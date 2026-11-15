@@ -23,6 +23,7 @@ import {
    servedFromOf,
 } from "./materialization/serve/leg";
 import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import { tablesReadForGates } from "./materialization/serve/bindings";
 import { answerOf, recordingManifest, variantsOf } from "./query_serving";
 
 const runnable = { tag: "routed" } as unknown as QueryMaterializer;
@@ -335,5 +336,85 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       }) as RoutedAnswer;
       expect(answer.answer.graftScope).toBe(graftScope);
       expect(answer.pastEntryPointGate).toBe(true);
+   });
+});
+
+describe("the served copy past an entry-point gate under G3 (gated sources off)", () => {
+   const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+   const colocated = binding("c", {
+      kind: "materialize",
+      tier: "colocated",
+      destinationName: "duckdb",
+      tablePath: '"c_tbl"',
+   });
+   const storage = binding("s", {
+      kind: "materialize",
+      tablePath: "main.s_tbl",
+   });
+   // The storage table read unquoted and upper-cased beside the colocated
+   // one: the served copy's spelling match finds only the colocated table.
+   const sql =
+      'SELECT 1 FROM "c_tbl" AS base LEFT JOIN MAIN.S_TBL AS j ON j.id = base.id';
+   const servedCandidate = (gateTablesRead: Binding[] | undefined) =>
+      variantsOf(
+         makeLegs(pinned, {
+            servedCopy: {
+               hasBindings: () => true,
+               loadQuery: async () => ({
+                  runnable,
+                  virtualMap,
+                  bindings: [colocated, storage],
+                  tablesRead: [colocated],
+                  gateTablesRead,
+                  graftScope: undefined,
+               }),
+            } as never,
+         }),
+         {
+            queryString: "run: gated -> { aggregate: n }",
+            givens: undefined,
+            authorRunnable: runnable,
+         },
+         pinned,
+         { modelPath: "m.malloy", colocatedKeepsContracts: true },
+      ).find((c) => c.kind === "served")!;
+   const withG3 = async <T>(run: () => Promise<T>): Promise<T> => {
+      const { restore } = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         },
+      });
+      try {
+         return await run();
+      } finally {
+         restore();
+      }
+   };
+
+   it("judges an answer by the tables it is judged to read for its gates, so a storage table spelled another way keeps it off G3", async () => {
+      await withG3(async () => {
+         const judged = tablesReadForGates(
+            sql,
+            [colocated, storage],
+            [colocated],
+         );
+         expect(judged).toEqual([colocated, storage]);
+         const candidate = servedCandidate(judged);
+         // Tried past the gate (every table it may read could be colocated)…
+         expect(candidate.keepsContracts).toBe(true);
+         const routed = await candidate.attempt();
+         // …but the answer it produced reads a storage table: not kept.
+         expect(routed.extra?.gateTablesRead).toEqual([colocated, storage]);
+         expect(candidate.keepsContractsFor!(routed.extra!)).toBe(false);
+      });
+   });
+
+   it("still keeps a colocated-only answer under G3", async () => {
+      await withG3(async () => {
+         const candidate = servedCandidate([colocated]);
+         const routed = await candidate.attempt();
+         expect(candidate.keepsContractsFor!(routed.extra!)).toBe(true);
+      });
    });
 });
