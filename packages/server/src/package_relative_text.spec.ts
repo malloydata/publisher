@@ -6,7 +6,13 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import { packageRelativeText } from "./package_relative_text";
+import {
+   callerVisibleText,
+   OUTSIDE_PACKAGE,
+   packageRelativeText,
+   rewriteErrorMessage,
+   withoutAbsolutePaths,
+} from "./package_relative_text";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -116,5 +122,49 @@ describe("packageRelativeText on a Windows server's paths", () => {
       );
       const sibling = `${root}2\\m.malloy`;
       expect(rel(`at ${sibling}`)).toBe(`at ${sibling}`);
+   });
+});
+
+describe("callerVisibleText", () => {
+   const pkg = "/srv/data/env/pkg";
+
+   it("names the package's files package-relative and any other path as outside it", () => {
+      expect(
+         callerVisibleText("FILE: file:///srv/data/env/pkg/m.malloy", pkg),
+      ).toBe("FILE: m.malloy");
+      expect(
+         callerVisibleText(
+            "FILE: file:///srv/data/env/q/x.malloy\nline 1",
+            pkg,
+         ),
+      ).toBe(`FILE: ${OUTSIDE_PACKAGE}\nline 1`);
+      expect(
+         callerVisibleText("ENOENT: open '/etc/conf/other/x.json'", pkg),
+      ).toBe(`ENOENT: open '${OUTSIDE_PACKAGE}'`);
+      expect(callerVisibleText("at C:\\Users\\me\\x.malloy", pkg)).toBe(
+         `at ${OUTSIDE_PACKAGE}`,
+      );
+   });
+
+   it("leaves relative paths, URLs and arithmetic as they are", () => {
+      const text =
+         "a / b, x/y/z, ../q/x.malloy, 1/2/3, https://h.com/a/b, @2024-01-01";
+      expect(callerVisibleText(text, pkg)).toBe(text);
+   });
+});
+
+describe("rewriteErrorMessage", () => {
+   it("rewrites a writable message", () => {
+      const error = new Error("at /srv/a/b");
+      rewriteErrorMessage(error, withoutAbsolutePaths);
+      expect(error.message).toBe(`at ${OUTSIDE_PACKAGE}`);
+   });
+
+   it("leaves an error whose message cannot be written, rather than throwing", () => {
+      const error = Object.freeze(new Error("at /srv/a/b"));
+      expect(() =>
+         rewriteErrorMessage(error, withoutAbsolutePaths),
+      ).not.toThrow();
+      expect(error.message).toBe("at /srv/a/b");
    });
 });

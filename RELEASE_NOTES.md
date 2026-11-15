@@ -21,6 +21,9 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — error messages no longer include the server's filesystem paths
+
+A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.
 ## [Unreleased] — BREAKING: a materialized source serves from its table only its own given-reading `where:`
 
 **BREAKING (speed, not correctness).** A source scoped by a caller's given (`where: org_id = $ORG_ID`) is still built with that term left out and served from its table with the term applied for each caller, but only when the term is written on the materialized source itself. A given-reading `where:` the source inherits from a base is now refused at plan: the source is not built and is answered live, under the term, exactly as it answers without materialization. Nothing answers differently; some queries that read a table now run live.
