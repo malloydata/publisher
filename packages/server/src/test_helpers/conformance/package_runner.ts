@@ -88,8 +88,8 @@ export type Outcome = { answer: Answer } | { error: string };
 
 /**
  * The switches a served run is taken under: `off` (`PUBLISHER_MATERIALIZE`
- * unset, the shipped default) and `on` or `cutover` (`PUBLISHER_MATERIALIZE`
- * on). Since the v1 cutover's retirement every one serves through the served
+ * set `false`) and `on` or `cutover` (`PUBLISHER_MATERIALIZE` on, the shipped
+ * default). Since the v1 cutover's retirement every one serves through the served
  * copy, the rollup and view legs, or live; `cutover` is kept as a name for
  * the column the fixture declares its expectations under.
  */

@@ -9,7 +9,7 @@ Materialization pre-builds a Malloy source into a physical table so queries read
 
 This doc covers the open-source Publisher's materialization surface — how to declare it, the rules Publisher enforces, how to build on demand or on a schedule, the `malloy-pub` CLI, and how a self-hosted (standalone) deployment differs from a control-plane-driven (hosted) one.
 
-> **v1 and v2.** Most of this page documents v1, `#@ persist` on a source and `#@ preaggregate` on a measure, which is what a server runs by default. Materialization v2, `#(materialize)` on a source and `#(preaggregate)` on a measure, is in development behind `PUBLISHER_MATERIALIZE` (default off). With the switch off, Publisher ignores both v2 annotations and answers the source live; a `#(materialize)` it ignores gets no warning and no serve verdict. With it on, write a new materialization as `#(materialize) name="…"` for a table in the source's own warehouse (`name=` is required there) or `#(materialize) storage="…"` for a storage destination, which is served only with `PERSIST_STORAGE_MODE=on` too, and a new rollup as `#(preaggregate) grain=[…]`. `#@ preaggregate` is deprecated in v2; `#@ persist` on a view and `#@ -persist` are not. [materialization-migration.md](materialization-migration.md) is the recipe for moving v1 annotations to v2, and [the served copy](#the-served-copy-in-development-publisher_materialize) documents how v2 serves.
+> **v1 and v2.** Most of this page documents v1, `#@ persist` on a source and `#@ preaggregate` on a measure, which every server reads. Materialization v2, `#(materialize)` on a source and `#(preaggregate)` on a measure, is on by default; `PUBLISHER_MATERIALIZE=false` turns it off, and the setting is removed one release after the default ships. With the switch off, Publisher ignores both v2 annotations and answers the source live; a `#(materialize)` it ignores gets no warning and no serve verdict. With it on, write a new materialization as `#(materialize) name="…"` for a table in the source's own warehouse (`name=` is required there) or `#(materialize) storage="…"` for a storage destination, which is served only with `PERSIST_STORAGE_MODE=on` too, and a new rollup as `#(preaggregate) grain=[…]`. `#@ preaggregate` is deprecated in v2; `#@ persist` on a view and `#@ -persist` are not. [materialization-migration.md](materialization-migration.md) is the recipe for moving v1 annotations to v2, and [the served copy](#the-served-copy-materialization-v2-publisher_materialize) documents how v2 serves.
 
 ## Declare what to persist
 
@@ -65,7 +65,7 @@ Every annotation that asks for a table reads its place the same way: `#@ persist
 
 ### Opting a reader out: `#@ -persist`
 
-`#@ -persist` is Malloy core's own opt-out, and it is not deprecated: Publisher honours it for `#@ persist` sources and, in development, for `#(materialize)` sources alike ([materialization-migration.md](materialization-migration.md#persist-opt-out)).
+`#@ -persist` is Malloy core's own opt-out, and it is not deprecated: Publisher honours it for `#@ persist` and `#(materialize)` sources alike ([materialization-migration.md](materialization-migration.md#persist-opt-out)).
 
 A source that `extend`s a persisted source reads the persisted table too — the extension adds computed fields on top of the stored rows rather than recomputing them. Annotate the extension with `#@ -persist` when you want it recomputed live instead:
 
@@ -823,9 +823,9 @@ Every query result carries `path`, the path report. It says which materialized t
 
 The report is assembled after the query runs and never changes which table answers. It is absent only if it could not be assembled.
 
-### The served copy (in development, `PUBLISHER_MATERIALIZE`)
+### The served copy (materialization v2, `PUBLISHER_MATERIALIZE`)
 
-With `PUBLISHER_MATERIALIZE=true`, a query on a built colocated `#(materialize)` source, or (with `PERSIST_STORAGE_MODE=on` as well) a built `storage=` source, may be answered from the model's **served copy**: your own files, held in memory, with the source's definition replaced by its stored table under the same name. Its trailing `extend { … }` blocks, its annotations and every other line are your text, so an extension, a join to it, a view, a named query or a source in a file that imports it reads the stored table with no change to how it is written. The served copy compiles when the package binds its stored tables; a query it cannot answer is answered live. When it answers, the path report's `servedBy` carries `via: "served_copy"`.
+With `PUBLISHER_MATERIALIZE` on (the default), a query on a built colocated `#(materialize)` source, or (with `PERSIST_STORAGE_MODE=on` as well) a built `storage=` source, may be answered from the model's **served copy**: your own files, held in memory, with the source's definition replaced by its stored table under the same name. Its trailing `extend { … }` blocks, its annotations and every other line are your text, so an extension, a join to it, a view, a named query or a source in a file that imports it reads the stored table with no change to how it is written. The served copy compiles when the package binds its stored tables; a query it cannot answer is answered live. When it answers, the path report's `servedBy` carries `via: "served_copy"`.
 
 - **`#(materialize)`**: the table is the one the source's generated build source builds, which stores the source's rows with its `where:` applied, so a source of any shape re-roots. A computed dimension is stored under its own name, so the served copy drops its definition and the stored column is the field; the dimension's annotations (`#(doc)`, `#(classification)` and the rest) are written on that field, so they read back as before. A timeframe truncation (`order_date.month`) keeps its timeframe: its definition is rewritten in place to truncate the stored column again, so results, charts and filters see a `month` field as they do live. A dimension the source inherits from its base is simply its stored column. A query that sets its own `timezone:` over a table that stores a time-zone-dependent dimension (one declared on a base in another file; see below) is answered live, since the build computed it in the default timezone. A source whose base declares a measure, view or join it inherits is left as written (its table does not carry them) and warned about.
 - **`#@ persist storage=`**: only a query-shaped source (`x -> { … }`) is re-rooted, since its table is exactly its query's output; a timeframe column in that output keeps its timeframe too. A source declared by refinement alone stores its root's rows and is left as written; it still reads a re-rooted base by name.
@@ -856,7 +856,7 @@ A served copy that does not compile, or a source it cannot re-root, is a `served
 
 To move a v1 `#@ persist` source to `#(materialize)`, and for what each v1 form becomes, see [materialization-migration.md](materialization-migration.md).
 
-### The `name=` view (in development, `PUBLISHER_MATERIALIZE`)
+### The `name=` view (materialization v2, `PUBLISHER_MATERIALIZE`)
 
 A `#(materialize)` source's table is named by `name=` (or, for a `storage=` source without one, by the source's own name and its package's suffix, see [Whose table it is](#whose-table-it-is)). When a run names the physical table by its generation instead — a control plane's instructions, or a `scope: version` run, whose table carries the version's suffix — Publisher also makes a **view** at the declared `name=` that reads it (a source with no `name=` gets none: its name was Publisher's default, which no reader was promised), so a reader outside Malloy has one stable name for the current table. A bare `name=` is put in the same schema or dataset as the table it reads; a qualified one (`analytics.flights_all`) is used as written. A `storage=` view lives in the destination beside its table and reads it without the catalog name, so a reader attaching the destination under another name still resolves it.
 
@@ -869,9 +869,9 @@ A `#(materialize)` source's table is named by `name=` (or, for a `storage=` sour
 - **Dialects.** A view is made on DuckDB (with MotherDuck and DuckLake), Postgres, BigQuery (a dataset-qualified name), Snowflake, Databricks and Trino. Only DuckDB and Postgres are tested against a database; the BigQuery, Snowflake, Databricks and Trino statements are tested as SQL text only. SQL Server has view DDL too (a name with at most a schema), but nothing is built on a SQL Server connection, which Publisher treats as read-only, so no view is made there. MySQL views cannot carry a comment and Presto's `CREATE VIEW` takes none, so no view is made there (`unsupported`).
 - **Not v1.** A `#@ persist name=` source makes no view; its self-assigned table already carries the name.
 
-### Persisted views (in development, `PUBLISHER_MATERIALIZE`)
+### Persisted views (materialization v2, `PUBLISHER_MATERIALIZE`)
 
-With `PUBLISHER_MATERIALIZE=true`, `#@ persist` on a view stores the view's result, and that table answers a query only when the query calls the view exactly, or starts from it:
+With `PUBLISHER_MATERIALIZE` on (the default), `#@ persist` on a view stores the view's result, and that table answers a query only when the query calls the view exactly, or starts from it:
 
 ```malloy
 source: flights is duckdb.table('flights') extend {
