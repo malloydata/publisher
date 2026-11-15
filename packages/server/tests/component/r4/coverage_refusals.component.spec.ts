@@ -31,9 +31,19 @@
  *    model serves.
  */
 
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import {
+   FixedConnectionMap,
+   InMemoryURLReader,
+   Runtime,
+} from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   computeSourceEntityId,
+   plannedSources,
+} from "../../../src/service/materialization/plan/addressing";
 import { formatPublishRejections } from "../../../src/service/publish_checks";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
@@ -64,7 +74,6 @@ interface Loaded {
    fixture: LoadedFixture;
    live: Map<string, Outcome>;
    rejections: string | undefined;
-   tableIds: string[];
    restore(): void;
 }
 
@@ -91,9 +100,8 @@ async function load(s: Scenario, probes: Probe[]): Promise<Loaded> {
       );
    }
    const rejections = formatPublishRejections(loader.pkg as never);
-   const tableIds = Object.keys(loader.pkg.getBuildPlan()?.sources ?? {});
    const fixture = await loader.bind({ includeRollups: s.includeRollups });
-   return { fixture, live, rejections, tableIds, restore };
+   return { fixture, live, rejections, restore };
 }
 
 /** Assert a probe's served answer equals live's and reports its tier. */
@@ -270,6 +278,20 @@ source: orders is orders_raw extend {
          expect(l.rejections).toBeDefined();
          expect(l.rejections).toContain("by_key");
       },
+      "neither colliding view is served from a table, the third is": (l) => {
+         const views = l.fixture.pkg
+            .getServeVerdicts()
+            .map(
+               (v) =>
+                  `${v.sourceName}:${v.verdict}${v.reason ? `:${v.reason}` : ""}`,
+            )
+            .sort();
+         expect(views).toEqual([
+            "orders__by_both__view:serves",
+            "orders__by_region__view:live:refused",
+            "orders__by_status__view:live:refused",
+         ]);
+      },
    },
 );
 
@@ -432,11 +454,13 @@ source: orders is orders_raw extend {
    }, 120_000);
 });
 
-scenario(
-   "a v1 storage= rollup over a storage= base",
-   {
-      files: {
-         "m.malloy": `${HEADER}
+for (const materialize of ["true", "false"]) {
+   scenario(
+      `a v1 storage= rollup over a storage= base, PUBLISHER_MATERIALIZE=${materialize}`,
+      {
+         env: { PUBLISHER_MATERIALIZE: materialize },
+         files: {
+            "m.malloy": `${HEADER}
 import "raw.malloy"
 
 #@ persist name="stored_base" storage="lake"
@@ -445,42 +469,47 @@ source: stored_base is orders_raw -> { select: id, region, status, amount } exte
   measure: total is amount.sum()
 }
 `,
-      },
-      includeRollups: true,
-   },
-   [
-      {
-         name: "a query the grain covers",
-         malloy: "run: stored_base -> { group_by: region; aggregate: total }",
-         tier: "rollup",
-      },
-   ],
-   {
-      // Planned as the rollup leg's, as #(preaggregate) over a stored base
-      // is: built in the destination beside its base and served from there.
-      "the rollup is planned and served, not left out as rollup_over_stored_base":
-         async (l) => {
-            const verdicts = l.fixture.pkg
-               .getServeVerdicts()
-               .map(
-                  (v) =>
-                     `${v.origin}:${v.verdict}${v.reason ? `:${v.reason}` : ""}`,
-               )
-               .sort();
-            expect(verdicts).toEqual(["persist:serves", "preaggregate:serves"]);
-            expect(l.fixture.built.map((b) => b.tier)).toEqual([
-               "storage",
-               "storage",
-            ]);
-            const out = await l.fixture.run(
-               "m.malloy",
-               "run: stored_base -> { group_by: region; aggregate: total }",
-            );
-            if ("error" in out) throw new Error(out.error);
-            expect(out.answer.servedFrom).toBe("storage");
          },
-   },
-);
+         includeRollups: true,
+      },
+      [
+         {
+            name: "a query the grain covers",
+            malloy:
+               "run: stored_base -> { group_by: region; aggregate: total }",
+            tier: "rollup",
+         },
+      ],
+      {
+         // Planned as the rollup leg's, as #(preaggregate) over a stored base
+         // is: built in the destination beside its base and served from there.
+         "the rollup is planned and served, not left out as rollup_over_stored_base":
+            async (l) => {
+               const verdicts = l.fixture.pkg
+                  .getServeVerdicts()
+                  .map(
+                     (v) =>
+                        `${v.origin}:${v.verdict}${v.reason ? `:${v.reason}` : ""}`,
+                  )
+                  .sort();
+               expect(verdicts).toEqual([
+                  "persist:serves",
+                  "preaggregate:serves",
+               ]);
+               expect(l.fixture.built.map((b) => b.tier)).toEqual([
+                  "storage",
+                  "storage",
+               ]);
+               const out = await l.fixture.run(
+                  "m.malloy",
+                  "run: stored_base -> { group_by: region; aggregate: total }",
+               );
+               if ("error" in out) throw new Error(out.error);
+               expect(out.answer.servedFrom).toBe("storage");
+            },
+      },
+   );
+}
 
 // ---------------------------------------------------------------------------
 // Warnings
@@ -559,7 +588,6 @@ const ADDRESSED_PROBES: Probe[] = [
 ];
 
 describe("PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION", () => {
-   const ids: Record<string, string[]> = {};
    for (const on of ["false", "true"]) {
       describe(`set ${on}`, () => {
          let l: Loaded | undefined;
@@ -571,7 +599,6 @@ describe("PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION", () => {
                },
                ADDRESSED_PROBES,
             );
-            ids[on] = [...l.tableIds].sort();
          }, 120_000);
          afterAll(async () => {
             l?.restore();
@@ -584,12 +611,68 @@ describe("PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION", () => {
          }
       });
    }
-   // The destination is the storage= name or, colocated, the connection's:
-   // either way it now folds into the address, so both tables move.
-   it("moves every source's address", () => {
-      expect(ids.true).toHaveLength(2);
-      expect(ids.false).toHaveLength(2);
-      expect(ids.true.filter((id) => ids.false.includes(id))).toEqual([]);
+
+   // One compile, fixed connection digests: only the switch differs.
+   it("moves the storage= source's address and no colocated one", async () => {
+      const duckdb = new DuckDBConnection("duckdb");
+      try {
+         await duckdb.runSQL(
+            "CREATE TABLE ev AS SELECT * FROM (VALUES (1, 'a', 5.0)) AS t(id, region, amount)",
+         );
+         const runtime = new Runtime({
+            urlReader: new InMemoryURLReader(
+               new Map([
+                  [
+                     "file:///m.malloy",
+                     `${HEADER}
+#@ persist storage="lake"
+source: stored is duckdb.table('ev') -> { select: id, region, amount }
+#@ persist
+source: placed is duckdb.table('ev') -> { select: id, region, amount }
+`,
+                  ],
+               ]),
+            ),
+            connections: new FixedConnectionMap(
+               new Map([["duckdb", duckdb]]),
+               "duckdb",
+            ),
+         });
+         const model = await runtime
+            .loadModel(new URL("file:///m.malloy"))
+            .getModel();
+         const sources = Object.fromEntries(
+            plannedSources(await runtime.getBuildTargets(model)).map((s) => [
+               s.name,
+               s,
+            ]),
+         );
+         const digests = { duckdb: "fixed-digest" };
+         const addresses = (on: string) => {
+            const restore = installSettings({
+               env: {
+                  PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: on,
+               },
+            }).restore;
+            try {
+               return {
+                  stored: computeSourceEntityId(sources.stored, digests),
+                  placed: computeSourceEntityId(sources.placed, digests),
+               };
+            } finally {
+               restore();
+            }
+         };
+         const off = addresses("false");
+         const onAddr = addresses("true");
+         expect(onAddr.stored).not.toBe(off.stored);
+         expect(onAddr.placed).toBe(off.placed);
+         // Stable within a position, so the difference is the switch.
+         expect(addresses("false")).toEqual(off);
+      } finally {
+         await duckdb.close();
+      }
    });
 });
 

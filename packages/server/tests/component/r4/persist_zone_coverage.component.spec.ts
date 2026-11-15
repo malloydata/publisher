@@ -78,77 +78,86 @@ source: jb is duckdb.table('ev') extend {
 `;
 }
 
-/** Each case: its name, its query, and whether it must be served. */
-const CASES: [string, string, boolean][] = [
+/**
+ * How a case must be answered: from the table (`served`), or live, either
+ * because no stored leg is considered (`unrouted`: the query is rooted in a
+ * warehouse source that reaches the stored table through a join on another
+ * connection), or declined with the path report's reason (`TIME_ZONE`: a
+ * value stored in New York read in another zone; `WARNED`: the served copy
+ * does not carry the source, here `fields_not_carried`).
+ */
+type Outcome = "served" | "unrouted" | "TIME_ZONE" | "WARNED";
+
+const CASES: [string, string, Outcome][] = [
    [
       "through a join: a stored hour",
       "run: jb -> { group_by: pq.h; aggregate: n is count() }",
-      false,
+      "unrouted",
    ],
    [
       "through a join: a stored day",
       "run: jb -> { group_by: pq.d; aggregate: n is count() }",
-      false,
+      "unrouted",
    ],
    [
       "through a join: a stored hour truncation",
       "run: jb -> { group_by: pq.hr; aggregate: n is count() }",
-      false,
+      "unrouted",
    ],
    [
       "through a join: an inherited-zone dimension",
       "run: jb -> { group_by: inh.ts_hr; aggregate: n is count() }",
-      false,
+      "unrouted",
    ],
    [
       "through a join: a truncation of an inherited-zone column",
       "run: jb -> { group_by: d is inh.ts.day; aggregate: n is count() }",
-      false,
+      "unrouted",
    ],
    [
       "the zone-setting query, read directly: its stored day",
       "run: pq -> { group_by: d; aggregate: n is count() }",
-      false,
+      "TIME_ZONE",
    ],
    [
       "through a join: a truncation of a zone-only base's column",
       "run: jb -> { group_by: d is inh2.ts.day; aggregate: n is count() }",
-      false,
+      "unrouted",
    ],
    [
       "inherited, over a base with zoned dimensions: hour(ts)",
       "run: inh -> { group_by: h is hour(ts); aggregate: n is count() }",
-      false,
+      "WARNED",
    ],
    [
       "inherited, over a base with zoned dimensions: the base's dimension",
       "run: inh -> { group_by: ts_day; aggregate: total }",
-      false,
+      "WARNED",
    ],
    [
       "inherited, over a zone-only base: hour(ts)",
       "run: inh2 -> { group_by: h is hour(ts); aggregate: n is count() }",
-      true,
+      "served",
    ],
    [
       "inherited, over a zone-only base: a day truncation",
       "run: inh2 -> { group_by: d is ts.day; aggregate: total }",
-      true,
+      "served",
    ],
    [
       "inherited, over a zone-only base: a time-literal filter",
       "run: inh2 -> { where: ts ? @2024-03-14; aggregate: total }",
-      true,
+      "served",
    ],
    [
       "inherited, query-shaped: its stored day",
       "run: pqi -> { group_by: d; aggregate: n is count() }",
-      false,
+      "TIME_ZONE",
    ],
    [
       "inherited, query-shaped: hour(ts) over the stored instant",
       "run: pqi -> { group_by: h2 is hour(ts); aggregate: n is count() }",
-      false,
+      "served",
    ],
 ];
 
@@ -169,12 +178,26 @@ for (const tier of ["storage"] as const) {
          restore();
          await disposeScenarios();
       });
-      for (const [name, malloy, served] of CASES) {
-         it(`${name}: equal to live${served ? ", served" : ""}`, async () => {
+      it("leaves the source over a base with zoned dimensions out of the copy (fields_not_carried)", async () => {
+         expect(await fixture.servedCopyProblems()).toContainEqual({
+            sourceName: "inh",
+            reason: "fields_not_carried",
+         });
+      });
+      for (const [name, malloy, outcome] of CASES) {
+         it(`${name}: equal to live, ${outcome === "served" ? "served" : `live (${outcome})`}`, async () => {
             const run = await fixture.run({ name, malloy });
             expect(rowDifference(run.live, run.served)).toBeUndefined();
             expect(strictRowDifference(run.live, run.served)).toBeUndefined();
-            if (served) expect(run.servedVia).toBe("served_copy");
+            fixture.setBindings(fixture.bindings);
+            const { path } = await fixture.runAsIs(malloy);
+            const considered = (path?.considered ?? []).map((c) => c.reason);
+            if (outcome === "served") {
+               expect(run.servedVia).toBe("served_copy");
+               return;
+            }
+            expect(run.servedBy?.kind).toBe("live");
+            expect(considered).toEqual(outcome === "unrouted" ? [] : [outcome]);
          });
       }
    });

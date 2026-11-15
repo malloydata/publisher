@@ -160,23 +160,29 @@ source: flights_ny is duckdb.table('flights_raw') extend {
             }),
          );
       });
-      it("a sum by a zoned truncation of the parent: equal to live", async () => {
-         const run = await fixture.run({
-            name: "by departure day",
-            malloy:
-               "run: flights_ny -> { group_by: d is departed.day; aggregate: segments_ny.seg_miles; order_by: d }",
-         });
-         expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(strictRowDifference(run.live, run.served)).toBeUndefined();
+      it("a sum by a zoned truncation of the parent: served from the rollup, equal to live", async () => {
+         expectRollup(
+            await fixture.run({
+               name: "by departure day",
+               malloy:
+                  "run: flights_ny -> { group_by: d is departed.day; aggregate: segments_ny.seg_miles; order_by: d }",
+            }),
+         );
       });
-      it("the zoned source on its own: answered live, equal to live", async () => {
+      it("the zoned source on its own: live (TIME_ZONE), equal to live", async () => {
+         const malloy =
+            "run: segments_ny -> { group_by: flight_id; aggregate: seg_miles }";
          const run = await fixture.run({
             name: "the rolled-up source",
-            malloy:
-               "run: segments_ny -> { group_by: flight_id; aggregate: seg_miles }",
+            malloy,
          });
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(run.servedBy?.kind).not.toBe("rollup");
+         expect(run.servedBy?.kind).toBe("live");
+         fixture.setBindings(fixture.bindings);
+         const { path } = await fixture.runAsIs(malloy);
+         expect(
+            (path?.considered ?? []).map((c) => [c.kind, c.reason]),
+         ).toEqual([["rollup", "TIME_ZONE"]]);
       });
    });
 }

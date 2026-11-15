@@ -91,7 +91,7 @@ describe("R4: a rolling window under v1 #@ persist storage=, at a pinned clock",
       });
    }
 
-   it("read_time: after the clock moves, the window is re-applied, equal to live", async () => {
+   it("read_time: after the clock moves, the window is re-applied, served and equal to live", async () => {
       fixture.setClock(LATER);
       const run = await fixture.run({
          name: "read_time later",
@@ -99,6 +99,7 @@ describe("R4: a rolling window under v1 #@ persist storage=, at a pinned clock",
             "run: read_time -> { group_by: g; aggregate: total, n is count(); order_by: g }",
       });
       expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(run.servedVia).toBe("served_copy");
       expect(run.live.reduce((n, r) => n + Number(r.n), 0)).toBe(3);
    });
 

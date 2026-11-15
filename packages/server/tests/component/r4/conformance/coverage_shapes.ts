@@ -143,7 +143,7 @@ source: listed is duckdb.sql("""
    },
    {
       name: "rollup over a zoned base",
-      about: "A rollup declared on a source that sets its own timezone: (v1 #@ preaggregate; v2 #(preaggregate), refused as preaggregate-time-zone)",
+      about: "A rollup declared on a source that sets its own timezone:, as v1 #@ preaggregate and as v2 #(preaggregate): both are refused (preaggregate-time-zone), so every query answers live",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
