@@ -727,6 +727,31 @@ source: orders is orders_raw
    );
 
    it(
+      "refuses constructor= and toString= as unknown keys, not retired ones",
+      async () => {
+         const c = await compiled(`${BASE}
+#(materialize) name="orders_all" storage="lake" constructor="x" toString="y"
+source: orders is orders_raw
+`);
+         expect(generatedPlans(c)).toEqual([]);
+         const findings = (c.annotationFindings ?? []).filter(
+            (f) => f.subject === "orders",
+         );
+         expect(findings.map((f) => f.code)).not.toContain(
+            "materialize-retired-key",
+         );
+         expect(findings.map((f) => [f.code, f.tier])).toContainEqual([
+            "materialize-unknown-key",
+            "malformed",
+         ]);
+         expect(
+            findings.some((f) => f.message.includes("no longer reads")),
+         ).toBe(false);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "refuses a source that also carries its own #@ persist, rather than storing it twice",
       async () => {
          const c = await compiled(`##! experimental.persistence

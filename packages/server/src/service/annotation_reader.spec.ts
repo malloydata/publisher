@@ -138,6 +138,34 @@ describe("the #@ route's keys", () => {
    });
 });
 
+describe("a key named after an Object.prototype member", () => {
+   it("is an unknown key, never a retired one, at the top level and inside persist", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([
+            `#@ persist name="orders" constructor="x" toString="y" { hasOwnProperty="z" }`,
+         ]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.message.split("`")[1]])).toEqual([
+         ["persist-unknown-key", "constructor="],
+         ["persist-unknown-key", "toString="],
+      ]);
+      expect(findings.every((f) => f.rewrite === undefined)).toBe(true);
+   });
+
+   it("is an unknown key on #(materialize)", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([`#(materialize) constructor="x" toString="y"`]),
+         "materialize",
+      );
+      expect(findings.map((f) => [f.code, f.tier])).toEqual([
+         ["materialize-unknown-key", "malformed"],
+         ["materialize-unknown-key", "malformed"],
+      ]);
+   });
+});
+
 describe("the retired partition= key", () => {
    it("is malformed on #@ persist, with a rewrite that says to remove it", () => {
       const { findings } = readRouteTag(

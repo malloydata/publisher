@@ -420,7 +420,7 @@ export function readRouteTag(
          : `#(${route})`;
    if (accepted) {
       for (const [key] of tag.entries()) {
-         const retired = spec?.retiredKeys?.[key];
+         const retired = retiredRewrite(spec, key);
          if (retired !== undefined) {
             findings.push({
                route,
@@ -447,7 +447,7 @@ export function readRouteTag(
       // declaration.ts), so a retired one there is retired too.
       if (route === "@") {
          for (const [key] of tag.tag("persist")?.entries() ?? []) {
-            const retired = spec?.retiredKeys?.[key];
+            const retired = retiredRewrite(spec, key);
             if (retired === undefined) continue;
             findings.push({
                route,
@@ -495,6 +495,19 @@ export function persistAnnotationFindings(
          };
       },
    );
+}
+
+/**
+ * What to write instead of `key` when `spec` retires it, or undefined. An own
+ * key only: `constructor=` or `toString=` is an unknown key, never one
+ * inherited from `Object.prototype`.
+ */
+function retiredRewrite(
+   spec: RouteSpec | undefined,
+   key: string,
+): string | undefined {
+   const retired = spec?.retiredKeys;
+   return retired && Object.hasOwn(retired, key) ? retired[key] : undefined;
 }
 
 /**

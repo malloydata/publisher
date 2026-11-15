@@ -264,7 +264,7 @@ function retiredKeyRefusal(
    declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
 ): string | undefined {
    const retired = PUBLISHER_ROUTES.materialize?.retiredKeys ?? {};
-   const key = declaration.keys.find((k) => k in retired);
+   const key = declaration.keys.find((k) => Object.hasOwn(retired, k));
    if (key === undefined) return undefined;
    return `#(materialize) no longer reads \`${key}=\`; ${retired[key]}`;
 }
