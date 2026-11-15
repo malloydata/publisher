@@ -547,7 +547,7 @@ export function pairLeafKeyChecksOf(
 /**
  * Run a rollup's key check (known limitation 29) on `connection` and say what
  * it found: unique when no non-NULL key value repeats. Undefined when the
- * check could not run, which the join-to-rollup leg reads as unknown and
+ * check could not run, which the join-to-rollup branch reads as unknown and
  * declines as it did before the check existed; the build itself never fails
  * for it.
  */

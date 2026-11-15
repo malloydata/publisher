@@ -469,7 +469,7 @@ interface Compiled {
    leftOut?: readonly LeftOutDefinition[];
    /**
     * The overlay the copy compiled from (the re-rooted files, by overlay
-    * key) and the connections it compiled with: the join-to-rollup leg
+    * key) and the connections it compiled with: the join-to-rollup branch
     * compiles a variant over the same files (see {@link ServedCopyServe.joinRollupBasis}).
     */
    files?: ReadonlyMap<string, string>;
@@ -517,7 +517,7 @@ type AuthorReroot = Reroot & {
 };
 
 /**
- * What the join-to-rollup leg reads of a compiled served copy, to answer a
+ * What the join-to-rollup branch reads of a compiled served copy, to answer a
  * query in a storage destination (see {@link ServedCopyServe.joinRollupBasis}).
  */
 export interface ServedCopyJoinBasis {
@@ -1061,7 +1061,7 @@ export class ServedCopyServe {
    }
 
    /**
-    * What the join-to-rollup leg (A7) builds on to answer a query in a
+    * What the join-to-rollup branch (A7) builds on to answer a query in a
     * storage destination (known limitation 26): the copy's re-rooted files
     * and connections, over which it compiles the query's source with one
     * join re-pointed at a joined source's rollup in the same destination,

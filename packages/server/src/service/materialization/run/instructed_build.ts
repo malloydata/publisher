@@ -1506,7 +1506,7 @@ function rollupParentKeyChecksOf(
  * Run each query source's primary key check of a built rollup, on the
  * rollup's connection, and record what it found beside the rollup. A check
  * on another connection, or one that does not run, records nothing: the
- * join-to-rollup leg then reads that source's key as unknown and declines.
+ * join-to-rollup branch then reads that source's key as unknown and declines.
  */
 async function checkParentKeys(
    ledger: UniquenessLedger,

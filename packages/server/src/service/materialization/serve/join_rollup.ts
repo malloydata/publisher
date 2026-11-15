@@ -98,8 +98,8 @@ export function joinRollupBranches(
    plansByBase: ReadonlyMap<string, readonly RollupVariantPlan[]>,
    sourceFilterReads: ReadonlySet<string>,
    parentPrimaryKey: string | undefined,
-): { leg: JoinRollupBranch; refusal?: JoinRollupRefusal }[] {
-   const out: { leg: JoinRollupBranch; refusal?: JoinRollupRefusal }[] = [];
+): { branch: JoinRollupBranch; refusal?: JoinRollupRefusal }[] {
+   const out: { branch: JoinRollupBranch; refusal?: JoinRollupRefusal }[] = [];
    for (const join of joins) {
       if (join.relationship === "cross") continue;
       // A join defined in place (`segments extend { … }`) has no sourceID:
@@ -108,7 +108,7 @@ export function joinRollupBranches(
       const plans = plansByBase.get(join.sourceID);
       if (!plans || plans.length === 0) continue;
       for (const plan of plans) {
-         const leg = {
+         const branch = {
             join: join as JoinRollupBranch["join"],
             plan,
             relationship:
@@ -118,8 +118,8 @@ export function joinRollupBranches(
                   : ("many" as const),
          };
          out.push({
-            leg,
-            ...(leg.relationship === "many" || join.relationship === "many"
+            branch,
+            ...(branch.relationship === "many" || join.relationship === "many"
                ? keyRepeatRefusal(join, parentPrimaryKey)
                : {}),
             // The condition's own refusal, when it has one, is the reason given.
@@ -233,24 +233,24 @@ function refusalOf(
  * (`["lines", "qty"]`, a join-level operand).
  */
 export function unmatchedRowProblem(
-   leg: JoinRollupBranch,
+   branch: JoinRollupBranch,
    read: ReadonlySet<string>,
    isColumn: (path: readonly string[]) => boolean,
    joinMeetsNoRow: (name: string) => boolean,
 ): string | undefined {
-   for (const m of leg.plan.rollupMeasures) {
+   for (const m of branch.plan.rollupMeasures) {
       if (!read.has(m.name)) continue;
       for (const { leaf } of m.partials) {
          if (leaf.aggregate === "min" || leaf.aggregate === "max") {
             const operand = bareOperand(leaf.expr);
             if (operand === undefined || !isColumn(operand)) {
-               return `\`${leg.join.name}.${m.name}\` takes a ${leaf.aggregate} of a value that is not NULL on a parent with no rows, which Malloy reads live (malloydata/malloy#1762)`;
+               return `\`${branch.join.name}.${m.name}\` takes a ${leaf.aggregate} of a value that is not NULL on a parent with no rows, which Malloy reads live (malloydata/malloy#1762)`;
             }
             continue;
          }
          const at = leaf.joinPath[0];
          if (at !== undefined && !joinMeetsNoRow(at)) {
-            return `\`${leg.join.name}.${m.name}\` aggregates at \`${at}\`, which is not keyed on a column of \`${leg.join.name}\` and so matches a row for a parent with no rows live (malloydata/malloy#1762)`;
+            return `\`${branch.join.name}.${m.name}\` aggregates at \`${at}\`, which is not keyed on a column of \`${branch.join.name}\` and so matches a row for a parent with no rows live (malloydata/malloy#1762)`;
          }
       }
    }
@@ -271,26 +271,26 @@ export function unmatchedRowProblem(
  * build found of the key: `repeated` covers a NULL as well.
  */
 export function joinedKeyProblem(
-   leg: JoinRollupBranch,
+   branch: JoinRollupBranch,
    read: ReadonlySet<string>,
    joinedKey: string | undefined,
    joinedKeyVerdict: KeyVerdict,
 ): string | undefined {
    if (
       joinedKey === undefined ||
-      joinedKey === leg.join.keyColumn ||
+      joinedKey === branch.join.keyColumn ||
       requireUnique(joinedKeyVerdict)
    ) {
       return undefined;
    }
-   for (const m of leg.plan.rollupMeasures) {
+   for (const m of branch.plan.rollupMeasures) {
       if (!read.has(m.name)) continue;
       for (const { leaf } of m.partials) {
          if (leaf.aggregate === "min" || leaf.aggregate === "max") continue;
          if (leaf.joinPath.length > 0) continue;
          return joinedKeyVerdict === "repeated"
-            ? `\`${leg.join.name}\` holds a value of its primary key \`${joinedKey}\` more than once or NULL, and live counts and sums \`${leg.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`
-            : `\`${leg.join.name}\`'s primary key \`${joinedKey}\` was not checked unique and never NULL when its rollup was built, and live counts and sums \`${leg.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`;
+            ? `\`${branch.join.name}\` holds a value of its primary key \`${joinedKey}\` more than once or NULL, and live counts and sums \`${branch.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`
+            : `\`${branch.join.name}\`'s primary key \`${joinedKey}\` was not checked unique and never NULL when its rollup was built, and live counts and sums \`${branch.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`;
       }
    }
    return undefined;
@@ -307,17 +307,17 @@ export function joinedKeyProblem(
  * `COUNT(DISTINCT key)` skips.
  */
 export function parentKeyProblem(
-   leg: JoinRollupBranch,
+   branch: JoinRollupBranch,
    parentKey: KeyVerdict,
 ): string | undefined {
-   if (leg.relationship === "one" && leg.join.relationship === "one") {
+   if (branch.relationship === "one" && branch.join.relationship === "one") {
       return undefined;
    }
    if (requireUnique(parentKey)) return undefined;
-   const key = leg.join.baseKey;
+   const key = branch.join.baseKey;
    return parentKey === "repeated"
-      ? `the query source holds a value of its primary key \`${key}\` more than once or NULL, so a row of the rollup of \`${leg.join.name}\` would be read once per row that shares it`
-      : `the query source's primary key \`${key}\` was not checked unique and never NULL when the rollup of \`${leg.join.name}\` was built, so a row of it could be read once per row that shares it`;
+      ? `the query source holds a value of its primary key \`${key}\` more than once or NULL, so a row of the rollup of \`${branch.join.name}\` would be read once per row that shares it`
+      : `the query source's primary key \`${key}\` was not checked unique and never NULL when the rollup of \`${branch.join.name}\` was built, so a row of it could be read once per row that shares it`;
 }
 
 /**
@@ -368,11 +368,11 @@ function bareOperand(expr: MeasureExpr): string[] | undefined {
  * (`sourceFieldJoinReads`). Returns why the branch cannot answer, or undefined.
  */
 export function checkJoinCoverage(
-   leg: JoinRollupBranch,
+   branch: JoinRollupBranch,
    levels: QueryLevelFacts,
    parentReads: (name: string) => "none" | "scalar" | "aggregate",
 ): JoinRollupRefusal | undefined {
-   const { plan, join } = leg;
+   const { plan, join } = branch;
    const name = join.name;
    const fanOut = new Set(plan.fanOutDimensions);
    const measureFanOut = new Map(

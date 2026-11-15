@@ -244,7 +244,7 @@ type VariantUse =
    | {
         kind: "join";
         localName: string;
-        leg: JoinRollupBranch;
+        branch: JoinRollupBranch;
         /**
          * Set when the query's source is read from the rollup's storage
          * destination through the served copy (known limitation 26): the
@@ -455,12 +455,13 @@ export class RollupVariantServe {
       const target =
          localName && sourceID ? this.rollupTarget(sourceID) : undefined;
       // A7: the query source's joins whose joined source has rollups.
-      const legs = sourceID && localName ? this.joinLegsOf(sourceID) : [];
+      const branches =
+         sourceID && localName ? this.joinBranchesOf(sourceID) : [];
       if (
          !localName ||
          !sourceID ||
          !struct ||
-         (!target && legs.length === 0)
+         (!target && branches.length === 0)
       ) {
          throw new NoRollupForQuery("the query's source declares no rollup");
       }
@@ -530,8 +531,8 @@ export class RollupVariantServe {
       }
       // Then a joined source's rollup, read through the join (A7): R1's
       // join branches, inside the rollup step.
-      const usage = legs.length > 0 ? queryFieldUsagePaths(prepared) : [];
-      for (const { leg, refusal } of legs) {
+      const usage = branches.length > 0 ? queryFieldUsagePaths(prepared) : [];
+      for (const { branch, refusal } of branches) {
          // A join branch redeclares the author's source around the join, not
          // over its declaring file, so it carries no gate to prove: past an
          // entry-point gate it declines (CONTRACT).
@@ -540,7 +541,7 @@ export class RollupVariantServe {
             continue;
          }
          try {
-            return await this.attemptJoin(leg, refusal, {
+            return await this.attemptJoin(branch, refusal, {
                localName,
                sourceID,
                shape,
@@ -597,11 +598,13 @@ export class RollupVariantServe {
    }
 
    /**
-    * The legs the joins of source `sourceID` offer (A7), each with why it
+    * The join branches the joins of source `sourceID` offer (A7), each with why it
     * cannot be used, if it cannot. Read through the source map's join
     * readers; memoised with the plans.
     */
-   private joinLegsOf(sourceID: string): ReturnType<typeof joinRollupBranches> {
+   private joinBranchesOf(
+      sourceID: string,
+   ): ReturnType<typeof joinRollupBranches> {
       const byBase = this.plansByBase();
       const memo = this.planMemo;
       const cached = memo?.joinBranches?.get(sourceID);
@@ -609,7 +612,7 @@ export class RollupVariantServe {
       const map = SourceMap.of(this.host.modelDef());
       const filter = map.filterJoinsOf(sourceID);
       const joins = map.joinsOf(sourceID);
-      const legs = joinRollupBranches(
+      const branches = joinRollupBranches(
          joins,
          byBase,
          // Unknown reads count as reading every join.
@@ -620,9 +623,9 @@ export class RollupVariantServe {
       );
       if (memo) {
          memo.joinBranches ??= new Map();
-         memo.joinBranches.set(sourceID, legs);
+         memo.joinBranches.set(sourceID, branches);
       }
-      return legs;
+      return branches;
    }
 
    /**
@@ -635,19 +638,19 @@ export class RollupVariantServe {
    ): Set<string> {
       const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
       if (typeof sourceID !== "string" || !this.hasRollups()) return new Set();
-      const legs = this.joinLegsOf(sourceID);
-      if (legs.length === 0) return new Set();
+      const branches = this.joinBranchesOf(sourceID);
+      if (branches.length === 0) return new Set();
       // Only the joins the query reads (every one, when its reads are
       // unreadable): the leg never tries a join the query does not read.
       const usage = queryFieldUsagePaths(prepared);
       return new Set(
-         legs
+         branches
             .filter(
-               ({ leg }) =>
+               ({ branch }) =>
                   usage === undefined ||
-                  usage.some((p) => p[0] === leg.join.name),
+                  usage.some((p) => p[0] === branch.join.name),
             )
-            .map(({ leg }) => leg.plan.baseSourceID),
+            .map(({ branch }) => branch.plan.baseSourceID),
       );
    }
 
@@ -657,7 +660,7 @@ export class RollupVariantServe {
     * ({@link JoinNotRead} when the query reads nothing through the join).
     */
    private async attemptJoin(
-      leg: JoinRollupBranch,
+      branch: JoinRollupBranch,
       refusal: ReturnType<typeof joinRollupBranches>[number]["refusal"],
       q: {
          localName: string;
@@ -669,7 +672,7 @@ export class RollupVariantServe {
          args: Parameters<RollupVariantServe["attempt"]>[0];
       },
    ): Promise<RollupAnswer> {
-      const { plan, join } = leg;
+      const { plan, join } = branch;
       const name = join.name;
       const declined = joinBranchDecline(name, q.usage, refusal);
       if (declined) throw declined;
@@ -736,7 +739,7 @@ export class RollupVariantServe {
       // fixed at every level that aggregates through the join.
       if (levels) {
          const loose = checkJoinCoverage(
-            leg,
+            branch,
             levels,
             sourceFieldJoinReads(q.struct, name),
          );
@@ -747,15 +750,15 @@ export class RollupVariantServe {
             .filter((p) => p[0] === name && p.length === 2)
             .map((p) => p[1] as string),
       );
-      this.checkJoinKeys(leg, q, q.usage, childDef, read, inDestination);
+      this.checkJoinKeys(branch, q, q.usage, childDef, read, inDestination);
       const table = this.tableOf(plan, q.args.pinned);
       if (!table) {
          throw this.noFreshTable(plan, q.args.pinned);
       }
       if (inDestination) {
-         return this.answerJoinInDestination(leg, q, table, inDestination);
+         return this.answerJoinInDestination(branch, q, table, inDestination);
       }
-      return this.answerJoinColocated(leg, q, table);
+      return this.answerJoinColocated(branch, q, table);
    }
 
    /**
@@ -765,7 +768,7 @@ export class RollupVariantServe {
     * source's fields the query reads through the join.
     */
    private checkJoinKeys(
-      leg: JoinRollupBranch,
+      branch: JoinRollupBranch,
       q: Parameters<RollupVariantServe["attemptJoin"]>[2],
       usage: readonly (readonly string[])[],
       childDef: JoinedSourceDef | undefined,
@@ -774,7 +777,7 @@ export class RollupVariantServe {
          | { basis: ServedCopyJoinBasis; source: Binding }
          | undefined,
    ): void {
-      const { plan, join } = leg;
+      const { plan, join } = branch;
       const name = join.name;
       // A join_one the data does not keep unique repeats each parent row
       // once per joined row live, and every aggregate not taken at the join
@@ -803,7 +806,7 @@ export class RollupVariantServe {
       // storage destination, as the build of the query source's stored
       // table there found it over the rows that table holds.
       const keyProblem = parentKeyProblem(
-         leg,
+         branch,
          inDestination
             ? this.storedKeyUniqueness(inDestination.source, join.baseKey)
             : this.parentKeyUniqueness(plan, q.struct, q.args.pinned),
@@ -851,7 +854,7 @@ export class RollupVariantServe {
                isBareColumn(childFields.get(j.baseKey)),
          );
       const problem = unmatchedRowProblem(
-         leg,
+         branch,
          read,
          (operand) => {
             if (operand.length === 1) {
@@ -881,7 +884,7 @@ export class RollupVariantServe {
       // The joined source's own key, when the join is keyed on another
       // column: live counts and sums its rows once per non-NULL key.
       const joinedProblem = joinedKeyProblem(
-         leg,
+         branch,
          read,
          primaryKeyOf(childDef),
          plan.storage !== undefined
@@ -907,15 +910,15 @@ export class RollupVariantServe {
     * rollup's table; else a {@link LegDecline}.
     */
    private async answerJoinColocated(
-      leg: JoinRollupBranch,
+      branch: JoinRollupBranch,
       q: Parameters<RollupVariantServe["attemptJoin"]>[2],
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): Promise<RollupAnswer> {
-      const { plan, join } = leg;
+      const { plan, join } = branch;
       const name = join.name;
       const variant = await this.compiledVariant(
          plan,
-         { kind: "join", localName: q.localName, leg },
+         { kind: "join", localName: q.localName, branch },
          table,
       );
       if (!variant.materializer) {
@@ -1012,12 +1015,12 @@ export class RollupVariantServe {
     * the tables the variant reads, and that its SQL reads both tables.
     */
    private async answerJoinInDestination(
-      leg: JoinRollupBranch,
+      branch: JoinRollupBranch,
       q: Parameters<RollupVariantServe["attemptJoin"]>[2],
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
       at: { basis: ServedCopyJoinBasis; source: Binding },
    ): Promise<RollupAnswer> {
-      const { plan, join } = leg;
+      const { plan, join } = branch;
       const name = join.name;
       const { basis, source } = at;
       const across = (why: string) =>
@@ -1049,7 +1052,7 @@ export class RollupVariantServe {
          {
             kind: "join",
             localName: q.localName,
-            leg,
+            branch,
             destination: { basis, keepsJoin },
          },
          table,
@@ -1349,13 +1352,13 @@ export class RollupVariantServe {
    }
 
    /**
-    * The first join_one of the query's source, other than `legJoin`, that the
+    * The first join_one of the query's source, other than `branchJoin`, that the
     * query reads and whose key a rollup's build found repeated (see
     * {@link keyUniqueness}), or undefined.
     */
    private nonUniqueJoinOneRead(
       struct: unknown,
-      legJoin: string,
+      branchJoin: string,
       usage: readonly (readonly string[])[],
       pinned: Pinned,
    ): string | undefined {
@@ -1364,7 +1367,7 @@ export class RollupVariantServe {
       const byBase = this.plansByBase();
       for (const j of SourceMap.of(this.host.modelDef()).joinsOf(sourceID)) {
          if (
-            j.name === legJoin ||
+            j.name === branchJoin ||
             j.relationship !== "one" ||
             j.sourceID === undefined ||
             j.keyColumn === undefined ||
@@ -1471,7 +1474,7 @@ export class RollupVariantServe {
          plan.rollupSourceName,
          use.localName,
          use.kind === "join"
-            ? `join:${use.leg.join.name}${use.destination ? `\u0000${use.destination.basis.key}\u0000${use.destination.keepsJoin}` : ""}`
+            ? `join:${use.branch.join.name}${use.destination ? `\u0000${use.destination.basis.key}\u0000${use.destination.keepsJoin}` : ""}`
             : "base",
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
@@ -2214,8 +2217,8 @@ function sourceOverRollup(
       const extension = additions;
       return `source: ${identifier(use.localName)} is ${identifier(servedName)}${internalPartials(plan)}${extension}`;
    }
-   const { join } = use.leg;
-   const keyword = use.leg.relationship === "one" ? "join_one" : "join_many";
+   const { join } = use.branch;
+   const keyword = use.branch.relationship === "one" ? "join_one" : "join_many";
    const joined = `${plan.rollupSourceName}__joined`;
    const j = identifier(join.name);
    // Over the served copy, a join it left out across connections is not

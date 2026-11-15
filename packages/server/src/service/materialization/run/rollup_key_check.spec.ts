@@ -418,7 +418,7 @@ describe("the joined source's own primary key check, on a build", () => {
 
 /**
  * A source stored in a destination, checked over its table at its own build
- * (the join-to-rollup leg in a destination reads that table). The destination
+ * (the join-to-rollup branch in a destination reads that table). The destination
  * is a plain DuckDB file under the environment, as a `storage=` destination
  * of type duckdb is; the stand-in build writes the source's rows there.
  */

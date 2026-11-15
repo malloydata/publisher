@@ -674,7 +674,7 @@ source: orders is orders_raw extend {
    },
    {
       // A `storage=` rollup read through a join_many keyed on the query
-      // source's primary key: the join-to-rollup leg reads the query source's
+      // source's primary key: the join-to-rollup branch reads the query source's
       // stored table beside it, so the plan checks each stored source's key at
       // its own build (the plan's stored-table key checks).
       name: "a storage= rollup read through a join_many",

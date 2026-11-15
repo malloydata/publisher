@@ -858,7 +858,7 @@ export class PackageMaterialization {
     * Drop the rollup key checks (known limitation 29) bound for these content
     * addresses: a run is about to write their tables, so what a check found
     * over the rows before no longer describes them. The routing itself is
-    * kept; the join-to-rollup leg reads the table as unknown until a run
+    * kept; the join-to-rollup branch reads the table as unknown until a run
     * binds a new check.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {

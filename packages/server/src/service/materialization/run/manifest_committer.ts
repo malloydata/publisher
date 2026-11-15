@@ -310,7 +310,7 @@ export class ManifestCommitter {
          }
       }
       // A stored table's own primary key check rides on its entry, from this
-      // run's records alone (the join-to-rollup leg in a destination).
+      // run's records alone (the join-to-rollup branch in a destination).
       const storageEntries = Object.fromEntries(
          Object.entries(builtEntries).map(([id, entry]) => {
             const keyUniqueness = entry.storageDestinationName

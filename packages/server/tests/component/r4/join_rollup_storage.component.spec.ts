@@ -688,7 +688,7 @@ source: flights_pairs is duckdb.table('flights_raw') extend {
 describe("R4: join-to-rollup in a storage destination, over a source with its own time zone", () => {
    // A rollup over a zoned source is planned when a source in the same zone
    // joins it (preaggregate-time-zone's exception), in a storage= destination
-   // too: the join leg reads it when the joining source is stored there.
+   // too: the join branch reads it when the joining source is stored there.
    const zonedModel = `source: segs_la is duckdb.table('segs_raw') extend {
   timezone: 'America/Los_Angeles'
   primary_key: seg_id
