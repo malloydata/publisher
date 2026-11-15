@@ -3,10 +3,8 @@
 
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
-import {
-   getMaterializeEnabled,
-   getMaterializeGatedSources,
-} from "../../../config";
+import { gateSwitches } from "../../../config";
+import { tableKeepsGates } from "../domain/gate_policy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { recordEligibilityRefused } from "../../../materialization_metrics";
 import type { AnnotationNote } from "../../annotations";
@@ -693,20 +691,34 @@ export function gateEnforcedAtRead(
         >
       | undefined,
 ): boolean {
-   // A rollup asks its own question: a `#(preaggregate)` rollup's base gates
-   // are grafted and proven on its variant (R3 for rollups), a v1 one's never.
+   // A rollup asks its own question: its base gates are grafted and proven on
+   // its variant (R3 for rollups), for a `#(preaggregate)` rollup and a v1
+   // `#@ preaggregate` line read as one (the cutover's G4) alike.
    const rollup = plan?.preaggregatePlans?.[sourceID];
    if (rollup !== undefined) return rollupGateEnforcedAtRead(rollup);
    // A `#(materialize)` source is v2's: its gate is admitted only with v2's
-   // switch, not with the v1 cutover that also enables the gated switch.
-   if (!getMaterializeEnabled() || !getMaterializeGatedSources()) return false;
-   if (!plan?.materializePlans?.[sourceID]) return false;
+   // switch, not with the v1 cutover that also enables the gated switch, and
+   // only for the entry point's own row-level gate (the gate policy).
+   const materialized = plan?.materializePlans?.[sourceID];
+   if (!materialized) return false;
    const outcome = plan.sourceGateOutcomes?.[sourceID];
-   return (
-      outcome?.classification === "row_level" &&
-      outcome.attributed &&
-      // The served copy cannot graft a row filter the entry point inherits.
-      !outcome.inheritedRowFilter
+   return tableKeepsGates(
+      {
+         kind: "materialize",
+         tier:
+            (materialized as { persist?: Record<string, string> }).persist
+               ?.storage === undefined
+               ? "colocated"
+               : "storage",
+         v1: false,
+         gate: {
+            rowLevel: outcome?.classification === "row_level",
+            attributed: outcome?.attributed === true,
+            // The served copy cannot graft a row filter the entry point inherits.
+            inheritedRowFilter: outcome?.inheritedRowFilter === true,
+         },
+      },
+      gateSwitches(),
    );
 }
 

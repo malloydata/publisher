@@ -26,8 +26,8 @@ import { withStatementUsage } from "../../statement_usage";
 import {
    bindingServesModelSource,
    deriveServeBindings,
-   type ServeBinding,
-} from "../domain/serve_binding";
+   type Binding,
+} from "../domain/binding";
 import { authorModelLiftContext } from "../text/author_model";
 import {
    declarableColumns,
@@ -624,7 +624,7 @@ export class StorageBuildStrategy
       // Only an entry at the destination its source is declared in NOW: a
       // stored table left from before the source moved is stale (#7087).
       const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
-      const upstreams: ServeBinding[] = deriveServeBindings(
+      const upstreams: Binding[] = deriveServeBindings(
          currentEntries,
          aliasesForBinding,
          (name) => {
@@ -647,7 +647,7 @@ export class StorageBuildStrategy
          // A rollup is never an upstream (its synthesized name is in no model
          // file). Filtering it also keeps the legible "no materialized upstream"
          // refusal for a destination holding only rollups.
-         .filter((b) => b.origin !== "preaggregate");
+         .filter((b) => b.kind !== "rollup");
       const present = new Set(upstreams.map((b) => b.sourceName));
       // Stored tables the downstream reads, directly or transitively. One absent
       // from this destination's parents is named here, before any compile, which
@@ -834,7 +834,9 @@ export class StorageBuildStrategy
             [{ name: parent.sourceName, detail }],
          );
       }
-      const binding: ServeBinding = {
+      const binding: Binding = {
+         kind: "persist",
+         tier: "storage",
          sourceName: chain.parentBuildSourceName,
          destinationName,
          virtualHandle: address,

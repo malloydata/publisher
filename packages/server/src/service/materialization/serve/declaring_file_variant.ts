@@ -36,7 +36,7 @@ import { collectEntryPointGates } from "../../gate_classification";
 import { doubleQuotedString, identifier } from "../../malloy_text";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
-import { splitSourceID } from "../plan/persisted_view";
+import { splitSourceID } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import type { GeneratedFiles } from "../text/generated_files";
 import { packageFiles } from "../text/package_files";
@@ -101,18 +101,10 @@ export async function compileDeclaringFileVariant(args: {
    ): string | { error: string } | Promise<string | { error: string }>;
 }): Promise<CompiledDeclaringFileVariant> {
    const { packagePath, modelPath, packageConfig, modelDef } = args;
-   const declared = splitSourceID(args.sourceID);
-   if (!declared) return { error: "no declaring file" };
-   let declaringFile: string;
-   try {
-      declaringFile = fileURLToPath(declared.url);
-   } catch {
-      return { error: "not a local file" };
-   }
+   const declared = declaringFileOf(args.sourceID, args.copySuffix);
+   if ("error" in declared) return declared;
+   const { declaringURL, copyURL, copyName } = declared;
    const modelFile = path.join(packagePath, modelPath);
-   const declaringURL = pathToFileURL(declaringFile);
-   const copyURL = pathToFileURL(`${declaringFile}${args.copySuffix}`);
-   const copyName = path.basename(fileURLToPath(copyURL));
    const authorFiles = packageFiles(packagePath, modelPath, packageConfig);
    // The author's files with source-level `#@` lines blanked, the declaring
    // file's under the copy.
@@ -195,6 +187,32 @@ ${imports}
       modelDef: modelDefOf(model as unknown as { _modelDef: ModelDef }),
       runtime: runtime as unknown as GraftRuntime,
    };
+}
+
+/**
+ * Which file a variant of the source `sourceID` names redeclares it in: its
+ * declaring file (a local file, from the `sourceID`), and the copy of it
+ * (`<file><copySuffix>`) that holds the file's other names. An error when the
+ * `sourceID` names no declaring file, or one that is not a local file.
+ */
+export function declaringFileOf(
+   sourceID: string,
+   copySuffix: string,
+):
+   | { error: string }
+   | { name: string; declaringURL: URL; copyURL: URL; copyName: string } {
+   const declared = splitSourceID(sourceID);
+   if (!declared) return { error: "no declaring file" };
+   let declaringFile: string;
+   try {
+      declaringFile = fileURLToPath(declared.url);
+   } catch {
+      return { error: "not a local file" };
+   }
+   const declaringURL = pathToFileURL(declaringFile);
+   const copyURL = pathToFileURL(`${declaringFile}${copySuffix}`);
+   const copyName = path.basename(fileURLToPath(copyURL));
+   return { name: declared.name, declaringURL, copyURL, copyName };
 }
 
 /**

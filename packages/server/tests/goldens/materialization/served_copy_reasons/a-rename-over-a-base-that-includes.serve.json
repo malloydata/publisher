@@ -1,0 +1,12 @@
+{
+  "problems": [
+    {
+      "reason": "definition_not_parsed",
+      "sourceName": "renamed_hidden"
+    }
+  ],
+  "query": {
+    "equalToLive": true,
+    "servedFrom": null
+  }
+}

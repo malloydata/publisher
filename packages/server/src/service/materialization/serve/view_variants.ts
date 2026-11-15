@@ -67,19 +67,16 @@ import {
 import type { ModelConnectionInput } from "../../model_runtime";
 import { extractRunViewCall, type RunViewCall } from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
-import { evaluateManifestFreshness } from "../domain/freshness";
 import type { BuildManifest } from "../domain/types";
 import {
    generatePersistedViewFile,
    persistedViewCompanionHref,
-   planModelPersistedViews,
-   splitSourceID,
-   type PersistedViewPlan,
-} from "../plan/persisted_view";
-import { viewNoteTexts } from "../plan/persisted_view_compile";
+   viewNoteTexts,
+} from "../text/read_text";
+import { splitSourceID, type PersistedViewPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import type { ServeBinding } from "../domain/serve_binding";
+import type { Binding, Pinned } from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes } from "../text/field_notes";
 import {
@@ -100,6 +97,12 @@ interface ViewVariantHost {
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
    /** The package's planned tables, to find each view's address. */
    catalog(): MaterializedTableCatalog | undefined;
+   /**
+    * Every persisted view a compiled model can see, as the planner reads them
+    * (`plan/persisted_view.ts`): passed in by the model, since serving never
+    * imports the planner.
+    */
+   planModelPersistedViews(modelDef: unknown): { plans: PersistedViewPlan[] };
 }
 
 /** A persisted view's answer, for the router. */
@@ -110,7 +113,7 @@ interface ViewAnswer {
    /** For a `storage=` view: how its `virtual()` handle resolves. */
    virtualMap?: VirtualMap;
    /** For a `storage=` view: its binding. */
-   binding?: ServeBinding;
+   binding?: Binding;
    /** Where `govern()` grafts the source's gates on the variant (R3). */
    graftScope: GraftScope;
 }
@@ -130,7 +133,7 @@ export interface ViewTable {
 interface ResolvedTable extends ViewTable {
    virtualMap?: VirtualMap;
    quotedPath?: string;
-   binding?: ServeBinding;
+   binding?: Binding;
    /** A colocated table's name as the manifest substitutes it. */
    colocatedTable?: string;
 }
@@ -146,9 +149,11 @@ interface CompiledVariant {
 export class PersistedViewServe {
    private packagePath?: string;
    private packageConfig?: ModelConnectionInput;
-   private bindings: ServeBinding[] = [];
+   /** Bumped when the context, the destinations or the bindings change: a graft cache scope. */
    private generation = 0;
    private compiled = new Map<string, Promise<CompiledVariant>>();
+   /** The snapshot bindings {@link compiled} was compiled over. */
+   private compiledFor: readonly Binding[] | undefined;
    private planMemo?: { modelDef: unknown; plans: PersistedViewPlan[] };
 
    constructor(private readonly host: ViewVariantHost) {}
@@ -159,18 +164,16 @@ export class PersistedViewServe {
       this.invalidate();
    }
 
-   /** Keep the bindings that store a persisted view this model can see. */
-   setBindings(bindings: readonly ServeBinding[]): void {
-      const ids = this.buildSourceIDs();
-      this.bindings = bindings.filter((b) =>
-         (b.sourceIDs ?? []).some((id) => ids.has(id)),
-      );
-      this.invalidate();
-   }
-
    invalidate(): void {
       this.generation++;
       this.compiled.clear();
+   }
+
+   /** Start a new compile cache when the snapshot's bindings changed. */
+   private compiledOver(pinned: Pinned): void {
+      if (this.compiledFor === pinned.snapshot.bindings) return;
+      if (this.compiledFor !== undefined) this.invalidate();
+      this.compiledFor = pinned.snapshot.bindings;
    }
 
    /** Every persisted view a source this model can see declares. */
@@ -178,7 +181,9 @@ export class PersistedViewServe {
       const modelDef = this.host.modelDef();
       const memo = this.planMemo;
       if (memo && memo.modelDef === modelDef) return memo.plans;
-      const plans = modelDef ? planModelPersistedViews(modelDef).plans : [];
+      const plans = modelDef
+         ? this.host.planModelPersistedViews(modelDef).plans
+         : [];
       this.planMemo = { modelDef, plans };
       return plans;
    }
@@ -187,16 +192,20 @@ export class PersistedViewServe {
       return this.plans().length > 0;
    }
 
-   /** The generated build sources' `sourceID`s, to keep their bindings off the other legs. */
-   buildSourceIDs(): Set<string> {
-      return new Set(this.plans().map((p) => p.buildSourceID));
-   }
-
-   /** The `storage=` view tables bound now; with `now`, only the fresh ones. */
-   viewBindings(now?: number): ServeBinding[] {
-      if (now === undefined) return this.bindings;
-      const at = new Date(now);
-      return this.bindings.filter((b) => isFresh(b, at));
+   /**
+    * The `storage=` view tables of a pinned snapshot that store a view this
+    * model can see: every one bound, or only those read at the pin.
+    */
+   viewBindings(pinned: Pinned, which: "bound" | "fresh"): Binding[] {
+      const ids = new Set(this.plans().map((p) => p.buildSourceID));
+      return (
+         which === "bound" ? pinned.snapshot.bindings : pinned.fresh
+      ).filter(
+         (b) =>
+            b.kind === "view" &&
+            b.tier === "storage" &&
+            (b.sourceIDs ?? []).some((id) => ids.has(id)),
+      );
    }
 
    /** The view the query text calls, when it is a persisted view of this model. */
@@ -217,14 +226,11 @@ export class PersistedViewServe {
    }
 
    /** The table a query calling a persisted view would read, for the path report. */
-   reportedTable(
-      queryString: string,
-      freshManifest: BuildManifest | undefined,
-   ): ViewTable | undefined {
+   reportedTable(queryString: string, pinned: Pinned): ViewTable | undefined {
       const called = this.calledView(queryString);
       if (!called) return undefined;
       const { virtualMap, quotedPath, binding, colocatedTable, ...table } =
-         this.tableOf(called.plan, freshManifest);
+         this.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
       void quotedPath;
       void binding;
@@ -241,20 +247,19 @@ export class PersistedViewServe {
       givens: Record<string, unknown> | undefined;
       /** The caller's own compile against the author's model. */
       authorRunnable: QueryMaterializer;
-      /** The fresh build manifest. */
+      /** The query's pinned tables. */
+      pinned: Pinned;
+      /** The pinned build manifest without the rollups' entries. */
       buildManifest: BuildManifest | undefined;
    }): Promise<ViewAnswer> {
+      this.compiledOver(args.pinned);
       const called = this.calledView(args.queryString);
       if (!called) {
          throw new LegDecline("view_missing_field");
       }
       const { call, plan } = called;
-      if (call.refined) {
-         throw new LegDecline(
-            "view_missing_field",
-            `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
-         );
-      }
+      const refined = refinedCallDecline(call);
+      if (refined) throw refined;
       // The run target must be the view's own source, by sourceID: not an
       // extension, and not a caller's redefinition of the name.
       const prepared = await readPreparedQuery(args.authorRunnable);
@@ -266,26 +271,28 @@ export class PersistedViewServe {
          typeof prepared.structRef === "string"
             ? prepared.structRef
             : undefined;
-      if (!localName || struct?.sourceID !== plan.sourceID) {
-         throw new LegDecline(
-            "view_missing_field",
-            `the query does not call \`${call.view}\` on the source that declares it`,
-         );
-      }
+      const offTarget = callTargetDecline(
+         call,
+         plan,
+         localName,
+         struct?.sourceID,
+      );
+      // An unnamed run target is always declined (`offTarget` is set).
+      if (offTarget || !localName) throw offTarget;
       // An exact call shows in the public result schema; a query that goes on
       // past the view shows only in its text (Evidence 4).
       if (call.laterStages === 0) {
          const result = await args.authorRunnable.getPreparedResult({
             ...(args.givens ? { givens: args.givens as never } : {}),
          } as never);
-         if (result.resultExplore.name !== plan.viewName) {
-            throw new LegDecline(
-               "view_missing_field",
-               `the query is not a call of \`${call.view}\``,
-            );
-         }
+         const inexact = exactCallDecline(
+            call,
+            plan,
+            result.resultExplore.name,
+         );
+         if (inexact) throw inexact;
       }
-      const table = this.tableOf(plan, args.buildManifest);
+      const table = this.tableOf(plan, args.pinned, args.buildManifest);
       if (!table.built) {
          throw new LegDecline("view_not_built");
       }
@@ -347,25 +354,22 @@ export class PersistedViewServe {
    /** The view's table: a `storage=` binding, or a colocated manifest entry. */
    private tableOf(
       plan: PersistedViewPlan,
+      pinned: Pinned,
       freshManifest: BuildManifest | undefined,
    ): ResolvedTable {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
       if (plan.storage !== undefined) {
-         const binding = this.bindings.find((b) =>
-            (b.sourceIDs ?? []).includes(plan.buildSourceID),
-         );
-         if (!binding) {
+         const lookup = pinned.tableFor(plan.buildSourceID, "view");
+         if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
          }
+         const { binding } = lookup;
          const dataAsOf = binding.freshAsOf
             ? { dataAsOf: binding.freshAsOf }
             : {};
-         if (
-            !isFresh(binding, new Date()) ||
-            !this.host.serveDestinationConfig()
-         ) {
+         if (lookup.state === "stale" || !this.host.serveDestinationConfig()) {
             return {
                ...withId,
                ...dataAsOf,
@@ -392,9 +396,7 @@ export class PersistedViewServe {
          };
       }
       const bound =
-         tableId !== undefined
-            ? this.host.catalog()?.bound[tableId]
-            : undefined;
+         tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
       if (!bound || tableId === undefined) {
          return { ...withId, tier: "colocated", built: false, stale: false };
       }
@@ -527,9 +529,9 @@ ${viewBody}
             }
             // The companion over the copy, so its build SQL (and so its
             // address) is the one the build plan computed.
-            const siblings = planModelPersistedViews(modelDef).plans.filter(
-               (p) => p.declaringURL === declared.url,
-            );
+            const siblings = this.host
+               .planModelPersistedViews(modelDef)
+               .plans.filter((p) => p.declaringURL === declared.url);
             const text = generatePersistedViewFile(siblings, copyName);
             if (!text) return { error: "no companion" };
             const companion = persistedViewCompanionHref(declaringURL.href);
@@ -547,21 +549,6 @@ ${viewBody}
 /** The flags every generated variant file declares. */
 const VARIANT_FLAGS =
    "##! experimental { access_modifiers givens persistence virtual_source }";
-
-/** Whether a binding is inside its freshness window at `now`. */
-function isFresh(b: ServeBinding, now: Date): boolean {
-   return (
-      evaluateManifestFreshness(
-         {
-            tableName: b.tablePath,
-            dataAsOf: b.freshAsOf,
-            freshnessWindowSeconds: b.freshnessWindowSeconds,
-            freshnessFallback: b.freshnessFallback,
-         },
-         now,
-      ) === "serve_table"
-   );
-}
 
 /** What the variant reproduces of the view's result. */
 interface ViewShape {
@@ -649,4 +636,57 @@ function viewDeclaration(viewName: string, shape: ViewShape): string {
    // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
    const notes = shape.notes.map((n) => `  ${n}\n`).join("");
    return `${notes}  view: ${identifier(viewName)} is { select: ${select}${order} }`;
+}
+
+/**
+ * A call that refines the view (`+ { … }`): the stored result holds only the
+ * view as written, so the leg declines it.
+ */
+export function refinedCallDecline(call: RunViewCall): LegDecline | undefined {
+   if (call.refined) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The run target must be the view's own source, by sourceID: not an
+ * extension, and not a caller's redefinition of the name. `localName` is the
+ * run target's name when the query names one; `sourceID` its compiled source's.
+ */
+export function callTargetDecline(
+   call: RunViewCall,
+   plan: Pick<PersistedViewPlan, "sourceID">,
+   localName: string | undefined,
+   sourceID: unknown,
+): LegDecline | undefined {
+   if (!localName || sourceID !== plan.sourceID) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query does not call \`${call.view}\` on the source that declares it`,
+      );
+   }
+   return undefined;
+}
+
+/**
+ * Exact-call recognition: a query with no stage past the view's own is a
+ * call of the persisted view only when its public result schema is named for
+ * that view (`resultName`, the compiled `resultExplore.name`).
+ */
+export function exactCallDecline(
+   call: RunViewCall,
+   plan: Pick<PersistedViewPlan, "viewName">,
+   resultName: string,
+): LegDecline | undefined {
+   if (resultName !== plan.viewName) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query is not a call of \`${call.view}\``,
+      );
+   }
+   return undefined;
 }

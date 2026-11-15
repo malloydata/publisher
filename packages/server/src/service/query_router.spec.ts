@@ -244,26 +244,50 @@ describe("routeQuery metrics", () => {
    });
 
    const count = (labels: Record<string, string>) =>
-      harness.collectCounter("publisher_query_variant_routing_total", labels);
+      harness.collectCounter("publisher_query_route_total", labels);
 
-   it("counts each candidate by variant, outcome and reason", async () => {
+   it("counts each candidate by leg, outcome and public reason", async () => {
       await routeQuery(
          [variant("served", "misses", []), variant("rollup", "answers", [])],
          async () => false,
       );
+      // Unexplained, as the path report reads it.
       expect(
          await count({
-            variant: "served",
+            leg: "served",
             outcome: "skipped",
-            reason: "does_not_answer",
+            reason: "MISSING_FIELD",
          }),
       ).toBe(1);
       expect(
-         await count({ variant: "rollup", outcome: "used", reason: "none" }),
+         await count({ leg: "rollup", outcome: "used", reason: "NONE" }),
+      ).toBe(1);
+      expect(await count({ leg: "live" })).toBe(0);
+   });
+
+   it("counts an explained decline by its code's SkipReason", async () => {
+      await routeQuery(
+         [
+            {
+               ...variant("rollup", "misses", []),
+               explain: () => ({ code: "rollup_grain_too_coarse" }),
+            },
+         ],
+         async () => false,
+      );
+      expect(
+         await count({
+            leg: "rollup",
+            outcome: "skipped",
+            reason: "GRAIN_TOO_COARSE",
+         }),
+      ).toBe(1);
+      expect(
+         await count({ leg: "live", outcome: "used", reason: "NONE" }),
       ).toBe(1);
    });
 
-   it("counts a chosen variant whose run failed as skipped run_failed, not used", async () => {
+   it("counts a chosen variant whose run failed as fallback RUN_FAILED, answered live", async () => {
       const decision = await routeQuery(
          [variant("served", "answers", [])],
          async () => false,
@@ -271,31 +295,39 @@ describe("routeQuery metrics", () => {
       );
       recordVariantRouting(decision.considered, true);
       expect(
-         await count({ variant: "served", outcome: "used", reason: "none" }),
+         await count({ leg: "served", outcome: "used", reason: "NONE" }),
       ).toBe(0);
       expect(
          await count({
-            variant: "served",
-            outcome: "skipped",
-            reason: "run_failed",
+            leg: "served",
+            outcome: "fallback",
+            reason: "RUN_FAILED",
          }),
+      ).toBe(1);
+      expect(
+         await count({ leg: "live", outcome: "used", reason: "NONE" }),
       ).toBe(1);
    });
 
-   it("counts a gated skip, and nothing for a hypothetical route", async () => {
+   it("counts a gated skip as CONTRACT, nothing for an inapplicable leg or a hypothetical route", async () => {
       await routeQuery([variant("rollup", "answers", [])], async () => true);
       await routeQuery([variant("rollup", "answers", [])], async () => false, {
          recordMetrics: false,
       });
+      await routeQuery(
+         [variant("view", "inapplicable", [])],
+         async () => false,
+      );
       expect(
          await count({
-            variant: "rollup",
+            leg: "rollup",
             outcome: "skipped",
-            reason: "row_level_gate",
+            reason: "CONTRACT",
          }),
       ).toBe(1);
       expect(
-         await count({ variant: "rollup", outcome: "used", reason: "none" }),
+         await count({ leg: "rollup", outcome: "used", reason: "NONE" }),
       ).toBe(0);
+      expect(await count({ leg: "view" })).toBe(0);
    });
 });

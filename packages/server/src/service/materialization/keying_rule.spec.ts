@@ -64,7 +64,7 @@ const ALLOWED: Record<string, Record<string, string>> = {
       "else if (!group.includes(source.name)) group.push(source.name);":
          "aliases grouped per address for rebinding by name in Malloy text",
    },
-   "domain/serve_binding.ts": {
+   "domain/binding.ts": {
       "const sourceID = contents?.[binding.sourceName]?.sourceID;":
          "the model's own namespace, resolving a name to its sourceID",
       "...(aliasesBySourceName[entry.sourceName] ?? []).filter(":
@@ -79,8 +79,6 @@ const ALLOWED: Record<string, Record<string, string>> = {
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",
    },
    "serve/storage_bindings.ts": {
-      "} else if (!this.shadowedSourcesLogged.has(binding.sourceName)) {":
-         "log dedupe only",
       "const def = contents?.[binding.sourceName] as":
          "the model's own namespace",
       "const def = contents?.[binding.sourceName];":

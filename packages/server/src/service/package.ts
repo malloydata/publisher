@@ -1458,7 +1458,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             pkg.surfacedRenderTagWarnings(renderTagWarnings);
          pkg.adoptOutcomeMetadata(outcome);
          // No manifest is bound yet, so this serves live until a bind.
-         pkg.materialization.wireFreshnessResolvers();
+         pkg.materialization.wireServingResolvers();
          pkg.refreshServingIdentity();
 
          buildPlanMs = await pkg.materialization.applyLoadBuildPlan(
@@ -2061,9 +2061,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.markManifestBindFailed();
    }
 
-   /** See {@link PackageMaterialization.bindColocatedServeManifest}. */
+   /** The colocated half of {@link PackageMaterialization.bind}. */
    public bindColocatedServeManifest(entries: FreshnessManifest): void {
-      this.materialization.bindColocatedServeManifest(entries);
+      this.materialization.bind({ colocated: entries });
    }
 
    /** See {@link PackageMaterialization.forgetKeyUniqueness}. */
@@ -2071,11 +2071,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.forgetKeyUniqueness(sourceEntityIds);
    }
 
-   /** See {@link PackageMaterialization.bindStorageServeBindings}. */
+   /** The `storage=` half of {@link PackageMaterialization.bind}. */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
-      this.materialization.bindStorageServeBindings(entries);
+      this.materialization.bind({ storage: entries });
    }
 
    /** See {@link PackageMaterialization.setServeDestinationSchema}. */
@@ -2704,8 +2704,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.applySiblingModelResolverToModels();
       // Applies the query boundary too, against the refreshed explore set.
       this.installReports(discovery);
-      // New models start with no serve routing; re-apply it.
-      this.materialization.pushStorageServeBindingsToModels();
+      // New models read the snapshot through their new policy; compile
+      // their served copies over it now.
+      this.materialization.wireServingResolvers();
+      this.materialization.publishSnapshot({ models: "installed" });
       this.materialization.pushServeDestinationConfigToModels();
       // Read against the reports installed above.
       this.renderTagWarnings =
@@ -2718,8 +2720,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          discovery,
          discoveryMs + performance.now() - lintStarted,
       );
-      this.materialization.recordManifestBinding(entries);
-      this.materialization.wireFreshnessResolvers();
+      this.materialization.bind({ colocated: entries, colocatedAsGiven: true });
       warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
    }

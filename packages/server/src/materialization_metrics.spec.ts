@@ -24,9 +24,17 @@ import {
    recordEligibilityRefused,
    recordMaterializationRun,
    recordServeShapeTypeFallback,
-   recordStorageServeRouting,
+   recordManifestBind,
+   recordSourceBound,
+   recordSourceDeclined,
+   ROUTE_LEGS,
+   ROUTE_OUTCOMES,
+   ROUTE_REASONS,
+   BIND_SCOPES,
+   BIND_OUTCOMES,
    resetMaterializationTelemetryForTesting,
 } from "./materialization_metrics";
+import { SOURCE_DECLINE_REASONS } from "./service/materialization/domain/source_decline";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -249,19 +257,36 @@ describe("materialization_metrics", () => {
       ).toBe(1);
    });
 
-   it("counts storage= serve-routing decisions labeled by outcome", async () => {
-      recordStorageServeRouting("storage");
-      recordStorageServeRouting("storage");
-      recordStorageServeRouting("live_fallback");
-
+   it("counts serving's binds by scope, outcome and reason", async () => {
+      recordManifestBind("success");
+      recordManifestBind("timeout");
+      recordSourceBound();
+      recordSourceBound();
+      recordSourceDeclined("build_plan_unavailable");
+      recordSourceDeclined("classification_not_kept");
+      const bind = (labels: Record<string, string>) =>
+         harness.collectCounter("publisher_served_copy_bind_total", labels);
       expect(
-         await harness.collectCounter("publisher_storage_serve_routing_total", {
-            outcome: "storage",
-         }),
+         await bind({ scope: "manifest", outcome: "success", reason: "none" }),
+      ).toBe(1);
+      expect(
+         await bind({ scope: "manifest", outcome: "timeout", reason: "none" }),
+      ).toBe(1);
+      expect(
+         await bind({ scope: "source", outcome: "bound", reason: "none" }),
       ).toBe(2);
       expect(
-         await harness.collectCounter("publisher_storage_serve_routing_total", {
-            outcome: "live_fallback",
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "build_plan_unavailable",
+         }),
+      ).toBe(1);
+      expect(
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "classification_not_kept",
          }),
       ).toBe(1);
    });
@@ -312,5 +337,58 @@ describe("materialization_metrics", () => {
             { kind: "array" },
          ),
       ).toBe(1);
+   });
+});
+
+// Each label of the routing and bind counters is a closed union; adding a
+// value is a reviewed change to these lists (Step 4 specification).
+describe("the routing and bind label vocabularies", () => {
+   it("names exactly the route counter's legs, outcomes and reasons", () => {
+      expect([...ROUTE_LEGS]).toEqual(["view", "rollup", "served", "live"]);
+      expect([...ROUTE_OUTCOMES]).toEqual(["used", "skipped", "fallback"]);
+      expect([...ROUTE_REASONS]).toEqual([
+         "NONE",
+         "NOT_BUILT",
+         "WARNED",
+         "MISSING_FIELD",
+         "CONTRACT",
+         "GRAIN_TOO_COARSE",
+         "TIME_ZONE",
+         "CROSS_CONNECTION",
+         "COUNT_SEMANTICS",
+         "STALE",
+         "RUN_FAILED",
+      ]);
+   });
+
+   it("names exactly the bind counter's scopes, outcomes and reasons", () => {
+      expect([...BIND_SCOPES]).toEqual(["manifest", "source"]);
+      expect([...BIND_OUTCOMES]).toEqual([
+         "success",
+         "failure",
+         "timeout",
+         "bound",
+         "declined",
+      ]);
+      expect(["none", ...SOURCE_DECLINE_REASONS]).toEqual([
+         "none",
+         "build_plan_unavailable",
+         "refused",
+         "missing_table",
+         "compile_failed",
+         "cross_connection_unbuilt",
+         "column_types",
+         "no_declaration",
+         "range_not_found",
+         "definition_not_parsed",
+         "pair_join_not_found",
+         "pair_not_compiled",
+         "fields_not_carried",
+         "read_terms_not_kept",
+         "cross_connection_join",
+         "inline_join_kept",
+         "reroot_not_compiled",
+         "classification_not_kept",
+      ]);
    });
 });

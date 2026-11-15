@@ -34,19 +34,20 @@ import {
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
 import {
-   generateRollupBuildFile,
    planModelRollups,
-   ROLLUP_COMPANION_SUFFIX,
    parentKeyCheckQuery,
    readsAsJoinMany,
    rollupKeyCheckQuery,
    type JoinedKeyNeed,
-   type ParentKeyCheck,
    type ParentKeyNeed,
    type RollupRefusal,
-   type RollupVariantPlan,
 } from "./rollup_plan";
-import { splitSourceID } from "./persisted_view";
+import {
+   generateRollupBuildFile,
+   packageRelativeSourceID,
+   ROLLUP_COMPANION_SUFFIX,
+} from "../text/read_text";
+import type { ParentKeyCheck, RollupVariantPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
 
@@ -67,43 +68,6 @@ export function rollupCompanionURL(
    return pathToFileURL(
       `${path.join(packagePath, modelPath)}${ROLLUP_COMPANION_SUFFIX}`,
    );
-}
-
-/**
- * The companion URL of the file a `sourceID` was declared in, or undefined
- * for a declaration that is not a local file.
- */
-export function rollupCompanionURLOf(declaringURL: string): URL | undefined {
-   try {
-      return pathToFileURL(
-         `${fileURLToPath(declaringURL)}${ROLLUP_COMPANION_SUFFIX}`,
-      );
-   } catch {
-      return undefined;
-   }
-}
-
-/**
- * A `sourceID` with its file made relative to the package
- * (`orders@models/orders.malloy`), so a rollup's name does not depend on
- * where the package is checked out.
- */
-export function packageRelativeSourceID(
-   packagePath: string,
-   sourceID: string,
-): string {
-   const at = splitSourceID(sourceID);
-   if (!at) return sourceID;
-   try {
-      const file = fileURLToPath(at.url);
-      const relative = path
-         .relative(path.resolve(packagePath), file)
-         .split(path.sep)
-         .join("/");
-      return `${at.name}@${relative}`;
-   } catch {
-      return sourceID;
-   }
 }
 
 /**

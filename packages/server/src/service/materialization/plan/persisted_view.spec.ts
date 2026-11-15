@@ -17,12 +17,9 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { viewNoteTexts } from "./persisted_view_compile";
-import {
-   generatePersistedViewFile,
-   PERSIST_VIEW_NOT_BUILT,
-   type PersistedViewPlan,
-} from "./persisted_view";
+import { generatePersistedViewFile, viewNoteTexts } from "../text/read_text";
+import { PERSIST_VIEW_NOT_BUILT } from "./persisted_view";
+import type { PersistedViewPlan } from "../domain/table_plans";
 
 const TABLE = `duckdb.sql("""
   select * from (values

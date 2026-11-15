@@ -41,7 +41,7 @@ import {
    stringLiteral,
 } from "../../malloy_text";
 import { noteSource } from "../text/field_notes";
-import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
+import type { MaterializeReadTimeTerm } from "../domain/read_time_terms";
 import { storedMalloyType, storedTypeText } from "../stored_column_types";
 
 export { storedMalloyType };

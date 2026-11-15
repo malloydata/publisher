@@ -305,7 +305,7 @@ October's in parentheses where comparable.
 ### Router
 
 `bun run perf:router --sources N` (in `packages/server`): what today's routing decision
-(`Model.runQueryResults`) costs per query, in process, on the
+(`ModelServing.run`) costs per query, in process, on the
 [R4 harness](../packages/server/tests/component/r4/harness.ts)'s real build-and-bind path. It has no
 HTTP, so it isolates the routing from transport. Materialization v2 replaces this chain with a
 variant router, and its phase 1 is held to these numbers. The numbers below were recorded on the

@@ -33,8 +33,8 @@ import {
    storedKeyChecksOf,
    type JoinedKeyNeed,
    type ParentKeyNeed,
-   type RollupVariantPlan,
 } from "./rollup_plan";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import {
    compileParentKeyChecks,
    parentKeyCheckCompiler,
