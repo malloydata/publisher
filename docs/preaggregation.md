@@ -321,10 +321,10 @@ rows read a given (`preaggregate-reads-given`) or the current time
 `PUBLISHER_MATERIALIZE_GATED_SOURCES` lets a query read the rollup past its gate
 (`preaggregate-access-filter`). Each is a warning, and the measure is served live.
 
-A colocated base's `name=` namespace *is* inherited, and the asymmetry is not about inheritance. Colocated
-rollups are offered through a companion model whose members Publisher names itself, with
-the base under an import alias, so nothing there is keyed on your source's name and there
-is no binding to collide with.
+A colocated base's `name=` namespace *is* inherited, and the asymmetry is not about
+inheritance. Colocated rollups are offered through a companion model whose members
+Publisher names itself, with the base under an import alias, so nothing there is keyed on
+your source's name and there is no binding to collide with.
 
 **It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
 placed differently — one in the store, one alongside the base. Measures sharing a grain

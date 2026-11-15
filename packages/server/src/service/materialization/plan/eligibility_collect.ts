@@ -4,7 +4,8 @@
 /**
  * Which planned sources may build and serve, decided where the compiled
  * sources exist: rollups that would share a table, the tier gate's inputs,
- * and the per-tier eligibility records the serve side requires. Split out of build_plan.ts; behaviour unchanged.
+ * and the per-tier eligibility records the serve side requires. Split out of
+ * build_plan.ts; behaviour unchanged.
  */
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";

@@ -71,21 +71,30 @@ async function compile(
 }
 
 /** Each planned rollup, by name: what its build and its table are. */
-function rollupsOf(compiled: CompiledBuildPlan) {
+type PlannedSource = NonNullable<
+   ReturnType<typeof deriveBuildPlanOutcome>["plan"]
+>["sources"][string];
+
+interface PlannedRollup {
+   sourceEntityId: PlannedSource["sourceEntityId"];
+   sql: PlannedSource["sql"];
+   annotationFields: PlannedSource["annotationFields"];
+   preaggregate: PlannedSource["preaggregate"];
+}
+
+function rollupsOf(compiled: CompiledBuildPlan): Record<string, PlannedRollup> {
    const { plan } = deriveBuildPlanOutcome(compiled, null);
-   return Object.fromEntries(
-      Object.values(plan?.sources ?? {})
-         .filter((s) => s.origin === "preaggregate")
-         .map((s) => [
-            s.name,
-            {
-               sourceEntityId: s.sourceEntityId,
-               sql: s.sql,
-               annotationFields: s.annotationFields,
-               preaggregate: s.preaggregate,
-            },
-         ]),
-   );
+   const out: Record<string, PlannedRollup> = {};
+   for (const s of Object.values(plan?.sources ?? {})) {
+      if (s.origin !== "preaggregate") continue;
+      out[s.name] = {
+         sourceEntityId: s.sourceEntityId,
+         sql: s.sql,
+         annotationFields: s.annotationFields,
+         preaggregate: s.preaggregate,
+      };
+   }
+   return out;
 }
 
 function codesOf(compiled: CompiledBuildPlan): string[] {
@@ -185,6 +194,47 @@ describe("a v1 #@ preaggregate over a storage= base", () => {
          expect.stringMatching(/^pa__m__daily_by_region__p[0-9a-f]{8}$/),
       ]);
       expect(new Set(instructions.map((i) => i.sourceEntityId)).size).toBe(3);
+   });
+
+   it("gives a colocated grain with no namespace= no container from a storage= base's name=", async () => {
+      const { compiled, packagePath } = await compile(
+         `##! experimental.persistence
+#@ persist storage="lake" name="analytics.lake_daily"
+source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'east' AS region") -> {
+  group_by: category, region
+  aggregate: amount_sum is amount.sum()
+} extend {
+  #@ preaggregate grain="region"
+  measure: total is amount_sum.sum()
+}
+`,
+         false,
+      );
+      const { instructions } = deriveSelfInstructions(
+         compiled,
+         undefined,
+         {},
+         undefined,
+         { environmentName: "e1", packageName: "pa", packagePath },
+      );
+      expect(instructions.map((i) => i.physicalTableName).sort()).toEqual([
+         "analytics.lake_daily",
+         expect.stringMatching(/^pa__m__daily_by_region__p[0-9a-f]{8}$/),
+      ]);
+   });
+
+   it("plans the v1 spelling the same with PUBLISHER_MATERIALIZE on", async () => {
+      const off = await compile(spelled(QUERY_SHAPED, false), false);
+      const on = await compile(spelled(QUERY_SHAPED, false), true);
+      expect(rollupsOf(on.compiled)).toEqual(rollupsOf(off.compiled));
+      expect(Object.keys(rollupsOf(on.compiled))).toHaveLength(2);
+      // Only the deprecation of the spelling is added.
+      expect(
+         (on.compiled.annotationFindings ?? [])
+            .map((f) => f.code)
+            .filter((c) => c !== "deprecated-preaggregate-annotation")
+            .filter((c) => c.startsWith("preaggregate-")),
+      ).toEqual([]);
    });
 
    it("takes no prefix and no container from the base's name=, and its own namespace= as a container", async () => {

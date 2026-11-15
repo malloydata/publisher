@@ -5130,8 +5130,9 @@ components:
           description: >-
             For a `live` verdict, why: `refused` (the plan refused to build it),
             `storage_mode` (`storage=` while `PERSIST_STORAGE_MODE` is not
-            `on`), `rollup_over_stored_base` (a rollup over a `storage=` base,
-            left out of the plan), `unreachable` (no source on the package's
+            `on`), `rollup_over_stored_base` (retained, never reported by a
+            released server: a rollup over a `storage=` base is planned like
+            any other), `unreachable` (no source on the package's
             published surface reads it), `row_level_gate` (every query through
             it carries an `#(authorize)` or `#(access_filter)` gate, which the
             storage tier and rollups cannot keep yet), `shadowed` (its storage
@@ -5891,12 +5892,10 @@ components:
                   cannot tell from a real de-identification, so a review has
                   to (one per field, `subject` the source; `warn`; a plain
                   copy under `#(carries)` refuses the load instead).
-                  `preaggregate-over-stored-base`: a source persisted with
-                  `#@ persist storage=` that also declares `#@ preaggregate
-                  storage=` rollups, which are left out of the build plan and
-                  every run because a rollup over a stored base can neither build
-                  nor serve yet (one per base, `subject` the base; `warn`; the
-                  base still builds and serves from storage).
+                  `preaggregate-over-stored-base`: retained, never reported by a
+                  released server. A `#@ preaggregate` rollup over a
+                  `#@ persist storage=` base is planned, built and served like
+                  any other rollup.
                   `persist-unparseable`: a `#@` annotation that does not
                   parse, so Malloy drops its source from the build and it is
                   served live (one per annotation, `model` its file; `error`;
