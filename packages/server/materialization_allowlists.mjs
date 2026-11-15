@@ -196,7 +196,7 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {
 /** H2: ticket numbers, phase or step labels and dates in comments, per file: the count allowed, and the step that removes them. */
 export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    "service/materialization/package_materialization.ts": {
-      count: 8,
+      count: 7,
       step: "5",
    },
    "service/materialization/domain/rollup_measures.ts": { count: 1, step: "5" },
@@ -212,7 +212,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       step: "5",
    },
    "service/materialization/plan/eligibility_collect.ts": {
-      count: 4,
+      count: 1,
       step: "5",
    },
    "service/materialization/plan/materialization_eligibility.ts": {
@@ -249,7 +249,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       count: 3,
       step: "5",
    },
-   "service/materialization/run/run_instructions.ts": { count: 1, step: "5" },
    "service/materialization/run/source_build.ts": { count: 4, step: "5" },
    "service/materialization/run/storage_build_strategy.ts": {
       count: 6,
@@ -258,7 +257,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    "service/materialization/serve/author_imports.ts": { count: 1, step: "5" },
    "service/materialization/serve/join_rollup.ts": { count: 6, step: "5" },
    "service/materialization/serve/rollup_variants.ts": { count: 3, step: "5" },
-   "service/materialization/serve/serve_verdict.ts": { count: 8, step: "5" },
+   "service/materialization/serve/serve_verdict.ts": { count: 6, step: "5" },
    "service/materialization/serve/served_copy.ts": { count: 3, step: "5" },
    "service/materialization/serve/served_copy_serve.ts": {
       count: 5,

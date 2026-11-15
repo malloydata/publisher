@@ -42,6 +42,7 @@ The rest of this page describes `#@ preaggregate`, which keeps working (deprecat
 - **A stored base.** A rollup builds from the author's rows, never from its base's stored table, so a rollup over a `#@ persist storage=` base builds and serves (#6293).
 - **What routes.** The query's text is compiled where its source's name means the rollup. It routes when every field it groups or filters by is in the grain, every aggregate is a stored measure's merge (an aggregate written in the query or in a `having:`, or a `select:` stage, is not; this is read from the compiled query, not its text), and it sets no `timezone:`, in any stage or nest. A query on a source that sets its own `timezone:` is answered live (`TIME_ZONE`): the rollup's stored times are not read in that zone, so a truncation, a filter on one, or a gate on one would not match live. Since no query on it reads such a rollup, a `#(preaggregate)` on a source that sets (or inherits) its own `timezone:` is not built (`preaggregate-time-zone`, a warning), unless a source in the same zone joins it, the one read left (through a join, above). A `calculate:` over a measure (`lag(total)`) reads that measure at its level, so it is held to the same rules as an aggregate there. A fan-out dimension counts as fixed by `where: d = <one value>`, alone or as one conjunct of an `and`. A query that supplies a given routes. A named `view:` routes as its own query does: `run: orders -> by_category`, a refinement of it, a query starting from it, and a `nest:` of one are compiled with the view as you wrote it, and answered from the rollup when the view's query passes the same checks, its text, and the text of every view it builds on, still compiles to the view the served model holds (an edit not yet reloaded is answered live), and it reads no raw SQL (`sql_boolean(…)`, whose columns the rollup may not keep). A persisted view of that name (`#@ persist` on the view) answers its own call first. The path report names the reason for each skip, and an answer from a `storage=` rollup reports `servedFrom: storage`.
 - **Givens.** A rollup whose build reads a given is not built (a warning): its table would hold one value's rows.
+- **Other compile-time refusals.** A valid rollup that a compile-time gate refuses alone is not built, and its measures are answered live, while the rest of the package loads: one on a dialect whose connection creates no table (SQL Server), one whose table name another rollup's table holds, one over a base scoped by a given, a v1 `#@ preaggregate` rollup over a base with a row-level gate, or one the `storage=` gate refuses. The warning is `preaggregate-not-built`, with `subject` the base, and its message names the base, the grain and the reason. A refusal with a code of its own (`preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given` and the like) keeps it. `preaggregate-malformed` is a line Publisher cannot read, such as an empty `grain=[]`, and it refuses the publish, with one exception: an empty `storage=` on a `#@ preaggregate` line warns under it and refuses only that rollup.
 
 ## Declare a rollup
 
@@ -291,33 +292,40 @@ annotation inherited onto a source that then hides the measure would raise it, w
 source produces no rollup at all and exposes nothing.
 
 **Write it on the `#@ preaggregate` line.** A destination is not inherited from the
-base's `#@ persist storage=`, and the reason is worth knowing because the opposite reads
-as obviously right — a rollup of X belongs where X's rows live.
-
-It does not work, in either of the two cases — and they are exhaustive, because inheriting
-would require `#@ persist` on the base. If the base is **query-shaped** it builds a stored
-table of its own, and a rollup over it is then built by reading that table rather than the
-raw source — a path that recovers the rollup's definition from the model file, which a
-rollup does not have, so the build fails. If the base is **not query-shaped** — a table
-extended with measures — the annotation parses, and the build refuses the whole run for a
-`#@ persist` source that was dropped from the plan.
-
-That first case is reachable deliberately, not only by inheritance: writing `storage=` on
-both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall. Even had it
-built, the base's own stored table already claims the name its rollups would be served
-under, so nothing would have read it. So Publisher leaves such rollups out of the plan and
-every run, rather than attempting a build that cannot succeed: the base still builds and
-serves from its stored table, and the package carries a `preaggregate-over-stored-base`
-warning (`warn`, one per base). Rollups over a stored base are planned for a later release.
-
-So a rollup goes to a destination because its own line says so, which is also the
+base's `#@ persist storage=`. A rollup's placement is its own line's, and it is part of
+the rollup's identity, so adding or removing `storage=` on a base never moves its rollups'
+tables, and a rollup goes to a destination because its own line says so. That is also the
 common case: a rollup's base is usually a table extended with measures, and Malloy admits
 only query-shaped sources as build roots, so most bases cannot carry `#@ persist` at all.
 
-A `name=` namespace *is* inherited, and the asymmetry is not about inheritance. Colocated
-rollups are offered through a companion model whose members Publisher names itself, with
-the base under an import alias, so nothing there is keyed on your source's name and there
-is no binding to collide with.
+**A rollup over a stored base builds and serves.** A rollup is built from the author's
+rows, never from its base's stored table, so a `#@ preaggregate` on a source that is itself
+`#@ persist storage=` is planned, built and served exactly as the `#(preaggregate)` it
+reads as. Each grain is one table, in the destination its own line names or, with no
+`storage=`, alongside the base in the warehouse the base reads from, under the rollup's
+[readable name](materialization.md#readable-table-names)
+(`<package>__<file>__<base>_by_<grain>__p<hash>`), never the base's. The base's own
+`name=` is neither a prefix nor a namespace for it. A query a rollup covers is answered
+from the rollup; one it does not is answered as it was before:
+
+- **A query-shaped base** builds its own stored table as well, which keeps answering every
+  query no rollup covers, the base's own measures included.
+- **A table extended with measures** is not a build root, so its `#@ persist` plans
+  nothing: the package carries a `persist-not-materializable` warning, a query no rollup
+  covers is answered live, and a run of the whole package is refused for that source, as
+  it is for any `#@ persist` Malloy cannot build. A run that names the rollups builds them;
+  drop the `#@ persist`, which stores nothing, and every run does.
+
+The refusals are the rollup leg's, for the same reasons as `#(preaggregate)`: a base whose
+rows read a given (`preaggregate-reads-given`) or the current time
+(`preaggregate-current-time`) builds no rollup, and neither does a gated base unless
+`PUBLISHER_MATERIALIZE_GATED_SOURCES` lets a query read the rollup past its gate
+(`preaggregate-access-filter`). Each is a warning, and the measure is served live.
+
+A colocated base's `name=` namespace *is* inherited, and the asymmetry is not about
+inheritance. Colocated rollups are offered through a companion model whose members
+Publisher names itself, with the base under an import alias, so nothing there is keyed on
+your source's name and there is no binding to collide with.
 
 **It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
 placed differently — one in the store, one alongside the base. Measures sharing a grain

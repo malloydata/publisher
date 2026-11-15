@@ -27,7 +27,6 @@ describe("Package.annotationFindingWarnings", () => {
          materialization: {
             droppedPersistWarnings: () => [],
             annotationFindingWarnings: () => [],
-            rollupsOverStoredBaseWarnings: () => [],
             incrementalPolicyAdvisories: () => [
                warn(INCREMENTAL_NO_MERGE_KEY_CODE),
                warn(INCREMENTAL_SHARED_ADDRESS_CODE),

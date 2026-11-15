@@ -45,7 +45,7 @@ const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
 /**
  * The live verdict reasons that carry a publish warning of their own, with its
  * code. The other live reasons are warned where their cause is found (storage
- * mode, refusals, rollups over a stored base).
+ * mode, refusals).
  */
 export const VERDICT_WARNING_CODES: Readonly<
    Partial<Record<ServeVerdictReason, string>>
@@ -62,8 +62,6 @@ type ServeVerdictReason =
    | "refused"
    /** `storage=` while PERSIST_STORAGE_MODE is not `on`. */
    | "storage_mode"
-   /** A rollup over a `storage=` base, left out of the plan (#6293). */
-   | "rollup_over_stored_base"
    /** Nothing on the package's published surface reaches it (#6277). */
    | "unreachable"
    /** Every entry point over it carries a row-level gate the tier cannot keep. */
@@ -189,8 +187,6 @@ export interface ServeVerdictFacts {
     * `#(materialize)` source.
     */
    materialize?(sourceID: string): "serves" | "off" | "not_served" | undefined;
-   /** Rollups over a stored base (#6293), left out of the plan. */
-   rollupsOverStoredBase?: readonly { baseName: string; modelPath?: string }[];
    /**
     * A persisted view's generated build source (`#@ persist` on a view, P14),
     * by its plan sourceID: the source and view it stores. A query reaches it
@@ -225,7 +221,7 @@ function planTier(source: PersistSourcePlan): "colocated" | "storage" {
 
 /**
  * Every materialized source's verdict, in plan order: planned sources first,
- * then refused ones, then rollups left out of the plan.
+ * then refused ones.
  */
 export function computeServeVerdicts(facts: ServeVerdictFacts): ServeVerdict[] {
    const out: ServeVerdict[] = [];
@@ -250,23 +246,6 @@ export function computeServeVerdicts(facts: ServeVerdictFacts): ServeVerdict[] {
          message: `Not built, so queries on it are answered live: ${refused.message}`,
          fixes: [
             "Remove what the refusal names, or drop the annotation if the source is not meant to be materialized.",
-         ],
-      });
-   }
-   for (const rollup of facts.rollupsOverStoredBase ?? []) {
-      out.push({
-         sourceName: rollup.baseName,
-         sourceID: `${rollup.baseName}#preaggregate`,
-         ...(rollup.modelPath ? { modelPath: rollup.modelPath } : {}),
-         origin: "preaggregate",
-         tier: "storage",
-         verdict: "live",
-         reason: "rollup_over_stored_base",
-         message:
-            `The rollups of \`${rollup.baseName}\` are not built, because it is ` +
-            `stored with storage=; its queries are answered from its own table.`,
-         fixes: [
-            `Declare the rollup on a source \`${rollup.baseName}\` is built from, or drop storage= from \`${rollup.baseName}\`.`,
          ],
       });
    }

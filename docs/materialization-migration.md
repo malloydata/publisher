@@ -112,6 +112,7 @@ still build and serve.
 | Code | What it means | What to do |
 | --- | --- | --- |
 | `materialize-not-built` | Publisher cannot build this `#(materialize)` source; the message names why (a colocated BigQuery source with no dataset-qualified `name=`, a refused `inline=`, a name another source's table holds, and so on). It serves live. | Fix what it names, or keep the v1 form. |
+| `preaggregate-not-built` | Publisher cannot build this valid rollup (a read-only dialect, a table name another rollup holds, a base scoped by a given, a row-level gate on a v1 rollup's base, the `storage=` gate); the message names the base, the grain and why. Its measures serve live. A refusal with its own code, such as `preaggregate-access-filter` or `preaggregate-time-zone`, keeps it. | Fix what it names. |
 | `materialize-unknown-key`, `materialize-unparseable` | The line cannot be read as written. Severity `error`: a publish is refused. | Fix the key or the quoting. |
 | `materialize-retired-key` | The line carries a key that is no longer read, `partition=`. Severity `error`: a publish is refused. | Remove the key. |
 | `annotation-near-miss` | A misspelled route, such as `#(materialise)`. Nothing is built. | Fix the spelling. |
@@ -563,9 +564,9 @@ answers reports `servedBy.kind: "rollup"`. What differs from `#@ preaggregate`:
 - **It belongs to the source that writes it.** An extension or an import does not repeat it.
 - **It answers more.** A `#(preaggregate)` rollup answers named views, extensions of its source,
   queries that reach its source through a join (colocated rollups only), and join-level
-  `max`/`min`, and it builds over a `#@ persist storage=` base, which a v1 rollup does not. With
-  `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, a colocated one also answers a gated entry point
-  whose gates read only grain dimensions, the gate grafted and proven on the rollup.
+  `max`/`min`. With `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, a colocated one also answers
+  a gated entry point whose gates read only grain dimensions, the gate grafted and proven on the
+  rollup.
 - **A new table.** A v2 rollup's table is not the v1 rollup's, so it builds once after the move.
 
 [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)
@@ -644,7 +645,7 @@ it. The build plan, the manifest and reuse all key on it.
 - **Read warning codes as open strings.** This page names `deprecated-preaggregate-annotation`
   (with the switch on), `materialize-not-built`, `materialize-unknown-key`,
   `materialize-unparseable`, `materialize-retired-key`, `materialize-pair-full-refresh`,
-  `served-copy-not-served` and `persist-view-not-built`, beside
+  `served-copy-not-served`, `persist-view-not-built` and `preaggregate-not-built`, beside
   `materialization-destination-missing` and `materialization-connection-cannot-hold-table`. Only the
   three malformed codes are errors.
 - **A rolling window deletes as well as appends.** An incremental refresh of a source with a

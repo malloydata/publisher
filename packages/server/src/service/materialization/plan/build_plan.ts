@@ -110,7 +110,6 @@ import {
    collectSourceEligibility,
    collidingRollups,
    refuseCollidingMaterialize,
-   storedBaseOfRollup,
    type ColocatedSourceEligibility,
    type SourceEligibility,
 } from "./eligibility_collect";
@@ -141,7 +140,6 @@ export {
 } from "./addressing";
 export {
    collidingRollups,
-   storedBaseOfRollup,
    tierGateInputs,
    type ColocatedSourceEligibility,
    type SourceEligibility,
@@ -1363,27 +1361,13 @@ export function deriveBuildPlan(
    // One level holding every source with every table it reads. A host walks
    // these edges for a rerun's upstream closure, freshness inheritance and
    // lineage, so none may be left out.
-   // A rollup over a stored base is left out of the plan (storedBaseOfRollup),
-   // so of its graph too: every node is in `sources` or `refusedSources`.
-   const leftOut = new Set(
-      Object.keys(sources).filter((sourceID) =>
-         storedBaseOfRollup(
-            { sources, preaggregatePlans: options?.preaggregatePlans },
-            sourceID,
-         ),
-      ),
-   );
    const wireGraphs: WireBuildGraph[] = builds.map((build) => ({
       connectionName: build.connectionName,
       nodes: [
-         build.order
-            .filter((sourceID) => !leftOut.has(sourceID))
-            .map((sourceID) => ({
-               sourceID,
-               dependsOn: (build.dependsOn[sourceID] ?? []).filter(
-                  (upstream) => !leftOut.has(upstream),
-               ),
-            })),
+         build.order.map((sourceID) => ({
+            sourceID,
+            dependsOn: build.dependsOn[sourceID] ?? [],
+         })),
       ],
    }));
 
@@ -1442,9 +1426,6 @@ export function deriveBuildPlan(
                continue;
             }
          } else {
-            // A storage rollup over a storage= base can neither build nor
-            // serve (see storedBaseOfRollup): out of the plan, warned on.
-            if (leftOut.has(sourceID)) continue;
             // Before the other gates: a rollup sharing its table with another
             // model's must neither build nor serve, so it leaves `sources`.
             try {
@@ -1665,12 +1646,6 @@ function refuseColocatedTablesSharedWithARefusal(
 export interface BuildPlanOutcome {
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
-   /**
-    * Storage rollups left out because their base is itself `storage=`
-    * persisted (see storedBaseOfRollup). Optional: a worker that predates it
-    * sends none.
-    */
-   rollupsOverStoredBase?: { baseName: string; modelPath?: string }[];
    annotationFindings: PackageAnnotationFinding[];
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
@@ -1696,6 +1671,19 @@ export interface BuildPlanOutcome {
     * a worker that predates it sends none.
     */
    rollupsKeepingGates?: string[];
+   /**
+    * The base and grain of each rollup in `plan.refusedSources`, by its
+    * sourceID, so its package warning names what the author wrote rather
+    * than the generated name (a refusal may also leave `plan.sources`).
+    * Optional: a worker that predates it sends none.
+    */
+   refusedRollups?: Record<string, RefusedRollup>;
+}
+
+/** What a refused rollup's warning names: its base and its grain. */
+export interface RefusedRollup {
+   baseSourceName: string;
+   grainDimensions: string[];
 }
 
 /**
@@ -1739,24 +1727,9 @@ export function deriveBuildPlanOutcome(
                  omittedSources: compiled.omittedSources,
               },
            );
-   // One entry per base: its grains share the reason.
-   const overStoredBase = new Map<
-      string,
-      { baseName: string; modelPath?: string }
-   >();
-   for (const sourceID of Object.keys(compiled.sources)) {
-      const base = storedBaseOfRollup(compiled, sourceID);
-      if (!base || overStoredBase.has(base.sourceID)) continue;
-      const modelPath = compiled.sourceModelPaths?.[base.sourceID];
-      overStoredBase.set(base.sourceID, {
-         baseName: base.name,
-         ...(modelPath ? { modelPath } : {}),
-      });
-   }
    return {
       plan,
       droppedPersistSources,
-      rollupsOverStoredBase: [...overStoredBase.values()],
       annotationFindings: compiled.annotationFindings ?? [],
       sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
@@ -1769,7 +1742,27 @@ export function deriveBuildPlanOutcome(
          .filter(([, rollup]) => rollupGateEnforcedAtRead(rollup))
          .map(([sourceID]) => sourceID)
          .sort(),
+      refusedRollups: refusedRollupsOf(plan, compiled.preaggregatePlans),
    };
+}
+
+/** {@link BuildPlanOutcome.refusedRollups}. */
+function refusedRollupsOf(
+   plan: BuildPlan | null,
+   rollups: Record<string, RollupPlan> | undefined,
+): Record<string, RefusedRollup> {
+   const out: Record<string, RefusedRollup> = {};
+   for (const [sourceID, refused] of Object.entries(
+      plan?.refusedSources ?? {},
+   )) {
+      const rollup = rollups?.[sourceID];
+      if (refused.tier !== "preaggregate" || !rollup) continue;
+      out[sourceID] = {
+         baseSourceName: rollup.baseSourceName,
+         grainDimensions: rollup.grainDimensions,
+      };
+   }
+   return out;
 }
 
 /**

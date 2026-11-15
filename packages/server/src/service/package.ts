@@ -1969,7 +1969,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.nativeSchemaWarnings(),
          ...this.materialization.servedCopyWarnings(),
          ...this.materialization.droppedPersistWarnings(),
-         ...this.materialization.rollupsOverStoredBaseWarnings(),
          ...this.materialization.repeatedJoinOneKeyWarnings(),
          ...this.materialization.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
@@ -2362,7 +2361,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return [
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.annotationFindingWarnings(),
-         ...this.materialization.rollupsOverStoredBaseWarnings(),
          // Not materialization-unreachable: it reports what the surface
          // curates, not an annotation finding.
          ...this.preaggregateAccessWarnings(),
