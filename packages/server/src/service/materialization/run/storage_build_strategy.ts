@@ -5,7 +5,11 @@ import {
    plannedModelDefOf,
    sourceDefOf,
 } from "../../governance/ir/compiled_model";
-import type { Manifest, PersistSource } from "@malloydata/malloy";
+import type {
+   Connection as MalloyConnection,
+   Manifest,
+   PersistSource,
+} from "@malloydata/malloy";
 import {
    ChainedShapeNotCarriedError,
    ChainedUpstreamMissingError,
@@ -34,7 +38,7 @@ import {
    duckdbTypeToMalloyType,
    type UndeclarableColumn,
 } from "../stored_column_types";
-import { quoteManifestTablePath } from "../../quoting";
+import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
 import { reachPersisted } from "../text/source_map";
 import { extensionOverStoredModel } from "../plan/materialize_stored_chain";
 import {
@@ -48,7 +52,15 @@ import {
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
-import type { TierAdapter } from "./tier";
+import type {
+   DroppedTable,
+   KeyCheck,
+   KeyCheckRecord,
+   StorageSite,
+   TierAdapter,
+} from "./tier";
+import { runRollupKeyCheck } from "./inline_uniqueness";
+import { storedKeyCheckSql } from "../text/key_check_text";
 import {
    ledgerFields,
    refreshFields,
@@ -62,11 +74,15 @@ import {
    BilledReadNotCapturedError,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
+   dropStorageTable,
    oneFileModel,
+   STORAGE_TARGET_DIALECT,
+   withStorageDestinationSession,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
 import {
+   backupSuffix,
    BuildEnvironment,
    ChainedPlanFacts,
    NO_PLAN_FACTS,
@@ -133,19 +149,86 @@ export interface StorageBuildRequest {
  * plan: a table whose columns no type declares faithfully is built and
  * answers live.
  */
-export class StorageBuildStrategy implements TierAdapter<StorageBuildRequest> {
+export class StorageBuildStrategy
+   implements TierAdapter<StorageBuildRequest, StorageSite>
+{
    readonly tier = "storage" as const;
 
    constructor(
       private readonly seams: {
          /**
-          * Stack a chained source on its parents. The facade routes this back
-          * through its own `buildDownstreamViaParents` so its specs can
-          * substitute it.
+          * Stack a chained source on its parents. The service routes this
+          * through its collaborators, so a spec can hand it one; absent,
+          * this adapter's own.
           */
-         buildDownstreamViaParents: StorageBuildStrategy["buildDownstreamViaParents"];
-      },
+         buildDownstreamViaParents?: StorageBuildStrategy["buildDownstreamViaParents"];
+      } = {},
    ) {}
+
+   /**
+    * Drop the table on an isolated read-write session on its destination
+    * (see {@link dropStorageTable}), and in the same session its backup
+    * name, which an earlier release's `name=` view replacement used.
+    */
+   async drop(site: StorageSite, table: DroppedTable): Promise<void> {
+      try {
+         await dropStorageTable({
+            destinationName: site.destinationName,
+            destinationConnection: site.destinationConnection,
+            physicalTableName: table.physicalTableName,
+            environmentPath: site.environmentPath,
+            ...(table.leftoversOf !== undefined
+               ? {
+                    alsoDrop: [
+                       `${table.physicalTableName}${backupSuffix(table.leftoversOf)}`,
+                    ],
+                 }
+               : {}),
+         });
+      } catch (err) {
+         if (!table.onDropFailed) throw err;
+         await table.onDropFailed(err);
+      }
+   }
+
+   /** On an isolated read-write session with the destination attached. */
+   async checkKey(
+      site: StorageSite,
+      check: KeyCheck,
+      table: string,
+   ): Promise<KeyCheckRecord | undefined> {
+      try {
+         return await withStorageDestinationSession(site, (session) =>
+            runRollupKeyCheck(
+               check,
+               session as unknown as MalloyConnection,
+               table,
+            ),
+         );
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
+    * The SQL of a stored table's key check over `keyColumn`, reading the
+    * table where it lives in the destination.
+    */
+   keyCheckSql(
+      site: Pick<StorageSite, "destinationName" | "destinationConnection">,
+      physicalTableName: string,
+      keyColumn: string,
+   ): string {
+      const path = quoteTablePath(
+         storageTablePath(
+            site.destinationName,
+            physicalTableName,
+            destinationSchemaOf(site.destinationConnection),
+         ),
+         STORAGE_TARGET_DIALECT,
+      );
+      return storedKeyCheckSql(path, keyColumn);
+   }
 
    /**
     * Materialize a source into a `storage=` destination (DuckDB/DuckLake) via a
@@ -281,7 +364,10 @@ export class StorageBuildStrategy implements TierAdapter<StorageBuildRequest> {
                              ? ([params.replacesView] as const)
                              : []),
                        )
-                     : this.seams.buildDownstreamViaParents(
+                     : (
+                          this.seams.buildDownstreamViaParents ??
+                          this.buildDownstreamViaParents.bind(this)
+                       )(
                           persistSource,
                           destinationName,
                           destinationConnection,

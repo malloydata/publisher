@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { keyCheckCompilerKey } from "../domain/key_check";
-import { storedKeyCheckSql } from "../text/key_check_text";
 import {
    assertInlinedJoinsUnique,
    pairLeafKeyChecksOf,
    checkDigest,
-   runRollupKeyCheck,
    tableIdentityKey,
    type StoredJoin,
    type UniquenessLedger,
@@ -33,15 +31,9 @@ import {
 import { getPersistStorageMode } from "../../../config";
 import { withSpan } from "../../../telemetry";
 import { errMessage } from "../../../utils";
-import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
-import {
-   STORAGE_TARGET_DIALECT,
-   withStorageDestinationSession,
-} from "./materialization_build_session";
-import {
-   destinationSchemaOf,
-   storageTablePath,
-} from "../domain/storage_table_path";
+import { quoteManifestTablePath } from "../../quoting";
+import { ColocatedTier } from "./colocated_build_strategy";
+import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
    CompiledBuildPlan,
    computeSourceEntityId,
@@ -116,6 +108,10 @@ import {
    reportSourceBuilt,
    reportSourceRefused,
 } from "./run_telemetry";
+
+/** The tiers a key check runs through, where its table lives. */
+const COLOCATED = new ColocatedTier();
+const STORAGE = new StorageBuildStrategy();
 
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
 function upstreamsBySourceID(
@@ -1397,7 +1393,7 @@ async function checkParentKeys(
 ): Promise<void> {
    for (const check of checks) {
       if (check.connectionName !== connectionName) continue;
-      const record = await runRollupKeyCheck(check, connection, table);
+      const record = await COLOCATED.checkKey({ connection }, check, table);
       if (!record) {
          logger.warn(
             "A query source's primary key check did not run; its queries through a #(preaggregate) rollup read as a join_many are answered live",
@@ -1435,7 +1431,7 @@ async function checkPairLeafKeys(
    table: string,
 ): Promise<void> {
    for (const check of checks) {
-      const record = await runRollupKeyCheck(check, connection, table);
+      const record = await COLOCATED.checkKey({ connection }, check, table);
       if (!record) {
          logger.warn(
             "A pair table's leaf key check did not run; counts through its inlined join_many are answered live",
@@ -1490,17 +1486,13 @@ function storedKeyCheckOf(
    } catch {
       return undefined;
    }
-   const path = quoteTablePath(
-      storageTablePath(
-         destinationName,
-         entry.physicalTableName,
-         destinationSchemaOf(destinationConnection),
-      ),
-      STORAGE_TARGET_DIALECT,
-   );
    return {
       keyColumn,
-      sql: storedKeyCheckSql(path, keyColumn),
+      sql: STORAGE.keyCheckSql(
+         { destinationName, destinationConnection },
+         entry.physicalTableName,
+         keyColumn,
+      ),
       table: tableIdentityKey(
          "destination",
          destinationName,
@@ -1525,24 +1517,15 @@ async function checkStoredKey(
 ): Promise<void> {
    const check = storedKeyCheckOf(run, persistSource.sourceID, entry);
    if (!check) return;
-   let record: Awaited<ReturnType<typeof runRollupKeyCheck>>;
-   try {
-      record = await withStorageDestinationSession(
-         {
-            destinationName: check.destinationName,
-            destinationConnection: check.destinationConnection,
-            environmentPath: run.environment.getEnvironmentPath(),
-         },
-         (session) =>
-            runRollupKeyCheck(
-               check,
-               session as unknown as MalloyConnection,
-               check.table,
-            ),
-      );
-   } catch {
-      record = undefined;
-   }
+   const record = await STORAGE.checkKey(
+      {
+         destinationName: check.destinationName,
+         destinationConnection: check.destinationConnection,
+         environmentPath: run.environment.getEnvironmentPath(),
+      },
+      check,
+      check.table,
+   );
    if (!record) {
       logger.warn(
          "A stored source's primary key check did not run; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
@@ -1575,7 +1558,7 @@ async function checkRollupKey(
    table: string,
 ): Promise<void> {
    if (!check) return;
-   const record = await runRollupKeyCheck(check, connection, table);
+   const record = await COLOCATED.checkKey({ connection }, check, table);
    if (!record) {
       logger.warn(
          "A #(preaggregate) rollup's key check did not run; queries through its join_one that need the key unique are answered live",

@@ -301,8 +301,6 @@ export const RATCHET_LONG_FUNCTIONS = {
       "2g.4",
    "service/materialization/run/materialization_service.ts#MaterializationService.createMaterialization":
       "2g.4",
-   "service/materialization/run/reclaimer.ts#Reclaimer.dropManifestEntries":
-      "2g.4",
    "service/materialization/run/source_build.ts#SourceBuilder.build": "2g.4",
    "service/materialization/run/storage_build_strategy.ts#StorageBuildStrategy.build":
       "2g.4",

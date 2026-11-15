@@ -10,7 +10,15 @@ import { storedColumnsOfOutput } from "../stored_column_types";
 import { capturedNativeSchema } from "./colocated_native_types";
 import { ManifestEntry } from "../domain/types";
 import { capabilitiesOf } from "../domain/dialect";
-import type { ColocatedBuildRequest, TierAdapter } from "./tier";
+import type {
+   ColocatedBuildRequest,
+   ColocatedSite,
+   DroppedTable,
+   KeyCheck,
+   KeyCheckRecord,
+   TierAdapter,
+} from "./tier";
+import { runRollupKeyCheck } from "./inline_uniqueness";
 import { buildColocatedDelta } from "./incremental_delta_strategy";
 import {
    advanceLedgerAfterSeed,
@@ -38,12 +46,61 @@ import { backupSuffix, stagingSuffix } from "./materialization_run_support";
  * incremental source it also clears the ledger before the rebuild and records
  * the new boundary after it.
  */
-export class ColocatedTier implements TierAdapter<ColocatedBuildRequest> {
+export class ColocatedTier
+   implements TierAdapter<ColocatedBuildRequest, ColocatedSite>
+{
    readonly tier = "colocated" as const;
 
    /** A delta for an incremental table the run can advance, else a rebuild in full. */
    async build(request: ColocatedBuildRequest): Promise<ManifestEntry> {
       return (await buildColocatedDelta(request)) ?? this.buildInFull(request);
+   }
+
+   /**
+    * Drop the table, quoted as the build quoted it so what built also drops,
+    * then the staging table a crash between its create and the swap can
+    * leave, and the previous copy a crash between the swap's two renames
+    * can leave.
+    */
+   async drop(site: ColocatedSite, table: DroppedTable): Promise<void> {
+      const { connection, runOptions } = site;
+      const dialect = connection.dialectName;
+      try {
+         await connection.runSQL(
+            `DROP TABLE IF EXISTS ${quoteTablePath(
+               table.physicalTableName,
+               dialect,
+            )}`,
+            runOptions,
+         );
+      } catch (err) {
+         if (!table.onDropFailed) throw err;
+         await table.onDropFailed(err);
+      }
+      if (table.leftoversOf === undefined) return;
+      await connection.runSQL(
+         `DROP TABLE IF EXISTS ${quoteTablePath(
+            `${table.physicalTableName}${stagingSuffix(table.leftoversOf)}`,
+            dialect,
+         )}`,
+         runOptions,
+      );
+      await connection.runSQL(
+         `DROP TABLE IF EXISTS ${quoteTablePath(
+            `${table.physicalTableName}${backupSuffix(table.leftoversOf)}`,
+            dialect,
+         )}`,
+         runOptions,
+      );
+   }
+
+   /** On the warehouse connection itself. */
+   checkKey(
+      site: ColocatedSite,
+      check: KeyCheck,
+      table: string,
+   ): Promise<KeyCheckRecord | undefined> {
+      return runRollupKeyCheck(check, site.connection, table);
    }
 
    /** The staging CTAS and the swap onto the served name. */
