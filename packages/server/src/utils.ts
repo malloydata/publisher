@@ -102,13 +102,21 @@ export function linkTextSteps(
  * reaches. A link loop or an unreadable link is refused.
  */
 /**
- * Where a walk stopped at `at` (missing, or a file with more to walk) as a
- * path whose open fails the same way: `at` and the last name still to walk,
- * never the rest. The rest may climb out (`newdir/../../outside/secret`), and
- * a directory that appears at `at` between the check and the open would
- * carry the open there.
+ * Where a walk stopped at `at` as a path whose open fails the same way the
+ * kernel's would: a missing `at` with the last name still to walk (ENOENT),
+ * or a file `at` with the next step still under it (ENOTDIR; `f.md/..` stays
+ * `f.md/..`, spelled, never collapsed to the file). Never the rest of the
+ * walk, which may climb out (`newdir/../../outside/secret`): a directory
+ * appearing at `at` between the check and the open then cannot carry the
+ * open out. (A symlink appearing there, or at a component already checked,
+ * still could; only a change to the served tree at runtime can do that.)
  */
-function stopped(at: string, pending: readonly string[]): Resolution {
+function stopped(
+   at: string,
+   pending: readonly string[],
+   isFile: boolean,
+): Resolution {
+   if (isFile) return { at, path: `${at}${path.sep}${pending[0] ?? ".."}` };
    const last = [...pending].reverse().find((name) => name !== "..");
    return { at, path: last === undefined ? at : path.join(at, last) };
 }
@@ -140,7 +148,7 @@ function* resolveSteps(
       const next = path.join(cur, name);
       if (!mayLook(next)) throw new ImportOutsidePackageError();
       const stat = (yield { op: "lstat", path: next }) as fs.Stats | undefined;
-      if (stat === undefined) return stopped(next, pending);
+      if (stat === undefined) return stopped(next, pending, false);
       if (stat.isSymbolicLink()) {
          if (++hops > MAX_LINK_HOPS) throw new ImportOutsidePackageError();
          const text = (yield { op: "readlink", path: next }) as
@@ -154,7 +162,7 @@ function* resolveSteps(
       }
       if (!stat.isDirectory() && pending.length > 0) {
          // A file with more to walk: the kernel stops here (ENOTDIR).
-         return stopped(next, pending);
+         return stopped(next, pending, true);
       }
       cur = next;
    }
@@ -453,15 +461,19 @@ export function packageURLReader(packageRoot: string): URLReader {
 export async function listPackageTree(root: string): Promise<string[]> {
    const realRoot = await fs.promises.realpath(root);
    const files: string[] = [];
+   // Each link's target is walked once (so a link loop ends); a directory
+   // reached both directly and through a link is listed under both names.
    const walked = new Set<string>([realRoot]);
-   const visit = async (dir: string): Promise<void> => {
-      for (const entry of await fs.promises.readdir(dir, {
+   // `dir` is how the files are listed; `readFrom` is where the walk resolved
+   // it, which is what is read, so a link is not followed again by spelling.
+   const visit = async (dir: string, readFrom: string): Promise<void> => {
+      for (const entry of await fs.promises.readdir(readFrom, {
          withFileTypes: true,
       })) {
          if (ignoreDotfiles(entry.name)) continue;
          const full = path.join(dir, entry.name);
          if (entry.isDirectory()) {
-            await visit(full);
+            await visit(full, path.join(readFrom, entry.name));
          } else if (entry.isSymbolicLink()) {
             // Resolved by the package's own walk, which never looks outside
             // the package: a link out (or one that passes out and back) is
@@ -481,13 +493,13 @@ export async function listPackageTree(root: string): Promise<string[]> {
             }
             if (walked.has(real)) continue;
             walked.add(real);
-            await visit(full);
+            await visit(full, real);
          } else {
             files.push(full);
          }
       }
    };
-   await visit(root);
+   await visit(root, realRoot);
    return files;
 }
 

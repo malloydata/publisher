@@ -88,6 +88,13 @@ describe("readSkillsDir", () => {
       }
    });
 
+   it("reports a skills/ that is a dangling link out of the package as leading outside it", () => {
+      fs.symlinkSync("/definitely-absent-skills-dir", path.join(pkg, "skills"));
+      const read = readSkillsDir(pkg);
+      expect(read.skills).toEqual([]);
+      expect(read.blocking.join(" ")).toContain("resolves outside the package");
+   });
+
    it("returns nothing, and no warning, when skills/ is a dangling link", () => {
       fs.symlinkSync(path.join(pkg, "gone"), path.join(pkg, "skills"));
       expect(readSkillsDir(pkg)).toEqual({

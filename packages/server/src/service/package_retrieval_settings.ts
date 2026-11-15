@@ -22,6 +22,7 @@ import { PackageManifestError } from "../errors";
 import { stepsOutside } from "../path_safety";
 import { confinedPackagePath, ImportOutsidePackageError } from "../utils";
 import { pathToFileURL } from "url";
+import { callerVisibleText } from "../package_relative_text";
 
 /**
  * The variants of the prompt the fcj index build sends to write a node's
@@ -737,7 +738,7 @@ async function readPromptFile(
    } catch (error) {
       if (error instanceof PackageManifestError) throw error;
       return fail(
-         `Invalid publisher.json ${at}: cannot read ${describe(rel)} (${(error as Error).message}). ` +
+         `Invalid publisher.json ${at}: cannot read ${describe(rel)} (${callerVisibleText((error as Error).message, packageRoot)}). ` +
             `Fix: create the file inside the package or remove the key.`,
       );
    }

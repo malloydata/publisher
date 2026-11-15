@@ -494,3 +494,26 @@ describe("a walk that stops at a missing directory", () => {
       }
    });
 });
+
+describe("a link whose text steps .. past a file, or through a missing name", () => {
+   it("fails as the kernel would: ENOTDIR after a file, ENOENT after a missing name", async () => {
+      const base = fs.realpathSync(
+         fs.mkdtempSync(path.join(os.tmpdir(), "stop-kinds-")),
+      );
+      try {
+         const pkg6 = path.join(base, "pkg");
+         fs.mkdirSync(pkg6);
+         fs.writeFileSync(path.join(pkg6, "f.md"), "file");
+         fs.symlinkSync("f.md/..", path.join(pkg6, "after-file"));
+         fs.symlinkSync("missing/..", path.join(pkg6, "after-missing"));
+         const afterFile = url(path.join(pkg6, "after-file"));
+         const afterMissing = url(path.join(pkg6, "after-missing"));
+         expect(await outcome(pkg6, afterFile)).toContain("ENOTDIR");
+         expect(() => readPackageURLSync(pkg6, afterFile)).toThrow("ENOTDIR");
+         expect(await outcome(pkg6, afterMissing)).toContain("ENOENT");
+         expect(() => readPackageURLSync(pkg6, afterMissing)).toThrow("ENOENT");
+      } finally {
+         fs.rmSync(base, { recursive: true, force: true });
+      }
+   });
+});

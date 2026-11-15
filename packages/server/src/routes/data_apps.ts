@@ -14,7 +14,7 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
-import { safeJoinUnderRoot } from "../path_safety";
+import { safeJoinUnderRoot, stepsOutside } from "../path_safety";
 import { confinedPackagePath } from "../utils";
 import { pathToFileURL } from "url";
 import type { PackageLookup } from "../service/environment_ports";
@@ -92,25 +92,30 @@ async function serveFromPackage(
       const fullPath = safeJoinUnderRoot(publicRoot, subPath);
 
       // Then containment by the package's own walk, which never looks
-      // outside public/: a link out answers 403 whatever it leads to (a file,
-      // a directory, or nothing), while a symlinked package root (watch
-      // mode's in-place mount) is tolerated. No public/ 404s here, and a
-      // missing file 404s when it is sent.
-      try {
-         await fsp.realpath(publicRoot);
-      } catch {
+      // outside the package. public/ itself is resolved against the package
+      // root, so a public/ that links out serves nothing (403), whatever it
+      // leads to; one that links inside the package (`public -> web`) serves.
+      // A file must then resolve inside the real public/: a link out of it
+      // answers 403 whatever it leads to. A symlinked package root (watch
+      // mode's in-place mount) is tolerated. A package with no public/
+      // directory answers 404 here, and a missing file 404s when it is sent.
+      const served = await servedPublic(publicRoot);
+      if (served.kind === "none") {
          if (!res.headersSent) {
             res.status(404).type("text/html").send(PACKAGE_FILE_NOT_FOUND_HTML);
          }
          return;
       }
-      let realFullPath: string;
-      try {
-         realFullPath = await confinedPackagePath(
-            publicRoot,
-            pathToFileURL(fullPath),
-         );
-      } catch {
+      if (served.kind === "outside") {
+         res.status(403).end();
+         return;
+      }
+      const realFullPath = await insidePublic(
+         publicRoot,
+         served.real,
+         fullPath,
+      );
+      if (realFullPath === undefined) {
          res.status(403).end();
          return;
       }
@@ -258,6 +263,52 @@ function stripNonTagText(input: string): string {
    return current;
 }
 
+/**
+ * Where a package's public/ really is, resolved by the package's own walk
+ * against the package root (its parent): `outside` when public/ itself links
+ * out of the package, to anything or to nothing, so its target is never
+ * looked at; `none` when there is no public/ directory.
+ */
+async function servedPublic(
+   publicRoot: string,
+): Promise<
+   { kind: "inside"; real: string } | { kind: "outside" } | { kind: "none" }
+> {
+   let real: string;
+   try {
+      real = await confinedPackagePath(
+         path.dirname(publicRoot),
+         pathToFileURL(publicRoot),
+      );
+   } catch {
+      return { kind: "outside" };
+   }
+   const stat = await fsp.stat(real).catch(() => undefined);
+   return stat?.isDirectory() ? { kind: "inside", real } : { kind: "none" };
+}
+
+/**
+ * `file` resolved by the package's own walk, when it lands inside the real
+ * public/ (`realPublic`); undefined for a link out of public/, whatever it
+ * leads to.
+ */
+async function insidePublic(
+   publicRoot: string,
+   realPublic: string,
+   file: string,
+): Promise<string | undefined> {
+   let real: string;
+   try {
+      real = await confinedPackagePath(
+         path.dirname(publicRoot),
+         pathToFileURL(file),
+      );
+   } catch {
+      return undefined;
+   }
+   return stepsOutside(path.relative(realPublic, real)) ? undefined : real;
+}
+
 async function listPackageDataApps(
    environmentName: string,
    packageName: string,
@@ -268,19 +319,20 @@ async function listPackageDataApps(
    const out: DataAppItem[] = [];
 
    // Same containment as serveFromPackage, applied before reading any file's
-   // head, so a symlink out of public/ is never opened, nor looked through.
-   // No public/ directory yields an empty list.
-   try {
-      await fsp.realpath(publicRoot);
-   } catch {
-      return out;
-   }
+   // head, so a symlink out of public/ (or a public/ that links out) is never
+   // opened, nor looked through. No public/ directory yields an empty list,
+   // and so does one that links out of the package.
+   const served = await servedPublic(publicRoot);
+   if (served.kind !== "inside") return out;
+   const realPublic = served.real;
 
-   async function walk(dir: string, depth: number) {
+   // `dir` is how a page is named; `readFrom` is where the walk resolved it,
+   // which is what is read, so no link is followed again by its spelling.
+   async function walk(dir: string, readFrom: string, depth: number) {
       if (depth > DATA_APPS_DEPTH_CAP) return;
       let entries: Dirent[];
       try {
-         entries = await fsp.readdir(dir, { withFileTypes: true });
+         entries = await fsp.readdir(readFrom, { withFileTypes: true });
       } catch {
          return;
       }
@@ -288,13 +340,12 @@ async function listPackageDataApps(
          if (entry.name.startsWith(".") || entry.name === "node_modules")
             continue;
          const full = path.join(dir, entry.name);
-         try {
-            await confinedPackagePath(publicRoot, pathToFileURL(full));
-         } catch {
-            continue;
-         }
+         // Confined before anything is opened: a page outside public/ (or
+         // the package) is never read for its title.
+         const real = await insidePublic(publicRoot, realPublic, full);
+         if (real === undefined) continue;
          if (entry.isDirectory()) {
-            await walk(full, depth + 1);
+            await walk(full, real, depth + 1);
          } else if (
             entry.isFile() &&
             (entry.name.endsWith(".html") || entry.name.endsWith(".htm"))
@@ -304,7 +355,7 @@ async function listPackageDataApps(
             let title = rel;
             let fit: "viewport" | undefined;
             try {
-               const fh = await fsp.open(full, "r");
+               const fh = await fsp.open(real, "r");
                try {
                   const buf = Buffer.alloc(4096);
                   const { bytesRead } = await fh.read(buf, 0, 4096, 0);
@@ -354,7 +405,7 @@ async function listPackageDataApps(
       }
    }
 
-   await walk(publicRoot, 0);
+   await walk(publicRoot, realPublic, 0);
    out.sort((a, b) => {
       if (a.path === "index.html") return -1;
       if (b.path === "index.html") return 1;

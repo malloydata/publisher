@@ -134,8 +134,10 @@ Concretely:
   walk: model and notebook reads, the package listing and its data probe, `publisher.json`,
   the content hash, the retrieval prompt files, package skills and agent skills and their
   assets, the report write path, and the files of an HTML data app. When the walk stops at a
-  missing directory, only that point and the last name are opened, never the rest of the
-  spelled path, so a directory that appears there afterwards cannot carry the open out.
+  missing directory, only that point and the next name are opened, never the rest of the
+  spelled path, so a directory appearing there afterwards cannot carry the open out. (A symlink
+  appearing there, or at a component already checked, between the check and the open still
+  could; only someone changing the served tree at runtime can arrange that.)
 - **Registering a package is an operator action.** Packages come from `publisher.config.json` or a
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker
@@ -262,8 +264,12 @@ same origin as the REST API. The consequences follow from that and are all inten
 - The only CSP on these documents is `frame-ancestors`. There is no `script-src`, so a page may
   load and run anything, including third-party scripts.
 - The routes are unauthenticated, and only `public/` is reachable. Path traversal is blocked
-  lexically and again by the package's own path walk, which never looks outside `public/`: a
-  symlink escaping the directory returns 403 whether or not its target exists.
+  lexically and again by the package's own path walk, which never looks outside the package.
+  `public/` itself is resolved against the package root: a `public/` that is a link out of the
+  package serves and lists nothing (403), whatever it leads to, while one that links inside the
+  package (`public -> web`) serves. A file in it must resolve inside the real `public/`: a
+  symlink escaping the directory returns 403 whether or not its target exists, and a page
+  outside it is never opened, not even for its `<title>`.
 
 **Reports carry no author-written JavaScript file.** A report (a tagged `.malloy`, of either
 layout, or a legacy `.malloynb`) is Malloy, markdown and renderer tags. It is declarative, which

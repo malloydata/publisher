@@ -21,6 +21,7 @@ import {
    ImportOutsidePackageError,
 } from "../../utils";
 import { pathToFileURL } from "url";
+import { callerVisibleText } from "../../package_relative_text";
 
 /** The build-time bundle of the repo's skills, served as MCP prompts and through get_skill. */
 export const BUNDLED_SKILLS = (skillsBundle as { skills: SkillEntry[] }).skills;
@@ -140,7 +141,9 @@ function readFileInside(
          return { problem: "is not valid UTF-8 text" };
       }
    } catch (error) {
-      return { problem: `cannot be read (${(error as Error).message})` };
+      return {
+         problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
+      };
    }
 }
 
@@ -166,7 +169,7 @@ function referenceFilesInside(
       // No reference/ is the common case; a file or unreadable directory there is not.
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       warnings.push(
-         `Package skill reference directory '${rel}/reference' cannot be listed (${(error as Error).message}), so its references are not served. Fix: make it a readable directory of .md files, or remove it.`,
+         `Package skill reference directory '${rel}/reference' cannot be listed (${callerVisibleText((error as Error).message, packageRoot)}), so its references are not served. Fix: make it a readable directory of .md files, or remove it.`,
       );
       return [];
    }
@@ -209,7 +212,7 @@ export function readSkillsDir(
          if (!fs.statSync(inside).isDirectory()) {
             return { skills, files, warnings, blocking };
          }
-         entries = fs.readdirSync(root, { withFileTypes: true });
+         entries = fs.readdirSync(inside, { withFileTypes: true });
       } else {
          entries = [];
       }
@@ -664,7 +667,7 @@ function assetFilesInside(
    } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
          walk.skipped.push(
-            `assets of '${skillRel}' cannot be listed (${(error as Error).message})`,
+            `assets of '${skillRel}' cannot be listed (${callerVisibleText((error as Error).message, packageRoot)})`,
          );
       }
       return [];
@@ -690,7 +693,7 @@ function assetFilesInside(
       } catch (error) {
          skip(
             `${skillRel}/assets/${rel}`,
-            `its directory cannot be listed (${(error as Error).message})`,
+            `its directory cannot be listed (${callerVisibleText((error as Error).message, packageRoot)})`,
          );
          return;
       }
@@ -765,7 +768,10 @@ function assetFilesInside(
          try {
             size = fs.lstatSync(absolute).size;
          } catch (error) {
-            skip(shown, `it cannot be read (${(error as Error).message})`);
+            skip(
+               shown,
+               `it cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
+            );
             continue;
          }
          const packagePath = `${skillRel}/assets/${relative}`;
@@ -1196,7 +1202,7 @@ export function readPackageAgents(
          const why =
             error instanceof AgentProblem
                ? error.message
-               : `it cannot be read (${(error as Error).message})`;
+               : `it cannot be read (${callerVisibleText((error as Error).message, packagePath)})`;
          result.warnings.push(
             `Package agent '${name}' is not served: ${why}. Fix: correct the 'agents.${name}' entry in publisher.json and the files it names.`,
          );
