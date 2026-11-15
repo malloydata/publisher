@@ -1081,6 +1081,9 @@ export class EnvironmentStore
             this.cleanupPackageEmbeddings(environmentName, packageName),
       });
       if (alreadyBound) return;
+      // Before any poll can list this environment's versions: /status reads
+      // them from memory from here on.
+      await environment.primeStatusVersions();
       try {
          const owned = new Map<string, Set<string>>();
          for (const version of await repository.listVersionsByEnvironment(
@@ -1742,35 +1745,39 @@ export class EnvironmentStore
       );
    }
 
+   /**
+    * The body of `GET /status` and `get_status`: the control plane's
+    * heartbeat, so a constant-time read of what this server holds. Each
+    * environment answers from its status snapshot (see
+    * Environment.describeForStatus), so a poll builds no package metadata,
+    * reads nothing from the database and never starts a load, whatever else
+    * the server is doing.
+    */
    public async getStatus(
       options: StatusOptions = {},
    ): Promise<ServerStatusBody> {
-      // Back-pressure reads as "throttled" so the control plane can stop
-      // routing to this worker; "draining" takes precedence.
-      const baseState = getOperationalState();
-      const operationalState = (
-         baseState !== "draining" &&
-         (this.memoryGovernor?.isBackpressured() ?? false)
-            ? "throttled"
-            : baseState
-      ) as ServerStatusBody["operationalState"];
+      const status = this.statusHeader();
+      for (const environment of this.environments.values()) {
+         status.environments.push(
+            environment.describeForStatus({
+               includeLoading: options.includeLoading,
+            }) as ServerStatusBody["environments"][number],
+         );
+      }
+      this.addStatusProblems(status);
+      return status;
+   }
 
-      const status: ServerStatusBody = {
-         timestamp: Date.now(),
-         environments: [],
-         initialized: this.isInitialized,
-         frozenConfig: isPublisherConfigFrozen(),
-         operationalState,
-         version: SERVER_VERSION,
-      };
-      // Whether a publish from a location publishes versions, so an
-      // orchestrator mid-rollout can tell. A server from before versions sends
-      // no field, which means "off".
-      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
-      status.versionPromotion = getVersionPromotionMode();
-      // The Console's model page. Absent, as from a server that predates the
-      // setting, reads as "explorer".
-      status.modelPage = getModelPageMode();
+   /**
+    * `/status` as it was computed before the snapshot: every package listed
+    * (and so a registered one loaded) and every version row read on the call.
+    * The reference the snapshot is proven equal to (status_snapshot.spec.ts);
+    * never on a poll.
+    */
+   public async computeStatusFromListings(
+      options: StatusOptions = {},
+   ): Promise<ServerStatusBody> {
+      const status = this.statusHeader();
 
       // `/status` entries carry each package's serving state; a listing does not.
       const environments = await this.listEnvironments(true, {
@@ -1833,6 +1840,43 @@ export class EnvironmentStore
 
       // Collected AFTER listEnvironments: serialize() loads packages, which is
       // what records their failures.
+      this.addStatusProblems(status);
+      return status;
+   }
+
+   /** The fields of a `/status` body that do not describe an environment. */
+   private statusHeader(): ServerStatusBody {
+      // Back-pressure reads as "throttled" so the control plane can stop
+      // routing to this worker; "draining" takes precedence.
+      const baseState = getOperationalState();
+      const operationalState = (
+         baseState !== "draining" &&
+         (this.memoryGovernor?.isBackpressured() ?? false)
+            ? "throttled"
+            : baseState
+      ) as ServerStatusBody["operationalState"];
+
+      const status: ServerStatusBody = {
+         timestamp: Date.now(),
+         environments: [],
+         initialized: this.isInitialized,
+         frozenConfig: isPublisherConfigFrozen(),
+         operationalState,
+         version: SERVER_VERSION,
+      };
+      // Whether a publish from a location publishes versions, so an
+      // orchestrator mid-rollout can tell. A server from before versions sends
+      // no field, which means "off".
+      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
+      status.versionPromotion = getVersionPromotionMode();
+      // The Console's model page. Absent, as from a server that predates the
+      // setting, reads as "explorer".
+      status.modelPage = getModelPageMode();
+      return status;
+   }
+
+   /** Load errors, stale packages, and why the server is empty or failed. */
+   private addStatusProblems(status: ServerStatusBody): void {
       const loadErrors: LoadError[] = [];
       for (const [environmentName, message] of this.failedEnvironments) {
          loadErrors.push({ environment: environmentName, message });
@@ -1872,8 +1916,6 @@ export class EnvironmentStore
       if (this.initError) {
          status.initError = this.initError;
       }
-
-      return status;
    }
 
    /**

@@ -827,6 +827,8 @@ export class PackageMaterialization {
       colocated?: FreshnessManifest;
       colocatedAsGiven?: boolean;
       storage?: Record<string, ManifestEntry>;
+      /** Models a reload just installed: publish to them even when the bindings did not move. */
+      models?: "installed";
    }): void {
       if (update.colocated) {
          this.adoptColocated(
@@ -838,7 +840,12 @@ export class PackageMaterialization {
       if (update.storage) {
          this.storageBindings = this.admitStorage(update.storage);
       }
-      this.publishSnapshot();
+      this.publishSnapshot(update.models ? { models: update.models } : {});
+   }
+
+   /** The colocated entries bound now, by identity: a bind replaces them wholesale. */
+   boundColocatedEntries(): FreshnessManifest | undefined {
+      return this.colocatedEntries;
    }
 
    /** Store the colocated entries; an empty map reverts to live (unbound). */
@@ -1071,13 +1078,21 @@ export class PackageMaterialization {
       }
    }
 
+   /**
+    * {@link declarationOf}, as one function for the package's life: the
+    * served-copy context is compared by identity, so a fresh closure per
+    * publish would recompile every model on every publish.
+    */
+   private readonly declarationLookup = (sourceID: string): unknown =>
+      this.declarationOf(sourceID);
+
    private setServedCopyContextOn(model: Model): void {
       // Optional: a model a spec stands in for need not implement it.
       model.setServedCopyContext?.(
          this.owner.packagePath(),
          this.owner.malloyConfig(),
          this.materializePlans,
-         (sourceID) => this.declarationOf(sourceID),
+         this.declarationLookup,
       );
    }
 
