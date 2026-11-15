@@ -72,7 +72,10 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
          expect(Object.values(refused).map((r) => [r.name, r.reason])).toEqual([
             ["a", "empty_storage"],
          ]);
-         expect(instructions.map((i) => i.sourceEntityId)).toEqual([ADDRESS]);
+         // Each `name=` its own address (foldDistinctTableNames): b's table.
+         expect(instructions.map((i) => i.physicalTableName)).toEqual([
+            "b_tbl",
+         ]);
          expect(instructions[0].destination).toBeUndefined();
       });
 

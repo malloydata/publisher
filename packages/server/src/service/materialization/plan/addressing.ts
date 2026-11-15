@@ -21,7 +21,12 @@ import {
    getPersistAddressIncludesDestination,
    getPersistStorageMode,
 } from "../../../config";
-import { declaredStorage } from "./persist_source_fields";
+import { tableNamesFoldCase } from "../domain/storage_table_path";
+import { tableNamesMeet } from "../domain/table_name";
+import {
+   declaredStorage,
+   deriveAnnotationFields,
+} from "./persist_source_fields";
 import type { SourceBuild } from "../domain/compiled_build_plan";
 
 /** Project Malloy's targets for one connection into a {@link SourceBuild}. */
@@ -265,6 +270,8 @@ export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
    target?: BuildTarget,
+   /** The plan's {@link TableFolds}; absent, nothing is folded. */
+   tableFolds?: TableFolds,
 ): string {
    // The target's `sql` is load-bearing: this address keys the covered_through
    // ledger (incremental_build.ts), so it must describe WHAT the source
@@ -280,22 +287,26 @@ export function computeSourceEntityId(
    // `manifestForCompiler` carries an entry under both. The digest stays the
    // caller's, so the same SQL on another connection is another table.
    const resolved = buildTargetOf(source, target);
+   const fold = tableFolds?.[source.sourceID];
    const chosen = testAddresses.get(resolved);
    if (chosen !== undefined) {
-      const layout = addressText(source, "");
+      const layout = addressText(source, "", fold);
       return layout === "" ? chosen : makeDigest(chosen, layout);
    }
    return makeDigest(
       connectionDigests[source.connectionName],
-      addressText(source, resolved.sql),
+      addressText(source, resolved.sql, fold),
    );
 }
 
 /**
  * The key the compiler itself files a source's table under: its target's
  * `buildId`, which the compiler computed and looks tables up by. Like
- * {@link computeSourceEntityId} but without the folded destination, so for a
- * source that has one the two differ and a compiler manifest carries the entry under both (see `manifestForCompiler`).
+ * {@link computeSourceEntityId} but without what {@link addressText} folds in
+ * (a destination, a distinct `name=` or projection), so for a source that has
+ * one the two differ and a manifest handed to the compiler carries the entry
+ * under both (see `manifestForCompiler`). Sources folded apart share one
+ * compiler key, whose entry is then either of their tables: the same rows.
  *
  * `connectionDigests` is unused: the target's key was computed under the
  * runtime's own digests, for the same connections Publisher resolves
@@ -333,19 +344,272 @@ export function addressDestination(source: PersistSource): string | undefined {
 /**
  * Fold what the target's `sql` cannot carry into the text a source's address
  * is computed from: (P12, behind a switch) the storage destination it builds
- * into. The target's `sql` carries no annotation bytes, so without this a
- * source moved to `storage=` would keep its colocated address.
+ * into, and the author's `name=` (or stored projection) where another source
+ * of the same build names (or stores) another table
+ * ({@link foldDistinctTableNames}). The target's `sql` carries no annotation
+ * bytes, so without this a source moved to `storage=` would keep its
+ * colocated address, and two `name=`s on one build would get one
+ * table.
  *
- * Derived here rather than passed in so every caller agrees
- * (`build_targets_address_equality` pins it). Nothing to fold appends
+ * The destination is derived here rather than passed in so every caller
+ * agrees (`build_targets_address_equality` pins it); the table fold is the
+ * plan's, which every caller addressing a plan's source passes. Nothing to fold appends
  * nothing, keeping such addresses stable; a change moves the address once,
  * which is the rebuild the author asked for.
  */
-export function addressText(source: PersistSource, sql: string): string {
+export function addressText(
+   source: PersistSource,
+   sql: string,
+   /** The source's entry in its plan's {@link TableFolds}. */
+   tableFold?: string,
+): string {
    let text = sql;
    const destination = addressDestination(source);
    if (destination !== undefined) text += `\n-- stored in: ${destination}`;
+   if (tableFold) text += `\n-- table: ${tableFold}`;
    return text;
+}
+
+/**
+ * Where `source`'s `#@` persist declaration is written: an extension that
+ * inherits its base's declaration names the base's line. Its sourceID when it
+ * carries no located note.
+ */
+function declarationOf(source: PersistSource): string {
+   try {
+      const note = source.annotations.forRoute("@")[0] as
+         | { at?: { url: string; range: { start: { line: number } } } }
+         | undefined;
+      if (note?.at) return `${note.at.url}:${note.at.range.start.line}`;
+   } catch {
+      // Unreadable: its own declaration.
+   }
+   return source.sourceID;
+}
+
+/**
+ * Whether `source` writes its own `#@` persist declaration, rather than
+ * inheriting its base's (an extension). A source whose annotation cannot be
+ * read counts as declaring.
+ */
+function declaresOwnPersist(source: PersistSource): boolean {
+   try {
+      const own = source.annotation;
+      if (!own) return true;
+      return [...(own.blockNotes ?? []), ...(own.notes ?? [])].some((n) =>
+         n.text.trimStart().startsWith("#@"),
+      );
+   } catch {
+      return true;
+   }
+}
+
+/**
+ * The columns a `storage=` build of `source` stores (as
+ * projectToStoredColumns writes them), sorted; "" for a colocated source,
+ * whose build writes its whole query, or one whose columns cannot be read
+ * (its storage build refuses on its own).
+ */
+function storedProjection(
+   source: PersistSource,
+   storedColumns: (source: PersistSource) => string[],
+): string {
+   try {
+      if (!declaredStorage(source)) return "";
+      return [...storedColumns(source)].sort().join(",");
+   } catch {
+      return "";
+   }
+}
+
+/**
+ * What {@link foldDistinctTableNames} folds into each moved source's address,
+ * by sourceID: its name's identity, and its stored columns where projections
+ * differ. A source not listed keeps its plain address. Carried on the plan
+ * (`CompiledBuildPlan.tableFolds`) and handed to every
+ * {@link computeSourceEntityId} that addresses a plan's source.
+ */
+export type TableFolds = Readonly<Record<string, string>>;
+
+/**
+ * Give each author `name=` its own table: two sources that compile to one
+ * build (one address, say gated differently at read) but name different
+ * tables are each addressed with their name folded in, so every plan, build,
+ * manifest and bind path keys two tables. A source with no `name=` of its
+ * own (a defaulted readable name, a rollup) keeps the plain address, as does
+ * every source of an address whose sources all name one table: the same
+ * source reached from two models, or identical SQL with no `name=`.
+ *
+ * Likewise two `storage=` declarations of one build that store different
+ * columns (one keeps a column `private:`, the other drops it with `except:`):
+ * each is addressed with its declaring source's projection folded in, so a
+ * column one drops is never at rest in the other's table. An extension that
+ * inherits a declaration is on its table. Two such sources with one `name=`
+ * then sit on two addresses at one table, which is the author's collision,
+ * reported, and refused by an auto-run (see sharedTables).
+ *
+ * So only an address that held sources naming or storing different tables
+ * moves, and the result does not depend on build order. A source moves when
+ * a same-build source naming another table is added or removed, so its table
+ * is rebuilt once then.
+ *
+ * Names are compared as persistTableTarget compares them: case folded where
+ * the destination folds it, and two names that may be one table
+ * ({@link tableNamesMeet}: `main.t` and `t`) are one, so they are never
+ * split onto two addresses writing it; `s1.t` and `s2.t` are two.
+ *
+ * Decided over the package's whole plan, before any source is refused, and
+ * carried on the plan, so a plan less its refused sources keeps the
+ * addresses.
+ */
+export function foldDistinctTableNames(
+   plan: {
+      tables: Readonly<
+         Record<
+            string,
+            {
+               source: PersistSource;
+               target?: BuildTarget;
+               rollup?: unknown;
+               materialize?: { nameDefaulted?: true };
+            }
+         >
+      >;
+      connectionDigests: Record<string, string>;
+   },
+   /**
+    * The columns a `storage=` build of a source writes
+    * (build_plan's storedColumnNames); a throw reads as none.
+    */
+   storedColumns: (source: PersistSource) => string[],
+): TableFolds {
+   const groups = new Map<
+      string,
+      {
+         sourceID: string;
+         name: string;
+         defaulted: boolean;
+         stores: string;
+         declaration: string;
+         declares: boolean;
+      }[]
+   >();
+   for (const [sourceID, table] of Object.entries(plan.tables)) {
+      const { source } = table;
+      let address: string;
+      try {
+         address = computeSourceEntityId(
+            source,
+            plan.connectionDigests,
+            table.target,
+         );
+      } catch {
+         continue; // Unaddressable: refused on its own path.
+      }
+      const rollup = !!table.rollup;
+      const declared = deriveAnnotationFields(source).name?.trim();
+      const materialize = table.materialize;
+      const defaulted =
+         rollup || (materialize ? !!materialize.nameDefaulted : !declared);
+      const group = groups.get(address) ?? [];
+      group.push({
+         sourceID,
+         // As persistTableTarget compares names: case folded where the
+         // destination folds it, so `T` and `t` are one table there.
+         name: tableNamesFoldCase(
+            source.dialectName,
+            !!deriveAnnotationFields(source).storage?.trim(),
+         )
+            ? (declared ?? "").toLowerCase()
+            : (declared ?? ""),
+         defaulted,
+         stores: rollup ? "" : storedProjection(source, storedColumns),
+         declaration: declarationOf(source),
+         declares: declaresOwnPersist(source),
+      });
+      groups.set(address, group);
+   }
+   const folds: Record<string, string> = {};
+   for (const group of groups.values()) {
+      const tables = tableClusters(
+         group.filter((m) => !m.defaulted).map((m) => m.name),
+      );
+      const nameOf = (m: (typeof group)[number]) =>
+         m.defaulted ? "" : tables.get(m.name)!;
+      // A colocated build stores its whole query, so only `storage=`
+      // sources are told apart by what they store, and only one declaration
+      // from another: an extension that inherits its base's `#@ persist` is
+      // its base's table, whatever it renames or adds.
+      // A declaration stores what its declaring source projects; an
+      // extension reads that table. With no declaring source among them (a
+      // hand-made plan), the first by sourceID.
+      const declared = new Map<string, { stores: string; declares: boolean }>();
+      for (const m of [...group].sort((a, b) =>
+         a.sourceID.localeCompare(b.sourceID),
+      )) {
+         if (m.stores === "") continue;
+         const held = declared.get(m.declaration);
+         if (held === undefined || (m.declares && !held.declares)) {
+            declared.set(m.declaration, {
+               stores: m.stores,
+               declares: m.declares,
+            });
+         }
+      }
+      const storesOf = (m: (typeof group)[number]) =>
+         m.stores === "" ? "" : declared.get(m.declaration)!.stores;
+      const projections = new Set(group.map(storesOf).filter((p) => p !== ""));
+      const keyOf = (m: (typeof group)[number]) =>
+         storesOf(m) !== "" && projections.size > 1
+            ? `${nameOf(m)}\u0000${storesOf(m)}`
+            : nameOf(m);
+      if (new Set(group.map(keyOf)).size < 2) continue;
+      for (const member of group) {
+         const key = keyOf(member);
+         if (key) folds[member.sourceID] = key;
+      }
+   }
+   return folds;
+}
+
+/**
+ * Each written name's table, as the smallest name of the names that are one
+ * table with it: names merge only where every pair of them meets
+ * ({@link tableNamesMeet}). `main.t` and `t` are one table, and `s1.t` and
+ * `s2.t` two. A name that meets two names which do not meet each other (a
+ * bare `t` beside `s1.t` and `s2.t`) merges with none: it is left on an
+ * address of its own, for the collision check to refuse, so it never stands
+ * for either of them and leaves the other unwritten.
+ */
+function tableClusters(names: string[]): Map<string, string> {
+   const distinct = [...new Set(names)].sort();
+   // A name whose every meeting name meets every other: only it may merge.
+   const settled = new Set(
+      distinct.filter((n) => {
+         const near = distinct.filter((m) => m !== n && tableNamesMeet(n, m));
+         return near.every((a, i) =>
+            near.slice(i + 1).every((b) => tableNamesMeet(a, b)),
+         );
+      }),
+   );
+   const root = new Map(distinct.map((n) => [n, n]));
+   const find = (n: string): string => {
+      const r = root.get(n)!;
+      return r === n ? n : find(r);
+   };
+   for (let i = 0; i < distinct.length; i++) {
+      for (let j = i + 1; j < distinct.length; j++) {
+         const [x, y] = [distinct[i], distinct[j]];
+         // Both settled: every component is then a set of names that all
+         // meet one another.
+         if (!settled.has(x) || !settled.has(y) || !tableNamesMeet(x, y)) {
+            continue;
+         }
+         const [a, b] = [find(x), find(y)];
+         if (a !== b) root.set(a < b ? b : a, a < b ? a : b);
+      }
+   }
+   return new Map(distinct.map((n) => [n, find(n)]));
 }
 
 /**

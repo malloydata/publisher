@@ -182,8 +182,14 @@ export function addressesOf(compiled: CompiledBuildPlan): SourceAddressing[] {
       };
       const target = compiled.tables[source.sourceID]?.target;
       try {
-         const realAddress = computeSourceEntityId(source, digests, target);
-         const address = computeSourceEntityId(source, fixed, target);
+         const folds = compiled.tableFolds;
+         const realAddress = computeSourceEntityId(
+            source,
+            digests,
+            target,
+            folds,
+         );
+         const address = computeSourceEntityId(source, fixed, target, folds);
          const addressSQL = target
             ? target.sql
             : buildSQLOf(source, { entries: {} });

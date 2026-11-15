@@ -31,14 +31,14 @@ import { MaterializationService } from "./materialization_service";
 import { ownedTableComment, TABLE_OWNED_ELSEWHERE } from "./table_ownership";
 
 /**
- * Two persisted sources that compile to one build share one content address,
- * so an auto-run builds ONE instruction for them, named after the first: here
- * `named`, at its author's `name=`. The ownership check refuses a `name=`
- * another package (or nobody provable) holds, and that refusal belongs to the
- * table, not to the source that declared the name: `twin`, which shares the
- * table, must not build it either. Each case plants a table at the name,
- * runs, and asserts that nothing on the address built, the planted table is
- * exactly as it was (rows and comment), and both sources answer live.
+ * Two persisted sources that compile to one build: `named`, at its author's
+ * `name=`, and `twin`, with none. Each names its own table, so each has its
+ * own address (foldDistinctTableNames) and an auto-run builds two tables. The
+ * ownership check refuses a `name=` another package (or nobody provable)
+ * holds: `named` is not built and answers live, the planted table is exactly
+ * as it was (rows and comment), and `twin` never writes it, building and
+ * serving its own table instead. (A host that instructs one table for the
+ * shared build is the build loop's case, below.)
  *
  * The colocated tier and a `scope: package` version, on a real DuckDB
  * warehouse; the `storage=` tier is
@@ -202,10 +202,10 @@ function outcome(m: Materialization) {
 }
 
 /**
- * Both sources on the refused address answer live, `solo` alone built, and
- * the planted table is exactly as it was.
+ * `named` refused and answering live, `solo` and `twin` built, `twin` served
+ * from its own table, and the planted table exactly as it was.
  */
-async function expectRefusedTogether(
+async function expectNamedRefused(
    m: Materialization,
    before: { rows: unknown[]; comment: unknown },
    holderText: string,
@@ -213,21 +213,47 @@ async function expectRefusedTogether(
 ): Promise<void> {
    expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
    const { built, failures } = outcome(m);
-   expect(built).toEqual(["solo"]);
-   expect(m.metadata).toMatchObject({ sourcesBuilt: 1 });
+   expect(built).toEqual(["solo", "twin"]);
+   expect(m.metadata).toMatchObject({ sourcesBuilt: 2 });
    expect(failures).toHaveLength(1);
+   expect(failures[0].sourceName).toBe("named");
    expect(failures[0].reason).toContain(`(${TABLE_OWNED_ELSEWHERE})`);
    expect(failures[0].reason).toContain(holderText);
    expect(await planted()).toEqual(before);
-   for (const source of ["named", "twin"]) {
-      expect(await answer(source, versionId)).toEqual({
-         who: "live",
-         servedFrom: null,
-      });
-   }
+   expect(await answer("named", versionId)).toEqual({
+      who: "live",
+      servedFrom: null,
+   });
+   await expectServedFromOwnTable(m, "twin", versionId);
 }
 
-describe("the colocated tier: a refused name= refuses every source sharing its table", () => {
+/**
+ * `source` reads the table its run built for it, and only it: marking that
+ * table's rows changes its answer.
+ */
+async function expectServedFromOwnTable(
+   m: Materialization,
+   source: string,
+   versionId?: string,
+): Promise<void> {
+   const entries = Object.values(
+      (
+         m.manifest as {
+            entries: Record<
+               string,
+               { sourceName: string; physicalTableName: string }
+            >;
+         }
+      ).entries,
+   ).filter((e) => e.sourceName === source);
+   expect(entries).toHaveLength(1);
+   const table = entries[0].physicalTableName;
+   expect(table).not.toBe("named_t");
+   await sql(`UPDATE "${table}" SET who = '${source}_stored'`);
+   expect((await answer(source, versionId)).who).toBe(`${source}_stored`);
+}
+
+describe("the colocated tier: a refused name= refuses its own source, and a twin builds its own table", () => {
    beforeEach(async () => {
       writePackageFiles(
          path.join(envPath, PKG),
@@ -239,47 +265,48 @@ describe("the colocated tier: a refused name= refuses every source sharing its t
       service = newService();
    });
 
-   it("another package's table at the name: neither source builds, and its rows and mark stay", async () => {
+   it("another package's table at the name: named does not build, and its rows and mark stay", async () => {
       await sql("CREATE TABLE named_t AS SELECT 'pb' AS who");
       await sql(`COMMENT ON TABLE named_t IS '${OTHER_MARK}'`);
       const before = await planted();
       expect(before).toEqual({ rows: ["pb"], comment: OTHER_MARK });
 
-      await expectRefusedTogether(
+      await expectNamedRefused(
          await build(),
          before,
          `a table package '${ENV}/pb' built`,
       );
    });
 
-   it("a table no run of the package wrote (a user's own, unmarked): neither source builds over it", async () => {
+   it("a table no run of the package wrote (a user's own, unmarked): no source builds over it", async () => {
       await sql("CREATE TABLE named_t AS SELECT 'mine' AS who");
       const before = await planted();
       expect(before).toEqual({ rows: ["mine"], comment: null });
 
-      await expectRefusedTogether(
+      await expectNamedRefused(
          await build(),
          before,
          "a table with no Publisher mark that this package's records do not show it built",
       );
    });
 
-   it("once the name is free the shared table is built once, marked as this package's, and serves both", async () => {
+   it("once the name is free named_t is built, marked as this package's, and serves named alone", async () => {
       const m = await build();
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
       expect(outcome(m).failures).toEqual([]);
+      expect(outcome(m).built).toEqual(["named", "solo", "twin"]);
       expect(await planted()).toEqual({
          rows: ["live"],
          comment: ownedTableComment(`${ENV}/${PKG}`),
       });
       await sql("UPDATE named_t SET who = 'stored'");
-      for (const source of ["named", "twin"]) {
-         expect((await answer(source)).who).toBe("stored");
-      }
+      expect((await answer("named")).who).toBe("stored");
+      await expectServedFromOwnTable(m, "twin");
+      expect((await answer("named")).who).toBe("stored");
    });
 });
 
-describe('a "scope: package" version: a refused name= refuses every source sharing the versions\' table', () => {
+describe('a "scope: package" version: a refused name= refuses its own source, and a twin builds its own table', () => {
    beforeEach(async () => {
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       env.bindVersions(repo, ENV_ID, {
@@ -324,12 +351,12 @@ describe('a "scope: package" version: a refused name= refuses every source shari
       service = newService();
    });
 
-   it("another package's table at the name: neither source builds, and its rows and mark stay", async () => {
+   it("another package's table at the name: named does not build, and its rows and mark stay", async () => {
       await sql("CREATE TABLE named_t AS SELECT 'pb' AS who");
       await sql(`COMMENT ON TABLE named_t IS '${OTHER_MARK}'`);
       const before = await planted();
 
-      await expectRefusedTogether(
+      await expectNamedRefused(
          await build(),
          before,
          `a table package '${ENV}/pb' built`,

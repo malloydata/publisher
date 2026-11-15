@@ -56,6 +56,12 @@ export interface PlannedTable {
    sourceEntityId: string;
    origin: "persist" | "preaggregate";
    /**
+    * The key Malloy files the table under in a build manifest, where it is
+    * not `sourceEntityId` (an address foldDistinctTableNames moved): a
+    * colocated persisted view or query is substituted under it.
+    */
+   compilerKey?: string;
+   /**
     * The model the plan entry came from. A rollup has no stable `sourceID` on
     * the model side, so it is matched to its plan by name within its model.
     */
