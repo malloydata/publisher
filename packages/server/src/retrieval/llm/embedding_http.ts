@@ -15,8 +15,14 @@ import type {
    ProviderName,
 } from "./types";
 
-/** Timeout for bulk (index-build) embedding calls. */
+/**
+ * Default of `retrieval.embedding.timeoutMs`; read the value in force through
+ * `embeddingBatchTimeoutMs()`.
+ */
 export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
+
+/** Most rows one bulk (index-build) embedding request carries. */
+export const MAX_BULK_EMBED_ROWS = 256;
 
 /** Per-input character cap (matches the hosted indexing pipeline). */
 export const MAX_EMBED_INPUT_CHARS = 1_024;

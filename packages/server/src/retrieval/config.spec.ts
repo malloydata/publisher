@@ -157,6 +157,27 @@ describe("retrieval.embedding and retrieval.egress validation", () => {
       });
    });
 
+   it("timeoutMs is optional and must be a positive integer", () => {
+      const embedding = { provider: "ollama", model: "bge-m3" };
+      expect(
+         parseRetrievalConfig({ embedding })?.embedding?.timeoutMs,
+      ).toBeUndefined();
+      expect(
+         parseRetrievalConfig({
+            embedding: { ...embedding, timeoutMs: "120000" },
+         })?.embedding?.timeoutMs,
+      ).toBe(120_000);
+      for (const bad of [0, -1, 2.5, "soon"]) {
+         expect(() =>
+            parseRetrievalConfig({
+               embedding: { ...embedding, timeoutMs: bad },
+            }),
+         ).toThrow(
+            `Invalid retrieval.embedding.timeoutMs: expected a positive integer, got ${JSON.stringify(bad)}.`,
+         );
+      }
+   });
+
    it("prefixes default to empty strings", () => {
       expect(
          parseRetrievalConfig({ embedding: { dimensions: 512 } })?.embedding,

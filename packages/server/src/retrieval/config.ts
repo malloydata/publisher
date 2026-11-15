@@ -54,6 +54,8 @@ export type RetrievalEmbeddingConfig = {
    queryPrefix: string;
    /** Text put before indexed text; a change re-embeds. Default ''. */
    documentPrefix: string;
+   /** Deadline of one index-build embedding request, in ms. Default 30000. */
+   timeoutMs?: number;
 };
 
 /**
@@ -328,6 +330,7 @@ function parseEmbedding(raw: unknown): RetrievalEmbeddingConfig | undefined {
       "location",
       "queryPrefix",
       "documentPrefix",
+      "timeoutMs",
    ];
    const fix = `"embedding": { "provider": "openai", "model": "text-embedding-3-small" }`;
    const obj = block(raw, "retrieval.embedding", keys, fix);
@@ -389,6 +392,11 @@ function parseEmbedding(raw: unknown): RetrievalEmbeddingConfig | undefined {
       "retrieval.embedding.dimensions",
       "set it to e.g. 512",
    );
+   const timeoutMs = positiveInt(
+      obj.timeoutMs,
+      "retrieval.embedding.timeoutMs",
+      "set it to milliseconds, e.g. 120000",
+   );
    return {
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
@@ -408,6 +416,7 @@ function parseEmbedding(raw: unknown): RetrievalEmbeddingConfig | undefined {
             "retrieval.embedding.documentPrefix",
             `"documentPrefix": "search_document: "`,
          ) ?? "",
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
    };
 }
 
