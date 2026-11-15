@@ -215,6 +215,7 @@
 
 import { keyCheckPipeline } from "../text/key_check_text";
 import { Annotations } from "@malloydata/malloy";
+import { createHash } from "crypto";
 import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
 import { hiddenAccess } from "../../governance/ir/compiled_model";
@@ -347,21 +348,30 @@ const CARRIED_GROUPS = ["freshness", "queryMetadata"] as const;
 /** A property name inside a carried group that the persist line can hold bare. */
 const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/**
- * Why a colocated `#(materialize)` (one with no `storage=`) and no `name=` is
- * not built: its table would default to the source's own name, in the very
- * warehouse it reads, so it could be the table it is built from.
- */
-export function colocatedNeedsName(tableName: string): string {
-   return (
-      "a #(materialize) source built into its own warehouse needs name=: " +
-      `without one its table would be \`${tableName}\`, which may be the very ` +
-      "table it reads"
-   );
-}
-
 /** A table name `#@ persist name=` accepts (see persist_annotation_validation.ts). */
 const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The dialects whose table needs a container its connection does not give it
+ * (BigQuery: a dataset), which only a `name=` can supply.
+ */
+const NEEDS_QUALIFIED_TABLE: ReadonlySet<string> = new Set(["standardsql"]);
+
+/**
+ * The table name a `#(materialize)` source's build takes: the source's own
+ * name when it is plain, else its plain characters (runs of the rest folded
+ * to `_`) and a hash of the whole name, so a source named outside ASCII, or
+ * with a space, is still built, and two names that fold alike never share a
+ * table.
+ */
+export function materializeTableName(sourceName: string): string {
+   if (PLAIN_TABLE_NAME.test(sourceName)) return sourceName;
+   const folded = sourceName
+      .replace(/[^A-Za-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+   const hash = createHash("sha256").update(sourceName).digest("hex");
+   return `${folded || "source"}_${hash.slice(0, 8)}`;
+}
 
 /** Keys `#(materialize)` reads for the plan itself, not the persist line. */
 const PLANNED_KEYS = ["inline"] as const;
@@ -455,6 +465,8 @@ interface SourceDefLike {
       range?: { start?: { line: number; character: number } };
    };
    connection?: unknown;
+   /** The source's dialect (Malloy's `dialectName`). */
+   dialect?: unknown;
    primaryKey?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
@@ -584,8 +596,9 @@ function inheritedPersist(
 
 /**
  * The declaration's key outside the route's closed set, as a malformed
- * refusal, or undefined. A misspelt `name=` must never fall back to a default
- * table, so the source is not built, and the publish is refused.
+ * refusal, or undefined. A misspelt key must never fall back to a default
+ * (a misspelt `storage=` would build into the source's own warehouse), so
+ * the source is not built, and the publish is refused.
  */
 function unknownKeyRefusal(
    declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
@@ -1956,32 +1969,35 @@ export function planModelMaterialize(
       if (placed.placement.tier === "storage") {
          persist.storage = placed.placement.destination;
       }
-      // A source is planned in the model that declares it (see `declaredHere`),
-      // so its name here is the name its author gave it.
-      const tableName = name;
-      if (persist.name === undefined) {
-         // Colocated (no `storage=`): built into the warehouse it reads,
-         // where its own name could be the table it is built from.
-         if (persist.storage === undefined) {
-            refused.push({
-               sourceName: name,
-               sourceID: def.sourceID,
-               reason: colocatedNeedsName(tableName),
-            });
-            continue;
-         }
-         if (!PLAIN_TABLE_NAME.test(tableName)) {
-            refused.push({
-               sourceName: name,
-               sourceID: def.sourceID,
-               reason:
-                  `the source's name \`${tableName}\` is not a plain table name; ` +
-                  "give #(materialize) a name=",
-            });
-            continue;
-         }
-         persist.name = tableName;
+      // Without `name=`, the table takes the source's own name (made plain
+      // when it is not, see materializeTableName), which the self-instructed
+      // run gives its package's or version's suffix (run_instructions.ts). A
+      // source is planned in the model that declares it (see
+      // `declaredHere`), so its name here is the name its author gave it.
+      // With `name=`, the table is the author's: written at that name (its
+      // schema or dataset included) by an unversioned or `scope: package`
+      // run, under that name's container with the version's suffix on its
+      // leaf by a `scope: version` run, and under the host's name, in that
+      // container, by an orchestrated one. No view is made at it.
+      const nameDefaulted = persist.name === undefined;
+      // A BigQuery table needs a dataset, which only a `name=` can give a
+      // table built into the source's own warehouse: without one the build
+      // would fail on BigQuery's own error, so the source is not built.
+      if (
+         persist.storage === undefined &&
+         NEEDS_QUALIFIED_TABLE.has(String(def.dialect)) &&
+         !persist.name?.includes(".")
+      ) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               "a #(materialize) source built into BigQuery needs a " +
+               "dataset-qualified name= (`dataset.table`), which places its table",
+         });
+         continue;
       }
+      if (nameDefaulted) persist.name = materializeTableName(name);
       let pair: MaterializePair | undefined;
       let pairBlocks: MaterializePairBlocks | undefined;
       if (paths.length > 0) {

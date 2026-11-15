@@ -48,7 +48,6 @@ import {
    type BuildQueryMetadata,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
-import type { NameViewIntent, NameViewRecord, OwnNameTable } from "./name_view";
 import type { UniquenessLedger } from "./inline_uniqueness";
 import { reportSourceFailed } from "./run_telemetry";
 
@@ -129,28 +128,13 @@ export interface InstructedRun {
     * second route to one takes that failure instead of building it again.
     */
    failedTargets?: Map<string, { sourceEntityId: string; err: unknown }>;
-   /** The `name=` views the sources this run built call for (name_view.ts). */
-   nameViewIntents?: NameViewIntent[];
    /**
     * Auto-run's inline uniqueness passes: the run before's, and this run's
     * own (inline_uniqueness.ts). Absent: every check runs as compiled.
     */
    uniqueness?: UniquenessLedger;
-   /**
-    * By view key: the `name=` views whose name preflight found held by a
-    * table this package's own run wrote, which the view replaces.
-    */
-   nameViewOwnTables?: Map<string, OwnNameTable>;
    /** The run's cancellation: a source failing after it is `cancelled`. */
    signal?: AbortSignal;
-   /** This package's own views a built table replaced at its name. */
-   replacedNameViews?: NameViewRecord[];
-   /** Whether this package's records say it wrote a table at a view's name. */
-   ownNameTableAt?: (
-      intent: NameViewIntent,
-   ) => Promise<OwnNameTable | undefined>;
-   /** Whether another run of this package is building now. */
-   otherRunActive?: () => Promise<boolean>;
 }
 
 /** One source the colocated gate refuses, as colocatedRefusalOn reports it. */

@@ -48,7 +48,7 @@ export class ColocatedCtasStrategy
          buildSQL,
          runOptions,
          incrementalRefresh,
-         swapDependents,
+         replacesView,
       } = request;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -101,7 +101,7 @@ export class ColocatedCtasStrategy
          stagingTableName,
          backupTableName: `${physicalTableName}${backupSuffix(sourceEntityId)}`,
          connectionName: persistSource.connectionName,
-         swapDependents,
+         ...(replacesView ? { replacesView } : {}),
       });
 
       // Visible to later downstreams in this run, under the SAME quoted path
@@ -281,15 +281,8 @@ interface SwapArgs {
    stagingTableName: string;
    backupTableName: string;
    connectionName: string;
-   /**
-    * A `name=` view the swap must carry: the transactional swap runs each of
-    * its attempts' statements before its DROP and after its RENAME, trying
-    * the next attempt when one fails (a view over the served table, which
-    * only Postgres asks for; or this package's own view AT the name, which
-    * the new table replaces). A non-transactional swap runs only its
-    * `aside` statements: `before` first, `restore` when the swap fails.
-    */
-   swapDependents?: ColocatedBuildRequest["swapDependents"];
+   /** Run first in the swap's transaction: see ColocatedBuildRequest. */
+   replacesView?: string[];
 }
 
 /**
@@ -306,38 +299,14 @@ export async function swapIntoPlace(args: SwapArgs): Promise<void> {
       await swapInTransaction(args);
       return;
    }
-   const aside = args.swapDependents?.aside;
-   if (!aside) {
-      await swapByRenamingAside(args);
-      return;
-   }
-   const run = (sql: string) => args.connection.runSQL(sql, args.runOptions);
-   try {
-      for (const sql of aside.before) await run(sql);
-   } catch (err) {
-      await dropStagingAfterFailure(args);
-      throw err;
-   }
-   try {
-      await swapByRenamingAside(args);
-   } catch (err) {
-      // The swap left the name as it found it (empty): put back what
-      // `before` removed.
-      try {
-         for (const sql of aside.restore) await run(sql);
-      } catch (restoreErr) {
-         logger.error(
-            "Failed to put back a name= view after a failed materialized table swap",
-            {
-               physicalTableName: args.physicalTableName,
-               connectionName: args.connectionName,
-               error: errMessage(err),
-               restoreError: errMessage(restoreErr),
-            },
-         );
+   if (args.replacesView?.length) {
+      // Only DuckDB and Postgres are given these, whose swap is one
+      // transaction; anywhere else they run just before it.
+      for (const sql of args.replacesView) {
+         await args.connection.runSQL(sql, args.runOptions);
       }
-      throw err;
    }
+   await swapByRenamingAside(args);
 }
 
 /**
@@ -366,55 +335,64 @@ async function swapInTransaction({
    physicalTableName,
    stagingTableName,
    connectionName,
-   swapDependents,
+   replacesView,
 }: SwapArgs): Promise<void> {
    const run = (sql: string) => connection.runSQL(sql, runOptions);
-   const attempts = swapDependents?.attempts(stagingTableName) ?? [
-      { before: [], after: [] },
-   ];
    const explicit = dialect !== "postgres";
-   let failure: unknown;
-   for (const { before, after } of attempts) {
-      const body = [
-         ...before,
-         `DROP TABLE IF EXISTS ${quoteTablePath(physicalTableName, dialect)}`,
-         `ALTER TABLE ${quoteTablePath(stagingTableName, dialect)} RENAME TO ${quoteRenameTarget(physicalTableName, dialect)}`,
-         ...after,
-      ];
-      const statements = explicit
-         ? ["BEGIN TRANSACTION", ...body, "COMMIT"]
-         : body;
-      try {
-         await run(statements.map((s) => `${s};`).join("\n"));
-         return;
-      } catch (err) {
-         failure = err;
-         if (explicit) {
-            try {
-               await run("ROLLBACK");
-            } catch (rollbackErr) {
-               // Usually no transaction was left open, which is harmless.
-               logger.warn("Failed to roll back a materialized table swap", {
-                  physicalTableName,
-                  connectionName,
-                  error: errMessage(rollbackErr),
-                  // The swap's error can quote its SQL; it reaches the run's
-                  // record.
-                  causeCode: errorCodeOf(err),
-               });
-            }
+   const body = [
+      ...(replacesView ?? []),
+      `DROP TABLE IF EXISTS ${quoteTablePath(physicalTableName, dialect)}`,
+      `ALTER TABLE ${quoteTablePath(stagingTableName, dialect)} RENAME TO ${quoteRenameTarget(physicalTableName, dialect)}`,
+   ];
+   const statements = explicit
+      ? ["BEGIN TRANSACTION", ...body, "COMMIT"]
+      : body;
+   try {
+      await run(statements.map((s) => `${s};`).join("\n"));
+      return;
+   } catch (failure) {
+      if (explicit) {
+         try {
+            await run("ROLLBACK");
+         } catch (rollbackErr) {
+            // Usually no transaction was left open, which is harmless.
+            logger.warn("Failed to roll back a materialized table swap", {
+               physicalTableName,
+               connectionName,
+               error: errMessage(rollbackErr),
+               // The swap's error can quote its SQL; it reaches the run's
+               // record.
+               causeCode: errorCodeOf(failure),
+            });
          }
       }
+      // Rolled back, so the served table is as it was.
+      await dropStagingAfterFailure({
+         connection,
+         runOptions,
+         dialect,
+         stagingTableName,
+         connectionName,
+      });
+      if (replacesView?.length && dependedOn(failure)) {
+         throw new Error(
+            `the table cannot take the name '${physicalTableName}': the name= ` +
+               `view this package left there in an earlier release has views of ` +
+               `its own over it, so dropping it would drop them too. Nothing was ` +
+               `changed. Drop or repoint those views, then build again.`,
+         );
+      }
+      throw failure;
    }
-   // Every attempt rolled back, so the served table is as it was.
-   await dropStagingAfterFailure({
-      connection,
-      runOptions,
-      dialect,
-      stagingTableName,
-      connectionName,
-   });
-   throw failure;
+}
+
+/** Whether a statement failed because other objects depend on what it drops. */
+function dependedOn(err: unknown): boolean {
+   const code = (err as { code?: unknown } | null)?.code;
+   return (
+      code === "2BP01" ||
+      /depend on it|dependent objects|has dependent/i.test(errMessage(err))
+   );
 }
 
 /**

@@ -1,4 +1,4 @@
--- hammer/124-a-name-view-replaces-the-table-its-own-package-wrote-there/nvt/nvt.malloy: build plan
+-- hammer/124-a-materialize-name-places-the-table-and-makes-no-view/nvt/nvt.malloy: build plan
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 

@@ -171,9 +171,8 @@ export async function tryCompileMaterializeCompanion(args: {
       refused.push(...planned.refused);
       plannedIDs = planned.plans.map((p) => p.sourceID);
       // The text the author's model was compiled from, through the reader
-      // the companion compiles with: a package's build view (joins across
-      // connections left out) or a worker's file map, not necessarily the
-      // file on disk, and the compiled locations the terms are found by are
+      // the companion compiles with: a worker's file map or an overlay, not
+      // necessarily the file on disk, and the compiled locations the terms are found by are
       // positions in that text. Read once.
       const files = GeneratedFiles.over(args.getRuntime);
       let modelText: Promise<string> | undefined;

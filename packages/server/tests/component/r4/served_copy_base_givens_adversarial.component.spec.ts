@@ -739,6 +739,14 @@ source: colocated is base extend { measure: total is amt.sum() }
 #(materialize) storage="lake" refresh="incremental" watermark="ts"
 source: incremental is base extend { measure: total is amt.sum() }
 
+// Colocated, no name=, writing its own term: built and served.
+#(materialize)
+source: colocated_own is duckdb.table('ev') extend {
+  where: org = $ORG
+  dimension: mine is org = $ORG
+  measure: total is amt.sum()
+}
+
 #(materialize) storage="lake" refresh="incremental" watermark="ts"
 source: incremental_own is duckdb.table('ev') extend {
   where: org = $ORG
@@ -759,7 +767,7 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
          files: { "m.malloy": colocatedModel },
          seedSql,
          materialize: true,
-         colocated: ["colocated"],
+         colocated: ["colocated", "colocated_own"],
       });
       built = fixture.bindings
          .flatMap((b) => b.sourceIDs ?? [])
@@ -773,8 +781,9 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
 
    it("never builds one caller's rows", async () => {
       // Both over the scoped base inherit its term and are refused; the
-      // incremental source that writes its own is built.
-      expect(built).toEqual(["incremental_own"]);
+      // sources that write their own are built, the colocated one with no
+      // name= (a colocated #(materialize) needs none).
+      expect(built).toEqual(["colocated_own", "incremental_own"]);
       for (const source of Object.keys(fixture.physicalTables)) {
          const orgs = await fixture.storedSQL(
             (t) => `SELECT DISTINCT org FROM ${t(source)} ORDER BY org`,
@@ -783,7 +792,12 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
       }
    });
 
-   for (const source of ["colocated", "incremental", "incremental_own"]) {
+   for (const source of [
+      "colocated",
+      "incremental",
+      "colocated_own",
+      "incremental_own",
+   ]) {
       it(`${source} answers each caller as live`, async () => {
          const runs: R4Run[] = [];
          for (const givens of INTERLEAVED) {
@@ -793,7 +807,7 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
                givens,
             });
             expect(run.servedVia).toBe(
-               source === "incremental_own" ? "served_copy" : undefined,
+               source.endsWith("_own") ? "served_copy" : undefined,
             );
             expect(rowDifference(run.live, run.served)).toBeUndefined();
             for (const row of run.served) expect(row.org).toBe(givens.ORG);
