@@ -82,7 +82,6 @@ const OPTIONAL_MODEL_FIELDS: ReadonlyArray<[keyof SerializedModel, Expect]> = [
    ["renderTagResults", "array"],
    ["preaggregateCompanion", "object"],
    ["entities", "object"],
-   ["crossConnectionLeftOut", "array"],
 ];
 
 /** The arrays a planned `SerializedModel.entities` carries. */

@@ -44,7 +44,6 @@ import {
    upstreamReuseFromManifest,
    wrongTierDetail,
 } from "./materialization_run_support";
-import type { SwapDependents } from "./name_view";
 import type { StorageBuildRequest } from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
 
@@ -91,8 +90,10 @@ export class SourceBuilder {
       contentSourceEntityId?: string,
       // The default knows nothing; only test seams rely on it.
       planFacts: ChainedPlanFacts = NO_PLAN_FACTS,
-      // A `name=` view the colocated swap must carry (see SwapDependents).
-      swapDependents?: SwapDependents,
+      // Statements that drop this package's own leftover `name=` view at the
+      // table's name, run first in the build's own transaction (DuckDB,
+      // Postgres; leftover_name_views.ts).
+      replacesView?: string[],
    ): Promise<ManifestEntry> {
       const physicalTableName = instruction.physicalTableName;
       const isStorageBuild =
@@ -416,7 +417,7 @@ export class SourceBuilder {
             contentSourceEntityId,
             planFacts,
             lift,
-            ...(swapDependents?.replacesView ? { replacesNameView: true } : {}),
+            ...(replacesView ? { replacesView } : {}),
          });
       }
 
@@ -437,7 +438,7 @@ export class SourceBuilder {
             persistSource,
             { physicalTableName, sourceEntityId: contentSourceEntityId },
          ),
-         ...(swapDependents ? { swapDependents } : {}),
+         ...(replacesView ? { replacesView } : {}),
       };
       for (const strategy of COLOCATED_STRATEGIES) {
          const entry = await strategy.build(request);

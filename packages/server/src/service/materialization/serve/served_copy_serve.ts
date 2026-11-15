@@ -3411,15 +3411,16 @@ function pairParentMeasures(
 
 /**
  * The load-time classification checks, run on the served copy's own compile:
- * the compile that answers a query, which may reach fields the compile of
- * record never had (a join #6982 left out of it, answered once both sides are
- * built). A source whose served surface has a `#(carries)` leak, or an
- * unclassified field, that the compile of record does not is never served
- * from the copy (the bind guard's `classificationNotKept`), and a
- * `classification_not_kept` problem names each finding. Returns those
- * sources' `sourceID`s.
+ * the compile that answers a query. A re-root that changed what a source
+ * exposes or how a field is classified (a stored column that lost its
+ * field's class, say) would show here as a `#(carries)` leak or an
+ * unclassified field the compile of record does not have; such a source is
+ * never served from the copy (the bind guard's `classificationNotKept`), and
+ * a `classification_not_kept` problem names each finding. A fail-closed
+ * backstop: Publisher's re-roots keep every class, so nothing reaches it
+ * unless one stops doing so. Returns those sources' `sourceID`s.
  */
-function classificationCeiling(
+export function classificationCeiling(
    modelPath: string,
    recordDef: unknown,
    servedDef: unknown,

@@ -1,17 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { loadLeavingOutCrossConnectionJoins } from "./cross_connection_joins";
-import { isCrossConnectionRefusal } from "../text/cross_connection_text";
-import { definitionCutAt } from "../text/definition_cut";
-import { installSettings } from "../../../test_helpers/settings_env";
+import {
+   isCrossConnectionRefusal,
+   leaveOutCrossConnectionJoins,
+} from "./cross_connection_text";
+import { definitionCutAt } from "./definition_cut";
 
 const URL_ = "file:///p/m.malloy";
 
@@ -58,6 +59,28 @@ function compileFiles(files: Record<string, string>) {
    };
 }
 
+type Compiled = Awaited<ReturnType<ReturnType<typeof compileWith>>>;
+
+/**
+ * {@link leaveOutCrossConnectionJoins} over `load`, with the model the last
+ * successful compile returned; undefined when nothing is left out.
+ */
+async function leaveOut(args: {
+   firstError: unknown;
+   readText: (url: string) => string | undefined;
+   load: (overlay: ReadonlyMap<string, string>) => Promise<Compiled>;
+}) {
+   let result: Compiled | undefined;
+   const kept = await leaveOutCrossConnectionJoins({
+      firstError: args.firstError,
+      readText: args.readText,
+      compile: async (overlay) => {
+         result = await args.load(overlay);
+      },
+   });
+   return kept && result ? { ...kept, result } : undefined;
+}
+
 const model = `source: accounts is crm.sql("select 1 as id, 'a' as account_name") extend { primary_key: id }
 source: usage is product.sql("select 1 as account_id, 5 as events")
 #(doc) "Usage by account"
@@ -76,14 +99,6 @@ source: account_usage is accounts extend {
 `;
 
 describe("leaving out joins across connections", () => {
-   let restore: () => void;
-   beforeAll(() => {
-      restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
-   });
-   afterAll(() => restore());
-
    it("recognizes Malloy's refusal by its code", async () => {
       const error = await compileWith(model)(new Map()).catch((e) => e);
       expect(isCrossConnectionRefusal(error)).toBe(true);
@@ -93,7 +108,7 @@ describe("leaving out joins across connections", () => {
    it("leaves out the join and every definition that reads it, keeping positions", async () => {
       const compile = compileWith(model);
       const firstError = await compile(new Map()).catch((e) => e);
-      const view = await loadLeavingOutCrossConnectionJoins({
+      const view = await leaveOut({
          firstError,
          readText: () => model,
          load: compile,
@@ -134,7 +149,7 @@ describe("leaving out joins across connections", () => {
       const compile = compileWith(broken);
       const firstError = await compile(new Map()).catch((e) => e);
       expect(
-         await loadLeavingOutCrossConnectionJoins({
+         await leaveOut({
             firstError,
             readText: () => broken,
             load: compile,
@@ -196,7 +211,7 @@ source: report is account_usage extend {
       };
       const compile = compileFiles(files);
       const firstError = await compile(new Map()).catch((e) => e);
-      const view = await loadLeavingOutCrossConnectionJoins({
+      const view = await leaveOut({
          firstError,
          readText: (u) => files[u],
          load: compile,
@@ -224,28 +239,11 @@ source: other is nowhere
       const compile = compileFiles(files);
       const firstError = await compile(new Map()).catch((e) => e);
       expect(
-         await loadLeavingOutCrossConnectionJoins({
+         await leaveOut({
             firstError,
             readText: (u) => files[u],
             load: compile,
          }),
       ).toBeUndefined();
-   });
-
-   it("loads nothing from a build view with the switch off", async () => {
-      const off = installSettings({ env: { PUBLISHER_MATERIALIZE: "false" } });
-      try {
-         const compile = compileWith(model);
-         const firstError = await compile(new Map()).catch((e) => e);
-         expect(
-            await loadLeavingOutCrossConnectionJoins({
-               firstError,
-               readText: () => model,
-               load: compile,
-            }),
-         ).toBeUndefined();
-      } finally {
-         off.restore();
-      }
    });
 });
