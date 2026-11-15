@@ -1,13 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { sqlLiteral } from "../../db_utils";
-
 /**
- * How much session history to admit before filtering. Set explicitly because the
- * default is 100 and applies before the `WHERE` — see {@link snowflakeCostSQL}.
+ * What a `storage=` build's warehouse read cost, as BigQuery's job record or
+ * Snowflake's session history accounts for it, and which of the session's
+ * queries was the build's read. The queries that read the cost are
+ * warehouse_sql.ts's.
  */
-const SNOWFLAKE_HISTORY_LIMIT = 10_000;
+
+import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./warehouse_sql";
+
+export { BIGQUERY_COST_COLUMNS, snowflakeCostSQL };
 
 /**
  * What a `storage=` build's warehouse read cost, as the warehouse accounts for it.
@@ -51,17 +54,6 @@ export interface BuildReadCost {
    cacheHit: boolean | null;
 }
 
-/**
- * Cost columns selected by the query that already locates the read's result
- * table. They must ride on that query: a script's child job is reachable only
- * through its parent, so a separate lookup keyed on the child id finds nothing.
- */
-export const BIGQUERY_COST_COLUMNS = `
-   total_slot_time_ms,
-   json_extract_string(statistics, '$.query.totalBytesProcessed') AS bytes_processed,
-   json_extract_string(statistics, '$.query.totalBytesBilled')    AS bytes_billed,
-   json_extract_string(statistics, '$.query.cacheHit')            AS cache_hit`;
-
 /** Read {@link BIGQUERY_COST_COLUMNS} off a job row. */
 export function bigQueryReadCost(
    row: Record<string, unknown>,
@@ -78,65 +70,6 @@ export function bigQueryReadCost(
       executionTimeMs: null,
       cacheHit: bool(row.cache_hit),
    };
-}
-
-/**
- * The database to resolve `INFORMATION_SCHEMA` against.
- *
- * Emitted BARE, not quoted: quoting is case-exact while the connection parameter
- * resolves case-insensitively, so `mydb` against a stored `MYDB` would miss. A
- * name needing quotes takes the `SNOWFLAKE` fallback (measured to return the same
- * rows) rather than being interpolated raw into identifier position.
- */
-function snowflakeDatabaseQualifier(
-   database: string | null | undefined,
-): string {
-   // Snowflake's unquoted-identifier rule: a leading digit or `$` needs quotes.
-   return typeof database === "string" &&
-      /^[A-Za-z_][A-Za-z0-9_$]*$/.test(database)
-      ? database
-      : "SNOWFLAKE";
-}
-
-/**
- * The queries this build's session ran, found by the tag the build set on it.
- *
- * - `INFORMATION_SCHEMA`, not `ACCOUNT_USAGE`: the latter lags up to three hours
- *   and needs elevated grants.
- * - Keyed on the TAG, not `LAST_QUERY_ID()`: the ADBC driver issues its own
- *   `SELECT 1` probes on the session, so the last query is often a probe.
- *   {@link pickSnowflakeReadRow} picks the read out of the result.
- * - `_BY_SESSION` with an explicit `RESULT_LIMIT`: these table functions cap
- *   output (default 100) BEFORE the `WHERE` runs, so no predicate reaches past
- *   the cap. Measured: past 100 statements, the default form matched zero rows.
- * - The accounting query carries the same tag but is not filtered by text: the
- *   exact-SQL match in {@link pickSnowflakeReadRow} and `EXECUTION_STATUS`
- *   already exclude it, and a text filter would misfire on a source that models
- *   Snowflake's query history.
- * - Aliases are QUOTED: Snowflake folds bare aliases to uppercase.
- * - The tag is escaped with {@link sqlLiteral}, not quote-doubling: it is JSON,
- *   so backslashes arrive doubled and Snowflake consumes one as an escape.
- * - Always database-qualified: a database-less connection has no CURRENT
- *   database, so the unqualified form fails with `002004 (42601)`. The
- *   `SNOWFLAKE` shared database exists on every account; a role that cannot read
- *   it loses only the cost, since a failed lookup is treated as no cost.
- */
-export function snowflakeCostSQL(
-   queryTag: string,
-   /** The connection's configured database, absent for a database-less one. */
-   database?: string | null,
-): string {
-   const qualifier = `${snowflakeDatabaseQualifier(database)}.INFORMATION_SCHEMA`;
-   return `
-      SELECT QUERY_ID       AS "job_id",
-             QUERY_TEXT     AS "query_text",
-             BYTES_SCANNED  AS "bytes_scanned",
-             EXECUTION_TIME AS "execution_time_ms",
-             ROWS_PRODUCED  AS "rows_produced"
-      FROM TABLE(${qualifier}.QUERY_HISTORY_BY_SESSION(
-                 RESULT_LIMIT => ${SNOWFLAKE_HISTORY_LIMIT}))
-      WHERE QUERY_TAG = '${sqlLiteral(queryTag, "snowflake")}'
-        AND EXECUTION_STATUS = 'SUCCESS'`;
 }
 
 /**

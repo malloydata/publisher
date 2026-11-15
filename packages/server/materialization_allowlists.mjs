@@ -146,11 +146,7 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {
    "service/materialization/plan/persist_annotation_validation.ts": "5",
    "service/materialization/plan/persist_dynamic_terms.ts": "5",
    "service/materialization/run/build_failure_class.ts": "5",
-   "service/materialization/run/build_query_tag.ts": "5",
-   "service/materialization/run/build_read_cost.ts": "5",
-   "service/materialization/run/colocated_build_strategy.ts": "5",
    "service/materialization/run/error_code.ts": "5",
-   "service/materialization/run/incremental_apply.ts": "5",
    "service/materialization/run/incremental_build.ts": "5",
    "service/materialization/run/incremental_delta_strategy.ts": "5",
    "service/materialization/run/incremental_storage.ts": "5",
@@ -171,7 +167,6 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {
    "service/materialization/run/storage_build_strategy.ts": "5",
    "service/materialization/run/storage_table_load.ts": "5",
    "service/materialization/run/table_claims.ts": "5",
-   "service/materialization/run/table_ownership.ts": "5",
 };
 
 /** H2: ticket numbers, phase or step labels and dates in comments, per file: the count allowed, and the step that removes them. */
@@ -262,21 +257,6 @@ export const RATCHET_IR_READS = {};
 /** Clock reads in serve/ and domain/, per file. */
 export const RATCHET_CLOCK_READS = {};
 /** A dialect compared to a string literal outside the dialect table, per file. */
-export const RATCHET_DIALECT_LITERALS = {
-   "service/materialization/run/colocated_build_strategy.ts": {
-      count: 1,
-      step: "2l",
-   },
-   "service/materialization/run/colocated_native_types.ts": {
-      count: 3,
-      step: "2l",
-   },
-   "service/materialization/run/incremental_apply.ts": {
-      count: 10,
-      step: "2l",
-   },
-   "service/materialization/run/table_mark_sql.ts": { count: 3, step: "2l" },
-   "service/materialization/run/table_ownership.ts": { count: 2, step: "2l" },
-};
+export const RATCHET_DIALECT_LITERALS = {};
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};

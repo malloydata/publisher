@@ -436,10 +436,15 @@ describe("the ratchets", () => {
    });
 
    it("a dialect is compared to a literal only in the dialect table", () => {
+      // The dialect table's two halves: what a dialect can do, and its SQL.
+      const table = new Set([
+         "service/materialization/domain/dialect.ts",
+         "service/materialization/run/warehouse_sql.ts",
+      ]);
       expectCounts(
          "dialect literals",
          countMatches(
-            mzFiles(),
+            mzFiles().filter((f) => !table.has(srcRel(f))),
             // Not a type test (`typeof dialect !== "string"`).
             /(?<!typeof\s+)\b\w*[dD]ialect\w*\s*[!=]==?\s*["'`][a-z_]+["'`]|["'`][a-z_]+["'`]\s*[!=]==?\s*[\w.]*[dD]ialect\w*\b/,
          ),

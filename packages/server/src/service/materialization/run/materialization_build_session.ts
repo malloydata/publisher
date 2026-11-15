@@ -53,14 +53,13 @@ import {
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
 import {
-   BIGQUERY_COST_COLUMNS,
    bigQueryReadCost,
    pickSnowflakeReadRow,
-   snowflakeCostSQL,
    snowflakeReadCost,
    str,
    type BuildReadCost,
 } from "./build_read_cost";
+import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./warehouse_sql";
 import { recordAttributionSkipped } from "../../../materialization_metrics";
 import type { QueryMetadata } from "../../query_metadata";
 import {

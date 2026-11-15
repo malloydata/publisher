@@ -1,6 +1,25 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Generating and applying an incremental DELTA: the bounded slice of a persisted
+ * source that a refresh writes into the already-serving table, instead of
+ * rebuilding it.
+ *
+ * The delta is composed SQL, never a compiled Malloy query: the source's own
+ * build SQL (the target's `buildSQL()`, the string the seed's CTAS runs)
+ * wrapped in a `WHERE` on the watermark. A compiled query's SQL arrives
+ * FINALIZED (see {@link deltaSelect}), and a generated source extension
+ * silently DROPS its `where:`, which would rewrite every row. Pinned in
+ * incremental_compiler_contract.spec.ts.
+ *
+ * The statements whose text differs by dialect (string literals, the probes'
+ * wrapping, the transaction around a delta) are warehouse_sql.ts's.
+ *
+ * The range is HALF-OPEN, `[start, end)`, which makes a run idempotent: a crash
+ * between the commit and the ledger advance costs a repeat, not a corruption.
+ */
+
 import { decodeDottedTablePath } from "@malloydata/malloy";
 
 import { logger } from "../../../logger";
@@ -15,27 +34,19 @@ import {
 } from "../domain/dialect";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
+import {
+   escapeSqlString,
+   inOneTransaction,
+   probeSelect,
+   snowflakeScriptingBlock,
+   targetColumnsProbeSql,
+   transactionKeywords,
+} from "./warehouse_sql";
 import type { PairDelta } from "../domain/incremental";
 import {
    windowDeleteBefore,
    type RollingWindow,
 } from "../domain/read_time_terms";
-
-/**
- * Generating and applying an incremental DELTA: the bounded slice of a persisted
- * source that a refresh writes into the already-serving table, instead of
- * rebuilding it.
- *
- * The delta is composed SQL, never a compiled Malloy query: the source's own
- * build SQL (the target's `buildSQL()`, the string the seed's CTAS runs)
- * wrapped in a `WHERE` on the watermark. A compiled query's SQL arrives
- * FINALIZED (see {@link deltaSelect}), and a generated source extension
- * silently DROPS its `where:`, which would rewrite every row. Pinned in
- * incremental_compiler_contract.spec.ts.
- *
- * The range is HALF-OPEN, `[start, end)`, which makes a run idempotent: a crash
- * between the commit and the ledger advance costs a repeat, not a corruption.
- */
 
 /**
  * The incremental refresh's dialect sets, from the dialect table
@@ -55,7 +66,7 @@ export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> =
 export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> =
    dialectsWith("merge");
 
-export { describeDialects };
+export { describeDialects, probeSelect, snowflakeScriptingBlock };
 
 /**
  * A watermark boundary, held as CANONICAL SCALAR TEXT plus the watermark's Malloy
@@ -73,25 +84,6 @@ const RENDERABLE_TYPES = new Set(["date", "timestamp", "number", "string"]);
 
 export function isRenderableWatermarkType(malloyType: string): boolean {
    return RENDERABLE_TYPES.has(malloyType);
-}
-
-/**
- * Escape a string for a single-quoted SQL literal.
- *
- * Snowflake and BigQuery read `\` in a single-quoted string as an escape
- * character, so a backslash must be doubled there or a value ending in one
- * swallows the closing quote; Postgres (standard_conforming_strings, its
- * default) reads a doubled backslash as two characters. A quote is doubled
- * everywhere except BigQuery, which has no `''` escape (adjacent literals are a
- * syntax error) and takes `\'`; its backslashes are escaped first so they
- * cannot pair with that escape.
- */
-function escapeSqlString(value: string, dialect?: string): string {
-   if (dialect === "standardsql") {
-      return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-   }
-   const quoted = value.replace(/'/g, "''");
-   return dialect === "snowflake" ? quoted.replace(/\\/g, "\\\\") : quoted;
 }
 
 /**
@@ -342,20 +334,6 @@ export function decodeTablePathSegments(
    });
 }
 
-/**
- * Wrap a probe SELECT so the dialect's driver hands back named columns.
- *
- * Postgres only: `PostgresConnection` rewrites every `runSQL` row as
- * `rows[i].row` (Malloy queries project one `row` JSON column), so a plain
- * `SELECT max(x) AS m` comes back as `[undefined]`. Wrapping in `row_to_json`
- * supplies that column. Pinned in incremental_apply.spec.ts.
- */
-export function probeSelect(dialect: string, innerSelect: string): string {
-   return dialect === "postgres"
-      ? `SELECT row_to_json(__p) AS "row" FROM (${innerSelect}) AS __p`
-      : innerSelect;
-}
-
 /** A probe's rows as plain objects (see {@link probeSelect}). */
 function probeRows(rows: unknown[]): Record<string, unknown>[] {
    return rows.filter(
@@ -388,71 +366,16 @@ export async function probeTargetColumns(
          error: `physical table name ${JSON.stringify(physicalTableName)} is not a decodable ${dialect} table path`,
       };
    }
-   let sql: string;
-   if (dialect === "duckdb") {
-      // `duckdb_columns()`: an attached DuckLake catalog has no
-      // `information_schema`, and `DESCRIBE` throws on an absent table where this
-      // function's contract needs an empty answer.
-      const table = segments[segments.length - 1];
-      // A two-segment path is in the catalog's default schema. Named explicitly
-      // because two schemas can hold the same table name, and probing the wrong
-      // one would describe a table this build never wrote.
-      const schema =
-         segments.length >= 3 ? segments[segments.length - 2] : "main";
-      // The catalog is the FIRST segment (the path is `<destination>.<name>`);
-      // counting from the end would misread a longer name's container.
-      const database = segments[0];
-      sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
-              FROM duckdb_columns()
-              WHERE database_name = '${escapeSqlString(database, dialect)}'
-                AND schema_name = '${escapeSqlString(schema, dialect)}'
-                AND table_name = '${escapeSqlString(table, dialect)}'
-              ORDER BY column_index`;
-   } else if (dialect === "postgres" || dialect === "snowflake") {
-      const table = segments[segments.length - 1];
-      // An unqualified name lives in the session's default schema, where the CTAS
-      // created it. Not "any schema on the search path": two schemas can hold
-      // the same table name.
-      const schema =
-         segments.length >= 2
-            ? `'${escapeSqlString(segments[segments.length - 2], dialect)}'`
-            : "current_schema()";
-      // Snowflake's information_schema is per-DATABASE, so a database-qualified
-      // name must probe that database's view; Postgres cannot cross databases,
-      // so any leading segment is the current one by construction.
-      const infoSchema =
-         dialect === "snowflake" && segments.length >= 3
-            ? `${quoteIdentifier(segments[segments.length - 3], dialect)}.information_schema.columns`
-            : "information_schema.columns";
-      sql = probeSelect(
-         dialect,
-         `SELECT column_name AS ${probeAlias("column_name", dialect)}
-           FROM ${infoSchema}
-           WHERE table_schema = ${schema}
-             AND table_name = '${escapeSqlString(table, dialect)}'
-           ORDER BY ordinal_position`,
-      );
-   } else {
-      // BigQuery's INFORMATION_SCHEMA is per-dataset, so the view itself must be
-      // dataset-qualified: an unqualified target has no dataset to look in.
-      if (segments.length < 2) {
-         return {
-            columns: [],
-            error:
-               `physical table name ${JSON.stringify(physicalTableName)} is not ` +
-               `dataset-qualified, so its schema cannot be read from ` +
-               `INFORMATION_SCHEMA`,
-         };
-      }
-      const table = segments[segments.length - 1];
-      const container = segments
-         .slice(0, -1)
-         .map((s) => quoteIdentifier(s, dialect))
-         .join(".");
-      sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
-              FROM ${container}.INFORMATION_SCHEMA.COLUMNS
-              WHERE table_name = '${escapeSqlString(table, dialect)}'
-              ORDER BY ordinal_position`;
+   // Undefined: an unqualified BigQuery name has no dataset to look in.
+   const sql = targetColumnsProbeSql(dialect, segments);
+   if (sql === undefined) {
+      return {
+         columns: [],
+         error:
+            `physical table name ${JSON.stringify(physicalTableName)} is not ` +
+            `dataset-qualified, so its schema cannot be read from ` +
+            `INFORMATION_SCHEMA`,
+      };
    }
    try {
       const result = await runner(sql);
@@ -695,10 +618,7 @@ export function deltaStatements(params: {
       if (windowDeletes.length === 0) return [clauses.join("\n")];
       // The merge and the window's delete commit together, so a reader never
       // sees the delete without the rows that replaced the window's edge.
-      const body = [clauses.join("\n"), ...windowDeletes];
-      if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
-      const transaction = transactionKeywords(dialect);
-      return [transaction.begin, ...body, transaction.commit];
+      return inOneTransaction(dialect, [clauses.join("\n"), ...windowDeletes]);
    }
 
    const watermark = q(watermarkName);
@@ -711,9 +631,7 @@ export function deltaStatements(params: {
          `SELECT ${columnList} FROM (${deltaSQL}) AS __s`,
       ...windowDeletes,
    ];
-   if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
-   const transaction = transactionKeywords(dialect);
-   return [transaction.begin, ...body, transaction.commit];
+   return inOneTransaction(dialect, body);
 }
 
 /** The text a pair delta's check fails with; {@link isPairGuardFailure} reads it. */
@@ -814,45 +732,6 @@ export function pairDeltaStatements(params: {
       transaction.commit,
       `DROP TABLE IF EXISTS ${staged}`,
    ];
-}
-
-/**
- * The range replace as ONE statement for Snowflake: an anonymous Snowflake
- * Scripting block in `EXECUTE IMMEDIATE $$…$$` (drivers do not accept a bare
- * block).
- *
- * The EXCEPTION handler is the rollback, INSIDE the statement because a separate
- * `ROLLBACK` call could reach a different pooled session, leaving the open
- * transaction holding locks. RAISE re-throws, so the build still fails and the
- * boundary is not advanced.
- */
-export function snowflakeScriptingBlock(statements: string[]): string {
-   const body = statements.map((s) => `  ${s};`).join("\n");
-   // SQL containing `$$` would end the block early and run the rest as separate
-   // statements. Generated deltas never contain it, so refuse rather than escape:
-   // planSourceRefresh catches the throw and seeds (plan_error).
-   const block = `BEGIN\n  BEGIN TRANSACTION;\n${body}\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND`;
-   if (block.includes("$$")) {
-      throw new Error(
-         "the delta SQL contains '$$', which cannot be carried inside a " +
-            "Snowflake Scripting block",
-      );
-   }
-   return `EXECUTE IMMEDIATE $$\n${block}\n$$`;
-}
-
-function transactionKeywords(dialect: string): {
-   begin: string;
-   commit: string;
-   rollback: string;
-} {
-   return dialect === "standardsql"
-      ? {
-           begin: "BEGIN TRANSACTION",
-           commit: "COMMIT TRANSACTION",
-           rollback: "ROLLBACK TRANSACTION",
-        }
-      : { begin: "BEGIN", commit: "COMMIT", rollback: "ROLLBACK" };
 }
 
 /**

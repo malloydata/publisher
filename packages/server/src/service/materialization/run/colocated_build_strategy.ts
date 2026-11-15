@@ -1,6 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The colocated tier: a table built in its source's own warehouse, by a
+ * delta or by a staging table swapped onto the served name
+ * ({@link ColocatedTier}, {@link swapIntoPlace}); its schema capture, its
+ * drop and its key check on the source's connection. The swap's transaction
+ * text, which differs by dialect, is warehouse_sql.ts's.
+ */
+
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
@@ -27,6 +35,7 @@ import {
    resetLedger,
 } from "./incremental_build";
 import { backupSuffix, stagingSuffix } from "./materialization_run_support";
+import { transactionalSwapSql } from "./warehouse_sql";
 
 /**
  * A full rebuild of a colocated table in the source's own warehouse: COPY into
@@ -392,22 +401,19 @@ async function swapInTransaction({
    replacesView,
 }: SwapArgs): Promise<void> {
    const run = (sql: string) => connection.runSQL(sql, runOptions);
-   const explicit = dialect !== "postgres";
-   const body = [
-      ...(replacesView ?? []),
-      `DROP TABLE IF EXISTS ${quoteTablePath(physicalTableName, dialect)}`,
-      `ALTER TABLE ${quoteTablePath(stagingTableName, dialect)} RENAME TO ${quoteRenameTarget(physicalTableName, dialect)}`,
-   ];
-   const statements = explicit
-      ? ["BEGIN TRANSACTION", ...body, "COMMIT"]
-      : body;
+   const swap = transactionalSwapSql(dialect, {
+      before: replacesView ?? [],
+      quotedPhysical: quoteTablePath(physicalTableName, dialect),
+      quotedStaging: quoteTablePath(stagingTableName, dialect),
+      renameTarget: quoteRenameTarget(physicalTableName, dialect),
+   });
    try {
-      await run(statements.map((s) => `${s};`).join("\n"));
+      await run(swap.sql);
       return;
    } catch (failure) {
-      if (explicit) {
+      if (swap.rollback !== undefined) {
          try {
-            await run("ROLLBACK");
+            await run(swap.rollback);
          } catch (rollbackErr) {
             // Usually no transaction was left open, which is harmless.
             logger.warn("Failed to roll back a materialized table swap", {
