@@ -112,6 +112,7 @@ still build and serve.
 | Code | What it means | What to do |
 | --- | --- | --- |
 | `materialize-not-built` | Publisher cannot build this `#(materialize)` source; the message names why (a colocated BigQuery source with no dataset-qualified `name=`, a refused `inline=`, a name another source's table holds, and so on). It serves live. | Fix what it names, or keep the v1 form. |
+| `preaggregate-not-built` | Publisher cannot build this valid rollup (a read-only dialect, a table name another rollup holds, the `storage=` gate); the message names the base, the grain and why. Its measures serve live. A refusal with its own code, such as `preaggregate-access-filter` or `preaggregate-time-zone`, keeps it. | Fix what it names. |
 | `materialize-unknown-key`, `materialize-unparseable` | The line cannot be read as written. Severity `error`: a publish is refused. | Fix the key or the quoting. |
 | `materialize-retired-key` | The line carries a key that is no longer read, `partition=`. Severity `error`: a publish is refused. | Remove the key. |
 | `annotation-near-miss` | A misspelled route, such as `#(materialise)`. Nothing is built. | Fix the spelling. |
@@ -644,7 +645,7 @@ it. The build plan, the manifest and reuse all key on it.
 - **Read warning codes as open strings.** This page names `deprecated-preaggregate-annotation`
   (with the switch on), `materialize-not-built`, `materialize-unknown-key`,
   `materialize-unparseable`, `materialize-retired-key`, `materialize-pair-full-refresh`,
-  `served-copy-not-served` and `persist-view-not-built`, beside
+  `served-copy-not-served`, `persist-view-not-built` and `preaggregate-not-built`, beside
   `materialization-destination-missing` and `materialization-connection-cannot-hold-table`. Only the
   three malformed codes are errors.
 - **A rolling window deletes as well as appends.** An incremental refresh of a source with a

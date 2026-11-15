@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a rollup a compile-time gate refuses now warns `preaggregate-not-built`
+
+This changes the meaning of a signal. A valid `#(preaggregate)` or `#@ preaggregate` rollup that a compile-time gate refuses alone, while the rest of the package loads, used to carry the `persist-source-refused` warning of a `#@ persist` source, though its author wrote no `#@ persist`. It now carries its own code, `preaggregate-not-built` (severity `warn`), with `subject` its base source (now also when the refusal left the rollup out of the plan's `sources`), and a message that names the base and the grain before the gate's reason: ``The rollup of `orders` at (category) is not built, so its measures are served live: …``. The gates are the ones that refuse a rollup in the build plan's `refusedSources` (tier `preaggregate`): a dialect whose connection creates no table, a table name another rollup's table holds, a base scoped by a given, and the `storage=` destination gate. `persist-source-refused` now means a `#@ persist` source only.
+
+Nothing else changes: the same rollups are built or refused, the same queries are served or answered live, and `refusedSources` lists the same entries with the same reasons and messages. A rollup refusal that already had a code of its own keeps it (`preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given`, `preaggregate-over-stored-base` and the like), and `preaggregate-malformed` is unchanged. Who is affected: a client that matched `persist-source-refused` to find refused rollups. Match `preaggregate-not-built` as well; warning codes are open strings, so a client that does not know the new code should show it as it shows any other warning.
+
 ## [Unreleased] — tables built in Credible now serve in three shapes that answered live
 
 Three shapes of stored source had their tables built but were answered live, with a warning or none. Each now reads its table, with answers equal to live:

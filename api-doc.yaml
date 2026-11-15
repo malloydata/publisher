@@ -5918,7 +5918,14 @@ components:
                   compile-time gate refused (a row-level gate, a free
                   parameter, a given in the persisted query, or the `storage=`
                   gate), served live, with the gate's message (`subject` the
-                  source, or a rollup's base; `warn`).
+                  source; `warn`). `preaggregate-not-built`: a valid
+                  `#(preaggregate)` or `#@ preaggregate` rollup a compile-time
+                  gate refused alone (a read-only dialect, a base scoped by a
+                  given, a table name another rollup holds, or the `storage=`
+                  gate), so it is not built and its measures are served live
+                  while the rest of the package loads; the message names the
+                  base, the grain and the gate's reason (`subject` the base;
+                  `warn`).
                   `persist-incremental-no-merge-key`: an incremental source
                   with no `merge_key=`, so each refresh replaces its watermark
                   range (`subject` the source; `warn`).

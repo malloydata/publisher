@@ -175,8 +175,9 @@ below.
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
 everyone. A source a compile-time gate refuses is also a package warning, code
-`persist-source-refused`, carrying the gate's message, with `subject` the source (a rollup's base
-for a rollup).
+`persist-source-refused`, carrying the gate's message, with `subject` the source. A rollup a gate
+refuses is `preaggregate-not-built` instead, with `subject` its base and a message naming its base,
+its grain and the gate's reason.
 
 ### Tenant-scoped sources: where a given may sit
 
