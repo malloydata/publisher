@@ -413,15 +413,4 @@ export const RATCHET_LONG_FUNCTIONS = {
    "service/materialization/run/source_build.ts#SourceBuilder.build": "2g.4",
    "service/materialization/run/storage_build_strategy.ts#StorageBuildStrategy.build":
       "2g.4",
-   "service/materialization/serve/query_path.ts#buildQueryPath": "2g.2",
-   "service/materialization/serve/rollup_variants.ts#RollupVariantServe.attemptJoin":
-      "2g.2",
-   "service/materialization/serve/serve_verdict.ts#verdictFor": "2g.2",
-   "service/materialization/serve/served_copy_serve.ts#ServedCopyServe.answer":
-      "2g.2",
-   "service/materialization/serve/served_copy_serve.ts#ServedCopyServe.compile":
-      "2g.2",
-   "service/materialization/serve/served_copy_serve.ts#ServedCopyServe.rerootFor":
-      "2g.2",
-   "service/materialization/serve/served_copy_serve.ts#pairRerootOf": "2g.2",
 };

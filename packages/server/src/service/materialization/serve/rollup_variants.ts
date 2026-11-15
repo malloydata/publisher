@@ -654,15 +654,8 @@ export class RollupVariantServe {
    ): Promise<RollupAnswer> {
       const { plan, join } = leg;
       const name = join.name;
-      // Only a query that reads through the join (an unreadable one might).
-      if (q.usage && !q.usage.some((p) => p[0] === name)) {
-         throw new JoinNotRead(name);
-      }
-      if (refusal) {
-         throw new LegDecline(refusal.code, refusal.callerDetail, {
-            shapeCheck: true,
-         });
-      }
+      const declined = joinLegDecline(name, q.usage, refusal);
+      if (declined) throw declined;
       // A rollup in a storage destination is joined there, so only to a
       // query source the served copy reads from that destination too; Malloy
       // joins within one connection (malloy#3032).
@@ -681,17 +674,7 @@ export class RollupVariantServe {
       // zone; live reads the joined rows in the query source's.
       const childDef = SourceMap.of(this.host.modelDef()).node(
          plan.baseSourceID,
-      )?.def as
-         | {
-              queryTimezone?: unknown;
-              fields?: {
-                 name?: unknown;
-                 as?: unknown;
-                 e?: unknown;
-                 join?: unknown;
-              }[];
-           }
-         | undefined;
+      )?.def as JoinedSourceDef | undefined;
       const parentZone = recordedTimezoneOf(q.struct);
       if ((recordedTimezoneOf(childDef) ?? "") !== (parentZone ?? "")) {
          throw new LegDecline(
@@ -702,31 +685,10 @@ export class RollupVariantServe {
       }
       const grain = new Set(plan.grainDimensions);
       const measures = new Set(plan.rollupMeasures.map((m) => m.name));
-      const through = (paths: readonly string[]) =>
-         paths
-            .filter((p) => p.startsWith(`${name}.`))
-            .map((p) => p.slice(name.length + 1));
-      const coarse = through([
-         ...q.shape.groupedBy,
-         ...q.shape.filteredBy,
-      ]).find((f) => !grain.has(f) && !measures.has(f));
-      if (coarse !== undefined) {
-         throw new LegDecline(
-            "rollup_grain_too_coarse",
-            `the query reads \`${name}.${coarse}\`, which the rollup's grain does not keep`,
-            { shapeCheck: true },
-         );
-      }
-      const missing = through(q.shape.measures).find(
-         (m) => !measures.has(m) && !grain.has(m),
-      );
-      if (missing !== undefined) {
-         throw new LegDecline(
-            "rollup_missing_field",
-            `the query aggregates \`${name}.${missing}\`, which the rollup does not store`,
-            { shapeCheck: true },
-         );
-      }
+      const coarse = joinGrainDecline(name, q.shape, grain, measures);
+      if (coarse) throw coarse;
+      const missing = joinCoverageDecline(name, q.shape, grain, measures);
+      if (missing) throw missing;
       // Every level reads rows by groups: a `select:` or `index:` stage would
       // read the rollup's rows, one per group, not the joined rows.
       const levels = queryLevelFacts(q.prepared);
@@ -768,6 +730,38 @@ export class RollupVariantServe {
             .filter((p) => p[0] === name && p.length === 2)
             .map((p) => p[1] as string),
       );
+      this.checkJoinKeys(leg, q, q.usage, childDef, read, inDestination);
+      const table = this.tableOf(plan, q.args.pinned);
+      if (!table) {
+         throw new LegDecline(
+            "rollup_not_built",
+            "the rollup has no fresh table",
+         );
+      }
+      if (inDestination) {
+         return this.answerJoinInDestination(leg, q, table, inDestination);
+      }
+      return this.answerJoinColocated(leg, q, table);
+   }
+
+   /**
+    * The join leg's key checks (known limitation 29): that live's rows and
+    * the variant's are the same rows through the re-pointed join, else a
+    * {@link LegDecline} (`rollup_count_semantics`). `read` are the joined
+    * source's fields the query reads through the join.
+    */
+   private checkJoinKeys(
+      leg: JoinRollupLeg,
+      q: Parameters<RollupVariantServe["attemptJoin"]>[2],
+      usage: readonly (readonly string[])[],
+      childDef: JoinedSourceDef | undefined,
+      read: ReadonlySet<string>,
+      inDestination:
+         | { basis: ServedCopyJoinBasis; source: Binding }
+         | undefined,
+   ): void {
+      const { plan, join } = leg;
+      const name = join.name;
       // A join_one the data does not keep unique repeats each parent row
       // once per joined row live, and every aggregate not taken at the join
       // counts the repeats; the rollup holds one row per key. Served only
@@ -810,7 +804,7 @@ export class RollupVariantServe {
       const repeating = this.nonUniqueJoinOneRead(
          q.struct,
          name,
-         q.usage,
+         usage,
          q.args.pinned,
       );
       if (repeating !== undefined) {
@@ -891,16 +885,20 @@ export class RollupVariantServe {
       if (joinedProblem !== undefined) {
          throw new LegDecline("rollup_count_semantics", joinedProblem);
       }
-      const table = this.tableOf(plan, q.args.pinned);
-      if (!table) {
-         throw new LegDecline(
-            "rollup_not_built",
-            "the rollup has no fresh table",
-         );
-      }
-      if (inDestination) {
-         return this.answerJoinInDestination(leg, q, table, inDestination);
-      }
+   }
+
+   /**
+    * Answer a join leg over a colocated rollup: the query compiled against
+    * the variant, read through the build manifest, whose SQL must read the
+    * rollup's table; else a {@link LegDecline}.
+    */
+   private async answerJoinColocated(
+      leg: JoinRollupLeg,
+      q: Parameters<RollupVariantServe["attemptJoin"]>[2],
+      table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
+   ): Promise<RollupAnswer> {
+      const { plan, join } = leg;
+      const name = join.name;
       const variant = await this.compiledVariant(
          plan,
          { kind: "join", localName: q.localName, leg },
@@ -1171,24 +1169,10 @@ export class RollupVariantServe {
       ]);
       // Cheap first, from the caller's own compile: what it groups and filters
       // by must be in the grain, what it aggregates must be stored.
-      const coarse = [...shape.groupedBy, ...shape.filteredBy].find(
-         (f) => !grain.has(f) && !measures.has(f),
-      );
-      if (coarse !== undefined) {
-         throw new LegDecline(
-            "rollup_grain_too_coarse",
-            `the query reads \`${coarse}\`, which the rollup's grain does not keep`,
-            { shapeCheck: true },
-         );
-      }
-      const missing = shape.measures.find((m) => !measures.has(m));
-      if (missing !== undefined) {
-         throw new LegDecline(
-            "rollup_missing_field",
-            `the query aggregates \`${missing}\`, which the rollup does not store`,
-            { shapeCheck: true },
-         );
-      }
+      const coarse = grainDecline(shape, grain, measures);
+      if (coarse) throw coarse;
+      const missing = coverageDecline(shape, measures);
+      if (missing) throw missing;
       const table = this.tableOf(plan, args.pinned);
       if (!table) {
          throw new LegDecline(
@@ -2497,4 +2481,134 @@ function importedSourceName(
       same(named.filterList, struct.filterList)
       ? struct.as
       : undefined;
+}
+
+/** The joined source's compiled declaration, as the join leg reads it. */
+interface JoinedSourceDef {
+   queryTimezone?: unknown;
+   fields?: {
+      name?: unknown;
+      as?: unknown;
+      e?: unknown;
+      join?: unknown;
+   }[];
+}
+
+/**
+ * The join-leg choice: a leg is tried only for a query that reads through
+ * its join (an unreadable one might), and only when the join offers a rollup
+ * it can use. A {@link JoinNotRead} when the query reads nothing through the
+ * join, the leg's refusal as a {@link LegDecline}, or undefined to try it.
+ */
+export function joinLegDecline(
+   name: string,
+   usage: readonly (readonly string[])[] | undefined,
+   refusal: ReturnType<typeof joinRollupLegs>[number]["refusal"],
+): Error | undefined {
+   if (usage && !usage.some((p) => p[0] === name)) {
+      return new JoinNotRead(name);
+   }
+   if (refusal) {
+      return new LegDecline(refusal.code, refusal.callerDetail, {
+         shapeCheck: true,
+      });
+   }
+   return undefined;
+}
+
+/** The fields of `paths` read through the join `name`, by their names in it. */
+function readThroughJoin(name: string, paths: readonly string[]): string[] {
+   return paths
+      .filter((p) => p.startsWith(`${name}.`))
+      .map((p) => p.slice(name.length + 1));
+}
+
+/**
+ * The grain check of a join leg: a field the query groups or filters by
+ * through the join `name` must be one of the rollup's grain dimensions or
+ * stored measures, else the rollup is too coarse.
+ */
+export function joinGrainDecline(
+   name: string,
+   shape: Pick<ReturnType<typeof queryShapeOf>, "groupedBy" | "filteredBy">,
+   grain: ReadonlySet<string>,
+   measures: ReadonlySet<string>,
+): LegDecline | undefined {
+   const coarse = readThroughJoin(name, [
+      ...shape.groupedBy,
+      ...shape.filteredBy,
+   ]).find((f) => !grain.has(f) && !measures.has(f));
+   if (coarse !== undefined) {
+      return new LegDecline(
+         "rollup_grain_too_coarse",
+         `the query reads \`${name}.${coarse}\`, which the rollup's grain does not keep`,
+         { shapeCheck: true },
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The coverage check of a join leg: a measure the query aggregates through
+ * the join `name` must be one the rollup stores (or a grain dimension).
+ */
+export function joinCoverageDecline(
+   name: string,
+   shape: Pick<ReturnType<typeof queryShapeOf>, "measures">,
+   grain: ReadonlySet<string>,
+   measures: ReadonlySet<string>,
+): LegDecline | undefined {
+   const missing = readThroughJoin(name, shape.measures).find(
+      (m) => !measures.has(m) && !grain.has(m),
+   );
+   if (missing !== undefined) {
+      return new LegDecline(
+         "rollup_missing_field",
+         `the query aggregates \`${name}.${missing}\`, which the rollup does not store`,
+         { shapeCheck: true },
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The grain check of a base leg, cheap, from the caller's own compile: what
+ * the query groups and filters by must be in the grain (or a stored
+ * measure), else the rollup is too coarse.
+ */
+export function grainDecline(
+   shape: Pick<ReturnType<typeof queryShapeOf>, "groupedBy" | "filteredBy">,
+   grain: ReadonlySet<string>,
+   measures: ReadonlySet<string>,
+): LegDecline | undefined {
+   const coarse = [...shape.groupedBy, ...shape.filteredBy].find(
+      (f) => !grain.has(f) && !measures.has(f),
+   );
+   if (coarse !== undefined) {
+      return new LegDecline(
+         "rollup_grain_too_coarse",
+         `the query reads \`${coarse}\`, which the rollup's grain does not keep`,
+         { shapeCheck: true },
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The coverage check of a base leg: every measure the query aggregates must
+ * be one the rollup stores.
+ */
+export function coverageDecline(
+   shape: Pick<ReturnType<typeof queryShapeOf>, "measures">,
+   measures: ReadonlySet<string>,
+): LegDecline | undefined {
+   const missing = shape.measures.find((m) => !measures.has(m));
+   if (missing !== undefined) {
+      return new LegDecline(
+         "rollup_missing_field",
+         `the query aggregates \`${missing}\`, which the rollup does not store`,
+         { shapeCheck: true },
+      );
+   }
+   return undefined;
 }

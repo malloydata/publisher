@@ -252,12 +252,8 @@ export class PersistedViewServe {
          throw new LegDecline("view_missing_field");
       }
       const { call, plan } = called;
-      if (call.refined) {
-         throw new LegDecline(
-            "view_missing_field",
-            `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
-         );
-      }
+      const refined = refinedCallDecline(call);
+      if (refined) throw refined;
       // The run target must be the view's own source, by sourceID: not an
       // extension, and not a caller's redefinition of the name.
       const prepared = await readPreparedQuery(args.authorRunnable);
@@ -269,24 +265,26 @@ export class PersistedViewServe {
          typeof prepared.structRef === "string"
             ? prepared.structRef
             : undefined;
-      if (!localName || struct?.sourceID !== plan.sourceID) {
-         throw new LegDecline(
-            "view_missing_field",
-            `the query does not call \`${call.view}\` on the source that declares it`,
-         );
-      }
+      const offTarget = callTargetDecline(
+         call,
+         plan,
+         localName,
+         struct?.sourceID,
+      );
+      // An unnamed run target is always declined (`offTarget` is set).
+      if (offTarget || !localName) throw offTarget;
       // An exact call shows in the public result schema; a query that goes on
       // past the view shows only in its text (Evidence 4).
       if (call.laterStages === 0) {
          const result = await args.authorRunnable.getPreparedResult({
             ...(args.givens ? { givens: args.givens as never } : {}),
          } as never);
-         if (result.resultExplore.name !== plan.viewName) {
-            throw new LegDecline(
-               "view_missing_field",
-               `the query is not a call of \`${call.view}\``,
-            );
-         }
+         const inexact = exactCallDecline(
+            call,
+            plan,
+            result.resultExplore.name,
+         );
+         if (inexact) throw inexact;
       }
       const table = this.tableOf(plan, args.pinned, args.buildManifest);
       if (!table.built) {
@@ -632,4 +630,57 @@ function viewDeclaration(viewName: string, shape: ViewShape): string {
    // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
    const notes = shape.notes.map((n) => `  ${n}\n`).join("");
    return `${notes}  view: ${identifier(viewName)} is { select: ${select}${order} }`;
+}
+
+/**
+ * A call that refines the view (`+ { … }`): the stored result holds only the
+ * view as written, so the leg declines it.
+ */
+export function refinedCallDecline(call: RunViewCall): LegDecline | undefined {
+   if (call.refined) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The run target must be the view's own source, by sourceID: not an
+ * extension, and not a caller's redefinition of the name. `localName` is the
+ * run target's name when the query names one; `sourceID` its compiled source's.
+ */
+export function callTargetDecline(
+   call: RunViewCall,
+   plan: Pick<PersistedViewPlan, "sourceID">,
+   localName: string | undefined,
+   sourceID: unknown,
+): LegDecline | undefined {
+   if (!localName || sourceID !== plan.sourceID) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query does not call \`${call.view}\` on the source that declares it`,
+      );
+   }
+   return undefined;
+}
+
+/**
+ * Exact-call recognition: a query with no stage past the view's own is a
+ * call of the persisted view only when its public result schema is named for
+ * that view (`resultName`, the compiled `resultExplore.name`).
+ */
+export function exactCallDecline(
+   call: RunViewCall,
+   plan: Pick<PersistedViewPlan, "viewName">,
+   resultName: string,
+): LegDecline | undefined {
+   if (resultName !== plan.viewName) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query is not a call of \`${call.view}\``,
+      );
+   }
+   return undefined;
 }
