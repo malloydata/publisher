@@ -13,7 +13,7 @@ import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import type { PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
-import { computeSourceEntityId } from "./addressing";
+import { computeSourceEntityId, type TableFolds } from "./addressing";
 import {
    assertBuildReadsNoCurrentTime,
    assertMaterializationEligible,
@@ -39,6 +39,8 @@ import { deriveAnnotationFields } from "./persist_source_fields";
 interface EligibilityPlan {
    tables: Record<string, TablePlan>;
    connectionDigests: Record<string, string>;
+   /** The plan's table folds (CompiledBuildPlan.tableFolds). */
+   tableFolds?: TableFolds;
    /**
     * The package is a published version of a `scope: "version"` package:
     * every table name, `name=` included, is a readable name with its
@@ -66,6 +68,7 @@ const collidingRollupsByTables = new WeakMap<
 export function collidingRollups(compiled: {
    tables: Record<string, TablePlan>;
    connectionDigests: Record<string, string>;
+   tableFolds?: TableFolds;
 }): ReadonlyMap<string, string> {
    const memo = collidingRollupsByTables.get(compiled.tables);
    if (memo) return memo;
@@ -84,6 +87,7 @@ export function collidingRollups(compiled: {
             source,
             compiled.connectionDigests,
             target,
+            compiled.tableFolds,
          );
       } catch {
          // No address: the other gates refuse it on their own.
@@ -261,6 +265,7 @@ function sharedTableGroups(
             source,
             compiled.connectionDigests,
             table.target,
+            compiled.tableFolds,
          );
          target = physicalTarget(
             source,
@@ -584,6 +589,7 @@ export function collectColocatedSourceEligibility(
                source,
                compiled.connectionDigests,
                target,
+               compiled.tableFolds,
             );
          } catch (idErr) {
             // No id to key the refusal under; the log is the only record that
@@ -612,6 +618,7 @@ export function collectColocatedSourceEligibility(
             source,
             compiled.connectionDigests,
             target,
+            compiled.tableFolds,
          );
       } catch (err) {
          logger.warn(

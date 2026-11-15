@@ -380,12 +380,13 @@ function recordedLineage(d: IncrementalDeclaration): string {
  * Sources that resolve to ONE content address, when at least one declares
  * incremental refresh.
  *
- * The address hashes the connection and canonical SQL only (not names or
- * declarations), so a copy-paste shares it, and downstream there is one run
- * manifest entry and one covered_through row. For incremental sources this fails
- * silently: DIFFERING declarations re-seed each other forever; AGREEING ones
- * collapse so one `name=` table is never built. The build path is safe either
- * way, but neither is visible from the model text.
+ * The address hashes the connection and canonical SQL (not declarations, and
+ * a `name=` only where it names a table of its own: foldDistinctTableNames),
+ * so a copy-paste with no `name=`, or the same one, shares it, and downstream
+ * there is one manifest entry and one covered_through row. For incremental
+ * sources this fails silently: DIFFERING declarations re-seed each other
+ * forever; AGREEING ones collapse onto one table. The build path is safe
+ * either way, but neither is visible from the model text.
  */
 function sharedAddressAdvisories(
    sources: IncrementalPolicySource[],
@@ -423,8 +424,8 @@ function sharedAddressAdvisories(
                     `other's lineage recorded and rebuilds in full instead of ` +
                     `advancing, indefinitely. Give them different definitions ` +
                     `or keep only one.`
-                  : `Only one is materialized; the other's name= table is never ` +
-                    `built. Keep one, unless the duplication is intentional.`),
+                  : `Only one table is materialized, and both are read from ` +
+                    `it. Keep one, unless the duplication is intentional.`),
          });
       }
    }

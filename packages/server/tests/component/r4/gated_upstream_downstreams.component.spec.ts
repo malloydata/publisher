@@ -207,23 +207,22 @@ const sameOutcome = (live: Outcome, served: Outcome): string | undefined => {
 /**
  * The refusals each setting must report for the downstreams of the
  * `#(access_filter)` and `#(authorize)` upstreams, by `name:tier:reason`.
- * The annotated join is refused only as the v1 colocated one, whose table
- * is the refused plain join's (the deep scan's documented gap; a join does
- * not carry the gate live either, so the table equals live). A downstream
- * that inherits a row filter (`af`, `xf`) is refused in every form, so no
- * table holds every caller's rows that nothing reads. One that inherits a
- * lock (`az`) is admitted on both tiers, v1 and `#(materialize)` alike, with
- * the switch off or on (G3), and refused only through a join.
+ * The annotated join is built in either tier, its table apart from the
+ * refused plain join's (the deep scan's documented gap; a join does not carry
+ * the gate live either, so the table equals live). A downstream that inherits
+ * a row filter (`af`, `xf`) is refused in every form, so no table holds every
+ * caller's rows that nothing reads. One that inherits a lock (`az`) is
+ * admitted on both tiers, v1 and `#(materialize)` alike, with the switch off
+ * or on (G3), and refused only through a join.
  */
 function expectedGateRefusals(): string[] {
    const out: string[] = [];
    for (const g of ["af", "az", "xf"]) {
       for (const s of SHAPES) {
          if (s === "ajoin") {
-            // The v1 colocated annotated join shares its table (one address:
-            // the same SQL) with the plain join, which is refused, so it is
-            // refused too: the bind serves no source on that address.
-            out.push(`${g}_pc_${s}:colocated:authorize`);
+            // The v1 colocated annotated join compiles to the plain join's
+            // SQL, but names its own table (`name=`), so it is not on the
+            // refused plain join's address and is not refused with it.
             continue;
          }
          // A gate reached only through a join is never the entry point's own;
@@ -379,22 +378,25 @@ for (const gated of [false, true]) {
          expect(message).toContain("reads an #(access_filter) row-level gate");
       });
 
-      it("builds no v1 colocated table it shares with a refused source, and answers its callers live", () => {
+      it("builds the v1 colocated annotated join its own table, apart from the refused plain join's, and serves it", () => {
+         // One build SQL, two `name=`s: two tables (foldDistinctTableNames),
+         // so the plain join's refusal is its own. Every caller's answer
+         // equals live (the matrix above).
          const built = fixture.built.map((b) => b.name);
-         const plan = loader.pkg.getBuildPlan() as unknown as {
-            refusedSources?: Record<string, { name: string; message: string }>;
-         };
          for (const g of ["af", "az", "xf"]) {
             const name = `${g}_pc_ajoin`;
-            expect([name, built.includes(name)]).toEqual([name, false]);
-            const message = Object.values(plan.refusedSources ?? {}).find(
-               (r) => r.name === name,
-            )?.message;
-            expect(message).toContain(`shares its table with '${g}_`);
+            expect([name, built.includes(name)]).toEqual([name, true]);
+            expect([`${g}_pc_join`, built.includes(`${g}_pc_join`)]).toEqual([
+               `${g}_pc_join`,
+               false,
+            ]);
             for (const i of CALLERS.keys()) {
                const out = served.get(`${name}#${i}`)!;
                if ("error" in out) throw new Error(`${name}: ${out.error}`);
-               expect([name, out.answer.servedBy]).toEqual([name, "live"]);
+               expect([name, out.answer.servedBy]).toEqual([
+                  name,
+                  "materialized",
+               ]);
             }
          }
       });

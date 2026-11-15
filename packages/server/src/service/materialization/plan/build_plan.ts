@@ -124,7 +124,9 @@ import { deriveAnnotationFields, deriveColumns } from "./persist_source_fields";
 import { quoteIdentifier } from "../../quoting";
 import {
    addressSQL,
+   compilerBuildId,
    computeSourceEntityId,
+   foldDistinctTableNames,
    isUnkeyable,
    plannedSources,
    plannedTargetOf,
@@ -132,6 +134,7 @@ import {
    renameBuildSourceIDs,
    withoutSourceIDs,
    sourceBuildsOf,
+   type TableFolds,
 } from "./addressing";
 import {
    materializePlansOf,
@@ -175,6 +178,7 @@ export {
    sourcesInBuildOrder,
    type SourceBuild,
 } from "../domain/compiled_build_plan";
+export type { TableFolds } from "./addressing";
 export {
    sharedTables,
    tierGateInputs,
@@ -285,6 +289,16 @@ export function storedColumnNames(persistSource: PersistSource): string[] {
       throw new Error("the compiled source declares no atomic columns");
    }
    return names;
+}
+
+/**
+ * The plan's {@link TableFolds} (foldDistinctTableNames), with each
+ * `storage=` source's stored columns read as its build writes them.
+ */
+export function planTableFolds(
+   plan: Parameters<typeof foldDistinctTableNames>[0],
+): TableFolds {
+   return foldDistinctTableNames(plan, storedColumnNames);
 }
 
 /**
@@ -1456,7 +1470,11 @@ async function planV1PersistSources(
 export function deriveBuildPlan(
    compiled: Pick<
       CompiledBuildPlan,
-      "builds" | "tables" | "connectionDigests" | "omittedSources"
+      | "builds"
+      | "tables"
+      | "connectionDigests"
+      | "omittedSources"
+      | "tableFolds"
    >,
    packageMaterialization?: WirePackageMaterialization | null,
    sourceNames?: string[],
@@ -1501,6 +1519,7 @@ export function deriveBuildPlan(
             annotationFields,
             connectionDigests,
             packageMaterialization,
+            compiled.tableFolds,
          );
       } catch (err) {
          // Reported, so a host does not read the source's absence as its
@@ -1525,6 +1544,7 @@ export function deriveBuildPlan(
    refuseColocatedTablesSharedWithARefusal(
       tables,
       connectionDigests,
+      compiled.tableFolds,
       wireSources,
       refusedSources,
    );
@@ -1696,6 +1716,7 @@ function wireSourceOf(
    annotationFields: Record<string, string>,
    connectionDigests: Record<string, string>,
    packageMaterialization: WirePackageMaterialization | null | undefined,
+   tableFolds?: TableFolds,
 ): WirePersistSourcePlan {
    const { source, rollup, modelPath } = table;
    return {
@@ -1711,7 +1732,12 @@ function wireSourceOf(
               measures: rollup.measures.map((m) => m.name),
            }
          : null,
-      sourceEntityId: computeSourceEntityId(source, connectionDigests),
+      sourceEntityId: computeSourceEntityId(
+         source,
+         connectionDigests,
+         undefined,
+         tableFolds,
+      ),
       sql: addressSQL(source),
       // Verbatim; the resolved declaration is deliberately not a wire field
       // (see resolveIncrementalDeclaration).
@@ -1739,6 +1765,7 @@ function wireSourceOf(
 function refuseColocatedTablesSharedWithARefusal(
    tables: Record<string, TablePlan>,
    connectionDigests: Record<string, string>,
+   tableFolds: TableFolds | undefined,
    wireSources: Record<string, WirePersistSourcePlan>,
    refusedSources: Record<string, WireRefusedSource>,
 ): void {
@@ -1761,7 +1788,12 @@ function refuseColocatedTablesSharedWithARefusal(
       if (rollup || !v1(id)) continue;
       let address: string;
       try {
-         address = computeSourceEntityId(source, connectionDigests);
+         address = computeSourceEntityId(
+            source,
+            connectionDigests,
+            undefined,
+            tableFolds,
+         );
       } catch {
          continue;
       }
@@ -1840,6 +1872,13 @@ export interface BuildPlanOutcome {
     * Optional: a worker that predates it sends none.
     */
    refusedRollups?: Record<string, RefusedRollup>;
+   /**
+    * The key Malloy files each table under (its target's `buildId`), by
+    * content address, where the two differ: an address
+    * foldDistinctTableNames gave a source its own `name=` or projection on.
+    * Optional: a worker that predates it sends none.
+    */
+   compilerKeys?: Record<string, string>;
 }
 
 /** What a refused rollup's warning names: its base and its grain. */
@@ -1859,12 +1898,16 @@ export function deriveBuildPlanOutcome(
    /** The package's materialization `scope` (`"version"` suffixes every name). */
    scope?: string | null,
 ): BuildPlanOutcome {
+   // Before anything addresses a source: each author `name=` its own table,
+   // decided over the whole package unless the compile already decided it.
+   const tableFolds = collected.tableFolds ?? planTableFolds(collected);
    // Before anything reads the plan: a refused source is neither built nor
    // served, and its warning replaces it. A valid incremental declaration
    // this deployment cannot honour was refused alone where the plan was
    // compiled (compilePackageBuildPlan, or the load worker).
    const compiled = refuseCollidingMaterialize({
       ...collected,
+      tableFolds,
       ...(scope === "version" ? { versionScoped: true } : {}),
    });
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
@@ -1900,7 +1943,37 @@ export function deriveBuildPlanOutcome(
          .map(([sourceID]) => sourceID)
          .sort(),
       refusedRollups: refusedRollupsOf(plan, compiled.tables),
+      compilerKeys: compilerKeysOf(compiled),
    };
+}
+
+/** {@link BuildPlanOutcome.compilerKeys}. */
+function compilerKeysOf(
+   compiled: Pick<
+      CompiledBuildPlan,
+      "tables" | "connectionDigests" | "tableFolds"
+   >,
+): Record<string, string> {
+   const keys: Record<string, string> = {};
+   for (const { source, target } of Object.values(compiled.tables)) {
+      try {
+         const address = computeSourceEntityId(
+            source,
+            compiled.connectionDigests,
+            target,
+            compiled.tableFolds,
+         );
+         const key = compilerBuildId(
+            source,
+            compiled.connectionDigests,
+            target,
+         );
+         if (key !== address) keys[address] = key;
+      } catch {
+         // Unaddressable: refused on its own path.
+      }
+   }
+   return keys;
 }
 
 /**
@@ -1913,7 +1986,12 @@ export function deriveBuildPlanOutcome(
 export function refuseAloneInPlan<
    T extends Omit<CompiledBuildPlan, "connections">,
 >(compiled: T): T {
-   return refuseIncrementalUnbuildable(refuseCollidingMaterialize(compiled));
+   // Each author `name=` its own table first, decided over every source.
+   const folded =
+      compiled.tableFolds !== undefined
+         ? compiled
+         : { ...compiled, tableFolds: planTableFolds(compiled) };
+   return refuseIncrementalUnbuildable(refuseCollidingMaterialize(folded));
 }
 
 /**
