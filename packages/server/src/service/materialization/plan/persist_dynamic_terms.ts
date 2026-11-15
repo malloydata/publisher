@@ -174,6 +174,67 @@ function argumentBindsAGiven(node: unknown, depth = 0): boolean {
 }
 
 /**
+ * Whether the BUILD of a v1 `#@ persist` source reads the current time
+ * (`now`), so its table holds the rows as of the build while a live query
+ * reads them as of each read. The build is the persisted relation alone
+ * (probed: the relation's own SQL, never the source's extend block), so the
+ * positions are those of {@link buildSubstitutesAGiven}: the persisted query
+ * (its stages, a view it runs inlined into them, and the `where:`, fields and
+ * joins of the source it reads that the stages use) and, for a non-query
+ * source, everything but the read-time `filterList` and `fields`. The query
+ * rule is the persisted view's (`persistedViewRefusalReason`). Fails closed:
+ * unreadable IR is a refusal.
+ */
+export function buildReadsCurrentTime(persistSource: PersistSource): boolean {
+   try {
+      const def = sourceDefOf(persistSource) as unknown;
+      if (def === null || typeof def !== "object") return true;
+      const query = (def as { query?: unknown }).query;
+      if (query !== null && typeof query === "object") {
+         const { structRef, pipeline } = query as {
+            structRef?: unknown;
+            pipeline?: unknown;
+         };
+         // A source referenced by name, not inlined: the whole query decides.
+         if (structRef === null || typeof structRef !== "object") {
+            return readsCurrentTime(query);
+         }
+         const input = structRef as { fields?: unknown; filterList?: unknown };
+         const stages = Array.isArray(pipeline) ? pipeline : [];
+         const timed = currentTimeFields(input.fields);
+         return (
+            readsCurrentTime(input.filterList) ||
+            readsCurrentTime(stages) ||
+            stages.some((stage) =>
+               stageFieldPaths(stage).some((p) =>
+                  dependsOnCurrentTime(p, timed),
+               ),
+            )
+         );
+      }
+      const {
+         filterList: _readTimeFilters,
+         fields: _readTimeFields,
+         ...relation
+      } = def as Record<string, unknown>;
+      return readsCurrentTime(relation);
+   } catch {
+      return true;
+   }
+}
+
+/** The dotted field paths a compiled query stage reads, its expansions included. */
+function stageFieldPaths(stage: unknown): string[] {
+   const usage = (stage as { expandedFieldUsage?: unknown } | null)
+      ?.expandedFieldUsage;
+   if (!Array.isArray(usage)) return [];
+   return usage.flatMap((u) => {
+      const p = (u as { path?: unknown } | null)?.path;
+      return Array.isArray(p) && p.length > 0 ? [p.join(".")] : [];
+   });
+}
+
+/**
  * Admit or refuse a persist source by the POSITION of every given it reads,
  * returning the extend-block `where:` terms that may be stripped from the
  * build and re-applied at read, or the first position that cannot be.

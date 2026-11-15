@@ -179,6 +179,39 @@ everyone. A source a compile-time gate refuses is also a package warning, code
 refuses is `preaggregate-not-built` instead, with `subject` its base and a message naming its base,
 its grain and the gate's reason.
 
+### Sources that read the current time
+
+A `#@ persist` source whose **build** reads the current time (`now`) is refused, on both tiers, as
+`current_time`: it is not built, it is answered live, and the package carries a
+`persist-source-refused` warning naming it. Built, its table would hold the rows as of the build and
+serve them until the next rebuild, while a live query reads `now` again every time.
+
+The build reads `now` when it sits in the persisted relation: the persisted query (its `where:`, a
+field it computes, any later stage), a view the source runs (`source: r is orders -> recent`), or
+the `where:`, a dimension or a join of the source that query reads and uses
+(`source: recent is raw extend { where: ts > now - 7 days }` followed by
+`#@ persist source: r is recent -> { … }`). A query-shaped source it extends counts as its relation
+too. A base field the query does not read does not refuse it.
+
+`now` in the persisted source's own extend block is not in the build, so it is admitted: a
+`where: ts > now - 7 days`, a `dimension: is_past is ts < now` or a measure filtered on `now` written
+there is applied at every read, over the stored rows, and answers as live. That is the move the
+refusal names:
+
+```malloy
+// Built, answers as live: the window is applied at every read.
+#@ persist name="events"
+source: events is raw -> { select: * } extend { where: ts > now - 7 days }
+
+// Refused (current_time): the window is in the build, frozen as of the build.
+#@ persist name="events_frozen"
+source: events_frozen is raw -> { where: ts > now - 7 days; select: * }
+```
+
+A `#@ preaggregate` rollup whose base reads `now` is left unbuilt by the rollup's own rule
+(`preaggregate-current-time`), and `#(materialize)` has its own (rolling windows, below). `now`
+written inside a `conn.sql("...")` string is SQL text Publisher does not read, so it is not refused.
+
 ### Tenant-scoped sources: where a given may sit
 
 A source scoped to the caller — `where: org_id = $ORG_ID` — can be materialized into a `storage=`

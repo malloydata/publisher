@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a v1 `#@ persist` over `now` answers live instead of serving a stale snapshot
+
+A `#@ persist` source whose build reads the current time used to build, and then serve the rows as of the build until its next rebuild: `now` was frozen into its table. It is now refused at plan time, on every load path (publish, reload, restart, and a control-plane plan), on both tiers: its table stops being built, it is answered live, and the package carries a `persist-source-refused` warning naming it. The build reads `now` when it sits in the persisted relation: the persisted query (its `where:`, a field it computes, a later stage), a view the source runs, or the `where:`, a dimension or a join of the source that query reads and uses, including a query-shaped source it extends. `now` in the source's own extend block (a `where:`, dimension or measure there) is applied at every read and still builds; move a refused source's `now` there to serve it from a table again.
+
+The build plan's `refusedSources[].reason` and the `publisher_materialization_eligibility_refused_total` metric's `reason` label gain one value, `current_time`. A client that switches on the reason should handle it. A table such a source built before is no longer served. `#@ preaggregate` rollups and `#(materialize)` are unchanged: both already left a source that reads `now` unbuilt, or applied its window at read.
+
 ## [Unreleased] — a `#@ preaggregate` rollup over a stored base builds and serves, as documented now
 
 A `#@ preaggregate` on a measure of a source that is itself `#@ persist storage=` builds and serves, with no change to the model. It has since 0.13.0, when the v1 cutover began reading each `#@ preaggregate` line as the `#(preaggregate)` it spells: that rollup is built from the author's rows, never from the base's stored table, so neither reason such rollups were once left out holds. The documentation still said they were left out with a `preaggregate-over-stored-base` warning; it now says what happens, and the code that would have left them out, which nothing reached any more, is removed.

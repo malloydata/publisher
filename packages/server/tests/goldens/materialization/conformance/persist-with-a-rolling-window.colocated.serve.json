@@ -3,19 +3,21 @@
     "buildErrors": {},
     "built": [
       {
-        "name": "recent_body",
-        "tier": "colocated"
-      },
-      {
         "name": "recent_read",
         "tier": "colocated"
       }
     ],
     "verdicts": [
-      "recent_body:serves",
-      "recent_read:serves"
+      "recent_read:serves",
+      "recent_body:live:refused"
     ],
-    "warnings": []
+    "warnings": [
+      {
+        "code": "persist-source-refused",
+        "message": "Source 'recent_body' cannot be materialized: the relation it persists reads the current time (`now`), in its query, a view it runs, or the `where:`, a field or a join of the source that query reads. Its table would hold the rows as of the build and serve them until the next rebuild, while a live query reads `now` again every time, so it is not built and is answered live. To serve it from a table, move the `now` into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), or stop persisting this source.",
+        "subject": "recent_body"
+      }
+    ]
   },
   "queries": [
     {
@@ -58,13 +60,7 @@
       "equalToLive": true,
       "malloy": "run: recent_body -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [
-          {
-            "kind": "materialized",
-            "outcome": "used",
-            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
-          }
-        ],
+        "considered": [],
         "notConsidered": [
           {
             "built": true,
@@ -85,14 +81,12 @@
           "sourceName": "recent_body"
         },
         "servedBy": {
-          "kind": "materialized",
-          "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "a window in the persisted query",
-      "servedBy": "materialized",
+      "servedBy": "live",
       "servedFrom": null,
       "switch": "off"
     },
@@ -143,15 +137,7 @@
             "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3"
           }
         ],
-        "notConsidered": [
-          {
-            "built": true,
-            "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "recent_body",
-            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
-          }
-        ],
+        "notConsidered": [],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -214,13 +200,7 @@
       "equalToLive": true,
       "malloy": "run: recent_body -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [
-          {
-            "kind": "materialized",
-            "outcome": "used",
-            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
-          }
-        ],
+        "considered": [],
         "notConsidered": [
           {
             "built": true,
@@ -241,14 +221,12 @@
           "sourceName": "recent_body"
         },
         "servedBy": {
-          "kind": "materialized",
-          "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "a window in the persisted query",
-      "servedBy": "materialized",
+      "servedBy": "live",
       "servedFrom": null,
       "switch": "on"
     },
@@ -299,15 +277,7 @@
             "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3"
           }
         ],
-        "notConsidered": [
-          {
-            "built": true,
-            "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "recent_body",
-            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
-          }
-        ],
+        "notConsidered": [],
         "query": {
           "filteredBy": [],
           "groupedBy": [

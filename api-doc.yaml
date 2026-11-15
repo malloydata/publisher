@@ -10680,6 +10680,7 @@ components:
               rollup_name_collision,
               empty_storage,
               table_name_collision,
+              current_time,
             ]
           description: >-
             The bounded refusal reason. Only the compile-time reasons can
@@ -10708,7 +10709,13 @@ components:
             or serves, and each model answers from its base), and
             `empty_storage` (a `#@ persist` whose `storage=` names no
             destination: written empty, `storage=""`, or as a value that is not
-            a name, such as a list; it is not built and is answered live) —
+            a name, such as a list; it is not built and is answered live),
+            and `current_time` (a `#@ persist` whose build reads the current
+            time, `now`: in its persisted query, a view it runs, or the
+            `where:`, a field or a join of the source that query reads; its
+            table would hold the rows as of the build, so it is not built and
+            is answered live. `now` in the source's own extend block is
+            applied at every read and is admitted) —
             those being the only reasons the two
             compile-time eligibility asserts this collection is computed from
             produce. One more appears only in a run's
