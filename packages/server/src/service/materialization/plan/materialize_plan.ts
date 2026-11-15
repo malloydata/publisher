@@ -114,7 +114,7 @@ export function materializeTableName(sourceName: string): string {
 /** Keys `#(materialize)` reads for the plan itself, not the persist line. */
 const PLANNED_KEYS = ["inline"] as const;
 
-/** Keys `#(materialize)` accepts but a later pull request implements. */
+/** Keys `#(materialize)` accepts but does not implement; none at present. */
 const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
 
 /**

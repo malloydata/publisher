@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(preaggregate)` (materialization v2, phase 4): reading the declarations,
+ * `#(preaggregate)`: reading the declarations,
  * planning the rollups, and writing their build file.
  *
  *     source: flights is duckdb.table('flights.parquet') extend {
@@ -165,8 +165,8 @@ function rollupsServeGatedBases(placement: { storage?: string }): boolean {
 }
 
 /**
- * A rollup the variant leg planned: a `#(preaggregate)` one, or a v1
- * `#@ preaggregate` line read as one (the cutover's G4).
+ * A rollup the rollup leg planned: a `#(preaggregate)` one, or a v1
+ * `#@ preaggregate` line read as one.
  */
 function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
    return (
@@ -181,8 +181,8 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
  * rollups): `govern()` grafts and proves the base's gates on the rollup
  * variant, so the tier checks that refuse a gated build (the colocated and
  * storage `authorize` refusals) do not apply to it. True only for a rollup
- * the variant leg planned (a `#(preaggregate)` one, or a v1 `#@ preaggregate`
- * line read as one, the cutover's G4) over a gated base, whose every gate the
+ * the rollup leg planned (a `#(preaggregate)` one, or a v1 `#@ preaggregate`
+ * line read as one) over a gated base, whose every gate the
  * planner proved exact on the rollup (table 1: each field a grain dimension,
  * no gated join), at a
  * placement the gate policy allows (`domain/gate_policy.ts`). The build plan, the
@@ -293,7 +293,7 @@ interface Declaration {
    storage?: string;
    namespace?: string;
    /**
-    * Read from a v1 `#@ preaggregate` line (the cutover's G4): a finding v1's
+    * Read from a v1 `#@ preaggregate` line: a finding v1's
     * own validation already reports with the same code is not reported again.
     */
    v1?: true;
@@ -448,14 +448,14 @@ interface RollupPlanContext {
    readUnderGates?: boolean;
    /**
     * Whether v1 `#@ preaggregate` lines are read as `#(preaggregate)`
-    * declarations (the v1 cutover's G4). Absent: they are.
+    * declarations. Absent: they are.
     */
    readsV1?: boolean;
    /**
     * Whether `#(preaggregate)` declarations are read. Absent: they are. A
-    * caller that plans only because the v1 cutover is on passes
-    * `getMaterializeEnabled()`, so v2's route stays unread with its switch
-    * off.
+    * caller that plans v1 rollups whatever the switch passes
+    * `getMaterializeEnabled()`, so `#(preaggregate)` stays unread with its
+    * switch off.
     */
    readsV2?: boolean;
 }
@@ -536,8 +536,8 @@ export function planSourceRollups(
 }
 
 /**
- * Every rollup declaration `def` writes, its `#(preaggregate)` notes and, for
- * the v1 cutover, its measures' own `#@ preaggregate` lines, with a refusal
+ * Every rollup declaration `def` writes, its `#(preaggregate)` notes and its
+ * measures' own v1 `#@ preaggregate` lines, with a refusal
  * for a declaration on a field that is not a measure (malformed).
  */
 function rollupDeclarationsOf(
@@ -550,8 +550,8 @@ function rollupDeclarationsOf(
    const fields = (def.fields ?? []) as FieldLike[];
    const sources = scopeOf(map);
    const declarations: Declaration[] = [];
-   // `#(preaggregate)` is read unless the caller runs only for the v1
-   // cutover (`readsV2: false`), which reads v1's lines below alone.
+   // `#(preaggregate)` is read unless the caller reads only v1's lines below
+   // (`readsV2: false`).
    const readsV2 = ctx.readsV2 ?? true;
    for (const field of readsV2 ? fields : []) {
       const name = fieldNameOf(field);
@@ -574,13 +574,12 @@ function rollupDeclarationsOf(
          else declarations.push(read);
       }
    }
-   // The v1 cutover (G4): a measure's own `#@ preaggregate` lines, read by
-   // v1's own reader (a grain per line, `#@ -preaggregate` clearing those
-   // above it, `storage=` and `namespace=` bound to their line), are this
-   // leg's declarations too, so a v1 rollup is planned, built (under the v2
-   // rollup's table name, so it rebuilds once) and served here, and the v1
-   // composite is not. A line v1 reports as unusable is left to v1's own
-   // validation.
+   // A measure's own v1 `#@ preaggregate` lines, read by v1's own reader (a
+   // grain per line, `#@ -preaggregate` clearing those above it, `storage=`
+   // and `namespace=` bound to their line), are this leg's declarations too,
+   // so a v1 rollup is planned, built (under the `#(preaggregate)` rollup's
+   // table name) and served here. A line v1 reports as unusable is left to
+   // v1's own validation.
    if (ctx.readsV1 ?? true) {
       // As v1 places it: a grain naming no namespace (and no storage=) is
       // created beside its base's own `#@ persist name=`.
@@ -674,13 +673,13 @@ function rollupFactsOf(
             t.dependsOn.kind === "given_and_current_time",
       ) || readsCurrentTime((def as { query?: unknown }).query);
    const timeFields = currentTimeFields(def.fields);
-   // #1686: a source that sets its own `timezone:` (or inherits one) built
-   // its times in that zone, and the base leg reads no query on it from a
+   // A source that sets its own `timezone:` (or inherits one) built its
+   // times in that zone, and the base branch reads no query on it from a
    // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
-   // only reader left is the join leg (A7): through a join from a source in
-   // the same zone, colocated or, since #1704, in a `storage=` destination
-   // the joining source is stored in too (the leg declines at read when it
-   // is not). Anything else is never read.
+   // only reader left is the join branch (A7): through a join from a source
+   // in the same zone, colocated or in a `storage=` destination the joining
+   // source is stored in too (the branch declines at read when it is not).
+   // Anything else is never read. rollup_plan.spec.ts pins both.
    const zone = timezoneOf(def);
    const joinedInZone =
       zone !== undefined &&
@@ -1187,7 +1186,7 @@ export function rollupRefusalFinding(
 /**
  * The Malloy text of a rollup's key check (known limitation 29), or undefined
  * when the rollup's grain is not one dimension or it is not colocated (the
- * join-to-rollup leg reads a colocated rollup only). Run against the rollup
+ * join-to-rollup branch reads a colocated rollup only). Run against the rollup
  * companion, which imports the base under {@link rollupBaseAlias}, so it reads
  * exactly the rows the rollup's build groups. A NULL key meets no joining
  * row, so its repeats do not count.
@@ -1206,8 +1205,8 @@ export function rollupKeyCheckQuery(
 /**
  * Every named source in `map` with a declared primary key and a join, keyed
  * on that key, to a declared source: the query sources whose key the
- * join-to-rollup leg may need checked. A join keyed on another field never
- * takes the leg as a join_many (`keyRepeatRefusal`), so it needs no check.
+ * join-to-rollup branch may need checked. A join keyed on another field never
+ * takes the branch as a join_many (`keyRepeatRefusal`), so it needs no check.
  */
 export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
    const out: ParentKeyNeed[] = [];
@@ -1241,10 +1240,10 @@ export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
 
 /**
  * A joined source whose declared primary key is not the column a join to it
- * is keyed on: the join-to-rollup leg needs that key checked never NULL and
- * unique before it serves a count, sum or average of the source's own rows
- * through the join. Since malloydata/malloy#3208 live takes those at a joined
- * source over the rows whose key is not NULL (`CASE WHEN key IS NOT NULL`,
+ * is keyed on: the join-to-rollup branch needs that key checked never NULL
+ * and unique before it serves a count, sum or average of the source's own
+ * rows through the join. Live takes those at a joined source over the rows
+ * whose key is not NULL (`CASE WHEN key IS NOT NULL`,
  * `COUNT(DISTINCT key)` where the rows fan out), while the rollup, built at
  * the source's own grain, counts and sums every row.
  */
@@ -1299,9 +1298,9 @@ export function joinedKeyNeedsOf(map: SourceMap): JoinedKeyNeed[] {
 }
 
 /**
- * Whether the join-to-rollup leg reads rollup `plan` through `need`'s join as
- * a join_many: the join is declared one, or the rollup's grain is finer than
- * the join's key, so the leg re-points it as one (`joinRollupLegs`).
+ * Whether the join-to-rollup branch reads rollup `plan` through `need`'s join
+ * as a join_many: the join is declared one, or the rollup's grain is finer
+ * than the join's key, so the branch re-points it as one (`joinRollupLegs`).
  */
 export function readsAsJoinMany(
    plan: RollupVariantPlan,
@@ -1323,8 +1322,8 @@ export function readsAsJoinMany(
  * The stored-table key checks a build runs (each table's `storedKeyCheck`):
  * each of `sourceIDs` (the planned sources, the rollups left out) with a declared
  * primary key, by sourceID, when some `storage=` rollup in `plans` is read
- * through a join keyed on a source's primary key as a join_many. That leg
- * reads the query source's stored table in the destination (#1704), so the
+ * through a join keyed on a source's primary key as a join_many. That branch
+ * reads the query source's stored table in the destination, so the
  * key is checked over that table at its own build. Empty otherwise: no scan
  * for nothing.
  */

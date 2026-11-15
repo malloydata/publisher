@@ -4,8 +4,7 @@
 /**
  * Which planned sources may build and serve, decided where the compiled
  * sources exist: rollups that would share a table, the tier gate's inputs,
- * and the per-tier eligibility records the serve side requires. Split out of
- * build_plan.ts; behaviour unchanged.
+ * and the per-tier eligibility records the serve side requires.
  */
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";
@@ -185,7 +184,7 @@ interface SharedTableMember {
  * Sources that are not rollups, grouped by the table they write, keeping only
  * the groups that hold two content addresses: two DIFFERENT sources writing
  * one table, where the later build overwrites the earlier and each source's
- * reader reads the other's rows (#6644). The same source reached through two
+ * reader reads the other's rows. The same source reached through two
  * models' imports is one address, and shares its table legitimately. Rollups
  * are {@link collidingRollups}'.
  */

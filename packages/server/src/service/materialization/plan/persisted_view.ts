@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#@ persist` on a view (materialization v2, phase 4, P14): reading the
+ * `#@ persist` on a view (P14): reading the
  * declarations and writing their build file.
  *
  *     source: ops is duckdb.table('flights') extend {
@@ -27,7 +27,7 @@
  * The companion reads the author's files with every source-level `#@` line
  * blanked (positions kept), so a persisted view never chains onto its source's
  * own table: it reads the rows the live query reads (the same reason the
- * `#(preaggregate)` companion blanks them, #6293).
+ * `#(preaggregate)` companion blanks them).
  *
  * Keying: a declaration by its source's `sourceID` and the view's name; the
  * stored table by the generated source's `sourceEntityId` and destination,

@@ -5,7 +5,7 @@
  * plan's question 11).
  *
  * Malloy refuses a join whose source is on another connection than the source
- * it joins into (`join-connection-mismatch`, malloydata/malloy#3032), and it
+ * it joins into (`join-connection-mismatch`), and it
  * refuses it for the whole file. A served copy re-roots a source onto its
  * storage destination, and a reference join it keeps may read a source that
  * is not stored there. The served copy leaves that join out, so the queries
@@ -25,7 +25,7 @@
  * out: the first compile may report, beside the refused joins, only problems
  * that follow from them (an importer that cannot find a source whose file
  * failed), and each of those must be gone once the joins are out. A file with
- * any other error is left to fail as it does today. Later passes leave out
+ * any other error is left to fail with its own error. Later passes leave out
  * only definitions that fail for reading something missing; any other problem
  * stops it.
  *

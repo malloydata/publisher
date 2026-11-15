@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Rolling windows (materialization v2, phase 3): what a `#(materialize)`
+ * Rolling windows: what a `#(materialize)`
  * source may do with a `where:` term that compares a stored time field with
  * the current time, `ts >= now - 30 days`. The terms themselves are read by
  * the one `where:` classifier, `classifyWhereTerms` in
@@ -25,8 +25,7 @@
  *   not know. With no interval the widest set is every row that exists at
  *   build time, so the term is LEFT OUT of the build, as a given-reading term
  *   is (P2): the build copy replaces its text with `true` wherever the
- *   source's declaring file writes it, its own or inherited (decided
- *   2026-11-12, plan question 2, option A). The served copy re-applies it at
+ *   source's declaring file writes it, its own or inherited. The served copy re-applies it at
  *   every read. Stamping the interval to trim the table is a possible later
  *   optimisation, not built.
  * - A two-sided window, one `and` of comparisons

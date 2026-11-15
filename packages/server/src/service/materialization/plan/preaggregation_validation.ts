@@ -94,8 +94,8 @@ interface FieldLike {
  * happens to fail compiling such a reference; the storage tier plans from
  * compiled contents and would not, so the rule lives here for both.)
  *
- * Mirrors `isAccessRestricted` in serve/bindings.ts, which drops
- * hidden fields, joins and views from the serve shape for the same reason.
+ * Mirrors `isAccessRestricted` in serve/bindings.ts, which drops hidden
+ * columns from a binding's schema for the same reason.
  */
 function isAccessRestricted(f: FieldLike): boolean {
    return f.accessModifier != null && f.accessModifier !== "public";
@@ -120,7 +120,7 @@ function isTemporalType(type: string): boolean {
    return type === "date" || type === "timestamp" || type === "timestamptz";
 }
 
-/** A view/turtle. Views are dropped from composites, so they can never carry one. */
+/** A view (turtle): never a grain dimension, and never a `#@ preaggregate` target. */
 function isView(f: FieldLike): boolean {
    return f.type === "turtle";
 }

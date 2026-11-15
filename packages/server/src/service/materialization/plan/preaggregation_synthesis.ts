@@ -3,12 +3,8 @@
 
 /**
  * The v1 `#@ preaggregate` planner: turn validated declarations into rollup
- * plans, one per distinct grain, which the v1 cutover reads into the rollup
- * leg as `#(preaggregate)` plans (G4) and the build plan builds.
- *
- * The composite text it once emitted (an aliased import of the base, the
- * rollup members and a `compose()` re-exposing the base's name) retired with
- * the cutover (6g).
+ * plans, one per distinct grain, which the rollup leg reads as
+ * `#(preaggregate)` plans and the build plan builds.
  *
  * ## Determinism is a correctness property
  *
@@ -56,7 +52,7 @@ const NAME_SLUG_LIMIT = 40;
 
 /**
  * The rollup's source name: readable enough to recognize in a build plan, a
- * manifest and a log line, and unique by digest.
+ * run manifest and a log line, and unique by digest.
  */
 export function rollupSourceName(
    baseSourceName: string,
@@ -104,13 +100,13 @@ function persistNamespace(persistName: string | undefined): string | undefined {
 /**
  * Order two rollups on one base so the COARSER is offered first.
  *
- * The composite resolver takes the first member that covers a query, so member
- * order decides which covering rollup answers it. Fewer grain dimensions win
+ * The rollup leg offers rollups in this order and uses the first that
+ * answers, so the order decides which covering rollup answers a query. Fewer grain dimensions win
  * (which subsumes a strict-subset rule, and also orders incomparable grains).
  *
- * A dimension count is only a proxy for size. Ordering on the manifest's
- * `rowCount` is deliberately NOT used: member order would then depend on the
- * bound manifest, and the build and serve legs would synthesize different text
+ * A dimension count is only a proxy for size. Ordering on the run manifest's
+ * `rowCount` is deliberately NOT used: the order would then depend on the
+ * bound run manifest, and the build and serve legs would synthesize different text
  * (see this module's header).
  *
  * The generated name is the final tie-break, so the order is total.

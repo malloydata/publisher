@@ -96,12 +96,12 @@ const CHECKED_TYPES = new Set([
 /**
  * Whether a column stored as `storedType` serves as `declaredType`, or
  * `undefined` when the declared type is not one this check compares (json,
- * sql native, arrays, records), which keeps today's behaviour for them.
+ * sql native, arrays, records), which is never a mismatch.
  *
- * The rule is the serve shape's own mapping ({@link duckdbTypeToMalloyType}):
- * the type the shape will declare must be the type the author declared, with
- * one widening: the shape declares every DuckDB timestamp as `timestamp`, which
- * serves a declared `timestamptz` faithfully in a UTC session.
+ * The rule is the DuckDB type mapping ({@link duckdbTypeToMalloyType}): the
+ * type it declares must be the type the author declared, with one widening:
+ * it declares every DuckDB timestamp as `timestamp`, which serves a declared
+ * `timestamptz` faithfully in a UTC session.
  *
  * | Declared      | Faithful stored types                                    |
  * | ------------- | -------------------------------------------------------- |
@@ -401,7 +401,7 @@ export function rebuildWouldRecast(
 }
 
 /**
- * How the serve shape handles each mismatched column: read it through a cast
+ * How the served copy handles each mismatched column: read it through a cast
  * when {@link faithfulCastTarget} names one, since that cast gives the value
  * live gives and no value can fail it; otherwise report it unservable, so only
  * the queries reading it are answered live.
@@ -431,8 +431,7 @@ export function serveTypePlan(
  * For a colocated `#(materialize)` table (no `storage=`), whose build writes
  * into the source's own warehouse and captures no schema: its columns are the
  * build source's output, a table at one content address holds exactly that
- * build's columns, and Malloy reads each back as the basic type it built
- * (decided for the colocated served copy, phase 3 pull request 6).
+ * build's columns, and Malloy reads each back as the basic type it built.
  *
  * A field whose type has no faithful spelling here (`timestamptz`, `json`, a
  * `sql native` type, a nested type off DuckDB) is left out, so the served copy
@@ -446,14 +445,13 @@ export function storedColumnsOfOutput(
       /**
        * Store a `bigint` (Malloy's numberType for a 64-bit integer read back
        * from a table) as BIGINT rather than DOUBLE: for a schema read off a
-       * table, under the v1 cutover. Off, as before (a `#(materialize)`
-       * plan's compiled output).
+       * v1 table. Off for a `#(materialize)` plan's compiled output.
        */
       bigint?: boolean;
       /**
        * Store a `timestamptz` as TIMESTAMP WITH TIME ZONE rather than leaving
-       * the column out: for a v1 table's schema under the v1 cutover, whose
-       * every column the served copy must declare. Off, as before.
+       * the column out: for a v1 table's schema, whose every column the
+       * served copy must declare. Off otherwise.
        */
       timestamptz?: boolean;
    },
@@ -855,8 +853,8 @@ export function duckdbTypeToMalloyType(
  * declaration ({@link declarableColumns}), so a query reading it is answered
  * live.
  *
- * The one rule for every stored table's `type:`: the serve shape, the
- * chained build's parents, and the served copy.
+ * The one rule for every stored table's `type:`: the chained build's parents
+ * and the served copy.
  */
 export function storedMalloyType(stored: string): string | undefined {
    const parsed = parseStoredType(stored);

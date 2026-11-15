@@ -6,8 +6,7 @@
  * order Malloy's `getBuildTargets` reports, the build target each source maps
  * onto, the content address (`sourceEntityId`) every plan, build and serve
  * path agrees on, the compiler's own key, and the connection digests both are
- * hashed with. The one place an address is computed. Split out of
- * build_plan.ts; behaviour unchanged.
+ * hashed with. The one place an address is computed.
  */
 
 import type {
@@ -165,7 +164,7 @@ export function buildTargetOf(
 
 /**
  * The SQL `source`'s table is keyed by: the target's fully inlined `sql`, with
- * no manifest substitution, so it describes what the source computes whatever
+ * no compiler manifest substitution, so it describes what the source computes whatever
  * else has been built.
  */
 export function addressSQL(
@@ -256,7 +255,8 @@ export function plannedTargetOf(
 /**
  * The sourceEntityId for a persist source: a stable content address of its
  * connection identity and canonical SQL. The only place the publisher derives
- * the id, so planning, build and serve-time manifest resolution all agree.
+ * the id, so planning, build and serve-time run manifest resolution all
+ * agree.
  *
  * The connection digest is fingerprint-aware (see applyConnectionFingerprint in
  * connection.ts), so ids survive credential rotation.
@@ -295,8 +295,7 @@ export function computeSourceEntityId(
  * The key the compiler itself files a source's table under: its target's
  * `buildId`, which the compiler computed and looks tables up by. Like
  * {@link computeSourceEntityId} but without the folded destination, so for a
- * source that has one the two differ and a manifest handed to the compiler
- * carries the entry under both (see `manifestForCompiler`).
+ * source that has one the two differ and a compiler manifest carries the entry under both (see `manifestForCompiler`).
  *
  * `connectionDigests` is unused: the target's key was computed under the
  * runtime's own digests, for the same connections Publisher resolves
@@ -335,7 +334,7 @@ export function addressDestination(source: PersistSource): string | undefined {
  * Fold what the target's `sql` cannot carry into the text a source's address
  * is computed from: (P12, behind a switch) the storage destination it builds
  * into. The target's `sql` carries no annotation bytes, so without this a
- * source moved to `storage=` would keep its colocated address (#7087).
+ * source moved to `storage=` would keep its colocated address.
  *
  * Derived here rather than passed in so every caller agrees
  * (`build_targets_address_equality` pins it). Nothing to fold appends

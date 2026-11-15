@@ -42,8 +42,8 @@ export function declarationSpans(
    options: {
       /**
        * Walk back over trailing `include { … }` blocks too, so the run is
-       * everything after the base (a v1 query-shaped source's re-root under
-       * the cutover keeps its author's `include`, review F3).
+       * everything after the base (a v1 query-shaped source's re-root keeps
+       * its author's `include`).
        */
       throughIncludes?: boolean;
    } = {},

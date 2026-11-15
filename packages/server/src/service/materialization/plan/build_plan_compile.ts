@@ -65,7 +65,7 @@ export async function compilePackageBuildPlan(
    // Every declared primary key, by sourceID, for the stored-table key checks.
    const primaryKeys = new Map<string, string>();
    // Each `#(materialize)` uniqueness check's compiler over a run's
-   // manifest: this plan is built on the thread that runs builds.
+   // compiler manifest: this plan is built on the thread that runs builds.
    const keyCheckCompilers = new Map<string, KeyCheckCompiler>();
    const yielder = createEventLoopYielder();
 
@@ -145,7 +145,7 @@ export async function compilePackageBuildPlan(
    // checks that key unique and never NULL.
    await compileParentKeyChecks(rollupPlans, parentKeyNeeds, joinedKeyNeeds);
    // A `storage=` rollup read that way is read beside the query source's
-   // stored table (#1704): each stored source's key is checked over its
+   // stored table: each stored source's key is checked over its
    // table at its own build instead.
    const storedKeyChecks = storedKeyChecksOf(
       rollupPlans,

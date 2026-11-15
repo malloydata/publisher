@@ -94,7 +94,7 @@ interface GeneratedMaterialize {
     */
    generatedURLs: ReadonlySet<string>;
    /**
-    * Each uniqueness check's compiler over a run's manifest, by
+    * Each uniqueness check's compiler over a run's compiler manifest, by
     * {@link keyCheckCompilerKey}: compiled through the companion, which only
     * this process holds.
     */
@@ -535,9 +535,9 @@ async function compileCompanion(
    const checkCompilers = new Map<string, KeyCheckCompiler>();
    // The P8 checks' SQL, compiled now (never run here) so a build runs it
    // against the joined source's connection before it writes anything.
-   // Each check can also be compiled again over a run's manifest, so a run
-   // whose parent build reads the joined source's persisted table checks that
-   // table (inline_uniqueness.ts).
+   // Each check can also be compiled again over a run's compiler manifest, so
+   // a run whose parent build reads the joined source's persisted table checks
+   // that table (inline_uniqueness.ts).
    for (const plan of plans) {
       for (const check of plan.uniquenessChecks ?? []) {
          check.sql = await materializer

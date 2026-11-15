@@ -2,19 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The generated build companion for v1 `#@ persist` (materialization v2's
- * D3, first half; phase 3 pull request 6d).
+ * The generated build companion for v1 `#@ persist`.
  *
  * Malloy plans persisted sources only in a file that carries
  * `##! experimental.persistence`, and refuses a non-empty build manifest on
- * one that does not. An author's file needs the flag only for that: under the
- * v1 cutover the served copy reads every table, and the live compile takes
- * no manifest. So for a model file that declares `#@ persist` without the
+ * one that does not. An author's file needs the flag only for that: the
+ * served copy reads every table, and the live compile takes no build
+ * manifest. So for a model file that declares `#@ persist` without the
  * flag, the planner compiles a build copy of the file with the flag as its
- * first line, served over the file's own URL (the #1644 build-copy
- * mechanism's overlay), and asks it for build targets: every `sourceID` is the
- * author's, so the plan keys as before, and a file that has the flag is
- * planned from itself, unchanged. A v1 source's address must not move
+ * first line, served over the file's own URL (an overlay, like the
+ * `#(materialize)` build copy's), and asks it for build targets: every
+ * `sourceID` is the author's, so the plan keys as for the author's file, and
+ * a file that has the flag is planned from itself, unchanged. A v1 source's address must not move
  * between the two (`v1_build_companion_corpus.spec.ts`).
  */
 

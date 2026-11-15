@@ -341,10 +341,10 @@ export interface MaterializePlan {
    /**
     * The probe compiler found the source's rows the same in every query time
     * zone (P9): its `where:` terms and base relation compile to the same SQL
-    * at every probe zone. Absent: a `where: ts > @2026-03-08 09:00` (or a
-    * base the probe could not clear) filtered the table's rows in the
-    * build's zone, so a query that sets a `timezone:` over it is answered
-    * live.
+    * at every probe zone. Absent: a `where:` against a timestamp literal,
+    * which compiles in the query's zone (or a base the probe could not
+    * clear), filtered the table's rows in the build's zone, so a query that
+    * sets a `timezone:` over it is answered live.
     */
    zoneFreeRows?: true;
    /** One uniqueness check per inlined join_one (P8). */
@@ -459,8 +459,8 @@ export interface RollupMeasure {
  */
 export interface RollupVariantPlan extends RollupPlan {
    /**
-    * Marks a rollup the variant leg plans and serves: a `#(preaggregate)`
-    * one, or a v1 `#@ preaggregate` line read as one (the cutover's G4).
+    * Marks a rollup the rollup leg plans and serves: a `#(preaggregate)`
+    * one, or a v1 `#@ preaggregate` line read as one.
     */
    variant: true;
    baseSourceID: string;
@@ -475,7 +475,7 @@ export interface RollupVariantPlan extends RollupPlan {
    fanOutDimensions: string[];
    /**
     * Whether the base declares a row-level gate (`#(access_filter)` or
-    * `#(authorize)`): the join-to-rollup leg (A7) reads the rollup through a
+    * `#(authorize)`): the join-to-rollup branch (A7) reads the rollup through a
     * join, where no gate is grafted, so it declines such a base.
     */
    baseGated: boolean;
@@ -489,14 +489,14 @@ export interface RollupVariantPlan extends RollupPlan {
     * set when the grain is one dimension of the base, the rollup is
     * colocated, and the companion compiled the check. A run builds it only
     * when a join_one in the package is keyed on that dimension (see
-    * {@link joinOneKeysOf}); the join-to-rollup leg (A7) reads its outcome.
+    * {@link joinOneKeysOf}); the join-to-rollup branch (A7) reads its outcome.
     */
    keyCheck?: RollupKeyCheck;
    /**
     * The primary key checks of the query sources that read this rollup through
     * a join read as a join_many (see {@link readsAsJoinMany}): set at plan time
     * for each such source the package declares (see {@link parentKeyNeedsOf}),
-    * and run by the rollup's build. The join-to-rollup leg (A7) reads their
+    * and run by the rollup's build. The join-to-rollup branch (A7) reads their
     * outcome: a rollup row is met by every parent row that shares its key, so
     * the leg answers as live does only when the query source's key is unique
     * and never NULL.

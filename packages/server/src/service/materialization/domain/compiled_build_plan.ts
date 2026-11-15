@@ -72,8 +72,8 @@ export interface CompiledBuildPlan<Finding = unknown> {
    /** Findings on the authored `#@` annotations (see annotation_reader). */
    annotationFindings?: Finding[];
    /**
-    * Each `#(materialize)` uniqueness check's compiler over a run's manifest,
-    * by `keyCheckCompilerKey`; set only on a plan compiled on the thread
+    * Each `#(materialize)` uniqueness check's compiler over a run's compiler
+    * manifest, by `keyCheckCompilerKey`; set only on a plan compiled on the thread
     * that builds (`build_plan_compile.ts`).
     */
    keyCheckCompilers?: ReadonlyMap<string, KeyCheckCompiler>;

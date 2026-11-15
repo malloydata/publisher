@@ -23,7 +23,7 @@
  * addresses the generated target like any other persist source.
  *
  * What is stored: every atomic dimension of `src`, each under its own name,
- * computed or not (decided 2026-11-12), so the stored table carries the
+ * computed or not, so the stored table carries the
  * author's names and an outside reader sees `order_month`, not a suffixed
  * column. The served copy (the re-root rewriter) drops a stored computed
  * dimension's definition, so the column stands in for it, and carries the
@@ -31,7 +31,7 @@
  * and joins are not stored: the served copy keeps them as written, re-bound
  * over the stored columns.
  *
- * Hidden fields (P3, decided 2026-11-12). A query cannot select a `private`
+ * Hidden fields (P3). A query cannot select a `private`
  * or `internal` field, so the source's own and its inherited `internal`
  * fields are built from a copy of its file with its own access modifiers
  * lifted ({@link buildCopyText}), and stored under their own names, each
@@ -52,7 +52,7 @@
  * as it re-roots a `storage=` source on its destination; v1's colocated
  * `#@ persist` is still served through Malloy's build manifest.
  *
- * Joins (phase 3 PR 4). A join is a reference by default: it is not stored,
+ * Joins. A join is a reference by default: it is not stored,
  * the served copy keeps it as written, and it reads the joined source (its own
  * table, when that source is materialized) at query time. So a dimension whose
  * value reads through a reference join is not stored either; the served copy
@@ -67,7 +67,7 @@
  * skips it only when the joined table provably has not changed since it
  * passed (run/inline_uniqueness.ts).
  *
- * `inline=["j"]` on a join_many (phase 4, P5) stores a pair table: one row per
+ * `inline=["j"]` on a join_many (P5) stores a pair table: one row per
  * row of live's LEFT JOIN through the join, as `select:` through it reads them,
  * so a parent with no child keeps one row with null child columns. The build
  * is a `group_by:` of the source's own stored columns and the joined source's
@@ -80,8 +80,8 @@
  * served_copy.ts): the join's name is a record of the `j__<field>` columns, a
  * measure over the source's own fields aggregates the rows the flag marks, and
  * an aggregate through the join reads every row, a childless parent's
- * null-extended row included. Live reads that row for a `min` or `max`, and,
- * since malloydata/malloy#3208, skips it for a `count()`, `sum` or `avg`, so
+ * null-extended row included. Live reads that row for a `min` or `max`, and
+ * skips it for a `count()`, `sum` or `avg`, so
  * the served copy re-declares a measure through the join that counts, or
  * sums a value not null on that row, over the rows where the joined
  * source's stored key is not null, as live does. That test needs the key
@@ -112,8 +112,7 @@
  * whole parents over a per-parent watermark ({@link pairIncremental}; across
  * blocks, {@link PAIR_BLOCK_WATERMARK}), or is rebuilt in full with a warning.
  *
- * Not yet (each is a later pull request's, and is refused or left out here
- * rather than built wrong):
+ * Refused rather than built wrong:
  * - `inline=` on a join_cross is refused.
  * - A given-reading `where:` or dimension written anywhere but the
  *   materialized source's own declaration (a base in this file or another,
@@ -156,9 +155,10 @@
  * answers live, under the term, and the warning says to move the term or the
  * dimension onto the materialized source itself. A zone-dependent dimension a
  * base declares is stored as built, in the default zone, and a `timezone:`
- * query over the table is answered live. #1637's leak was a re-root that
- * dropped a given-reading `where:`; the served copy's given-term check still
- * refuses any re-root whose compiled filters lost one (`keepsGivenTerms`).
+ * query over the table is answered live. A re-root that dropped a
+ * given-reading `where:` would serve every caller's rows, so the served copy's
+ * given-term check also refuses any re-root whose compiled filters lost one
+ * (`keepsGivenTerms`).
  *
  * A current-time `where:` term is a rolling window (rolling_window.ts): a lower
  * bound builds as written, since the build's own `now` is the widest-set
