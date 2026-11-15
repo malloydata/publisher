@@ -92,6 +92,7 @@ import {
 import {
    boundTablePath,
    sqlReadsTable,
+   tablesReadForGates,
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
@@ -769,6 +770,8 @@ export class ServedCopyServe {
       virtualMap: VirtualMap;
       bindings: Binding[];
       tablesRead: Binding[];
+      /** What the answer is judged to read for its gates (tablesReadForGates). */
+      gateTablesRead: Binding[];
       /**
        * The served copy's compiled model, where a row-level gate is grafted
        * when this answer runs (R3): the gate's text is the author's, kept in
@@ -937,6 +940,7 @@ export class ServedCopyServe {
          virtualMap,
          bindings: compiled.rerooted,
          tablesRead,
+         gateTablesRead: tablesReadForGates(sql, compiled.rerooted, tablesRead),
          graftScope: {
             modelDef: compiled.modelDef as ModelDef,
             materializer: compiled.materializer,
