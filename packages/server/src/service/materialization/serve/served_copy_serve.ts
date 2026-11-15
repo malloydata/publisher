@@ -1362,7 +1362,12 @@ export class ServedCopyServe {
       });
       if (!declarable) return undefined;
       ({ columns, columnsLeftOut } = declarable);
-      const zoned = zonedTruncations(columns, def, fieldsByName);
+      const zoned = zonedTruncations(
+         columns,
+         def,
+         fieldsByName,
+         chainZoneOf(map, def),
+      );
       if (zoned.leftOut.length > 0) {
          // Left out like any column no read gives exactly, with its own
          // reason when a query reads it (`readsZonedTruncation`).
@@ -4268,8 +4273,9 @@ export function staleOnChain(
  * The re-root's timestamp truncations, which it restates over the stored
  * value (`d is d__stored.day`) and so truncates again in the zone the reading
  * query runs in: the identity only in the zone the build truncated it in. A
- * query-shaped source that sets a zone, in its query or on itself, reads in
- * another zone than it was built in (its query's stage zone ends with the
+ * query-shaped source with a zone (set in its query, on itself, or inherited
+ * from the base its query runs on, `ev_ny -> { … }`) reads in another zone
+ * than it was built in (its query's stage zone ends with the
  * query, and its own applies only at read, not to the query that built the
  * table), so each such column is left out (`leftOut`) and a query reading it
  * answers live. Otherwise the columns stay (`restated`), built in the
@@ -4280,6 +4286,8 @@ function zonedTruncations(
    columns: readonly ServedColumn[],
    def: unknown,
    fieldsByName: ReadonlyMap<string, unknown>,
+   /** The zone the source's chain sets, which its query's stage inherits. */
+   chainZone?: string,
 ): { columns: ServedColumn[]; leftOut: string[]; restated: string[] } {
    const truncation = (c: ServedColumn) => {
       const type = (fieldsByName.get(c.name) as { type?: unknown } | undefined)
@@ -4293,7 +4301,7 @@ function zonedTruncations(
    };
    const truncated = columns.filter(truncation).map((c) => c.name);
    const queryShaped = (def as { query?: unknown } | undefined)?.query;
-   if (queryShaped === undefined || !queryTimezoneOf(def)) {
+   if (queryShaped === undefined || !(queryTimezoneOf(def) ?? chainZone)) {
       return { columns: [...columns], leftOut: [], restated: truncated };
    }
    return {

@@ -11,6 +11,11 @@
  * zone again, and a backstop declines any query whose source computes in
  * another zone in the copy than in the author's model.
  *
+ * A query-shaped source whose stage inherits its base's zone
+ * (`ev_ny -> { … d is ts.day }`) stored its truncation in New York and
+ * restated it in UTC; it now leaves it out, so a query reading it answers
+ * live, and one that does not (`hour(ts)`, a filter) stays served.
+ *
  * Every case, colocated and `storage=`, answers equal to live, served or
  * declined; the inherited-zone ones are served. The other cases press the
  * per-column zone rule: joins, extensions that set or alias a zone, nests,
@@ -77,6 +82,8 @@ source: b_ny is duckdb.table('ev') extend {
 }
 #(materialize) ${at("inh2_t")}
 source: inh2 is b_ny extend { measure: total is amt.sum() }
+#(materialize) ${at("qz2_t")}
+source: qz2 is ev_ny -> { group_by: id, ts, h is hour(ts), d is ts.day }
 `;
 }
 /** Each case: its name, its query, and whether it must be served. */
@@ -229,6 +236,18 @@ const CASES: [string, string, boolean][] = [
    [
       "inh2 b_day",
       "run: inh2 -> { group_by: b_day; aggregate: n is count() }",
+      true,
+   ],
+   ["qz2 d", "run: qz2 -> { group_by: d; aggregate: n is count() }", false],
+   ["qz2 select *", "run: qz2 -> { select: *; order_by: id }", false],
+   [
+      "qz2 hour(ts)",
+      "run: qz2 -> { group_by: h2 is hour(ts); aggregate: n is count() }",
+      true,
+   ],
+   [
+      "qz2 filter",
+      "run: qz2 -> { where: ts ? @2024-03-14; aggregate: n is count() }",
       true,
    ],
 ];
