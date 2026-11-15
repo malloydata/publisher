@@ -931,11 +931,12 @@ export const gateSwitches = (): GateSwitches => ({
 
 /**
  * Whether a within-package persist-target COLLISION (two distinct persist
- * sources resolving to the same physical table in the same destination) is a
- * hard publish (and build) rejection, from `PERSIST_COLLISION_ENFORCE`
- * (default `true`). `false` opts out, for a deployment whose existing packages
- * carry a latent collision it cannot fix yet: the collision is then a warning,
- * and still never served from (`sharedTables`). Load is ALWAYS warn-only.
+ * sources resolving to the same physical table in the same destination) fails
+ * the publish and the load (and refuses a build), from
+ * `PERSIST_COLLISION_ENFORCE` (default `true`). `false` opts out of both, for
+ * a deployment whose existing packages carry a latent collision it cannot fix
+ * yet: the colliding sources are then refused alone, and still never served
+ * from the shared table (`sharedTables`).
  */
 export const getPersistCollisionEnforce = (): boolean =>
    settings.get("persist.collisionEnforcementEnabled");

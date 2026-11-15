@@ -9,7 +9,11 @@ import { pathToFileURL } from "url";
 
 import "@malloydata/db-duckdb/native";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { findingSeverity } from "./annotation_reader";
+import {
+   findingSeverity,
+   PERSIST_NOT_BUILT_CODE,
+   PERSIST_SOURCE_REFUSED_ALIAS_CODE,
+} from "./annotation_reader";
 import {
    Connection,
    ConnectionRuntime,
@@ -1968,7 +1972,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.materialization.storedColumnTypeWarnings(),
          ...this.materialization.nativeSchemaWarnings(),
          ...this.materialization.servedCopyWarnings(),
-         ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.repeatedJoinOneKeyWarnings(),
          ...this.materialization.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
@@ -1986,8 +1989,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...(this.surfaceWidenedWarning !== undefined
             ? [{ message: this.surfaceWidenedWarning }]
             : []),
-         // A collision spans sources, so it has no subject; the message names them.
-         ...this.persistenceCollisionWarnings().map((message) => ({ message })),
+         // A collision spans sources, so it has no subject; the message names
+         // them. Only under PERSIST_COLLISION_ENFORCE=false: otherwise it
+         // fails the load (formatInvalidAnnotations).
+         ...this.persistenceCollisionWarnings().map((message) => ({
+            message,
+            code: PERSIST_NOT_BUILT_CODE,
+            severity: "warn" as const,
+         })),
          ...this.preaggregateAccessWarnings(),
          // Legal but probably unintended, e.g. a typo'd merge_key=.
          ...this.materialization.incrementalPolicyAdvisories(),
@@ -1998,7 +2007,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }),
       ];
       if (allWarnings.length > 0) {
-         metadata.warnings = allWarnings;
+         // `persist-not-built` was `persist-source-refused` until this
+         // release: each is repeated under its former code, with the same
+         // message, for one release, then the alias is removed.
+         metadata.warnings = allWarnings.flatMap((warning) =>
+            "code" in warning && warning.code === PERSIST_NOT_BUILT_CODE
+               ? [
+                    warning,
+                    { ...warning, code: PERSIST_SOURCE_REFUSED_ALIAS_CODE },
+                 ]
+               : [warning],
+         );
       }
       return metadata;
    }
@@ -2347,9 +2366,19 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.materialization.formatInvalidPreaggregatePolicy();
    }
 
-   /** See {@link PackageMaterialization.formatUnparseableAnnotations}. */
-   public formatUnparseableAnnotations(): string {
-      return this.materialization.formatUnparseableAnnotations();
+   /**
+    * Every invalid materialization annotation, one per line, or "": the
+    * package's own ({@link PackageMaterialization.formatInvalidAnnotations})
+    * and a misspelled materialization route or directive. Fails the publish
+    * and the load.
+    */
+   public formatInvalidAnnotations(): string {
+      const nearMisses = this.materializationNearMisses().map(
+         (w) => `${w.model}: ${w.message} [${w.code}]`,
+      );
+      return [this.materialization.formatInvalidAnnotations(), ...nearMisses]
+         .filter(Boolean)
+         .join("\n");
    }
 
    /**
@@ -2359,7 +2388,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    public annotationFindingWarnings(): ApiPackageWarning[] {
       return [
-         ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.annotationFindingWarnings(),
          // Not materialization-unreachable: it reports what the surface
          // curates, not an annotation finding.
@@ -2376,11 +2404,22 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * Annotations the package's model files wrote that do nothing: a near miss
     * of a route Publisher owns (`annotation-near-miss`), or a prefix Malloy
-    * cannot route (`annotation-malformed-route`). Warnings, never refusals.
-    * Each model reports only the notes in its own file, so a shared import
-    * is reported once.
+    * cannot route (`annotation-malformed-route`). Warnings, never refusals; a
+    * near miss of a materialization route (`materialization-near-miss`) fails
+    * the load instead (see {@link formatInvalidAnnotations}). Each model
+    * reports only the notes in its own file, so a shared import is reported
+    * once.
     */
    public annotationNearMissWarnings(): ApiPackageWarning[] {
+      return this.nearMissWarnings().filter((w) => w.severity !== "error");
+   }
+
+   /** The near misses of a materialization route, which fail the load. */
+   private materializationNearMisses(): ApiPackageWarning[] {
+      return this.nearMissWarnings().filter((w) => w.severity === "error");
+   }
+
+   private nearMissWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of this.models) {
          // Optional: a model a spec stands in for need not implement it.
@@ -2427,11 +2466,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** See {@link PackageMaterialization.persistenceCollisionWarnings}. */
    public persistenceCollisionWarnings(): string[] {
       return this.materialization.persistenceCollisionWarnings();
-   }
-
-   /** See {@link PackageMaterialization.formatPersistenceCollisionRejections}. */
-   public formatPersistenceCollisionRejections(): string {
-      return this.materialization.formatPersistenceCollisionRejections();
    }
 
    /**

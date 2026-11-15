@@ -3,31 +3,28 @@
 
 /**
  * Every strict-at-publish check joined into one 400 message, or undefined when
- * the package is publishable: explores, persistence policy, `#@` lines that
- * do not parse, incremental
- * refresh, pre-aggregation, and persist-target collisions (unless
- * `PERSIST_COLLISION_ENFORCE=false` opts out, for a deployment with latent
- * collisions it cannot fix yet). At startup/reload these only warn (fail-safe), except the
- * incremental-refresh and pre-aggregation gates, which fail the load too.
+ * the package is publishable: explores, the package manifest's persistence
+ * policy, invalid materialization annotations (which include persist-target
+ * collisions unless `PERSIST_COLLISION_ENFORCE=false` opts out), incremental
+ * refresh and pre-aggregation. At startup/reload the explores and manifest
+ * policy only warn (fail-safe); the rest fail the load too (package_load_gates).
  */
 export function formatPublishRejections(
    pkg: {
       formatInvalidExplores(exploresOverride?: string[]): string;
       formatInvalidPersistencePolicy(): string;
-      formatUnparseableAnnotations(): string;
+      formatInvalidAnnotations(): string;
       formatInvalidIncrementalPolicy(): string;
       formatInvalidPreaggregatePolicy(): string;
-      formatPersistenceCollisionRejections(): string;
    },
    exploresOverride?: string[],
 ): string | undefined {
    const message = [
       pkg.formatInvalidExplores(exploresOverride),
       pkg.formatInvalidPersistencePolicy(),
-      pkg.formatUnparseableAnnotations(),
+      pkg.formatInvalidAnnotations(),
       pkg.formatInvalidIncrementalPolicy(),
       pkg.formatInvalidPreaggregatePolicy(),
-      pkg.formatPersistenceCollisionRejections(),
    ]
       .filter(Boolean)
       .join("\n");

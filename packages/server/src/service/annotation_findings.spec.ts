@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The outcome tiers for `#@` annotation findings, over real packages: what a
- * load reports in `Package.warnings` (malformed is `error`, unservable `warn`),
- * what publish refuses (malformed), and the one metric that counts them.
+ * The outcome tiers for `#@` annotation findings, over real packages: an
+ * invalid (`malformed`) annotation fails the load, and so the publish, with
+ * its code in the message; a valid one Publisher cannot build (`unservable`)
+ * is a `warn` package warning while the package loads; and the one metric
+ * that counts the findings of a package that loads.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -31,6 +33,7 @@ import {
 } from "./materialization/package_materialization";
 import type { PackageAnnotationFinding } from "./annotation_reader";
 import { installSettings } from "../test_helpers/settings_env";
+import { BadRequestError } from "../errors";
 
 let rootDir: string;
 let envPath: string;
@@ -69,92 +72,85 @@ source: raw is duckdb.sql("""SELECT 1 AS amount, 'A' AS category""")
 `;
 const ROLLUP = `source: daily is raw -> { group_by: category; aggregate: total is amount.sum() }`;
 
+/** The load's failure message; fails the test when the package loads. */
+async function loadError(
+   model: string,
+   manifest: Record<string, unknown> = {},
+): Promise<string> {
+   let error: unknown;
+   try {
+      await loadPackage(model, manifest);
+   } catch (e) {
+      error = e;
+   }
+   expect(error).toBeInstanceOf(BadRequestError);
+   return (error as Error).message;
+}
+
+/** Run `body` with materialization v2 on, in a load worker that reads it. */
+async function withMaterialize<T>(
+   body: () => Promise<T>,
+   env: Record<string, string> = {},
+): Promise<T> {
+   const { restore } = installSettings({
+      env: { PUBLISHER_MATERIALIZE: "true", ...env },
+   });
+   // The load worker reads its settings when it starts.
+   await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+   try {
+      return await body();
+   } finally {
+      await __setPackageLoadPoolForTests(null);
+      restore();
+   }
+}
+
 function coded(pkg: Package, code: string) {
    return (pkg.getPackageMetadata().warnings ?? []).filter(
       (w) => w.code === code,
    );
 }
 
-describe("annotation findings on a loaded package", () => {
+describe("an invalid #@ persist annotation fails the load", () => {
    it(
-      "loads a package whose #@ tag does not parse, with an error, and publish refuses it",
+      "a #@ tag that does not parse, with its code",
       async () => {
-         const pkg = await loadPackage(`${RAW}#@ persist name="t\n${ROLLUP}\n`);
-         const [warning] = coded(pkg, "persist-unparseable");
-         expect(warning).toMatchObject({
-            severity: "error",
-            model: "model.malloy",
-         });
-         expect(warning.message).toContain("does not parse");
-         // Malloy drops the source, so it is served live and nothing is planned.
-         expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
-         // Already published, it keeps loading; published anew, it is refused.
-         expect(formatPublishRejections(pkg)).toContain("does not parse");
-         expect(
-            await harness.collectCounter(
-               "publisher_annotation_findings_total",
-               {
-                  code: "persist-unparseable",
-                  tier: "malformed",
-               },
-            ),
-         ).toBe(1);
+         const message = await loadError(
+            `${RAW}#@ persist name="t\n${ROLLUP}\n`,
+         );
+         expect(message).toContain("model.malloy: ");
+         expect(message).toContain("does not parse");
+         expect(message).toContain("[persist-unparseable]");
       },
       { timeout: 30000 },
    );
 
    it(
-      "builds a source whose other #@ line parses, and says the broken line's directives are missing",
+      "a broken #@ line beside one that parses",
       async () => {
-         const pkg = await loadPackage(
+         const message = await loadError(
             `${RAW}#@ persist name="t"\n#@ refresh="full" queryMetadata="x\n${ROLLUP}\n`,
          );
-         const [warning] = coded(pkg, "persist-unparseable");
-         expect(warning).toMatchObject({ severity: "error", subject: "daily" });
-         expect(warning.message).toContain("built from its other #@ lines");
-         expect(warning.message).not.toContain("served live");
-         expect(
-            Object.values(pkg.getBuildPlan()?.sources ?? {}).map((s) => s.name),
-         ).toEqual(["daily"]);
+         expect(message).toContain('#@ persist source "daily"');
+         expect(message).toContain("[persist-unparseable]");
       },
       { timeout: 30000 },
    );
 
    it(
-      "refuses an unparseable #@ only at publish: the scheduler keeps it, and a policy PATCH is not refused",
+      "even with a schedule armed: the package does not load to schedule anything",
       async () => {
-         writePackageFiles(
-            path.join(envPath, "pkg"),
-            { "model.malloy": `${RAW}#@ persist name="t\n${ROLLUP}\n` },
-            {
-               manifest: {
-                  name: "pkg",
-                  description: "fixture",
-                  materialization: { scope: "version", schedule: "0 * * * *" },
-               },
-            },
+         const message = await loadError(
+            `${RAW}#@ persist name="t\n${ROLLUP}\n`,
+            { materialization: { scope: "version", schedule: "0 * * * *" } },
          );
-         const env = await Environment.create("testEnv", envPath, []);
-         await env.addPackage("pkg");
-         const pkg = await env.getPackage(parsePackageName("pkg"), false);
-         expect(formatPublishRejections(pkg)).toContain("does not parse");
-         // The scheduler disarms a package on any persistence-policy warning.
-         expect(pkg.persistencePolicyWarnings()).toEqual([]);
-         // A metadata PATCH that edits the policy judges the same list.
-         const patched = await env.updatePackage("pkg", {
-            name: "pkg",
-            materialization: { schedule: "30 * * * *" },
-         });
-         expect(
-            (patched as { materialization?: { schedule?: string } })
-               .materialization?.schedule,
-         ).toBe("30 * * * *");
+         expect(message).toContain("[persist-unparseable]");
       },
       { timeout: 30000 },
    );
 
    it(
-      "reports a finding on an imported persist source once, in the model that declares it",
+      "names a finding on an imported persist source once, in the model that declares it",
       async () => {
          writePackageFiles(
             path.join(envPath, "pkg"),
@@ -165,28 +161,34 @@ describe("annotation findings on a loaded package", () => {
             { manifest: { name: "pkg", description: "fixture" } },
          );
          const env = await Environment.create("testEnv", envPath, []);
-         await env.addPackage("pkg");
-         const pkg = await env.getPackage(parsePackageName("pkg"), false);
-         const unknown = coded(pkg, "persist-unknown-key").filter(
-            (w) => w.subject === "daily",
-         );
-         expect(unknown).toHaveLength(1);
-         expect(unknown[0]?.model).toBe("model.malloy");
+         let error: unknown;
+         try {
+            await env.addPackage("pkg");
+         } catch (e) {
+            error = e;
+         }
+         expect(error).toBeInstanceOf(BadRequestError);
+         const lines = (error as Error).message
+            .split("\n")
+            .filter(
+               (l) =>
+                  l.includes("[persist-unknown-key]") &&
+                  l.includes('source "daily"'),
+            );
+         expect(lines).toHaveLength(1);
+         expect(lines[0]).toStartWith("model.malloy: ");
       },
       { timeout: 30000 },
    );
 
    it(
-      "reports a retired key as an error with its rewrite",
+      "a retired key, with its rewrite",
       async () => {
-         const pkg = await loadPackage(
+         const message = await loadError(
             `${RAW}#@ persist name="t" schedule="0 * * * *"\n${ROLLUP}\n`,
          );
-         const [warning] = coded(pkg, "persist-retired-key");
-         expect(warning).toMatchObject({ severity: "error", subject: "daily" });
-         expect(warning.message).toContain("materialization.schedule");
-         // Refused at publish, as it was before the finding existed.
-         expect(formatPublishRejections(pkg)).toContain("schedule=");
+         expect(message).toContain("materialization.schedule");
+         expect(message).toContain("[persist-retired-key]");
       },
       { timeout: 30000 },
    );
@@ -216,97 +218,54 @@ source: daily is raw -> { where: category = $CAT; group_by: category; aggregate:
       ],
       ["an otherwise-refused source's", GIVEN_IN_QUERY],
    ])(
-      "refuses %s #@ persist partition= at publish, saying to remove it",
+      "%s #@ persist partition=, saying to remove it",
       async (_case, model) => {
-         const pkg = await loadPackage(model);
-         const [warning] = coded(pkg, "persist-retired-key");
-         expect(warning).toMatchObject({ severity: "error", subject: "daily" });
-         expect(warning.message).toContain("`partition=`");
-         expect(warning.message).toContain("partition= is not supported");
-         expect(warning.message).toContain("remove it");
-         // Not the vaguer unknown-key warning, which publish would allow.
-         expect(coded(pkg, "persist-unknown-key")).toEqual([]);
-         expect(formatPublishRejections(pkg)).toContain(
-            "partition= is not supported",
-         );
+         const message = await loadError(model);
+         expect(message).toContain("`partition=`");
+         expect(message).toContain("partition= is not supported");
+         expect(message).toContain("remove it");
+         expect(message).toContain("[persist-retired-key]");
+         // Not the vaguer unknown key.
+         expect(message).not.toContain("[persist-unknown-key]");
       },
       { timeout: 30000 },
    );
 
    it(
-      "refuses #@ persist partition= only at publish: the scheduler keeps it, and a policy PATCH is not refused",
+      "an unknown key, with the likely spelling",
       async () => {
-         writePackageFiles(
-            path.join(envPath, "pkg"),
-            {
-               "model.malloy": `${RAW}#@ persist name="t" partition="category"\n${ROLLUP}\n`,
-            },
-            {
-               manifest: {
-                  name: "pkg",
-                  description: "fixture",
-                  materialization: { scope: "version", schedule: "0 * * * *" },
-               },
-            },
+         const message = await loadError(
+            `${RAW}#@ persist nmae="t"\n${ROLLUP}\n`,
          );
-         const env = await Environment.create("testEnv", envPath, []);
-         await env.addPackage("pkg");
-         const pkg = await env.getPackage(parsePackageName("pkg"), false);
-         expect(formatPublishRejections(pkg)).toContain(
-            "partition= is not supported",
-         );
-         // The scheduler disarms a package on any persistence-policy warning.
-         expect(pkg.persistencePolicyWarnings()).toEqual([]);
-         const patched = await env.updatePackage("pkg", {
-            name: "pkg",
-            materialization: { schedule: "30 * * * *" },
-         });
-         expect(
-            (patched as { materialization?: { schedule?: string } })
-               .materialization?.schedule,
-         ).toBe("30 * * * *");
+         expect(message).toContain("did you mean `name=`?");
+         expect(message).toContain("[persist-unknown-key]");
       },
       { timeout: 30000 },
    );
 
-   it(
-      "reports an unknown key on a plain persist source as a warning, and publish allows it",
-      async () => {
-         const pkg = await loadPackage(
-            `${RAW}#@ persist name="t" merge_keys="category"\n${ROLLUP}\n`,
-         );
-         const [warning] = coded(pkg, "persist-unknown-key");
-         expect(warning).toMatchObject({ severity: "warn", subject: "daily" });
-         expect(warning.message).toContain("merge_keys=");
-         expect(formatPublishRejections(pkg)).toBeUndefined();
-         expect(
-            await harness.collectCounter(
-               "publisher_annotation_findings_total",
-               {
-                  code: "persist-unknown-key",
-                  tier: "unservable",
-               },
-            ),
-         ).toBe(1);
+   it.each([
+      [
+         "a filtered pass-through",
+         `${RAW}#@ persist\nsource: passthrough is duckdb.table('rows.csv') extend { where: a > 0 }\n`,
+      ],
+      [
+         // A table base with only a measure added: Malloy plans nothing for
+         // it, and a run used to refuse every sibling's build over it.
+         "a table base with a measure, stored",
+         `${RAW}#@ persist storage="lake"\nsource: passthrough is duckdb.table('rows.csv') extend { measure: n is count() }\n`,
+      ],
+   ])(
+      "a #@ persist on a shape Malloy does not plan: %s",
+      async (_case, model) => {
+         const message = await loadError(model);
+         expect(message).toContain('#@ persist source "passthrough"');
+         expect(message).toContain("[persist-not-materializable]");
       },
       { timeout: 30000 },
    );
+});
 
-   it(
-      "codes a persist source that cannot be materialized",
-      async () => {
-         const pkg = await loadPackage(
-            `${RAW}#@ persist\nsource: passthrough is duckdb.table('rows.csv') extend { where: a > 0 }\n`,
-         );
-         const [warning] = coded(pkg, "persist-not-materializable");
-         expect(warning).toMatchObject({
-            severity: "warn",
-            subject: "passthrough",
-         });
-      },
-      { timeout: 30000 },
-   );
-
+describe("annotation findings on a loaded package", () => {
    it(
       "codes a pre-aggregation of a field the source hides",
       async () => {
@@ -340,229 +299,203 @@ source: daily is raw -> { where: category = $CAT; group_by: category; aggregate:
                /^(persist|preaggregate)-/.test(w.code ?? ""),
             ),
          ).toEqual([]);
+         expect(formatPublishRejections(pkg)).toBeUndefined();
       },
       { timeout: 30000 },
    );
 
    it(
-      "refuses an unknown #(materialize) key at publish, with the switch on",
+      "plans #(materialize) name= at that name, whatever the package's scope, colocated or stored",
       async () => {
-         const { restore } = installSettings({
-            env: { PUBLISHER_MATERIALIZE: "true" },
-         });
-         // The load worker reads its settings when it starts.
-         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
-         try {
-            const pkg = await loadPackage(
-               `${RAW}#(materialize) nmae="t"\nsource: orders is raw\n`,
-            );
-            const [warning] = coded(pkg, "materialize-unknown-key");
-            expect(warning).toMatchObject({
-               severity: "error",
-               subject: "orders",
-            });
-            expect(warning.message).toContain("did you mean `name=`?");
-            // A package already published keeps loading; publish refuses.
-            expect(formatPublishRejections(pkg)).toContain("`nmae=`");
-         } finally {
-            await __setPackageLoadPoolForTests(null);
-            restore();
-         }
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "refuses a #(materialize) partition= at publish, saying to remove it",
-      async () => {
-         const { restore } = installSettings({
-            env: { PUBLISHER_MATERIALIZE: "true" },
-         });
-         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
-         try {
-            const pkg = await loadPackage(
-               `${RAW}#(materialize) name="t" storage="lake" partition="category"\nsource: orders is raw\n`,
-            );
-            const [warning] = coded(pkg, "materialize-retired-key");
-            expect(warning).toMatchObject({
-               severity: "error",
-               subject: "orders",
-            });
-            expect(warning.message).toContain("`partition=`");
-            expect(warning.message).toContain("partition= is not supported");
-            expect(warning.message).toContain("remove it");
-            expect(coded(pkg, "materialize-unknown-key")).toEqual([]);
-            expect(formatPublishRejections(pkg)).toContain("`partition=`");
-         } finally {
-            await __setPackageLoadPoolForTests(null);
-            restore();
-         }
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "plans #(materialize) name= at that name, whatever the package's scope, colocated or stored, and refuses no publish",
-      async () => {
-         const { restore } = installSettings({
-            env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
-         });
-         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
-         try {
-            for (const [manifest, keys] of [
-               [{}, ""],
-               [{ materialization: { scope: "package" } }, ' storage="lake"'],
-               [{ materialization: { scope: "version" } }, ""],
-            ] as const) {
-               for (const [name, written] of [
-                  [' name="analytics.orders_t"', "analytics.orders_t"],
-                  ["", "orders"],
+         await withMaterialize(
+            async () => {
+               for (const [manifest, keys] of [
+                  [{}, ""],
+                  [
+                     { materialization: { scope: "package" } },
+                     ' storage="lake"',
+                  ],
+                  [{ materialization: { scope: "version" } }, ""],
                ] as const) {
-                  await fs.rm(path.join(envPath, "pkg"), {
-                     recursive: true,
-                     force: true,
-                  });
-                  const pkg = await loadPackage(
-                     `${RAW}#(materialize)${name}${keys}\nsource: orders is raw\n`,
-                     manifest,
-                  );
-                  // Planned, under the author's name (schema included) or the
-                  // source's own; the run adds a suffix only to the latter.
-                  expect(
-                     Object.values(pkg.getBuildPlan()?.sources ?? {}).map(
-                        (s) => s.annotationFields?.name,
-                     ),
-                  ).toEqual([written]);
-                  expect(formatPublishRejections(pkg)).toBeUndefined();
+                  for (const [name, written] of [
+                     [' name="analytics.orders_t"', "analytics.orders_t"],
+                     ["", "orders"],
+                  ] as const) {
+                     await fs.rm(path.join(envPath, "pkg"), {
+                        recursive: true,
+                        force: true,
+                     });
+                     const pkg = await loadPackage(
+                        `${RAW}#(materialize)${name}${keys}\nsource: orders is raw\n`,
+                        manifest,
+                     );
+                     // Planned, under the author's name (schema included) or
+                     // the source's own; the run adds a suffix only to the latter.
+                     expect(
+                        Object.values(pkg.getBuildPlan()?.sources ?? {}).map(
+                           (s) => s.annotationFields?.name,
+                        ),
+                     ).toEqual([written]);
+                     expect(formatPublishRejections(pkg)).toBeUndefined();
+                  }
                }
-            }
-            // #(preaggregate) never took a name=: an unknown key, refused too.
-            await fs.rm(path.join(envPath, "pkg"), {
-               recursive: true,
-               force: true,
-            });
-            const rollup = await loadPackage(
-               `${RAW}source: sales is raw extend {\n  #(preaggregate) grain=["category"] name="r"\n  measure: total is amount.sum()\n}\n`,
-            );
-            expect(formatPublishRejections(rollup)).toContain("name");
-         } finally {
-            await __setPackageLoadPoolForTests(null);
-            restore();
-         }
-      },
-      { timeout: 60000 },
-   );
-
-   it(
-      "under scope: version, a defaulted #(materialize) name and an equal name= write one table, and both are refused; unversioned they are two",
-      async () => {
-         const { restore } = installSettings({
-            env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
-         });
-         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
-         try {
-            const model = `${RAW}#(materialize) storage="lake"
-source: daily is raw extend { where: amount > 0 }
-
-#(materialize) name="daily" storage="lake"
-source: other is raw extend { where: amount < 0 }
-`;
-            const refusedIn = async (manifest: Record<string, unknown>) => {
+               // #(preaggregate) never took a name=: an unknown key.
                await fs.rm(path.join(envPath, "pkg"), {
                   recursive: true,
                   force: true,
                });
-               const pkg = await loadPackage(model, manifest);
-               return coded(pkg, "materialize-not-built")
-                  .map((w) => w.subject)
-                  .sort();
-            };
-            // Both take the version's suffix: daily__v<...> twice.
-            expect(
-               await refusedIn({ materialization: { scope: "version" } }),
-            ).toEqual(["daily", "other"]);
-            // Unversioned, the defaulted one takes the package's suffix.
-            expect(await refusedIn({})).toEqual([]);
-         } finally {
-            await __setPackageLoadPoolForTests(null);
-            restore();
-         }
+               const message = await loadError(
+                  `${RAW}source: sales is raw extend {\n  #(preaggregate) grain=["category"] name="r"\n  measure: total is amount.sum()\n}\n`,
+               );
+               expect(message).toContain("[preaggregate-unknown-key]");
+            },
+            { PERSIST_STORAGE_MODE: "on" },
+         );
       },
       { timeout: 60000 },
    );
 
    it(
-      "refuses a #(materialize) line that does not parse at publish, with the switch on",
+      "with the switch off, reads neither v2 route: no finding, and the package loads",
       async () => {
-         const { restore } = installSettings({
-            env: { PUBLISHER_MATERIALIZE: "true" },
-         });
-         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
-         try {
-            const pkg = await loadPackage(
-               `${RAW}#(materialize) name="t\nsource: orders is raw\n`,
-            );
-            const [warning] = coded(pkg, "materialize-unparseable");
-            expect(warning).toMatchObject({
-               severity: "error",
-               subject: "orders",
-            });
-            expect(warning.message).toContain("does not parse");
-            // Not built: nothing is planned for it.
-            expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
-            // A package already published keeps loading; publish refuses.
-            expect(formatPublishRejections(pkg)).toContain("does not parse");
-         } finally {
-            await __setPackageLoadPoolForTests(null);
-            restore();
-         }
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "with the switch off, reads neither v2 route: no finding, and publish is not refused",
-      async () => {
-         const { restore } = installSettings({
-            env: { PUBLISHER_MATERIALIZE: "false" },
-         });
-         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
-         try {
-            for (const line of [
-               '#(materialize) nmae="t"',
-               '#(materialize) name="t',
-               '#(preaggregate) grian=["category"]',
-               '#(preaggregate) grain=["category"',
-            ]) {
-               const pkg = await loadPackage(
-                  `${RAW}${line}\nsource: orders is raw\n`,
-               );
-               const codes = (pkg.getPackageMetadata().warnings ?? []).map(
-                  (w) => w.code,
-               );
-               expect(
-                  codes.filter(
-                     (c) =>
-                        c?.startsWith("materialize-") ||
-                        c?.startsWith("preaggregate-"),
-                  ),
-               ).toEqual([]);
-               expect(formatPublishRejections(pkg)).toBeUndefined();
-            }
-         } finally {
-            await __setPackageLoadPoolForTests(null);
-            restore();
-         }
+         await withMaterialize(
+            async () => {
+               for (const line of [
+                  '#(materialize) nmae="t"',
+                  '#(materialize) name="t',
+                  '#(preaggregate) grian=["category"]',
+                  '#(preaggregate) grain=["category"',
+               ]) {
+                  const pkg = await loadPackage(
+                     `${RAW}${line}\nsource: orders is raw\n`,
+                  );
+                  const codes = (pkg.getPackageMetadata().warnings ?? []).map(
+                     (w) => w.code,
+                  );
+                  expect(
+                     codes.filter(
+                        (c) =>
+                           c?.startsWith("materialize-") ||
+                           c?.startsWith("preaggregate-"),
+                     ),
+                  ).toEqual([]);
+                  expect(formatPublishRejections(pkg)).toBeUndefined();
+               }
+            },
+            { PUBLISHER_MATERIALIZE: "false" },
+         );
       },
       { timeout: 60000 },
    );
 });
 
-describe("the publish refusal for malformed materialization v2 declarations", () => {
-   // The contract a v2 route's reader relies on: any `malformed` finding on
-   // `#(materialize)` or `#(preaggregate)` (one that does not parse, an
-   // unknown key, ...) is refused at publish, while the load only warns.
-   function refusalOf(findings: PackageAnnotationFinding[]): string {
+describe("an invalid #(materialize) fails the load", () => {
+   it.each([
+      [
+         "an unknown key",
+         '#(materialize) nmae="t"',
+         "[materialize-unknown-key]",
+         "did you mean `name=`?",
+      ],
+      [
+         "partition=",
+         '#(materialize) name="t" storage="lake" partition="category"',
+         "[materialize-retired-key]",
+         "partition= is not supported",
+      ],
+      [
+         "a line that does not parse",
+         '#(materialize) name="t',
+         "[materialize-unparseable]",
+         "does not parse",
+      ],
+   ])(
+      "%s",
+      async (_case, line, code, text) => {
+         await withMaterialize(async () => {
+            const message = await loadError(
+               `${RAW}${line}\nsource: orders is raw\n`,
+            );
+            expect(message).toContain(code);
+            expect(message).toContain(text);
+            expect(message).toContain('source "orders"');
+         });
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "under scope: version, a defaulted name and an equal name= write one table: the load fails; unversioned they are two",
+      async () => {
+         await withMaterialize(
+            async () => {
+               const model = `${RAW}#(materialize) storage="lake"
+source: daily is raw extend { where: amount > 0 }
+
+#(materialize) name="daily" storage="lake"
+source: other is raw extend { where: amount < 0 }
+`;
+               const message = await loadError(model, {
+                  materialization: { scope: "version" },
+               });
+               expect(
+                  message
+                     .split("\n")
+                     .filter((l) =>
+                        l.includes("[materialization-table-collision]"),
+                     ),
+               ).toHaveLength(2);
+               // Unversioned, the defaulted one takes the package's suffix.
+               await fs.rm(path.join(envPath, "pkg"), {
+                  recursive: true,
+                  force: true,
+               });
+               const pkg = await loadPackage(model);
+               expect(coded(pkg, "materialize-not-built")).toEqual([]);
+            },
+            { PERSIST_STORAGE_MODE: "on" },
+         );
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "with PERSIST_COLLISION_ENFORCE=false, the colliding sources are refused alone and the package loads",
+      async () => {
+         await withMaterialize(
+            async () => {
+               const pkg = await loadPackage(
+                  `${RAW}#(materialize) name="t"
+source: daily is raw extend { where: amount > 0 }
+
+#(materialize) name="t"
+source: other is raw extend { where: amount < 0 }
+`,
+               );
+               expect(
+                  coded(pkg, "materialize-not-built")
+                     .map((w) => [w.subject, w.severity])
+                     .sort(),
+               ).toEqual([
+                  ["daily", "warn"],
+                  ["other", "warn"],
+               ]);
+               expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual(
+                  [],
+               );
+            },
+            { PERSIST_COLLISION_ENFORCE: "false" },
+         );
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("the load failure for invalid materialization annotations", () => {
+   // The contract every route's reader relies on: any `malformed` finding
+   // fails the load (and so the publish), named with its code, and nothing
+   // `unservable` does.
+   function failureOf(findings: PackageAnnotationFinding[]): string {
       const materialization = new PackageMaterialization(
          {} as unknown as PackageMaterializationOwner,
       );
@@ -571,10 +504,10 @@ describe("the publish refusal for malformed materialization v2 declarations", ()
             annotationFindings: PackageAnnotationFinding[];
          }
       ).annotationFindings = findings;
-      return materialization.formatUnparseableAnnotations();
+      return materialization.formatInvalidAnnotations();
    }
 
-   it("refuses a malformed finding on either v2 route, and nothing unservable", () => {
+   it("names every malformed finding on any route, and nothing unservable", () => {
       const finding = (
          route: string,
          tier: PackageAnnotationFinding["tier"],
@@ -588,16 +521,17 @@ describe("the publish refusal for malformed materialization v2 declarations", ()
          model: "m.malloy",
       });
       expect(
-         refusalOf([
-            finding("preaggregate", "malformed", "preaggregate-malformed"),
+         failureOf([
+            finding("preaggregate", "malformed", "preaggregate-invalid"),
             finding("materialize", "malformed", "materialize-unparseable"),
             finding("materialize", "unservable", "materialize-not-built"),
-            // v1's `#@` unknown key only warns (P13).
-            finding("@", "unservable", "persist-unknown-key"),
+            finding("@", "malformed", "persist-unknown-key"),
+            finding("@", "unservable", "persist-view-not-built"),
          ]).split("\n"),
       ).toEqual([
-         "m.malloy: preaggregate-malformed on preaggregate",
-         "m.malloy: materialize-unparseable on materialize",
+         "m.malloy: preaggregate-invalid on preaggregate [preaggregate-invalid]",
+         "m.malloy: materialize-unparseable on materialize [materialize-unparseable]",
+         "m.malloy: persist-unknown-key on @ [persist-unknown-key]",
       ]);
    });
 });

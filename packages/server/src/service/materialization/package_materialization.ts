@@ -8,8 +8,13 @@ import {
 } from "@malloydata/malloy";
 import {
    findingSeverity,
-   MATERIALIZE_V2_ROUTES,
-   POLICY_REFUSED_RETIRED_KEYS,
+   MATERIALIZATION_STORAGE_MODE_CODE,
+   MATERIALIZATION_TABLE_COLLISION_CODE,
+   MATERIALIZE_INVALID_CODE,
+   PERSIST_INVALID_CODE,
+   PERSIST_NOT_BUILT_CODE,
+   PERSIST_VIEW_INVALID_CODE,
+   PREAGGREGATE_INVALID_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
@@ -111,16 +116,40 @@ type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
 /**
- * `#@ preaggregate` violations that only warn: refusing them would stop
- * already-published packages loading (see formatInvalidPreaggregatePolicy).
+ * `#@ preaggregate` violations of a VALID declaration Publisher cannot build
+ * here: that rollup alone is refused with a warning (its code here), its
+ * measures answered live, and the package loads. Every other violation is an
+ * invalid declaration and fails the load (see formatInvalidPreaggregatePolicy).
+ * The planner skips each of these itself, so nothing is built.
  */
-const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
-   "non_public_measure",
-   "grain_dimension_not_public",
-   // A rollup whose `storage=` names nothing is refused alone, as every
-   // route refuses one (plan/declaration.ts), never the package.
-   "empty_storage",
-]);
+const PREAGG_WARN_ONLY: ReadonlyMap<PreaggregateViolationCode, string> =
+   new Map([
+      // Governance: an extension that hides an inherited field cannot fix
+      // its base's annotation.
+      ["non_public_measure", "preaggregate-hidden-field"],
+      ["grain_dimension_not_public", "preaggregate-hidden-field"],
+      // A rollup over a fan-out join, as `#(preaggregate)` refuses one.
+      ["base_source_has_fanout_join", "preaggregate-join-level"],
+   ]);
+
+/**
+ * The code a `#@ preaggregate` violation that fails the load is named by, the
+ * same as `#(preaggregate)`'s for the same mistake.
+ */
+function preaggregateViolationCode(code: PreaggregateViolationCode): string {
+   if (code === "unknown_key") return "preaggregate-unknown-key";
+   if (code === "unparseable") return "preaggregate-unparseable";
+   if (code === "non_additive_measure") return "preaggregate-not-mergeable";
+   if (code.startsWith("misplaced_")) return "preaggregate-not-a-measure";
+   if (
+      code === "unknown_grain_dimension" ||
+      code.startsWith("grain_") ||
+      code === "truncation_on_non_temporal"
+   ) {
+      return "preaggregate-unknown-grain";
+   }
+   return PREAGGREGATE_INVALID_CODE;
+}
 
 /**
  * Project wire entries to the `sourceEntityId -> { tableName }` map that
@@ -178,14 +207,6 @@ export interface PackageMaterializationOwner {
  * own timeout never fires first.
  */
 const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
-
-/**
- * The code on the warning for a `#@ persist` source a compile-time gate
- * refused (a row-level gate, a free parameter, a given in the persisted query,
- * or a `storage=` source the storage gate refuses). Not counted as an
- * annotation finding: the annotation is well formed.
- */
-export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
 
 /**
  * The code on the warning for a valid rollup Publisher refuses alone at
@@ -287,9 +308,6 @@ export class PackageMaterialization {
            verdicts: LiveVerdicts | undefined;
         }
       | undefined;
-   // `#@ persist` sources Malloy's build walk did not plan, which
-   // would silently serve live. Warned, and refused at build.
-   private droppedPersistSources: { name: string; modelPath: string }[] = [];
    /** Rollups over a gated base whose gates are grafted at read (row 1). */
    private rollupsKeepingGates = new Set<string>();
    /** The base and grain of each refused rollup, by its sourceID. */
@@ -418,7 +436,6 @@ export class PackageMaterialization {
          }
          const {
             plan,
-            droppedPersistSources,
             annotationFindings,
             sourceEligibility,
             colocatedSourceEligibility,
@@ -437,9 +454,10 @@ export class PackageMaterialization {
          this.refusedRollups = refusedRollups ?? {};
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
-         this.droppedPersistSources = droppedPersistSources;
          // `?? []`: an outcome a worker built before this field existed.
-         this.annotationFindings = annotationFindings ?? [];
+         this.annotationFindings = (annotationFindings ?? []).map(
+            relaxedCollision,
+         );
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
          // `?? []`: an outcome a worker built before this field existed.
@@ -464,6 +482,11 @@ export class PackageMaterialization {
             .filter(([sourceID]) => incrementalDeclarations[sourceID])
             .map(([sourceID, source]) => ({
                ...(persistedViews.get(sourceID) ?? { sourceName: source.name }),
+               invalidCode: persistedViews.has(sourceID)
+                  ? PERSIST_VIEW_INVALID_CODE
+                  : materializePlans?.[sourceID]
+                    ? MATERIALIZE_INVALID_CODE
+                    : PERSIST_INVALID_CODE,
                modelPath: source.modelPath,
                dialect: source.dialect,
                storageDestination: source.annotationFields?.storage,
@@ -1261,30 +1284,10 @@ export class PackageMaterialization {
    }
 
    /**
-    * Warnings for `#@ persist` sources Malloy's build walk did not plan (e.g.
-    * a filtered pass-through), which would otherwise silently serve
-    * live. Independent of {@link buildPlan}: a package whose only persist
-    * source is dropped has no plan.
-    */
-   droppedPersistWarnings(): ApiPackageWarning[] {
-      return this.droppedPersistSources.map((d) => ({
-         model: d.modelPath,
-         subject: d.name,
-         code: "persist-not-materializable",
-         severity: "warn" as const,
-         message:
-            `is annotated '#@ persist' but was not recognized as a ` +
-            `materializable source, so nothing is materialized and it is served ` +
-            `live. Only query/aggregate sources build; a filtered pass-through ` +
-            `does not. Persist a query source, or invoke a parameterized source ` +
-            `with a bound argument.`,
-      }));
-   }
-
-   /**
-    * The findings on authored `#@` annotations, as package warnings: a
-    * malformed one (an unparseable tag, a retired key) is `error`, refused at
-    * publish; an unservable one (an unknown key) is `warn`.
+    * The findings on authored annotations, as package warnings: an
+    * unservable one (a valid annotation not built here) is `warn`. A
+    * malformed one fails the load ({@link formatInvalidAnnotations}), so a
+    * serving package carries none; it would be `error`.
     */
    annotationFindingWarnings(): ApiPackageWarning[] {
       return this.annotationFindings.map((finding) => ({
@@ -1348,8 +1351,9 @@ export class PackageMaterialization {
     * Warnings for the sources the compile-time gates refused. Not an
     * annotation finding: the annotation is well formed; the source it sits on
     * cannot be materialized. A `#@ persist` source's is coded
-    * {@link PERSIST_SOURCE_REFUSED_CODE} and carries the gate's message
-    * verbatim, so there is one wording to maintain. A rollup's is coded
+    * {@link PERSIST_NOT_BUILT_CODE} and carries the gate's message verbatim,
+    * so there is one wording to maintain (the package repeats it under its
+    * former code for one release; see Package.getPackageMetadata). A rollup's is coded
     * {@link PREAGGREGATE_NOT_BUILT_CODE}, its message naming its base and
     * grain before the gate's, and its `subject` is its BASE source (its own
     * name is generated), omitted when the base is unavailable.
@@ -1357,7 +1361,7 @@ export class PackageMaterialization {
    persistRefusalWarnings(): ApiPackageWarning[] {
       const refused = this.buildPlan?.refusedSources;
       if (!refused) return [];
-      return Object.entries(refused).map(([sourceID, source]) => {
+      return Object.entries(refused).flatMap(([sourceID, source]) => {
          const rollup =
             source.tier === "preaggregate"
                ? (this.refusedRollups[sourceID] ??
@@ -1384,12 +1388,12 @@ export class PackageMaterialization {
                  }
                : {
                     message: source.message,
-                    code: PERSIST_SOURCE_REFUSED_CODE,
+                    code: PERSIST_NOT_BUILT_CODE,
                     severity: "warn",
                  };
          if (source.modelPath) warning.model = source.modelPath;
          if (subject) warning.subject = subject;
-         return warning;
+         return [warning];
       });
    }
 
@@ -1437,6 +1441,8 @@ export class PackageMaterialization {
             model: source.modelPath ?? "",
             subject: rollup ? rollup.baseSourceName : source.name,
             message,
+            code: MATERIALIZATION_STORAGE_MODE_CODE,
+            severity: "warn",
          });
       }
       return warnings;
@@ -2075,8 +2081,10 @@ export class PackageMaterialization {
    }
 
    /**
-    * The Malloy Persistence policy's REJECTION rules: a non-empty result fails a
-    * publish and disarms the scheduler (warn-only at load). Advisory findings go
+    * The package manifest's Malloy Persistence policy REJECTION rules: a
+    * non-empty result fails a publish and disarms the scheduler (warn-only at
+    * load). A per-source `sharing=` or `schedule=` is an annotation finding
+    * instead, which fails the load. Advisory findings go
     * to materializationConfigWarnings. Cross-package scope rules are not
     * checked: the build plan is intra-package only.
     */
@@ -2090,26 +2098,8 @@ export class PackageMaterialization {
       const packageFreshness = materialization?.freshness ?? null;
       const scope = this.owner.metadata().scope ?? "package";
 
-      // Rule 1: per-source sharing/schedule are retired.
-      for (const source of sources) {
-         const fields = source.annotationFields ?? {};
-         if (fields.sharing !== undefined) {
-            warnings.push(
-               `#@ persist source "${source.name}" declares sharing=... which is ` +
-                  `no longer supported: scope is a single package-level mode. Set ` +
-                  `"materialization": { "scope": "version" | "package" } in ` +
-                  `${PACKAGE_MANIFEST_NAME} instead.`,
-            );
-         }
-         if (fields.schedule !== undefined) {
-            warnings.push(
-               `#@ persist source "${source.name}" declares schedule=... which is ` +
-                  `no longer supported: a schedule is package-root-only. Declare ` +
-                  `"materialization.schedule" at the ${PACKAGE_MANIFEST_NAME} root ` +
-                  `(requires "scope": "version") instead.`,
-            );
-         }
-      }
+      // A per-source sharing= or schedule= is a retired `#@ persist` key:
+      // its finding fails the publish and the load (formatInvalidAnnotations).
 
       // Rule 2: a package-level cron is legal only with scope: version.
       if (packageSchedule && scope !== "version") {
@@ -2152,34 +2142,40 @@ export class PackageMaterialization {
    }
 
    /**
-    * The publish refusal for `#@` lines that do not parse, for a retired
-    * `#@ persist` key the persistence policy does not already refuse
-    * (`partition=`; {@link POLICY_REFUSED_RETIRED_KEYS}), and for malformed
-    * materialization v2 declarations (an unknown or retired key on
-    * `#(materialize)` or `#(preaggregate)`, whose key sets are closed), one per
-    * line, or "" when none. Publish only: a load warns (the finding rides
-    * `Package.warnings`), so a package already published keeps loading and its
-    * schedule keeps running, and a metadata PATCH is not refused for it. Kept
-    * out of {@link persistencePolicyWarnings}, which the scheduler and the
-    * metadata PATCH both read.
+    * Every invalid materialization annotation, one per line with its code, or
+    * "" when there is none: a `#@` line that does not parse, an unknown or
+    * retired key, a bad value or contradictory combination on any route (every
+    * `malformed` finding), and two sources an author's names put on one table
+    * (unless `PERSIST_COLLISION_ENFORCE=false`). Each fails the publish AND
+    * the load, on every path (publish, reload, restart, watch mode and a
+    * control-plane load), as a compile error does: an invalid annotation is
+    * the author's to fix, never something to serve around. A valid
+    * annotation Publisher cannot build is a `*-not-built` warning instead.
     */
-   formatUnparseableAnnotations(): string {
-      return this.annotationFindings
-         .filter(
-            (finding) =>
-               finding.code === "persist-unparseable" ||
-               (finding.code === "persist-retired-key" &&
-                  (finding.nested ||
-                     !POLICY_REFUSED_RETIRED_KEYS.has(finding.key ?? ""))) ||
-               (finding.tier === "malformed" &&
-                  MATERIALIZE_V2_ROUTES.has(finding.route)),
-         )
+   formatInvalidAnnotations(): string {
+      const lines = this.annotationFindings
+         .filter((finding) => finding.tier === "malformed")
          .map(
             (finding) =>
                `${finding.model ? `${finding.model}: ` : ""}${finding.message}` +
-               (finding.rewrite ? `; ${finding.rewrite}` : ""),
-         )
-         .join("\n");
+               (finding.rewrite ? `; ${finding.rewrite}` : "") +
+               ` [${finding.code}]`,
+         );
+      if (getPersistCollisionEnforce()) {
+         const collisions = this.persistenceCollisionWarnings();
+         if (collisions.length > 0) {
+            lines.push(
+               ...collisions.map(
+                  (c) => `${c} [${MATERIALIZATION_TABLE_COLLISION_CODE}]`,
+               ),
+               // The operator's opt-out, named once, after the author's fix.
+               "A deployment that must load such a package anyway can set " +
+                  "PERSIST_COLLISION_ENFORCE=false, which warns instead and " +
+                  "serves the colliding sources live.",
+            );
+         }
+      }
+      return lines.join("\n");
    }
 
    /** The {@link persistencePolicyWarnings}, one per line, or "" if valid. */
@@ -2196,32 +2192,41 @@ export class PackageMaterialization {
       return incrementalPolicyRejections(this.incrementalPolicySources);
    }
 
-   /** The {@link incrementalPolicyWarnings}, one per line, or "" if valid. */
+   /**
+    * The {@link incrementalPolicyWarnings}, one per line with its route's
+    * `*-invalid` code, or "" if valid.
+    */
    formatInvalidIncrementalPolicy(): string {
-      return this.incrementalPolicyWarnings().join("\n");
+      return this.incrementalPolicySources
+         .flatMap((source) =>
+            incrementalPolicyRejections([source]).map(
+               (m) => `${m} [${source.invalidCode ?? PERSIST_INVALID_CODE}]`,
+            ),
+         )
+         .join("\n");
    }
 
    /**
-    * REJECTION messages for `#@ preaggregate` declarations that cannot take
-    * effect (rules in preaggregation_validation), strict at publish AND load:
-    * pre-aggregation is invisible when it works, so an ignored declaration
-    * would show correct numbers and no acceleration, with no one told.
-    *
-    * The access-modifier pair only warns: refusing would stop already-published
-    * packages loading, and an inherited annotation on a hiding source yields
-    * advice the author cannot follow. Warning is safe because the planner
-    * itself skips hidden fields (planSourcePreaggregation), so nothing is built.
+    * REJECTION messages for invalid `#@ preaggregate` declarations (rules in
+    * preaggregation_validation), each with its code, strict at publish AND
+    * load: pre-aggregation is invisible when it works, so an ignored
+    * declaration would show correct numbers and no acceleration, with no one
+    * told. A valid declaration Publisher cannot build ({@link PREAGG_WARN_ONLY})
+    * only warns.
     */
    formatInvalidPreaggregatePolicy(): string {
-      return this.preaggregateMessages(
-         (code) => !PREAGG_WARN_ONLY.has(code),
-      ).join("\n");
+      return this.preaggregateFindings((code) => !PREAGG_WARN_ONLY.has(code))
+         .map(
+            // Source names repeat across models; name the file.
+            ({ modelPath, violation }) =>
+               `${modelPath}: ${violation.message} [${preaggregateViolationCode(violation.code)}]`,
+         )
+         .join("\n");
    }
 
    /**
-    * The violations that only warn, surfaced at load: the access-modifier
-    * pair, and a rollup whose `storage=` names nothing (refused alone, as
-    * every route refuses one).
+    * The violations that only warn, surfaced at load: a valid rollup refused
+    * alone ({@link PREAGG_WARN_ONLY}).
     */
    preaggregateAccessWarnings(): ApiPackageWarning[] {
       return this.preaggregateFindings((code) =>
@@ -2230,21 +2235,9 @@ export class PackageMaterialization {
          model: modelPath,
          subject: violation.fieldName ?? violation.sourceName,
          message: violation.message,
-         code:
-            violation.code === "empty_storage"
-               ? "preaggregate-malformed"
-               : "preaggregate-hidden-field",
+         code: PREAGG_WARN_ONLY.get(violation.code) as string,
          severity: "warn" as const,
       }));
-   }
-
-   private preaggregateMessages(
-      keep: (code: PreaggregateViolationCode) => boolean,
-   ): string[] {
-      return this.preaggregateFindings(keep).map(
-         // Source names repeat across models; name the file.
-         ({ modelPath, violation }) => `${modelPath}: ${violation.message}`,
-      );
    }
 
    /** Violations kept by `keep`, paired with their model, unformatted for both consumers. */
@@ -2334,20 +2327,31 @@ export class PackageMaterialization {
       }
       return warnings;
    }
+}
 
-   /** Collisions as a publish rejection; "" when `PERSIST_COLLISION_ENFORCE=false`. */
-   formatPersistenceCollisionRejections(): string {
-      if (!getPersistCollisionEnforce()) return "";
-      const collisions = this.persistenceCollisionWarnings();
-      if (collisions.length === 0) return "";
-      // The operator's opt-out, named once, after the author's fix.
-      return [
-         ...collisions,
-         "A deployment that must publish such a package anyway can set " +
-            "PERSIST_COLLISION_ENFORCE=false, which warns instead and serves " +
-            "the colliding sources live.",
-      ].join("\n");
+/**
+ * A `#(materialize)` table collision as this deployment judges it: invalid
+ * (it fails the load) by default, or, under `PERSIST_COLLISION_ENFORCE=false`,
+ * that source refused alone, as `materialize-not-built`.
+ */
+function relaxedCollision(
+   finding: PackageAnnotationFinding,
+): PackageAnnotationFinding {
+   if (
+      finding.code !== MATERIALIZATION_TABLE_COLLISION_CODE ||
+      getPersistCollisionEnforce()
+   ) {
+      return finding;
    }
+   return {
+      ...finding,
+      tier: "unservable",
+      code: "materialize-not-built",
+      message: finding.message.replace(
+         " is invalid: ",
+         " is not built, so the source is served live: ",
+      ),
+   };
 }
 
 /** See PackageMaterialization's entry-point index. */
