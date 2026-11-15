@@ -1000,6 +1000,197 @@
       "DROP TABLE IF EXISTS \"sch\".\"orders__backup\""
     ]
   },
+  "swapIntoPlace.failsFirst": {
+    "duckdb": {
+      "statements": [
+        "BEGIN TRANSACTION;\nDROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";\nCOMMIT;",
+        "ROLLBACK",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "postgres": {
+      "statements": [
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "standardsql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "SELECT 1 FROM `sch`.`orders__m1` WHERE 1 = 0",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "snowflake": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "databricks": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "SELECT 1 FROM `sch`.`orders__m1` WHERE 1 = 0",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "trino": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "presto": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "mysql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+        "SELECT 1 FROM `sch`.`orders__m1` WHERE 1 = 0",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `sch`.`orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "sqlserver": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "unknown_dialect": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    }
+  },
+  "swapIntoPlace.failsSecond": {
+    "duckdb": {
+      "statements": [
+        "BEGIN TRANSACTION;\nDROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";\nCOMMIT;"
+      ],
+      "refused": null
+    },
+    "postgres": {
+      "statements": [
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";"
+      ],
+      "refused": null
+    },
+    "standardsql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "ALTER TABLE `sch`.`orders__m1__backup` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__staging`"
+      ],
+      "refused": "permission denied"
+    },
+    "snowflake": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "databricks": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "ALTER TABLE `sch`.`orders__m1__backup` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__staging`"
+      ],
+      "refused": "permission denied"
+    },
+    "trino": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "presto": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "mysql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `sch`.`orders__m1`",
+        "ALTER TABLE `sch`.`orders__m1__backup` RENAME TO `sch`.`orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__staging`"
+      ],
+      "refused": "permission denied"
+    },
+    "sqlserver": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "unknown_dialect": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    }
+  },
   "capturedNativeSchema.one": {
     "duckdb": [
       "DESCRIBE \"orders\""

@@ -311,6 +311,44 @@ async function statements(): Promise<Record<string, unknown>> {
       return r.statements;
    });
 
+   // The swap's failure paths: the statement at `failAt` (1-based) fails
+   // once, as a warehouse error that is not a missing table, and every
+   // statement sent is recorded with the refusal the swap answers with.
+   const failingSwap = async (dialect: string, failAt: number) => {
+      const statements: string[] = [];
+      let n = 0;
+      const runSQL = async (sql: string) => {
+         statements.push(sql);
+         n++;
+         if (n === failAt) throw new Error("permission denied");
+         return { rows: [] };
+      };
+      let refused: string | null = null;
+      try {
+         await swapIntoPlace({
+            connection: { runSQL } as never,
+            runOptions: {},
+            dialect,
+            physicalTableName: "sch.orders__m1",
+            stagingTableName: "sch.orders__m1__staging",
+            backupTableName: "sch.orders__m1__backup",
+            connectionName: "wh",
+         });
+      } catch (err) {
+         refused = err instanceof Error ? err.message : String(err);
+      }
+      return { statements, refused };
+   };
+   // The first statement: the transaction, or the move aside.
+   out["swapIntoPlace.failsFirst"] = await perDialectAsync((d) =>
+      failingSwap(d, 1),
+   );
+   // The second: the rename onto the served name, where the move aside
+   // came first.
+   out["swapIntoPlace.failsSecond"] = await perDialectAsync((d) =>
+      failingSwap(d, 2),
+   );
+
    // The native-type catalog read.
    for (const [shape, segments] of Object.entries(PATHS)) {
       out[`capturedNativeSchema.${shape}`] = await perDialectAsync(
