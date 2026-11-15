@@ -101,3 +101,25 @@ export function packageRelativeText(
 function escapeRegExp(text: string): string {
    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/**
+ * Run `load`, and if it throws, name the package's files package-relative in
+ * the error's message before rethrowing it. The one wrapper every package
+ * load goes through (a boot, a reload, a published version, a staged
+ * publish), so no surface that reports the failure (/status `loadErrors`,
+ * the package resource, a publish or reload answer, MCP) can tell its reader
+ * where this server keeps its files, and no load path can drift from another.
+ */
+export async function withPackageRelativeErrors<T>(
+   packagePath: string,
+   load: () => Promise<T>,
+): Promise<T> {
+   try {
+      return await load();
+   } catch (error) {
+      if (error instanceof Error) {
+         error.message = packageRelativeText(error.message, packagePath);
+      }
+      throw error;
+   }
+}

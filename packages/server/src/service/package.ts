@@ -186,6 +186,7 @@ import {
 import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
+import { withPackageRelativeErrors } from "../package_relative_text";
 import {
    PackageModelPolicy,
    type OffSurfaceContext,
@@ -898,13 +899,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             "publisher.package.dry_run": options.dryRun === true,
          },
          () =>
-            Package.load(
-               environmentName,
-               packageName,
-               packagePath,
-               environmentMalloyConfig,
-               cleanupDirectoryOnFailure,
-               options.dryRun === true,
+            // A failed load's message names the package's files
+            // package-relative, whichever path loaded it.
+            withPackageRelativeErrors(packagePath, () =>
+               Package.load(
+                  environmentName,
+                  packageName,
+                  packagePath,
+                  environmentMalloyConfig,
+                  cleanupDirectoryOnFailure,
+                  options.dryRun === true,
+               ),
             ),
       );
    }
@@ -2622,6 +2627,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * models, which a fresh package has none of yet.
     */
    public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+      // A recompile that fails names the files package-relative, as a load's
+      // failure does.
+      return withPackageRelativeErrors(this.packagePath, () =>
+         this.recompileAllModels(entries),
+      );
+   }
+
+   private async recompileAllModels(entries: FreshnessManifest): Promise<void> {
       // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
       const buildManifest = toTableNameManifest(entries);

@@ -34,6 +34,10 @@ import {
 } from "../path_safety";
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
+import {
+   packageRelativeText,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import { URL_READER } from "../utils";
 import {
    ANNOTATION_GATE_NEAR_MISS_CODE,
@@ -246,9 +250,19 @@ export async function compileSource(
    assertValidCompileRequest(request);
    const compileIn = async (versioned: Package | undefined) => {
       const ctx = await openCompileContext(host, request, versioned);
-      if (scope === "package") return compilePackageDryRun(ctx);
-      if (scope === "file") return compileFile(ctx);
-      return compileAppend(ctx);
+      // The diagnostics, and a refusal, name the package's files
+      // package-relative, never where this server keeps them.
+      const result = await withPackageRelativeErrors(ctx.packagePath, () => {
+         if (scope === "package") return compilePackageDryRun(ctx);
+         if (scope === "file") return compileFile(ctx);
+         return compileAppend(ctx);
+      });
+      return {
+         ...result,
+         problems: result.problems.map((problem) =>
+            packageRelativeProblem(problem, ctx.packagePath),
+         ),
+      };
    };
    // A published version compiles in its own folder with no lock: its files
    // never change.
@@ -262,6 +276,24 @@ export async function compileSource(
    return host.withPackageLock(packageName, async () =>
       compileIn(await host.versionedPackage(packageName, versionId, true)),
    );
+}
+
+/**
+ * `problem` with its message and its `at.url` naming the package's files
+ * package-relative: `file:///srv/data/env/pkg/m.malloy` reads `m.malloy`.
+ */
+function packageRelativeProblem(
+   problem: TaggedLogMessage,
+   packagePath: string,
+): TaggedLogMessage {
+   const at = (problem as { at?: { url?: string } }).at;
+   return {
+      ...problem,
+      message: packageRelativeText(problem.message, packagePath),
+      ...(at?.url !== undefined && {
+         at: { ...at, url: packageRelativeText(at.url, packagePath) },
+      }),
+   } as TaggedLogMessage;
 }
 
 /** The argument checks every scope runs before taking the package lock. */

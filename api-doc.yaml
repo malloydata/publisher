@@ -10243,7 +10243,9 @@ components:
           properties:
             url:
               type: string
-              description: URL of the source file
+              description: >-
+                The source file: a package file's path relative to the package
+                root (`orders.malloy`), never where the server keeps it.
             range:
               type: object
               description: Character range within the source file
