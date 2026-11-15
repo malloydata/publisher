@@ -69,9 +69,8 @@ import {
 import {
    materializeRefusalFinding,
    pairFullRefreshFinding,
-   pairKeyColumns,
-   pairLevelRowColumn,
-} from "./build_file_generator";
+} from "./materialize_plan";
+import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
 import { persistedViewRefusalFinding } from "./persisted_view";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";

@@ -15,7 +15,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../../src/errors";
-import type { MaterializePlan } from "../../../src/service/materialization/plan/build_file_generator";
+import type { MaterializePlan } from "../../../src/service/materialization/domain/table_plans";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,

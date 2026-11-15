@@ -34,22 +34,28 @@ import {
    buildCopyDeclarationAt,
    buildCopyName,
    buildCopyText,
+} from "./materialize_build_copy";
+import {
    chainLevels,
-   extensionOverStoredModel,
    generatedNamesOf,
    generateBuildFiles,
    givenReadTerms,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
-   planModelMaterialize,
    settledChains,
    splitSourceID,
-   storedChainText,
    withoutParent,
-   type MaterializePlan,
-   type MaterializeRefusal,
-   type StoredColumnType,
 } from "./build_file_generator";
+import {
+   extensionOverStoredModel,
+   storedChainText,
+   type StoredColumnType,
+} from "./materialize_stored_chain";
+import {
+   planModelMaterialize,
+   type MaterializeRefusal,
+} from "./materialize_plan";
+import { type MaterializePlan } from "../domain/table_plans";
 import type { TermUse } from "../domain/read_time_terms";
 import {
    compileInMemory,

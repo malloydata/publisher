@@ -43,7 +43,7 @@ import type {
    SourceEligibility,
 } from "./plan/build_plan";
 import { computePackageBuildPlan } from "./plan/build_plan_compile";
-import type { MaterializePlan } from "./plan/build_file_generator";
+import type { MaterializePlan } from "./domain/table_plans";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,

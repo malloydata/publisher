@@ -14,10 +14,8 @@ import {
    compilePackageBuildPlan,
    computePackageBuildPlan,
 } from "./build_plan_compile";
-import {
-   planModelMaterialize,
-   type MaterializePlan,
-} from "./build_file_generator";
+import { planModelMaterialize } from "./materialize_plan";
+import { type MaterializePlan } from "../domain/table_plans";
 
 /**
  * P9 on the `#(materialize)` build side: a dimension whose value depends on

@@ -22,7 +22,7 @@ import {
    routeOfNote,
    tagPayloadKeys,
 } from "./annotation_reader";
-import { GENERATOR_KEYS } from "./materialization/plan/build_file_generator";
+import { GENERATOR_KEYS } from "./materialization/plan/materialize_plan";
 
 function annotationsOf(lines: string[]): Annotations {
    return new Annotations({

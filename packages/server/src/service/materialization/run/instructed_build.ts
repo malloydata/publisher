@@ -13,7 +13,7 @@ import {
    type UniquenessLedger,
 } from "./inline_uniqueness";
 import type { ParentKeyCheck, RollupKeyCheck } from "../plan/rollup_plan";
-import type { InlineUniquenessCheck } from "../plan/build_file_generator";
+import type { InlineUniquenessCheck } from "../domain/table_plans";
 import { buildSQLOf } from "../plan/addressing";
 import type {
    Connection as MalloyConnection,

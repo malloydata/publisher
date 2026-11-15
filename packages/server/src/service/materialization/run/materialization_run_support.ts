@@ -1,10 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   generatedNameOwner,
-   type MaterializePlan,
-} from "../plan/build_file_generator";
+import { generatedNameOwner } from "../plan/build_file_generator";
+import { type MaterializePlan } from "../domain/table_plans";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";

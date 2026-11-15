@@ -17,10 +17,7 @@ import {
    type SqlRunner,
    warehouseDeltaTarget,
 } from "../run/incremental_apply";
-import {
-   materializeColumns,
-   planModelMaterialize,
-} from "./build_file_generator";
+import { materializeColumns, planModelMaterialize } from "./materialize_plan";
 import {
    classifyWhereTerms,
    currentTimeFields,

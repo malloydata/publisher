@@ -24,7 +24,7 @@ import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_ha
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import type { MaterializePlan } from "../plan/build_file_generator";
+import type { MaterializePlan } from "../domain/table_plans";
 import {
    PackageMaterialization,
    type PackageMaterializationOwner,

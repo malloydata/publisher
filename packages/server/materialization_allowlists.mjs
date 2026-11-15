@@ -24,11 +24,7 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/incremental_storage.ts -> service/materialization/plan/build_plan":
       "2g.3",
-   "service/materialization/run/inline_uniqueness.ts -> service/materialization/plan/build_file_generator":
-      "2g.3",
    "service/materialization/run/instructed_build.ts -> service/materialization/plan/addressing":
-      "2g.3",
-   "service/materialization/run/instructed_build.ts -> service/materialization/plan/build_file_generator":
       "2g.3",
    "service/materialization/run/instructed_build.ts -> service/materialization/plan/build_plan":
       "2g.3",
@@ -60,7 +56,7 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/source_build.ts -> service/materialization/plan/build_plan":
       "2g.3",
-   "service/materialization/run/storage_build_strategy.ts -> service/materialization/plan/build_file_generator":
+   "service/materialization/run/storage_build_strategy.ts -> service/materialization/plan/materialize_stored_chain":
       "2g.3",
    "service/materialization/run/table_ownership.ts -> service/materialization/plan/build_plan":
       "2g.3",
@@ -90,8 +86,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/environment.ts -> service/materialization/run/manifest_loader":
       "2g.3",
    "service/environment_store.ts -> service/materialization/run/inline_uniqueness":
-      "2g.3",
-   "service/model.ts -> service/materialization/plan/build_file_generator":
       "2g.3",
    "service/model.ts -> service/materialization/plan/build_plan": "2g.3",
    "service/model.ts -> service/materialization/plan/persisted_view": "2g.3",
@@ -203,7 +197,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    "service/materialization/domain/table_plans.ts": { count: 1, step: "5" },
    "service/materialization/plan/addressing.ts": { count: 1, step: "5" },
    "service/materialization/plan/build_file_generator.ts": {
-      count: 7,
+      count: 6,
       step: "5",
    },
    "service/materialization/plan/build_plan.ts": { count: 6, step: "5" },
@@ -333,7 +327,7 @@ export const RATCHET_DIALECT_LITERALS = {
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {
-   "service/materialization/plan/build_file_generator.ts#planModelMaterialize":
+   "service/materialization/plan/materialize_plan.ts#planModelMaterialize":
       "2g.3",
    "service/materialization/plan/build_plan.ts#collectModelBuildPlan": "2g.3",
    "service/materialization/plan/build_plan.ts#deriveBuildPlan": "2g.3",

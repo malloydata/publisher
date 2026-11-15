@@ -27,17 +27,19 @@ import {
    runRollupKeyCheck,
 } from "../run/inline_uniqueness";
 import { rollingWindowsOf } from "../domain/read_time_terms";
+import { buildCopyText } from "./materialize_build_copy";
 import {
-   buildCopyText,
    buildSourceName,
    generateBuildFile,
    generateBuildFiles,
+} from "./build_file_generator";
+import {
    materializeRefusalFinding,
    materializeTableName,
    planModelMaterialize,
-   storedChainText,
-   type MaterializePlan,
-} from "./build_file_generator";
+} from "./materialize_plan";
+import { storedChainText } from "./materialize_stored_chain";
+import { type MaterializePlan } from "../domain/table_plans";
 
 /**
  * The `#(materialize)` build-file generator (materialization v2, phase 3,

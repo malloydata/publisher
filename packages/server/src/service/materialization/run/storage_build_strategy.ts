@@ -36,12 +36,12 @@ import {
 } from "../stored_column_types";
 import { quoteManifestTablePath } from "../../quoting";
 import { reachPersisted } from "../text/source_map";
+import { extensionOverStoredModel } from "../plan/materialize_stored_chain";
 import {
-   extensionOverStoredModel,
    type MaterializeParent,
    type MaterializePlan,
    type StoredChain,
-} from "../plan/build_file_generator";
+} from "../domain/table_plans";
 import {
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    storageBuildCasts,

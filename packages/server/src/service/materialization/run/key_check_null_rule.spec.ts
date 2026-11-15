@@ -33,8 +33,8 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import {
    buildSourceName,
    generateBuildFile,
-   type MaterializePlan,
 } from "../plan/build_file_generator";
+import { type MaterializePlan } from "../domain/table_plans";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import { parentKeyCheckQuery, rollupKeyCheckQuery } from "../plan/rollup_plan";
 import { rollupBaseAlias } from "../text/read_text";

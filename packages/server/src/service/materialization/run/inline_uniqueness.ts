@@ -27,7 +27,7 @@ import type { KeyUniqueness, ManifestEntry } from "../domain/types";
 import type {
    InlineUniquenessCheck,
    MaterializePlan,
-} from "../plan/build_file_generator";
+} from "../domain/table_plans";
 
 /**
  * A `#(materialize)` source inlines a join_one (`inline=["j"]`) whose joined

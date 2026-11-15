@@ -18,13 +18,10 @@ import {
    compilePackageBuildPlan,
    computePackageBuildPlan,
 } from "./build_plan_compile";
-import {
-   buildCopyText,
-   generateBuildFile,
-   givenReadTerms,
-   planModelMaterialize,
-   type MaterializePlan,
-} from "./build_file_generator";
+import { buildCopyText } from "./materialize_build_copy";
+import { generateBuildFile, givenReadTerms } from "./build_file_generator";
+import { planModelMaterialize } from "./materialize_plan";
+import { type MaterializePlan } from "../domain/table_plans";
 import { admitGivenPositions } from "./persist_dynamic_terms";
 
 /**

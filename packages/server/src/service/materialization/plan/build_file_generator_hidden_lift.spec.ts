@@ -11,7 +11,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "./build_plan_compile";
-import { buildCopyText, type MaterializePlan } from "./build_file_generator";
+import { buildCopyText } from "./materialize_build_copy";
+import { type MaterializePlan } from "../domain/table_plans";
 
 /**
  * The P3 build copy's lift, across every access-modifier syntax Malloy

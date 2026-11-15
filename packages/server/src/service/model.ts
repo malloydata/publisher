@@ -166,7 +166,7 @@ import {
    type SourceTypeMismatches,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
 } from "./materialization/serve/storage_bindings";
-import type { MaterializePlan } from "./materialization/plan/build_file_generator";
+import type { MaterializePlan } from "./materialization/domain/table_plans";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
    planSourceRollups,

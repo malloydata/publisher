@@ -22,7 +22,7 @@ import {
 } from "./materialization_eligibility";
 import type { PackageAnnotationFinding } from "../../annotation_reader";
 import type { SourceBuild } from "./addressing";
-import { materializeRefusalFinding } from "./build_file_generator";
+import { materializeRefusalFinding } from "./materialize_plan";
 import type { TablePlan } from "../domain/table_plans";
 import {
    declaredStorage,

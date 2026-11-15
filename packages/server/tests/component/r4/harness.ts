@@ -40,10 +40,8 @@ import {
 } from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
-import {
-   extensionOverStoredModel,
-   type MaterializePlan,
-} from "../../../src/service/materialization/plan/build_file_generator";
+import { extensionOverStoredModel } from "../../../src/service/materialization/plan/materialize_stored_chain";
+import { type MaterializePlan } from "../../../src/service/materialization/domain/table_plans";
 import {
    oneFileModel,
    planChainedDownstream,

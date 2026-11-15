@@ -12,7 +12,7 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import { accessLiftEdits, applyEdits } from "../text/declaration_text";
 import { addressSQL, buildSQLOf, deriveBuildPlanOutcome } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
-import type { MaterializePlan } from "./build_file_generator";
+import type { MaterializePlan } from "../domain/table_plans";
 
 /**
  * P3 on the `#(materialize)` build side (materialization v2, phase 3): a
