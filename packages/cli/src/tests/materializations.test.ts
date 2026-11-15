@@ -145,7 +145,9 @@ describe("Materialization Commands", () => {
         materializationCommands.BUILT_NOT_SERVED_EXIT_CODE,
       );
     } finally {
-      process.exitCode = before;
+      // Bun ignores `process.exitCode = undefined`, so restoring an unset
+      // code that way leaves the 2 in place and the whole run exits 2.
+      process.exitCode = before ?? 0;
     }
   });
 
