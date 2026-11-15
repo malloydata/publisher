@@ -33,6 +33,12 @@ Five shapes were answered differently by a colocated table and a `storage=` one,
 
 No API, enum or metric value changes.
 
+## [Unreleased] — a colocated `#(materialize)` source behind its own row-level gate is built and served, as a colocated `#@ persist` is
+
+A `#(materialize)` source with no `storage=`, whose own `#(access_filter)` or row-level `#(authorize)` is proven to be its entry point's own row filter or lock, is now built in its own warehouse and served from that table with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off, the default. The gate is re-applied when the table is read: it is grafted onto every served query and proven there exactly as on live, so each caller gets live's rows, or live's denial. The table holds every caller's rows and never leaves the author's warehouse, which is why a colocated v1 `#@ persist` has been served this way since the v1 cutover; `#(materialize)` now follows the same rule. Before, it was refused (`persist-source-refused`, reason `authorize`) and answered live.
+
+Nothing else moves. A `#(materialize) storage=` source behind a gate still needs `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, and is refused without it. A gate the source inherits from one it extends, one reached through a join, and a gate over a source whose build would substitute a given stay refused on every tier, and an answer that would also read a `storage=` table is answered live. A model with no gated colocated `#(materialize)` source behaves exactly as before. As with every gate, it holds only behind the gateway that sets the givens from a verified identity ([operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+
 ## [Unreleased] — a `storage=` rollup returns exact big-integer sums and keeps `timestamptz` grains
 
 A rollup stored in a `storage=` destination (`#(preaggregate)` or v1 `#@ preaggregate`) read its stored table with the wrong types in two cases. A big-integer measure (a `sum` of a BIGINT) whose total passed 2^53 came back rounded, as `-9007199254740992` where live gives `-9007199254740993`; it is now read through its native type and returns every digit, as live does. A grain dimension live types as `timestamptz` came back typed `timestamp`, with equal rows; it now keeps its `timestamptz` type. A big-integer column the destination stored where no cast reads it exactly (a float, its digits already lost) is no longer served: the rollup is skipped with reason `MISSING_FIELD` and the query is answered live. Colocated rollups are unchanged; they were already exact.
