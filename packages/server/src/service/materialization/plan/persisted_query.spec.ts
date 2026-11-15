@@ -112,3 +112,202 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE off", () => {
       expect(codes(c)).not.toContain(PERSIST_QUERY_NOT_BUILT);
    });
 });
+
+const GIVENS = `##! experimental { givens }\ngiven: TENANT :: string is ""\n`;
+const GATED = `${GIVENS}#(access_filter) tenant = $TENANT\nsource: ops is ${TABLE} extend { measure: n is count() }\n`;
+/** {@link GATED} without its gate: the twin a gate refusal is built as. */
+const UNGATED = `${GIVENS}source: ops is ${TABLE} extend { measure: n is count() }\n`;
+
+/** The build sources a package plans, by name. */
+function built(c: Awaited<ReturnType<typeof compiled>>): string[] {
+   return Object.values(c.sources)
+      .map((s) => s.name)
+      .sort();
+}
+
+/** The `persist-query-not-built` messages, one per refused query. */
+function notBuilt(c: Awaited<ReturnType<typeof compiled>>): string[] {
+   return (c.annotationFindings ?? [])
+      .filter((f) => f.code === PERSIST_QUERY_NOT_BUILT)
+      .map((f) => f.message);
+}
+
+describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
+   beforeEach(() => enable(true));
+
+   it("plans one generated build source per query, named <query>__query, in the companion", async () => {
+      const c = await compiled(
+         `${BASE}#@ persist name="nq_tbl"\nquery: q is base -> { group_by: carrier; aggregate: n; order_by: n desc; limit: 1 }\n`,
+      );
+      const sources = Object.entries(c.sources);
+      expect(sources.map(([, s]) => s.name)).toEqual(["q__query"]);
+      const [id, source] = sources[0];
+      expect(id).toMatch(/^q__query@.*m\.malloy\.persist-view\.malloy$/);
+      // The stored rows are exactly `run: q`'s: its ordering and limit kept.
+      expect(source.getSQL()).toContain("LIMIT 1");
+      expect(notBuilt(c)).toEqual([]);
+      expect(c.droppedPersistSources ?? []).toEqual([]);
+   });
+
+   it("plans an inline run target with no gate", async () => {
+      const c = await compiled(
+         `#@ persist\nquery: q is ${TABLE} -> { group_by: carrier }\n`,
+      );
+      expect(built(c)).toEqual(["q__query"]);
+   });
+
+   it("plans a query beside a persisted view, in one companion", async () => {
+      const c = await compiled(
+         `source: base is ${TABLE} extend {\n  measure: n is count()\n  #@ persist\n  view: v is { group_by: carrier; aggregate: n }\n}\n#@ persist\nquery: q is base -> { group_by: tenant; aggregate: n }\n`,
+      );
+      expect(built(c)).toEqual(["base__v__view", "q__query"]);
+   });
+
+   it("lists a query once, in its declaring model, however many models import it", async () => {
+      const c = await compiledFiles({
+         "a.malloy": `${BASE}#@ persist\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
+         "b.malloy": `import "a.malloy"\nquery: q2 is q -> { select: * }\n`,
+      });
+      expect(built(c)).toEqual(["q__query"]);
+      expect(Object.values(c.sourceModelPaths ?? {})).toEqual(["a.malloy"]);
+   });
+
+   // Each refusal beside the twin it is built as, so the check named is the
+   // one that refuses (mutation-checked: the twin differs by that one thing).
+   const refusals: {
+      name: string;
+      refused: string | Record<string, string>;
+      twin: string | Record<string, string>;
+      reason: string;
+      gated?: boolean;
+   }[] = [
+      {
+         name: "a query that reads a given",
+         refused: `${GIVENS}${BASE}#@ persist\nquery: q is base -> { where: tenant = $TENANT; group_by: carrier; aggregate: n }\n`,
+         twin: `${GIVENS}${BASE}#@ persist\nquery: q is base -> { where: tenant = 't1'; group_by: carrier; aggregate: n }\n`,
+         reason: "reads a given",
+      },
+      {
+         name: "a query that reads the current time",
+         refused: `source: base is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") extend { measure: c is count() }\n#@ persist\nquery: q is base -> { where: ts > now - 30 days; aggregate: c }\n`,
+         twin: `source: base is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") extend { measure: c is count() }\n#@ persist\nquery: q is base -> { where: ts > @2025-01-01; aggregate: c }\n`,
+         reason: "current time",
+      },
+      {
+         name: "a query whose source has its own given-reading where:",
+         refused: `${GIVENS}source: base is ${TABLE} extend { where: tenant = $TENANT; measure: n is count() }\n#@ persist\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
+         twin: `${GIVENS}source: base is ${TABLE} extend { where: tenant = 't1'; measure: n is count() }\n#@ persist\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
+         reason: "reads a given",
+      },
+      {
+         name: "a query over a source with its own access filter",
+         refused: `${GATED}#@ persist\nquery: q is ops -> { group_by: tenant; aggregate: n }\n`,
+         twin: `${UNGATED}#@ persist\nquery: q is ops -> { group_by: tenant; aggregate: n }\n`,
+         reason: "row-level gate",
+      },
+      {
+         name: "a gated query, with the gated-sources switch on",
+         refused: `${GATED}#@ persist\nquery: q is ops -> { group_by: tenant; aggregate: n }\n`,
+         twin: `${UNGATED}#@ persist\nquery: q is ops -> { group_by: tenant; aggregate: n }\n`,
+         reason: "row-level gate",
+         gated: true,
+      },
+      {
+         name: "a query whose source inherits an access filter",
+         refused: `${GATED}source: ops2 is ops extend {}\n#@ persist\nquery: q is ops2 -> { group_by: tenant; aggregate: n }\n`,
+         twin: `${UNGATED}source: ops2 is ops extend {}\n#@ persist\nquery: q is ops2 -> { group_by: tenant; aggregate: n }\n`,
+         reason: "row-level gate",
+      },
+      {
+         name: "a query whose source derives from a gated source",
+         refused: `${GATED}source: ops2 is ops -> { group_by: tenant, carrier; aggregate: n }\n#@ persist\nquery: q is ops2 -> { group_by: tenant; aggregate: total is n.sum() }\n`,
+         twin: `${UNGATED}source: ops2 is ops -> { group_by: tenant, carrier; aggregate: n }\n#@ persist\nquery: q is ops2 -> { group_by: tenant; aggregate: total is n.sum() }\n`,
+         reason: "row-level gate",
+      },
+      {
+         name: "a query that reaches a gate through a join",
+         refused: `${GIVENS}#(access_filter) tenant = $TENANT\nsource: tenants is duckdb.sql("select 't1' as tenant") extend { primary_key: tenant }\nsource: base is ${TABLE} extend { join_one: t is tenants on tenant = t.tenant; measure: n is count() }\n#@ persist\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
+         twin: `${GIVENS}source: tenants is duckdb.sql("select 't1' as tenant") extend { primary_key: tenant }\nsource: base is ${TABLE} extend { join_one: t is tenants on tenant = t.tenant; measure: n is count() }\n#@ persist\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
+         reason: "row-level gate",
+      },
+      {
+         name: "an inline run target that reaches a gate",
+         refused: `${GATED}#@ persist\nquery: q is ops extend { dimension: t2 is tenant } -> { group_by: t2; aggregate: n }\n`,
+         twin: `${UNGATED}#@ persist\nquery: q is ops extend { dimension: t2 is tenant } -> { group_by: t2; aggregate: n }\n`,
+         reason: "row-level gate",
+      },
+      {
+         name: "an inline run target that joins a gated source",
+         refused: `${GIVENS}#(access_filter) tenant = $TENANT\nsource: tenants is duckdb.sql("select 't1' as tenant") extend { primary_key: tenant }\nsource: base is ${TABLE} extend { measure: n is count() }\n#@ persist\nquery: q is base extend { join_one: t is tenants on tenant = t.tenant } -> { group_by: carrier; aggregate: n }\n`,
+         twin: `${GIVENS}source: tenants is duckdb.sql("select 't1' as tenant") extend { primary_key: tenant }\nsource: base is ${TABLE} extend { measure: n is count() }\n#@ persist\nquery: q is base extend { join_one: t is tenants on tenant = t.tenant } -> { group_by: carrier; aggregate: n }\n`,
+         reason: "row-level gate",
+      },
+      {
+         name: "a query over a gated source declared in another file",
+         refused: {
+            "a.malloy": GATED,
+            "b.malloy": `import "a.malloy"\n#@ persist\nquery: q is ops -> { group_by: tenant; aggregate: n }\n`,
+         },
+         twin: {
+            "a.malloy": UNGATED,
+            "b.malloy": `import "a.malloy"\n#@ persist\nquery: q is ops -> { group_by: tenant; aggregate: n }\n`,
+         },
+         reason: "row-level gate",
+      },
+      {
+         name: "a query whose result nests",
+         refused: `${BASE}#@ persist\nquery: q is base -> { group_by: carrier; nest: t is { group_by: tenant } }\n`,
+         twin: `${BASE}#@ persist\nquery: q is base -> { group_by: carrier, tenant }\n`,
+         reason: "nests",
+      },
+      {
+         name: "a query whose result has a select: nest",
+         refused: `${BASE}#@ persist\nquery: q is base -> { group_by: carrier; nest: t is { select: tenant } }\n`,
+         twin: `${BASE}#@ persist\nquery: q is base -> { select: carrier, tenant }\n`,
+         reason: "nests",
+      },
+      {
+         name: "an @env. reference on the line",
+         refused: `${BASE}#@ persist name=@env.TBL\nquery: q is base -> { group_by: carrier }\n`,
+         twin: `${BASE}#@ persist name="tbl"\nquery: q is base -> { group_by: carrier }\n`,
+         reason: "@env.",
+      },
+      {
+         name: "an incremental key",
+         refused: `${BASE}#@ persist watermark=id\nquery: q is base -> { group_by: carrier }\n`,
+         twin: `${BASE}#@ persist\nquery: q is base -> { group_by: carrier }\n`,
+         reason: "incremental key",
+      },
+      {
+         name: "a generated name another source already has",
+         refused: `${BASE}source: q__query is base\n#@ persist\nquery: q is base -> { group_by: carrier }\n`,
+         twin: `${BASE}source: q__other is base\n#@ persist\nquery: q is base -> { group_by: carrier }\n`,
+         reason: "collides",
+      },
+   ];
+   for (const r of refusals) {
+      it(`refuses ${r.name}, with persist-query-not-built, and builds its twin`, async () => {
+         enable(true, r.gated ?? false);
+         const plan = (files: string | Record<string, string>) =>
+            typeof files === "string" ? compiled(files) : compiledFiles(files);
+         const refused = await plan(r.refused);
+         expect(built(refused)).not.toContain("q__query");
+         const messages = notBuilt(refused);
+         expect(messages.length).toBe(1);
+         expect(messages[0]).toContain(r.reason);
+         expect(messages[0]).toContain("source: q_result is q");
+         const twin = await plan(r.twin);
+         expect(built(twin)).toContain("q__query");
+         expect(notBuilt(twin)).toEqual([]);
+      });
+   }
+
+   it("builds a query over an ungated source declared in another file", async () => {
+      const c = await compiledFiles({
+         "a.malloy": BASE,
+         "b.malloy": `import "a.malloy"\n#@ persist\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
+      });
+      expect(built(c)).toEqual(["q__query"]);
+      expect(notBuilt(c)).toEqual([]);
+   });
+});

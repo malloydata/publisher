@@ -21,6 +21,21 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `#@ persist` on a named query stores its result (`PUBLISHER_MATERIALIZE`)
+
+With `PUBLISHER_MATERIALIZE` on (the default), `#@ persist` on a top-level `query:` builds the query's result as a generated source, `<query>__query`, in the same companion as the file's persisted views, colocated or with `storage=`. Its table answers exactly the calls of the query, and answers them equal to live:
+
+- **Served from the table:** REST and MCP `queryName`, a single-query report and a report tile naming the query, `run: q`, and `run: q -> { … }`. The answer keeps the query's name, its columns in order, each column's kind (an aggregate is still a measure) and annotations, its ordering and its render tags.
+- **Answered live:** `run: q + { … }` (a refinement; the path report skips the table `MISSING_FIELD`) and any use of `q` inside another definition.
+- **Governance fails closed.** Not built, with `persist-query-not-built` naming why: a query that reads a given or the current time, whose source has a given-reading `where:`, and any query that reaches a row-level gate (`#(access_filter)` or `#(authorize)`: its source's own, one it inherits, or one on a source it joins), whatever `PUBLISHER_MATERIALIZE_GATED_SOURCES` says. Such a query is answered live under its gate, and the leg is never tried past an entry-point gate (`publisher_query_route_total` counts it `leg="view"`, `skipped`, `CONTRACT`).
+- **Regrouped as a persisted view is.** The table answers with each measure a measure again by the persisted view's regroup rule: only when the last stage groups by at least one dimension and nests nothing. A query that aggregates with no `group_by:` is built but answered live (`MISSING_FIELD`); a result that nests is not built.
+- **Counted as the view leg.** The route counter has no leg of its own for a persisted query: it counts as `leg="view"`. The path report names its table `kind: "query"`.
+- **Not yet:** persisting a query from inside a report file.
+
+**API addition.** `QueryPathTableKind` (the path report's `servedBy.kind` and each candidate's `kind`) gains `query`, a persisted named query's table. A client treats a kind it does not know as a stored table it cannot name. The build plan lists a persisted query as an ordinary persist source (`origin: persist`); its serve verdict reads `The persisted query \`<query>\``.
+
+Off, nothing changes from the entry below: the query is warned `persist-query-not-built` and answered live.
+
 ## [Unreleased] — `#@ persist` on a named query says what it does
 
 `#@ persist` on a top-level `query:` builds nothing: Malloy's persistence planner walks sources only. The package used to warn with the source warning, `persist-not-materializable`, which told the author to "persist a query source" about something that already is a query, and a materialization run over the whole package was refused because of it.

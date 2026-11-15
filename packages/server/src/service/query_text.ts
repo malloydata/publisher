@@ -176,6 +176,81 @@ export function extractRunViewCall(query?: string): RunViewCall | undefined {
    };
 }
 
+/**
+ * A query that starts from a named query, read from its text: `run: q`,
+ * refined (`run: q + { limit: 3 }`), or with later stages (`run: q -> { … }`).
+ * The name is as written; whether it names a query is the model's to say.
+ */
+export interface RunQueryCall {
+   query: string;
+   /** A `+ { … }` refinement follows the name. */
+   refined: boolean;
+   /** How many `-> …` stages follow the query's own. */
+   laterStages: number;
+}
+
+/**
+ * The named query the LAST run statement starts from (Malloy runs the last),
+ * or undefined when it does not read as one: `run: NAME` (backticked or not),
+ * `run: NAME + { … }`, `run: NAME -> …` with any number of later stages, or a
+ * bare `NAME -> …` line with no `run:`. Anything else this reader does not
+ * follow (a parenthesized name, `NAME + other`, an `extend`) is undefined, so
+ * the caller answers it as written. Strips its own input.
+ *
+ * The persisted-query leg's half of an exact call's recognition: the compiled
+ * result schema cannot tell `run: q` from `run: q + { … }` (both are named
+ * `q`), so the text decides, and the compiled query's name and declaring file
+ * confirm it (materialization, persisted named queries).
+ */
+export function extractRunQueryCall(query?: string): RunQueryCall | undefined {
+   if (!query) return undefined;
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   let start = -1;
+   for (let k = 0; k + 1 < tokens.count; k++) {
+      if (isWord(tokens, k, "run") && textIs(tokens, k + 1, ":")) start = k + 2;
+   }
+   if (start < 0) {
+      // The bare form, as extractRunTargetSourceNames reads it.
+      for (let k = 0; k + 2 < tokens.count; k++) {
+         if (
+            isName(tokens, k) &&
+            arrowAt(tokens, k + 1) &&
+            opensLine(tokens, k)
+         ) {
+            start = k;
+            break;
+         }
+      }
+   }
+   if (start < 0 || !isName(tokens, start)) return undefined;
+   let k = start + 1;
+   let refined = false;
+   if (textIs(tokens, k, "+") && tokens.kind[k] === PUNCT) {
+      if (!textIs(tokens, k + 1, "{") || tokens.partner[k + 1] < 0) {
+         return undefined;
+      }
+      refined = true;
+      k = tokens.partner[k + 1] + 1;
+   }
+   let laterStages = 0;
+   while (arrowAt(tokens, k)) {
+      const stage = k + 2;
+      if (textIs(tokens, stage, "{") && tokens.partner[stage] >= 0) {
+         k = tokens.partner[stage] + 1;
+      } else if (isName(tokens, stage)) {
+         k = stage + 1;
+      } else {
+         return undefined;
+      }
+      laterStages++;
+   }
+   // The statement must end here: the next statement, or the text's end.
+   if (k < tokens.count && !(isName(tokens, k) && textIs(tokens, k + 1, ":"))) {
+      return undefined;
+   }
+   return { query: textOf(tokens, start), refined, laterStages };
+}
+
 /** A compiled object's location in its file: zero-based lines and UTF-16 columns. */
 export interface TextRange {
    start: { line: number; character: number };

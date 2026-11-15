@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { derivationTerminals } from "./caller_joins";
 import {
+   extractRunQueryCall,
    extractRunViewCall,
    buildDerivationBaseMap,
    buildIsEdgeMap,
@@ -994,6 +995,65 @@ describe("extractRunViewCall", () => {
          "",
       ]) {
          expect(extractRunViewCall(text)).toBeUndefined();
+      }
+   });
+});
+
+describe("extractRunQueryCall", () => {
+   it("reads an exact call of a named query, as queryName sends it too", () => {
+      expect(extractRunQueryCall("run: top_carriers")).toEqual({
+         query: "top_carriers",
+         refined: false,
+         laterStages: 0,
+      });
+      // REST and MCP `queryName` send a backticked name on a line of its own.
+      expect(extractRunQueryCall("\nrun: `top carriers`")).toEqual({
+         query: "top carriers",
+         refined: false,
+         laterStages: 0,
+      });
+   });
+
+   it("reads a query that goes on past the named query", () => {
+      expect(
+         extractRunQueryCall(
+            "run: q -> { select: * } -> { aggregate: n is count() }",
+         ),
+      ).toEqual({ query: "q", refined: false, laterStages: 2 });
+   });
+
+   it("reads a refinement, which the leg declines", () => {
+      expect(extractRunQueryCall("run: q + { limit: 3 }")).toEqual({
+         query: "q",
+         refined: true,
+         laterStages: 0,
+      });
+      expect(
+         extractRunQueryCall("run: q + { where: a = 1 } -> { select: * }"),
+      ).toEqual({ query: "q", refined: true, laterStages: 1 });
+   });
+
+   it("reads the last run statement, past other statements, comments and strings", () => {
+      expect(
+         extractRunQueryCall(
+            "// run: x\nquery: q2 is q -> { select: * }\nrun: q2 -> { where: s = 'run: q' }",
+         ),
+      ).toEqual({ query: "q2", refined: false, laterStages: 1 });
+      expect(extractRunQueryCall("run: a\nrun: b")).toMatchObject({
+         query: "b",
+      });
+   });
+
+   it("reads nothing from a shape it does not follow", () => {
+      for (const text of [
+         "run: (q)",
+         "run: q + other",
+         "run: q extend { dimension: x is 1 }",
+         "run: q -> { select: * } + { limit: 1 }",
+         "source: s is q",
+         "",
+      ]) {
+         expect(extractRunQueryCall(text)).toBeUndefined();
       }
    });
 });

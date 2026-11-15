@@ -5,12 +5,13 @@
  * What the planner decides for each stored table, as plain data the build
  * and the serving legs both read: a `#(materialize)` source's plan (its stored
  * columns, read-time terms, pair layout and the bases its served copy keeps),
- * a persisted view's, and a `#(preaggregate)` rollup's, with the one reader
- * of the `sourceID` that keys each of them.
+ * a persisted view's and a persisted named query's, and a `#(preaggregate)`
+ * rollup's, with the one reader of the `sourceID` that keys each of them.
  *
  * Planned in `plan/` (`build_file_generator.ts`, `persisted_view.ts`,
  * `rollup_plan.ts`); read by the run's builds, the bind, the served copy and
- * the rollup and view legs, and the read-text writers (`text/read_text.ts`).
+ * the rollup, view and query legs, and the read-text writers
+ * (`text/read_text.ts`).
  *
  * Pure.
  */
@@ -61,6 +62,8 @@ export function splitSourceID(
 
 /** One `#@ persist` view, as planned. */
 export interface PersistedViewPlan {
+   /** Tells a view's plan from a named query's (`kind: "query"`). */
+   kind?: "view";
    /** The declaring source's `sourceID` (`<name>@<declaring file URL>`). */
    sourceID: string;
    /** The source's name in its declaring file. */
@@ -74,6 +77,36 @@ export interface PersistedViewPlan {
    /** The author's `#@` lines on the view, verbatim, trimmed. */
    persistLines: string[];
    /** The `storage=` destination, when the view declares one. */
+   storage?: string;
+   /** The declaring file's URL. */
+   declaringURL: string;
+}
+
+/** One `#@ persist` named query, as planned. */
+export interface PersistedQueryPlan {
+   kind: "query";
+   /** The query's name in its declaring file. */
+   queryName: string;
+   /**
+    * The run target's `sourceID` (`<name>@<declaring file URL>`), when the
+    * query runs a source declared by name in its own file; absent for a run
+    * target written inline (`query: q is duckdb.table('t') -> { … }`).
+    */
+   sourceID?: string;
+   /** The run target's name, beside {@link sourceID}. */
+   sourceName?: string;
+   /**
+    * For a run target imported from another file (which compiles into the
+    * query whole, as an inline one does): the name the model gives it.
+    */
+   importedSource?: string;
+   /** The generated build source's name, inside the companion. */
+   buildSourceName: string;
+   /** The generated build source's `sourceID`, as the companion compiles it. */
+   buildSourceID: string;
+   /** The author's `#@` lines on the query, verbatim, trimmed. */
+   persistLines: string[];
+   /** The `storage=` destination, when the query declares one. */
    storage?: string;
    /** The declaring file's URL. */
    declaringURL: string;

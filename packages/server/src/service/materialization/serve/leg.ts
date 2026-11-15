@@ -5,9 +5,11 @@
  * A serving leg, and the answer one query gets from the legs.
  *
  * A leg answers a routed query from stored tables or declines: the view leg
- * (a persisted view called exactly), the rollup leg, and the served copy (the
- * author's source re-rooted on its stored table, gates and all). Each is
- * `{ kind, applies, attempt }` and nothing more: `applies` is pure and
+ * (a persisted view called exactly), the query leg (a persisted named query
+ * called exactly), the rollup leg, and the served copy (the author's source
+ * re-rooted on its stored table, gates and all). Each is
+ * `{ kind, applies, attempt }`, plus `passesNoGate` on a leg never tried past
+ * an entry-point gate whatever its kind's row allows: `applies` is pure and
  * compiles nothing; `attempt` resolves with a {@link LegAnswer} or throws a
  * `LegDecline` (domain/leg_decline.ts). A leg does not know the gate policy or
  * the router: the query pipeline (`service/model_serving.ts`) asks the policy
@@ -15,9 +17,11 @@
  * read, and it reads the decline's code itself.
  *
  * {@link makeLegs} makes the legs for one pinned snapshot, in the router's
- * order (R1: the view by exact call, then the coarsest rollup, then the
- * served copy). A leg is listed only when it exists for the model and the
- * snapshot, so the gate check runs exactly when one could route.
+ * order (R1: the view or named query by exact call, then the coarsest
+ * rollup, then the served copy). The query leg counts and reports as a
+ * `view` leg: it reads the same kind of table, by the same exact-call rule.
+ * A leg is listed only when it exists for the model and the snapshot, so the
+ * gate check runs exactly when one could route.
  *
  * {@link Answer} is the one record of how a query was served: built once from
  * the router's decision, replaced (never mutated) when a stored run fails and
@@ -42,6 +46,10 @@ import type { BuildManifest } from "../domain/types";
 import type { RollupVariantServe } from "./rollup_variants";
 import type { ServedCopyServe } from "./served_copy_serve";
 import type { PersistedViewServe, ViewTable } from "./view_variants";
+import type { PersistedQueryServe } from "./query_variants";
+
+/** The query leg's serve, for the model that makes one (beside the legs it makes). */
+export { PersistedQueryServe } from "./query_variants";
 
 /** The legs, in their usual order. */
 export type LegKind = "view" | "rollup" | "served";
@@ -63,6 +71,12 @@ export interface Leg {
    applies(q: QueryFacts, p: Pinned): boolean;
    /** Answer the query as written, or throw a `LegDecline`. */
    attempt(q: QueryFacts, p: Pinned): Promise<LegAnswer>;
+   /**
+    * Never tried past an entry-point gate, whatever the gate policy allows
+    * its kind: fails closed for a leg whose tables are never built over a
+    * gated source.
+    */
+   readonly passesNoGate?: true;
 }
 
 /** What a leg answered with: its runnable, and what running it reads. */
@@ -86,8 +100,8 @@ export interface LegAnswer {
    readonly graftScope: GraftScope | undefined;
    /** For a rollup answer: the rollup that answered. */
    readonly rollupMember?: string;
-   /** For a view answer: the persisted view's table. */
-   readonly viewTable?: ViewTable;
+   /** For a view answer: the persisted view's (or named query's) table. */
+   readonly viewTable?: ViewTable & { readonly kind?: "query" };
 }
 
 /** How one query was served. */
@@ -131,6 +145,8 @@ export interface LegContext {
    readonly rollupVariants?: RollupVariantServe;
    /** The view leg, when the model has a persisted view and the leg is on. */
    readonly persistedViews?: PersistedViewServe;
+   /** The query leg, when the model has a persisted named query and the leg is on. */
+   readonly persistedQueries?: PersistedQueryServe;
 }
 
 /**
@@ -139,8 +155,9 @@ export interface LegContext {
  */
 export function makeLegs(p: Pinned, ctx: LegContext): readonly Leg[] {
    const legs: Leg[] = [];
-   const { persistedViews, rollupVariants, servedCopy } = ctx;
+   const { persistedViews, persistedQueries, rollupVariants, servedCopy } = ctx;
    if (persistedViews) legs.push(viewLeg(persistedViews));
+   if (persistedQueries) legs.push(queryLeg(persistedQueries));
    if (rollupVariants) legs.push(rollupLeg(rollupVariants));
    if (servedCopy?.hasBindings(p.snapshot)) legs.push(servedLeg(servedCopy));
    return legs;
@@ -174,6 +191,36 @@ function viewLeg(views: PersistedViewServe): Leg {
             virtualMap: answer.virtualMap,
             graftScope: answer.graftScope,
             viewTable: answer.table,
+         };
+      },
+   };
+}
+
+/**
+ * A persisted named query by exact call (`run: q`, `run: q -> { … }`), beside
+ * the view leg and counted as one. Never past an entry-point gate: a
+ * persisted query is never built over a gated source.
+ */
+function queryLeg(queries: PersistedQueryServe): Leg {
+   return {
+      kind: "view",
+      passesNoGate: true,
+      applies: (q) => !!queries.calledQuery(q.queryString),
+      attempt: async (q, p) => {
+         const answer = await queries.attempt({
+            queryString: q.queryString,
+            givens: q.givens,
+            authorRunnable: q.authorRunnable,
+            pinned: p,
+            buildManifest: pinnedManifest(p),
+         });
+         return {
+            runnable: answer.runnable,
+            tablesRead: answer.binding ? [answer.binding] : undefined,
+            shapeBindings: answer.binding ? [answer.binding] : [],
+            virtualMap: answer.virtualMap,
+            graftScope: answer.graftScope,
+            viewTable: { ...answer.table, kind: "query" },
          };
       },
    };

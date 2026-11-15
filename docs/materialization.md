@@ -778,6 +778,7 @@ Every query result carries `path`, the path report. It says which materialized t
 ```
 
 - `tableId` is the table's `sourceEntityId`, the content address the build plan and manifest key on. Sources that build the same SQL share one table, so they share one id.
+- `kind` is `materialized` (a stored source), `rollup`, `view` (a persisted view's table), `query` (a persisted named query's table) or, on `servedBy`, `live`. A client treats a kind it does not know as a stored table it cannot name.
 - `considered` lists the tables on the queried source's chain (the source, what it extends or renames, and the source its query reads from) and the rollups of a source on it, in the order they are tried: `storage=` tables, then colocated rollups, then colocated tables nearest first. A table that was not tried because an earlier one answered is left out.
 - `reason` is one of `NOT_BUILT` (not bound to this package), `STALE` (past its freshness window), `CONTRACT` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, or reaches a field a rollup does not carry), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups), `RUN_FAILED` (the stored read failed and the freshness fallback answered live) or `WARNED` (the table answers no query at all: its serve verdict is `live`; see below). The list is closed, and codes may be added.
 - A `WARNED` skip carries `code`, the serve verdict's reason the table will not serve: `storage_mode` (a `storage=` table while `PERSIST_STORAGE_MODE` is `off` or `write-only`; the query reads the source's own warehouse, where its colocated table may answer), `unreachable` (nothing the package publishes reaches it), `row_level_gate` (every published entry point over it carries a row-level gate, which stored data cannot keep yet; a rollup only, for a stored table, while `PUBLISHER_MATERIALIZE_GATED_SOURCES` is on), `refused` (the package refuses to serve it) or `shadowed` (its storage table is bound to another source of the same name). Where the verdict says a table will never serve, it replaces what one query alone showed, but only where the router never tried the table: a source the bind refuses reads `WARNED` `refused`, not `NOT_BUILT`, and a table every published entry point gates reads `WARNED` `row_level_gate`, not `CONTRACT`. A skip the router reached by trying the table (`MISSING_FIELD`, `GRAIN_TOO_COARSE`, `COUNT_SEMANTICS`) keeps its own reason, and `STALE` and `RUN_FAILED` stay as they are, since only the query knows them. A `storage=` table and its colocated copy share a `tableId` but each reads its own verdict. The set of codes is open.
@@ -854,18 +855,33 @@ source: flights is duckdb.table('flights') extend {
 
 Off (the default), `#@ persist` on a view is ignored, as before.
 
-### Persisted named queries
+### Persisted named queries (in development, `PUBLISHER_MATERIALIZE`)
 
-`#@ persist` on a top-level `query:` is not built, and the query is answered live. The package carries a warning, code `persist-query-not-built`, that names the workaround: persist a source over the query and query that source.
+With `PUBLISHER_MATERIALIZE=true`, `#@ persist` on a top-level `query:` stores the query's result, and that table answers a query only when it calls the query exactly, or starts from it:
 
 ```malloy
-query: top_carriers is flights -> { group_by: carrier; aggregate: flight_count }
+source: flights is duckdb.table('flights') extend {
+  measure: flight_count is count()
+}
 
+#@ persist
+query: top_carriers is flights -> { group_by: carrier; aggregate: flight_count; order_by: flight_count desc; limit: 10 }
+```
+
+- **What it answers.** `run: top_carriers` in every spelling a caller sends: the REST or MCP `queryName`, a single-query report naming it, a report tile naming it, and `run: top_carriers` written by hand; and `run: top_carriers -> { … }`, whose later stages read the stored result. Not a refinement (`run: top_carriers + { where: … }`, skipped `MISSING_FIELD`: a `where:` and the query's `limit:` do not commute), nor any use of the query inside another definition (`source: s is top_carriers`, `query: q2 is top_carriers -> { … }`, a join to it), which are answered as they would be without the annotation. The answer keeps the query's name, its columns in their order, each column's kind (an aggregate is still a measure) and annotations, its ordering and its render tags. A linear report is a notebook, which answers live, as for persisted views.
+- **Where it is stored and what it is called.** Without `storage=`, in the source's own warehouse; with `storage=`, in that destination. The build plan lists it as a generated source named `<query>__query` (the `__query` marks it a query's, so a source of the same name never shares its table), and its default table name is that name with the package's suffix. `name=` is honoured as on any `#@ persist` line. It is rebuilt whole: `watermark=`, `merge_key=` and `partition=` are refused.
+- **Not built, with a warning** (`persist-query-not-built`, and the query is answered live): a query whose result reads a given or the current time, through its own stages or its source's `where:` (its result differs per caller or per read); a result that nests; an `@env.` reference on its line. A query whose result the variant cannot regroup row for row (the persisted view's rule: its last stage must group by at least one dimension and nest nothing) is built but answered live (skipped `MISSING_FIELD`): one that aggregates with no `group_by:`. Also not built: the governance cases below.
+- **Gates, fail closed.** A query that reaches a row-level gate (`#(access_filter)`, or an `#(authorize)`) is never built, whatever `PUBLISHER_MATERIALIZE_GATED_SOURCES` says: its source's own gate, one it inherits from a source it extends, renames or derives from, one on a source it joins, and one an inline or imported run target reaches. It is answered live under the gate, and the query leg is never tried past an entry-point gate (the route counter counts it `leg="view"`, `skipped`, `CONTRACT`). To serve a gated result from a table, persist a view on the gated source, which follows the persisted-view rule. Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+- **The path report.** A query that calls a persisted query lists its table first, as `kind: "query"`: `used` when it answered (`servedBy.kind` is `query`), else skipped with `NOT_BUILT`, `STALE`, `CONTRACT` or `MISSING_FIELD`. Its serve verdict reads `The persisted query \`<query>\``.
+
+Off (the default), a persisted query is not built and is answered live, and the package carries `persist-query-not-built`, which names the workaround that works either way: persist a source over the query and query that source.
+
+```malloy
 #@ persist
 source: top_carriers_result is top_carriers
 ```
 
-A misspelled key on the query's `#@` line is reported as on a source (`persist-unknown-key`). The query never refuses a build run.
+A misspelled key on the query's `#@` line is reported as on a source (`persist-unknown-key`). A persisted query never refuses a build run.
 
 ## Standalone vs. hosted (control-plane) deployments
 

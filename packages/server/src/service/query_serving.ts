@@ -49,6 +49,7 @@ import type {
    Answer,
    Leg,
    LegAnswer,
+   LegContext,
    LegKind,
    QueryFacts,
 } from "./materialization/serve/leg";
@@ -106,8 +107,10 @@ export function variantsOf(
    return legs.map((leg) => ({
       kind: leg.kind,
       applicable: leg.applies(facts, pinned),
-      keepsContracts: legMayPassGate(leg.kind, switches, gateContext),
+      keepsContracts:
+         !leg.passesNoGate && legMayPassGate(leg.kind, switches, gateContext),
       keepsContractsFor: (answer: LegAnswer) =>
+         !leg.passesNoGate &&
          answerKeepsGates(
             leg.kind,
             answer.tablesRead ?? [],
@@ -245,6 +248,8 @@ export interface QueryServingHost {
    readonly rollupVariants: RollupVariantServe;
    /** The `#@ persist` view leg (materialization v2, phase 4, P14). */
    readonly persistedViews: PersistedViewServe;
+   /** The `#@ persist` named-query leg. */
+   readonly persistedQueries: NonNullable<LegContext["persistedQueries"]>;
 }
 
 /**
@@ -293,13 +298,14 @@ export async function queryPathFor(
       const variantRollups = host.rollupVariants.hasRollups()
          ? host.rollupVariants.rollups()
          : [];
-      // The persisted view the query calls, if any: its table is the first
-      // candidate (R1), whatever the router decided about it.
+      // The persisted view or named query the query calls, if any: its table
+      // is the first candidate (R1), whatever the router decided about it.
       const routed = answer.leg === "live" ? undefined : answer.answer;
       const viewTable =
          routed?.viewTable ??
          (args.queryString !== undefined
-            ? host.persistedViews.reportedTable(args.queryString, pinned)
+            ? (host.persistedViews.reportedTable(args.queryString, pinned) ??
+              host.persistedQueries.reportedTable(args.queryString, pinned))
             : undefined);
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.

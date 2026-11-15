@@ -12,6 +12,9 @@
  * declares the query (its `location.url`) and the query's name there, and reads
  * only the notes the `query:` statement itself wrote (never one a query it
  * derives from carries).
+ *
+ * The planning and the build companion are in `persisted_view.ts`, beside
+ * persisted views'.
  */
 
 import { Annotations } from "@malloydata/malloy";
@@ -40,7 +43,7 @@ export interface DeclaredPersistQuery {
 }
 
 /** What the readers use of a compiled `NamedQueryDef`. */
-export interface NamedQueryLike {
+interface NamedQueryLike {
    type?: unknown;
    name?: unknown;
    structRef?: unknown;

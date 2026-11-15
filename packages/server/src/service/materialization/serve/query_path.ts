@@ -148,7 +148,7 @@ interface TableState {
     * since its only other name is a physical storage path.
     */
    tableId?: string;
-   kind: "materialized" | "rollup" | "view";
+   kind: "materialized" | "rollup" | "view" | "query";
    tier: "storage" | "colocated";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
@@ -234,9 +234,11 @@ export interface QueryPathInput {
    rollupMember?: string;
    /**
     * The table of the persisted view the query calls (`#@ persist` on a view,
-    * P14), when it calls one: tried before every other table (R1).
+    * P14), or of the persisted named query it calls (`kind: "query"`), when
+    * it calls one: tried before every other table (R1).
     */
    view?: {
+      kind?: "query";
       tableId?: string;
       tier: "storage" | "colocated";
       built: boolean;
@@ -261,10 +263,18 @@ export interface QueryPathInput {
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
    // One decision per kind; where two candidates share a kind (the v1 and
-   // `#(preaggregate)` rollup legs), the one that answered.
+   // `#(preaggregate)` rollup legs, the view and named-query legs), the one
+   // that answered, else one that applied.
    const decided = new Map<ConsideredVariant["kind"], ConsideredVariant>();
    for (const c of input.considered) {
-      if (!decided.has(c.kind) || c.outcome === "used") decided.set(c.kind, c);
+      const prior = decided.get(c.kind);
+      if (
+         !prior ||
+         c.outcome === "used" ||
+         (prior.reason === "not_applicable" && c.reason !== "not_applicable")
+      ) {
+         decided.set(c.kind, c);
+      }
    }
    // The served copy's decision is the stored tables' decision.
    const servedCopyAnswered = input.via === "served_copy";
@@ -435,7 +445,7 @@ function viewTableDecision(
       const t: TableState = {
          key: `persisted-view/${input.view.tableId ?? ""}`,
          ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
-         kind: "view",
+         kind: input.view.kind ?? "view",
          tier: input.view.tier,
          stale: input.view.stale,
          unbuilt: !input.view.built,

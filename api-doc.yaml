@@ -8801,11 +8801,13 @@ components:
 
     QueryPathTableKind:
       type: string
-      enum: [view, rollup, materialized, live]
+      enum: [view, query, rollup, materialized, live]
       description: >-
-        What kind of answer: `view`, a persisted view's table; `rollup`, a
-        pre-aggregation; `materialized`, a materialized source's table; `live`,
-        the source's own warehouse.
+        What kind of answer: `view`, a persisted view's table; `query`, a
+        persisted named query's table (`#@ persist` on a top-level `query:`);
+        `rollup`, a pre-aggregation; `materialized`, a materialized source's
+        table; `live`, the source's own warehouse. A client treats a kind it
+        does not know as a materialized table it cannot name.
 
     SkipReason:
       type: string

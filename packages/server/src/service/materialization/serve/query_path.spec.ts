@@ -109,6 +109,37 @@ describe("buildQueryPath", () => {
       ]);
    });
 
+   it("reads the view kind's decision from the leg that applied, when the view and query legs both ran", () => {
+      const report = buildQueryPath(
+         input({
+            view: {
+               kind: "query",
+               tableId: "id_q",
+               tier: "colocated",
+               built: true,
+               stale: false,
+            },
+            considered: [
+               { kind: "view", outcome: "skipped", reason: "not_applicable" },
+               {
+                  kind: "view",
+                  outcome: "skipped",
+                  reason: "does_not_answer",
+                  code: "view_missing_field",
+               },
+            ],
+         }),
+      );
+      expect(report.considered).toEqual([
+         {
+            tableId: "id_q",
+            kind: "query",
+            outcome: "skipped",
+            reason: "MISSING_FIELD",
+         },
+      ]);
+   });
+
    it("lists storage before colocated, and a colocated table only when no stored one answered", () => {
       const daily = storageOf("daily");
       const tables = [planned("daily"), planned("orders")];
