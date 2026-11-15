@@ -454,7 +454,7 @@ export interface ServedColumn {
 }
 
 /** A timeframe in {@link TIMEFRAMES}, as Malloy text. */
-export function timeframeKeyword(timeframe: string | undefined): string {
+function timeframeKeyword(timeframe: string | undefined): string {
    switch (timeframe) {
       case "second":
          return "second";

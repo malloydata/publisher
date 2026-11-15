@@ -6,11 +6,15 @@
  * rows: each column's kind (a measure stays a measure) and its annotations,
  * Malloy's own `#(malloy)` one included, with only its `drill_expression` set
  * aside (a stored column's drill code legitimately differs). Measures (a
- * filtered one and a boolean one among them), dimensions, timeframes, a
- * calculation, a multi-stage view, nests (by name, inline and two deep) and a
- * query that goes on past the view are each compared, through the real
- * package path, for a `storage=` table and a colocated one. Before the view
- * leg regrouped the stored rows, every measure came back a dimension.
+ * filtered one and boolean ones among them, NULL included), dimensions,
+ * timeframes, a calculation, a `having:`, a multi-stage view and a query that
+ * goes on past the view are each compared, through the real package path, for
+ * a `storage=` table and a colocated one. Before the view leg regrouped the
+ * stored rows, every measure came back a dimension.
+ *
+ * A view whose stored rows cannot be regrouped into exactly themselves (no
+ * dimension to key them, a nest) is declined by the view leg and answers
+ * live; those cases assert the decline, and rows and metadata equal to live.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -108,6 +112,47 @@ source: ov is orders_raw extend {
     }
   }
 
+  @PVIEW(ov_select_nest)
+  view: select_nest is {
+    group_by: region
+    aggregate: total
+    nest: lines is { select: status }
+  }
+
+  @PVIEW(ov_empty_nest)
+  view: empty_nest is {
+    group_by: region
+    aggregate: total
+    nest: north_placed is {
+      where: status = 'placed' and region = 'north'
+      group_by: status
+      aggregate: total
+    }
+  }
+
+  @PVIEW(ov_having_only)
+  view: having_only is { aggregate: order_count; having: order_count > 1000000 }
+
+  @PVIEW(ov_having_grouped)
+  view: having_grouped is {
+    group_by: region
+    aggregate: order_count
+    having: order_count > 2
+  }
+
+  @PVIEW(ov_null_flag)
+  view: null_flag is {
+    group_by: region
+    aggregate: any_null is max(amount) { where: amount is null } > 100000
+  }
+
+  @PVIEW(ov_select_calc)
+  view: select_calc is {
+    select: region
+    calculate: prev_region is lag(region)
+    order_by: region
+  }
+
   @PVIEW(ov_listing)
   view: listing is { select: id, region, amount; order_by: id }
 
@@ -143,7 +188,6 @@ interface Case {
 
 const CASES: Case[] = [
    { name: "measures and a dimension", malloy: "run: ov -> by_region" },
-   { name: "measures alone", malloy: "run: ov -> totals" },
    { name: "a timestamp timeframe", malloy: "run: ov -> by_month" },
    {
       name: "a date timeframe",
@@ -167,23 +211,60 @@ const CASES: Case[] = [
       malloy: "run: ov -> by_region -> { select: region, total }",
    },
    {
+      name: "a NULL boolean measure stays NULL",
+      malloy: "run: ov -> null_flag",
+   },
+   {
+      name: "a having: on a grouped view",
+      malloy: "run: ov -> having_grouped",
+   },
+   // Shapes whose stored rows cannot be regrouped into exactly themselves:
+   // the view leg declines them, so they answer live.
+   {
+      name: "measures alone (no dimension to key the stored rows)",
+      malloy: "run: ov -> totals",
+      liveIn: ["storage", "colocated"],
+   },
+   {
+      name: "a having: that leaves no row, with no dimension",
+      malloy: "run: ov -> having_only",
+      liveIn: ["storage", "colocated"],
+   },
+   {
+      name: "a select: with a calculate:, whose duplicate rows a regroup would merge",
+      malloy: "run: ov -> select_calc",
+      liveIn: ["storage", "colocated"],
+   },
+   {
+      name: "a select: nest, whose duplicate rows a regroup would merge",
+      malloy: "run: ov -> select_nest",
+      liveIn: ["storage", "colocated"],
+   },
+   {
+      name: "a later stage counting a select: nest's rows",
+      malloy:
+         "run: ov -> select_nest -> { aggregate: g is total.sum(), n is lines.count() }",
+      liveIn: ["storage", "colocated"],
+   },
+   {
+      name: "a nest left empty by its where:",
+      malloy: "run: ov -> empty_nest",
+      liveIn: ["storage", "colocated"],
+   },
+   {
       name: "a view nested by name and a nest in a nest",
       malloy: "run: ov -> deep",
-      liveIn: ["storage"],
+      liveIn: ["storage", "colocated"],
    },
    {
       name: "a nest with its own where:",
       malloy: "run: ov -> filtered_nest",
-      liveIn: ["storage"],
-      knownGap: {
-         colocated:
-            "the nest's #(malloy) drill_filters (its where:, written over the source's fields) cannot be restated over the stored rows",
-      },
+      liveIn: ["storage", "colocated"],
    },
    {
       name: "a nest's fields",
       malloy: "run: ov -> nested",
-      liveIn: ["storage"],
+      liveIn: ["storage", "colocated"],
    },
 ];
 

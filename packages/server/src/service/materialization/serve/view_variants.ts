@@ -84,7 +84,6 @@ import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import {
    TIMEFRAMES,
-   timeframeKeyword,
    timeframeRestatements,
    typeDeclaration,
 } from "./served_copy";
@@ -574,9 +573,11 @@ interface ViewShape {
    columns: ViewColumn[];
    orderBy: { name: string; desc: boolean }[];
    notes: string[];
+   /** The last stage's kind (`reduce`, `project`, …), as compiled. */
+   stageType?: string;
 }
 
-/** One output column of the view (or of a nest in it), as live reports it. */
+/** One output column of the view, as live reports it. */
 interface ViewColumn {
    name: string;
    /** The Malloy type of the stored value (`number`, `string`, `array`, …). */
@@ -588,69 +589,45 @@ interface ViewColumn {
     * `calculation`), a `dimension`, or a `nest` (a nested result).
     */
    kind: "measure" | "dimension" | "nest";
-   /** A nest's own columns, ordering and limit. */
-   nest?: NestShape;
-}
-
-interface NestShape {
-   columns: ViewColumn[];
-   orderBy: { name: string; desc: boolean }[];
-   limit?: number;
 }
 
 /** A compiled query stage, as far as the shape reads it. */
 interface StageIR {
+   type?: unknown;
    outputStruct?: { fields?: unknown[] };
    orderBy?: { field?: unknown; dir?: unknown }[];
-   limit?: unknown;
-   queryFields?: unknown[];
 }
 
-/** What live's result explore says of a field: its kind, and a nest's fields. */
+/** What live's result explore says of the columns: which are measures, which nest. */
 interface ResultKinds {
    measures: Set<string>;
-   nests: Map<string, ResultKinds>;
+   nests: Set<string>;
 }
 
 /** The kinds live's result reports, read from Malloy's public result explore. */
 function resultKinds(explore: { allFields: readonly unknown[] }): ResultKinds {
-   const out: ResultKinds = { measures: new Set(), nests: new Map() };
+   const out: ResultKinds = { measures: new Set(), nests: new Set() };
    for (const raw of explore.allFields) {
       const f = raw as {
          name: string;
          isAtomicField(): boolean;
          isExploreField(): boolean;
          sourceWasMeasure?(): boolean;
-         allFields?: readonly unknown[];
       };
       if (f.isAtomicField() && f.sourceWasMeasure?.()) {
          out.measures.add(f.name);
-      } else if (f.isExploreField() && f.allFields) {
-         out.nests.set(f.name, resultKinds({ allFields: f.allFields }));
+      } else if (f.isExploreField()) {
+         out.nests.add(f.name);
       }
    }
    return out;
 }
 
-/** A stage's output columns, ordering and limit, a nest's included. */
-function stageShape(stage: StageIR | undefined, kinds: ResultKinds): NestShape {
-   const turtles = new Map<string, StageIR[]>();
-   for (const q of stage?.queryFields ?? []) {
-      const t = q as {
-         type?: unknown;
-         name?: unknown;
-         as?: unknown;
-         pipeline?: unknown;
-      };
-      const name = typeof t.as === "string" ? t.as : t.name;
-      if (
-         t.type === "turtle" &&
-         typeof name === "string" &&
-         Array.isArray(t.pipeline)
-      ) {
-         turtles.set(name, t.pipeline as StageIR[]);
-      }
-   }
+/** The last stage's output columns and ordering. */
+function stageShape(
+   stage: StageIR | undefined,
+   kinds: ResultKinds,
+): Pick<ViewShape, "columns" | "orderBy"> {
    const columns = (stage?.outputStruct?.fields ?? []).flatMap(
       (raw): ViewColumn[] => {
          const f = raw as {
@@ -666,12 +643,6 @@ function stageShape(stage: StageIR | undefined, kinds: ResultKinds): NestShape {
                  ? f.name
                  : undefined;
          if (name === undefined) return [];
-         const nestKinds = kinds.nests.get(name);
-         const pipeline = turtles.get(name);
-         const nest =
-            nestKinds && pipeline
-               ? stageShape(pipeline[pipeline.length - 1], nestKinds)
-               : undefined;
          return [
             {
                name,
@@ -681,12 +652,11 @@ function stageShape(stage: StageIR | undefined, kinds: ResultKinds): NestShape {
                   ? { timeframe: f.timeframe }
                   : {}),
                notes: fieldNotes(raw),
-               kind: nest
+               kind: kinds.nests.has(name)
                   ? "nest"
                   : kinds.measures.has(name)
                     ? "measure"
                     : "dimension",
-               ...(nest ? { nest } : {}),
             },
          ];
       },
@@ -700,11 +670,7 @@ function stageShape(stage: StageIR | undefined, kinds: ResultKinds): NestShape {
               : undefined;
       return name === undefined ? [] : [{ name, desc: o.dir === "desc" }];
    });
-   return {
-      columns,
-      orderBy,
-      ...(typeof stage?.limit === "number" ? { limit: stage.limit } : {}),
-   };
+   return { columns, orderBy };
 }
 
 /** The view's output columns, ordering and notes, from a compile of the bare call. */
@@ -723,8 +689,9 @@ async function viewShape(
    ) as StageIR[];
    // Live's result explore says which columns are measures and which nest.
    const result = await call.getPreparedResult();
+   const last = stages[stages.length - 1];
    const { columns, orderBy } = stageShape(
-      stages[stages.length - 1],
+      last,
       resultKinds(result.resultExplore),
    );
    const def = SourceMap.of(modelDef).node(plan.sourceID)?.def as
@@ -740,7 +707,12 @@ async function viewShape(
    const view = def?.fields?.find(
       (f) => f.type === "turtle" && (f.as ?? f.name) === plan.viewName,
    );
-   return { columns, orderBy, notes: viewNoteTexts(view?.annotations) };
+   return {
+      columns,
+      orderBy,
+      notes: viewNoteTexts(view?.annotations),
+      ...(typeof last?.type === "string" ? { stageType: last.type } : {}),
+   };
 }
 
 /**
@@ -762,88 +734,84 @@ const MAX_TYPES = new Set([
 ]);
 
 /**
+ * Why the stored rows cannot be grouped again into exactly themselves, or
+ * undefined when they can. Regrouping is exact only when the view's last
+ * stage groups by at least one dimension: its stored rows are then keyed by
+ * those dimensions, one row per group.
+ *
+ * - A stage that is not a grouping (`select:`) has no key; grouping by its
+ *   columns would merge duplicate rows.
+ * - A stage with no dimension groups everything into one row, which a
+ *   `having:` may have filtered away; grouping an empty table again still
+ *   answers one row.
+ * - A nest's rows are an array per stored row; rebuilding it would merge a
+ *   `select:` nest's duplicates and turn an empty nest into one NULL row.
+ */
+function regroupRefusal(shape: ViewShape): string | undefined {
+   if (shape.stageType !== "reduce") {
+      return `its last stage is a ${shape.stageType ?? "stage"} that does not group, so its rows have no key`;
+   }
+   const nest = shape.columns.find((c) => c.kind === "nest");
+   if (nest) {
+      return `it nests \`${nest.name}\`, whose stored rows cannot be rebuilt exactly`;
+   }
+   if (!shape.columns.some((c) => c.kind === "dimension")) {
+      return "it groups by no dimension, so an empty result would come back as one row";
+   }
+   return undefined;
+}
+
+/**
  * The view, redeclared over the stored result: its notes, columns and
  * ordering.
  *
  * A view whose result holds only dimensions selects its stored columns. One
- * with a measure or a nest groups its stored rows again, by its dimensions,
- * which the stored result holds once per row, so each group is one stored row
- * and each measure re-aggregates one value (`total is total.max()`): the rows
- * are the stored rows, and each measure is a measure again, its `#(malloy)`
- * annotation carrying `calculation` as live's does. A nest is rebuilt the same
- * way from its stored rows, with its ordering and limit, so it is drillable
- * and its own fields keep their kinds. A boolean measure re-aggregates through
- * the number it picks. A measure of any other type `max()` does not take (a
- * JSON value, an array) cannot be re-aggregated; the variant is refused, and
- * the query answers live.
+ * with a measure groups its stored rows again, by its dimensions, which the
+ * stored result holds once per row, so each group is one stored row and each
+ * measure re-aggregates one value (`total is total.max()`): the rows are the
+ * stored rows, and each measure is a measure again, its `#(malloy)`
+ * annotation carrying `calculation` as live's does. A boolean measure
+ * re-aggregates through the number it picks, NULL kept NULL. Where that
+ * regrouping is not provably exact ({@link regroupRefusal}), or a measure's
+ * type is one `max()` does not take (a JSON value, an array), the variant is
+ * refused and the query answers live.
  */
 function viewDeclaration(viewName: string, shape: ViewShape): string {
    // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
    const notes = shape.notes.map((n) => `  ${n}\n`).join("");
+   const select = shape.columns.map((c) => identifier(c.name)).join(", ");
+   const order =
+      shape.orderBy.length > 0
+         ? `order_by: ${shape.orderBy
+              .map((o) => `${identifier(o.name)} ${o.desc ? "desc" : "asc"}`)
+              .join(", ")}`
+         : "";
    if (!regroups(shape.columns)) {
-      const select = shape.columns.map((c) => identifier(c.name)).join(", ");
-      return `${notes}  view: ${identifier(viewName)} is { select: ${select}${orderByClause(shape.orderBy, "; ")} }`;
+      return `${notes}  view: ${identifier(viewName)} is { select: ${select}${order ? `; ${order}` : ""} }`;
    }
-   // malloy-text: groupedBody's statements, every value through identifier or noteSource (recursive, so the ratchet cannot follow it)
-   return `${notes}  view: ${identifier(viewName)} is {\n${groupedBody(shape, [], "    ")}  }`;
+   const refusal = regroupRefusal(shape);
+   if (refusal) {
+      throw new Error(`the view's stored rows cannot be regrouped: ${refusal}`);
+   }
+   const lines = shape.columns.map(groupedColumn).join("");
+   return `${notes}  view: ${identifier(viewName)} is {\n${lines}${order ? `    ${order}\n` : ""}  }`;
 }
 
-/** `order_by: …`, after `separator`; empty when there is none. */
-function orderByClause(
-   orderBy: readonly { name: string; desc: boolean }[],
-   // malloy-text: a literal separator ("; " or an indent), never a value
-   separator: string,
-): string {
-   return orderBy.length > 0
-      ? `${separator}order_by: ${orderBy
-           .map((o) => `${identifier(o.name)} ${o.desc ? "desc" : "asc"}`)
-           .join(", ")}`
-      : "";
-}
-
-/**
- * A grouping stage's statements over the stored result, one per column in
- * order. `path` is the stored nest the columns are read through (empty at the
- * top, where each column is the source's own field).
- */
-function groupedBody(
-   shape: NestShape,
-   path: readonly string[],
-   // malloy-text: whitespace this file builds, never a value
-   indent: string,
-): string {
-   const lines = shape.columns.map((c) => {
-      const stored = [...path, c.name].map(identifier).join(".");
-      // malloy-text: the author's own notes through noteSource, names through identifier
-      const notes = c.notes.map((n) => noteSource(n, `${indent}  `)).join("");
-      const name = identifier(c.name);
-      switch (c.kind) {
-         case "measure":
-            // A boolean through the number it picks, so a NULL stays NULL.
-            if (c.type === "boolean") {
-               return `${indent}aggregate:\n${notes}${indent}  ${name} is max(pick 1 when ${stored} pick 0 when not ${stored} else null) = 1\n`;
-            }
-            if (!MAX_TYPES.has(c.type)) {
-               throw new Error(
-                  `the measure \`${c.name}\` is a ${c.type || "value"} that max() cannot re-aggregate`,
-               );
-            }
-            return `${indent}aggregate:\n${notes}${indent}  ${name} is ${stored}.max()\n`;
-         case "nest":
-            // malloy-text: this function's own output for the nest, every value through identifier or noteSource (recursion the ratchet cannot follow)
-            return `${indent}nest:\n${notes}${indent}  ${name} is {\n${groupedBody(c.nest!, [...path, c.name], `${indent}    `)}${indent}  }\n`;
-         case "dimension": {
-            // At the top a dimension is the source's own field, timeframe and
-            // notes included; in a nest it is read from the stored record.
-            if (path.length === 0) return `${indent}group_by: ${name}\n`;
-            // malloy-text: the stored path through identifier, truncated by a timeframe keyword from TIMEFRAMES
-            const read = c.timeframe
-               ? `${stored}.${timeframeKeyword(c.timeframe)}`
-               : stored;
-            return `${indent}group_by:\n${notes}${indent}  ${name} is ${read}\n`;
-         }
-      }
-   });
-   const order = orderByClause(shape.orderBy, indent);
-   return `${lines.join("")}${order ? `${order}\n` : ""}${shape.limit !== undefined ? `${indent}limit: ${shape.limit}\n` : ""}`;
+/** One column of the regrouped view, as its statement. */
+function groupedColumn(c: ViewColumn): string {
+   const name = identifier(c.name);
+   if (c.kind === "dimension") return `    group_by: ${name}\n`;
+   // malloy-text: the author's own notes through noteSource
+   const notes = c.notes.map((n) => noteSource(n, "      ")).join("");
+   // A boolean through the number it picks; `not b` holds for a NULL `b`, so
+   // a NULL is picked as NULL first.
+   if (c.type === "boolean") {
+      return `    aggregate:\n${notes}      ${name} is max(pick null when ${name} is null pick 1 when ${name} else 0) = 1\n`;
+   }
+   if (!MAX_TYPES.has(c.type)) {
+      throw new Error(
+         `the measure \`${c.name}\` is a ${c.type || "value"} that max() cannot re-aggregate`,
+      );
+   }
+   return `    aggregate:\n${notes}      ${name} is ${name}.max()\n`;
 }
