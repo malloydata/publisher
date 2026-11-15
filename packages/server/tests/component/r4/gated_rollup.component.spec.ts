@@ -22,7 +22,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../../src/errors";
-import { allowGatedStorageRollupsForTests } from "../../../src/service/materialization/plan/rollup_plan";
+import { allowGatedStorageRollupsForTests } from "../../../src/config";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,

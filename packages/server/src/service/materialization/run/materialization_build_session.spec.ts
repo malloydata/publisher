@@ -14,7 +14,6 @@ import {
 import { storageDestinationRoot } from "../../connection_config";
 import type { components } from "../../../api";
 import {
-   assertStorageServeShapeCompiles,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    type BuildSessionDeps,
@@ -27,14 +26,46 @@ import {
    passthroughSourceType,
    wrapPassthrough,
    writePartitionedTable,
+   oneFileModel,
 } from "./materialization_build_session";
-import {
-   buildChainedStorageBuildModel,
-   buildVirtualMap,
-   type ServeBinding,
-} from "../serve/materialization_serve_transform";
+import { identifier } from "../../malloy_text";
+import { declarableColumns } from "../stored_column_types";
+import { buildVirtualMap } from "../serve/bindings";
+import { type Binding } from "../domain/binding";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+/**
+ * A one-file model over stored parents, for the build session's own specs:
+ * each parent declared as a virtual source of its stored table (its
+ * declarable columns only), then the downstream as a persist source.
+ */
+function buildChainedStorageBuildModel(params: {
+   upstreams: Binding[];
+   downstreamName: string;
+   downstreamDefText: string;
+   destinationName: string;
+   documentFlags?: string[];
+}): string {
+   const parents = params.upstreams.map((b) => {
+      const type = identifier(`${b.sourceName}__shape`);
+      const fields = declarableColumns(b.schema)
+         .declared.map((c) => `   ${identifier(c.name)}::${c.malloyType}`)
+         .join(",\n");
+      return (
+         `type: ${type} is {\n${fields}\n}\n` +
+         `source: ${identifier(b.sourceName)} is ${identifier(b.destinationName)}.virtual('${b.virtualHandle}')::${type}`
+      );
+   });
+   return [
+      ...(params.documentFlags ?? []),
+      "##! experimental { persistence virtual_source }",
+      ...parents,
+      `#@ persist storage="${params.destinationName}"`,
+      `source: ${params.downstreamDefText}`,
+      "",
+   ].join("\n");
+}
 
 describe("createIsolatedBuildSession (per-build instance isolation)", () => {
    // Multi-tenant safety regression guard. @malloydata/db-duckdb pools :memory:
@@ -68,164 +99,6 @@ describe("createIsolatedBuildSession (per-build instance isolation)", () => {
       await dispose();
       // Second dispose must not throw (idempotent teardown).
       await dispose();
-   });
-});
-
-describe("assertStorageServeShapeCompiles (build-time servability gate)", () => {
-   it("passes for a well-formed captured schema (compiles the serve shape in DuckDB)", async () => {
-      await expect(
-         assertStorageServeShapeCompiles({
-            destinationName: "lake",
-            sourceName: "daily_orders",
-            virtualHandle: "se_1",
-            physicalTableName: "daily_orders__mabc123",
-            schema: [
-               { name: "order_date", type: "DATE" },
-               { name: "order_count", type: "BIGINT" },
-               { name: "total_amount", type: "DOUBLE" },
-            ],
-         }),
-      ).resolves.toBeUndefined();
-   });
-
-   // Each used to be declared `json`, which Malloy refuses in a `type:`, so
-   // the whole table was refused. A list or struct is now declared as
-   // Malloy's array or record type; anything else is left out of the shape.
-   it.each([
-      "INTEGER[]",
-      "STRUCT(a INTEGER, b VARCHAR)",
-      "STRUCT(k VARCHAR, v INTEGER[])[]",
-      "MAP(VARCHAR, INTEGER)",
-      "BLOB",
-      "INTERVAL",
-      "ENUM('calm', 'busy')",
-      "UNION(n INTEGER, s VARCHAR)",
-      "JSON",
-   ])("passes a table with a %s column", async (type) => {
-      await expect(
-         assertStorageServeShapeCompiles({
-            destinationName: "lake",
-            sourceName: "s",
-            virtualHandle: "h",
-            physicalTableName: "p",
-            schema: [
-               { name: "id", type: "BIGINT" },
-               { name: "c", type },
-            ],
-         }),
-      ).resolves.toBeUndefined();
-   });
-
-   it("passes a table whose only column is a list", async () => {
-      await expect(
-         assertStorageServeShapeCompiles({
-            destinationName: "lake",
-            sourceName: "s",
-            virtualHandle: "h",
-            physicalTableName: "p",
-            schema: [{ name: "c", type: "INTEGER[]" }],
-         }),
-      ).resolves.toBeUndefined();
-   });
-
-   it("refuses a table with no column left to declare, with its reason and the columns by name and type", async () => {
-      const error = await assertStorageServeShapeCompiles({
-         destinationName: "lake",
-         sourceName: "s",
-         virtualHandle: "h",
-         physicalTableName: "p",
-         schema: [
-            { name: "attrs", type: "MAP(VARCHAR, INTEGER)" },
-            { name: "raw", type: "BLOB" },
-         ],
-      }).then(
-         () => undefined,
-         (e: unknown) => e,
-      );
-      expect(error).toBeInstanceOf(MaterializationEligibilityError);
-      expect((error as MaterializationEligibilityError).reason).toBe(
-         "not_duckdb_portable",
-      );
-      expect((error as Error).message).toContain(
-         "no stored column has a Malloy type that reads it back faithfully " +
-            "('attrs' (MAP(VARCHAR, INTEGER)), 'raw' (BLOB))",
-      );
-   });
-
-   it("carries its reason when the shape does not compile", async () => {
-      const error = await assertStorageServeShapeCompiles({
-         destinationName: "lake",
-         sourceName: "s",
-         virtualHandle: "h",
-         physicalTableName: "p",
-         schema: [],
-      }).then(
-         () => undefined,
-         (e: unknown) => e,
-      );
-      expect(error).toBeInstanceOf(MaterializationEligibilityError);
-      expect((error as MaterializationEligibilityError).reason).toBe(
-         "not_duckdb_portable",
-      );
-   });
-});
-
-describe("serve-shape gate shares one session across builds", () => {
-   // The gate compiles against ONE process-wide session rather than a fresh
-   // DuckDB instance per build (~5.9MB/build of unreclaimed RSS on the
-   // production image). Sharing is safe on paper — the gate does no ATTACH and
-   // establishes no credentials — but a shared session means a shared CATALOG,
-   // and every compile declares a virtual source into it.
-   //
-   // The failure that would matter is a false PASS: a later shape satisfied by
-   // declarations an earlier compile left behind. No end-to-end scenario reaches
-   // it, because each hammer scenario gets a fresh publisher and so never
-   // compiles many shapes through one session.
-   const valid = (i: number) => ({
-      destinationName: "lake",
-      sourceName: `daily_${i}`,
-      virtualHandle: `se_${i}`,
-      physicalTableName: `daily_${i}__mabc`,
-      schema: [
-         { name: "order_date", type: "DATE" },
-         { name: "total_amount", type: "DOUBLE" },
-      ],
-   });
-
-   it("still refuses an unservable shape after many successful compiles", async () => {
-      for (let i = 0; i < 25; i++) {
-         await assertStorageServeShapeCompiles(valid(i));
-      }
-      await expect(
-         assertStorageServeShapeCompiles({ ...valid(99), schema: [] }),
-      ).rejects.toThrow(/cannot be served/i);
-      await expect(
-         assertStorageServeShapeCompiles({
-            ...valid(98),
-            schema: [{ name: "a", type: "NOT_A_REAL_TYPE" }],
-         }),
-      ).rejects.toThrow(/cannot be served/i);
-   });
-
-   it("a refusal does not poison the session for later valid shapes", async () => {
-      await expect(
-         assertStorageServeShapeCompiles({ ...valid(31), schema: [] }),
-      ).rejects.toThrow(/cannot be served/i);
-      await expect(
-         assertStorageServeShapeCompiles(valid(32)),
-      ).resolves.toBeUndefined();
-   });
-
-   it("reusing one handle with a DIFFERENT schema sees the new schema", async () => {
-      // The sharpest false-pass shape: if the first declaration lingered, the
-      // second would compile against stale columns and wrongly pass.
-      await assertStorageServeShapeCompiles({
-         ...valid(41),
-         schema: [{ name: "kept", type: "BIGINT" }],
-      });
-      await expect(
-         assertStorageServeShapeCompiles({ ...valid(41), schema: [] }),
-      ).rejects.toThrow(/cannot be served/i);
    });
 });
 
@@ -576,11 +449,13 @@ describe("buildSourceIntoStorage bounds the incremental delta's session too", ()
 // catalog, with no file reopen). POSIX releases the handle promptly. The
 // stack-on-parent rebind mechanism's cross-platform correctness is pinned in-memory (no file) by
 // the "runs the downstream over the parent's stored rows" test in
-// materialization_serve_transform.spec.ts.
+// chained_storage_build.spec.ts.
 describe.skipIf(process.platform === "win32")(
    "buildDownstreamIntoStorage (stack-on-parent, real DuckDB)",
    () => {
-      const parent: ServeBinding = {
+      const parent: Binding = {
+         kind: "persist",
+         tier: "storage",
          sourceName: "daily_orders",
          destinationName: "lake",
          virtualHandle: "daily_h",
@@ -652,12 +527,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -692,13 +569,15 @@ describe.skipIf(process.platform === "win32")(
                   // The downstream reads `weekly_orders`, which is NOT rebound here —
                   // the transient model can't compile, mirroring the mixed-engine /
                   // uncarried-parent case that must fall back to recompute-from-raw.
-                  transientModel: buildChainedStorageBuildModel({
-                     upstreams: [parent],
-                     downstreamName: "monthly_orders",
-                     downstreamDefText:
-                        "monthly_orders is weekly_orders -> { group_by: x is 1 }",
-                     destinationName: "lake",
-                  }),
+                  model: oneFileModel(
+                     buildChainedStorageBuildModel({
+                        upstreams: [parent],
+                        downstreamName: "monthly_orders",
+                        downstreamDefText:
+                           "monthly_orders is weekly_orders -> { group_by: x is 1 }",
+                        destinationName: "lake",
+                     }),
+                  ),
                   downstreamName: "monthly_orders",
                   virtualMap: buildVirtualMap([parent]),
                   physicalTableName: "monthly_orders__mdef456",
@@ -721,12 +600,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                // No table for the rebound parent, so its SQL cannot be written.
                virtualMap: new Map(),
@@ -752,16 +633,18 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText:
-                     "monthly_orders is daily_orders extend {\n" +
-                     '  dimension: doubled is sql_number("${total} * 2")\n' +
-                     "} -> { group_by: doubled }",
-                  destinationName: "lake",
-                  documentFlags: ["##! experimental.sql_functions"],
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText:
+                        "monthly_orders is daily_orders extend {\n" +
+                        '  dimension: doubled is sql_number("${total} * 2")\n' +
+                        "} -> { group_by: doubled }",
+                     destinationName: "lake",
+                     documentFlags: ["##! experimental.sql_functions"],
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -790,12 +673,14 @@ describe.skipIf(process.platform === "win32")(
                      type: "duckdb",
                      ducklakeConnection: { destinationSchema: "materialzed" },
                   } as ApiConnection,
-                  transientModel: buildChainedStorageBuildModel({
-                     upstreams: [parent],
-                     downstreamName: "monthly_orders",
-                     downstreamDefText,
-                     destinationName: "lake",
-                  }),
+                  model: oneFileModel(
+                     buildChainedStorageBuildModel({
+                        upstreams: [parent],
+                        downstreamName: "monthly_orders",
+                        downstreamDefText,
+                        destinationName: "lake",
+                     }),
+                  ),
                   downstreamName: "monthly_orders",
                   virtualMap: buildVirtualMap([parent]),
                   physicalTableName: "monthly_orders__mdef456",
@@ -813,12 +698,14 @@ describe.skipIf(process.platform === "win32")(
                   type: "duckdb",
                   ducklakeConnection: { destinationSchema: "materialized" },
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -843,15 +730,17 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "next_days",
-                  downstreamDefText:
-                     "next_days is daily_orders -> {\n" +
-                     "  group_by: next_day is order_date + 1 day\n" +
-                     "  aggregate: t is total.sum()\n}",
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "next_days",
+                     downstreamDefText:
+                        "next_days is daily_orders -> {\n" +
+                        "  group_by: next_day is order_date + 1 day\n" +
+                        "  aggregate: t is total.sum()\n}",
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "next_days",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "next_days__m1",
@@ -878,12 +767,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -906,7 +797,7 @@ describe.skipIf(process.platform === "win32")(
       // every such column was declared `json`, which Malloy refuses in a
       // `type:`, so no chained build over such a parent could lift.
       describe("over a parent with list, struct and MAP columns", () => {
-         const exotic: ServeBinding = {
+         const exotic: Binding = {
             ...parent,
             sourceName: "tagged_orders",
             virtualHandle: "tagged_h",
@@ -939,12 +830,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [exotic],
-                  downstreamName: name,
-                  downstreamDefText: defText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [exotic],
+                     downstreamName: name,
+                     downstreamDefText: defText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: name,
                virtualMap: buildVirtualMap([exotic]),
                physicalTableName: `${name}__m1`,

@@ -74,7 +74,7 @@
     "collisionEnforcementEnabled": true
   },
   "materialize": {
-    "enabled": false,
+    "enabled": true,
     "gatedSources": false
   },
   "materialization": {

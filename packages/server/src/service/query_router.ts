@@ -23,7 +23,11 @@
  */
 
 import type { QueryMaterializer } from "@malloydata/malloy";
-import { recordQueryVariantRouting } from "../materialization_metrics";
+import {
+   declineOfCode,
+   type VariantSkipExplanation,
+} from "./materialization/domain/leg_decline";
+import { recordQueryRoute, type RouteReason } from "../materialization_metrics";
 
 /** The kinds of candidate the router knows, in their usual catalog order. */
 /**
@@ -32,7 +36,7 @@ import { recordQueryVariantRouting } from "../materialization_metrics";
  * a persisted view's table (`#@ persist` on a view, phase 4), tried first: it
  * answers only an exact call of its view (R1).
  */
-export type VariantKind = "view" | "served" | "storage" | "rollup";
+export type VariantKind = "view" | "served" | "rollup";
 
 /**
  * Why a candidate did not answer. Internal for now; the path report maps
@@ -93,11 +97,7 @@ export interface Variant<Extra = unknown> {
    keepsContractsFor?(extra: Extra): boolean;
 }
 
-/** A candidate's own account of why it did not answer (see {@link Variant.explain}). */
-export interface VariantSkipExplanation {
-   code: string;
-   callerDetail?: string;
-}
+export type { VariantSkipExplanation };
 
 /** What the router decided about one candidate. */
 export interface ConsideredVariant {
@@ -151,7 +151,7 @@ export async function routeQuery<Extra>(
    variants: ReadonlyArray<Variant<Extra>>,
    blockedByGate: () => Promise<RowLevelVeto>,
    /**
-    * Count each candidate in `publisher_query_variant_routing_total` now. Off
+    * Count each candidate in `publisher_query_route_total` now. Off
     * when the caller counts after the run instead ({@link recordVariantRouting}),
     * so a variant whose run fails and falls back live is not counted `used`.
     */
@@ -163,21 +163,42 @@ export async function routeQuery<Extra>(
 }
 
 /**
- * One count per candidate the router considered. With `runFailed`, the
- * variant it chose failed at run time and the query was answered live, so
- * that variant counts as `skipped` with reason `run_failed`, not `used`.
+ * One count per candidate the router considered, once the query is answered
+ * (`publisher_query_route_total`). With `runFailed`, the variant it chose
+ * failed at run time and the query was answered live, so that variant counts
+ * as `fallback` with reason `RUN_FAILED`, not `used`. A candidate that did
+ * not apply is not counted. When live answered a query the router counted a
+ * candidate for, `live` counts as `used`.
  */
 export function recordVariantRouting(
    considered: readonly ConsideredVariant[],
    runFailed = false,
 ): void {
    for (const c of considered) {
-      if (runFailed && c.outcome === "used") {
-         recordQueryVariantRouting(c.kind, "skipped", "run_failed");
-      } else {
-         recordQueryVariantRouting(c.kind, c.outcome, c.reason ?? "none");
+      if (c.outcome === "used") {
+         if (runFailed) recordQueryRoute(c.kind, "fallback", "RUN_FAILED");
+         else recordQueryRoute(c.kind, "used", "NONE");
+      } else if (c.reason !== "not_applicable") {
+         recordQueryRoute(c.kind, "skipped", routeReasonOf(c));
       }
    }
+   const counted = considered.some((c) => c.reason !== "not_applicable");
+   if (
+      counted &&
+      (runFailed || !considered.some((c) => c.outcome === "used"))
+   ) {
+      recordQueryRoute("live", "used", "NONE");
+   }
+}
+
+/**
+ * The public reason for a skipped candidate: a gate it cannot keep is
+ * `CONTRACT`; a decline is its code's `SkipReason`, and anything unexplained
+ * is `MISSING_FIELD`, as the path report reads it.
+ */
+function routeReasonOf(c: ConsideredVariant): RouteReason {
+   if (c.reason === "row_level_gate") return "CONTRACT";
+   return declineOfCode(c.code)?.reason ?? "MISSING_FIELD";
 }
 
 async function decideRoute<Extra>(

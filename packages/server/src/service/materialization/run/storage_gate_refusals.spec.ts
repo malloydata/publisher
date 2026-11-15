@@ -2,168 +2,96 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Characterization of the `storage=` build's DuckDB gate
- * (`assertStorageServeShapeCompiles`), which every `storage=` build passes
- * before its table is reported: which captured schemas it lets through and
- * which it refuses with a 422. Recorded as it behaves today, so replacing or
- * removing the gate (step R) shows exactly which builds change outcome.
+ * A `storage=` build no longer passes a per-build DuckDB gate: whether a
+ * stored table can be read is decided at bind, per source, by the served
+ * copy's stored-type plan (`declarableColumns`, the one declaration rule).
+ * A column no Malloy type reads back faithfully is left out of the source's
+ * `type:`, so only a query reading it answers live; a table with no column
+ * left is still built, and the served copy declines its source at bind
+ * (`column_types`), so every query over it answers live.
  *
- * A list or struct column is declared as Malloy's array or record type and
- * passes. A column no Malloy type reads back faithfully (MAP, UNION, ENUM,
- * BLOB, INTERVAL, BIT, JSON, an unknown type) is left out of the shape, so a
- * query reading it answers live; the gate refuses only a table with no column
- * left, with reason `not_duckdb_portable`.
+ * Pinned per stored DuckDB type, beside the outcome the gate gave before it
+ * was replaced: the types whose one-column table the build used to refuse
+ * with a 422 (`not_duckdb_portable`) now build and answer live.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-   internalErrorToHttpError,
-   MaterializationEligibilityError,
-} from "../../../errors";
-import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
-import {
-   startMetricsHarness,
-   type MetricsHarness,
-} from "../../../test_helpers/metrics_harness";
-import { assertStorageServeShapeCompiles } from "./materialization_build_session";
+import { describe, expect, it } from "bun:test";
+import { declarableColumns } from "../stored_column_types";
 
-function gate(
-   schema: { name?: string; type?: string }[],
-   over: { sourceName?: string; destinationName?: string } = {},
-): Promise<void> {
-   return assertStorageServeShapeCompiles({
-      destinationName: over.destinationName ?? "lake",
-      sourceName: over.sourceName ?? "s",
-      virtualHandle: "h",
-      physicalTableName: "p",
-      schema,
-   });
-}
-
-async function outcome(
-   schema: { name?: string; type?: string }[],
-   over?: { sourceName?: string; destinationName?: string },
-): Promise<"serves" | "refused"> {
-   try {
-      await gate(schema, over);
-      return "serves";
-   } catch (err) {
-      expect(err).toBeInstanceOf(MaterializationEligibilityError);
-      return "refused";
-   }
-}
-
-/** A column of each DuckDB type `DESCRIBE` can report, and the gate's outcome. */
-const BY_TYPE: Record<string, "serves" | "refused"> = {
-   BOOLEAN: "serves",
-   TINYINT: "serves",
-   SMALLINT: "serves",
-   INTEGER: "serves",
-   BIGINT: "serves",
-   HUGEINT: "serves",
-   UBIGINT: "serves",
-   UHUGEINT: "serves",
-   FLOAT: "serves",
-   DOUBLE: "serves",
-   "DECIMAL(18,2)": "serves",
-   "DECIMAL(38,10)": "serves",
-   VARCHAR: "serves",
-   UUID: "serves",
-   DATE: "serves",
-   TIME: "serves",
-   TIMESTAMP: "serves",
-   TIMESTAMP_NS: "serves",
-   "TIMESTAMP WITH TIME ZONE": "serves",
-   TIMESTAMPTZ: "serves",
-   INTERVAL: "refused",
-   BLOB: "refused",
-   BIT: "refused",
-   JSON: "refused",
-   "INTEGER[]": "serves",
-   "VARCHAR[]": "serves",
-   "STRUCT(a INTEGER, b VARCHAR)": "serves",
-   "MAP(VARCHAR, INTEGER)": "refused",
-   "ENUM('a', 'b')": "refused",
-   "UNION(n INTEGER, s VARCHAR)": "refused",
-   NOT_A_REAL_TYPE: "refused",
+/**
+ * A one-column table of each DuckDB type `DESCRIBE` can report: whether the
+ * column is declared (served) or left out (its source answers live), and
+ * what the replaced gate did with the table.
+ */
+const BY_TYPE: Record<
+   string,
+   { column: "declared" | "left out"; gateBefore: "built" | "422" }
+> = {
+   BOOLEAN: { column: "declared", gateBefore: "built" },
+   TINYINT: { column: "declared", gateBefore: "built" },
+   SMALLINT: { column: "declared", gateBefore: "built" },
+   INTEGER: { column: "declared", gateBefore: "built" },
+   BIGINT: { column: "declared", gateBefore: "built" },
+   HUGEINT: { column: "declared", gateBefore: "built" },
+   UBIGINT: { column: "declared", gateBefore: "built" },
+   UHUGEINT: { column: "declared", gateBefore: "built" },
+   FLOAT: { column: "declared", gateBefore: "built" },
+   DOUBLE: { column: "declared", gateBefore: "built" },
+   "DECIMAL(18,2)": { column: "declared", gateBefore: "built" },
+   "DECIMAL(38,10)": { column: "declared", gateBefore: "built" },
+   VARCHAR: { column: "declared", gateBefore: "built" },
+   UUID: { column: "declared", gateBefore: "built" },
+   DATE: { column: "declared", gateBefore: "built" },
+   TIME: { column: "declared", gateBefore: "built" },
+   TIMESTAMP: { column: "declared", gateBefore: "built" },
+   TIMESTAMP_NS: { column: "declared", gateBefore: "built" },
+   "TIMESTAMP WITH TIME ZONE": { column: "declared", gateBefore: "built" },
+   TIMESTAMPTZ: { column: "declared", gateBefore: "built" },
+   INTERVAL: { column: "left out", gateBefore: "422" },
+   BLOB: { column: "left out", gateBefore: "422" },
+   BIT: { column: "left out", gateBefore: "422" },
+   JSON: { column: "left out", gateBefore: "422" },
+   "INTEGER[]": { column: "declared", gateBefore: "built" },
+   "VARCHAR[]": { column: "declared", gateBefore: "built" },
+   "STRUCT(a INTEGER, b VARCHAR)": { column: "declared", gateBefore: "built" },
+   "MAP(VARCHAR, INTEGER)": { column: "left out", gateBefore: "422" },
+   "ENUM('a', 'b')": { column: "left out", gateBefore: "422" },
+   "UNION(n INTEGER, s VARCHAR)": { column: "left out", gateBefore: "422" },
+   NOT_A_REAL_TYPE: { column: "left out", gateBefore: "422" },
 };
 
-describe("the storage= build's DuckDB gate", () => {
-   let metrics: MetricsHarness;
-   beforeEach(async () => {
-      metrics = await startMetricsHarness();
-      resetMaterializationTelemetryForTesting();
-   });
-   afterEach(async () => {
-      resetMaterializationTelemetryForTesting();
-      await metrics.shutdown();
-   });
-
-   it("serves or refuses a one-column table by the column's type", async () => {
+describe("a storage= table's columns, decided at bind", () => {
+   it("declares or leaves out a column by its type", () => {
       const seen: Record<string, string> = {};
       for (const type of Object.keys(BY_TYPE)) {
-         seen[type] = await outcome([{ name: "c", type }]);
+         const { declared } = declarableColumns([{ name: "c", type }]);
+         seen[type] = declared.length === 1 ? "declared" : "left out";
       }
-      expect(seen).toEqual(BY_TYPE);
+      expect(seen).toEqual(
+         Object.fromEntries(
+            Object.entries(BY_TYPE).map(([t, o]) => [t, o.column]),
+         ),
+      );
    });
 
-   it("leaves out a column it cannot type rather than refusing the table", async () => {
+   it("refused exactly the tables whose every column is left out, which now build", () => {
+      for (const [type, outcome] of Object.entries(BY_TYPE)) {
+         expect({ type, refusedBefore: outcome.gateBefore === "422" }).toEqual({
+            type,
+            refusedBefore: outcome.column === "left out",
+         });
+      }
+   });
+
+   it("leaves a column out rather than the table", () => {
       expect(
-         await outcome([
-            { name: "id", type: "BIGINT" },
-            { name: "tags", type: "VARCHAR[]" },
-         ]),
-      ).toBe("serves");
-      expect(
-         await outcome([
+         declarableColumns([
             { name: "id", type: "BIGINT" },
             { name: "m", type: "MAP(VARCHAR, INTEGER)" },
          ]),
-      ).toBe("serves");
-   });
-
-   it("refuses a table with no typed column, and skips a column without a name or type", async () => {
-      expect(await outcome([])).toBe("refused");
-      expect(await outcome([{ name: "c" }, { type: "INTEGER" }])).toBe(
-         "refused",
-      );
-      expect(await outcome([{ name: "", type: "INTEGER" }])).toBe("refused");
-      expect(
-         await outcome([{ name: "c", type: "INTEGER" }, { name: "d" }]),
-      ).toBe("serves");
-   });
-
-   it("quotes any column, source or destination name", async () => {
-      for (const name of ["order", "with space", 'q"uote', "x'y", "1st"]) {
-         expect(await outcome([{ name, type: "INTEGER" }])).toBe("serves");
-      }
-      expect(
-         await outcome([{ name: "c", type: "INTEGER" }], {
-            sourceName: "with space",
-            destinationName: "my lake",
-         }),
-      ).toBe("serves");
-   });
-
-   it("refuses a table with no column left as a 422 with reason not_duckdb_portable, naming the columns", async () => {
-      const err = await gate([
-         { name: "c", type: "MAP(VARCHAR, INTEGER)" },
-      ]).then(
-         () => undefined,
-         (e: unknown) => e as MaterializationEligibilityError,
-      );
-      expect(err).toBeInstanceOf(MaterializationEligibilityError);
-      expect(err!.reason).toBe("not_duckdb_portable");
-      expect(err!.message).toStartWith(
-         "Source 's' cannot be served from its storage destination: no stored " +
-            "column has a Malloy type that reads it back faithfully ('c' (MAP(VARCHAR, INTEGER))).",
-      );
-      expect(internalErrorToHttpError(err!, { log: false }).status).toBe(422);
-      expect(
-         await metrics.collectCounter(
-            "publisher_materialization_eligibility_refused_total",
-            { reason: "not_duckdb_portable" },
-         ),
-      ).toBe(1);
+      ).toEqual({
+         declared: [{ name: "id", type: "BIGINT", malloyType: "number" }],
+         leftOut: [{ name: "m", type: "MAP(VARCHAR, INTEGER)" }],
+      });
    });
 });

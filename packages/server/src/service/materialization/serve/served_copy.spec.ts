@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { storedTypeText } from "../stored_column_types";
 import { describe, expect, it } from "bun:test";
 import {
    buildServedCopy,
@@ -14,12 +15,11 @@ import {
    rewriteDimensions,
    SERVED_COPY_FLAG,
    storedMalloyType,
-   storedTypeText,
    typeDeclaration,
    type Reroot,
    replacePairJoin,
 } from "./served_copy";
-import { inverseRenameBlocks } from "../declaration_text";
+import { inverseRenameBlocks } from "../text/declaration_text";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
 function rangeOf(text: string, name: string): Reroot["range"] {

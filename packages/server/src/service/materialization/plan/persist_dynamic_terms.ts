@@ -1,16 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import { destinationOf, readRouteIfAny } from "./declaration";
 import { collectGivenRefs } from "../../given";
 import { readsAGiven } from "../../probe_compiler";
 import { forEachFieldPath } from "../../governance/ir/array_query";
 import {
    NOW_OFFSET_UNITS,
+   type MalloyRange,
    type NowComparisonOp,
    type NowOffsetUnit,
-} from "../../malloy_text";
+   type RollingWindow,
+   type TermUse,
+} from "../domain/read_time_terms";
 
 /**
  * Where a persist source's givens sit, and whether that lets the source be
@@ -98,7 +102,7 @@ function givenNames(node: unknown): string[] {
 export function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
    let def: unknown;
    try {
-      def = persistSource._sourceDef as unknown;
+      def = sourceDefOf(persistSource) as unknown;
    } catch {
       return true;
    }
@@ -185,7 +189,7 @@ export function admitGivenPositions(
 ): DynamicTermClassification {
    let def: unknown;
    try {
-      def = persistSource._sourceDef as unknown;
+      def = sourceDefOf(persistSource) as unknown;
    } catch (err) {
       return unreadable(err, "which givens the build would bake in");
    }
@@ -425,15 +429,14 @@ const MAX_JOIN_DEPTH = 4;
 function declaresStorage(annotations: unknown): boolean {
    if (annotations === undefined || annotations === null) return false;
    try {
-      const tag = parseRouteTag(
+      const tag = readRouteIfAny(
          new Annotations(
             annotations as ConstructorParameters<typeof Annotations>[0],
          ),
          "@",
-      ).tag;
-      if (!tag.has("persist")) return false;
-      const storage = tag.text("storage");
-      return typeof storage === "string" && storage.trim().length > 0;
+      );
+      if (!tag?.has("persist")) return false;
+      return destinationOf(tag, "persist") !== undefined;
    } catch {
       return false;
    }
@@ -480,7 +483,7 @@ export function readTimeDynamicTerms(
    persistSource: PersistSource,
 ): DynamicTerm[] {
    try {
-      const def = persistSource._sourceDef as unknown as {
+      const def = sourceDefOf(persistSource) as unknown as {
          filterList?: unknown;
          fields?: unknown;
       };
@@ -490,18 +493,6 @@ export function readTimeDynamicTerms(
       // the source as unscopable, which one empty-column term expresses.
       return [{ code: "<unreadable>", givens: [], columns: [] }];
    }
-}
-
-/** A zero-based range in a Malloy file, as the compiler reports one. */
-export interface MalloyRange {
-   start: { line: number; character: number };
-   end: { line: number; character: number };
-}
-
-/** Where a term reads a field or a given, as its `refSummary` records it. */
-export interface TermUse {
-   url: string;
-   range: MalloyRange;
 }
 
 function termUse(use: unknown): TermUse | undefined {
@@ -616,22 +607,6 @@ function dynamicTerm(entry: object): DynamicTerm {
 // every term of a compiled source by what it depends on beside the stored
 // columns: nothing (fixed), a given, the current time, or both.
 // ---------------------------------------------------------------------------
-
-/**
- * A current-time comparison in the one shape a stored table can re-apply at
- * read: a one-segment field compared with `now`, optionally offset by a whole
- * number of one unit, read with the field on the left. The direction is the
- * comparison: `>=`/`>` keep rows newer than the cut-off (a lower bound),
- * `<`/`<=` rows older than it (an upper bound).
- */
-export interface RollingWindow {
-   /** The field the term compares (a stored column, when it is stored). */
-   field: string;
-   /** As read with the field on the left. */
-   op: NowComparisonOp;
-   /** `now + sign * amount unit`; absent for a bare `now`. */
-   offset?: { sign: 1 | -1; amount: number; unit: NowOffsetUnit };
-}
 
 /** What one `where:` term of a compiled source depends on. */
 type WhereTermDependency =

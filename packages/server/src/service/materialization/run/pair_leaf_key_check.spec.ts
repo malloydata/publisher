@@ -24,8 +24,8 @@ import {
    PackageMaterialization,
    type PackageMaterializationOwner,
 } from "../package_materialization";
-import type { ServeBinding } from "../serve/materialization_serve_transform";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { Binding } from "../domain/binding";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import {
    INLINE_UNIQUENESS_KEY,
    keyUniquenessAt,
@@ -37,7 +37,7 @@ import {
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
 import { SourceBuilder } from "./source_build";
-import { deriveColocatedServeBindings } from "../serve/colocated_bindings";
+import { deriveColocatedServeBindings } from "../serve/bind";
 
 const packages = tempBuildPlanPackages();
 let restore: () => void;
@@ -264,10 +264,7 @@ describe("a pair table's leaf key check, on a build", () => {
    // that fails part-way, or a rewrite that brings a NULL or repeated leaf
    // key, never leaves a pass bound over rows it did not check.
    it("is forgotten on the models' colocated bindings when a run is about to write the table", () => {
-      const pushed: ServeBinding[][] = [];
-      const model = {
-         setServeBindings: (b: ServeBinding[]) => pushed.push(b),
-      };
+      const model = {};
       const materialization = new PackageMaterialization({
          models: () => new Map([["m.malloy", model]]),
          packageName: () => "pkg",
@@ -292,13 +289,18 @@ describe("a pair table's leaf key check, on a build", () => {
       materialization.colocatedSourceEligibility = {
          eligibleEntityIds: new Set(["a"]),
       } as never;
-      const bound = () =>
-         pushed[pushed.length - 1]?.find((b) => b.virtualHandle === "a");
-      materialization.recordManifestBinding({
-         a: {
-            tableName: "flights_pairs",
-            connectionName: "duckdb",
-            keyUniqueness: { parentKeys: { "segs@m": true } },
+      const bound = (): Binding | undefined =>
+         materialization
+            .snapshot()
+            .bindings.find((b) => b.virtualHandle === "a");
+      materialization.bind({
+         colocatedAsGiven: true,
+         colocated: {
+            a: {
+               tableName: "flights_pairs",
+               connectionName: "duckdb",
+               keyUniqueness: { parentKeys: { "segs@m": true } },
+            },
          },
       });
       expect(bound()?.primaryKeys).toEqual({ "segs@m": true });
@@ -306,11 +308,14 @@ describe("a pair table's leaf key check, on a build", () => {
       expect(bound()?.tablePath).toBe("flights_pairs");
       expect(bound()?.primaryKeys).toBeUndefined();
       // A later bind that holds the record again pushes it.
-      materialization.recordManifestBinding({
-         a: {
-            tableName: "flights_pairs",
-            connectionName: "duckdb",
-            keyUniqueness: { parentKeys: { "segs@m": false } },
+      materialization.bind({
+         colocatedAsGiven: true,
+         colocated: {
+            a: {
+               tableName: "flights_pairs",
+               connectionName: "duckdb",
+               keyUniqueness: { parentKeys: { "segs@m": false } },
+            },
          },
       });
       expect(bound()?.primaryKeys).toEqual({ "segs@m": false });

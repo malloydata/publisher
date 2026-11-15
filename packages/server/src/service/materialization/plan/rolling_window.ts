@@ -49,34 +49,16 @@
  * to that zone's wall time, so the served copy answers such a query live.
  */
 
-import type { NowOffsetUnit } from "../../malloy_text";
-import type {
-   ClassifiedWhereTerm,
-   RollingWindow,
-   TermUse,
-} from "./persist_dynamic_terms";
+import type { ClassifiedWhereTerm } from "./persist_dynamic_terms";
+import {
+   rollingWindowsOf,
+   type CurrentTimeReadTerm,
+   type NowOffsetUnit,
+   type RollingWindow,
+   type TermUse,
+} from "../domain/read_time_terms";
 
 export type { RollingWindow };
-
-/**
- * One comparison of a current-time `where:` term of a materialized source,
- * which its served copy writes again over the stored table, at every read's
- * clock. A two-sided term is two of these, with the same `code`.
- */
-export interface CurrentTimeReadTerm {
-   kind: "current_time";
-   /** The author's text of the term, for messages. */
-   code: string;
-   /** The stored columns it reads: the window's field. */
-   columns: string[];
-   window: RollingWindow;
-   /**
-    * Set when the build leaves the whole term out (it holds an upper bound):
-    * where the term reads each field, by which the build copy finds its text
-    * and replaces it with `true`. Absent: the term is built as written.
-    */
-   leftOut?: TermUse[];
-}
 
 /** Why a source's current-time terms cannot be materialized. */
 interface RollingWindowRefusal {
@@ -178,15 +160,6 @@ export function rollingWindowTerms(
       }
    }
    return { ok: true, terms };
-}
-
-/** The windows among a plan's read-time terms, lower and upper bounds alike. */
-export function rollingWindowsOf(
-   terms: readonly { kind: string; window?: RollingWindow }[] | undefined,
-): RollingWindow[] {
-   return (terms ?? []).flatMap((t) =>
-      t.kind === "current_time" && t.window ? [t.window] : [],
-   );
 }
 
 /**

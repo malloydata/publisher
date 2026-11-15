@@ -23,11 +23,11 @@
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { splitManifestEntries } from "../../../src/service/materialization/run/manifest_loader";
-import { deriveServeBindings } from "../../../src/service/materialization/serve/materialization_serve_transform";
+import { deriveServeBindings } from "../../../src/service/materialization/domain/binding";
 import type {
    KeyUniqueness,
    ManifestEntry,
-} from "../../../src/service/materialization/types";
+} from "../../../src/service/materialization/domain/types";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,

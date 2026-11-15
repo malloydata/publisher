@@ -1,0 +1,12 @@
+{
+  "problems": [
+    {
+      "reason": "column_types",
+      "sourceName": "s"
+    }
+  ],
+  "query": {
+    "equalToLive": true,
+    "servedFrom": null
+  }
+}

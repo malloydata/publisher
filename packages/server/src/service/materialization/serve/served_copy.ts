@@ -40,9 +40,9 @@ import {
    nowComparison,
    stringLiteral,
 } from "../../malloy_text";
-import { noteSource } from "../field_notes";
-import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
-import { storedMalloyType } from "./materialization_serve_transform";
+import { noteSource } from "../text/field_notes";
+import type { MaterializeReadTimeTerm } from "../domain/read_time_terms";
+import { storedMalloyType, storedTypeText } from "../stored_column_types";
 
 export { storedMalloyType };
 import {
@@ -53,14 +53,14 @@ import {
    inverseRenameBlocks,
    inverselyRenamedColumns,
    rewriteDimensions,
-} from "../declaration_text";
+} from "../text/declaration_text";
 import {
    isName,
    lexAll,
    offsetOf,
    statementHead,
    statementStarts,
-} from "../malloy_lexer";
+} from "../text/malloy_lexer";
 import {
    dropJoinDefinition,
    inlinedJoinRenames,
@@ -71,7 +71,7 @@ import {
    renameBlock,
    TIMEFRAMES,
    type GeneratedRename,
-} from "../inlined_join_text";
+} from "../text/inlined_join_text";
 
 export {
    declarationSpans,
@@ -1423,17 +1423,6 @@ function timeframeStatements(
       if (dims) out += `\n  ${accessPrefix(access)}dimension:\n${dims}`;
    }
    return out;
-}
-
-/**
- * The Malloy type a stored column is declared as in the `type:`: the one rule
- * every stored table's declaration follows ({@link storedMalloyType}). A
- * column it cannot declare is left out before a declaration is written, so
- * the `json` here is never reached by one that compiles: Malloy refuses it in
- * a `type:`, which fails that copy and leaves the source to its fallback.
- */
-export function storedTypeText(stored: string): string {
-   return storedMalloyType(stored) ?? "json";
 }
 
 /** The emitted `type:` declaration for one re-rooted source. */

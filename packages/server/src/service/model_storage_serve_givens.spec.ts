@@ -20,7 +20,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import type { Binding } from "./materialization/domain/binding";
 import { malloyGivenToApi } from "./given";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
@@ -67,7 +67,9 @@ source: scoped is duckdb.sql("SELECT 0 AS org_id, 0 AS amount WHERE false") exte
 const STORED = `CREATE OR REPLACE TABLE mz_scoped AS
    SELECT * FROM (VALUES (1, 10), (2, 7), (1, 20)) AS t(org_id, amount)`;
 
-const BINDING: ServeBinding = {
+const BINDING: Binding = {
+   kind: "persist",
+   tier: "storage",
    sourceName: "scoped",
    destinationName: "duckdb",
    virtualHandle: "h_scoped",

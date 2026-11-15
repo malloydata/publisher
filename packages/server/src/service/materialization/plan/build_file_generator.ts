@@ -179,7 +179,7 @@
  * (`strippedTerms`, the merge-key scope, the eligibility gate). The served
  * copy keeps each term because it is in the declaration's own trailing
  * `extend` run, which the re-root keeps as written; both sides read that run
- * with one reader (`../declaration_text.ts`). A term is only taken out when
+ * with one reader (`../text/declaration_text.ts`). A term is only taken out when
  * that holds, and the source is refused otherwise: a term written on a source
  * this one extends, or anywhere in its declaration but that run (the re-root
  * would drop it); one that reads a field the table does not store (it could
@@ -218,9 +218,11 @@
  * Every name and value in the generated text goes through `malloy_text`.
  */
 
+import { keyCheckPipeline } from "../text/key_check_text";
 import { Annotations } from "@malloydata/malloy";
 import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
+import { hiddenAccess } from "../../governance/ir/compiled_model";
 import {
    MATERIALIZE_KEYS,
    nearestKey,
@@ -233,7 +235,13 @@ import {
    nowComparison,
    stringLiteral,
 } from "../../malloy_text";
-import { parseRouteTag, routeHasKey } from "../../motly";
+import {
+   declares,
+   EMPTY_STORAGE_REASON,
+   placementOf,
+   readNotes,
+   type RouteTag,
+} from "./declaration";
 import {
    accessLiftEdits,
    afterModelHeader,
@@ -243,38 +251,59 @@ import {
    dropDimensions,
    inverseRenameBlocks,
    type TextEdit,
-} from "../declaration_text";
-import type { StoredColumn } from "../stored_column_types";
+} from "../text/declaration_text";
 import {
    dropJoinDefinition,
    inlinedJoinRenames,
    inlinedJoinStatements,
    intoFirstExtend,
    type InlinedJoinText,
-} from "../inlined_join_text";
-import { offsetOf } from "../malloy_lexer";
-import {
-   confirmedAncestors,
-   keptAncestorChain,
-   type KeptAncestor,
-} from "../kept_ancestors";
+} from "../text/inlined_join_text";
+import { offsetOf } from "../text/malloy_lexer";
+import { confirmedAncestors, keptAncestorChain } from "../text/kept_ancestors";
 import { callerIndependent, type FieldDependence } from "../../probe_compiler";
 import {
    classifyWhereTerms,
    currentTimeFields,
    givenReadingFields,
    type ClassifiedWhereTerm,
-   type MalloyRange,
-   type TermUse,
 } from "./persist_dynamic_terms";
 import {
    buildQueryWindows,
    leftOutTermReadElsewhere,
    leftOutWindowTerms,
    rollingWindowTerms,
-   type CurrentTimeReadTerm,
 } from "./rolling_window";
-import { SourceMap, type FieldJoinReads, type SourceJoin } from "./source_map";
+import type {
+   GivenReadTerm,
+   MalloyRange,
+   TermUse,
+} from "../domain/read_time_terms";
+import type {
+   CallerInput,
+   InlineUniquenessCheck,
+   KeptAncestor,
+   LeftOutDimension,
+   MaterializeColumn,
+   MaterializeGivenDeclaration,
+   MaterializePair,
+   MaterializePairBlocks,
+   MaterializeParent,
+   MaterializePlan,
+   StoredChain,
+} from "../domain/table_plans";
+
+export type {
+   InlineUniquenessCheck,
+   MaterializeParent,
+   MaterializePlan,
+   StoredChain,
+};
+import {
+   SourceMap,
+   type FieldJoinReads,
+   type SourceJoin,
+} from "../text/source_map";
 
 /** The route `#(materialize)` is on. */
 const MATERIALIZE_ROUTE = "materialize";
@@ -369,21 +398,6 @@ export function pairLevelRowColumn(level: number): string {
  */
 const PAIR_LANE_COLUMN = "__pair_lane";
 
-/** One join past the first of an inlined path of join_manys. */
-interface MaterializePairHop {
-   /** The join's name on the previous hop's joined source. */
-   join: string;
-   /** This hop's joined source's primary key, as that source names it. */
-   key: string;
-   /** This hop's joined source's declaration. */
-   sourceID: string;
-   /**
-    * The row flag of the level above this hop ({@link pairLevelRowColumn}):
-    * one row per distinct row down to the previous hop.
-    */
-   rowColumn: string;
-}
-
 /**
  * An incremental pair table's watermark column: per parent, the greatest of
  * the declared watermark fields over the parent's row and every child row, so
@@ -398,71 +412,6 @@ const PAIR_WATERMARK = "__pair_watermark";
  * not honoured: the table is rebuilt in full on every refresh, and served.
  */
 const MATERIALIZE_PAIR_FULL_REFRESH_CODE = "materialize-pair-full-refresh";
-
-/** How a pair table (an inlined join_many, P5) is laid out. */
-export interface MaterializePair {
-   /** The inlined join_many's name on the materialized source. */
-   join: string;
-   /** The source's primary key, a stored column: one parent per value. */
-   parentKey: string;
-   /** The joined source's primary key, as the joined source names it. */
-   childKey: string;
-   /** The joined source's declaration, whose text the served copy re-roots. */
-   childSourceID: string;
-   /** The parent-row flag's column ({@link PAIR_PARENT_ROW}). */
-   parentRowColumn: string;
-   /**
-    * For a path of join_manys (`inline=["items.options"]`): the joins past the
-    * first, in order. Absent: one hop.
-    */
-   hops?: MaterializePairHop[];
-   /**
-    * For an incremental pair table: its watermark column
-    * ({@link PAIR_WATERMARK}) and the stored columns it is the greatest of,
-    * at least one of the source's own and one of the joined source's.
-    */
-   watermark?: { column: string; parts: string[] };
-   /**
-    * For a path of more than one hop: the levels between the source and the
-    * leaf (1 for the path's first join) each of whose rows has exactly one
-    * row of every level above it, so its row flag marks one row per row of
-    * that level whichever parent it is read under. Proven from the joins and
-    * the build's key check ({@link pairKeyChecks}): each join down to the
-    * level is keyed on its parent level's primary key, which the build checks
-    * unique and never null, so a row meets at most one parent row. A middle
-    * level's aggregate beside a deeper level is served only at these levels
-    * (see `governance/ir/pair_flat_query.ts`). Absent: none.
-    */
-   oneParentLevels?: number[];
-}
-
-/**
- * A pair table that stores more than one inlined path: one block of rows per
- * path, each block the rows of that path's own pair table, marked by
- * {@link PAIR_LANE_COLUMN}. Every block stores every column, the other
- * blocks' as typed nulls, and every level flag down to the deepest path.
- */
-interface MaterializePairBlocks {
-   /** The blocks, by block number; the first is the plan's `pair`. */
-   blocks: MaterializePair[];
-   /** The block-number column ({@link PAIR_LANE_COLUMN}). */
-   laneColumn: string;
-   /** The connection the build's SQL source runs on: the source's own. */
-   connection: string;
-   /**
-    * Each joined column's Malloy type, for the other blocks' typed nulls
-    * (see {@link typedNull}).
-    */
-   columnTypes: Record<string, string>;
-   /** The number of level flags every block writes: the deepest path's depth. */
-   levels: number;
-   /**
-    * For an incremental table: its watermark ({@link PAIR_WATERMARK}), per
-    * parent the greatest of `parts` over the parent's rows in every block,
-    * so a range selects a parent's rows in all of them or none.
-    */
-   watermark?: { column: string; parts: string[] };
-}
 
 /**
  * Every key the generator reads, which must be the route's closed set in the
@@ -481,115 +430,6 @@ const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
 /** The code of a `#(materialize)` line that does not parse. */
 const MATERIALIZE_UNPARSEABLE_CODE = "materialize-unparseable";
 
-/** One stored column of a materialized source. */
-interface MaterializeColumn {
-   /** The dimension's name on the author's source. */
-   dimension: string;
-   /** The column the build stores it as: the dimension's own name. */
-   column: string;
-   /**
-    * Whether the source computes it (the served copy drops its definition so
-    * the stored column stands in) or reads it from its table.
-    */
-   computed: boolean;
-   /**
-    * The access modifier the author's source gives the field, when it is not
-    * public (P3). The build reads a copy of the source with its own access
-    * modifiers lifted so it can select the field (see
-    * {@link buildCopyText}); the served copy keeps the modifier, so a caller
-    * still cannot select it.
-    */
-   access?: "private" | "internal";
-   /**
-    * For a stored computed dimension of the source's own: the probe compiler
-    * found its value the same in every query time zone (P9), so a query that
-    * sets a `timezone:` reads it from the table. Absent: unknown, and such a
-    * query is answered live.
-    */
-   zoneFree?: true;
-   /**
-    * For a column of an inlined join's joined source: the join's name, with
-    * {@link dimension} the joined source's field. The served copy declares
-    * these under the join's name, in place of the join.
-    */
-   join?: string;
-   /**
-    * For a column of a joined source two or more joins down an inlined path
-    * of join_manys: the joins from the source to it, {@link join} first
-    * (`["items", "options"]`), with {@link dimension} its field. Absent for
-    * the path's first join's columns.
-    */
-   path?: string[];
-}
-
-/** The P8 uniqueness check for one inlined join_one, run before each build. */
-export interface InlineUniquenessCheck {
-   /** The join's name on the materialized source. */
-   join: string;
-   /** The joined source's column the join is keyed on. */
-   keyColumn: string;
-   /** The generated query's name in the build companion. */
-   queryName: string;
-   /** The joined source's declaration, which the check groups. */
-   joinedSourceID: string;
-   /** The connection the check runs on: the joined source's. */
-   connectionName?: string;
-   /**
-    * The check's SQL, compiled with the companion (never run at plan time).
-    * Any row it returns is a key the joined source holds twice.
-    */
-   sql?: string;
-   /**
-    * Set on a pair table's key check: the level of the path whose key it
-    * checks, 0 for the source's own. Such a check also fails on a null key,
-    * since a level's row flag marks one row per distinct key, where live
-    * counts each row
-    * ({@link pairKeyChecks}). `join` is then the path down to that level
-    * (empty for the source).
-    */
-   pairLevel?: number;
-   /**
-    * Set on a pair table's leaf key check ({@link pairKeyChecks}): it never
-    * fails the build. An auto-run runs it once the table is written and
-    * records what it found beside the table (unique and never null, under
-    * {@link joinedSourceID}); the served copy re-declares a count through the
-    * path over the leaf's key only where that record passed.
-    */
-   recordOnly?: true;
-}
-
-/**
- * A given-reading `where:` term a materialized source's build leaves out and
- * its served copy keeps (P2). `columns` are the stored columns it reads, so a
- * read over the table can apply it. The served copy writes nothing for it:
- * the term is in the declaration's own trailing `extend`, which the re-root
- * keeps as written (see {@link termSpans}).
- */
-interface GivenReadTerm {
-   kind: "given";
-   /** The term as the author wrote it, verbatim. */
-   code: string;
-   /** The givens it reads. */
-   givens: string[];
-   /** The stored columns it reads. */
-   columns: string[];
-   /** Where it reads each field and given, in the declaring file. */
-   at: TermUse[];
-}
-
-/**
- * A `where:` term of a materialized source that depends on the read, so the
- * served copy applies it again over the stored table, by what it reads
- * (`classifyWhereTerms`, the one term classifier), told apart by `kind`. A
- * current-time lower bound (rolling_window.ts) is built as written, since the
- * build's own `now` stores the widest set, and is also the bound an
- * incremental refresh deletes below; a current-time term holding an upper
- * bound is left out of the build (`leftOut`), since with no refresh interval
- * the widest set is every row. A given-reading term (P2) is left out of the
- * build and kept by the served copy as the author wrote it.
- */
-export type MaterializeReadTimeTerm = CurrentTimeReadTerm | GivenReadTerm;
-
 /** The given-reading terms (P2) among a plan's read-time terms. */
 export function givenReadTerms(
    plan: Pick<MaterializePlan, "readTimeTerms">,
@@ -597,180 +437,6 @@ export function givenReadTerms(
    return (plan.readTimeTerms ?? []).filter(
       (t): t is GivenReadTerm => t.kind === "given",
    );
-}
-
-/** What a caller sets that a left-out dimension's value depends on (P9). */
-type CallerInput = "given" | "current_time" | "time_zone";
-
-/**
- * A dimension of a materialized source left out of its build because its
- * value depends on the caller (P9): the served copy computes it at read.
- */
-interface LeftOutDimension {
-   dimension: string;
-   reads: CallerInput[];
-   /**
-    * For one a base on the plan's `keptBases` declares: where (the field's
-    * compiled location), so the build copy confirms it is in that base's
-    * trailing `extend` run, the text the served copy keeps.
-    */
-   at?: TermUse;
-}
-
-/** A given a read-time term reads, and the file that declares it. */
-interface MaterializeGivenDeclaration {
-   name: string;
-   url: string;
-   /**
-    * The path the generated file imports it from, relative to the companion;
-    * set by the caller that knows the package layout. Absent: the author's
-    * model, which declares it.
-    */
-   from?: string;
-}
-
-/** What the generator writes for one `#(materialize)` source. */
-export interface MaterializePlan {
-   /** The author's source name in this model. */
-   sourceName: string;
-   /** The source's identity (the keying rule): its `sourceID`. */
-   sourceID: string;
-   /** The generated build source's name. */
-   buildSourceName: string;
-   /** The stored columns, in the source's field order. */
-   columns: MaterializeColumn[];
-   /**
-    * The build source's compiled output, each column in DuckDB's type
-    * spelling (`storedColumnsOfOutput`), read off the compiled companion.
-    * A colocated table's schema is not captured at build, so its serve
-    * binding declares these. Absent before the companion compiles.
-    */
-   storedColumns?: StoredColumn[];
-   /**
-    * The `#@ persist` keys carried from the declaration, by key path: `name`,
-    * or `freshness.window` for a property of a carried group.
-    */
-   persist: Record<string, string>;
-   /**
-    * The source's read-time `where:` terms: the ones the served copy applies
-    * again over the stored table at every read. Absent when it has none.
-    */
-   readTimeTerms?: MaterializeReadTimeTerm[];
-   /**
-    * The declaration's range in its declaring file, when it has given terms
-    * or hidden columns: where its build copy takes the terms out and lifts
-    * its own access modifiers.
-    */
-   declaration?: TermUse;
-   /** The givens its given-reading terms read, for the generated file to import. */
-   givenDeclarations?: MaterializeGivenDeclaration[];
-   /** The joins the declaration inlines (`inline=[…]`). */
-   inline?: string[];
-   /**
-    * The computed dimensions left out of the build because each depends on
-    * the caller (P9), in field order: the source's own, and ones a base on
-    * {@link keptBases} declares. Absent when none is.
-    */
-   leftOut?: LeftOutDimension[];
-   /**
-    * The ancestors whose trailing `extend` blocks the served copy must keep
-    * ahead of the source's own (kept_ancestors.ts), nearest first, up to the
-    * farthest one needed: one writes a given-reading `where:` the source
-    * inherits, or declares a dimension left out because it depends on the
-    * caller. The build leaves those out, and only that base's block,
-    * written again over the stored table, re-applies them at read. Absent
-    * when the source needs no base's block.
-    */
-   keptBases?: KeptAncestor[];
-   /**
-    * The probe compiler found the source's rows the same in every query time
-    * zone (P9): its `where:` terms and base relation compile to the same SQL
-    * at every probe zone. Absent: a `where: ts > @2026-03-08 09:00` (or a
-    * base the probe could not clear) filtered the table's rows in the
-    * build's zone, so a query that sets a `timezone:` over it is answered
-    * live.
-    */
-   zoneFreeRows?: true;
-   /** One uniqueness check per inlined join_one (P8). */
-   uniquenessChecks?: InlineUniquenessCheck[];
-   /**
-    * For an inlined join_many: the pair table's layout (P5); for a table
-    * that stores more than one inlined path, its first block's.
-    */
-   pair?: MaterializePair;
-   /** For a pair table that stores more than one inlined path: its blocks. */
-   pairBlocks?: MaterializePairBlocks;
-   /**
-    * Why a pair table's `refresh="incremental"` is not honoured, when it is
-    * not: the plan carries no incremental key, so the table is rebuilt in
-    * full on every refresh, and the package warns
-    * ({@link MATERIALIZE_PAIR_FULL_REFRESH_CODE}).
-    */
-   pairFullRefresh?: string;
-   /**
-    * The table takes the source's own name because the declaration has no
-    * `name=`, which the refusal of a colliding table name says (see
-    * `refuseCollidingMaterialize`).
-    */
-   nameDefaulted?: true;
-   /**
-    * For an extension table (P10): the materialized parent whose build source
-    * this source's build reads, so its table is computed from the parent's.
-    * Absent: built over the raw chain.
-    */
-   buildsOver?: MaterializeParent;
-}
-
-/** The parent an extension table builds over (P10). */
-export interface MaterializeParent {
-   /** The parent's identity: its `sourceID` (the keying rule). */
-   sourceID: string;
-   /** The parent's name in the shared declaring file; display only. */
-   sourceName: string;
-   /** The parent's declaration in that file, which the build copy re-roots. */
-   declaration: TermUse;
-   /**
-    * The declarations from just below the parent to the extension's own,
-    * root first, each an `extend` or a rename of the one before, in the same
-    * file: what a `storage=` build carries over the parent's stored table.
-    */
-   path: TermUse[];
-   /**
-    * For a `storage=` pair, set with the build copy: the text the extension's
-    * build compiles in its destination over the parent's stored table
-    * ({@link extensionOverStoredModel}). Absent until the build copy is
-    * written; absent for a colocated pair, whose build reads the parent's
-    * build source in its own warehouse.
-    */
-   overStored?: StoredChain;
-   /**
-    * Declarations of the same file, off the chain, that the build copy
-    * replaces with an empty source over the parent's build source: each read
-    * the parent's re-rooted declaration and did not compile over it, which
-    * would fail this extension's build copy for another source's sake
-    * (materialize_compile.ts, `compileContained`). Empty, so anything on the
-    * chain that reads one fails to compile and the extension builds over the
-    * raw chain instead: an omission never changes what the build reads.
-    */
-   omit?: TermUse[];
-}
-
-/**
- * What a `storage=` extension table's build compiles in its destination
- * (P10): no source but the parent's stored table, so the build reads the
- * destination alone, never the warehouse.
- */
-export interface StoredChain {
-   /** The parent's generated build source, which the declarations re-root on. */
-   parentBuildSourceName: string;
-   /** The author file's `##!` flags, which its declarations may need. */
-   flags: string[];
-   /**
-    * `source:` statements, root first: the parent re-rooted on
-    * {@link parentBuildSourceName}, then each declaration on
-    * {@link MaterializeParent.path}, as the extension's build copy writes them.
-    */
-   declarations: string;
 }
 
 /** A declaration the generator could not plan, and why. */
@@ -823,21 +489,6 @@ const ATOMIC_TYPES = new Set([
    "sql native",
 ]);
 
-/**
- * A compiled field's access modifier when it is not public, or undefined. Fails
- * closed, as `isHidden` in preaggregation_synthesis.ts does: a modifier it does
- * not know reads as private. The one reader of `accessModifier` for P3: the
- * plan, the build copy's selectable set and the served copy's access check.
- */
-export function hiddenAccess(field: {
-   accessModifier?: unknown;
-}): "private" | "internal" | undefined {
-   if (field.accessModifier == null || field.accessModifier === "public") {
-      return undefined;
-   }
-   return field.accessModifier === "internal" ? "internal" : "private";
-}
-
 /** A Malloy `sourceID`'s declared name and declaring file, or undefined. */
 export function splitSourceID(
    sourceID: string,
@@ -858,7 +509,7 @@ function readMaterializeDeclaration(
    contents: Readonly<Record<string, unknown>> = {},
 ):
    | {
-        tag: ReturnType<typeof parseRouteTag>["tag"];
+        tag: RouteTag;
         keys: string[];
         /** Parse errors: a declaration with any is not read at all. */
         errors: string[];
@@ -868,12 +519,7 @@ function readMaterializeDeclaration(
       (note) => routeOfNote(note.text) === MATERIALIZE_ROUTE,
    );
    if (notes.length === 0) return undefined;
-   const { tag, log } = parseRouteTag(
-      new Annotations({ notes } as ConstructorParameters<
-         typeof Annotations
-      >[0]),
-      MATERIALIZE_ROUTE,
-   );
+   const { tag, log } = readNotes(notes, MATERIALIZE_ROUTE);
    return {
       tag,
       keys: [...tag.entries()].map(([key]) => key),
@@ -892,7 +538,7 @@ function declaresOwnPersist(
       (note) => routeOfNote(note.text) === "@",
    );
    if (notes.length === 0) return false;
-   return routeHasKey(
+   return declares(
       new Annotations({ notes } as ConstructorParameters<
          typeof Annotations
       >[0]),
@@ -917,7 +563,7 @@ function inheritedPersist(
    const chain = new Annotations(
       (def.annotations ?? {}) as ConstructorParameters<typeof Annotations>[0],
    );
-   if (!routeHasKey(chain, "@", "persist")) return undefined;
+   if (!declares(chain, "@", "persist")) return undefined;
    const own = declaredNotes(def, contents);
    const inherited = chain
       .forRoute("@")
@@ -2442,6 +2088,19 @@ export function planModelMaterialize(
          continue;
       }
       const { persist } = carried;
+      // Its place, by the one placement rule (declaration.ts).
+      const placed = placementOf(declaration.tag);
+      if ("refused" in placed) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: EMPTY_STORAGE_REASON,
+         });
+         continue;
+      }
+      if (placed.placement.tier === "storage") {
+         persist.storage = placed.placement.destination;
+      }
       // A source is planned in the model that declares it (see `declaredHere`),
       // so its name here is the name its author gave it.
       const tableName = name;
@@ -3043,24 +2702,10 @@ function pairKeyChecks(
  * table's key check ({@link pairKeyChecks}) also returns a null key.
  */
 function emitUniquenessCheck(check: InlineUniquenessCheck): string {
-   const key = identifier(check.keyColumn);
-   if (check.pairLevel !== undefined) {
-      return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
-  group_by: ${key}
-  aggregate: matches is count()
-} -> {
-  where: matches > 1 or ${key} is null
-  select: ${key}
-  limit: 1
-}`;
-   }
-   return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
-  where: ${key} is not null
-  group_by: ${key}
-  aggregate: matches is count()
-  having: matches > 1
-  limit: 1
-}`;
+   const kind =
+      check.pairLevel !== undefined ? "pair_level" : "inline_join_one";
+   // malloy-text: keyCheckPipeline writes its names through identifier
+   return `query: ${identifier(check.queryName)} is ${keyCheckPipeline(kind, checkAlias(check), check.keyColumn)}`;
 }
 
 /**

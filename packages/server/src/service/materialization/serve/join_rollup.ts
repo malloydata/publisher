@@ -61,9 +61,10 @@
  * (`CONTRACT`), since the rollup carries none.
  */
 
-import type { SourceJoin } from "../plan/source_map";
-import type { RollupVariantPlan } from "../plan/rollup_plan";
-import type { MeasureExpr } from "../plan/rollup_measure_grammar";
+import { requireUnique, type KeyVerdict } from "../domain/key_check";
+import type { SourceJoin } from "../text/source_map";
+import type { RollupVariantPlan } from "../domain/table_plans";
+import type { MeasureExpr } from "../domain/rollup_measures";
 import type {
    QueryLevelFacts,
    QueryLevelField,
@@ -266,20 +267,19 @@ export function unmatchedRowProblem(
  * join keyed on that primary key (`joinedKey` the leg's key column) meets no
  * row whose key is NULL; a `min` or `max` reads every row live too; and a
  * partial taken at a join of the joined source tests that join's key, which
- * the rollup's build tests the same way. `joinedKeyUnique` is what the
- * rollup's build found of the key: true, false (repeated or NULL), or
- * undefined (not checked).
+ * the rollup's build tests the same way. `joinedKey` is what the rollup's
+ * build found of the key: `repeated` covers a NULL as well.
  */
 export function joinedKeyProblem(
    leg: JoinRollupLeg,
    read: ReadonlySet<string>,
    joinedKey: string | undefined,
-   joinedKeyUnique: boolean | undefined,
+   joinedKeyVerdict: KeyVerdict,
 ): string | undefined {
    if (
       joinedKey === undefined ||
       joinedKey === leg.join.keyColumn ||
-      joinedKeyUnique === true
+      requireUnique(joinedKeyVerdict)
    ) {
       return undefined;
    }
@@ -288,7 +288,7 @@ export function joinedKeyProblem(
       for (const { leaf } of m.partials) {
          if (leaf.aggregate === "min" || leaf.aggregate === "max") continue;
          if (leaf.joinPath.length > 0) continue;
-         return joinedKeyUnique === false
+         return joinedKeyVerdict === "repeated"
             ? `\`${leg.join.name}\` holds a value of its primary key \`${joinedKey}\` more than once or NULL, and live counts and sums \`${leg.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`
             : `\`${leg.join.name}\`'s primary key \`${joinedKey}\` was not checked unique and never NULL when its rollup was built, and live counts and sums \`${leg.join.name}.${m.name}\` once per non-NULL key where its rollup reads every row`;
       }
@@ -299,8 +299,8 @@ export function joinedKeyProblem(
 /**
  * Why the leg cannot read a join read as a join_many while the query
  * source's primary key is not known unique and never NULL, or undefined.
- * `parentKeyUnique` is what the rollup's build found of that key: true,
- * false (repeated or NULL), or undefined (not checked). A rollup row is met
+ * `parentKey` is what the rollup's build found of that key: `repeated`
+ * covers a NULL as well. A rollup row is met
  * by every parent row sharing its key: with the key repeated, the variant
  * sums it once per parent row where live sums each joined row once, and with
  * a NULL key the variant's `COUNT(1)` counts a parent live's
@@ -308,14 +308,14 @@ export function joinedKeyProblem(
  */
 export function parentKeyProblem(
    leg: JoinRollupLeg,
-   parentKeyUnique: boolean | undefined,
+   parentKey: KeyVerdict,
 ): string | undefined {
    if (leg.relationship === "one" && leg.join.relationship === "one") {
       return undefined;
    }
-   if (parentKeyUnique === true) return undefined;
+   if (requireUnique(parentKey)) return undefined;
    const key = leg.join.baseKey;
-   return parentKeyUnique === false
+   return parentKey === "repeated"
       ? `the query source holds a value of its primary key \`${key}\` more than once or NULL, so a row of the rollup of \`${leg.join.name}\` would be read once per row that shares it`
       : `the query source's primary key \`${key}\` was not checked unique and never NULL when the rollup of \`${leg.join.name}\` was built, so a row of it could be read once per row that shares it`;
 }

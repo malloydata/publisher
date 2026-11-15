@@ -23,14 +23,14 @@
  * failures with it.
  */
 
-import { offsetOf } from "../malloy_lexer";
+import { offsetOf } from "../text/malloy_lexer";
 import { overlayKey } from "../../overlay_key";
 import {
    errorProblems,
    isCrossConnectionRefusal,
    isJoinConnectionMismatch,
    mayFollowFromLeftOut,
-} from "../plan/cross_connection_joins";
+} from "../text/cross_connection_text";
 import type { ServedCopySpan } from "./served_copy";
 
 /**
@@ -38,7 +38,7 @@ import type { ServedCopySpan } from "./served_copy";
  *
  * `precise`: a problem that may follow from a join refused across
  * connections (a missing field) is not traced to a re-root whose own text
- * holds such a refusal, since leaving that join out (cross_connection_joins.ts)
+ * holds such a refusal, since leaving that join out (cross_connection_text.ts)
  * may clear it and keep the table for every other query; a failure that is
  * nothing but such refusals is traced to no re-root at all.
  *

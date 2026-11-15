@@ -8479,9 +8479,9 @@ components:
             to degrade to the live warehouse. **The rows are correct and the
             request succeeded**, which is why this needs its own value: it is
             indistinguishable from a storage hit at the call site, and treating it
-            as one would report a healthy hit rate for a broken store. This value
-            is NOT the same event as the `live_fallback` label on
-            `publisher_storage_serve_routing_total` — see the warning below.
+            as one would report a healthy hit rate for a broken store. On
+            `publisher_query_route_total` the same event is the answering leg's
+            `outcome="fallback", reason="RUN_FAILED"`.
 
             **This field describes the `storage=` tier and nothing else.** It
             records how the storage routing decision came out, so it says nothing
@@ -8529,18 +8529,11 @@ components:
             counts colocated entries only, so a package whose sources are all
             `storage=` reports 0 while being fully bound.
 
-            ⚠️ **`live_fallback` names two different things across two surfaces,
-            and correlating them on the token is wrong in both directions.** On
-            this field it means the store failed at run time. On
-            `publisher_storage_serve_routing_total{outcome}` it means the
-            transform was ineligible — this field's null case 3 — and that
-            metric spells the run-time failure `runtime_live_fallback`. So the
-            field's `live_fallback` is the metric's `runtime_live_fallback`, and
-            the metric's `live_fallback` is this field's `null`. A third surface,
-            `manifestBindingStatus`, uses the same token for a third thing: a
-            configured `manifestLocation` whose fetch or bind failed. Each
-            surface is internally consistent; none of them means what the others
-            do.
+            ⚠️ **`live_fallback` here is not `manifestBindingStatus`'s.** On this
+            field it means the store failed at run time; `manifestBindingStatus`
+            uses the same token for a configured `manifestLocation` whose fetch
+            or bind failed. Each surface is internally consistent; neither means
+            what the other does.
         executionTimeMs:
           type: integer
           description: >-
@@ -10639,6 +10632,7 @@ components:
               read_only_dialect,
               env_reference,
               rollup_name_collision,
+              empty_storage,
             ]
           description: >-
             The bounded refusal reason. Only the compile-time reasons can
@@ -10660,8 +10654,11 @@ components:
             warehouse), and `rollup_name_collision` (a
             pre-aggregation rollup whose generated name, and so its table, is
             also another model's rollup with different content; neither builds
-            or serves, and each model answers from its base) — those being the
-            only reasons the two
+            or serves, and each model answers from its base), and
+            `empty_storage` (a `#@ persist` whose `storage=` names no
+            destination: written empty, `storage=""`, or as a value that is not
+            a name, such as a list; it is not built and is answered live) —
+            those being the only reasons the two
             compile-time eligibility asserts this collection is computed from
             produce.
 
@@ -10679,12 +10676,13 @@ components:
             longer produced. It was the storage tier's blanket refusal of any
             given reference, and the positional reasons above replaced it: where
             a given sits decides the outcome, so a single reason covering every
-            placement can no longer be raised. `not_duckdb_portable` is decided against the
-            post-build captured schema, which does not exist at compile time,
-            and `public_surface_unknown` is raised by the build-time narrowing
-            of a stored table to the source's public columns; both are listed
-            only because they share the enum the runtime eligibility metric
-            uses.
+            placement can no longer be raised. `not_duckdb_portable` is
+            likewise retained and no longer produced: a `storage=` table no
+            column of which Malloy can type is now built, and its source is
+            answered live. `public_surface_unknown` is raised by the build-time
+            narrowing of a stored table to the source's public columns; both
+            are listed only because they share the enum the runtime
+            eligibility metric uses.
         message:
           type: string
           description: >-

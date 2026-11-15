@@ -3,16 +3,19 @@
 
 /**
  * Every conformance shape under the shipped default, which no
- * other spec runs. The conformance spec's `cutover` switch also sets
- * `PUBLISHER_MATERIALIZE`; the default leaves it off, and 6f found one defect
- * only that combination reaches (the cutover read `#(preaggregate)` with it
- * off). Here only `PERSIST_STORAGE_MODE=on` is set: each v1 query is answered
- * live before any table is
- * bound, then after the bind, and the two must agree on rows and on each
- * column's type (number subtype aside) and annotations.
+ * other spec runs. The default turns `PUBLISHER_MATERIALIZE` on, so the
+ * `#(materialize)` shapes run here too; 6f found one defect only the default
+ * reached when it was off (the cutover read `#(preaggregate)` with it off),
+ * which `preaggregate_variants.spec.ts` pins with the switch set `false`.
+ * Here only `PERSIST_STORAGE_MODE=on` is set: each query is answered live
+ * before any table is bound, then after the bind, and the two must agree on
+ * rows and on each column's type and annotations (a number's subtype and
+ * the `drill_expression` of Malloy's own `#(malloy)` annotations aside, a
+ * nest's fields included).
  */
 
 import { afterAll, describe, expect, it } from "bun:test";
+import { parseAnnotation } from "@malloydata/malloy-tag";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES } from "./conformance/data";
 import {
@@ -24,17 +27,75 @@ import {
 import { LIVE_WRONG_NEST, renderFiles, SHAPES } from "./conformance/shapes";
 import { rowDifference } from "./harness";
 
-function metadataDifference(a: Answer, b: Answer): string | undefined {
+/**
+ * Shapes whose served answer marks a measure it read from a stored column as
+ * a dimension: Malloy's `#(malloy)` annotation on it loses `calculation` and
+ * gains a drill `code`, so a renderer reads the column as a dimension. Known for a persisted
+ * view, whose table stores each measure as a column; set aside for these
+ * shapes alone until the view leg keeps the measure's kind.
+ */
+const STORED_MEASURE_AS_DIMENSION = new Set(["persisted view"]);
+
+/**
+ * A `#(malloy)` annotation with only its `drill_expression` set aside, which
+ * the served copy writes differently for a dimension it stores (its code is the
+ * stored column, or the definition, not live's): the conformance spec's
+ * `drill-metadata` tolerance. Every other key Malloy writes there
+ * (`reference_id`, `calculation`, `drill_filters`, `limit`, `ordered_by`,
+ * `query_timezone`) is still compared, `calculation` aside for
+ * {@link STORED_MEASURE_AS_DIMENSION}. Any other annotation is compared as is.
+ */
+function withoutDrillExpression(
+   note: string,
+   measureKind: "compare" | "ignore",
+): unknown {
+   if (!note.startsWith("#(malloy)")) return note;
+   const { tag, log } = parseAnnotation(note);
+   if (log.length > 0) return note;
+   const { drill_expression: _d, calculation, ...rest } = tag.getProperties();
+   const kept =
+      calculation && measureKind === "compare"
+         ? { calculation, ...rest }
+         : rest;
+   return Object.fromEntries(
+      Object.entries(kept).map(([k, v]) => [k, v.toJSON()]),
+   );
+}
+
+function metadataDifference(
+   a: Answer,
+   b: Answer,
+   measureKind: "compare" | "ignore",
+): string | undefined {
    if (a.fields.length !== b.fields.length) return "field count";
-   const strip = (t: unknown) => {
-      if (t && typeof t === "object" && "subtype" in t) {
-         const { subtype: _s, ...rest } = t as Record<string, unknown>;
-         return rest;
+   // A number's subtype and the drill expression in Malloy's own `#(malloy)`
+   // annotations are set aside at every depth, a nest's fields included, as
+   // the conformance spec's `number-subtype` and `drill-metadata` tolerances do.
+   const strip = (t: unknown): unknown => {
+      if (Array.isArray(t)) {
+         return t.map((a) =>
+            typeof (a as { value?: unknown })?.value === "string"
+               ? {
+                    ...(a as object),
+                    value: withoutDrillExpression(
+                       (a as { value: string }).value,
+                       measureKind,
+                    ),
+                 }
+               : strip(a),
+         );
+      }
+      if (t && typeof t === "object") {
+         return Object.fromEntries(
+            Object.entries(t as Record<string, unknown>)
+               .filter(([k]) => k !== "subtype")
+               .map(([k, v]) => [k, strip(v)]),
+         );
       }
       return t;
    };
    const notes = (n: string[] | undefined) =>
-      (n ?? []).filter((x) => !x.startsWith("#(malloy)"));
+      (n ?? []).map((x) => withoutDrillExpression(x, measureKind));
    for (let i = 0; i < a.fields.length; i++) {
       const [x, y] = [a.fields[i], b.fields[i]];
       if (JSON.stringify(strip(x.type)) !== JSON.stringify(strip(y.type))) {
@@ -59,8 +120,6 @@ afterAll(async () => {
 describe("the conformance shapes under the default settings", () => {
    for (const shape of SHAPES) {
       for (const variant of shape.variants ?? ["storage", "colocated"]) {
-         // `#(materialize)` is ignored with PUBLISHER_MATERIALIZE off.
-         if (variant === "materialize") continue;
          it(`${shape.name} [${variant}]: every answer equals live`, async () => {
             const restore = installSettings({
                env: { PERSIST_STORAGE_MODE: "on" },
@@ -108,7 +167,13 @@ describe("the conformance shapes under the default settings", () => {
                   }
                   const why =
                      rowDifference(l.answer.rows, s.answer.rows) ??
-                     metadataDifference(l.answer, s.answer);
+                     metadataDifference(
+                        l.answer,
+                        s.answer,
+                        STORED_MEASURE_AS_DIMENSION.has(shape.name)
+                           ? "ignore"
+                           : "compare",
+                     );
                   if (why) problems.push(`${q.name}: ${why}`);
                   if (s.answer.servedBy !== "live") servedCount++;
                }

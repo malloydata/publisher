@@ -17,6 +17,7 @@
  * rewriter is checked against the same scenarios when it lands (phase 3).
  */
 
+import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect } from "bun:test";
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -33,11 +34,10 @@ import {
    parentKeyNeedsOf,
    storedKeyChecksOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
-import { SourceMap } from "../../../src/service/materialization/plan/source_map";
+import { SourceMap } from "../../../src/service/materialization/text/source_map";
 import {
    pairLeafKeyChecksOf,
    runRollupKeyCheck,
-   storedKeyCheckSql,
 } from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
@@ -45,10 +45,16 @@ import {
    extensionOverStoredModel,
    type MaterializePlan,
 } from "../../../src/service/materialization/plan/build_file_generator";
-import { planChainedDownstream } from "../../../src/service/materialization/run/materialization_build_session";
-import { storageTablePath } from "../../../src/service/materialization/run/storage_table_path";
+import {
+   oneFileModel,
+   planChainedDownstream,
+} from "../../../src/service/materialization/run/materialization_build_session";
+import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
-import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
+import {
+   deriveColocatedServeBindings,
+   kindFromPlan,
+} from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
@@ -75,14 +81,17 @@ import {
    compilerBuildId,
    presentAs,
 } from "../../../src/service/materialization/plan/addressing";
+import { buildVirtualMap } from "../../../src/service/materialization/serve/bindings";
 import {
-   buildVirtualMap,
    deriveServeBindings,
-   declarableColumns,
+   makeSnapshot,
+   type Binding,
+} from "../../../src/service/materialization/domain/binding";
+import {
    groupAliasesByName,
    planSourceIds,
-   type ServeBinding,
-} from "../../../src/service/materialization/serve/materialization_serve_transform";
+} from "../../../src/service/materialization/domain/source_aliases";
+import { declarableColumns } from "../../../src/service/materialization/stored_column_types";
 import {
    castToDeclaredTypes,
    persistSourceDeclaredColumns,
@@ -91,7 +100,7 @@ import {
 import type {
    KeyUniqueness,
    ManifestEntry,
-} from "../../../src/service/materialization/types";
+} from "../../../src/service/materialization/domain/types";
 import { Model } from "../../../src/service/model";
 import type { HydrationRuntime } from "../../../src/service/model_runtime";
 import { malloyGivenToApi, type MalloyGiven } from "../../../src/service/given";
@@ -230,7 +239,7 @@ export interface R4Run {
 
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
-   bindings: ServeBinding[];
+   bindings: Binding[];
    /** Each built source's table id (its content address in the plan), by name. */
    tableIds: Record<string, string>;
    /**
@@ -271,7 +280,7 @@ export interface R4Fixture {
     * serve shape, so the next served query compiles it again. Kept apart from
     * {@link runAsIs} so a benchmark can do it outside its stopwatch.
     */
-   setBindings(bindings: ServeBinding[]): void;
+   setBindings(bindings: Binding[]): void;
    /** One query under the bindings already set, with nothing around it. */
    runAsIs(
       malloy: string,
@@ -674,6 +683,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // `#@ persist` views (phase 4, P14): their generated build sources keep
    // their own sourceIDs, as the package's build plan keeps them.
    const viewRefusals: string[] = [];
+   const viewBuildSourceIDs = new Set<string>();
    if (scenario.persistedViews) {
       const views = await tryCompilePersistedViewCompanion({
          packagePath: dir,
@@ -704,6 +714,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const names = new Set(
             views.generated.plans.map((p) => p.buildSourceName),
          );
+         for (const p of views.generated.plans) {
+            viewBuildSourceIDs.add(p.buildSourceID);
+         }
          for (const target of targets.connections.flatMap((c) => c.targets)) {
             if (target.readsGivens) {
                for (const s of target.sources) {
@@ -876,19 +889,23 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             type: c.type as string,
          }));
          const planned = await planChainedDownstream({
-            transientModel: extensionOverStoredModel({
-               plan: materializePlans[source.sourceID],
-               chain: over.overStored,
-               connectionName: DESTINATION,
-               virtualHandle: parentEntry.sourceEntityId,
-               columns: declarableColumns(schema).declared.map((c) => ({
-                  name: c.name,
-                  type: c.malloyType,
-               })),
-            }),
+            model: oneFileModel(
+               extensionOverStoredModel({
+                  plan: materializePlans[source.sourceID],
+                  chain: over.overStored,
+                  connectionName: DESTINATION,
+                  virtualHandle: parentEntry.sourceEntityId,
+                  columns: declarableColumns(schema).declared.map((c) => ({
+                     name: c.name,
+                     type: c.malloyType,
+                  })),
+               }),
+            ),
             downstreamName: materializePlans[source.sourceID].buildSourceName,
             virtualMap: buildVirtualMap([
                {
+                  kind: "persist",
+                  tier: "storage",
                   sourceName: over.overStored.parentBuildSourceName,
                   destinationName: DESTINATION,
                   virtualHandle: parentEntry.sourceEntityId,
@@ -1021,13 +1038,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
+   // Each kind read off the plan, as the package's bind reads it.
+   const kinds = {
+      materializeSourceIDs: new Set(Object.keys(materializePlans)),
+      viewBuildSourceIDs,
+   };
    const bindings = [
       ...deriveServeBindings(
          entries,
          groupAliasesByName(Object.values(plan)),
          undefined,
          planSourceIds(plan),
-      ),
+      ).map((b) => ({ ...b, kind: kindFromPlan(b, kinds) })),
       // The colocated `#(materialize)` tables, through the package's own
       // derivation.
       ...deriveColocatedServeBindings({
@@ -1054,10 +1076,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // The manifest is passed only on a served run, so a live run reads live.
    let manifestOn = false;
    const policy = ModelPolicy.fixed({
-      freshBuildManifestEntries: () =>
-         manifestOn && Object.keys(colocatedEntries).length > 0
-            ? colocatedEntries
-            : undefined,
+      snapshot: () => makeSnapshot([], manifestOn ? colocatedEntries : {}),
       materializedTables: {
          planned: new Map([
             ...sources.map(
@@ -1161,7 +1180,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          (e) => [e.sourceName, e.physicalTableName] as const,
       ),
       ...bindings
-         .filter((b) => b.colocated)
+         .filter((b) => b.tier === "colocated")
          .map((b) => [b.sourceName, b.tablePath] as const),
    ]);
    return {

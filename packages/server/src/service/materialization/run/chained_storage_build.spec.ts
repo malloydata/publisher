@@ -41,8 +41,11 @@ import { buildEnvironmentStub } from "../../../test_helpers/materialization_serv
 import { installSettings } from "../../../test_helpers/settings_env";
 import { storageDestinationRoot } from "../../connection_config";
 import { collectModelBuildPlan, emptyBuildPlanParts } from "../plan/build_plan";
-import { authorModelLiftContext } from "../serve/materialization_serve_transform";
-import type { ManifestEntry } from "../types";
+import { authorModelLiftContext } from "../text/author_model";
+import type { ChainBuildRequest } from "../domain/chain_build";
+import type { ManifestEntry } from "../domain/types";
+import { chainBuildText } from "../serve/served_copy_serve";
+import { servedCopyAlias } from "../serve/served_copy_config";
 import * as session from "./materialization_build_session";
 import {
    chainedPlanFacts,
@@ -105,11 +108,20 @@ function reader(): URLReader {
    return { readURL: async (url: URL) => fs.readFileSync(url, "utf8") };
 }
 
-/** Plan one model file as a package load would, and the chained facts a run derives. */
-async function planChain(text: string): Promise<Chain> {
+/**
+ * Plan one model file as a package load would, and the chained facts a run
+ * derives. `others` are more files beside `m.malloy`, which it may import.
+ */
+async function planChain(
+   text: string,
+   others: Record<string, string> = {},
+): Promise<Chain> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chained-build-"));
    dirs.push(dir);
    fs.writeFileSync(path.join(dir, "m.malloy"), text);
+   for (const [name, other] of Object.entries(others)) {
+      fs.writeFileSync(path.join(dir, name), other);
+   }
    const base = pathToFileURL(dir + "/");
    const runtime = new Runtime({ urlReader: reader(), connections });
    const materializer = runtime.loadModel(new URL("m.malloy", base), {
@@ -213,10 +225,19 @@ async function stack(
          "lake",
          LAKE as never,
          builtEntries,
-         buildEnvironmentStub({
-            destinations: { lake: LAKE },
-            environmentPath: chain.dir,
-         }) as never,
+         {
+            ...buildEnvironmentStub({
+               destinations: { lake: LAKE },
+               environmentPath: chain.dir,
+            }),
+            // The package's served copy writes the text (the host port).
+            chainBuildText: (request: ChainBuildRequest) =>
+               chainBuildText(request, {
+                  modelPath: "m.malloy",
+                  modelDef: source._model?._modelDef,
+                  context: [chain.dir, {} as never, {}],
+               }) ?? { declined: "no model declares the downstream" },
+         } as never,
          `${name}_t`,
          chain.facts,
          chain.facts.addressBySourceId[id]!,
@@ -230,10 +251,17 @@ async function stack(
    }
 }
 
+/** A file with its blanked lines' spaces gone, as it reads. */
+const trimmed = (text: string) => text.replace(/[ \t]+$/gm, "");
+
+/** The downstream's file each compile read, as the build wrote it. */
 function transientModels(spy: { mock: { calls: unknown[][] } }): string[] {
-   return spy.mock.calls.map(
-      (call) => (call[0] as { transientModel: string }).transientModel,
-   );
+   return spy.mock.calls.map((call) => {
+      const { model } = call[0] as {
+         model: { files: ReadonlyMap<string, string>; entry: string };
+      };
+      return model.files.get(model.entry)!;
+   });
 }
 
 const CHAIN = `${RAW}
@@ -253,7 +281,7 @@ source: monthly is daily -> {
 describe.skipIf(process.platform === "win32")(
    "a v1 chained storage= build, stacked on its parent's stored table",
    () => {
-      it("compiles this transient model, and builds the downstream from the parent's rows", async () => {
+      it("compiles the author's file with the parent re-rooted, and builds the downstream from the parent's rows", async () => {
          const chain = await planChain(CHAIN);
          await writeLake(chain.dir, DAILY_ROWS);
          const { result, error, models } = await stack(
@@ -264,15 +292,18 @@ describe.skipIf(process.platform === "win32")(
          expect(error).toBeUndefined();
          const address =
             chain.facts.addressBySourceId[chain.byName("daily").id];
-         expect(models).toEqual([
-            `##! experimental.persistence
-##! experimental { persistence virtual_source }
-type: daily__shape is {
+         expect(models.map(trimmed)).toEqual([
+            `##! experimental.persistence\n${"\n".repeat(7)}
+##! experimental { virtual_source }
+type: daily__served is {
    d::date,
    cat::string,
    total::number
 }
-source: daily is lake.virtual('${address}')::daily__shape
+
+#@ persist storage="lake"
+source: daily is ${servedCopyAlias("lake")}.virtual('${address}')::daily__served
+
 #@ persist storage="lake"
 source: monthly is daily -> {
   group_by: m is d.month
@@ -301,7 +332,7 @@ source: monthly is daily -> {
          ]);
       });
 
-      it("re-declares a parent's own refinements over its table, and a rename binds to the same table", async () => {
+      it("keeps a parent's own refinements over its table, and a rename reads the re-rooted parent", async () => {
          const chain = await planChain(`${RAW}
 #@ persist storage="lake"
 source: daily is raw -> {
@@ -329,29 +360,23 @@ source: by_cat is day_rows -> {
          expect(error).toBeUndefined();
          const address =
             chain.facts.addressBySourceId[chain.byName("daily").id];
-         // Every tier below the first thins the parent's refinements; the
-         // first compiled, so one model is tried.
-         expect(models).toEqual([
-            `##! experimental.persistence
-##! experimental { persistence virtual_source }
-type: daily__shape is {
+         expect(models.map(trimmed)).toEqual([
+            `##! experimental.persistence\n${"\n".repeat(7)}
+##! experimental { virtual_source }
+type: daily__served is {
    d::date,
    cat::string,
    total::number
 }
-source: daily is lake.virtual('${address}')::daily__shape extend {
-   dimension: loud_cat is upper(cat)
-   where: cat = 'a'
+
+#@ persist storage="lake"
+source: daily is ${servedCopyAlias("lake")}.virtual('${address}')::daily__served extend {
+  where: cat = 'a'
+  dimension: loud_cat is upper(cat)
 }
-type: day_rows__shape is {
-   d::date,
-   cat::string,
-   total::number
-}
-source: day_rows is lake.virtual('${address}')::day_rows__shape extend {
-   dimension: loud_cat is upper(cat)
-   where: cat = 'a'
-}
+
+source: day_rows is daily
+
 #@ persist storage="lake"
 source: by_cat is day_rows -> {
   group_by: loud_cat
@@ -363,6 +388,158 @@ source: by_cat is day_rows -> {
          expect(
             await readLake(chain.dir, "SELECT loud_cat, total FROM by_cat_t"),
          ).toEqual([{ loud_cat: "A", total: 17 }]);
+      });
+
+      it("re-roots a parent in the file that declares it, under an intermediate the downstream reads it through", async () => {
+         const chain = await planChain(
+            `##! experimental.persistence
+import 'base.malloy'
+
+source: january is daily extend { where: d < @2026-02-01 }
+
+#@ persist storage="lake"
+source: jan_by_cat is january -> {
+  group_by: cat
+  aggregate: total is total.sum()
+}
+`,
+            {
+               "base.malloy": `${RAW}
+#@ persist storage="lake"
+source: daily is raw -> {
+  group_by: d, cat
+  aggregate: total is amt.sum()
+}
+`,
+            },
+         );
+         // The stored rows differ from the warehouse's, so an answer read
+         // from the warehouse would show.
+         await writeLake(
+            chain.dir,
+            `${DAILY_ROWS}; UPDATE daily_t SET total = total * 100`,
+         );
+         const { result, error, models } = await stack(
+            chain,
+            "jan_by_cat",
+            parentEntry(chain, "daily"),
+         );
+         expect(error).toBeUndefined();
+         // The entry file, with the parent's own file re-rooted beside it.
+         expect(models.map(trimmed)).toEqual([
+            `##! experimental.persistence
+import 'base.malloy'
+
+source: january is daily extend { where: d < @2026-02-01 }
+
+#@ persist storage="lake"
+source: jan_by_cat is january -> {
+  group_by: cat
+  aggregate: total is total.sum()
+}
+`,
+         ]);
+         expect(result?.upstreamReuse).toBe("reused");
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT cat, total FROM jan_by_cat_t ORDER BY cat",
+            ),
+         ).toEqual([
+            { cat: "a", total: 1000 },
+            { cat: "b", total: 500 },
+         ]);
+      });
+
+      it("leaves out a parent's definition that reads the warehouse, and stacks only a downstream that does not read it", async () => {
+         const chain = await planChain(`${RAW}
+#@ persist storage="lake"
+source: daily is raw -> {
+  group_by: d, cat
+  aggregate: total is amt.sum()
+} extend {
+  join_one: r is raw on r.d = d
+  measure: raw_rows is r.count()
+  dimension: loud_cat is upper(cat)
+}
+
+#@ persist storage="lake"
+source: by_loud is daily -> {
+  group_by: loud_cat
+  aggregate: total is total.sum()
+}
+
+#@ persist storage="lake"
+source: by_raw is daily -> {
+  group_by: cat
+  aggregate: raw_rows
+}
+`);
+         await writeLake(
+            chain.dir,
+            `${DAILY_ROWS}; UPDATE daily_t SET total = total * 100`,
+         );
+         const loud = await stack(
+            chain,
+            "by_loud",
+            parentEntry(chain, "daily"),
+         );
+         expect(loud.error).toBeUndefined();
+         expect(loud.result?.upstreamReuse).toBe("reused");
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT loud_cat, total FROM by_loud_t ORDER BY loud_cat",
+            ),
+         ).toEqual([
+            { loud_cat: "A", total: 1700 },
+            { loud_cat: "B", total: 500 },
+         ]);
+         // The measure reading the left-out join is gone too, so a downstream
+         // that reads it does not compile over the stored parent, and is a
+         // shape the build could not carry (the caller recomputes it), never a
+         // table built without it.
+         const raw = await stack(chain, "by_raw", parentEntry(chain, "daily"));
+         expect(raw.error).toBeInstanceOf(ChainedShapeNotCarriedError);
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT count(*)::INTEGER AS n FROM information_schema.tables WHERE table_name = 'by_raw_t'",
+            ),
+         ).toEqual([{ n: 0 }]);
+      });
+
+      it("declines a downstream that would store fewer columns than a recompute writes", async () => {
+         const chain = await planChain(`${RAW}
+#@ persist storage="lake"
+source: daily is raw -> {
+  group_by: d, cat
+  aggregate: total is amt.sum()
+} extend {
+  join_one: r is raw on r.d = d
+  dimension: raw_cat is r.cat
+  dimension: loud_cat is upper(cat)
+}
+
+#@ persist storage="lake"
+source: every is daily -> { select: * }
+`);
+         await writeLake(chain.dir, DAILY_ROWS);
+         // `raw_cat` reads the join left out over the stored parent, so the
+         // stacked `select: *` would lack it; a recompute writes it.
+         const { error } = await stack(
+            chain,
+            "every",
+            parentEntry(chain, "daily"),
+         );
+         expect(error).toBeInstanceOf(ChainedShapeNotCarriedError);
+         expect((error as Error).message).toContain("'raw_cat'");
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT count(*)::INTEGER AS n FROM information_schema.tables WHERE table_name = 'every_t'",
+            ),
+         ).toEqual([{ n: 0 }]);
       });
 
       it("names a parent with no table in this destination, before compiling anything", async () => {
@@ -454,9 +631,93 @@ source: weird is daily -> {
             "'weird' reaches only stored upstreams ('daily'), but the build " +
                "could not express it over them",
          );
-         // A parent with no refinements gives every tier the same model, so
-         // it is compiled once.
+         // Nothing in the parent can be left out, so it is compiled once.
          expect(models.length).toBe(1);
+      });
+
+      it("keeps a gated parent's gates on its re-root, as the author wrote them", async () => {
+         const chain = await planChain(`${RAW.replace(
+            "##! experimental.persistence",
+            "##! experimental { persistence givens }",
+         )}
+given: ROLE :: string is 'admin'
+
+#(authorize) $ROLE = 'admin'
+#(access_filter) cat = 'a'
+#@ persist storage="lake"
+source: daily is raw -> {
+  group_by: d, cat
+  aggregate: total is amt.sum()
+}
+
+#@ persist storage="lake"
+source: monthly is daily -> {
+  group_by: m is d.month
+  aggregate: total is total.sum()
+}
+`);
+         await writeLake(chain.dir, DAILY_ROWS);
+         const { error, models } = await stack(
+            chain,
+            "monthly",
+            parentEntry(chain, "daily"),
+         );
+         // The gates stay on the re-rooted parent as the author wrote them,
+         // so the copy declares the parent with every gate it has live. A
+         // gate is a caller's, proved by govern() at query time, never baked
+         // into a build: the eligibility gate refuses a stored source that
+         // reaches one, so in a run this chain never builds.
+         expect(models.length).toBe(1);
+         expect(models[0]).toContain(
+            "#(authorize) $ROLE = 'admin'\n#(access_filter) cat = 'a'\n#@ persist storage=\"lake\"\nsource: daily is ",
+         );
+         expect(error).toBeUndefined();
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT CAST(m AS VARCHAR) AS m, total FROM monthly_t ORDER BY m",
+            ),
+         ).toEqual([
+            { m: "2026-01-01", total: 15 },
+            { m: "2026-02-01", total: 7 },
+         ]);
+      });
+
+      it("writes the text from the package's model as loaded, before any build has read its files", async () => {
+         const chain = await planChain(CHAIN);
+         // A fresh compile of the model, as the package holds it: nothing has
+         // read its author files through it yet.
+         const runtime = new Runtime({ urlReader: reader(), connections });
+         const base = pathToFileURL(chain.dir + "/");
+         const model = await runtime
+            .loadModel(new URL("m.malloy", base), { importBaseURL: base })
+            .getModel();
+         const { id, source } = chain.byName("monthly");
+         const address =
+            chain.facts.addressBySourceId[chain.byName("daily").id]!;
+         const text = chainBuildText(
+            {
+               downstream: { sourceID: id, name: source.name },
+               destination: { name: "lake", schema: "main" },
+               upstreams: [
+                  {
+                     entry: parentEntry(chain, "daily")[address],
+                     names: { daily: [chain.byName("daily").id] },
+                  },
+               ],
+            },
+            {
+               modelPath: "m.malloy",
+               modelDef: model._modelDef,
+               context: [chain.dir, {} as never, {}],
+            },
+         );
+         expect(
+            text && "declined" in text ? text.declined : undefined,
+         ).toBeUndefined();
+         expect(text && "rerooted" in text ? text.rerooted : []).toEqual([
+            "daily",
+         ]);
       });
    },
 );

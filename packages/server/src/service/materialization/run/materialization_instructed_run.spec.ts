@@ -11,7 +11,7 @@ import {
    MaterializationEligibilityError,
    BadRequestError,
 } from "../../../errors";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import {
    compiledWith,
    fakeSource,

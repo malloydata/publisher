@@ -49,36 +49,26 @@ const ALLOWED: Record<string, Record<string, string>> = {
          "a scoped run's sourceNames filter is a caller request by name",
    },
    "run/storage_build_strategy.ts": {
-      "}).filter((d) => onPath.has(d.sourceName));":
-         "names on one downstream's path within one model's namespace (the lift is per model)",
+      "names[b.sourceName] = b.sourceIDs;":
+         "the names that read one stored table, each with its own sourceIDs, for the chained build's request",
    },
    "run/run_instructions.ts": {
       "if (include && !include.has(persistSource.name)) continue;":
          "a scoped run's sourceNames filter is a caller request by name",
    },
-   "serve/materialization_serve_transform.ts": {
+   "domain/source_aliases.ts": {
       "const named = byName.get(source.name) ?? [];":
          "planSourceIds resolves a manifest entry's name to plan sourceIDs (name → id index)",
       "byName.set(source.name, named);":
          "planSourceIds resolves a manifest entry's name to plan sourceIDs (name → id index)",
-      "const sourceID = contents?.[binding.sourceName]?.sourceID;":
-         "the model's own namespace, resolving a name to its sourceID",
       "else if (!group.includes(source.name)) group.push(source.name);":
          "aliases grouped per address for rebinding by name in Malloy text",
+   },
+   "domain/binding.ts": {
+      "const sourceID = contents?.[binding.sourceName]?.sourceID;":
+         "the model's own namespace, resolving a name to its sourceID",
       "...(aliasesBySourceName[entry.sourceName] ?? []).filter(":
          "aliases grouped per address for rebinding by name in Malloy text",
-      "const url = ctx.contents[lift.sourceName]?.location?.url;":
-         "the model's own namespace",
-      "dependsOn.set(b.sourceName, set);":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "if (!remaining.has(b.sourceName)) continue;":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "const ready = [...dependsOn.get(b.sourceName)!].every((d) =>":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "remaining.delete(b.sourceName);":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "if (remaining.has(b.sourceName)) {":
-         "orders one serve shape's bindings by the Malloy names they declare",
    },
    "serve/serve_verdict.ts": {
       "const storageBound = facts.boundStorageNames.has(source.name);":
@@ -89,8 +79,6 @@ const ALLOWED: Record<string, Record<string, string>> = {
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",
    },
    "serve/storage_bindings.ts": {
-      "} else if (!this.shadowedSourcesLogged.has(binding.sourceName)) {":
-         "log dedupe only",
       "const def = contents?.[binding.sourceName] as":
          "the model's own namespace",
       "const def = contents?.[binding.sourceName];":

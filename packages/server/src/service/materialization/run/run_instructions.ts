@@ -20,14 +20,17 @@ import {
    tierGateInputs,
    storedBaseOfRollup,
 } from "../plan/build_plan";
-import { assertTierEligible } from "../plan/materialization_eligibility";
+import {
+   assertPlacementNamed,
+   assertTierEligible,
+} from "../plan/materialization_eligibility";
 import {
    BuildInstruction,
    BuildPlan,
    LedgerEntry,
    ManifestEntry,
    RefusedSource,
-} from "../types";
+} from "../domain/types";
 import {
    sourceIncrementalRefresh,
    type IncrementalRunContext,
@@ -149,6 +152,7 @@ export function deriveSelfInstructions(
          // an authorize-gated source materialized there would be served to
          // every caller.
          try {
+            assertPlacementNamed(persistSource);
             assertTierEligible(
                persistSource,
                !!destination,

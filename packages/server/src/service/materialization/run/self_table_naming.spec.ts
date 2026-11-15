@@ -12,7 +12,7 @@ import {
    versionTableSuffix,
 } from "../../versions/materialization_scope";
 import type { CompiledBuildPlan } from "../plan/build_plan";
-import type { ManifestEntry } from "../types";
+import type { ManifestEntry } from "../domain/types";
 import { nameViewIntentFor, tableAtNameIntentFor } from "./name_view";
 import { deriveSelfInstructions } from "./run_instructions";
 

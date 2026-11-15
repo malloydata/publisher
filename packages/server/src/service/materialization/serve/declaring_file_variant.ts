@@ -27,20 +27,19 @@
  * persisted table.
  */
 
+import { modelDefOf } from "../../governance/ir/compiled_model";
 import type { ModelDef, ModelMaterializer } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import type { GraftRuntime } from "../../gate_classification";
 import { collectEntryPointGates } from "../../gate_classification";
 import { doubleQuotedString, identifier } from "../../malloy_text";
-import {
-   createModelRuntime,
-   type ModelConnectionInput,
-} from "../../model_runtime";
+import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
-import { splitSourceID } from "../plan/persisted_view";
-import { SourceMap } from "../plan/source_map";
-import { persistBlankedFiles } from "../persist_blanking";
+import { splitSourceID } from "../domain/table_plans";
+import { SourceMap } from "../text/source_map";
+import type { GeneratedFiles } from "../text/generated_files";
+import { packageFiles } from "../text/package_files";
 import { authorNameImports } from "./author_imports";
 
 /** A variant compiled over the author's declaring file. */
@@ -102,34 +101,14 @@ export async function compileDeclaringFileVariant(args: {
    ): string | { error: string } | Promise<string | { error: string }>;
 }): Promise<CompiledDeclaringFileVariant> {
    const { packagePath, modelPath, packageConfig, modelDef } = args;
-   const declared = splitSourceID(args.sourceID);
-   if (!declared) return { error: "no declaring file" };
-   let declaringFile: string;
-   try {
-      declaringFile = fileURLToPath(declared.url);
-   } catch {
-      return { error: "not a local file" };
-   }
+   const declared = declaringFileOf(args.sourceID, args.copySuffix);
+   if ("error" in declared) return declared;
+   const { declaringURL, copyURL, copyName } = declared;
    const modelFile = path.join(packagePath, modelPath);
-   const declaringURL = pathToFileURL(declaringFile);
-   const copyURL = pathToFileURL(`${declaringFile}${args.copySuffix}`);
-   const copyName = path.basename(fileURLToPath(copyURL));
-   const { runtime: reader } = await createModelRuntime(
-      packagePath,
-      modelPath,
-      packageConfig,
-   );
-   const readText = async (url: string) => {
-      try {
-         const read = await reader.urlReader.readURL(new URL(url));
-         return typeof read === "string" ? read : read.contents;
-      } catch {
-         return undefined;
-      }
-   };
+   const authorFiles = packageFiles(packagePath, modelPath, packageConfig);
    // The author's files with source-level `#@` lines blanked, the declaring
    // file's under the copy.
-   const blanked = await persistBlankedFiles(modelDef, readText);
+   const blanked = await authorFiles.blanked(modelDef);
    if (!blanked) return { error: "a source-level #@ line not set aside" };
    const overlay = new Map<string, string>();
    for (const [url, text] of blanked) {
@@ -137,17 +116,11 @@ export async function compileDeclaringFileVariant(args: {
    }
    const declaringText =
       blanked.get(overlayKey(declaringURL)) ??
-      (await readText(declaringURL.href));
+      (await authorFiles.readIfAny(declaringURL.href));
    if (declaringText === undefined) return { error: "unreadable source" };
-   overlay.set(overlayKey(copyURL), declaringText);
+   overlay.set(copyURL.href, declaringText);
    // The copy's own names, to import into the declaring file's overlay.
-   const copyNames = await namesDeclaredIn(
-      packagePath,
-      modelPath,
-      packageConfig,
-      overlay,
-      copyURL,
-   );
+   const copyNames = await namesDeclaredIn(authorFiles, overlay, copyURL);
    let gates: string;
    try {
       gates = gateLines(modelDef, args.sourceID);
@@ -161,7 +134,7 @@ export async function compileDeclaringFileVariant(args: {
       copyName,
       sourceName: source,
       gates,
-      addFile: (url, text) => overlay.set(overlayKey(url), text),
+      addFile: (url, text) => overlay.set(url.href, text),
    });
    if (typeof declaration !== "string") return declaration;
    const others = copyNames.names.filter((n) => n !== source);
@@ -178,7 +151,7 @@ export async function compileDeclaringFileVariant(args: {
          ? `export { ${[source, ...reexported].map((n) => identifier(n)).join(", ")} }\n`
          : "";
    overlay.set(
-      overlayKey(declaringURL),
+      declaringURL.href,
       `${args.flags}
 ${importOthers}
 ${declaration}
@@ -199,26 +172,47 @@ ${exportAll}`,
       },
    );
    overlay.set(
-      overlayKey(args.queryModelURL.href),
+      args.queryModelURL.href,
       `${args.flags}
 ${imports}
 `,
    );
-   const { runtime, importBaseURL } = await createModelRuntime(
+   const { runtime, materializer, model } = await packageFiles(
       packagePath,
       modelPath,
       args.config,
-      { overlay },
-   );
-   const materializer = runtime.loadModel(args.queryModelURL, {
-      importBaseURL,
-   });
-   const model = await materializer.getModel();
+   ).compile(args.queryModelURL, overlay);
    return {
       materializer,
-      modelDef: (model as unknown as { _modelDef: ModelDef })._modelDef,
+      modelDef: modelDefOf(model as unknown as { _modelDef: ModelDef }),
       runtime: runtime as unknown as GraftRuntime,
    };
+}
+
+/**
+ * Which file a variant of the source `sourceID` names redeclares it in: its
+ * declaring file (a local file, from the `sourceID`), and the copy of it
+ * (`<file><copySuffix>`) that holds the file's other names. An error when the
+ * `sourceID` names no declaring file, or one that is not a local file.
+ */
+export function declaringFileOf(
+   sourceID: string,
+   copySuffix: string,
+):
+   | { error: string }
+   | { name: string; declaringURL: URL; copyURL: URL; copyName: string } {
+   const declared = splitSourceID(sourceID);
+   if (!declared) return { error: "no declaring file" };
+   let declaringFile: string;
+   try {
+      declaringFile = fileURLToPath(declared.url);
+   } catch {
+      return { error: "not a local file" };
+   }
+   const declaringURL = pathToFileURL(declaringFile);
+   const copyURL = pathToFileURL(`${declaringFile}${copySuffix}`);
+   const copyName = path.basename(fileURLToPath(copyURL));
+   return { name: declared.name, declaringURL, copyURL, copyName };
 }
 
 /**
@@ -226,20 +220,12 @@ ${imports}
  * its own, with which of them are givens.
  */
 async function namesDeclaredIn(
-   packagePath: string,
-   modelPath: string,
-   config: ModelConnectionInput,
+   files: GeneratedFiles,
    overlay: ReadonlyMap<string, string>,
    url: URL,
 ): Promise<{ names: string[]; givens: ReadonlySet<string> }> {
-   const { runtime, importBaseURL } = await createModelRuntime(
-      packagePath,
-      modelPath,
-      config,
-      { overlay },
-   );
-   const model = await runtime.loadModel(url, { importBaseURL }).getModel();
-   const def = (model as unknown as { _modelDef: ModelDef })._modelDef;
+   const { model } = await files.compile(url, overlay);
+   const def = modelDefOf(model as unknown as { _modelDef: ModelDef });
    const names = new Set<string>();
    for (const [name, entry] of Object.entries(def.contents ?? {})) {
       const located = entry as { location?: { url?: unknown } };

@@ -3,7 +3,7 @@
 
 /**
  * The router latency baseline: what today's routing decision
- * (`Model.runQueryResults`) costs per query, on each path it takes.
+ * (`ModelServing.run`) costs per query, on each path it takes.
  * Materialization v2 replaces that chain with a variant router, and its
  * numbers gate phase 1 against these.
  *

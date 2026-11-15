@@ -28,25 +28,28 @@ import { getMaterializeEnabled } from "../../../config";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
-import { overlayKey } from "../../overlay_key";
-import { persistBlankedFiles } from "../persist_blanking";
-import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import {
-   generateRollupBuildFile,
+   companionOmissions,
+   GeneratedFiles,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
+import {
    planModelRollups,
-   ROLLUP_COMPANION_SUFFIX,
    parentKeyCheckQuery,
    readsAsJoinMany,
    rollupKeyCheckQuery,
    type JoinedKeyNeed,
-   type ParentKeyCheck,
    type ParentKeyNeed,
    type RollupRefusal,
-   type RollupVariantPlan,
 } from "./rollup_plan";
-import { splitSourceID } from "./persisted_view";
-import { SourceMap } from "./source_map";
-import { omittedFromFile, type Omission } from "./omitted_sources";
+import {
+   generateRollupBuildFile,
+   packageRelativeSourceID,
+   ROLLUP_COMPANION_SUFFIX,
+} from "../text/read_text";
+import type { ParentKeyCheck, RollupVariantPlan } from "../domain/table_plans";
+import { SourceMap } from "../text/source_map";
+import type { Omission } from "../domain/omitted_sources";
 
 export interface GeneratedRollups {
    /** The rollups the companion declares. Never empty. */
@@ -65,43 +68,6 @@ export function rollupCompanionURL(
    return pathToFileURL(
       `${path.join(packagePath, modelPath)}${ROLLUP_COMPANION_SUFFIX}`,
    );
-}
-
-/**
- * The companion URL of the file a `sourceID` was declared in, or undefined
- * for a declaration that is not a local file.
- */
-export function rollupCompanionURLOf(declaringURL: string): URL | undefined {
-   try {
-      return pathToFileURL(
-         `${fileURLToPath(declaringURL)}${ROLLUP_COMPANION_SUFFIX}`,
-      );
-   } catch {
-      return undefined;
-   }
-}
-
-/**
- * A `sourceID` with its file made relative to the package
- * (`orders@models/orders.malloy`), so a rollup's name does not depend on
- * where the package is checked out.
- */
-export function packageRelativeSourceID(
-   packagePath: string,
-   sourceID: string,
-): string {
-   const at = splitSourceID(sourceID);
-   if (!at) return sourceID;
-   try {
-      const file = fileURLToPath(at.url);
-      const relative = path
-         .relative(path.resolve(packagePath), file)
-         .split(path.sep)
-         .join("/");
-      return `${at.name}@${relative}`;
-   } catch {
-      return sourceID;
-   }
 }
 
 /**
@@ -155,17 +121,10 @@ export async function tryCompileRollupCompanion(args: {
       );
       if (!text) return { refused };
       const url = rollupCompanionURL(args.packagePath, args.modelPath);
+      const files = GeneratedFiles.over(args.getRuntime);
       // The shared, checked blanking (persist_blanking.ts): each compiler
       // span must hold its note and the file must lex the same once blanked.
-      const { runtime: reader } = await args.getRuntime(new Map());
-      const overlay = await persistBlankedFiles(args.modelDef, async (href) => {
-         try {
-            const read = await reader.urlReader.readURL(new URL(href));
-            return typeof read === "string" ? read : read.contents;
-         } catch {
-            return undefined;
-         }
-      });
+      const overlay = await files.blanked(args.modelDef);
       if (!overlay) {
          // Building over the author's files as they are would chain a rollup
          // onto its base's table (#6293); build nothing instead.
@@ -175,17 +134,17 @@ export async function tryCompileRollupCompanion(args: {
          );
          return {
             refused,
-            omitted: omittedFromFile(
-               companionHref,
-               plannedNames,
-               "rollup_companion_blanking_failed",
-            ),
+            omitted: companionOmissions("rollup_blanking", {
+               file: companionHref,
+               names: plannedNames,
+            }),
          };
       }
-      overlay.set(overlayKey(url.href), text);
-      const { runtime, importBaseURL } = await args.getRuntime(overlay);
-      const materializer = runtime.loadModel(url, { importBaseURL });
-      const model = await materializer.getModel();
+      overlay.set(url.href, text);
+      const { runtime, materializer, model } = await files.compile(
+         url,
+         overlay,
+      );
       await compileRollupKeyChecks(planned.plans, materializer, args.modelPath);
       return {
          generated: {
@@ -207,11 +166,10 @@ export async function tryCompileRollupCompanion(args: {
       );
       return {
          refused,
-         omitted: omittedFromFile(
-            companionHref,
-            plannedNames,
-            "rollup_companion_failed",
-         ),
+         omitted: companionOmissions("rollup", {
+            file: companionHref,
+            names: plannedNames,
+         }),
       };
    }
 }

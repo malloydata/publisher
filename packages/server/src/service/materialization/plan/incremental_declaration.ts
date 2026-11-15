@@ -1,13 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
-import { parseRouteTag } from "../../motly";
+import { readRoute } from "./declaration";
 import type { RollingWindow } from "./rolling_window";
 import type { Tag } from "@malloydata/malloy-tag";
 
-import type { IncrementalStrategy } from "../types";
+import type { IncrementalStrategy } from "../domain/types";
 import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 
@@ -159,7 +160,7 @@ export interface PairDelta {
 /** The source's `#@` tag, or undefined when it does not parse. */
 function safeTag(source: PersistSource): Tag | undefined {
    try {
-      return parseRouteTag(source.annotations, "@").tag;
+      return readRoute(source.annotations, "@").tag;
    } catch {
       return undefined;
    }
@@ -179,7 +180,7 @@ function queryDefinitionFieldKinds(source: PersistSource): {
    const analytics: string[] = [];
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const def = source._sourceDef as any;
+      const def = sourceDefOf(source) as any;
       const pipeline: unknown[] = def?.query?.pipeline ?? [];
       pipeline.forEach((rawSegment, index) => {
          // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { plannedModelDefOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
    Manifest,
@@ -16,9 +17,9 @@ import {
    projectToPublicColumns,
    resolveQueryMetadata,
 } from "../plan/build_plan";
-import { authorModelLiftContext } from "../serve/materialization_serve_transform";
-import { reachPersisted } from "../plan/source_map";
-import { BuildInstruction, ManifestEntry } from "../types";
+import { authorModelLiftContext } from "../text/author_model";
+import { reachPersisted } from "../text/source_map";
+import { BuildInstruction, ManifestEntry } from "../domain/types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import { ColocatedCtasStrategy } from "./colocated_build_strategy";
 import {
@@ -195,7 +196,7 @@ export class SourceBuilder {
       // the walk below finds nothing and the entry carries no
       // `upstreamReuse`: a visible gap, not a wrong answer.
       const lift = authorModelLiftContext(
-         persistSource._model?._modelDef,
+         plannedModelDefOf(persistSource),
          readAuthorFile,
       );
       // A strict miss as a reason names it: a name only the generated files

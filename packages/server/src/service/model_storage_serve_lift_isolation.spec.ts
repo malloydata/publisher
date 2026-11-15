@@ -23,7 +23,7 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import type { Binding } from "./materialization/domain/binding";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
@@ -67,7 +67,9 @@ source: bad is fact -> { group_by: j.label; aggregate: n is count() }
 const STORED = `CREATE OR REPLACE TABLE mz_fact AS
    SELECT * FROM (VALUES (1, 10), (1, 20)) AS t(id, amount)`;
 
-const BINDING: ServeBinding = {
+const BINDING: Binding = {
+   kind: "persist",
+   tier: "storage",
    sourceName: "fact",
    destinationName: "duckdb",
    virtualHandle: "h_fact",

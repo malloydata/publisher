@@ -5,9 +5,10 @@ SPDX-License-Identifier: MIT
 
 # Moving from v1 materialization to `#(materialize)` and `#(preaggregate)`
 
-> **In development.** `#(materialize)` and `#(preaggregate)` are materialization v2's annotations.
-> Publisher reads them only with `PUBLISHER_MATERIALIZE` on (`materialize.enabled`, default off),
-> and they are still being built ([the plan](materialization-v2-plan.md)). With the switch off,
+> **On by default.** `#(materialize)` and `#(preaggregate)` are materialization v2's annotations.
+> Publisher reads them with `PUBLISHER_MATERIALIZE` on (`materialize.enabled`), which is the
+> default; the setting is removed one release after that default ships
+> ([the plan](materialization-v2-plan.md), decision 9). With the switch set `false`,
 > Publisher ignores both and answers the source live: a `#(materialize)` source gets no warning and
 > no serve verdict, and a `#(preaggregate)` line is an `annotation-near-miss` warning. A `#(materialize)`
 > source is served from its own warehouse (it then needs `name=`) or from a `storage=` destination,
@@ -57,12 +58,12 @@ still build and serve.
 ## The recipe
 
 1. **Run a server with the switch on**, somewhere other than production:
-   `PUBLISHER_MATERIALIZE=true`, and for a `storage=` source also `PERSIST_STORAGE_MODE=on` with the
+   `PUBLISHER_MATERIALIZE` on (the default; do not set it `false`), and for a `storage=` source also `PERSIST_STORAGE_MODE=on` with the
    storage destination it names configured
    ([storage destinations](connections.md#storage-destinations)). A colocated `#(materialize)`
    needs no storage tier. Both are read at startup. A server with the switch off ignores every v2 annotation, and says nothing
-   about a `#(materialize)` it ignores, so check this first: the server's startup log lists
-   `materialize.enabled=true from PUBLISHER_MATERIALIZE` among the settings it was given.
+   about a `#(materialize)` it ignores, so check this first: a server with it off lists
+   `materialize.enabled=false from PUBLISHER_MATERIALIZE` among the settings its startup log says it was given.
 2. **Find the v1 annotations.** `grep -rn -e '#@ *persist' -e '#@ *preaggregate' --include='*.malloy' .`
    lists them. Leave `#@ -persist` lines and `#@ persist` on views as they are.
 3. **Rewrite each one** by the sections below. Move a source at a time if the package is large: v1
@@ -115,7 +116,7 @@ still build and serve.
 | `annotation-near-miss` | A misspelled route, such as `#(materialise)`. Nothing is built. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
-| `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-in-development-publisher_materialize). |
+| `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize). |
 | `deprecated-preaggregate-annotation` | A measure still uses `#@ preaggregate`. | Rewrite it as `#(preaggregate)`. |
 
 A run can also refuse one source before writing anything, in the run's `failures` rather than as a
@@ -130,7 +131,7 @@ another `name=`, or drop the other table if nothing needs it.
 computed or not (its private and internal ones too), with the source's `where:` applied. v1 stores
 whatever the `#@ persist` source's own query produces. The served copy then reads that table under
 the source's own name, so its extensions, views, joins, named queries and importing files are
-unchanged ([the served copy](materialization.md#the-served-copy-in-development-publisher_materialize)).
+unchanged ([the served copy](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
 
 - **No `##! experimental.persistence` in your file**, for either spelling. A `#(materialize)`
   source's flag lives in the build source Publisher generates; since the v1 cutover a v1 file
@@ -144,7 +145,7 @@ unchanged ([the served copy](materialization.md#the-served-copy-in-development-p
   is built. A source that extends or renames it is not a second table: it reads the materialized
   source's table through the served copy, as its own text says. To give an extension a table of its
   own, put `#(materialize)` on it too
-  ([extension tables](materialization.md#the-served-copy-in-development-publisher_materialize)).
+  ([extension tables](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
 - **One annotation per source.** A source that carries both `#(materialize)` and its own
   `#@ persist` is not built, and is reported as `materialize-not-built`.
 - **A declaration Publisher cannot build serves live, with a warning.** It is not refused at
@@ -244,7 +245,7 @@ source: east_orders_b is orders_base extend {
 
 Or materialize the base as well: an extension of a `#(materialize)` source keeps its parent's
 measures, views and joins, and has a table of its own
-([extension tables](materialization.md#the-served-copy-in-development-publisher_materialize)).
+([extension tables](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
 
 ### Colocated: build into the source's own warehouse
 
@@ -253,8 +254,8 @@ measures, views and joins, and has a table of its own
 source's own connection, with everything it does for `storage=` (stored computed dimensions,
 `inline=`, private and internal fields, terms re-applied at read, extension tables, gates). A column
 whose type the served copy cannot declare as stored (a `timestamptz`, a `json` or driver-specific
-type, or a nest outside DuckDB) leaves that source answered live. A v1 colocated `#@ persist` keeps
-being served through Malloy's build manifest, as before.
+type, or a nest outside DuckDB) leaves that source answered live. A v1 colocated `#@ persist` is
+read by the served copy too, since the v1 cutover.
 
 ```malloy
 // v1
@@ -383,7 +384,7 @@ file, in a parenthesised head, or on a base whose fields the source renames, red
 hides refuses the source (`materialize-not-built`), and it serves live (plan rows
 [5](materialization-v2-plan.md#known-limitations-to-revisit) and
 [32](materialization-v2-plan.md#known-limitations-to-revisit);
-[materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize)). A
+[materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize)). A
 `where:` that reads its given through a dimension (`where: is_mine`) is refused, as in v1.
 
 ### A rolling window: a current-time `where:`
@@ -394,7 +395,7 @@ than a moving cut-off (`ts < now - 30 days`) is left out of the build, so the ta
 and is re-applied at every read; a two-sided window builds its lower bound and leaves its upper bound
 out. Other shapes that read `now` (an `or`, a bound `and`ed with another condition) leave the source
 unbuilt, and it serves live. The rules are in
-[materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize).
+[materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize).
 
 ```malloy
 #(materialize) storage="lake" refresh="full"
@@ -437,7 +438,7 @@ source: orders_lines is orders extend {
 through which a given is read (its joined source's `where:`, `on`, fields or own joins read one) is
 refused for that source (`materialize-not-built`), since its stored columns would hold one caller's
 rows; reference it instead. v1 has no equivalent of `inline=`, so there is nothing to migrate here; the limits are in
-[materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize) and
+[materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize) and
 the [known limitations](#known-limitations-you-may-hit) below.
 
 ### A source with a row-level gate
@@ -447,9 +448,10 @@ the [known limitations](#known-limitations-you-may-hit) below.
 compiles to a row filter is built and served from the served copy with the gate grafted on. Off, it
 is not built and serves live: a `storage=` one is refused as a gated `#@ persist storage=` source is,
 and a colocated one too, because its table is read only through the served copy. A colocated gated
-source that must have a table with the switch off stays on `#@ persist`, whose colocated table keeps
-the gate through Malloy's build manifest. The switch stays off until a security review of storing
-gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
+source that must have a table with the switch off stays on `#@ persist`: since the v1 cutover the
+served copy reads a v1 colocated table past its entry point's own proven gate, grafted as on live,
+even with the switch off, when every table the answer reads is colocated. The switch stays off
+until a security review of storing gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
 the givens from a verified identity
 ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 
@@ -474,7 +476,7 @@ source: sales is orders extend {
 
 A refinement (`run: sales -> by_category + { limit: 2 }`) is answered live and reports the view's
 table skipped with `MISSING_FIELD`. The rules are in
-[persisted views](materialization.md#persisted-views-in-development-publisher_materialize).
+[persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize).
 
 <a id="persist-opt-out"></a>
 
@@ -625,6 +627,6 @@ it. The build plan, the manifest and reuse all key on it.
 - **A `name=` view is a warehouse object Publisher marks.** When a run names a `#(materialize)`
   table by generation, Publisher also makes a view at `name=`, carrying the comment
   `malloy-publisher:name-view …`; a sweeper, a table dropper and package delete must recognize it
-  ([the `name=` view](materialization.md#the-name-view-in-development-publisher_materialize)).
+  ([the `name=` view](materialization.md#the-name-view-materialization-v2-publisher_materialize)).
   Generations and promote arrive in phase 5. See
   [the plan's control-plane contract](materialization-v2-plan.md#ownership).

@@ -12,12 +12,12 @@
  * (`storedMalloyType`): a list or struct is declared as Malloy's array or
  * record type and reads back as live does; anything else is left out of the
  * declaration, so a query reading it is answered live, and every query that
- * does not read it is served from the table. Each table passes the real gate
- * over its captured schema.
+ * does not read it is served from the table. A table with no column left
+ * to declare is built too, and the served copy declines its source at bind,
+ * so every query reading it is answered live.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { assertStorageServeShapeCompiles } from "../../../src/service/materialization/run/materialization_build_session";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -215,20 +215,6 @@ for (const t of TYPES) {
       afterAll(async () => {
          restore();
          await disposeScenarios();
-      });
-
-      it("passes the build-time gate over its captured schema", async () => {
-         const [binding] = fixture.bindings;
-         expect(binding.schema.map((c) => c.name)).toContain("x");
-         await expect(
-            assertStorageServeShapeCompiles({
-               destinationName: "lake",
-               sourceName: "s",
-               virtualHandle: binding.virtualHandle,
-               physicalTableName: "ex_stored",
-               schema: binding.schema,
-            }),
-         ).resolves.toBeUndefined();
       });
 
       it("compiles the served copy with no problem", async () => {
@@ -539,3 +525,51 @@ source: s is duckdb.table('ex') extend {
       });
    },
 );
+
+describe("R4: a storage= table whose every column is left out builds, and its source answers live", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental { persistence }
+source: base is duckdb.table('ex')
+
+#@ persist name="ex_stored" storage="lake"
+source: s is base -> { select: x }
+`,
+         },
+         seedSql: [
+            "CREATE TABLE ex AS SELECT * FROM (VALUES (1, MAP {'k': 1}), (2, MAP {'k': 2})) AS t(id, x)",
+         ],
+      });
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("is bound, and the served copy declines the source for its column types", async () => {
+      const [binding] = fixture.bindings;
+      expect(binding.schema.map((c) => c.name)).toEqual(["x"]);
+      expect(
+         (await fixture.servedCopyProblems()).map((p) => [
+            p.sourceName,
+            p.reason,
+         ]),
+      ).toEqual([["s", "column_types"]]);
+   });
+
+   it("answers a query over it live, and equal", async () => {
+      const run = await fixture.run({
+         name: "reading it",
+         malloy: "run: s -> { aggregate: n is count() }",
+         expectLive: true,
+      });
+      expect(run.live).toEqual([{ n: 2 }]);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+});

@@ -8,11 +8,9 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import {
-   definitionCutAt,
-   isCrossConnectionRefusal,
-   loadLeavingOutCrossConnectionJoins,
-} from "./cross_connection_joins";
+import { loadLeavingOutCrossConnectionJoins } from "./cross_connection_joins";
+import { isCrossConnectionRefusal } from "../text/cross_connection_text";
+import { definitionCutAt } from "../text/definition_cut";
 import { installSettings } from "../../../test_helpers/settings_env";
 
 const URL_ = "file:///p/m.malloy";

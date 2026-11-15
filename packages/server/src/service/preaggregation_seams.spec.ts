@@ -850,7 +850,7 @@ source: orders is duckdb.sql("""
          await harness.shutdown();
       });
 
-      const ROUTING_COUNTER = "publisher_storage_serve_routing_total";
+      const ROUTING_COUNTER = "publisher_query_route_total";
 
       it(
          "records no routing outcome for a gated query no rollup is planned for",
@@ -948,10 +948,7 @@ source: orders is duckdb.sql("""
                { ROLE: ["finance"] },
             );
             expect(
-               await harness.collectCounter(
-                  "publisher_storage_serve_routing_total",
-                  {},
-               ),
+               await harness.collectCounter("publisher_query_route_total", {}),
             ).toBe(0);
          } finally {
             resetMaterializationTelemetryForTesting();
@@ -1103,10 +1100,10 @@ source: orders is duckdb.sql("""
             { org_name: "two", total: 20 },
          ]);
          expect(
-            await harness.collectCounter(
-               "publisher_storage_serve_routing_total",
-               { outcome: "blocked_by_row_level_gate" },
-            ),
+            await harness.collectCounter("publisher_query_route_total", {
+               outcome: "skipped",
+               reason: "CONTRACT",
+            }),
          ).toBe(0);
       },
       { timeout: 60000 },
@@ -1122,10 +1119,10 @@ source: orders is duckdb.sql("""
             { GROUPS: [1] },
          );
          expect(
-            await harness.collectCounter(
-               "publisher_storage_serve_routing_total",
-               { outcome: "blocked_by_row_level_gate" },
-            ),
+            await harness.collectCounter("publisher_query_route_total", {
+               outcome: "skipped",
+               reason: "CONTRACT",
+            }),
          ).toBe(0);
          expect(
             await runGatedQuery(
@@ -1138,10 +1135,10 @@ source: orders is duckdb.sql("""
             { org_name: null, total: 20 },
          ]);
          expect(
-            await harness.collectCounter(
-               "publisher_storage_serve_routing_total",
-               { outcome: "blocked_by_row_level_gate" },
-            ),
+            await harness.collectCounter("publisher_query_route_total", {
+               outcome: "skipped",
+               reason: "CONTRACT",
+            }),
          ).toBe(1);
       },
       { timeout: 60000 },

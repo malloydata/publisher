@@ -21,7 +21,7 @@ import {
    queryShapeOf,
    type StorageTable,
 } from "./query_path";
-import { sourceChain } from "../plan/source_map";
+import { sourceChain } from "../text/source_map";
 
 const shape = {
    sourceName: "daily",
@@ -91,7 +91,7 @@ describe("buildQueryPath", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [
                {
-                  kind: "storage",
+                  kind: "served",
                   outcome: "skipped",
                   reason: "row_level_gate",
                },
@@ -116,7 +116,7 @@ describe("buildQueryPath", () => {
          input({
             catalog: catalog(tables, { id_orders: "orders_built" }),
             storage: { all: [daily], fresh: [daily] },
-            considered: [{ kind: "storage", outcome: "used" }],
+            considered: [{ kind: "served", outcome: "used" }],
             storageTablesRead: [daily],
          }),
       );
@@ -130,7 +130,7 @@ describe("buildQueryPath", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [
                {
-                  kind: "storage",
+                  kind: "served",
                   outcome: "skipped",
                   reason: "does_not_answer",
                   detail: "no field x",
@@ -175,7 +175,7 @@ describe("buildQueryPath", () => {
                   ...(withShape
                      ? [
                           {
-                             kind: "storage" as const,
+                             kind: "served" as const,
                              outcome: "skipped" as const,
                              reason: "does_not_answer" as const,
                           },
@@ -341,7 +341,7 @@ describe("buildQueryPath", () => {
          input({
             catalog: catalog([planned("other")]),
             storage: { all: [other], fresh: [other] },
-            considered: [{ kind: "storage", outcome: "used" }],
+            considered: [{ kind: "served", outcome: "used" }],
             storageTablesRead: [other],
          }),
       );
@@ -423,7 +423,7 @@ describe("buildQueryPath", () => {
          input({
             catalog: catalog([planned("daily")]),
             storage: { all: [daily], fresh: [daily] },
-            considered: [{ kind: "storage", outcome: "used" }],
+            considered: [{ kind: "served", outcome: "used" }],
             storageTablesRead: [daily],
             runFailed: true,
          }),
@@ -445,7 +445,7 @@ describe("buildQueryPath", () => {
          input({
             catalog: catalog([]),
             storage: { all: [daily], fresh: [daily] },
-            considered: [{ kind: "storage", outcome: "used" }],
+            considered: [{ kind: "served", outcome: "used" }],
             storageTablesRead: [daily],
          }),
       );
@@ -643,7 +643,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [
                {
-                  kind: "storage",
+                  kind: "served",
                   outcome: "skipped",
                   reason: "row_level_gate",
                },
@@ -680,7 +680,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [
                {
-                  kind: "storage",
+                  kind: "served",
                   outcome: "skipped",
                   reason: "row_level_gate",
                },
@@ -761,7 +761,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [
                {
-                  kind: "storage",
+                  kind: "served",
                   outcome: "skipped",
                   reason: "row_level_gate",
                },
@@ -856,7 +856,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [
                {
-                  kind: "storage",
+                  kind: "served",
                   outcome: "skipped",
                   reason: "row_level_gate",
                },
@@ -947,7 +947,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
          input({
             catalog: { ...catalog([planned("daily")]), liveVerdicts },
             storage: { all: [daily], fresh: [daily] },
-            considered: [{ kind: "storage", outcome: "used" }],
+            considered: [{ kind: "served", outcome: "used" }],
             storageTablesRead: [daily],
             runFailed: true,
          }),
@@ -1025,7 +1025,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [
                {
-                  kind: "storage",
+                  kind: "served",
                   outcome: "skipped",
                   reason: "does_not_answer",
                   code: "rollup_missing_field",
@@ -1058,7 +1058,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             storage: { all: [daily], fresh: [daily] },
             considered: [
                {
-                  kind: "storage",
+                  kind: "served",
                   outcome: "skipped",
                   reason: "row_level_gate",
                },

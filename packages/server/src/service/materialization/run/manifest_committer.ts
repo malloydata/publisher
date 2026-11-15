@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
 import { logger } from "../../../logger";
 import { recordAutoLoadOutcome } from "../../../materialization_metrics";
@@ -16,14 +17,12 @@ import type { MaterializationHost } from "../host";
 import {
    BuildInstruction,
    BuildManifestResult,
-   boundNativeSchemaOf,
-   boundSchemaOf,
    FreshnessManifest,
    isLegacyFailedEntry,
    ManifestEntry,
    ManifestReference,
    SourceFailure,
-} from "../types";
+} from "../domain/types";
 import { keyUniquenessAt, type RollupKeyRecord } from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import type { RunLifecycle } from "./run_lifecycle";
