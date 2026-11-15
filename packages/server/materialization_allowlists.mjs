@@ -200,7 +200,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       count: 6,
       step: "5",
    },
-   "service/materialization/plan/build_plan.ts": { count: 6, step: "5" },
+   "service/materialization/plan/build_plan.ts": { count: 5, step: "5" },
    "service/materialization/plan/build_plan_compile.ts": {
       count: 1,
       step: "5",
@@ -327,17 +327,6 @@ export const RATCHET_DIALECT_LITERALS = {
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {
-   "service/materialization/plan/materialize_plan.ts#planModelMaterialize":
-      "2g.3",
-   "service/materialization/plan/build_plan.ts#collectModelBuildPlan": "2g.3",
-   "service/materialization/plan/build_plan.ts#deriveBuildPlan": "2g.3",
-   "service/materialization/plan/materialize_compile.ts#tryCompileMaterializeCompanion":
-      "2g.3",
-   "service/materialization/plan/materialize_compile.ts#withBuildCopies":
-      "2g.3",
-   "service/materialization/plan/preaggregation_validation.ts#validateSourcePreaggregation":
-      "2g.3",
-   "service/materialization/plan/rollup_plan.ts#planSourceRollups": "2g.3",
    "service/materialization/run/instructed_build.ts#InstructedBuild.buildInstructedSource":
       "2g.4",
    "service/materialization/run/materialization_build_session.ts#buildSourceIntoStorage":

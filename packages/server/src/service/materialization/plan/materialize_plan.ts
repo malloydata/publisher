@@ -1195,6 +1195,7 @@ export function planModelMaterialize(
    const refused: MaterializeRefusal[] = [];
    // The joins each source has, read through the source map.
    const map = SourceMap.of({ contents });
+   const ctx: PlanContext = { contents, map, givens, probed, zoneFreeRows };
    // A plain code-unit order, not localeCompare: the generated text must not
    // depend on the host's locale.
    for (const [name, object] of Object.entries(contents).sort(([a], [b]) =>
@@ -1205,471 +1206,538 @@ export function planModelMaterialize(
       if (typeof def.sourceID !== "string") continue;
       const declaredIn = splitSourceID(def.sourceID)?.url;
       if (declaredHere && declaredIn && !declaredHere(declaredIn)) continue;
-      let declaration;
-      try {
-         declaration = readMaterializeDeclaration(def, contents);
-      } catch (error) {
+      const planned = planSource(name, def as PlannedDef, ctx);
+      if (planned instanceof Declined) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
-            reason: `#(materialize) does not parse: ${error instanceof Error ? error.message : String(error)}`,
-            malformedCode: MATERIALIZE_UNPARSEABLE_CODE,
+            reason: planned.reason,
+            ...(planned.malformedCode
+               ? { malformedCode: planned.malformedCode }
+               : {}),
          });
-         continue;
+      } else if (planned) {
+         plans.push(planned);
       }
-      if (!declaration) continue;
-      if (declaration.errors.length > 0) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: `#(materialize) does not parse: ${declaration.errors.join("; ")}`,
-            malformedCode: MATERIALIZE_UNPARSEABLE_CODE,
-         });
-         continue;
-      }
-      // Before any other refusal: a retired key, or one outside the closed
-      // set, is malformed, refused at publish, whatever else the source would
-      // be refused for.
-      const retiredKey = retiredKeyRefusal(declaration);
-      if (retiredKey) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: retiredKey,
-            malformedCode: MATERIALIZE_RETIRED_KEY_CODE,
-         });
-         continue;
-      }
-      const unknownKey = unknownKeyRefusal(declaration);
-      if (unknownKey) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: unknownKey,
-            malformedCode: MATERIALIZE_UNKNOWN_KEY_CODE,
-         });
-         continue;
-      }
-      if (declaresOwnPersist(def, contents)) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               "the source also carries its own #@ persist; declare one or the other",
-         });
-         continue;
-      }
-      // A source that inherits `#@ persist` is already its base's table under
-      // v1 (an extension is its base's table): the plan holds it under its
-      // own sourceID, so a generated build source presented as it would
-      // overwrite that entry and read itself in the build graph.
-      const inherited = inheritedPersist(def, contents);
-      if (inherited) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               `the source inherits #@ persist from ${inherited.from ? `\`${inherited.from}\`` : "the source it is built on"}, ` +
-               "so it is already stored as that source's table; put #(materialize) on a " +
-               "source that does not inherit #@ persist, or drop the #@ persist",
-         });
-         continue;
-      }
-      const deferred = declaration.keys.find((key) => key in DEFERRED_KEYS);
-      if (deferred) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: DEFERRED_KEYS[deferred],
-         });
-         continue;
-      }
-      let inline: string[] = [];
-      if (declaration.keys.includes("inline")) {
-         const items = declaration.tag.array("inline")?.map((i) => i.text());
-         if (!items || items.some((i) => typeof i !== "string" || i === "")) {
-            refused.push({
-               sourceName: name,
-               sourceID: def.sourceID,
-               reason:
-                  'inline= must be a list of join names, such as inline=["carriers"]',
-            });
-            continue;
-         }
-         inline = [...new Set(items as string[])];
-      }
-      const joins = map.joinsOf(def.sourceID);
-      // Each entry's joins from the source down: a join, or a path of
-      // join_manys (`items.options`).
-      const resolved = inline.map((entry) =>
-         inlinedPathOf(entry, joins, map, def.connection),
-      );
-      const inlineProblem = resolved.find(
-         (r): r is { reason: string } => "reason" in r,
-      );
-      if (inlineProblem) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: inlineProblem.reason,
-         });
-         continue;
-      }
-      // A private or internal join's access, by name. Its build reads the
-      // join through the build copy's lift (P3), and its joined columns carry
-      // the modifier: the served copy declares an inlined join_one's record,
-      // and a pair table's (an inlined join_many's), under it, and renames
-      // the stored columns behind it `private` in the record's own block.
-      const joinAccess = new Map<string, "private" | "internal">();
-      for (const raw of def.fields ?? []) {
-         const f = raw as FieldLike;
-         const access = hiddenAccess(f);
-         const fieldName = f.as ?? f.name;
-         if (access && typeof fieldName === "string" && f.join !== undefined) {
-            joinAccess.set(fieldName, access);
-         }
-      }
-      const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
-      const ones = entries
-         .filter((p) => p[0].relationship !== "many")
-         .map((p) => p[0].name);
-      // An inlined join_many is a pair table (P5): one path of join_manys
-      // below each one inlined. A path that is the start of a longer one is
-      // stored by the longer one's (its level flag answers it).
-      const byFirst = new Map<string, SourceJoin[][]>();
-      for (const p of entries.filter((e) => e[0].relationship === "many")) {
-         byFirst.set(p[0].name, [...(byFirst.get(p[0].name) ?? []), p]);
-      }
-      const pathKey = (p: readonly SourceJoin[]) =>
-         p.map((j) => j.name).join(".");
-      let parted: string | undefined;
-      const paths: SourceJoin[][] = [];
-      for (const group of byFirst.values()) {
-         const longest = group.reduce((a, b) => (b.length > a.length ? b : a));
-         const apart = group.find(
-            (p) =>
-               !pathKey(longest).startsWith(pathKey(p) + ".") &&
-               pathKey(p) !== pathKey(longest),
-         );
-         if (apart) {
-            parted =
-               `inline= names two paths through ${quotedName(longest[0].name)} that ` +
-               `part (${quotedName(pathKey(apart))}, ${quotedName(pathKey(longest))}); ` +
-               "a pair table stores one path below each join it inlines";
-            break;
-         }
-         paths.push(longest);
-      }
-      if (parted) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: parted,
-         });
-         continue;
-      }
-      // A dimension that depends on the caller is left out and computed at
-      // read (P9).
-      const dependence = callerDependentDimensions(
-         def,
-         probed?.get(def.sourceID),
-         inline,
-      );
-      if ("reason" in dependence) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: dependence.reason,
-         });
-         continue;
-      }
-      // What reads through an inlined join_many has one value per pair, not
-      // per parent, so it is computed at read through the served join.
-      const columns = materializeColumns(def, {
-         joinReads: map.fieldJoinsOf(def.sourceID),
-         inline: new Set(ones),
-         hasJoins: joins.length > 0,
-         leftOut: new Set(dependence.leftOut.map((d) => d.dimension)),
-         zoneFree: dependence.zoneFree,
-      });
-      const ownColumns = new Set(columns.map((c) => c.column));
-      const joinedColumns = [
-         ...ones.flatMap((j) =>
-            inlinedJoinColumns(
-               map,
-               joins.find((x) => x.name === j) as SourceJoin,
-               undefined,
-               joinAccess.get(j),
-            ),
-         ),
-         ...paths.flatMap((p) =>
-            p.flatMap((j, k) =>
-               inlinedJoinColumns(
-                  map,
-                  j,
-                  p.slice(0, k + 1).map((x) => x.name),
-                  joinAccess.get(p[0].name),
-               ),
-            ),
-         ),
-      ];
-      const clash = joinedColumns.find((c) => ownColumns.has(c.column));
-      if (clash) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               `the inlined column \`${clash.column}\` has the name of one of the ` +
-               "source's own dimensions",
-         });
-         continue;
-      }
-      columns.push(...joinedColumns);
-      if (columns.length === 0) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: "the source has no dimension to store",
-         });
-         continue;
-      }
-      const classified = classifyWhereTerms(def);
-      const window = rollingWindowTerms(
-         classified,
-         new Map(columns.map((c) => [c.column, columnType(def, c.dimension)])),
-      );
-      if (!window.ok) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: window.detail,
-         });
-         continue;
-      }
-      // Only an inlined join's columns are stored; any other join is read
-      // through the served join, over its own source, at read.
-      const joinedWindow = leftOutTermReadElsewhere(
-         (def.fields ?? []).filter((raw) =>
-            inline.includes(
-               String((raw as FieldLike).as ?? (raw as FieldLike).name),
-            ),
-         ),
-         window.terms,
-      );
-      if (joinedWindow !== undefined) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               `the \`where:\` term \`${joinedWindow}\` keeps rows older than a ` +
-               "moving cut-off and is also applied by a join `inline=` names, so " +
-               "leaving it out of the build would store joined rows the read " +
-               "cannot take back out",
-         });
-         continue;
-      }
-      const readTime = readTimeTermsOf(def, classified, columns, givens);
-      if (!readTime.ok) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: readTime.reason,
-         });
-         continue;
-      }
-      const carried = carriedPersistKeys(declaration);
-      if ("reason" in carried) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: carried.reason,
-         });
-         continue;
-      }
-      const { persist } = carried;
-      // Its place, by the one placement rule (declaration.ts).
-      const placed = placementOf(declaration.tag);
-      if ("refused" in placed) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: EMPTY_STORAGE_REASON,
-         });
-         continue;
-      }
-      if (placed.placement.tier === "storage") {
-         persist.storage = placed.placement.destination;
-      }
-      // Without `name=`, the table takes the source's own name (made plain
-      // when it is not, see materializeTableName), which the self-instructed
-      // run gives its package's or version's suffix (run_instructions.ts). A
-      // source is planned in the model that declares it (see
-      // `declaredHere`), so its name here is the name its author gave it.
-      // With `name=`, the table is the author's: written at that name (its
-      // schema or dataset included) by an unversioned or `scope: package`
-      // run, under that name's container with the version's suffix on its
-      // leaf by a `scope: version` run, and under the host's name, in that
-      // container, by an orchestrated one. No view is made at it.
-      const nameDefaulted = persist.name === undefined;
-      // A BigQuery table needs a dataset, which only a `name=` can give a
-      // table built into the source's own warehouse: without one the build
-      // would fail on BigQuery's own error, so the source is not built.
-      if (
-         persist.storage === undefined &&
-         NEEDS_QUALIFIED_TABLE.has(String(def.dialect)) &&
-         !persist.name?.includes(".")
-      ) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               "a #(materialize) source built into BigQuery needs a " +
-               "dataset-qualified name= (`dataset.table`), which places its table",
-         });
-         continue;
-      }
-      if (nameDefaulted) persist.name = materializeTableName(name);
-      let pair: MaterializePair | undefined;
-      let pairBlocks: MaterializePairBlocks | undefined;
-      if (paths.length > 0) {
-         const laid = paths.map((p) =>
-            pairRefusal(
-               p,
-               def,
-               map,
-               columns.filter((c) => c.join === undefined),
-               joinedColumns,
-            ),
-         );
-         const problem = laid.find(
-            (l): l is { reason: string } => "reason" in l,
-         );
-         if (problem) {
-            refused.push({
-               sourceName: name,
-               sourceID: def.sourceID,
-               reason: problem.reason,
-            });
-            continue;
-         }
-         const pairs = (laid as { pair: MaterializePair }[]).map((l) => l.pair);
-         pair = pairs[0];
-         if (pairs.length > 1) {
-            const blocks = pairBlocksOf(pairs, paths, columns, def.connection);
-            if ("reason" in blocks) {
-               refused.push({
-                  sourceName: name,
-                  sourceID: def.sourceID,
-                  reason: blocks.reason,
-               });
-               continue;
-            }
-            pairBlocks = blocks.blocks;
-         }
-      }
-      if (carried.watermarks && !(pair && persist.refresh === "incremental")) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason:
-               "#(materialize) `watermark=` takes a list only on an incremental " +
-               "pair table (an inlined join_many); name one dimension",
-         });
-         continue;
-      }
-      let pairFullRefresh: string | undefined;
-      if (pair && persist.refresh === "incremental") {
-         const incremental = pairIncremental({
-            pairs: pairBlocks?.blocks ?? [pair],
-            persist,
-            names:
-               carried.watermarks ??
-               (persist.watermark !== undefined ? [persist.watermark] : []),
-            columns,
-            // A column of a path's k-th join is typed on that join's joined
-            // source.
-            columnTypeOf: (c) => {
-               if (c.join === undefined) return columnType(def, c.dimension);
-               const at = c.path ?? [c.join];
-               const path = paths.find((p) =>
-                  at.every((n, i) => p[i]?.name === n),
-               );
-               const hop = path?.[at.length - 1];
-               return hop ? joinedColumnType(hop, c.dimension) : "";
-            },
-            windowFields: window.terms.map((t) => t.window.field),
-         });
-         if ("watermark" in incremental) {
-            if (pairBlocks) {
-               pairBlocks = { ...pairBlocks, watermark: incremental.watermark };
-            } else {
-               pair = { ...pair, watermark: incremental.watermark };
-            }
-            persist.watermark = incremental.watermark.column;
-            persist.merge_key = pair.parentKey;
-         } else if ("fullRefresh" in incremental) {
-            pairFullRefresh = incremental.fullRefresh;
-            for (const key of INCREMENTAL_KEYS) delete persist[key];
-         }
-      }
-      const build = buildSourceName(name);
-      const checked = ones;
-      const uniquenessChecks = [
-         ...checked.map((j): InlineUniquenessCheck => {
-            const join = joins.find((x) => x.name === j) as SourceJoin;
-            return {
-               join: j,
-               keyColumn: join.keyColumn as string,
-               queryName: `${build}__unique__${j}`,
-               joinedSourceID: join.sourceID as string,
-               ...(join.connection ? { connectionName: join.connection } : {}),
-            };
-         }),
-         ...(pair
-            ? pairKeyChecks(
-                 pair,
-                 pairBlocks,
-                 def.sourceID,
-                 build,
-                 typeof def.connection === "string"
-                    ? def.connection
-                    : undefined,
-              )
-            : []),
-      ];
-      plans.push({
-         sourceName: name,
-         sourceID: def.sourceID,
-         buildSourceName: build,
-         columns,
-         persist,
-         ...(window.terms.length + readTime.terms.length > 0
-            ? { readTimeTerms: [...window.terms, ...readTime.terms] }
-            : {}),
-         ...(readTime.terms.length > 0
-            ? {
-                 declaration: readTime.declaration,
-                 givenDeclarations: readTime.givenDeclarations,
-              }
-            : columns.some((c) => c.access)
-              ? withDeclaration(declarationOf(def))
-              : {}),
-         ...(inline.length > 0 ? { inline } : {}),
-         ...(dependence.leftOut.length > 0
-            ? { leftOut: dependence.leftOut }
-            : {}),
-         ...(zoneFreeRows?.has(def.sourceID)
-            ? { zoneFreeRows: true as const }
-            : {}),
-         ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
-         ...(pair ? { pair } : {}),
-         ...(pairBlocks ? { pairBlocks } : {}),
-         ...(pairFullRefresh ? { pairFullRefresh } : {}),
-         ...(declaration.keys.includes("name") ? {} : { nameDefaulted: true }),
-      });
    }
    chainExtensionTables(plans, map);
    return { plans, refused };
+}
+
+/** What planning one source reads beyond the source itself. */
+interface PlanContext {
+   contents: Record<string, unknown>;
+   map: SourceMap;
+   givens?: Record<string, unknown>;
+   probed?: ReadonlyMap<string, ReadonlyMap<string, FieldDependence>>;
+   zoneFreeRows?: ReadonlySet<string>;
+}
+
+/** A source def the planner has checked carries its `sourceID`. */
+type PlannedDef = SourceDefLike & { sourceID: string };
+
+/** Why one source is not planned, and the malformed code a publish refuses it with. */
+class Declined {
+   constructor(
+      readonly reason: string,
+      readonly malformedCode?: string,
+   ) {}
+}
+
+/** One stage of planning a source: its value, or why the source is not planned. */
+type Staged<T> = T | Declined;
+
+/**
+ * Plan one source, stage by stage, each of which may decline it: its
+ * declaration, its inlined joins, its stored columns, its read-time terms,
+ * its placement and table name, and a pair table's layout. Undefined for a
+ * source that declares no `#(materialize)`.
+ */
+function planSource(
+   name: string,
+   def: PlannedDef,
+   ctx: PlanContext,
+): Staged<MaterializePlan> | undefined {
+   const declaration = materializeDeclarationOf(def, ctx.contents);
+   if (declaration === undefined || declaration instanceof Declined) {
+      return declaration;
+   }
+   const inlined = inlinedJoinsOf(def, declaration, ctx.map);
+   if (inlined instanceof Declined) return inlined;
+   const stored = storedColumnsOf(def, inlined, ctx);
+   if (stored instanceof Declined) return stored;
+   const { columns } = stored;
+   const terms = readTermsOf(def, columns, inlined.inline, ctx.givens);
+   if (terms instanceof Declined) return terms;
+   const placed = placedPersistOf(name, def, declaration);
+   if (placed instanceof Declined) return placed;
+   const { persist } = placed;
+   const layout = pairLayoutOf(def, ctx.map, {
+      paths: inlined.paths,
+      columns,
+      joinedColumns: stored.joinedColumns,
+      persist,
+      watermarks: placed.watermarks,
+      windowFields: terms.window.terms.map((t) => t.window.field),
+   });
+   if (layout instanceof Declined) return layout;
+   const { pair, pairBlocks, pairFullRefresh } = layout;
+   const build = buildSourceName(name);
+   const uniquenessChecks = [
+      ...inlined.ones.map((j): InlineUniquenessCheck => {
+         const join = inlined.joins.find((x) => x.name === j) as SourceJoin;
+         return {
+            join: j,
+            keyColumn: join.keyColumn as string,
+            queryName: `${build}__unique__${j}`,
+            joinedSourceID: join.sourceID as string,
+            ...(join.connection ? { connectionName: join.connection } : {}),
+         };
+      }),
+      ...(pair
+         ? pairKeyChecks(
+              pair,
+              pairBlocks,
+              def.sourceID,
+              build,
+              typeof def.connection === "string" ? def.connection : undefined,
+           )
+         : []),
+   ];
+   const { window, readTime } = terms;
+   const { inline } = inlined;
+   const { dependence } = stored;
+   return {
+      sourceName: name,
+      sourceID: def.sourceID,
+      buildSourceName: build,
+      columns,
+      persist,
+      ...(window.terms.length + readTime.terms.length > 0
+         ? { readTimeTerms: [...window.terms, ...readTime.terms] }
+         : {}),
+      ...(readTime.terms.length > 0
+         ? {
+              declaration: readTime.declaration,
+              givenDeclarations: readTime.givenDeclarations,
+           }
+         : columns.some((c) => c.access)
+           ? withDeclaration(declarationOf(def))
+           : {}),
+      ...(inline.length > 0 ? { inline } : {}),
+      ...(dependence.leftOut.length > 0 ? { leftOut: dependence.leftOut } : {}),
+      ...(ctx.zoneFreeRows?.has(def.sourceID)
+         ? { zoneFreeRows: true as const }
+         : {}),
+      ...(uniquenessChecks.length > 0 ? { uniquenessChecks } : {}),
+      ...(pair ? { pair } : {}),
+      ...(pairBlocks ? { pairBlocks } : {}),
+      ...(pairFullRefresh ? { pairFullRefresh } : {}),
+      ...(declaration.keys.includes("name") ? {} : { nameDefaulted: true }),
+   };
+}
+
+type ReadDeclaration = NonNullable<
+   ReturnType<typeof readMaterializeDeclaration>
+>;
+
+/**
+ * The source's own `#(materialize)` declaration, read and checked for what
+ * refuses it before anything else: a declaration that does not parse, a
+ * retired or unknown key (malformed, refused at publish), a source that also
+ * carries or inherits `#@ persist`, and a deferred key.
+ */
+function materializeDeclarationOf(
+   def: PlannedDef,
+   contents: Record<string, unknown>,
+): Staged<ReadDeclaration> | undefined {
+   let declaration;
+   try {
+      declaration = readMaterializeDeclaration(def, contents);
+   } catch (error) {
+      return new Declined(
+         `#(materialize) does not parse: ${error instanceof Error ? error.message : String(error)}`,
+         MATERIALIZE_UNPARSEABLE_CODE,
+      );
+   }
+   if (!declaration) return undefined;
+   if (declaration.errors.length > 0) {
+      return new Declined(
+         `#(materialize) does not parse: ${declaration.errors.join("; ")}`,
+         MATERIALIZE_UNPARSEABLE_CODE,
+      );
+   }
+   // Before any other refusal: a retired key, or one outside the closed
+   // set, is malformed, refused at publish, whatever else the source would
+   // be refused for.
+   const retiredKey = retiredKeyRefusal(declaration);
+   if (retiredKey)
+      return new Declined(retiredKey, MATERIALIZE_RETIRED_KEY_CODE);
+   const unknownKey = unknownKeyRefusal(declaration);
+   if (unknownKey)
+      return new Declined(unknownKey, MATERIALIZE_UNKNOWN_KEY_CODE);
+   if (declaresOwnPersist(def, contents)) {
+      return new Declined(
+         "the source also carries its own #@ persist; declare one or the other",
+      );
+   }
+   // A source that inherits `#@ persist` is already its base's table under
+   // v1 (an extension is its base's table): the plan holds it under its
+   // own sourceID, so a generated build source presented as it would
+   // overwrite that entry and read itself in the build graph.
+   const inherited = inheritedPersist(def, contents);
+   if (inherited) {
+      return new Declined(
+         `the source inherits #@ persist from ${inherited.from ? `\`${inherited.from}\`` : "the source it is built on"}, ` +
+            "so it is already stored as that source's table; put #(materialize) on a " +
+            "source that does not inherit #@ persist, or drop the #@ persist",
+      );
+   }
+   const deferred = declaration.keys.find((key) => key in DEFERRED_KEYS);
+   if (deferred) return new Declined(DEFERRED_KEYS[deferred]);
+   return declaration;
+}
+
+/** The joins a declaration's `inline=` names, resolved against the source. */
+interface InlinedJoins {
+   /** The entries of `inline=`, deduplicated. */
+   inline: string[];
+   /** Every join the source declares. */
+   joins: SourceJoin[];
+   /** The inlined join_ones, by name. */
+   ones: string[];
+   /** One path of join_manys below each join_many inlined (a pair table). */
+   paths: SourceJoin[][];
+   /** A private or internal join's access, by name. */
+   joinAccess: Map<string, "private" | "internal">;
+}
+
+/** The joins `inline=` names, or why they cannot be inlined. */
+function inlinedJoinsOf(
+   def: PlannedDef,
+   declaration: ReadDeclaration,
+   map: SourceMap,
+): Staged<InlinedJoins> {
+   let inline: string[] = [];
+   if (declaration.keys.includes("inline")) {
+      const items = declaration.tag.array("inline")?.map((i) => i.text());
+      if (!items || items.some((i) => typeof i !== "string" || i === "")) {
+         return new Declined(
+            'inline= must be a list of join names, such as inline=["carriers"]',
+         );
+      }
+      inline = [...new Set(items as string[])];
+   }
+   const joins = map.joinsOf(def.sourceID);
+   // Each entry's joins from the source down: a join, or a path of
+   // join_manys (`items.options`).
+   const resolved = inline.map((entry) =>
+      inlinedPathOf(entry, joins, map, def.connection),
+   );
+   const inlineProblem = resolved.find(
+      (r): r is { reason: string } => "reason" in r,
+   );
+   if (inlineProblem) return new Declined(inlineProblem.reason);
+   // A private or internal join's access, by name. Its build reads the
+   // join through the build copy's lift (P3), and its joined columns carry
+   // the modifier: the served copy declares an inlined join_one's record,
+   // and a pair table's (an inlined join_many's), under it, and renames
+   // the stored columns behind it `private` in the record's own block.
+   const joinAccess = new Map<string, "private" | "internal">();
+   for (const raw of def.fields ?? []) {
+      const f = raw as FieldLike;
+      const access = hiddenAccess(f);
+      const fieldName = f.as ?? f.name;
+      if (access && typeof fieldName === "string" && f.join !== undefined) {
+         joinAccess.set(fieldName, access);
+      }
+   }
+   const entries = (resolved as { path: SourceJoin[] }[]).map((r) => r.path);
+   const ones = entries
+      .filter((p) => p[0].relationship !== "many")
+      .map((p) => p[0].name);
+   // An inlined join_many is a pair table (P5): one path of join_manys
+   // below each one inlined. A path that is the start of a longer one is
+   // stored by the longer one's (its level flag answers it).
+   const byFirst = new Map<string, SourceJoin[][]>();
+   for (const p of entries.filter((e) => e[0].relationship === "many")) {
+      byFirst.set(p[0].name, [...(byFirst.get(p[0].name) ?? []), p]);
+   }
+   const pathKey = (p: readonly SourceJoin[]) => p.map((j) => j.name).join(".");
+   const paths: SourceJoin[][] = [];
+   for (const group of byFirst.values()) {
+      const longest = group.reduce((a, b) => (b.length > a.length ? b : a));
+      const apart = group.find(
+         (p) =>
+            !pathKey(longest).startsWith(pathKey(p) + ".") &&
+            pathKey(p) !== pathKey(longest),
+      );
+      if (apart) {
+         return new Declined(
+            `inline= names two paths through ${quotedName(longest[0].name)} that ` +
+               `part (${quotedName(pathKey(apart))}, ${quotedName(pathKey(longest))}); ` +
+               "a pair table stores one path below each join it inlines",
+         );
+      }
+      paths.push(longest);
+   }
+   return { inline, joins, ones, paths, joinAccess };
+}
+
+type Dependence = Exclude<
+   ReturnType<typeof callerDependentDimensions>,
+   { reason: string }
+>;
+
+/**
+ * The source's stored columns, its own and its inlined joins', and the
+ * computed dimensions left out because each depends on the caller (P9).
+ */
+function storedColumnsOf(
+   def: PlannedDef,
+   inlined: InlinedJoins,
+   ctx: Pick<PlanContext, "map" | "probed">,
+): Staged<{
+   columns: MaterializeColumn[];
+   joinedColumns: MaterializeColumn[];
+   dependence: Dependence;
+}> {
+   const { map } = ctx;
+   const { inline, joins, ones, paths, joinAccess } = inlined;
+   // A dimension that depends on the caller is left out and computed at
+   // read (P9).
+   const dependence = callerDependentDimensions(
+      def,
+      ctx.probed?.get(def.sourceID),
+      inline,
+   );
+   if ("reason" in dependence) return new Declined(dependence.reason);
+   // What reads through an inlined join_many has one value per pair, not
+   // per parent, so it is computed at read through the served join.
+   const columns = materializeColumns(def, {
+      joinReads: map.fieldJoinsOf(def.sourceID),
+      inline: new Set(ones),
+      hasJoins: joins.length > 0,
+      leftOut: new Set(dependence.leftOut.map((d) => d.dimension)),
+      zoneFree: dependence.zoneFree,
+   });
+   const ownColumns = new Set(columns.map((c) => c.column));
+   const joinedColumns = [
+      ...ones.flatMap((j) =>
+         inlinedJoinColumns(
+            map,
+            joins.find((x) => x.name === j) as SourceJoin,
+            undefined,
+            joinAccess.get(j),
+         ),
+      ),
+      ...paths.flatMap((p) =>
+         p.flatMap((j, k) =>
+            inlinedJoinColumns(
+               map,
+               j,
+               p.slice(0, k + 1).map((x) => x.name),
+               joinAccess.get(p[0].name),
+            ),
+         ),
+      ),
+   ];
+   const clash = joinedColumns.find((c) => ownColumns.has(c.column));
+   if (clash) {
+      return new Declined(
+         `the inlined column \`${clash.column}\` has the name of one of the ` +
+            "source's own dimensions",
+      );
+   }
+   columns.push(...joinedColumns);
+   if (columns.length === 0) {
+      return new Declined("the source has no dimension to store");
+   }
+   return { columns, joinedColumns, dependence };
+}
+
+type WindowTerms = Extract<ReturnType<typeof rollingWindowTerms>, { ok: true }>;
+type ReadTimeTerms = Extract<ReturnType<typeof readTimeTermsOf>, { ok: true }>;
+
+/**
+ * The source's read-time terms: its rolling windows and its given-reading
+ * `where:` terms, each left out of the build and applied again at read.
+ */
+function readTermsOf(
+   def: PlannedDef,
+   columns: MaterializeColumn[],
+   inline: readonly string[],
+   givens: Record<string, unknown> | undefined,
+): Staged<{ window: WindowTerms; readTime: ReadTimeTerms }> {
+   const classified = classifyWhereTerms(def);
+   const window = rollingWindowTerms(
+      classified,
+      new Map(columns.map((c) => [c.column, columnType(def, c.dimension)])),
+   );
+   if (!window.ok) return new Declined(window.detail);
+   // Only an inlined join's columns are stored; any other join is read
+   // through the served join, over its own source, at read.
+   const joinedWindow = leftOutTermReadElsewhere(
+      (def.fields ?? []).filter((raw) =>
+         inline.includes(
+            String((raw as FieldLike).as ?? (raw as FieldLike).name),
+         ),
+      ),
+      window.terms,
+   );
+   if (joinedWindow !== undefined) {
+      return new Declined(
+         `the \`where:\` term \`${joinedWindow}\` keeps rows older than a ` +
+            "moving cut-off and is also applied by a join `inline=` names, so " +
+            "leaving it out of the build would store joined rows the read " +
+            "cannot take back out",
+      );
+   }
+   const readTime = readTimeTermsOf(def, classified, columns, givens);
+   if (!readTime.ok) return new Declined(readTime.reason);
+   return { window, readTime };
+}
+
+/**
+ * The `#@ persist` keys the declaration carries onto its build source, with
+ * its place (by the one placement rule, declaration.ts) and its table's name.
+ */
+function placedPersistOf(
+   name: string,
+   def: PlannedDef,
+   declaration: ReadDeclaration,
+): Staged<{ persist: Record<string, string>; watermarks?: string[] }> {
+   const carried = carriedPersistKeys(declaration);
+   if ("reason" in carried) return new Declined(carried.reason);
+   const { persist } = carried;
+   const placed = placementOf(declaration.tag);
+   if ("refused" in placed) return new Declined(EMPTY_STORAGE_REASON);
+   if (placed.placement.tier === "storage") {
+      persist.storage = placed.placement.destination;
+   }
+   // Without `name=`, the table takes the source's own name (made plain
+   // when it is not, see materializeTableName), which the self-instructed
+   // run gives its package's or version's suffix (run_instructions.ts). A
+   // source is planned in the model that declares it (see
+   // `declaredHere`), so its name here is the name its author gave it.
+   // With `name=`, the table is the author's: written at that name (its
+   // schema or dataset included) by an unversioned or `scope: package`
+   // run, under that name's container with the version's suffix on its
+   // leaf by a `scope: version` run, and under the host's name, in that
+   // container, by an orchestrated one. No view is made at it.
+   const nameDefaulted = persist.name === undefined;
+   // A BigQuery table needs a dataset, which only a `name=` can give a
+   // table built into the source's own warehouse: without one the build
+   // would fail on BigQuery's own error, so the source is not built.
+   if (
+      persist.storage === undefined &&
+      NEEDS_QUALIFIED_TABLE.has(String(def.dialect)) &&
+      !persist.name?.includes(".")
+   ) {
+      return new Declined(
+         "a #(materialize) source built into BigQuery needs a " +
+            "dataset-qualified name= (`dataset.table`), which places its table",
+      );
+   }
+   if (nameDefaulted) persist.name = materializeTableName(name);
+   return {
+      persist,
+      ...(carried.watermarks ? { watermarks: carried.watermarks } : {}),
+   };
+}
+
+/**
+ * A pair table's layout (P5): one block per inlined path, its key checks'
+ * inputs, and, for an incremental one, its per-parent watermark or the
+ * reason it is rebuilt in full. Nothing for a source that inlines no
+ * join_many. Sets the watermark and merge key on `persist`, or removes its
+ * incremental keys, as the layout decides.
+ */
+function pairLayoutOf(
+   def: PlannedDef,
+   map: SourceMap,
+   args: {
+      paths: SourceJoin[][];
+      columns: MaterializeColumn[];
+      joinedColumns: MaterializeColumn[];
+      persist: Record<string, string>;
+      watermarks?: string[];
+      windowFields: string[];
+   },
+): Staged<{
+   pair?: MaterializePair;
+   pairBlocks?: MaterializePairBlocks;
+   pairFullRefresh?: string;
+}> {
+   const { paths, columns, persist } = args;
+   let pair: MaterializePair | undefined;
+   let pairBlocks: MaterializePairBlocks | undefined;
+   if (paths.length > 0) {
+      const laid = paths.map((p) =>
+         pairRefusal(
+            p,
+            def,
+            map,
+            columns.filter((c) => c.join === undefined),
+            args.joinedColumns,
+         ),
+      );
+      const problem = laid.find((l): l is { reason: string } => "reason" in l);
+      if (problem) return new Declined(problem.reason);
+      const pairs = (laid as { pair: MaterializePair }[]).map((l) => l.pair);
+      pair = pairs[0];
+      if (pairs.length > 1) {
+         const blocks = pairBlocksOf(pairs, paths, columns, def.connection);
+         if ("reason" in blocks) return new Declined(blocks.reason);
+         pairBlocks = blocks.blocks;
+      }
+   }
+   if (args.watermarks && !(pair && persist.refresh === "incremental")) {
+      return new Declined(
+         "#(materialize) `watermark=` takes a list only on an incremental " +
+            "pair table (an inlined join_many); name one dimension",
+      );
+   }
+   let pairFullRefresh: string | undefined;
+   if (pair && persist.refresh === "incremental") {
+      const incremental = pairIncremental({
+         pairs: pairBlocks?.blocks ?? [pair],
+         persist,
+         names:
+            args.watermarks ??
+            (persist.watermark !== undefined ? [persist.watermark] : []),
+         columns,
+         // A column of a path's k-th join is typed on that join's joined
+         // source.
+         columnTypeOf: (c) => {
+            if (c.join === undefined) return columnType(def, c.dimension);
+            const at = c.path ?? [c.join];
+            const path = paths.find((p) =>
+               at.every((n, i) => p[i]?.name === n),
+            );
+            const hop = path?.[at.length - 1];
+            return hop ? joinedColumnType(hop, c.dimension) : "";
+         },
+         windowFields: args.windowFields,
+      });
+      if ("watermark" in incremental) {
+         if (pairBlocks) {
+            pairBlocks = { ...pairBlocks, watermark: incremental.watermark };
+         } else {
+            pair = { ...pair, watermark: incremental.watermark };
+         }
+         persist.watermark = incremental.watermark.column;
+         persist.merge_key = pair.parentKey;
+      } else if ("fullRefresh" in incremental) {
+         pairFullRefresh = incremental.fullRefresh;
+         for (const key of INCREMENTAL_KEYS) delete persist[key];
+      }
+   }
+   return {
+      ...(pair ? { pair } : {}),
+      ...(pairBlocks ? { pairBlocks } : {}),
+      ...(pairFullRefresh ? { pairFullRefresh } : {}),
+   };
 }
 
 /**

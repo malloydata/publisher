@@ -960,20 +960,43 @@ export async function collectModelBuildPlan(
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
    },
 ): Promise<void> {
+   await collectGeneratedTables(parts, args);
+   const plannable = await v1PlanModel(parts, args);
+   if (!plannable) return;
+   const targets = await plannable.runtime.getBuildTargets(plannable.model);
+   // BEFORE the empty-plan `return`, so a model whose only persist source is
+   // a dropped shape is still caught.
+   const planned = plannedSources(targets);
+   reportPersistLineFindings(parts, targets, planned, {
+      ...args,
+      planModel: plannable.model,
+   });
+   if (planned.length === 0) return;
+   parts.builds.push(...sourceBuildsOf(targets));
+   await planV1PersistSources(parts, planned, args);
+}
+
+type CollectArgs = Parameters<typeof collectModelBuildPlan>[1];
+
+/**
+ * The tables a model's generated companions plan: `#(materialize)` sources
+ * and `#@ persist` views behind PUBLISHER_MATERIALIZE (off, nothing here
+ * runs and the plan is exactly what it was), and rollups. Before the v1
+ * walk's early returns: the author's model needs no persistence flag, since
+ * each generated companion carries it.
+ */
+async function collectGeneratedTables(
+   parts: BuildPlanParts,
+   args: CollectArgs,
+): Promise<void> {
    const {
       modelPath,
       packagePath,
       materializer,
       malloyModel,
-      runtime,
       getRuntime,
       keyCheckCompilers,
    } = args;
-   // `#(materialize)` (materialization v2, phase 3), behind
-   // PUBLISHER_MATERIALIZE: off, nothing here runs and the plan is exactly what
-   // it was. Like pre-aggregation, BEFORE the early `return`s below: the
-   // author's model needs no persistence flag, since the generated companion
-   // carries it.
    if (getMaterializeEnabled()) {
       await collectGeneratedMaterialize(parts, {
          modelPath,
@@ -994,17 +1017,27 @@ export async function collectModelBuildPlan(
    }
    // Rollups (phase 4): v1 `#@ preaggregate` lines are read as their
    // declarations (the v1 cutover's G4), and `#(preaggregate)` with
-   // PUBLISHER_MATERIALIZE. Before the early `return`s below, since a model
-   // declaring only rollups needs no persistence flag.
-   {
-      await collectGeneratedRollups(parts, {
-         modelPath,
-         packagePath,
-         getRuntime,
-         modelDef: modelDefOf(malloyModel),
-      });
-   }
+   // PUBLISHER_MATERIALIZE. A model declaring only rollups needs no
+   // persistence flag.
+   await collectGeneratedRollups(parts, {
+      modelPath,
+      packagePath,
+      getRuntime,
+      modelDef: modelDefOf(malloyModel),
+   });
+}
 
+/**
+ * The model and runtime the v1 walk plans `#@ persist` sources in: the
+ * author's own, or, for a model without `##! experimental.persistence`, its
+ * v1 build copy; undefined when that copy cannot be compiled (its sources
+ * are recorded as omitted).
+ */
+async function v1PlanModel(
+   parts: BuildPlanParts,
+   args: CollectArgs,
+): Promise<{ model: MalloyModel; runtime: Runtime } | undefined> {
+   const { modelPath, packagePath, malloyModel, runtime, getRuntime } = args;
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
    // which would abort the whole package's plan. Before the v1 cutover such a
    // model plans no persist source, mirroring Malloy's own guard (guard 1).
@@ -1036,12 +1069,25 @@ export async function collectModelBuildPlan(
             );
          },
       });
-      if (!companion) return;
+      if (!companion) return undefined;
       planModel = companion.model;
       planRuntime = companion.runtime;
    }
+   return { model: planModel, runtime: planRuntime };
+}
 
-   const targets = await planRuntime.getBuildTargets(planModel);
+/**
+ * Report what the model's `#@` lines cost: each line that does not parse, by
+ * the source it is on (or as omitted, when none of that source's lines
+ * parse), and each `#@ persist` source Malloy's walk dropped.
+ */
+function reportPersistLineFindings(
+   parts: BuildPlanParts,
+   targets: Awaited<ReturnType<Runtime["getBuildTargets"]>>,
+   planned: PersistSource[],
+   args: CollectArgs & { planModel: MalloyModel },
+): void {
+   const { modelPath, packagePath, malloyModel, planModel } = args;
    const parseErrors = targets.tagParseLog.filter((msg) => {
       logger.warn("Persist annotation issue", {
          modelPath,
@@ -1051,9 +1097,6 @@ export async function collectModelBuildPlan(
       return msg.severity === "error";
    });
 
-   // BEFORE the empty-plan `return`, so a model whose only persist source is
-   // a dropped shape is still caught.
-   const planned = plannedSources(targets);
    // A `#@` line that does not parse is reported by what it cost. Malloy drops
    // a source only when none of its `#@` lines parse; when another does, the
    // source is still planned, built without the broken line's directives.
@@ -1115,10 +1158,15 @@ export async function collectModelBuildPlan(
    )) {
       parts.droppedPersistSources.push({ name, modelPath });
    }
+}
 
-   if (planned.length === 0) return;
-
-   parts.builds.push(...sourceBuildsOf(targets));
+/** Plan the v1 walk's `#@ persist` sources: their findings and gates. */
+async function planV1PersistSources(
+   parts: BuildPlanParts,
+   planned: PersistSource[],
+   args: CollectArgs,
+): Promise<void> {
+   const { modelPath, packagePath, materializer, malloyModel } = args;
    // Lazily built on the first persist source.
    let classificationCtx:
       | { modelDef: ModelDef; deps: GateClassificationDeps }
@@ -1216,171 +1264,37 @@ export function deriveBuildPlan(
    const omitted: Omission[] = [...(compiled.omittedSources ?? [])];
    const gateInputs: TierGateInputs = { tables };
    for (const [sourceID, table] of Object.entries(tables)) {
-      const { source, modelPath } = table;
+      const { source } = table;
       if (include && !include.has(source.name)) continue;
-      // What the catch below reports, if this source fails to project: a
-      // gate failing with an error (not a refusal) is told apart from the
-      // rest of the projection.
-      let failedAt: OmittedSourceReason = "projection_failed";
       // One unreadable source must not cost the package its plan: addressing
       // throws for a colocated source referencing a given with no default, and
       // an escaping throw would drop EVERY colocated binding for the package.
       try {
          const annotationFields = deriveAnnotationFields(source);
-
-         // Tier-appropriate eligibility BEFORE computeSourceEntityId(),
-         // which fail for a refused source. Mirrors the build path: `storage=`
-         // gets the storage-destination gate; plain `#@ persist` gets the
-         // colocated gate, which admits a resolved, fully-attributed gate. The
-         // storage gate for every source would misreport buildable colocated
-         // sources as refused.
-         const declaresStorage = !!annotationFields.storage;
-         const rollup = table.rollup;
-         // A rollup over a gated base is refused UNCONDITIONALLY, but that
-         // governs only whether it MATERIALIZES (enforced at build time); the plan
-         // still reports the synthesized rollup. See preaggregation_seams.spec.ts
-         // ("gate stops materialization, not synthesis") and
-         // docs/materialization.md.
-         if (!rollup) {
-            try {
-               assertPlacementNamed(source);
-               assertTierEligible(
-                  source,
-                  declaresStorage,
-                  gateInputs,
-                  annotationFields,
-               );
-            } catch (err) {
-               // Only an eligibility refusal is reportable; anything else must not
-               // masquerade as a security refusal.
-               if (!(err instanceof MaterializationEligibilityError)) {
-                  failedAt = "eligibility_check_failed";
-                  throw err;
-               }
-               refusedSources[sourceID] = {
-                  name: source.name,
-                  sourceID: source.sourceID,
-                  modelPath,
-                  tier: declaresStorage ? "storage" : "colocated",
-                  reason: err.reason || "authorize",
-                  message: errMessage(err),
-               };
-               continue;
-            }
-         } else {
-            // A storage rollup over a storage= base can neither build nor
-            // serve (see storedBaseOfRollup): out of the plan, warned on.
-            if (leftOut.has(sourceID)) continue;
-            // Before the other gates: a rollup sharing its table with another
-            // model's must neither build nor serve, so it leaves `sources`.
-            try {
-               assertRollupNameUnshared(source, {
-                  collidingRollups: collidingRollups({
-                     tables,
-                     connectionDigests,
-                  }),
-               });
-            } catch (err) {
-               if (!(err instanceof MaterializationEligibilityError)) {
-                  failedAt = "eligibility_check_failed";
-                  throw err;
-               }
-               refusedSources[sourceID] = {
-                  name: source.name,
-                  sourceID: source.sourceID,
-                  modelPath,
-                  tier: "preaggregate",
-                  reason: err.reason || "rollup_name_collision",
-                  message: errMessage(err),
-               };
-               continue;
-            }
-            // A storage rollup runs BOTH gates; neither subsumes the other. The
-            // authorize refusal is unconditional for rollups (they group ACROSS
-            // the gated column, so cannot be row-filtered afterwards).
-            //
-            // An AUTHORIZE refusal leaves the rollup in `sources` too (Malloy
-            // synthesized it) — the coexistence the spec permits for this tier
-            // alone. A STORAGE refusal removes it: the rollup can never be
-            // written, and `Package.storageWarnings` and the auto-run would
-            // otherwise treat it as materialized/buildable.
-            let storageRefused = false;
-            try {
-               // A `#(preaggregate)` rollup over a gated base whose gates
-               // the variant grafts at read (rows 1 and 21) is not refused
-               // for them; a v1 rollup always is.
-               const keepsGate = rollupGateEnforcedAtRead(rollup);
-               assertColocatedPersistNotAuthorizeGated(
-                  source,
-                  source.name,
-                  "preaggregate",
-                  table.gate,
-                  annotationFields,
-                  { gateEnforcedAtRead: keepsGate },
-               );
-               if (declaresStorage) {
-                  storageRefused = true;
-                  assertMaterializationEligible(
-                     source,
-                     deriveAnnotationFields(source),
-                     { gateEnforcedAtRead: keepsGate },
-                  );
-                  storageRefused = false;
-               }
-            } catch (err) {
-               if (!(err instanceof MaterializationEligibilityError)) {
-                  failedAt = "eligibility_check_failed";
-                  throw err;
-               }
-               refusedSources[sourceID] = {
-                  name: source.name,
-                  sourceID: source.sourceID,
-                  modelPath,
-                  // Always `preaggregate`, even for a storage refusal: only this
-                  // tier may coexist with a `sources` entry, and it is the only
-                  // provenance marking the entry as a rollup. Which gate refused
-                  // is in `reason`.
-                  tier: "preaggregate",
-                  reason: err.reason || "authorize",
-                  message: errMessage(err),
-               };
-               if (storageRefused) continue;
-            }
-         }
-         // `origin`/`preaggregate`: a synthesized rollup is mechanically an
-         // ordinary persist source, so the plan is the only place its provenance,
-         // grain and measures are visible.
-         wireSources[sourceID] = {
-            name: source.name,
-            sourceID: source.sourceID,
-            connectionName: source.connectionName,
-            dialect: source.dialectName,
-            origin: rollup ? "preaggregate" : "persist",
-            preaggregate: rollup
-               ? {
-                    baseSourceName: rollup.baseSourceName,
-                    grainDimensions: rollup.grainDimensions,
-                    measures: rollup.measures.map((m) => m.name),
-                 }
-               : null,
-            sourceEntityId: computeSourceEntityId(source, connectionDigests),
-            sql: addressSQL(source),
-            // Verbatim; the resolved declaration is deliberately not a wire field
-            // (see resolveIncrementalDeclaration).
-            refresh: annotationFields.refresh ?? null,
-            freshness: resolveFreshness(source, packageMaterialization),
-            queryMetadata: resolveQueryMetadata(source, packageMaterialization),
-            columns: deriveColumns(source),
-            // Resolved, not passed through; a source failing either is in
-            // `refusedSources` instead.
-            ...planDynamicFields(source),
+         const decided = eligibilityOf(sourceID, table, annotationFields, {
+            tables,
+            connectionDigests,
+            leftOut,
+            gateInputs,
+         });
+         if (decided.refused) refusedSources[sourceID] = decided.refused;
+         if (!decided.inPlan) continue;
+         wireSources[sourceID] = wireSourceOf(
+            table,
             annotationFields,
-            modelPath,
-         };
+            connectionDigests,
+            packageMaterialization,
+         );
       } catch (err) {
          // Reported, so a host does not read the source's absence as its
          // leaving the plan; by a code, never the message, which may quote SQL.
-         const reason = isUnkeyable(source) ? "unkeyable" : failedAt;
+         // A gate failing with an error (not a refusal) is told apart from the
+         // rest of the projection.
+         const reason: OmittedSourceReason = isUnkeyable(source)
+            ? "unkeyable"
+            : err instanceof EligibilityCheckFailed
+              ? "eligibility_check_failed"
+              : "projection_failed";
          logger.warn("Failed to project a persist source into the build plan", {
             sourceID,
             sourceName: source.name,
@@ -1403,6 +1317,201 @@ export function deriveBuildPlan(
       sources: wireSources,
       refusedSources,
       ...finalizeOmissions(omitted, new Set(Object.keys(wireSources))),
+   };
+}
+
+/** An eligibility gate that failed with an error, not a refusal. */
+class EligibilityCheckFailed extends Error {
+   constructor(readonly failure: unknown) {
+      super(errMessage(failure));
+   }
+}
+
+/**
+ * The refusal `check` throws, if any. Only an eligibility refusal is
+ * reportable; any other error must not masquerade as a security refusal, so
+ * it is rethrown as an {@link EligibilityCheckFailed}.
+ */
+function refusalOf(
+   check: () => void,
+): MaterializationEligibilityError | undefined {
+   try {
+      check();
+      return undefined;
+   } catch (err) {
+      if (err instanceof MaterializationEligibilityError) return err;
+      throw new EligibilityCheckFailed(err);
+   }
+}
+
+/**
+ * What the eligibility gates decide for one planned table in the wire plan:
+ * its refusal, if any, and whether it stays in `sources`.
+ *
+ * Tier-appropriate, BEFORE computeSourceEntityId(), which fails for a refused
+ * source. Mirrors the build path: `storage=` gets the storage-destination
+ * gate; plain `#@ persist` gets the colocated gate, which admits a resolved,
+ * fully-attributed gate. The storage gate for every source would misreport
+ * buildable colocated sources as refused.
+ *
+ * A rollup over a gated base is refused UNCONDITIONALLY, but that governs
+ * only whether it MATERIALIZES (enforced at build time); the plan still
+ * reports the synthesized rollup. See preaggregation_seams.spec.ts ("gate
+ * stops materialization, not synthesis") and docs/materialization.md.
+ */
+function eligibilityOf(
+   sourceID: string,
+   table: TablePlan,
+   annotationFields: Record<string, string>,
+   ctx: {
+      tables: Record<string, TablePlan>;
+      connectionDigests: Record<string, string>;
+      leftOut: ReadonlySet<string>;
+      gateInputs: TierGateInputs;
+   },
+): { refused?: WireRefusedSource; inPlan: boolean } {
+   const { source, modelPath, rollup } = table;
+   const declaresStorage = !!annotationFields.storage;
+   const refusal = (
+      err: MaterializationEligibilityError,
+      tier: WireRefusedSource["tier"],
+      fallback: WireRefusedSource["reason"],
+   ): WireRefusedSource => ({
+      name: source.name,
+      sourceID: source.sourceID,
+      modelPath,
+      tier,
+      reason: err.reason || fallback,
+      message: errMessage(err),
+   });
+   if (!rollup) {
+      const err = refusalOf(() => {
+         assertPlacementNamed(source);
+         assertTierEligible(
+            source,
+            declaresStorage,
+            ctx.gateInputs,
+            annotationFields,
+         );
+      });
+      return err
+         ? {
+              refused: refusal(
+                 err,
+                 declaresStorage ? "storage" : "colocated",
+                 "authorize",
+              ),
+              inPlan: false,
+           }
+         : { inPlan: true };
+   }
+   // A storage rollup over a storage= base can neither build nor serve (see
+   // storedBaseOfRollup): out of the plan, warned on.
+   if (ctx.leftOut.has(sourceID)) return { inPlan: false };
+   // Before the other gates: a rollup sharing its table with another model's
+   // must neither build nor serve, so it leaves `sources`.
+   const collision = refusalOf(() =>
+      assertRollupNameUnshared(source, {
+         collidingRollups: collidingRollups({
+            tables: ctx.tables,
+            connectionDigests: ctx.connectionDigests,
+         }),
+      }),
+   );
+   if (collision) {
+      return {
+         refused: refusal(collision, "preaggregate", "rollup_name_collision"),
+         inPlan: false,
+      };
+   }
+   // A storage rollup runs BOTH gates; neither subsumes the other. The
+   // authorize refusal is unconditional for rollups (they group ACROSS the
+   // gated column, so cannot be row-filtered afterwards).
+   //
+   // An AUTHORIZE refusal leaves the rollup in `sources` too (Malloy
+   // synthesized it) — the coexistence the spec permits for this tier alone.
+   // A STORAGE refusal removes it: the rollup can never be written, and
+   // `Package.storageWarnings` and the auto-run would otherwise treat it as
+   // materialized/buildable.
+   //
+   // Always tier `preaggregate`, even for a storage refusal: only this tier
+   // may coexist with a `sources` entry, and it is the only provenance
+   // marking the entry as a rollup. Which gate refused is in `reason`.
+   //
+   // A `#(preaggregate)` rollup over a gated base whose gates the variant
+   // grafts at read (rows 1 and 21) is not refused for them; a v1 rollup
+   // always is.
+   let keepsGate = false;
+   const authorize = refusalOf(() => {
+      // Inside the check: a rollup whose gate cannot be read fails the gate.
+      keepsGate = rollupGateEnforcedAtRead(rollup);
+      assertColocatedPersistNotAuthorizeGated(
+         source,
+         source.name,
+         "preaggregate",
+         table.gate,
+         annotationFields,
+         { gateEnforcedAtRead: keepsGate },
+      );
+   });
+   if (authorize) {
+      return {
+         refused: refusal(authorize, "preaggregate", "authorize"),
+         inPlan: true,
+      };
+   }
+   if (!declaresStorage) return { inPlan: true };
+   const storage = refusalOf(() =>
+      assertMaterializationEligible(source, deriveAnnotationFields(source), {
+         gateEnforcedAtRead: keepsGate,
+      }),
+   );
+   return storage
+      ? {
+           refused: refusal(storage, "preaggregate", "authorize"),
+           inPlan: false,
+        }
+      : { inPlan: true };
+}
+
+/**
+ * One planned table's wire entry. `origin`/`preaggregate`: a synthesized
+ * rollup is mechanically an ordinary persist source, so the plan is the only
+ * place its provenance, grain and measures are visible.
+ */
+function wireSourceOf(
+   table: TablePlan,
+   annotationFields: Record<string, string>,
+   connectionDigests: Record<string, string>,
+   packageMaterialization: WirePackageMaterialization | null | undefined,
+): WirePersistSourcePlan {
+   const { source, rollup, modelPath } = table;
+   return {
+      name: source.name,
+      sourceID: source.sourceID,
+      connectionName: source.connectionName,
+      dialect: source.dialectName,
+      origin: rollup ? "preaggregate" : "persist",
+      preaggregate: rollup
+         ? {
+              baseSourceName: rollup.baseSourceName,
+              grainDimensions: rollup.grainDimensions,
+              measures: rollup.measures.map((m) => m.name),
+           }
+         : null,
+      sourceEntityId: computeSourceEntityId(source, connectionDigests),
+      sql: addressSQL(source),
+      // Verbatim; the resolved declaration is deliberately not a wire field
+      // (see resolveIncrementalDeclaration).
+      refresh: annotationFields.refresh ?? null,
+      freshness: resolveFreshness(source, packageMaterialization),
+      queryMetadata: resolveQueryMetadata(source, packageMaterialization),
+      columns: deriveColumns(source),
+      // Resolved, not passed through; a source failing either is in
+      // `refusedSources` instead.
+      ...planDynamicFields(source),
+      annotationFields,
+      modelPath,
    };
 }
 
