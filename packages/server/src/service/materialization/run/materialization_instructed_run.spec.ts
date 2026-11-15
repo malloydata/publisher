@@ -283,7 +283,7 @@ describe("executeInstructedBuild", () => {
       ).toContain("Permission denied while writing to dataset analytics");
    });
 
-   it("refuses a host-instructed rollup over a stored base with its reason, not a chained-build error (#6293)", async () => {
+   it("gates a host-instructed rollup over a stored base as any storage rollup, never for its base being stored", async () => {
       const runSQL = sinon.stub().resolves();
       const orders = fakeSource({
          name: "orders",
@@ -309,6 +309,7 @@ describe("executeInstructedBuild", () => {
                kind: "rollup" as const,
                source: rollup,
                rollup: {
+                  variant: true,
                   baseSourceName: "orders",
                   baseSourceID: "orders",
                   grainDimensions: ["category"],
@@ -321,7 +322,8 @@ describe("executeInstructedBuild", () => {
             ["duckdb", { runSQL } as unknown as MalloyConnection],
          ]),
       };
-      // Only the rollup instructed: refused, so the run has nothing to build.
+      // Only the rollup instructed, with no destination: refused for that,
+      // as a storage rollup over any base is, so the run has nothing to build.
       const err = await callExecute(
          compiled,
          [
@@ -337,7 +339,8 @@ describe("executeInstructedBuild", () => {
          () => undefined,
          (e: unknown) => e as Error,
       );
-      expect(err?.message).toContain("cannot build or serve yet");
+      expect(err?.message).toContain("instructed with no storage destination");
+      expect(err?.message).not.toContain("cannot build or serve yet");
       expect(runSQL.called).toBe(false);
    });
 

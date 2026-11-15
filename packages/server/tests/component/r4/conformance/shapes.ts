@@ -21,6 +21,7 @@
  * the list, and skipped rather than failed.
  */
 
+import { COVERAGE_SHAPES } from "./coverage_shapes";
 import { RAW_MODEL } from "./data";
 
 export type Variant = "storage" | "colocated" | "materialize";
@@ -1688,4 +1689,5 @@ source: rehidden is customers_raw -> {
          },
       ],
    },
+   ...COVERAGE_SHAPES,
 ];

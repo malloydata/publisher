@@ -108,7 +108,7 @@ export interface RollupPlan {
     * colocated rollup built into the base's own warehouse.
     *
     * NOT inherited from the base's `#@ persist storage=`; see
-    * {@link basePersistNamespace} for why a destination cannot usefully be.
+    * {@link basePersistNamespace} for why a destination is not inherited.
     *
     * Mutually exclusive with {@link namespace} (refused at publish as
     * `namespace_with_storage`).

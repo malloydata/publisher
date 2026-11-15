@@ -1,0 +1,24 @@
+// conformance: a classified persisted source [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: classified__served is {
+   customer_id::number,
+   #(classification) "none"
+   region::string,
+   #(classification) "none"
+   total::number
+}
+
+import "raw.malloy"
+
+#(carries) ["pii", "none"]
+#(materialize) storage="lake"
+source: classified is __served_copy_alias_of_lake.virtual('38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb')::classified__served extend {
+  internal rename:
+    customer_id__stored is customer_id
+  dimension:
+    #(classification) "pii"
+    customer_id is customer_id__stored::"HUGEINT"
+}

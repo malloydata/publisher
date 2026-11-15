@@ -564,9 +564,9 @@ answers reports `servedBy.kind: "rollup"`. What differs from `#@ preaggregate`:
 - **It belongs to the source that writes it.** An extension or an import does not repeat it.
 - **It answers more.** A `#(preaggregate)` rollup answers named views, extensions of its source,
   queries that reach its source through a join (colocated rollups only), and join-level
-  `max`/`min`, and it builds over a `#@ persist storage=` base, which a v1 rollup does not. With
-  `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, a colocated one also answers a gated entry point
-  whose gates read only grain dimensions, the gate grafted and proven on the rollup.
+  `max`/`min`. With `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, a colocated one also answers
+  a gated entry point whose gates read only grain dimensions, the gate grafted and proven on the
+  rollup.
 - **A new table.** A v2 rollup's table is not the v1 rollup's, so it builds once after the move.
 
 [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)

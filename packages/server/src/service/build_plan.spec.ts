@@ -1173,8 +1173,7 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
 }
 `);
 
-         const { plan, rollupsOverStoredBase } =
-            await computePackageBuildPlan(pkg);
+         const { plan } = await computePackageBuildPlan(pkg);
 
          const entries = Object.values(plan?.sources ?? {});
          expect(
@@ -1182,7 +1181,6 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
          ).toHaveLength(1);
          expect(entries.map((s) => s.name)).toContain("orders");
          expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
-         expect(rollupsOverStoredBase ?? []).toEqual([]);
          // Every graph node is planned or refused.
          const nodes = (plan?.graphs ?? []).flatMap((g) =>
             g.nodes.flat().map((n) => n.sourceID),

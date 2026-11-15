@@ -106,7 +106,6 @@ import {
    collectSourceEligibility,
    collidingRollups,
    refuseCollidingMaterialize,
-   storedBaseOfRollup,
    type ColocatedSourceEligibility,
    type SourceEligibility,
 } from "./eligibility_collect";
@@ -135,7 +134,6 @@ export {
    type SourceBuild,
 } from "./addressing";
 export {
-   storedBaseOfRollup,
    tierGateInputs,
    type ColocatedSourceEligibility,
    type SourceEligibility,
@@ -1376,24 +1374,13 @@ export function deriveBuildPlan(
    // One level holding every source with every table it reads. A host walks
    // these edges for a rerun's upstream closure, freshness inheritance and
    // lineage, so none may be left out.
-   // A rollup over a stored base is left out of the plan (storedBaseOfRollup),
-   // so of its graph too: every node is in `sources` or `refusedSources`.
-   const leftOut = new Set(
-      Object.keys(tables).filter((sourceID) =>
-         storedBaseOfRollup(tables, sourceID),
-      ),
-   );
    const wireGraphs: WireBuildGraph[] = builds.map((build) => ({
       connectionName: build.connectionName,
       nodes: [
-         build.order
-            .filter((sourceID) => !leftOut.has(sourceID))
-            .map((sourceID) => ({
-               sourceID,
-               dependsOn: (build.dependsOn[sourceID] ?? []).filter(
-                  (upstream) => !leftOut.has(upstream),
-               ),
-            })),
+         build.order.map((sourceID) => ({
+            sourceID,
+            dependsOn: build.dependsOn[sourceID] ?? [],
+         })),
       ],
    }));
 
@@ -1409,10 +1396,9 @@ export function deriveBuildPlan(
       // an escaping throw would drop EVERY colocated binding for the package.
       try {
          const annotationFields = deriveAnnotationFields(source);
-         const decided = eligibilityOf(sourceID, table, annotationFields, {
+         const decided = eligibilityOf(table, annotationFields, {
             tables,
             connectionDigests,
-            leftOut,
             gateInputs,
          });
          if (decided.refused) refusedSources[sourceID] = decided.refused;
@@ -1498,13 +1484,11 @@ function refusalOf(
  * stops materialization, not synthesis") and docs/materialization.md.
  */
 function eligibilityOf(
-   sourceID: string,
    table: TablePlan,
    annotationFields: Record<string, string>,
    ctx: {
       tables: Record<string, TablePlan>;
       connectionDigests: Record<string, string>;
-      leftOut: ReadonlySet<string>;
       gateInputs: TierGateInputs;
    },
 ): { refused?: WireRefusedSource; inPlan: boolean } {
@@ -1543,9 +1527,6 @@ function eligibilityOf(
            }
          : { inPlan: true };
    }
-   // A storage rollup over a storage= base can neither build nor serve (see
-   // storedBaseOfRollup): out of the plan, warned on.
-   if (ctx.leftOut.has(sourceID)) return { inPlan: false };
    // Before the other gates: a rollup sharing its table with another model's
    // must neither build nor serve, so it leaves `sources`.
    const collision = refusalOf(() =>
@@ -1732,12 +1713,6 @@ function refuseColocatedTablesSharedWithARefusal(
 export interface BuildPlanOutcome {
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
-   /**
-    * Storage rollups left out because their base is itself `storage=`
-    * persisted (see storedBaseOfRollup). Optional: a worker that predates it
-    * sends none.
-    */
-   rollupsOverStoredBase?: { baseName: string; modelPath?: string }[];
    annotationFindings: PackageAnnotationFinding[];
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
@@ -1805,24 +1780,9 @@ export function deriveBuildPlanOutcome(
       compiled.builds.length === 0 && !compiled.omittedSources?.length
          ? null
          : deriveBuildPlan(compiled, materializationConfig);
-   // One entry per base: its grains share the reason.
-   const overStoredBase = new Map<
-      string,
-      { baseName: string; modelPath?: string }
-   >();
-   for (const sourceID of Object.keys(compiled.tables)) {
-      const base = storedBaseOfRollup(compiled.tables, sourceID);
-      if (!base || overStoredBase.has(base.sourceID)) continue;
-      const modelPath = compiled.tables[base.sourceID]?.modelPath;
-      overStoredBase.set(base.sourceID, {
-         baseName: base.name,
-         ...(modelPath ? { modelPath } : {}),
-      });
-   }
    return {
       plan,
       droppedPersistSources,
-      rollupsOverStoredBase: [...overStoredBase.values()],
       annotationFindings: compiled.annotationFindings ?? [],
       sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),

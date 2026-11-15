@@ -292,33 +292,40 @@ annotation inherited onto a source that then hides the measure would raise it, w
 source produces no rollup at all and exposes nothing.
 
 **Write it on the `#@ preaggregate` line.** A destination is not inherited from the
-base's `#@ persist storage=`, and the reason is worth knowing because the opposite reads
-as obviously right — a rollup of X belongs where X's rows live.
-
-It does not work, in either of the two cases — and they are exhaustive, because inheriting
-would require `#@ persist` on the base. If the base is **query-shaped** it builds a stored
-table of its own, and a rollup over it is then built by reading that table rather than the
-raw source — a path that recovers the rollup's definition from the model file, which a
-rollup does not have, so the build fails. If the base is **not query-shaped** — a table
-extended with measures — the annotation parses, and the build refuses the whole run for a
-`#@ persist` source that was dropped from the plan.
-
-That first case is reachable deliberately, not only by inheritance: writing `storage=` on
-both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall. Even had it
-built, the base's own stored table already claims the name its rollups would be served
-under, so nothing would have read it. So Publisher leaves such rollups out of the plan and
-every run, rather than attempting a build that cannot succeed: the base still builds and
-serves from its stored table, and the package carries a `preaggregate-over-stored-base`
-warning (`warn`, one per base). Rollups over a stored base are planned for a later release.
-
-So a rollup goes to a destination because its own line says so, which is also the
+base's `#@ persist storage=`. A rollup's placement is its own line's, and it is part of
+the rollup's identity, so adding or removing `storage=` on a base never moves its rollups'
+tables, and a rollup goes to a destination because its own line says so. That is also the
 common case: a rollup's base is usually a table extended with measures, and Malloy admits
 only query-shaped sources as build roots, so most bases cannot carry `#@ persist` at all.
 
-A `name=` namespace *is* inherited, and the asymmetry is not about inheritance. Colocated
-rollups are offered through a companion model whose members Publisher names itself, with
-the base under an import alias, so nothing there is keyed on your source's name and there
-is no binding to collide with.
+**A rollup over a stored base builds and serves.** A rollup is built from the author's
+rows, never from its base's stored table, so a `#@ preaggregate` on a source that is itself
+`#@ persist storage=` is planned, built and served exactly as the `#(preaggregate)` it
+reads as. Each grain is one table, in the destination its own line names or, with no
+`storage=`, alongside the base in the warehouse the base reads from, under the rollup's
+[readable name](materialization.md#readable-table-names)
+(`<package>__<file>__<base>_by_<grain>__p<hash>`), never the base's. The base's own
+`name=` is neither a prefix nor a namespace for it. A query a rollup covers is answered
+from the rollup; one it does not is answered as it was before:
+
+- **A query-shaped base** builds its own stored table as well, which keeps answering every
+  query no rollup covers, the base's own measures included.
+- **A table extended with measures** is not a build root, so its `#@ persist` plans
+  nothing: the package carries a `persist-not-materializable` warning, a query no rollup
+  covers is answered live, and a run of the whole package is refused for that source, as
+  it is for any `#@ persist` Malloy cannot build. A run that names the rollups builds them;
+  drop the `#@ persist`, which stores nothing, and every run does.
+
+The refusals are the rollup leg's, for the same reasons as `#(preaggregate)`: a base whose
+rows read a given (`preaggregate-reads-given`) or the current time
+(`preaggregate-current-time`) builds no rollup, and neither does a gated base unless
+`PUBLISHER_MATERIALIZE_GATED_SOURCES` lets a query read the rollup past its gate
+(`preaggregate-access-filter`). Each is a warning, and the measure is served live.
+
+A colocated base's `name=` namespace *is* inherited, and the asymmetry is not about
+inheritance. Colocated rollups are offered through a companion model whose members
+Publisher names itself, with the base under an import alias, so nothing there is keyed on
+your source's name and there is no binding to collide with.
 
 **It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
 placed differently — one in the store, one alongside the base. Measures sharing a grain

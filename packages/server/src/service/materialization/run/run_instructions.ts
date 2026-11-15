@@ -32,7 +32,6 @@ import {
    computeSourceEntityId,
    sourcesInBuildOrder,
    tierGateInputs,
-   storedBaseOfRollup,
 } from "../plan/build_plan";
 import {
    assertPlacementNamed,
@@ -137,11 +136,6 @@ function gateSources(
             getPersistStorageMode() === "off" &&
             declaredStorage(persistSource)
          ) {
-            continue;
-         }
-
-         // Never buildable today (#6293); the package warning says so.
-         if (storedBaseOfRollup(compiled.tables, persistSource.sourceID)) {
             continue;
          }
 
