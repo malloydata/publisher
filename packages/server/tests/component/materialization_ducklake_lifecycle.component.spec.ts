@@ -1853,7 +1853,10 @@ source: plain is raw extend { measure: total is amt.sum() }
          expect(await lake.storedRows("shared_t", "cat, amt")).toEqual([
             ["x", 9],
          ]);
-         expect((await lake.tableComments()).shared_t).toBe(OTHER_MARK);
+         expect(await lake.tableComments()).toEqual({
+            shared_t: OTHER_MARK,
+            [selfName("plain")]: null,
+         });
       });
    },
 );
