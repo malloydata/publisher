@@ -302,6 +302,11 @@ export interface R4Fixture {
    setClock(at: string): void;
    /** Why the persisted-view planner refused a view, one sentence each. */
    viewRefusals: string[];
+   /**
+    * With {@link R4Scenario.preaggregate}: each `#(preaggregate)` declaration
+    * the rollup planner refused, by its code and base source.
+    */
+   rollupRefusals: { code: string; sourceName: string }[];
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
       sql: (table: (sourceName: string) => string) => string,
@@ -1205,6 +1210,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       duckdb,
       model,
       viewRefusals,
+      rollupRefusals: (rollups?.refused ?? []).map((r) => ({
+         code: r.code,
+         sourceName: r.sourceName,
+      })),
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;

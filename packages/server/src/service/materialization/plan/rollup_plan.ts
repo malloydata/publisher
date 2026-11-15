@@ -78,7 +78,11 @@ import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
 import { collectEntryPointGates } from "../../gate_classification";
 import { createHash } from "node:crypto";
-import { ownLevelNotes, type AnnotationNote } from "../../annotations";
+import {
+   ownLevelNotes,
+   type AnnotationNote,
+   type AnnotationsDef,
+} from "../../annotations";
 import {
    declaredFieldNotes,
    type NotedSourceDef,
@@ -89,7 +93,12 @@ import {
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
-import { placementOf, readNotes } from "./declaration";
+import {
+   destinationOf,
+   placementOf,
+   readNotes,
+   readNotesIfAny,
+} from "./declaration";
 import { malloyIdentifiers } from "../../query_text";
 import {
    classifyWhereTerms,
@@ -584,22 +593,28 @@ export function planSourceRollups(
    // its times in that zone, and the base leg reads no query on it from a
    // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
    // only reader left is the join leg (A7): through a join from a source in
-   // the same zone, colocated or, since #1704, in a `storage=` destination
-   // the joining source is stored in too (the leg declines at read when it
-   // is not). Anything else is never read.
+   // the same zone, to a colocated rollup or, since #1704, to one in a
+   // `storage=` destination the joining source is stored in too (the leg
+   // reads no other: `CROSS_CONNECTION`). Anything else is never read.
    const zone = timezoneOf(def);
-   const joinedInZone =
-      zone !== undefined &&
-      map
-         .nodes()
-         .some(
-            (n) =>
-               n.sourceID !== node.sourceID &&
-               recordedTimezoneOf(n.def) === zone &&
-               map
-                  .joinsOf(n.sourceID)
-                  .some((j) => j.sourceID === node.sourceID),
-         );
+   const joinersInZone =
+      zone === undefined
+         ? []
+         : [...map.nodes()].filter(
+              (n) =>
+                 n.sourceID !== node.sourceID &&
+                 recordedTimezoneOf(n.def) === zone &&
+                 map
+                    .joinsOf(n.sourceID)
+                    .some((j) => j.sourceID === node.sourceID),
+           );
+   /** Whether a same-zone joiner reads a rollup placed in `storage` (none: colocated). */
+   const readInZone = (storage: string | undefined) =>
+      storage === undefined
+         ? joinersInZone.length > 0
+         : joinersInZone.some((n) =>
+              storedDestinationsOf(map, n.def).has(storage),
+           );
    const scope = {
       measureCode: (n: string) => {
          const f = byName.get(n);
@@ -695,12 +710,16 @@ export function planSourceRollups(
          );
          continue;
       }
-      if (zone !== undefined && !joinedInZone) {
+      if (zone !== undefined && !readInZone(decl.storage)) {
+         const noJoin =
+            decl.storage === undefined || joinersInZone.length === 0
+               ? "no source in the same zone joins it"
+               : `no source in the same zone that joins it is stored in \`${decl.storage}\`, the only place a join reads a rollup there from`;
          refused.push(
             unservable(
                "preaggregate-time-zone",
                decl.measure,
-               `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads`,
+               `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (${noJoin}), so its table would cost a build no query reads`,
             ),
          );
          continue;
@@ -1111,6 +1130,33 @@ export function rollupRefusalFinding(
 // ---------------------------------------------------------------------------
 // The build file
 // ---------------------------------------------------------------------------
+
+/**
+ * The `storage=` destinations a source's table, or the table of a source it is
+ * built on, is declared in: by `#(materialize) storage=` or
+ * `#@ persist storage=` on a source of its chain. The join leg reads a rollup
+ * in a destination only for a query source the served copy reads from there.
+ */
+function storedDestinationsOf(map: SourceMap, struct: unknown): Set<string> {
+   const out = new Set<string>();
+   for (const id of map.chainOf(struct)) {
+      const notes = ownLevelNotes(
+         (map.node(id)?.def as { annotations?: AnnotationsDef } | undefined)
+            ?.annotations,
+      );
+      const read = (route: string, key?: string) => {
+         const own = notes.filter((n) => routeOfNote(n.text) === route);
+         const tag = own.length > 0 ? readNotesIfAny(own, route) : undefined;
+         if (tag && (key === undefined || tag.has(key))) {
+            const destination = destinationOf(tag, key);
+            if (destination !== undefined) out.add(destination);
+         }
+      };
+      read("materialize");
+      read("@", "persist");
+   }
+   return out;
+}
 
 /**
  * The Malloy text of a rollup's key check (known limitation 29), or undefined

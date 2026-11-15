@@ -20,6 +20,10 @@
  * 3. A rollup a join_one reads beside the parent's own aggregates is served
  *    once its build checked the key unique, in a destination as colocated; a
  *    `storage=` rollup's key check was never planned.
+ * 4. A rollup over a source in its own time zone is built only where the join
+ *    leg reads it: joined from a source in the same zone, which for a
+ *    `storage=` rollup must be stored in its destination. Otherwise it is
+ *    refused at plan (`preaggregate-time-zone`), in both tiers.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -286,4 +290,89 @@ ${tier.label === "storage=" ? `#(materialize)${place}\n` : ""}source: flights is
       });
    });
 
+   describe(`R4 parity (${tier.label}): a rollup over a source in its own time zone`, () => {
+      const storage = tier.label === "storage=";
+      const place = storage ? tier.place("") : "";
+      const zoned = (
+         name: string,
+      ) => `source: ${name} is duckdb.table('segs_raw') extend {
+  timezone: 'America/Los_Angeles'
+  primary_key: seg_id
+  #(preaggregate) grain=["flight_id"]${place}
+  measure: seg_miles is miles.sum()
+}`;
+      // `read_segs` is joined from a source in its zone the join leg reads
+      // it for: on its own connection beside a colocated rollup, stored in
+      // the destination beside a `storage=` one. `unread_segs` is joined only
+      // from one the leg never reads it for: in another zone beside a
+      // colocated rollup; in its zone, but read on its own connection,
+      // beside a `storage=` one.
+      const model = `${zoned("read_segs")}
+${zoned("unread_segs")}
+${storage ? `#(materialize)${place}\n` : ""}source: flights_la is duckdb.table('flights_raw') extend {
+  timezone: 'America/Los_Angeles'
+  primary_key: id
+  join_many: read_segs on read_segs.flight_id = id
+}
+source: flights_unread is duckdb.table('flights_raw') extend {
+  ${storage ? "timezone: 'America/Los_Angeles'" : "timezone: 'America/New_York'"}
+  primary_key: id
+  join_many: unread_segs on unread_segs.flight_id = id
+}
+`;
+      let restore: () => void;
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         fixture = await buildScenario({
+            files: { "m.malloy": model },
+            seedSql: [
+               `CREATE TABLE flights_raw AS SELECT * FROM (VALUES
+                  (1, 'AA', 100), (2, 'AA', 200), (3, 'BB', 300)
+                ) AS t(id, carrier, distance)`,
+               `CREATE TABLE segs_raw AS SELECT * FROM (VALUES
+                  (10, 1, 2.0), (11, 1, 3.0), (12, 2, 4.0), (13, 3, 1.0)
+                ) AS t(seg_id, flight_id, miles)`,
+            ],
+            materialize: storage,
+            preaggregate: true,
+         });
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+
+      it("builds the rollup a join from the same zone reads, and serves it, equal to live", async () => {
+         expectServedFromRollup(
+            await fixture.run({
+               name: "read",
+               malloy:
+                  "run: flights_la -> { group_by: carrier; aggregate: read_segs.seg_miles; order_by: carrier }",
+            }),
+            tier.servedFrom,
+         );
+      });
+
+      it("refuses at plan the rollup no join reads, and answers it live, equal to live", async () => {
+         expect(fixture.rollupRefusals).toContainEqual({
+            code: "preaggregate-time-zone",
+            sourceName: "unread_segs",
+         });
+         expect(
+            fixture.rollupRefusals.filter((r) => r.sourceName === "read_segs"),
+         ).toEqual([]);
+         const run = await fixture.run({
+            name: "unread",
+            malloy:
+               "run: flights_unread -> { group_by: carrier; aggregate: unread_segs.seg_miles; order_by: carrier }",
+            expectLive: true,
+         });
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedBy?.kind).not.toBe("rollup");
+      });
+   });
 }
