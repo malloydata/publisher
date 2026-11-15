@@ -106,7 +106,7 @@ import {
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
    mergeBuildPlanParts,
-   refuseIncrementalUnbuildable,
+   refuseAloneInPlan,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanParts,
@@ -1519,9 +1519,13 @@ async function finishWorkerBuildPlan(
          (name) => digestSkipped.push(name),
       );
       const outcome = deriveBuildPlanOutcome(
-         // A valid incremental declaration this deployment cannot honour
-         // refuses its source alone, as compilePackageBuildPlan does.
-         refuseIncrementalUnbuildable({ ...parts, connectionDigests }),
+         // The sources refused alone, in the order compilePackageBuildPlan
+         // refuses them (a collision first).
+         refuseAloneInPlan({
+            ...parts,
+            connectionDigests,
+            ...(scope === "version" ? { versionScoped: true } : {}),
+         }),
          materializationConfig,
          scope,
       );

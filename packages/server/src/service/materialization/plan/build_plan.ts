@@ -116,6 +116,7 @@ import {
    collectSourceEligibility,
    collidingRollups,
    refuseCollidingMaterialize,
+   sharedTables,
    withoutSources,
    type ColocatedSourceEligibility,
    type SourceEligibility,
@@ -1786,13 +1787,26 @@ export function deriveBuildPlanOutcome(
 }
 
 /**
+ * The sources a plan refuses alone before anything reads it, in the one
+ * order every path applies (compilePackageBuildPlan, the load worker): an
+ * author collision first ({@link refuseCollidingMaterialize}, invalid
+ * whatever else is wrong with the source), then a valid incremental
+ * declaration this deployment cannot honour.
+ */
+export function refuseAloneInPlan<
+   T extends Omit<CompiledBuildPlan, "connections">,
+>(compiled: T): T {
+   return refuseIncrementalUnbuildable(refuseCollidingMaterialize(compiled));
+}
+
+/**
  * The compiled plan less each source whose VALID incremental declaration this
  * deployment cannot honour (incremental_policy's rules 6, 7 and 12), each
  * reported as its route's `*-not-built` warning: not built, answered live,
  * and the rest of the package loads. An invalid declaration is left in, for
  * the load's incremental gate to fail.
  */
-export function refuseIncrementalUnbuildable<
+function refuseIncrementalUnbuildable<
    T extends Omit<CompiledBuildPlan, "connections">,
 >(compiled: T): T {
    const declarations = collectIncrementalDeclarations(
@@ -1801,9 +1815,12 @@ export function refuseIncrementalUnbuildable<
    );
    const findings: PackageAnnotationFinding[] = [];
    const dropped = new Set<string>();
+   // An author collision is invalid whatever else is wrong with the source:
+   // a source sharing a table is left in for the collision check to judge.
+   const shared = sharedTables(compiled);
    for (const [sourceID, declaration] of Object.entries(declarations)) {
       const source = compiled.sources[sourceID];
-      if (!source) continue;
+      if (!source || shared.has(sourceID)) continue;
       const view = persistedViewOf(source);
       const reason = incrementalUnbuildableReason({
          sourceName: view?.sourceName ?? source.name,

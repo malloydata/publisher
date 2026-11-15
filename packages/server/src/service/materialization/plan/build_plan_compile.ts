@@ -17,7 +17,7 @@ import { recordConnectionDigestSkipped } from "../../../materialization_metrics"
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
-   refuseIncrementalUnbuildable,
+   refuseAloneInPlan,
    emptyBuildPlanParts,
    resolveConnectionDigests,
    resolvePackageConnections,
@@ -207,9 +207,7 @@ export async function compilePackageBuildPlan(
       sourceGateOutcomes: parts.sourceGateOutcomes,
       omittedSources: parts.omittedSources,
    });
-   return keepIncrementalUnbuildable
-      ? compiled
-      : refuseIncrementalUnbuildable(compiled);
+   return keepIncrementalUnbuildable ? compiled : refuseAloneInPlan(compiled);
 }
 
 /**

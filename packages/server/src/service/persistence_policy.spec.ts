@@ -403,6 +403,24 @@ source: b is duckdb.sql("SELECT 2 as y")
    );
 
    it(
+      "fails the load on a collision even when one of the two is an incremental source DuckDB cannot build",
+      async () => {
+         const message = await loadError(`##! experimental.persistence
+
+source: raw is duckdb.sql("SELECT 1 as x, DATE '2024-01-01' as d")
+
+#@ persist name="t" refresh="incremental" watermark="d"
+source: a is raw -> { group_by: x, d }
+
+#@ persist name="t"
+source: b is raw -> { group_by: x }
+`);
+         expect(message).toContain("[materialization-table-collision]");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "does not collide two name=s in two named schemas",
       async () => {
          const pkg = await loadPackage(`##! experimental.persistence
