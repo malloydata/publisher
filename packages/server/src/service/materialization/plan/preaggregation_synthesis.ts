@@ -30,7 +30,10 @@ import { classifyMeasureAdditivity } from "./preaggregation_classifier";
 import type { RollupMeasure, RollupPlan } from "../domain/rollup_measures";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
 import { fieldNotes } from "../text/field_notes";
-import type { ValidatableSource } from "./preaggregation_validation";
+import {
+   hasFanoutJoin,
+   type ValidatableSource,
+} from "./preaggregation_validation";
 
 /** Suffix on the stored partial-aggregate column for a measure. */
 const PARTIAL_SUFFIX = "__partial";
@@ -187,6 +190,8 @@ export function planSourcePreaggregation(
    baseSourceName: string,
    source: ValidatableSource,
 ): RollupPlan[] {
+   // Refused alone, as the validator reports it: no rollup over a fan-out join.
+   if (hasFanoutJoin(source)) return [];
    const inheritedNamespace = basePersistNamespace(source);
    /** Resolve a grain dimension back to the field it names, if it names one. */
    const fieldNamed = (name: string) =>

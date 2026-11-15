@@ -107,6 +107,7 @@ import {
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
    mergeBuildPlanParts,
+   refuseAloneInPlan,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanParts,
@@ -1488,7 +1489,8 @@ async function loadPackage(
       modelPaths,
       load,
       packageMetadata.materialization ?? null,
-      packageMetadata.scope,
+      // Only a published version's tables are named per version.
+      job.publishedVersion ? packageMetadata.scope : undefined,
    );
    const loadEnd = performance.now();
    return {
@@ -1557,7 +1559,13 @@ async function finishWorkerBuildPlan(
          (name) => digestSkipped.push(name),
       );
       const outcome = deriveBuildPlanOutcome(
-         { ...parts, connectionDigests },
+         // The sources refused alone, in the order compilePackageBuildPlan
+         // refuses them (a collision first).
+         refuseAloneInPlan({
+            ...parts,
+            connectionDigests,
+            ...(scope === "version" ? { versionScoped: true } : {}),
+         }),
          materializationConfig,
          scope,
       );
