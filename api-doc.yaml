@@ -5938,6 +5938,16 @@ components:
                   column, `model` the first model binding it, `subject` the
                   source, the message naming the column, both types and which
                   of the two applies; `warn`; see docs/materialization.md).
+                  `stored-native-schema-missing`: a colocated table is bound
+                  with no captured warehouse type (its manifest entry's
+                  `nativeSchema`) for a column whose field Malloy types as a big
+                  integer. On BigQuery the column is read as `INT64`, its only
+                  integer type, and still serves; on any other dialect it is
+                  left out, so a query that reads it is answered live. The next
+                  full rebuild captures the types (one per source, `model` the
+                  first model binding it, `subject` the source, the message
+                  naming the columns and which applies; `warn`; see
+                  docs/materialization.md).
                   `entities-…` (`entities-not-a-dimension`,
                   `entities-parameterized-source`,
                   `entities-multiple-required-filters`,

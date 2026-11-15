@@ -79,6 +79,11 @@ import {
 } from "./serve/bind";
 import { namesServedCopyAlias } from "./serve/served_copy_config";
 import {
+   NATIVE_SCHEMA_MISSING_CODE,
+   type NativeSchemaNotice,
+   nativeSchemaNotices,
+} from "./serve/native_schema_notices";
+import {
    previewNativeSchema,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
 } from "./stored_column_types";
@@ -1527,6 +1532,38 @@ export class PackageMaterialization {
    }
 
    /**
+    * Warnings for colocated tables bound with no captured warehouse type for
+    * a big-integer column, one per source: its columns read through a type
+    * the dialect fixes (BigQuery's INT64), and those left out. Keyed by the
+    * source's sourceID, so a source several models import reports once.
+    */
+   nativeSchemaWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      const seen = new Set<string>();
+      const { bindings } = this.snapshot();
+      for (const [modelPath, model] of this.owner.models()) {
+         const modelDef = model.getModelDef?.();
+         if (!modelDef) continue;
+         for (const n of nativeSchemaNotices(
+            bindings,
+            modelDef,
+            this.materializePlans,
+         )) {
+            if (seen.has(n.sourceID)) continue;
+            seen.add(n.sourceID);
+            warnings.push({
+               model: modelPath,
+               subject: n.sourceName,
+               code: NATIVE_SCHEMA_MISSING_CODE,
+               severity: "warn",
+               message: nativeSchemaMissingMessage(n),
+            });
+         }
+      }
+      return warnings;
+   }
+
+   /**
     * Each materialized source's serve verdict (materialization v2, D2;
     * ms2data/service#6277): whether queries are answered from its table, and
     * when not, why and what to change. Read from the plan and the binding as
@@ -2387,6 +2424,39 @@ function compilerReasons(detail: string | undefined): string {
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
 }
 
+/** The `stored-native-schema-missing` sentence for one source. */
+function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
+   // Names in prose, set in backticks as the other warnings set them.
+   const names = (columns: string[]) =>
+      columns.map((c) => "`" + c + "`").join(", ");
+   const parts: string[] = [];
+   const types = [...new Set(n.inferred.map((i) => i.as))];
+   if (n.inferred.length > 0) {
+      parts.push(
+         `${names(n.inferred.map((i) => i.column))} ` +
+            `${n.inferred.length === 1 ? "is" : "are"} read as ` +
+            `${names(types)}, the warehouse's only integer type, so ` +
+            `${n.inferred.length === 1 ? "it still serves" : "they still serve"} ` +
+            "from the table",
+      );
+   }
+   if (n.leftOut.length > 0) {
+      parts.push(
+         `${names(n.leftOut)} cannot be read exactly without one, so ` +
+            `${n.leftOut.length === 1 ? "it is" : "they are"} left out of the table's read: ` +
+            "the source answers live wherever it needs " +
+            `${n.leftOut.length === 1 ? "it" : "them"}, and wholly live when its other fields ` +
+            `cannot be served without ${n.leftOut.length === 1 ? "it" : "them"} (the ` +
+            "`served-copy-not-served` warning on the source says so)",
+      );
+   }
+   return (
+      "This source's colocated table is bound with no captured warehouse " +
+      "type for its big-integer columns (its manifest entry records none): " +
+      `${parts.join("; ")}. The next full rebuild captures the types.`
+   );
+}
+
 function servedCopyProblemMessage(
    problem: ServedCopyProblem,
    inlinedButKept = false,
@@ -2403,6 +2473,15 @@ function servedCopyProblemMessage(
          return "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.";
       case "range_not_found":
       case "definition_not_parsed":
+         if (problem.hiddenUnstored?.length) {
+            return (
+               "This source's `include` hides " +
+               problem.hiddenUnstored.map((c) => "`" + c + "`").join(", ") +
+               " (private or internal), which its v1 `storage=` table does not store: such a table stores " +
+               "public columns only. The served copy leaves the source as written, so it answers live. " +
+               "To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`."
+            );
+         }
          return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
       case "pair_join_not_found":
          return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";

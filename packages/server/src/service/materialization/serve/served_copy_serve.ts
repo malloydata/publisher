@@ -283,6 +283,11 @@ export interface ServedCopyProblem {
    coverage?: string[];
    /** The compiler's message, for logs and the package warning only. */
    detail?: string;
+   /**
+    * For `definition_not_parsed`: the columns the source's kept
+    * `include { … }` hides that its stored table does not hold.
+    */
+   hiddenUnstored?: string[];
 }
 
 /** What the served copy reads from the model that owns it. */
@@ -1967,7 +1972,21 @@ export class ServedCopyServe {
                // A source declared by refinement stays as written by design,
                // and still reads a re-rooted base by name: nothing to warn of.
                if (r.reason === "not_query_shaped") continue;
-               problems.push({ sourceName: r.sourceName, reason: r.reason });
+               // Keyed by the refused re-root's sourceID, as every other
+               // problem of one source is (the dry run reads it by that).
+               const sourceID = state.candidates.find(
+                  (c) =>
+                     c.reroot.url === r.url &&
+                     c.reroot.sourceName === r.sourceName,
+               )?.reroot.sourceID;
+               problems.push({
+                  sourceName: r.sourceName,
+                  ...(sourceID ? { sourceID } : {}),
+                  reason: r.reason,
+                  ...(r.hiddenUnstored
+                     ? { hiddenUnstored: r.hiddenUnstored }
+                     : {}),
+               });
             }
          }
          state.candidates = state.candidates.filter(

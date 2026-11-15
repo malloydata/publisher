@@ -514,7 +514,11 @@ integer, such as the `numeric` Postgres stores a sum of `BIGINT`s as; a MySQL in
 MySQL's `CAST` names no integer type; and a colocated column whose type its build did not record (a
 table built before this, a manifest whose producer does not record it, or an unqualified table name
 the warehouse's `information_schema` finds in more than one schema, where the build cannot tell
-which table it wrote). Served never exceeds live: on a source whose live answer itself rounds such values
+which table it wrote). A colocated column whose type its build did not record is the one exception
+on BigQuery: BigQuery has exactly one integer type, so the column is read as `INT64` and still
+serves. Either way the package reports the source as a warning with code
+`stored-native-schema-missing`, naming its columns and whether each is read as `INT64` or answered
+live; the next full rebuild records the types and clears it. Served never exceeds live: on a source whose live answer itself rounds such values
 (Postgres returns its rows through JSON), a `storage=` table reads the column as a plain number,
 which rounds the same way, and a colocated one reads it through Postgres's own `bigint` type, on
 live's own path ([known limitation 12](materialization-v2-plan.md#known-limitations-to-revisit)).

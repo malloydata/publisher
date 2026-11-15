@@ -116,6 +116,7 @@ still build and serve.
 | `materialize-retired-key` | The line carries a key that is no longer read, `partition=`. Severity `error`: a publish is refused. | Remove the key. |
 | `annotation-near-miss` | A misspelled route, such as `#(materialise)`. Nothing is built. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
+| `stored-native-schema-missing` | A colocated table is bound with no recorded warehouse type for a big-integer column (a table built before Publisher recorded them). On BigQuery the column is read as `INT64` and serves; elsewhere a query that reads it is answered live. | Run a full rebuild of the source; it records the types. |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
 | `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize). |
 | `deprecated-preaggregate-annotation` | A measure still uses `#@ preaggregate`. | Rewrite it as `#(preaggregate)`. |
