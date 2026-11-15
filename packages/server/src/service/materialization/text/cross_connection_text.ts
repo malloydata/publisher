@@ -63,6 +63,17 @@ const FOLLOWS_FROM_LEFT_OUT: ReadonlySet<string> = new Set([
    "ungroup-of-non-aggregate",
 ]);
 
+/**
+ * Malloy's codes for a statement in an importer that fails because the file
+ * it imports failed: an `export` of a name that file no longer defines. Each
+ * follows from the refused joins on the first compile and must be gone once
+ * they are out; a pass never leaves one out, since an `export` is not a
+ * definition and no cut of the text can place it.
+ */
+const FOLLOWS_FROM_FAILED_IMPORT: ReadonlySet<string> = new Set([
+   "export-name-not-defined",
+]);
+
 /** Whether a problem's code is Malloy refusing a join across connections. */
 export function isJoinConnectionMismatch(code: string | undefined): boolean {
    return code === JOIN_CONNECTION_MISMATCH;
@@ -88,7 +99,9 @@ export function isCrossConnectionRefusal(error: unknown): boolean {
       problems.every(
          (p) =>
             p.code === JOIN_CONNECTION_MISMATCH ||
-            (p.code !== undefined && FOLLOWS_FROM_LEFT_OUT.has(p.code)),
+            (p.code !== undefined &&
+               (FOLLOWS_FROM_LEFT_OUT.has(p.code) ||
+                  FOLLOWS_FROM_FAILED_IMPORT.has(p.code))),
       )
    );
 }
