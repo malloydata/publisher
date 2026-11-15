@@ -348,7 +348,7 @@ export function addressDestination(source: PersistSource): string | undefined {
  * of the same build names (or stores) another table
  * ({@link foldDistinctTableNames}). The target's `sql` carries no annotation
  * bytes, so without this a source moved to `storage=` would keep its
- * colocated address (#7087), and two `name=`s on one build would get one
+ * colocated address, and two `name=`s on one build would get one
  * table.
  *
  * The destination is derived here rather than passed in so every caller

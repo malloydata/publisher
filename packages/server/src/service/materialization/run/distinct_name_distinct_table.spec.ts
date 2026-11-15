@@ -259,13 +259,14 @@ describe("one table per stored projection", () => {
                CONNECTIONS,
             );
             const tableFolds = planTableFolds(compiled);
-            const addresses = Object.values(compiled.tables).map(({ source: s }) =>
-               computeSourceEntityId(
-                  s,
-                  compiled.connectionDigests,
-                  undefined,
-                  tableFolds,
-               ),
+            const addresses = Object.values(compiled.tables).map(
+               ({ source: s }) =>
+                  computeSourceEntityId(
+                     s,
+                     compiled.connectionDigests,
+                     undefined,
+                     tableFolds,
+                  ),
             );
             let hostRun: string | undefined;
             try {
@@ -450,7 +451,8 @@ describe("a bare name between two schemas", () => {
                ["a", "b", "c"]
                   .map(
                      (id) =>
-                        trio(["a", "b", "c"], storage).tables[id].source.sourceID,
+                        trio(["a", "b", "c"], storage).tables[id].source
+                           .sourceID,
                   )
                   .sort(),
             );

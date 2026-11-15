@@ -1470,7 +1470,11 @@ async function planV1PersistSources(
 export function deriveBuildPlan(
    compiled: Pick<
       CompiledBuildPlan,
-      "builds" | "tables" | "connectionDigests" | "omittedSources" | "tableFolds"
+      | "builds"
+      | "tables"
+      | "connectionDigests"
+      | "omittedSources"
+      | "tableFolds"
    >,
    packageMaterialization?: WirePackageMaterialization | null,
    sourceNames?: string[],
