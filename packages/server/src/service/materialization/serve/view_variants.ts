@@ -491,6 +491,18 @@ export class PersistedViewServe {
             : packageConfig;
       const view = viewDeclaration(plan.viewName, shape);
       if ("refusal" in view) return { refusal: view.refusal };
+      // A stored column whose type does not serve as live's is read through
+      // the served copy's faithful cast (a date truncation a build stored as
+      // a TIMESTAMP), or refuses the variant.
+      const read = table.binding
+         ? storedColumnCasts(
+              table.binding.schema,
+              shape.columns,
+              shape.queryTimezone,
+           )
+         : { casts: new Map<string, "DATE" | "BOOLEAN">() };
+      if ("refusal" in read) return { refusal: read.refusal };
+      const { casts } = read;
       // malloy-text: viewDeclaration's text, every value through identifier or noteSource
       const viewBody = view.text;
       return compileDeclaringFileVariant({
@@ -521,15 +533,8 @@ export class PersistedViewServe {
                // live's does. A timeframe column's go on its redefined field
                // (timeframeRestatements), and a measure's on the view's
                // re-aggregation of it (viewDeclaration), instead.
-               // A cast column's go on its redefined field too: a stored
-               // column whose type does not serve as live's is read through
-               // the served copy's faithful cast (a date truncation a build
-               // stored as a TIMESTAMP), or refuses the variant.
-               const casts = storedColumnCasts(
-                  table.binding.schema,
-                  shape.columns,
-                  shape.queryTimezone,
-               );
+               // A cast column's go on its redefined field too
+               // (storedColumnCasts).
                const columnNotes = new Map(
                   shape.columns.map((c) => [
                      c.name,
@@ -546,11 +551,17 @@ export class PersistedViewServe {
                      ...(notes && notes.length > 0 ? { notes } : {}),
                   };
                });
-               // malloy-text: the served copy's timeframe emitter and this file's cast emitter, the author's notes, names through identifier
-               const timeframes =
-                  timeframeRestatements(
-                     shape.columns.filter((c) => !casts.has(c.name)),
-                  ) + castRestatements(shape.columns, casts);
+               // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
+               const timeframes = timeframeRestatements(
+                  shape.columns.map((c) => {
+                     const castTo = casts.get(c.name);
+                     if (!castTo) return c;
+                     // A measure's notes go on its re-aggregation.
+                     const notes = c.kind === "measure" ? [] : c.notes;
+                     return { ...c, notes, castTo };
+                  }),
+                  table.binding.schema.map((c) => c.name),
+               );
                // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
                return `${typeDeclaration({ typeName, columns })}
 source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}
@@ -745,69 +756,35 @@ async function viewShape(
  * name: `DATE` or `BOOLEAN`, the served copy's faithful casts
  * ({@link serveTypePlan}). A build stores each column as its declared type
  * where it can, but one whose cast it declined (a view or source with a query
- * time zone, or a build whose casts failed and stored what the warehouse
- * returned)
- * holds a date truncation as a TIMESTAMP, which the `type:` would declare a
- * timestamp where live types it a date. A column no faithful cast reads as
- * live's type refuses the variant, and the query answers live.
+ * time zone) or a build whose casts failed and stored what the warehouse
+ * returned holds a date truncation as a TIMESTAMP, which the `type:` would
+ * declare a timestamp where live types it a date. A column no faithful cast
+ * reads as live's type is the refusal instead, and the query answers live.
  */
 function storedColumnCasts(
    schema: readonly { name: string; type: string }[],
    columns: readonly ViewColumn[],
    queryTimezone: string | undefined,
-): Map<string, string> {
+): { casts: Map<string, "DATE" | "BOOLEAN"> } | { refusal: string } {
    const declared = columns
       .filter((c) => c.kind !== "nest" && c.type !== "")
       .map((c) => ({ name: c.name, type: c.type }));
    const mismatches = storedColumnTypeMismatches(schema, declared);
-   if (mismatches.length === 0) return new Map();
    const plan = serveTypePlan(mismatches, { queryTimezone });
-   if (plan.unservable.length > 0) {
-      throw new Error(
-         `the stored ${plan.unservable
-            .map((m) => `\`${m.column}\` (${m.storedType})`)
-            .join(", ")} cannot be read as live's type`,
-      );
+   const [unservable] = plan.unservable;
+   if (unservable) {
+      return {
+         refusal: `the stored \`${unservable.column}\` (${unservable.storedType}) cannot be read as live's ${unservable.declaredType}`,
+      };
    }
-   return new Map(plan.casts.map((c) => [c.column, c.castTo]));
-}
-
-/**
- * For each column read through a cast ({@link storedColumnCasts}): the stored
- * column renamed internally and the field redefined as it cast, truncated
- * again when it has a timeframe, as the served copy writes it
- * (`timeframeExpression`): `(order_month__tf::"DATE").month`. A date is cast
- * with the SQL type, a plain `CAST(… AS DATE)`, never Malloy's `::date`,
- * which would convert it to a query's time zone first. A dimension's notes
- * go on its redefined field; a measure's on its re-aggregation. Text that
- * opens or continues an `extend { … }` block; empty when nothing is cast.
- */
-function castRestatements(
-   columns: readonly ViewColumn[],
-   casts: ReadonlyMap<string, string>,
-): string {
-   const cast = columns.filter((c) => casts.has(c.name));
-   if (cast.length === 0) return "";
-   const renames = cast
-      .map((c) => `    ${identifier(`${c.name}__tf`)} is ${identifier(c.name)}`)
-      .join("\n");
-   // malloy-text: the author's own notes, names through identifier, a cast to DATE or boolean and a timeframe from TIMEFRAMES
-   const dims = cast
-      .map((c) => {
-         const read =
-            casts.get(c.name) === "DATE"
-               ? `${identifier(`${c.name}__tf`)}::"DATE"`
-               : `${identifier(`${c.name}__tf`)}::boolean`;
-         const notes = c.kind === "dimension" ? c.notes : [];
-         return (
-            notes.map((n) => noteSource(n, "    ")).join("") +
-            `    ${identifier(c.name)} is ${
-               c.timeframe ? `(${read}).${c.timeframe}` : read
-            }`
-         );
-      })
-      .join("\n");
-   return `\n  internal rename:\n${renames}\n  dimension:\n${dims}`;
+   return {
+      casts: new Map(
+         plan.casts.map((c) => [
+            c.column,
+            c.castTo === "BOOLEAN" ? ("BOOLEAN" as const) : ("DATE" as const),
+         ]),
+      ),
+   };
 }
 
 /**

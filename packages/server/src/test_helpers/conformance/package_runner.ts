@@ -45,10 +45,14 @@ import type { Package } from "../../service/package";
 import { installSettings } from "../settings_env";
 import { writePackageFiles } from "../temp_package";
 import {
+   type BuildCastOptions,
    castToDeclaredTypes,
    type DeclaredColumn,
    declaredColumnsOf,
 } from "../../service/materialization/stored_column_types";
+import { queryTimezoneOf } from "../../service/governance/ir/compiled_model";
+import { planModelPersistedViews } from "../../service/materialization/plan/persisted_view";
+import { SourceMap } from "../../service/materialization/text/source_map";
 /** A result row, as `compactResult` carries it. */
 export type Row = Record<string, unknown>;
 
@@ -459,6 +463,7 @@ async function buildAll(
                         : declaredColumnsFor(pkg, entry).filter((c) =>
                              present.has(c.name),
                           ),
+                     castOptionsFor(pkg, entry),
                   )}`,
                );
                const described = await lake.runSQL(`DESCRIBE ${quoted}`, {
@@ -513,6 +518,55 @@ async function buildAll(
    pkg.bindColocatedServeManifest(colocated as never);
    pkg.bindStorageServeBindings(stored as never);
    return { built, buildErrors, colocated, stored };
+}
+
+/**
+ * What decides the planned source's build casts beyond its declared types:
+ * the query time zone its rows are computed in, under which a build leaves a
+ * `date` uncast (`storageBuildCasts`). An author source's own; for a
+ * generated build source (a persisted view's), its source's and the view's
+ * stages'.
+ */
+function castOptionsFor(
+   pkg: Package,
+   entry: { name: string; modelPath?: string },
+): BuildCastOptions {
+   const def = entry.modelPath
+      ? pkg.getModel(entry.modelPath)?.getModelDef()
+      : undefined;
+   if (!def) return {};
+   const struct = def.contents?.[entry.name];
+   let queryTimezone: string | undefined;
+   if (struct) {
+      queryTimezone = queryTimezoneOf(struct);
+   } else {
+      const plan = planModelPersistedViews(def).plans.find(
+         (p) => p.buildSourceName === entry.name,
+      );
+      const source = plan
+         ? (SourceMap.of(def).node(plan.sourceID)?.def as
+              | {
+                   queryTimezone?: unknown;
+                   fields?: {
+                      type?: unknown;
+                      name?: unknown;
+                      as?: unknown;
+                      pipeline?: unknown;
+                   }[];
+                }
+              | undefined)
+         : undefined;
+      const view = source?.fields?.find(
+         (f) => f.type === "turtle" && (f.as ?? f.name) === plan?.viewName,
+      );
+      queryTimezone = queryTimezoneOf({
+         queryTimezone: source?.queryTimezone,
+         query: {
+            pipeline: Array.isArray(view?.pipeline) ? view.pipeline : [],
+         },
+      });
+   }
+   return queryTimezone ? { queryTimezone } : {};
 }
 
 /**

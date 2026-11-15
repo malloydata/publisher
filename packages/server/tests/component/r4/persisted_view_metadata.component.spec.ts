@@ -43,7 +43,7 @@ import {
 import { renderFiles, type Shape } from "./conformance/shapes";
 import { rowDifference } from "./harness";
 
-const MODEL = `##! experimental { persistence }
+const MODEL = `##! experimental { persistence sql_functions }
 import "raw.malloy"
 
 source: ov is orders_raw extend {
@@ -51,6 +51,11 @@ source: ov is orders_raw extend {
   #(doc) "Revenue"
   measure: total is amount.sum()
   measure: order_count is count()
+  // A flag the warehouse returns as an INTEGER, and a number it returns as
+  // text: a build stored uncast keeps both.
+  dimension: big_flag is sql_boolean("CASE WHEN \${amount} > 100 THEN 1 ELSE 0 END")
+  dimension: amount_text is sql_number("CAST(\${amount} AS VARCHAR)")
+  dimension: maybe_date is pick order_date when amount > 50 else null
 
   @PVIEW(ov_by_region)
   view: by_region is { group_by: region; aggregate: total, order_count }
@@ -214,6 +219,29 @@ source: ov is orders_raw extend {
     order_by: created_day
   }
 
+  @PVIEW(ov_flags)
+  view: flags is { group_by: big_flag; aggregate: order_count; order_by: big_flag }
+
+  @PVIEW(ov_text_amount)
+  view: text_amount is { group_by: amount_text; aggregate: order_count }
+
+  @PVIEW(ov_date_probes)
+  view: date_probes is {
+    group_by:
+      old_month is (order_date - 60 years).month
+      far_month is (order_date + 3000 years).month
+      null_month is maybe_date.month
+    aggregate: order_count
+    order_by: old_month, null_month
+  }
+
+  @PVIEW(ov_tf_collision)
+  view: tf_collision is {
+    group_by: d_month is order_date.month, d_month__tf is order_date.year
+    aggregate: order_count
+    order_by: d_month
+  }
+
   @PVIEW(ov_date_measure)
   view: date_measure is {
     group_by: region
@@ -230,6 +258,18 @@ source: ov is orders_raw extend {
       order_by: status
       limit: 2
     }
+  }
+}
+
+source: ovz is orders_raw extend {
+  timezone: 'America/New_York'
+  measure: total is amount.sum()
+
+  @PVIEW(ovz_by_month)
+  view: by_month is {
+    group_by: order_month is order_date.month
+    aggregate: total
+    order_by: order_month
   }
 }
 
@@ -299,6 +339,33 @@ const CASES: Case[] = [
          storage:
             "the stored day reads back at UTC midnight where live answers New York midnight (rows differ, not only a type)",
       },
+   },
+   {
+      name: "an integer flag read as a boolean",
+      malloy: "run: ov -> flags",
+      covers: { column: "big_flag", values: [true, false] },
+   },
+   {
+      name: "a column no faithful cast reads as live's type",
+      malloy: "run: ov -> text_amount",
+      liveIn: ["storage"],
+      declinedBecause: {
+         storage:
+            "the stored `amount_text` (VARCHAR) cannot be read as live's number",
+      },
+   },
+   {
+      name: "a date before 1970, a far-future one and a NULL one",
+      malloy: "run: ov -> date_probes",
+      covers: { column: "null_month", values: [null] },
+   },
+   {
+      name: "a timeframe column beside one named like its internal name",
+      malloy: "run: ov -> tf_collision",
+   },
+   {
+      name: "a date truncation under a source's time zone",
+      malloy: "run: ovz -> by_month",
    },
    {
       name: "a date-typed measure",
