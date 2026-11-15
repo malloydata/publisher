@@ -116,6 +116,8 @@ describe("readPackageAgents", () => {
       expect(answers[0]).toBe(answers[1]);
       if (linkTextKeptVerbatim()) {
          expect(answers[0]).toContain("resolves outside the package");
+      } else {
+         expect(answers[0]).not.toContain("resolves outside the package");
       }
    });
 

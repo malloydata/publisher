@@ -72,6 +72,8 @@ describe("readSkillsDir", () => {
          // the link leads to the package's own skills/real and is served.
          if (linkTextKeptVerbatim()) {
             expect(results[0]).toContain("resolves outside the package");
+         } else {
+            expect(results[0]).not.toContain("resolves outside the package");
          }
 
          // skills/ itself, out and back into a directory of the package.
@@ -89,6 +91,8 @@ describe("readSkillsDir", () => {
          expect(skills[0]).toBe(skills[1]);
          if (linkTextKeptVerbatim()) {
             expect(skills[0]).toContain("resolves outside the package");
+         } else {
+            expect(skills[0]).not.toContain("resolves outside the package");
          }
       } finally {
          fs.rmSync(outside, { recursive: true, force: true });

@@ -851,6 +851,7 @@ describe("a path that goes out of the package and comes back", () => {
          // either way.
          const kept = linkTextKeptVerbatim();
          if (kept) expect(imp[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+         else expect(imp[0]).toStartWith("200");
 
          const model = await pair(`m${form}`, (dir, folder, via) => {
             fs.symlinkSync(
@@ -860,6 +861,7 @@ describe("a path that goes out of the package and comes back", () => {
          });
          expect(model[0]).toBe(model[1]);
          if (kept) expect(model[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+         else expect(model[0]).toStartWith("200");
 
          const manifest = await pair(`j${form}`, (dir, folder, via) => {
             fs.rmSync(path.join(dir, "publisher.json"));
@@ -870,6 +872,7 @@ describe("a path that goes out of the package and comes back", () => {
          });
          expect(manifest[0]).toBe(manifest[1]);
          if (kept) expect(manifest[0]).not.toStartWith("200");
+         else expect(manifest[0]).toStartWith("200");
 
          const probe = await pair(`d${form}`, (dir, folder, via) => {
             fs.symlinkSync(
@@ -881,6 +884,7 @@ describe("a path that goes out of the package and comes back", () => {
          expect(probe[0]).toStartWith("200");
          expect(probe[0]).toContain("real.csv");
          if (kept) expect(probe[0]).not.toContain("d.csv");
+         else expect(probe[0]).toContain("d.csv");
       });
    }
 });
@@ -1086,6 +1090,7 @@ describe("a public/ that is itself a link", () => {
       // Normalized when made (Windows), the link leads to the package's own
       // web/ and serves; kept (POSIX), it is refused. Alike either way.
       if (linkTextKeptVerbatim()) expect(answers[0]).toStartWith("403");
+      else expect(answers[0]).toStartWith("200");
    });
 
    it("serves nothing for a public/ that links to the filesystem root", async () => {

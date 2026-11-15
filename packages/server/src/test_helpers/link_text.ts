@@ -27,6 +27,12 @@ export function linkTextKeptVerbatim(): boolean {
    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
    }
+   // Only Windows is known to normalize. A normalized reading anywhere else
+   // (an odd tmp mount, FUSE) would silently relax the refusal assertions
+   // this probe gates, so it fails loudly instead.
+   if (!verbatim && process.platform !== "win32") {
+      throw new Error("symlink text was normalized on a non-Windows runner");
+   }
    return verbatim;
 }
 
