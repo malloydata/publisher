@@ -112,7 +112,10 @@ import {
 
 /** The tiers a key check runs through, where its table lives. */
 const COLOCATED = new ColocatedTier();
-const STORAGE = new StorageBuildStrategy();
+// Only its key checks. A build goes through the service's adapter, which
+// routes a chained build through the run's collaborators; this one would not.
+const STORAGE: Pick<StorageBuildStrategy, "checkKey" | "keyCheckSql"> =
+   new StorageBuildStrategy();
 
 /**
  * The key checks an auto-run runs over a table once it is written: a

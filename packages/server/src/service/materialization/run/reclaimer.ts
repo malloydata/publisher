@@ -44,7 +44,9 @@ import type { RenamedTable } from "./run_instructions";
 
 /** The tiers a drop reaches a table through. */
 const COLOCATED = new ColocatedTier();
-const STORAGE = new StorageBuildStrategy();
+// Only its drop. A build goes through the service's adapter, which routes a
+// chained build through the run's collaborators; this one would not.
+const STORAGE: Pick<StorageBuildStrategy, "drop"> = new StorageBuildStrategy();
 
 /** A physical table's key for drop bookkeeping: where it lives, and its name. */
 function tableKey(destination: string, physicalTableName: string): string {
