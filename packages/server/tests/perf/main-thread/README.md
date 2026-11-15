@@ -100,14 +100,16 @@ against any build, a release that predates it included.
 ## The verdict
 
 Each side's figure is the median over its rounds. The two counts fail if any
-round is over.
+round is over. On `ubuntu-latest` (`verdict.ts` has the ranges): 0.12.6's
+`/status` p90 is 370 to 660 ms, which is why the budget is 1000 ms rather than
+the 500 ms a laptop suggests; 0.13.1's is 1.5 to 2 s.
 
 | check | kind | limit | catches |
 |---|---|---|---|
 | main-thread CPU per op vs baseline | relative | 1.5x | more synchronous work per load, bind or poll (0.13.1's `formatArrayQueryJoins`, its governor tick, its served-copy compiles) |
 | `/status` p90 vs baseline | relative | 2x, once the candidate's p90 is over 150 ms | a heartbeat that does more per poll or waits behind more main-thread work |
-| `/status` p90 under the storm | absolute | 500 ms | the same, when the baseline is as bad |
-| longest event-loop block | absolute | see `verdict.ts` | one long synchronous section (a whole-model walk or compile in one task) |
+| `/status` p90 under the storm | absolute | 1000 ms | the same, when the baseline is as bad |
+| longest event-loop block | absolute | 3000 ms | a gross stall: one synchronous section of seconds (0.12.5's storm went silent for 47 s). It does not separate 0.13.1 from 0.12.6, whose longest blocks overlap at 1 to 2 s on a CI runner |
 | served-copy compiles on an identical re-bind | absolute | 0 | re-binding the manifest a version already holds recompiling its served copy on the main thread (0.13.1 cause 1) |
 | loads started by `/status` | absolute | 0 | a heartbeat that starts a package load |
 
@@ -158,7 +160,8 @@ two sides publishing more than 10% differently.
   drops a package one side refuses and says so in the log.
 - The server settings in `storm.ts` (`SERVER_ENV`) mirror a worker with
   materialization on. Change them when the fleet's worker settings change.
-- The limits were calibrated on the donated CI runners (4 vCPU, 16 GB) against
+- The limits were calibrated on GitHub-hosted `ubuntu-latest` (4 vCPU, 16 GB), which is why the
+  job is pinned there, against
   0.12.6, 0.13.1 and the three fixes for ms2data/service#7795 merged together;
   the PR that added this check has the numbers. Recalibrate before tightening a
   limit, and before making the check required.

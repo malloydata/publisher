@@ -57,8 +57,8 @@ a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
 one runner, added after Publisher 0.13.1 pinned the worker's main thread
 (https://github.com/ms2data/service/issues/7795). On a PR that touches `packages/server/**`
 or `bun.lock` it compares the PR's head with its merge base; nightly, and as `release.yml`'s
-gate, it compares `main` with the anchor release in `anchor.json`. It holds no secret, so it runs
-on the donated runners, and it is **not a required check yet**: its flake rate on PRs decides
+gate, it compares `main` with the anchor release in `anchor.json`. It holds no secret but stays on GitHub-hosted
+`ubuntu-latest`, where its absolute budgets were calibrated, and it is **not a required check yet**: its flake rate on PRs decides
 that. It path-filters, which is only safe because it is not required (see below).
 
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:

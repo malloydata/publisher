@@ -71,7 +71,9 @@ concurrency:
 jobs:
   main-thread:
     name: main-thread regression
-    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    # Pinned, not on the donated runners: the absolute budgets were calibrated
+    # on GitHub-hosted ubuntu-latest, and a runner class change moves them.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Skipped by the caller

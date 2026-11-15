@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         pair: ["126-vs-131", "126-vs-126", "126-vs-fixed"]
-        n: [1, 2, 3]
+        n: [4, 5, 6]
     steps:
       - uses: actions/checkout@v4
         with:

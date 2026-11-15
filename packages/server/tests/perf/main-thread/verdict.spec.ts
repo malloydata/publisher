@@ -99,7 +99,7 @@ describe("judge", () => {
    it("holds the absolute budgets even when the baseline is as bad", () => {
       const bad = run({
          status: { n: 100, p50: 300, p90: 2000, max: 5000, timeouts: 0 },
-         maxBlockMs: 3000,
+         maxBlockMs: 4000,
       });
       const v = judge([bad], [bad]);
       expect(outcomeOf(v, "/status p90 vs baseline")).toBe("pass");
