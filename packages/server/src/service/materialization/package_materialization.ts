@@ -1434,47 +1434,14 @@ export class PackageMaterialization {
 
    /**
     * Warnings for a model whose served copy (materialization v2) leaves
-    * sources unserved: it did not compile, a cross-connection join waits for
-    * the other side to build, or a source could not be re-rooted. Those
+    * sources unserved: it did not compile, a join it moved across connections
+    * reads a source that is not stored, or a source could not be re-rooted. Those
     * sources serve through today's serve shape, or live. Empty when the served
     * copy is off.
     */
    servedCopyWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of this.owner.models()) {
-         const leftOut = model.crossConnectionLeftOutDefinitions?.() ?? [];
-         // What read a left-out join goes with it; nothing leaves silently.
-         const readers = leftOut.filter((l) => !l.crossConnection);
-         if (readers.length > 0) {
-            warnings.push({
-               model: modelPath,
-               code: SERVED_COPY_WARNING_CODE,
-               severity: "warn",
-               message:
-                  "These definitions read a join left out across connections, so this model loads without them: " +
-                  readers
-                     .map((l) =>
-                        l.declaration
-                           ? `\`${l.declaration}.${l.name}\``
-                           : `\`${l.name}\``,
-                     )
-                     .join(", ") +
-                  ".",
-            });
-         }
-         for (const l of leftOut) {
-            if (!l.crossConnection) continue;
-            warnings.push({
-               model: modelPath,
-               subject: l.declaration ?? l.name,
-               code: SERVED_COPY_WARNING_CODE,
-               severity: "warn",
-               message:
-                  `This model joins sources on different connections (the join \`${l.name}\`), ` +
-                  "which does not compile live, so it loads without that join and what reads it. " +
-                  "Queries that need it are answered once both sides are built into one storage destination.",
-            });
-         }
          const problems = model.servedCopyProblems?.() ?? [];
          // A join already inlined, but kept as written: its own warning says
          // why, so the cross-connection one does not advise inlining it.

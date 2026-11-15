@@ -50,10 +50,19 @@ To opt out, set `PUBLISHER_MATERIALIZE=false`: `#(materialize)` and `#(preaggreg
 
 The setting is removed one release after this one, together with its off position; from then on materialization v2 is always on. See docs/materialization.md and docs/materialization-migration.md.
 
+## [Unreleased] — (BREAKING) a model that joins sources across origin connections fails to load, as Malloy says
+
+Malloy refuses a join into a source on another connection (`join-connection-mismatch`), and refuses it for the whole file. With `PUBLISHER_MATERIALIZE` on, Publisher used to load such a model anyway, with the join and everything that read it left out, and answer queries through the join once both sides were stored in one storage destination. That rescue is removed: whatever the switch says, such a model fails to load.
+
+**Who is affected:** a package whose own files join a source on one connection to a source on another, served with `PUBLISHER_MATERIALIZE` set to `true` before this release. It loaded before; it now fails to load. A server that never set the switch sees no change, since such a model never loaded there. The whole package fails, its other models included, since a package's load stops at its first model that does not compile; the other packages in the environment load and serve as before. The load error is Malloy's own diagnostic (`Cannot join 'u', which is on connection 'product', into a source on connection 'crm'`): a `/status` `loadErrors` entry naming the package at boot, and a `424` from a publish.
+
+**The fix:** put the joined sources on one connection.
+
+Not affected: a stored source whose reference join reads a source that is not stored in its destination. The served copy still leaves that join out, so the queries that do not use it read the table, and a query that does is answered live (path report `CROSS_CONNECTION`, warning reason `cross_connection_join`). The `served-copy-not-served` warnings that named what a cross-connection model loaded without are gone with the rescue. No API change.
 
 ## [Unreleased] — the materialization rewriters read Malloy as Malloy reads it
 
-The served copy, a build's copy of the author's files and the build view that leaves joins across connections out all rewrite the author's text, and read it with their own small lexer. That lexer now shares one core with the reader of a caller's query text, which follows Malloy's own lexer exactly. What changes:
+The served copy and a build's copy of the author's files both rewrite the author's text, and read it with their own small lexer. That lexer now shares one core with the reader of a caller's query text, which follows Malloy's own lexer exactly. What changes:
 
 - **Names in any script are read as names.** A source, field or join named outside ASCII (`café`, `größe`, `注文`) was split by the old lexer at its first non-ASCII letter, so its re-root on a stored table did not compile and the source answered live, with the package warning `served-copy-not-served` (`reroot_not_compiled`) and a serve verdict of `live`. Such a source is now served from its table, with the same answers. To tell whether you were affected: a stored source with a non-ASCII name whose serve verdict was `live` with that warning.
 - **A string or quoted name ends at its line, a `#|` block annotation is skipped whole, and a `"""` block is one unit with the Malloy in its `%{ … }`.** None of these can be written differently in a model that compiles, so no compiled source's answers change. A text the rewriters read that holds a string crossing a line (which only a file edited since its last compile can) is now unreadable to them, and its source answers live rather than being rewritten around the break.

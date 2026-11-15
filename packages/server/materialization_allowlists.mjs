@@ -85,8 +85,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
       "2g.3",
-   "package_load/package_load_worker.ts -> service/materialization/plan/cross_connection_joins":
-      "2g.3",
    "package_load/protocol.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
@@ -100,8 +98,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model.ts -> service/materialization/plan/build_file_generator":
       "2g.3",
    "service/model.ts -> service/materialization/plan/build_plan": "2g.3",
-   "service/model.ts -> service/materialization/plan/cross_connection_joins":
-      "2g.3",
    "service/model.ts -> service/materialization/plan/persisted_view": "2g.3",
    "service/model.ts -> service/materialization/plan/preaggregation_validation":
       "2g.3",
@@ -219,10 +215,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    },
    "service/materialization/plan/build_plan.ts": { count: 8, step: "5" },
    "service/materialization/plan/build_plan_compile.ts": {
-      count: 2,
-      step: "5",
-   },
-   "service/materialization/plan/cross_connection_joins.ts": {
       count: 1,
       step: "5",
    },
@@ -243,7 +235,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    },
    "service/materialization/plan/rollup_plan.ts": { count: 5, step: "5" },
    "service/materialization/plan/v1_build_companion.ts": {
-      count: 3,
+      count: 2,
       step: "5",
    },
    "service/materialization/run/incremental_build.ts": { count: 1, step: "5" },
