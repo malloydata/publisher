@@ -352,6 +352,20 @@ const SAME_NAMED_QUERIES = {
 };
 
 describe("same-named sources in two models (#6644)", () => {
+   // Two sources on one table fail the load by default
+   // (`materialization-table-collision`); these hold the serve path to the
+   // operator's opt-out, under which each is refused alone and answers live.
+   beforeAll(async () => {
+      restore();
+      restore = withSwitch("on", { PERSIST_COLLISION_ENFORCE: "false" });
+      await freshLoadPool();
+   });
+   afterAll(async () => {
+      restore();
+      restore = withSwitch("on");
+      await freshLoadPool();
+   });
+
    for (const [tier, annotation] of [
       ["colocated", "#@ persist"],
       ["storage", '#@ persist storage="lake"'],

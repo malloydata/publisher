@@ -20,7 +20,10 @@ import {
    gateEnforcedAtRead,
    type TierGateInputs,
 } from "./materialization_eligibility";
-import type { PackageAnnotationFinding } from "../../annotation_reader";
+import {
+   MATERIALIZATION_TABLE_COLLISION_CODE,
+   type PackageAnnotationFinding,
+} from "../../annotation_reader";
 import type { SourceBuild } from "./addressing";
 import {
    materializeRefusalFinding,
@@ -298,14 +301,15 @@ export function sharedTables(
 /**
  * The compiled plan less every `#(materialize)` source whose table is also
  * another source's table (same destination, same physical name, a different
- * content address), each reported as `materialize-not-built` naming the
- * others. Refused outright, not built, whether its name is the default (the
+ * content address), each reported as `materialization-table-collision`
+ * naming the others, which fails the load (under
+ * `PERSIST_COLLISION_ENFORCE=false`, a `materialize-not-built` refusal). Refused outright, not built, whether its name is the default (the
  * source's own, with no `name=`) or a `name=` the author chose:
  * `#(materialize)` has no packages to stay compatible with, and a build over
  * another source's table would hand one source's readers the other's rows.
  * The same source reached through two models is one address, and is no
  * collision. What still shares a table afterwards (v1 sources only) is
- * {@link sharedTables}', served live, and refused at publish under
+ * {@link sharedTables}', served live, and a load failure under
  * `PERSIST_COLLISION_ENFORCE`.
  */
 export function refuseCollidingMaterialize<
@@ -335,23 +339,46 @@ export function refuseCollidingMaterialize<
       }
    }
    if (refused.size === 0) return compiled;
-   const keep = (sourceID: string) => !refused.has(sourceID);
-   const without = <V>(record: Record<string, V> | undefined) =>
-      record &&
-      Object.fromEntries(Object.entries(record).filter(([id]) => keep(id)));
-   const findings = [...(compiled.annotationFindings ?? [])];
-   for (const [sourceID, reason] of refused) {
-      findings.push(
+   return withoutSources(
+      compiled,
+      [...refused].map(([sourceID, reason]) =>
          materializeRefusalFinding(
             {
                sourceName: compiled.sources[sourceID].name,
                sourceID,
                reason,
+               // An author's names collide: invalid, unless the deployment
+               // opts out (PERSIST_COLLISION_ENFORCE=false, applied where the
+               // package loads), which refuses the source alone.
+               malformedCode: MATERIALIZATION_TABLE_COLLISION_CODE,
             },
             compiled.sourceModelPaths?.[sourceID] ?? "",
          ),
-      );
-   }
+      ),
+      new Set(refused.keys()),
+   );
+}
+
+/**
+ * The compiled plan less the sources in `drop` (neither built nor served:
+ * they answer live), with `findings` added to say why.
+ */
+export function withoutSources<
+   T extends EligibilityPlan & {
+      builds: SourceBuild[];
+      materializePlans?: Record<string, MaterializePlan>;
+      annotationFindings?: PackageAnnotationFinding[];
+   },
+>(
+   compiled: T,
+   findings: PackageAnnotationFinding[],
+   drop: ReadonlySet<string>,
+): T {
+   if (drop.size === 0) return compiled;
+   const keep = (sourceID: string) => !drop.has(sourceID);
+   const without = <V>(record: Record<string, V> | undefined) =>
+      record &&
+      Object.fromEntries(Object.entries(record).filter(([id]) => keep(id)));
    return {
       ...compiled,
       builds: compiled.builds
@@ -370,7 +397,7 @@ export function refuseCollidingMaterialize<
       sourceModelPaths: without(compiled.sourceModelPaths),
       sourceGateOutcomes: without(compiled.sourceGateOutcomes),
       materializePlans: without(compiled.materializePlans),
-      annotationFindings: findings,
+      annotationFindings: [...(compiled.annotationFindings ?? []), ...findings],
    };
 }
 

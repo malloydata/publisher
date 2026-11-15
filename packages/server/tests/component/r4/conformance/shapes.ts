@@ -93,6 +93,8 @@ export interface Shape {
    queries: (ConformanceQuery & { gaps?: GapMap })[];
    variants?: Variant[];
    gaps?: GapMap;
+   /** Settings the shape is loaded under, over the runner's. */
+   env?: Record<string, string>;
 }
 
 /** Render a shape's files for one variant. */
@@ -663,6 +665,11 @@ source: spaced is orders_raw -> {
    {
       name: "same-named sources in two models",
       issue: "#6644",
+      // Two sources on one table fail the load by default
+      // (`materialization-table-collision`, materialization_load_policy.spec.ts);
+      // under the operator's opt-out each is refused alone and answers live,
+      // which is what this shape holds the serve path to.
+      env: { PERSIST_COLLISION_ENFORCE: "false" },
       about: "Two models each persisting a source named summary, and a third importing both under other names",
       files: {
          "a.malloy": `${HEADER}
@@ -740,6 +747,11 @@ import { shipped is summary } from "b.malloy"
    {
       name: "same-named sources in two models, no name=",
       issue: "#6644",
+      // Two sources on one table fail the load by default
+      // (`materialization-table-collision`, materialization_load_policy.spec.ts);
+      // under the operator's opt-out each is refused alone and answers live,
+      // which is what this shape holds the serve path to.
+      env: { PERSIST_COLLISION_ENFORCE: "false" },
       about: "Two models each persisting a source named summary with no name=, so both tables take the source's name",
       files: {
          "a.malloy": `${HEADER}

@@ -220,6 +220,7 @@ import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
 import { hiddenAccess } from "../../governance/ir/compiled_model";
 import {
+   MATERIALIZE_INVALID_CODE,
    MATERIALIZE_KEYS,
    nearestKey,
    PUBLISHER_ROUTES,
@@ -239,6 +240,10 @@ import {
    readNotes,
    type RouteTag,
 } from "./declaration";
+import {
+   ENV_REFERENCE_REASON,
+   tableNameProblem,
+} from "./persist_annotation_validation";
 import {
    accessLiftEdits,
    afterModelHeader,
@@ -431,6 +436,11 @@ export const GENERATOR_KEYS: readonly string[] = [
 /** The code of a `#(materialize)` key outside the route's closed set. */
 const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
 
+/** What a `watermark=[…]` list anywhere but an incremental pair table is told. */
+const WATERMARK_LIST_REASON =
+   "#(materialize) `watermark=` takes a list only on an incremental pair " +
+   "table (an inlined join_many); name one dimension";
+
 /** The code of a `#(materialize)` key the route no longer reads. */
 const MATERIALIZE_RETIRED_KEY_CODE = "materialize-retired-key";
 
@@ -452,10 +462,11 @@ export interface MaterializeRefusal {
    sourceID?: string;
    reason: string;
    /**
-    * Set when the declaration cannot be read as written (it does not parse,
-    * or has an unknown key):
-    * the finding is `malformed` under this code, refused at publish, rather
-    * than the `unservable` `materialize-not-built`.
+    * Set when the declaration is invalid (it does not parse, has an unknown
+    * or retired key, a bad value or a contradictory combination): the
+    * finding is `malformed` under this code and fails the publish and the
+    * load, rather than the `unservable` `materialize-not-built` of a valid
+    * declaration Publisher cannot build.
     */
    malformedCode?: string;
 }
@@ -522,6 +533,8 @@ function readMaterializeDeclaration(
         keys: string[];
         /** Parse errors: a declaration with any is not read at all. */
         errors: string[];
+        /** A line read `@env.`, which the reader dropped. */
+        readsEnv: boolean;
      }
    | undefined {
    const notes = declaredNotes(def, contents).filter(
@@ -535,6 +548,7 @@ function readMaterializeDeclaration(
       errors: log
          .filter((entry) => entry.severity === "error")
          .map((entry) => entry.message),
+      readsEnv: log.some((entry) => entry.code === "env-reference-dropped"),
    };
 }
 
@@ -1007,12 +1021,14 @@ function inlinedPathOf(
    joins: readonly SourceJoin[],
    map: SourceMap,
    connection: unknown,
-): { path: SourceJoin[] } | { reason: string } {
+): { path: SourceJoin[] } | { reason: string; invalid?: true } {
    const names = entry.split(".");
    const quoted = quotedName(entry);
-   if (names.some((n) => n === "")) {
+   // Names no join: invalid, whatever the model is.
+   if (names.some((n) => n === "") || !joins.some((j) => j.name === names[0])) {
       return {
-         reason: `inline= names ${quoted}, which is not a join or a path of joins`,
+         reason: `inline= names ${quoted}, which is not a join or a path of joins of this source`,
+         invalid: true,
       };
    }
    const first = inlineRefusal(names[0], joins, connection);
@@ -1033,6 +1049,7 @@ function inlinedPathOf(
       if (!next) {
          return {
             reason: `inline= names ${quoted}, and ${quotedName(names[k])} is not a join of the source ${quotedName(prev.name)} joins`,
+            invalid: true,
          };
       }
       if (next.relationship !== "many") return { reason: throughOne };
@@ -1724,7 +1741,7 @@ export function planModelMaterialize(
          continue;
       }
       // Before any other refusal: a retired key, or one outside the closed
-      // set, is malformed, refused at publish, whatever else the source would
+      // set, is malformed (it fails the load), whatever else the source would
       // be refused for.
       const retiredKey = retiredKeyRefusal(declaration);
       if (retiredKey) {
@@ -1746,12 +1763,24 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // Before anything else is read: the line's directives were dropped,
+      // so building it would put a table where its author did not say.
+      if (declaration.readsEnv) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: ENV_REFERENCE_REASON,
+            malformedCode: MATERIALIZE_INVALID_CODE,
+         });
+         continue;
+      }
       if (declaresOwnPersist(def, contents)) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
             reason:
                "the source also carries its own #@ persist; declare one or the other",
+            malformedCode: MATERIALIZE_INVALID_CODE,
          });
          continue;
       }
@@ -1789,10 +1818,59 @@ export function planModelMaterialize(
                sourceID: def.sourceID,
                reason:
                   'inline= must be a list of join names, such as inline=["carriers"]',
+               malformedCode: MATERIALIZE_INVALID_CODE,
             });
             continue;
          }
          inline = [...new Set(items as string[])];
+      }
+      // The values the declaration carries, read before any refusal of a
+      // valid declaration, so an invalid one always fails the load.
+      const carried = carriedPersistKeys(declaration);
+      if ("reason" in carried) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: carried.reason,
+            malformedCode: MATERIALIZE_INVALID_CODE,
+         });
+         continue;
+      }
+      // Its place, by the one placement rule (declaration.ts).
+      const placed = placementOf(declaration.tag);
+      if ("refused" in placed) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: EMPTY_STORAGE_REASON,
+            malformedCode: MATERIALIZE_INVALID_CODE,
+         });
+         continue;
+      }
+      const namedTable = carried.persist.name?.trim();
+      const nameProblem = namedTable ? tableNameProblem(namedTable) : undefined;
+      if (nameProblem) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: nameProblem,
+            malformedCode: MATERIALIZE_INVALID_CODE,
+         });
+         continue;
+      }
+      // A list of watermarks is a pair table's: it needs an incremental
+      // refresh and an inlined join (the pair, checked once laid out below).
+      if (
+         carried.watermarks &&
+         !(carried.persist.refresh === "incremental" && inline.length > 0)
+      ) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: WATERMARK_LIST_REASON,
+            malformedCode: MATERIALIZE_INVALID_CODE,
+         });
+         continue;
       }
       const joins = map.joinsOf(def.sourceID);
       // Each entry's joins from the source down: a join, or a path of
@@ -1801,13 +1879,16 @@ export function planModelMaterialize(
          inlinedPathOf(entry, joins, map, def.connection),
       );
       const inlineProblem = resolved.find(
-         (r): r is { reason: string } => "reason" in r,
+         (r): r is { reason: string; invalid?: true } => "reason" in r,
       );
       if (inlineProblem) {
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
             reason: inlineProblem.reason,
+            ...(inlineProblem.invalid
+               ? { malformedCode: MATERIALIZE_INVALID_CODE }
+               : {}),
          });
          continue;
       }
@@ -1973,26 +2054,7 @@ export function planModelMaterialize(
          });
          continue;
       }
-      const carried = carriedPersistKeys(declaration);
-      if ("reason" in carried) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: carried.reason,
-         });
-         continue;
-      }
       const { persist } = carried;
-      // Its place, by the one placement rule (declaration.ts).
-      const placed = placementOf(declaration.tag);
-      if ("refused" in placed) {
-         refused.push({
-            sourceName: name,
-            sourceID: def.sourceID,
-            reason: EMPTY_STORAGE_REASON,
-         });
-         continue;
-      }
       if (placed.placement.tier === "storage") {
          persist.storage = placed.placement.destination;
       }
@@ -2067,9 +2129,8 @@ export function planModelMaterialize(
          refused.push({
             sourceName: name,
             sourceID: def.sourceID,
-            reason:
-               "#(materialize) `watermark=` takes a list only on an incremental " +
-               "pair table (an inlined join_many); name one dimension",
+            reason: WATERMARK_LIST_REASON,
+            malformedCode: MATERIALIZE_INVALID_CODE,
          });
          continue;
       }
@@ -2245,8 +2306,8 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
 
 /**
  * A refused declaration as a package warning: the source is not materialized
- * and serves live, which is the `unservable` tier, or `malformed` (refused at
- * publish) when the declaration cannot be read as written.
+ * and serves live, which is the `unservable` tier, or `malformed` (it fails
+ * the publish and the load) when the declaration is invalid.
  */
 export function materializeRefusalFinding(
    refusal: MaterializeRefusal,
@@ -2256,9 +2317,11 @@ export function materializeRefusalFinding(
       route: MATERIALIZE_ROUTE,
       tier: refusal.malformedCode ? "malformed" : "unservable",
       code: refusal.malformedCode ?? "materialize-not-built",
-      message:
-         `#(materialize) on source "${refusal.sourceName}" is not built, ` +
-         `so the source is served live: ${refusal.reason}.`,
+      message: refusal.malformedCode
+         ? `#(materialize) on source "${refusal.sourceName}" is invalid: ` +
+           `${refusal.reason}.`
+         : `#(materialize) on source "${refusal.sourceName}" is not built, ` +
+           `so the source is served live: ${refusal.reason}.`,
       subject: refusal.sourceName,
       model,
    };

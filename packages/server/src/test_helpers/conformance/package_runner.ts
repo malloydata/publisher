@@ -103,11 +103,12 @@ export type Outcome = { answer: Answer } | { error: string };
  */
 export type Switch = "off" | "on" | "cutover";
 
-function settingsFor(materialize: Switch) {
+function settingsFor(materialize: Switch, env: Record<string, string> = {}) {
    return {
       env: {
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_MATERIALIZE: materialize === "off" ? "false" : "true",
+         ...env,
       },
    };
 }
@@ -118,8 +119,12 @@ function settingsFor(materialize: Switch) {
  * cutover's bindings are pushed at bind, so a fixture queried under
  * `cutover` is rebound first ({@link LoadedFixture.rebind}).
  */
-export function withSwitch(materialize: Switch): () => void {
-   return installSettings(settingsFor(materialize)).restore;
+export function withSwitch(
+   materialize: Switch,
+   /** Settings of the fixture's own, over the switch's. */
+   env: Record<string, string> = {},
+): () => void {
+   return installSettings(settingsFor(materialize, env)).restore;
 }
 
 /**
