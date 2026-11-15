@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_date@<hammer>/mspb/mspb.malloy": "persist",
+      "by_region@<hammer>/mspb/mspb.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

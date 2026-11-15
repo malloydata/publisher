@@ -1,45 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   FixedConnectionMap,
-   InMemoryURLReader,
-   type ModelDef,
-   Runtime,
-} from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
+import { type ModelDef } from "@malloydata/malloy";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 import { confirmedAncestors, keptAncestorChain } from "./kept_ancestors";
 import { SourceMap } from "./source_map";
 
-// File-backed: db-duckdb's in-memory database is shared across spec files.
-const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "kept-ancestors-spec-"));
-const duckdb = new DuckDBConnection("duckdb", path.join(dbDir, "db.duckdb"));
+const mz = materializationFixture();
 const URL_ = "file:///pkg/m.malloy";
 
-async function compile(text: string): Promise<ModelDef> {
-   const runtime = new Runtime({
-      urlReader: new InMemoryURLReader(new Map([[URL_, text]])),
-      connections: new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      ),
-   });
-   return (await runtime.loadModel(new URL(URL_)).getModel())._modelDef;
-}
-
 beforeAll(async () => {
-   await duckdb.runSQL(
+   await mz.duckdb.runSQL(
       "CREATE TABLE ev AS SELECT 1 AS id, 'acme' AS org, 1.0 AS amt",
    );
-});
-
-afterAll(async () => {
-   await duckdb.close();
-   fs.rmSync(dbDir, { recursive: true, force: true });
 });
 
 // Over a table, Malloy records no base edge for an extension; the walk
@@ -63,7 +37,7 @@ describe("the kept walk over a table-backed base", () => {
       (model.contents[name] as unknown as { location: { range: never } })
          .location.range;
    beforeAll(async () => {
-      model = await compile(TEXT);
+      model = await mz.compile(TEXT);
    });
 
    for (const [label, read] of [

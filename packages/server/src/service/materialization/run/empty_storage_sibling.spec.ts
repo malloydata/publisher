@@ -54,7 +54,7 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
       it(`auto-run refuses that source alone and instructs its sibling when ${label}`, () => {
          const { service } = createMocks();
          const { instructions, refused } = (
-            service as unknown as {
+            service.collaborators as unknown as {
                deriveSelfInstructions: (
                   c: unknown,
                   n: string[] | undefined,

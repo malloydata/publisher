@@ -7,7 +7,7 @@
  * v1 colocated, and `#(materialize)`), under the v1 cutover (`cutover`: v1
  * tables are read by the served copy, the rollup and view legs, or not at
  * all; since the retirement the only path), through the real
- * package path (conformance/package_harness.ts). Every query's served answer must
+ * package path (src/test_helpers/conformance/package_runner.ts). Every query's served answer must
  * equal live, rows and result metadata (field types with their timeframes,
  * and annotations), and a stored table must have answered it.
  *
@@ -34,7 +34,7 @@ import {
    type Switch,
    withSwitch,
    type WireField,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import {
    type ConformanceQuery,
    type Expect,

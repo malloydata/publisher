@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * What the planner decides for each stored table, as plain data the build
- * and the serving legs both read: a `#(materialize)` source's plan (its stored
+ * What the planner decides for each stored table: `TablePlan`, one per
+ * planned table with its kind fixed at plan, and, as plain data the build and
+ * the serving legs both read, a `#(materialize)` source's plan (its stored
  * columns, read-time terms, pair layout and the bases its served copy keeps),
- * a persisted view's and a persisted named query's, and a `#(preaggregate)`
- * rollup's, with the one reader of the `sourceID` that keys each of them.
+ * a persisted view's and a persisted named query's, a `#(preaggregate)`
+ * rollup's and a table's classified gate, with the one reader of the
+ * `sourceID` that keys each of them.
  *
  * Planned in `plan/` (`build_file_generator.ts`, `persisted_view.ts`,
  * `rollup_plan.ts`); read by the run's builds, the bind, the served copy and
@@ -16,6 +18,7 @@
  * Pure.
  */
 
+import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type { MaterializeReadTimeTerm, TermUse } from "./read_time_terms";
 import type { AggregateLeaf, MeasureExpr, RollupPlan } from "./rollup_measures";
 
@@ -338,10 +341,10 @@ export interface MaterializePlan {
    /**
     * The probe compiler found the source's rows the same in every query time
     * zone (P9): its `where:` terms and base relation compile to the same SQL
-    * at every probe zone. Absent: a `where: ts > @2026-03-08 09:00` (or a
-    * base the probe could not clear) filtered the table's rows in the
-    * build's zone, so a query that sets a `timezone:` over it is answered
-    * live.
+    * at every probe zone. Absent: a `where:` against a timestamp literal,
+    * which compiles in the query's zone (or a base the probe could not
+    * clear), filtered the table's rows in the build's zone, so a query that
+    * sets a `timezone:` over it is answered live.
     */
    zoneFreeRows?: true;
    /** One uniqueness check per inlined join_one (P8). */
@@ -456,8 +459,8 @@ export interface RollupMeasure {
  */
 export interface RollupVariantPlan extends RollupPlan {
    /**
-    * Marks a rollup the variant leg plans and serves: a `#(preaggregate)`
-    * one, or a v1 `#@ preaggregate` line read as one (the cutover's G4).
+    * Marks a rollup the rollup leg plans and serves: a `#(preaggregate)`
+    * one, or a v1 `#@ preaggregate` line read as one.
     */
    variant: true;
    baseSourceID: string;
@@ -472,7 +475,7 @@ export interface RollupVariantPlan extends RollupPlan {
    fanOutDimensions: string[];
    /**
     * Whether the base declares a row-level gate (`#(access_filter)` or
-    * `#(authorize)`): the join-to-rollup leg (A7) reads the rollup through a
+    * `#(authorize)`): the join-to-rollup branch (A7) reads the rollup through a
     * join, where no gate is grafted, so it declines such a base.
     */
    baseGated: boolean;
@@ -486,14 +489,14 @@ export interface RollupVariantPlan extends RollupPlan {
     * set when the grain is one dimension of the base and the companion
     * compiled the check, for a colocated and a `storage=` rollup alike. A run builds it only
     * when a join_one in the package is keyed on that dimension (see
-    * {@link joinOneKeysOf}); the join-to-rollup leg (A7) reads its outcome.
+    * {@link joinOneKeysOf}); the join-to-rollup branch (A7) reads its outcome.
     */
    keyCheck?: RollupKeyCheck;
    /**
     * The primary key checks of the query sources that read this rollup through
     * a join read as a join_many (see {@link readsAsJoinMany}): set at plan time
     * for each such source the package declares (see {@link parentKeyNeedsOf}),
-    * and run by the rollup's build. The join-to-rollup leg (A7) reads their
+    * and run by the rollup's build. The join-to-rollup branch (A7) reads their
     * outcome: a rollup row is met by every parent row that shares its key, so
     * the leg answers as live does only when the query source's key is unique
     * and never NULL.
@@ -526,4 +529,101 @@ export interface ParentKeyCheck {
 export interface RollupKeyCheck {
    keyColumn: string;
    sql: string;
+}
+
+/**
+ * Whether every gate on the entry point RESOLVED, not which route it was written
+ * on. `"row_level"` is kept as the name so stored plans still read; an
+ * `#(authorize)` lock lands there too, deliberately — this decides whether a
+ * source may be BUILT, and `Model.queryEntryPointHasRowLevelGate` blocks routing
+ * to frozen rows per request on ANY collected gate.
+ */
+export type PersistSourceGateClassification = "row_level" | "rejected";
+
+/**
+ * `classification`: whether the entry point's gates resolved to something
+ * enforceable. `attributed`: `false` when `isAuthorizeAttributedToEntryPoint`
+ * (`plan/materialization_eligibility.ts`) finds a note reachable only through a join —
+ * checked independently because `collectEntryPointGates` does not trace joins,
+ * so `classification` cannot see a join-carried gate. `inheritedRowFilter`:
+ * an `#(access_filter)` the entry point reads from a source it derives from or
+ * extends rather than declares itself. A table of it holds every caller's
+ * rows, and the served copy, which re-roots the entry point and so replaces
+ * the source that declares the gate, cannot graft it: every query is declined
+ * and answered live, so such a table is never built. Absent reads false (a
+ * plan recorded before it).
+ */
+export interface PersistSourceGateOutcome {
+   classification: PersistSourceGateClassification;
+   attributed: boolean;
+   inheritedRowFilter?: boolean;
+}
+
+/**
+ * What a planned table holds, fixed when it is planned and carried to the
+ * build, its telemetry and the binding: never re-derived from which other
+ * plan a source also has, nor from a name.
+ */
+type TableKind = "persist" | "materialize" | "pair" | "rollup" | "view";
+
+/** What every planned table carries, whatever its kind. */
+interface TablePlanFacts {
+   /** The planned source, as Malloy's persistence planner planned it. */
+   source: PersistSource;
+   /**
+    * The build target the source maps onto, for a keyable source (an
+    * unkeyable one has none). The addressing helpers address it without the
+    * fallback lookup.
+    */
+   target?: BuildTarget;
+   /**
+    * The package-relative path of the declaring `.malloy` model. Only known
+    * at plan: a sourceID embeds an absolute `file://` URL with no package
+    * boundary.
+    */
+   modelPath?: string;
+   /** The entry point's `#(authorize)` gate, classified where it compiled. */
+   gate?: PersistSourceGateOutcome;
+   /**
+    * The declared primary key a build checks for a repeated or NULL value
+    * over this table, when it is stored in a destination and read beside a
+    * `storage=` rollup through a join_many keyed on it (the join-to-rollup
+    * leg in a destination). Absent: no such leg, so no check.
+    */
+   storedKeyCheck?: string;
+}
+
+/**
+ * One table a run should build: its kind, the source that builds it and what
+ * the planner decided for it. A `materialize` or `pair` table carries its
+ * `#(materialize)` plan and a `rollup` its rollup; no other kind carries
+ * either.
+ *
+ * Holds the planned Malloy source, so it stays on the thread that planned
+ * it; what crosses the package-load worker is the plan's projection.
+ */
+export type TablePlan = TablePlanFacts &
+   (
+      | {
+           kind: Extract<TableKind, "persist" | "view">;
+           materialize?: undefined;
+           rollup?: undefined;
+        }
+      | {
+           kind: Extract<TableKind, "materialize" | "pair">;
+           materialize: MaterializePlan;
+           rollup?: undefined;
+        }
+      | {
+           kind: Extract<TableKind, "rollup">;
+           rollup: RollupPlan;
+           materialize?: undefined;
+        }
+   );
+
+/** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */
+export function materializeKindOf(
+   plan: Pick<MaterializePlan, "pair">,
+): "materialize" | "pair" {
+   return plan.pair ? "pair" : "materialize";
 }

@@ -22,6 +22,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "summary@<pkg>/a.malloy": "materialize",
+      "summary@<pkg>/b.malloy": "materialize"
+    },
     "materializePlans": {
       "summary@<pkg>/a.malloy": {
         "buildSourceName": "summary__mat",

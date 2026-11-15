@@ -20,6 +20,12 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "big_orders@<hammer>/fmj/fmj.malloy": "persist",
+      "broken_orders@<hammer>/fmj/fmj.malloy": "persist",
+      "north_orders@<hammer>/fmj/fmj.malloy": "persist",
+      "regions@<hammer>/fmj/fmj.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

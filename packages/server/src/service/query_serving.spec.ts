@@ -304,7 +304,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       });
    }
 
-   it("carries every table a join leg in a storage destination reads into the route", async () => {
+   it("carries every table a join branch in a storage destination reads into the route", async () => {
       const rollup = { ...binding("rollup"), kind: "rollup" as const };
       const source = binding("flights");
       const candidate = rollupCandidate({

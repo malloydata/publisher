@@ -27,7 +27,7 @@ import {
 } from "./materialization_eligibility";
 import { collectSourceEligibility } from "./eligibility_collect";
 import { installSettings } from "../../../test_helpers/settings_env";
-import type { PersistSourceGateOutcome } from "./persist_source_fields";
+import type { PersistSourceGateOutcome } from "../domain/table_plans";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
    admitGivenPositions,
@@ -154,11 +154,12 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 #@ persist name="mz_given_outside" storage=lake
 source: mz_given_outside is base -> { select: * } extend { where: tenant = $tenant }`);
       expect(sources.mz_given_outside).toBeDefined();
-      const plan = assertMaterializationEligible(
+      assertMaterializationEligible(
          sources.mz_given_outside,
          deriveAnnotationFields(sources.mz_given_outside),
       );
-      expect(plan.terms).toEqual([
+      const admitted = admitGivenPositions(sources.mz_given_outside);
+      expect(admitted.ok && admitted.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
    });
@@ -605,11 +606,12 @@ source: mz_joined_unread is joiner extend {
       // Unread: the join is pruned, so nothing given-derived reaches the
       // artifact and there is nothing to strip or re-apply.
       expect(await sources.mz_joined_unread.getSQL()).not.toContain("JOIN");
-      const plan = assertMaterializationEligible(
+      assertMaterializationEligible(
          sources.mz_joined_unread,
          deriveAnnotationFields(sources.mz_joined_unread),
       );
-      expect(plan.terms).toEqual([]);
+      const admitted = admitGivenPositions(sources.mz_joined_unread);
+      expect(admitted.ok && admitted.terms).toEqual([]);
    });
 });
 
@@ -640,7 +642,9 @@ source: by_category is orders -> {
       expect(asPersist.message).toContain("#@ persist");
       const asRollup = refusal(() =>
          assertTierEligible(source, false, {
-            preaggregatePlans: { [source.sourceID]: {} },
+            tables: {
+               [source.sourceID]: { kind: "rollup", rollup: {} as never },
+            },
          }),
       );
       expect(asRollup.message).toContain("#@ preaggregate");
@@ -667,8 +671,15 @@ source: by_category is orders -> {
          },
          materialized = true,
       ) => ({
-         materializePlans: materialized ? { [sourceID]: {} } : {},
-         sourceGateOutcomes: { [sourceID]: outcome },
+         tables: {
+            [sourceID]: materialized
+               ? {
+                    kind: "materialize" as const,
+                    materialize: {} as never,
+                    gate: outcome,
+                 }
+               : { kind: "persist" as const, gate: outcome },
+         },
       });
 
       it("admits a #(materialize) source's own row-level gate to the storage tier with the gated-sources switch on or off (G3), and only with v2's switch", async () => {
@@ -713,7 +724,14 @@ source: by_category is orders -> {
             inputs(id, { classification: "rejected", attributed: true }),
             // A gate reached only through a join is not the entry point's.
             inputs(id, { classification: "row_level", attributed: false }),
-            { materializePlans: { [id]: {} } },
+            {
+               tables: {
+                  [id]: {
+                     kind: "materialize" as const,
+                     materialize: {} as never,
+                  },
+               },
+            },
          ]) {
             expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(
                false,
@@ -744,9 +762,15 @@ source: by_category is orders -> {
          expect(
             withEnv(G3_ONLY, () =>
                gateEnforcedAtRead(id, {
-                  ...inputs(id),
-                  materializePlans: { [id]: { persist: { storage: "lake" } } },
-               } as never),
+                  tables: {
+                     [id]: {
+                        ...inputs(id).tables[id],
+                        materialize: {
+                           persist: { storage: "lake" },
+                        } as never,
+                     },
+                  },
+               }),
             ),
          ).toBe(true);
          // G3's other conditions hold as for v1: an inherited, unproven or
@@ -800,7 +824,7 @@ source: by_category is orders -> {
             for (const plan of [
                v1({ classification: "rejected", attributed: true }),
                v1({ classification: "row_level", attributed: false }),
-               { materializePlans: {} },
+               { tables: {} },
             ]) {
                expect(
                   withEnv(env, () => gateEnforcedAtRead(id, plan, true)),
@@ -832,18 +856,7 @@ source: by_category is orders -> {
                "v__by_x__view@file:///elig/m.malloy.persist-view.malloy";
             expect(
                withEnv(env, () =>
-                  gateEnforcedAtRead(
-                     view,
-                     {
-                        sourceGateOutcomes: {
-                           [view]: {
-                              classification: "row_level",
-                              attributed: true,
-                           },
-                        },
-                     },
-                     true,
-                  ),
+                  gateEnforcedAtRead(view, inputs(view, undefined, false), true),
                ),
             ).toBe(false);
          }
@@ -859,10 +872,9 @@ source: by_category is orders -> {
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
          };
          const plan = {
-            sources: { [id]: source },
             connectionDigests: {},
-            ...inputs(id),
-         };
+            tables: { [id]: { ...inputs(id).tables[id], source } },
+         } as unknown as Parameters<typeof collectSourceEligibility>[0];
          // Colocated, the plan admits it (the precondition for the guard).
          expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
             true,
@@ -878,11 +890,16 @@ source: by_category is orders -> {
          const joined = withEnv(G3_ONLY, () =>
             collectSourceEligibility({
                ...plan,
-               ...inputs(id, {
-                  classification: "row_level",
-                  attributed: false,
-               }),
-            }),
+               tables: {
+                  [id]: {
+                     ...inputs(id, {
+                        classification: "row_level",
+                        attributed: false,
+                     }).tables[id],
+                     source,
+                  },
+               },
+            } as unknown as Parameters<typeof collectSourceEligibility>[0]),
          );
          expect(joined.eligible).toEqual([]);
          expect(joined.gateKept).toEqual([]);
@@ -913,10 +930,14 @@ source: by_category is orders -> {
             for (const materialized of [true, false]) {
                const { eligible, gateKept } = withEnv(env, () =>
                   collectSourceEligibility({
-                     sources: { [id]: source },
                      connectionDigests: {},
-                     ...inputs(id, undefined, materialized),
-                  }),
+                     tables: {
+                        [id]: {
+                           ...inputs(id, undefined, materialized).tables[id],
+                           source,
+                        },
+                     },
+                  } as unknown as Parameters<typeof collectSourceEligibility>[0]),
                );
                expect(eligible).toEqual([id]);
                expect(gateKept).toEqual([]);
@@ -1030,11 +1051,12 @@ source: mz_colocated_given is base -> { select: * } extend { where: tenant = $te
       // and the storage side additionally reports the term it will re-apply at
       // read. What still separates the tiers is what they do with that term,
       // not whether they tolerate it.
-      const plan = assertMaterializationEligible(
+      assertMaterializationEligible(
          sources.mz_colocated_given,
          deriveAnnotationFields(sources.mz_colocated_given),
       );
-      expect(plan.terms).toEqual([
+      const admitted = admitGivenPositions(sources.mz_colocated_given);
+      expect(admitted.ok && admitted.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
    });
@@ -1618,8 +1640,9 @@ describe("gateEnforcedAtRead's tier", () => {
          ] as const) {
             spy.mockClear();
             gateEnforcedAtRead(id, {
-               materializePlans: { [id]: { persist } },
-               sourceGateOutcomes: { [id]: gate },
+               tables: {
+                  [id]: { kind: "materialize", materialize: { persist }, gate },
+               },
             } as never);
             expect(spy).toHaveBeenCalledTimes(1);
             expect(spy.mock.calls[0][0]).toMatchObject({

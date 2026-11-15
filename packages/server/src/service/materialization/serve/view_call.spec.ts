@@ -11,45 +11,26 @@
  * a hand-written look-alike for a call.
  */
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
-} from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import type { Runtime } from "@malloydata/malloy";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 import { extractRunViewCall } from "../../query_text";
 
 const URL_ = "file:///vc/m.malloy";
-let duckdb: DuckDBConnection;
+const mz = materializationFixture();
 let runtime: Runtime;
 
 beforeAll(async () => {
-   duckdb = new DuckDBConnection("duckdb", ":memory:");
-   await duckdb.runSQL(
+   await mz.duckdb.runSQL(
       `CREATE TABLE f AS SELECT * FROM (VALUES ('aa', 1), ('bb', 2), ('aa', 3)) t(carrier, d)`,
    );
-   runtime = new Runtime({
-      urlReader: new InMemoryURLReader(
-         new Map([
-            [
-               URL_,
-               `source: ops is duckdb.table('f') extend {
+   runtime = mz.runtime(
+      `source: ops is duckdb.table('f') extend {
   measure: n is count()
   view: by_carrier is { group_by: carrier; aggregate: n }
 }`,
-            ],
-         ]),
-      ),
-      connections: new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      ),
-   });
-});
-
-afterAll(async () => {
-   await duckdb.close();
+      "file:///vc/",
+   );
 });
 
 async function compiled(query: string) {

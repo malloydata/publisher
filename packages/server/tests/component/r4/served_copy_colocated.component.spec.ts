@@ -19,7 +19,10 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
-import { freshLoadPool, loadFixture } from "./conformance/package_harness";
+import {
+   freshLoadPool,
+   loadFixture,
+} from "../../../src/test_helpers/conformance/package_runner";
 import {
    buildScenario,
    disposeScenarios,
@@ -372,7 +375,7 @@ for (const tier of tiers) {
 }
 
 /**
- * Through the real package path (conformance/package_harness.ts): the plan's
+ * Through the real package path (src/test_helpers/conformance/package_runner.ts): the plan's
  * eligibility, the colocated manifest bind, the router and `govern()`.
  */
 describe("colocated #(materialize) through the package: gates, and v1 unchanged", () => {

@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "gated@<pkg>/m.malloy": "materialize",
+      "scoped@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "gated@<pkg>/m.malloy": {
         "buildSourceName": "gated__mat",

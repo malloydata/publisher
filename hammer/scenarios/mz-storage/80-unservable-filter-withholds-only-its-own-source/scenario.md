@@ -8,22 +8,25 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A filter the shape cannot reproduce costs its own source the tier, not the model's
+# A filter the served copy cannot keep costs its own source the tier, not the model's
 
-A source's `where:` is always carried onto the serve shape, and a source whose
-`where:` cannot be reproduced there must serve live rather than serve unfiltered.
-The shape is ONE generated model covering every binding in it, so the blunt
-version of that rule sends the whole model live over one bad filter.
+A source's `where:` is always kept in the served copy, and a source whose `where:`
+cannot compile there must serve live rather than serve unfiltered. The served copy
+is ONE compiled model per author model, covering every source re-rooted in it, so
+the blunt version of that rule sends the whole model live over one bad filter.
 
-`north_orders` filters through a join to `regions`, which is not materialized —
-the join is not emitted, so its filter cannot resolve and its binding cannot
-compile. `big_orders`, in the same model, has a filter that reproduces fine. Only
+`north_orders` filters through a join to `regions`, which is not materialized and
+stays on `orders_pg`, so Malloy refuses the join from `north_orders`'s lake table.
+The served copy leaves the join out with what reads it, and `north_orders`'s
+`where:` reads it. A `where:` is not a definition that can be left out alone, so
+`north_orders` is left out of the served copy and answers live. `big_orders`, in
+the same model, has a filter that reads only its stored columns. Only
 `north_orders` loses the tier.
 
-And `big_orders` keeps its tier at full strength, not at the floor: its own view
-still serves from storage. Withholding a sibling re-enters the ladder with the
-survivors rather than freezing them at the shape that failed, so a source that
-did nothing wrong does not lose its joins and views to a neighbour's filter.
+And `big_orders` keeps its tier whole: its own view still serves from storage.
+Leaving a definition out costs only that definition and what reads it, so a
+source that did nothing wrong does not lose its joins and views to a neighbour's
+filter.
 
 ## Publisher
 
@@ -90,7 +93,7 @@ Expect:
 
 ## Query north total
 
-Correct, and served live — the filter reaches a join the shape cannot carry.
+Correct, and served live — the filter reaches a join the served copy leaves out.
 
 ```malloy
 run: north_orders -> { aggregate: total is amount.sum() }
@@ -145,8 +148,8 @@ Expect:
 ## Query big by region (again)
 
 Still the stale `100` / `200` ⇒ `big_orders` kept its VIEW, not just its rows.
-Freezing the survivors at the floor that failed would have dropped the view from
-the shape and sent this query live, where it would read `1100` for `r1`.
+Leaving the view out along with its sibling would have sent this query live,
+where it would read `1100` for `r1`.
 
 ```malloy
 run: big_orders -> by_region

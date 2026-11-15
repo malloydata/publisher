@@ -108,9 +108,9 @@ export function isColocated(b: Pick<Binding, "tier">): boolean {
 }
 
 /**
- * Every table a package serves, fixed. `entries` are the colocated manifest
- * entries, freshness facts and key checks included, that Malloy's build
- * manifest substitutes; `bindings` are the tables the served copy and the
+ * Every table a package serves, fixed. `entries` are the colocated run
+ * manifest entries, freshness facts and key checks included, that Malloy's
+ * compiler manifest substitutes; `bindings` are the tables the served copy and the
  * `storage=` legs read.
  */
 export interface Snapshot {

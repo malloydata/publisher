@@ -14,6 +14,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily_orders@<hammer>/nvt/nvt.malloy": "materialize"
+    },
     "materializePlans": {
       "daily_orders@<hammer>/nvt/nvt.malloy": {
         "buildSourceName": "daily_orders__mat",

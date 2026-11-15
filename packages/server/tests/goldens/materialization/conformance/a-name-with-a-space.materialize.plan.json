@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "spaced@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "spaced@<pkg>/m.malloy": {
         "buildSourceName": "spaced__mat",

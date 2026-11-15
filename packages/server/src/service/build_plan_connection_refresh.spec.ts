@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   sourcesIn,
+   targetsIn,
+} from "../test_helpers/materialization_test_fixtures";
+import {
    afterEach,
    beforeEach,
    describe,
@@ -166,11 +170,11 @@ function planned(pkg: Package): string[] {
 /** The addresses a run computes: a fresh compile with the connections as they are now. */
 async function compiled(pkg: Package): Promise<string[]> {
    const plan = await compilePackageBuildPlan(pkg);
-   return Object.values(plan.sources).map((s) =>
+   return Object.values(sourcesIn(plan)).map((s) =>
       computeSourceEntityId(
          s,
          plan.connectionDigests,
-         plan.targets?.[s.sourceID],
+         targetsIn(plan)?.[s.sourceID],
       ),
    );
 }

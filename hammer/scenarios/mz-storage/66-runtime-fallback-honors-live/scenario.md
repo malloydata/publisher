@@ -10,8 +10,8 @@ SPDX-License-Identifier: MIT
 
 # A binding declaring `fallback=live` degrades to live when the store fails mid-query
 
-The freshness contract's `fallback` is honoured on the compile-time ladder and by
-the per-query freshness gate. It was not honoured at RUN time: once a query routed
+The freshness contract's `fallback` is honoured when a query pins the tables it
+may read. It was not honoured at RUN time: once a query routed
 to storage, a missing or unreadable table surfaced as an error even for a binding
 that had explicitly declared `fallback=live`.
 

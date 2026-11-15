@@ -25,6 +25,7 @@ import {
    type BuildPlanPackage,
    type CompiledBuildPlan,
 } from "./build_plan";
+import { loadGateText } from "./load_gate_text";
 import { refuseCollidingMaterialize } from "./eligibility_collect";
 import {
    joinOneKey,
@@ -77,7 +78,7 @@ export async function compilePackageBuildPlan(
    // Every declared primary key, by sourceID, for the stored-table key checks.
    const primaryKeys = new Map<string, string>();
    // Each `#(materialize)` uniqueness check's compiler over a run's
-   // manifest: this plan is built on the thread that runs builds.
+   // compiler manifest: this plan is built on the thread that runs builds.
    const keyCheckCompilers = new Map<string, KeyCheckCompiler>();
    const yielder = createEventLoopYielder();
 
@@ -138,8 +139,10 @@ export async function compilePackageBuildPlan(
 
    // A rollup key check no join_one of the package reads is not run: it
    // would scan the base for nothing (known limitation 29).
-   for (const plan of Object.values(parts.preaggregatePlans)) {
-      const rollup = plan as RollupVariantPlan;
+   const rollupPlans = Object.values(parts.tables).flatMap((table) =>
+      table.rollup ? [table.rollup as RollupVariantPlan] : [],
+   );
+   for (const rollup of rollupPlans) {
       if (
          rollup.keyCheck &&
          !joinOneKeys.has(
@@ -153,21 +156,21 @@ export async function compilePackageBuildPlan(
    // A query source read through a join_many keyed on its primary key, and
    // a rollup's base reached by a join on another column: the rollup's build
    // checks that key unique and never NULL.
-   const rollupPlans = Object.values(
-      parts.preaggregatePlans,
-   ) as RollupVariantPlan[];
    await compileParentKeyChecks(rollupPlans, parentKeyNeeds, joinedKeyNeeds);
    // A `storage=` rollup read that way is read beside the query source's
-   // stored table (#1704): each stored source's key is checked over its
+   // stored table: each stored source's key is checked over its
    // table at its own build instead.
    const storedKeyChecks = storedKeyChecksOf(
       rollupPlans,
       parentKeyNeeds.map(({ need }) => need),
       (sourceID) => primaryKeys.get(sourceID),
-      Object.keys(parts.sources).filter(
-         (sourceID) => !parts.preaggregatePlans[sourceID],
+      Object.keys(parts.tables).filter(
+         (sourceID) => !parts.tables[sourceID].rollup,
       ),
    );
+   for (const [sourceID, keyColumn] of Object.entries(storedKeyChecks)) {
+      parts.tables[sourceID].storedKeyCheck = keyColumn;
+   }
 
    const connections = await resolvePackageConnections(
       pkg,
@@ -193,19 +196,13 @@ export async function compilePackageBuildPlan(
    const compiled = refuseCollidingMaterialize({
       ...(versionOwnsTables(pkg) ? { versionScoped: true } : {}),
       builds: parts.builds,
-      sources: parts.sources,
-      targets: parts.targets,
+      tables: parts.tables,
       connectionDigests,
       connections,
-      sourceModelPaths: parts.sourceModelPaths,
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
       modelGateLines: parts.modelGateLines,
-      preaggregatePlans: parts.preaggregatePlans,
-      ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
-      materializePlans: parts.materializePlans,
       ...(keyCheckCompilers.size > 0 ? { keyCheckCompilers } : {}),
-      sourceGateOutcomes: parts.sourceGateOutcomes,
       omittedSources: parts.omittedSources,
    });
    return keepIncrementalUnbuildable ? compiled : refuseAloneInPlan(compiled);
@@ -226,6 +223,37 @@ export async function computePackageBuildPlan(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
       versionOwnsTables(pkg) ? "version" : undefined,
+   );
+}
+
+/**
+ * The load gate's text for a plan a run compiled (plan/load_gate_text.ts),
+ * read off the plan the run derives so the run and the load agree: empty
+ * when the files carry no invalid materialization annotation.
+ */
+export function runLoadGateText(
+   compiled: CompiledBuildPlan,
+   pkg: BuildPlanPackage,
+   judgement: { versionScoped: boolean; enforceCollisions: boolean },
+): string {
+   const derived = deriveBuildPlanOutcome(
+      compiled,
+      pkg.getMaterializationConfig?.() ?? null,
+      judgement.versionScoped ? "version" : undefined,
+   );
+   return loadGateText(
+      {
+         plan: derived.plan,
+         annotationFindings: derived.annotationFindings,
+         incrementalDeclarations: derived.incrementalDeclarations,
+         ...(derived.materializePlans
+            ? { materializePlans: derived.materializePlans }
+            : {}),
+         ...(derived.modelGateLines
+            ? { modelGateLines: derived.modelGateLines }
+            : {}),
+      },
+      judgement,
    );
 }
 

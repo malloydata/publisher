@@ -1,6 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The run's front door ({@link MaterializationService}): creates, lists,
+ * reads, stops and deletes materialization runs, and starts each build in the
+ * background. Its {@link RunCollaborators} are the steps a run takes (the
+ * build, a source's build, the storage tier's chained build, the commit), each
+ * replaceable from the constructor. Called by the materialization controller,
+ * main_server.ts, the scheduler and index.ts; main_server.ts reaches the
+ * reclaimer through it.
+ *
+ * Effects: writes the run store; one active run per package, held by the
+ * store's unique index; every table write goes through its collaborators.
+ */
+
 import {
    BadRequestError,
    BuildPlanUnavailableError,
@@ -33,10 +46,12 @@ import {
    tableNamesIn,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
-import type { MaterializationEnvironment, MaterializationHost } from "../host";
-import { CompiledBuildPlan } from "../plan/build_plan";
-import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import { deriveBuildPlanOutcome, loadGateText } from "../plan/build_plan";
+import type { MaterializationHost } from "../host";
+import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
+import {
+   compilePackageBuildPlan,
+   runLoadGateText,
+} from "../plan/build_plan_compile";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -65,7 +80,6 @@ import {
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
 import {
-   BuildEnvironment,
    outcomeFor,
    packageRelativeRun,
    tallySources,
@@ -93,12 +107,173 @@ import {
 } from "./run_instructions";
 import { packageRelativeText } from "../../../package_relative_text";
 import { SourceBuilder } from "./source_build";
-import {
-   StorageBuildStrategy,
-   type StorageBuildRequest,
-} from "./storage_build_strategy";
+import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryUnownedTables } from "./table_ownership";
+
+/** What a run is asked to do: createMaterialization's options, resolved. */
+export interface RunBuildOptions {
+   sourceNames: string[] | undefined;
+   forceRefresh: boolean;
+   reseed: boolean;
+   buildInstructions: BuildInstruction[] | undefined;
+   ledger: LedgerEntry[] | undefined;
+   referenceManifest: ManifestReference[] | undefined;
+   strictUpstreams: boolean | undefined;
+   warehouseReach?: WarehouseReach;
+   trigger: "ON_DEMAND" | "SCHEDULER";
+   runContext?: components["schemas"]["RunContext"];
+   /** The version createMaterialization resolved; null when unversioned. */
+   version: string | null;
+}
+
+/**
+ * The steps a run takes through the service's collaborators, each one
+ * replaceable from the constructor. The real ones reach each other through
+ * this set, so replacing one step (one source's build, the storage tier's
+ * chained build, a commit) changes it wherever a run takes it.
+ */
+export interface RunCollaborators {
+   /** The background run a create starts: the build, inside its telemetry. */
+   runBuild(
+      id: string,
+      environmentName: string,
+      packageName: string,
+      opts: RunBuildOptions,
+      signal: AbortSignal,
+   ): Promise<void>;
+   /** An auto-run's instructions (run_instructions.ts). */
+   deriveSelfInstructions: typeof deriveSelfInstructions;
+   /** The run's incremental context, over the service's ledger store. */
+   incrementalRunContext(
+      compiled: CompiledBuildPlan,
+      run: Parameters<typeof incrementalRunContext>[1],
+   ): IncrementalRunContext | undefined;
+   /** The instructed build loop ({@link InstructedBuild.run}). */
+   executeInstructedBuild: InstructedBuild["run"];
+   /** One source's build ({@link SourceBuilder.build}). */
+   buildOneSource: SourceBuilder["build"];
+   /** The storage tier's build ({@link StorageBuildStrategy.build}). */
+   buildOneSourceIntoStorage: StorageBuildStrategy["build"];
+   /** A chained storage build on its stored parents. */
+   buildDownstreamViaParents: StorageBuildStrategy["buildDownstreamViaParents"];
+   /** See {@link Reclaimer.reclaimStorageTablesFromFailedRun}. */
+   reclaimStorageTablesFromFailedRun: Reclaimer["reclaimStorageTablesFromFailedRun"];
+   /** See {@link Reclaimer.dropMaterializedTables}. */
+   dropMaterializedTables: Reclaimer["dropMaterializedTables"];
+   /** How a reclaim drops one run's entries ({@link Reclaimer.dropManifestEntries}). */
+   dropManifestEntries: Reclaimer["dropManifestEntries"];
+   /** See {@link ManifestCommitter.commit}. */
+   commitManifest: ManifestCommitter["commit"];
+   /** See {@link ManifestCommitter.autoLoad}. */
+   autoLoadManifest: ManifestCommitter["autoLoad"];
+   /** See {@link ManifestCommitter.mostRecentEntries}. */
+   getMostRecentManifestEntries: ManifestCommitter["mostRecentEntries"];
+}
+
+/**
+ * The collaborators a service is constructed with: some of them, or a
+ * function of the real ones that returns some (to wrap a real step).
+ */
+export type RunCollaboratorOverrides =
+   | Partial<RunCollaborators>
+   | ((real: RunCollaborators) => Partial<RunCollaborators>);
+
+/** What a create may ask of a run (see MaterializationService.createMaterialization). */
+interface CreateMaterializationOptions {
+   forceRefresh?: boolean;
+   /**
+    * Rebuild the in-scope incremental sources from scratch, ignoring their
+    * recorded boundaries. Distinct from `forceRefresh`, which only defeats
+    * skip-if-unchanged and never re-seeds.
+    */
+   reseed?: boolean;
+   sourceNames?: string[];
+   buildInstructions?: BuildInstruction[];
+   referenceManifest?: ManifestReference[];
+   strictUpstreams?: boolean;
+   /**
+    * What a strict build does with a source whose only build recomputes
+    * a stored upstream from the warehouse. Orchestrated-only.
+    */
+   warehouseReach?: WarehouseReach;
+   /**
+    * The caller-supplied incremental ledger (each entry a
+    * `ManifestEntry.ledger` an earlier run reported). When present, even
+    * empty, it replaces the local store for the whole run.
+    * Orchestrated-only; validated at create time.
+    */
+   ledger?: LedgerEntry[];
+   /**
+    * What initiated this run: `ON_DEMAND` (default, manual/API) or
+    * `SCHEDULER` (the standalone scheduler). Recorded on the run metadata.
+    */
+   trigger?: "ON_DEMAND" | "SCHEDULER";
+   /**
+    * Caller context attached as query metadata to the build's statements.
+    * Its `trigger` can express a publish, which `trigger` cannot; its
+    * `runId` replaces the materialization id as the grouping id.
+    */
+   runContext?: components["schemas"]["RunContext"] | null;
+   /**
+    * The published version to build; omitted or empty, `latest`.
+    * Resolved once, here, and carried to the background run, so a
+    * `latest` that moves meanwhile never changes what this run builds.
+    */
+   versionId?: VersionRef;
+}
+
+/** One run's arguments, as each stage of the build reads them. */
+interface RunScope {
+   telemetry: RunTelemetry;
+   id: string;
+   environmentName: string;
+   packageName: string;
+   opts: RunBuildOptions;
+   signal: AbortSignal;
+   orchestrated: boolean;
+   mode: MaterializationMode;
+   startedAt: number;
+}
+
+/** What a run's failure handling reads, set as the run goes. */
+interface RunState {
+   markedShared: boolean;
+   packagePath: string | undefined;
+}
+
+/** The package a run builds, loaded and compiled. */
+interface RunTarget {
+   environmentId: string;
+   environment: Awaited<ReturnType<MaterializationHost["getEnvironment"]>>;
+   versionId: string | undefined;
+   pkg: Awaited<ReturnType<RunTarget["environment"]["getPackage"]>>;
+   owned: string | undefined;
+   reader: ServingReader;
+   compiled: CompiledBuildPlan;
+}
+
+/** A run's instructions, and what deriving them decided. */
+interface RunInstructions {
+   instructions: BuildInstruction[];
+   carried: Record<string, ManifestEntry>;
+   refused: Record<string, RefusedSource>;
+   cleared: ReadonlyMap<string, EligibilityTier> | undefined;
+   renamed: RenamedTable[];
+}
+
+/** What the instructed build returned. */
+type InstructedBuildResult = Awaited<
+   ReturnType<RunCollaborators["executeInstructedBuild"]>
+>;
+
+/** What a run's commit leaves for the steps after it. */
+interface CommittedRun {
+   served: Awaited<ReturnType<RunCollaborators["commitManifest"]>>;
+   failures: ReturnType<typeof packageRelativeRun>["failures"];
+   sourcesFailed: number;
+   durationMs: number;
+}
 
 /**
  * Orchestrates single-call materialization builds: the facade the controller,
@@ -117,19 +292,33 @@ import { uncarryUnownedTables } from "./table_ownership";
  *
  * The work is its collaborators': {@link RunLifecycle} (the run state machine
  * and background runs), {@link TableClaims} (which tables an active run
- * writes), {@link InstructedBuild} and the tier strategies it reaches through
+ * writes), {@link InstructedBuild} and the tier adapters it reaches through
  * {@link SourceBuilder} (the build itself), {@link ManifestCommitter} (commit,
- * bind, read back) and {@link Reclaimer} (giving tables back). The private
- * methods below that only delegate are the seams this class's specs drive and
- * substitute; a collaborator that calls one goes back through this class.
+ * bind, read back) and {@link Reclaimer} (giving tables back, reached
+ * directly as {@link MaterializationService.reclaimer}). The steps a run
+ * takes through them are its {@link RunCollaborators}: the constructor takes
+ * any of them in place of the real one, so a spec hands the service a build,
+ * a tier or a commit of its own rather than replacing a method.
  */
 export class MaterializationService {
    private readonly lifecycle: RunLifecycle;
    private readonly claims: TableClaims;
    private readonly committer: ManifestCommitter;
-   private readonly reclaimer: Reclaimer;
+   /**
+    * Giving tables back: the version lifecycle's hooks (main_server.ts) and
+    * the startup sweep call it directly.
+    */
+   readonly reclaimer: Reclaimer;
+   /**
+    * The steps a run takes: the constructor's, else the real ones. Specs
+    * also drive a step through it.
+    */
+   readonly collaborators: RunCollaborators;
 
-   constructor(private readonly host: MaterializationHost) {
+   constructor(
+      private readonly host: MaterializationHost,
+      overrides: RunCollaboratorOverrides = {},
+   ) {
       const repository = () => this.repository;
       this.lifecycle = new RunLifecycle(repository);
       this.claims = new TableClaims(repository);
@@ -144,9 +333,73 @@ export class MaterializationService {
          repository,
          host,
          lifecycle: this.lifecycle,
-         dropManifestEntries: (...args) => this.dropManifestEntries(...args),
-         reclaimVersionTables: (...args) => this.reclaimVersionTables(...args),
+         dropManifestEntries: (...args) =>
+            this.collaborators.dropManifestEntries(...args),
       });
+      const real = this.realCollaborators();
+      this.collaborators = {
+         ...real,
+         ...(typeof overrides === "function" ? overrides(real) : overrides),
+      };
+   }
+
+   /**
+    * The real steps. Each reaches the others through
+    * {@link collaborators}, so a replaced step is the one every run takes.
+    */
+   private realCollaborators(): RunCollaborators {
+      // Stateless, so one serves every build.
+      const storage = new StorageBuildStrategy({
+         buildDownstreamViaParents: (...a) =>
+            this.collaborators.buildDownstreamViaParents(...a),
+      });
+      return {
+         runBuild: (...args) => this.runBuild(...args),
+         deriveSelfInstructions,
+         incrementalRunContext: (compiled, run) =>
+            incrementalRunContext(compiled, run, this.repository),
+         executeInstructedBuild: (...args) =>
+            new InstructedBuild({
+               buildOneSource: (...a) =>
+                  this.collaborators.buildOneSource(...a),
+               reclaimStorageTablesFromFailedRun: (...a) =>
+                  this.collaborators.reclaimStorageTablesFromFailedRun(...a),
+               packageRuns: async (environmentName, packageName) =>
+                  (await this.repository.listMaterializations(
+                     await this.resolveEnvironmentId(environmentName),
+                     packageName,
+                  )) ?? [],
+               tableNotOwned: async (environmentName, packageName, target) => {
+                  await this.claims.markHeldElsewhere(
+                     await this.resolveEnvironmentId(environmentName),
+                     packageName,
+                     "",
+                     target,
+                  );
+                  await this.committer.rebindLoadedVersions(
+                     environmentName,
+                     packageName,
+                  );
+               },
+            }).run(...args),
+         buildOneSource: (...args) =>
+            new SourceBuilder((request) =>
+               this.collaborators.buildOneSourceIntoStorage(request),
+            ).build(...args),
+         buildOneSourceIntoStorage: (request) => storage.build(request),
+         buildDownstreamViaParents: (...args) =>
+            storage.buildDownstreamViaParents(...args),
+         reclaimStorageTablesFromFailedRun: (...args) =>
+            this.reclaimer.reclaimStorageTablesFromFailedRun(...args),
+         dropMaterializedTables: (...args) =>
+            this.reclaimer.dropMaterializedTables(...args),
+         dropManifestEntries: (...args) =>
+            this.reclaimer.dropManifestEntries(...args),
+         commitManifest: (...args) => this.committer.commit(...args),
+         autoLoadManifest: (...args) => this.committer.autoLoad(...args),
+         getMostRecentManifestEntries: (...args) =>
+            this.committer.mostRecentEntries(...args),
+      };
    }
 
    private get repository(): ResourceRepository {
@@ -183,7 +436,7 @@ export class MaterializationService {
     * A package's runs, newest first. For a versioned package, the runs of one
     * version (the one named, or `latest`) and the runs from before its first
     * versioned publish, which still drive what a `scope: package` version
-    * serves. An unversioned package lists every run, as before.
+    * serves. An unversioned package lists every run.
     */
    async listMaterializations(
       environmentName: string,
@@ -193,7 +446,7 @@ export class MaterializationService {
       const versionId = options?.versionId ?? VersionRef.LATEST;
       const environmentId = await this.resolveEnvironmentId(environmentName);
       // Naming no version of a package that has no `latest` yet (explicit
-      // promotion, before the first move) lists every run, as before.
+      // promotion, before the first move) lists every run.
       const versions = (
          await this.host.getEnvironment(
             parseEnvironmentName(environmentName),
@@ -325,49 +578,102 @@ export class MaterializationService {
    async createMaterialization(
       environmentName: string,
       packageName: string,
-      options: {
-         forceRefresh?: boolean;
-         /**
-          * Rebuild the in-scope incremental sources from scratch, ignoring their
-          * recorded boundaries. Distinct from `forceRefresh`, which only defeats
-          * skip-if-unchanged and never re-seeds.
-          */
-         reseed?: boolean;
-         sourceNames?: string[];
-         buildInstructions?: BuildInstruction[];
-         referenceManifest?: ManifestReference[];
-         strictUpstreams?: boolean;
-         /**
-          * What a strict build does with a source whose only build recomputes
-          * a stored upstream from the warehouse (#6756). Orchestrated-only.
-          */
-         warehouseReach?: WarehouseReach;
-         /**
-          * The caller-supplied incremental ledger (each entry a
-          * `ManifestEntry.ledger` an earlier run reported). When present, even
-          * empty, it replaces the local store for the whole run.
-          * Orchestrated-only; validated at create time.
-          */
-         ledger?: LedgerEntry[];
-         /**
-          * What initiated this run: `ON_DEMAND` (default, manual/API) or
-          * `SCHEDULER` (the standalone scheduler). Recorded on the run metadata.
-          */
-         trigger?: "ON_DEMAND" | "SCHEDULER";
-         /**
-          * Caller context attached as query metadata to the build's statements.
-          * Its `trigger` can express a publish, which `trigger` cannot; its
-          * `runId` replaces the materialization id as the grouping id.
-          */
-         runContext?: components["schemas"]["RunContext"] | null;
-         /**
-          * The published version to build; omitted or empty, `latest`.
-          * Resolved once, here, and carried to the background run, so a
-          * `latest` that moves meanwhile never changes what this run builds.
-          */
-         versionId?: VersionRef;
-      } = {},
+      options: CreateMaterializationOptions = {},
    ): Promise<Materialization> {
+      const {
+         environmentId,
+         environment,
+         version,
+         scope,
+         versions,
+         orchestrated,
+         buildInstructions,
+      } = await this.resolveRunTarget(environmentName, packageName, options);
+
+      // The slot the run holds while it is active. An auto-run of a `scope:
+      // package` package writes the tables every version shares, so one runs
+      // per package (unversioned packages included). A run that writes only
+      // its own version's tables holds that version's slot, so versions build
+      // side by side: under `scope: version` its tables carry its version, and
+      // with buildInstructions the caller names them, as a host building one
+      // version does.
+      const lockVersion =
+         version !== null && (orchestrated || scope === "version")
+            ? version
+            : undefined;
+
+      const forceRefresh = options.forceRefresh ?? false;
+      const reseed = options.reseed ?? false;
+      const trigger = options.trigger ?? "ON_DEMAND";
+      const metadata = {
+         forceRefresh,
+         // Recorded separately: it says whether an incremental source rebuilt
+         // or advanced.
+         reseed,
+         sourceNames: options.sourceNames ?? null,
+         mode: orchestrated ? "orchestrated" : "auto",
+         trigger,
+         // The wire Materialization has no version field, so the version a
+         // run built rides its metadata, beside the scope that decided whose
+         // tables it builds.
+         ...(version !== null ? { versionId: version, scope } : {}),
+         // A version's run with instructions writes these, while it is
+         // active: no other active run of the package may (see
+         // claimTables).
+         ...(version !== null && orchestrated
+            ? {
+                 [WRITES_TABLES_KEY]: [
+                    ...new Set(
+                       buildInstructions!.map((i) => i.physicalTableName),
+                    ),
+                 ],
+              }
+            : {}),
+      };
+
+      const start = (): Promise<Materialization> =>
+         this.startRun({
+            environmentId,
+            environment,
+            environmentName,
+            packageName,
+            options,
+            version,
+            lockVersion,
+            metadata,
+            orchestrated,
+            buildInstructions,
+            forceRefresh,
+            reseed,
+            trigger,
+         });
+
+      if (version === null || !versions) return start();
+      // A version's run starts under that version's lock, which an archive
+      // also takes: either the archive commits first and this answers 410, or
+      // the run is registered first and the archive answers 409
+      // VERSION_BUILDING. Archiving reclaims a version's tables, so it must
+      // never overlap a run writing them. Then under the package's table
+      // lock, so the tables a run with instructions claims are checked and
+      // recorded as one step (see claimTables).
+      return versions.withVersionLock(packageName, version, async () => {
+         await versions.resolve(packageName, version);
+         return this.claims
+            .lockFor(environmentId, packageName)
+            .runExclusive(start);
+      });
+   }
+
+   /**
+    * What a create builds: the run's version, its package and scope, refused
+    * when an auto-run of a `scope: package` version is not its latest, and
+    * the caller's instructions checked against the build plan.
+    */
+   private async resolveRunTarget(
+      environmentName: string,
+      packageName: string,
+      options: CreateMaterializationOptions,
+   ) {
       const environmentId = await this.resolveEnvironmentId(environmentName);
 
       const environment = await this.host.getEnvironment(
@@ -423,7 +729,7 @@ export class MaterializationService {
       }
       if (orchestrated) {
          // Validate against the plan the run will build from: a connection
-         // edit re-derives it (ms2data/service#6145).
+         // edit re-derives it (build_plan_connection_refresh.spec.ts).
          await pkg.whenBuildPlanCurrent?.();
          // Never against a plan that failed to derive: after a failed
          // re-derivation the pre-edit plan is gone, and validating against
@@ -454,162 +760,148 @@ export class MaterializationService {
             }
          }
       }
-
-      // The slot the run holds while it is active. An auto-run of a `scope:
-      // package` package writes the tables every version shares, so one runs
-      // per package (unversioned packages included). A run that writes only
-      // its own version's tables holds that version's slot, so versions build
-      // side by side: under `scope: version` its tables carry its version, and
-      // with buildInstructions the caller names them, as a host building one
-      // version does.
-      const lockVersion =
-         version !== null && (orchestrated || scope === "version")
-            ? version
-            : undefined;
-
-      const forceRefresh = options.forceRefresh ?? false;
-      const reseed = options.reseed ?? false;
-      const trigger = options.trigger ?? "ON_DEMAND";
-      const metadata = {
-         forceRefresh,
-         // Recorded separately: it says whether an incremental source rebuilt
-         // or advanced.
-         reseed,
-         sourceNames: options.sourceNames ?? null,
-         mode: orchestrated ? "orchestrated" : "auto",
-         trigger,
-         // The wire Materialization has no version field, so the version a
-         // run built rides its metadata, beside the scope that decided whose
-         // tables it builds.
-         ...(version !== null ? { versionId: version, scope } : {}),
-         // A version's run with instructions writes these, while it is
-         // active: no other active run of the package may (see
-         // claimTables).
-         ...(version !== null && orchestrated
-            ? {
-                 [WRITES_TABLES_KEY]: [
-                    ...new Set(
-                       buildInstructions.map((i) => i.physicalTableName),
-                    ),
-                 ],
-              }
-            : {}),
+      return {
+         environmentId,
+         environment,
+         version,
+         scope,
+         versions,
+         orchestrated,
+         buildInstructions,
       };
+   }
 
-      const start = async (): Promise<Materialization> => {
-         const active = await this.repository.getActiveMaterialization(
+   /**
+    * Record the run PENDING, unless another run holds its slot or a table it
+    * names, and start its build in the background.
+    */
+   private async startRun(args: {
+      environmentId: string;
+      environment: RunTarget["environment"];
+      environmentName: string;
+      packageName: string;
+      options: CreateMaterializationOptions;
+      version: string | null;
+      lockVersion: string | undefined;
+      metadata: Record<string, unknown>;
+      orchestrated: boolean;
+      buildInstructions: BuildInstruction[] | undefined;
+      forceRefresh: boolean;
+      reseed: boolean;
+      trigger: "ON_DEMAND" | "SCHEDULER";
+   }): Promise<Materialization> {
+      const {
+         environmentId,
+         environment,
+         environmentName,
+         packageName,
+         options,
+         version,
+         lockVersion,
+         metadata,
+         orchestrated,
+         buildInstructions,
+         forceRefresh,
+         reseed,
+         trigger,
+      } = args;
+      const active = await this.repository.getActiveMaterialization(
+         environmentId,
+         packageName,
+         lockVersion,
+      );
+      if (active) {
+         throw this.lifecycle.activeConflict(
+            packageName,
+            active.id,
+            active.version,
+         );
+      }
+      if (version !== null && orchestrated) {
+         await this.claims.assertTablesFree(
             environmentId,
             packageName,
-            lockVersion,
+            tableNamesIn(metadata, WRITES_TABLES_KEY),
+            undefined,
+            true,
          );
-         if (active) {
+      }
+
+      let created: Materialization;
+      try {
+         created = await this.repository.createMaterialization(
+            environmentId,
+            packageName,
+            "PENDING",
+            metadata,
+            // A version's run records its version and slot; a package with
+            // no versions passes neither.
+            ...(version !== null || lockVersion !== undefined
+               ? [{ version, lockVersion }]
+               : []),
+         );
+      } catch (err) {
+         if (err instanceof DuplicateActiveMaterializationError) {
+            const winner = await this.repository.getActiveMaterialization(
+               environmentId,
+               packageName,
+               lockVersion,
+            );
             throw this.lifecycle.activeConflict(
                packageName,
-               active.id,
-               active.version,
+               winner?.id,
+               winner?.version,
             );
          }
-         if (version !== null && orchestrated) {
-            await this.claims.assertTablesFree(
-               environmentId,
-               packageName,
-               tableNamesIn(metadata, WRITES_TABLES_KEY),
-               undefined,
-               true,
-            );
-         }
+         throw err;
+      }
 
-         let created: Materialization;
-         try {
-            created = await this.repository.createMaterialization(
-               environmentId,
-               packageName,
-               "PENDING",
-               metadata,
-               // A version's run records its version and slot; a package with
-               // no versions passes neither, as before versions.
-               ...(version !== null || lockVersion !== undefined
-                  ? [{ version, lockVersion }]
-                  : []),
-            );
-         } catch (err) {
-            if (err instanceof DuplicateActiveMaterializationError) {
-               const winner = await this.repository.getActiveMaterialization(
-                  environmentId,
-                  packageName,
-                  lockVersion,
-               );
-               throw this.lifecycle.activeConflict(
-                  packageName,
-                  winner?.id,
-                  winner?.version,
-               );
-            }
-            throw err;
-         }
-
-         // Registered before the version's lock is released (see below), and
-         // released once the run has settled.
-         const release =
-            version !== null
-               ? environment.registerVersionBuild(packageName, version)
-               : undefined;
-         this.runInBackground(
-            created.id,
-            (signal) =>
-               withSpan(
-                  "publisher.materialization.build",
-                  {
-                     "malloy.package": packageName,
-                     "publisher.materialization.id": created.id,
-                     "publisher.materialization.mode": orchestrated
-                        ? "orchestrated"
-                        : "auto",
-                  },
-                  () =>
-                     this.runBuild(
-                        created.id,
-                        environmentName,
-                        packageName,
-                        {
-                           sourceNames: options.sourceNames,
-                           forceRefresh,
-                           reseed,
-                           buildInstructions,
-                           // Orchestrated-only: an auto-run depends on the
-                           // local store, which a supplied ledger would replace.
-                           ledger: orchestrated ? options.ledger : undefined,
-                           referenceManifest: options.referenceManifest,
-                           strictUpstreams: options.strictUpstreams,
-                           warehouseReach: orchestrated
-                              ? options.warehouseReach
-                              : undefined,
-                           trigger,
-                           runContext: options.runContext ?? undefined,
-                           version,
-                        },
-                        signal,
-                     ),
-               ),
-            release,
-         );
-         return created;
-      };
-
-      if (version === null || !versions) return start();
-      // A version's run starts under that version's lock, which an archive
-      // also takes: either the archive commits first and this answers 410, or
-      // the run is registered first and the archive answers 409
-      // VERSION_BUILDING. Archiving reclaims a version's tables, so it must
-      // never overlap a run writing them. Then under the package's table
-      // lock, so the tables a run with instructions claims are checked and
-      // recorded as one step (see claimTables).
-      return versions.withVersionLock(packageName, version, async () => {
-         await versions.resolve(packageName, version);
-         return this.claims
-            .lockFor(environmentId, packageName)
-            .runExclusive(start);
-      });
+      // Registered before the version's lock is released (see below), and
+      // released once the run has settled.
+      const release =
+         version !== null
+            ? environment.registerVersionBuild(packageName, version)
+            : undefined;
+      this.runInBackground(
+         created.id,
+         (signal) =>
+            withSpan(
+               "publisher.materialization.build",
+               {
+                  "malloy.package": packageName,
+                  "publisher.materialization.id": created.id,
+                  "publisher.materialization.mode": orchestrated
+                     ? "orchestrated"
+                     : "auto",
+               },
+               () =>
+                  this.collaborators.runBuild(
+                     created.id,
+                     environmentName,
+                     packageName,
+                     {
+                        sourceNames: options.sourceNames,
+                        forceRefresh,
+                        reseed,
+                        buildInstructions,
+                        // Orchestrated-only: an auto-run depends on the
+                        // local store, which a supplied ledger would replace.
+                        ledger: orchestrated ? options.ledger : undefined,
+                        referenceManifest: options.referenceManifest,
+                        strictUpstreams: options.strictUpstreams,
+                        warehouseReach: orchestrated
+                           ? options.warehouseReach
+                           : undefined,
+                        trigger,
+                        runContext: options.runContext ?? undefined,
+                        version,
+                     },
+                     signal,
+                  ),
+            ),
+         release,
+      );
+      return created;
    }
 
    /**
@@ -621,12 +913,7 @@ export class MaterializationService {
     * distribution to the caller.
     */
    private runBuild(
-      ...args: Parameters<MaterializationService["buildRun"]> extends [
-         RunTelemetry,
-         ...infer Rest,
-      ]
-         ? Rest
-         : never
+      ...args: Parameters<RunCollaborators["runBuild"]>
    ): Promise<void> {
       const [id, , packageName, opts] = args;
       const telemetry = new RunTelemetry(
@@ -646,31 +933,31 @@ export class MaterializationService {
       id: string,
       environmentName: string,
       packageName: string,
-      opts: {
-         sourceNames: string[] | undefined;
-         forceRefresh: boolean;
-         reseed: boolean;
-         buildInstructions: BuildInstruction[] | undefined;
-         ledger: LedgerEntry[] | undefined;
-         referenceManifest: ManifestReference[] | undefined;
-         strictUpstreams: boolean | undefined;
-         warehouseReach?: WarehouseReach;
-         trigger: "ON_DEMAND" | "SCHEDULER";
-         runContext?: components["schemas"]["RunContext"];
-         /** The version createMaterialization resolved; null when unversioned. */
-         version: string | null;
-      },
+      opts: RunBuildOptions,
       signal: AbortSignal,
    ): Promise<void> {
       const orchestrated = opts.buildInstructions !== undefined;
-      // Set once this run has recorded the shared tables it rebuilds: from
-      // then on, a failure must rebind the other loaded versions too.
-      let markedShared = false;
+      const state: RunState = {
+         // Set once this run has recorded the shared tables it rebuilds: from
+         // then on, a failure must rebind the other loaded versions too.
+         markedShared: false,
+         // Where the package is on this server, once known: a whole-run failure
+         // names its files package-relative too (see packageRelativeRun).
+         packagePath: undefined,
+      };
       const mode: MaterializationMode = telemetry.mode;
       const startedAt = Date.now();
-      // Where the package is on this server, once known: a whole-run failure
-      // names its files package-relative too (see packageRelativeRun).
-      let packagePath: string | undefined;
+      const run: RunScope = {
+         telemetry,
+         id,
+         environmentName,
+         packageName,
+         opts,
+         signal,
+         orchestrated,
+         mode,
+         startedAt,
+      };
 
       try {
          // Persisted so the UI can compute a duration.
@@ -678,241 +965,32 @@ export class MaterializationService {
             startedAt: new Date(startedAt),
          });
 
-         const environmentId = await this.resolveEnvironmentId(environmentName);
-         const environment = await this.host.getEnvironment(
-            parseEnvironmentName(environmentName),
-            false,
-         );
-         const versionId = opts.version ?? undefined;
-         const pkg = await environment.getPackage(
-            parsePackageName(packageName),
-            false,
-            versionId !== undefined
-               ? { versionId: VersionRef.parse(versionId) }
-               : {},
-         );
-         packagePath = pkg.getPackagePath();
-         // The version whose own runs this run reuses from and builds into
-         // (`scope: version`); undefined, the package's shared ones.
-         const owned =
-            versionId !== undefined ? ownedVersionOf(pkg) : undefined;
-         // Whose runs this run reuses from: its own under `scope: version`,
-         // the package's shared ones otherwise (see ServingReader).
-         const reader: ServingReader =
-            versionId !== undefined ? { versionId, owned } : {};
-
-         // A published version's tree never changes, so compiling it needs
-         // no lock; an unversioned package's can be replaced under it.
-         const compiled =
-            versionId !== undefined
-               ? await compilePackageBuildPlan(pkg, signal)
-               : await environment.withPackageLock(packageName, () =>
-                    compilePackageBuildPlan(pkg, signal),
-                 );
-
-         // A `#@ persist` source Malloy's build walk did not plan fails the
-         // package's load (`persist-not-materializable`), so a package that
-         // reaches a run has none: one source's mistake never refuses the
-         // whole run. What can reach one is the files on disk changed since
-         // the load: a save the load refused (the package serves its last
-         // good model, stale). The run builds from those files, so it is
-         // refused until they are fixed, rather than build what the load
-         // refused.
-         // A version's files never change; only the unversioned package a
-         // reload replaces can be stale.
-         const stale =
-            versionId === undefined &&
-            (environment.getStaleCompileErrors?.().has(packageName) ?? false);
-         // The load gate's own text, read off the plan this run derives
-         // (plan/load_gate_text.ts), so the run and the load agree.
-         const derived = deriveBuildPlanOutcome(
-            compiled,
-            pkg.getMaterializationConfig?.() ?? null,
-            owned !== undefined ? "version" : undefined,
-         );
-         const invalid = loadGateText(
-            {
-               plan: derived.plan,
-               annotationFindings: derived.annotationFindings,
-               incrementalDeclarations: derived.incrementalDeclarations,
-               ...(derived.materializePlans
-                  ? { materializePlans: derived.materializePlans }
-                  : {}),
-               ...(derived.modelGateLines
-                  ? { modelGateLines: derived.modelGateLines }
-                  : {}),
-            },
-            {
-               enforceCollisions: getPersistCollisionEnforce(),
-               versionScoped: owned !== undefined,
-            },
-         );
-         if (stale || invalid) {
-            throw new BadRequestError(
-               `Package ${packageName} is not built: ` +
-                  (invalid
-                     ? `its files carry an invalid materialization annotation, which its load refuses:\n${invalid}`
-                     : "its files changed and its last reload refused them, " +
-                       "so it serves an older model") +
-                  `\nFix the files and reload the package, then run again.`,
-            );
-         }
+         const target = await this.loadRunPackage(run, state);
+         const { environmentId, pkg, compiled } = target;
 
          // Assembled BEFORE the instructions because skip-if-unchanged consults
          // it: an incremental source is exempt from the carry-forward below.
-         const incremental = this.incrementalRunContext(compiled, {
-            environmentId,
-            packageName,
-            materializationId: id,
-            // `reseed`, never `forceRefresh`: every scheduled fire sets
-            // forceRefresh, which would make a schedule all full rebuilds.
-            forceRefresh: opts.reseed ?? false,
-            now: new Date(startedAt),
-            ledger: opts.ledger,
-         });
-
-         let instructions: BuildInstruction[];
-         // Tables built under readable names in place of an earlier run's,
-         // reclaimed once this run commits (Reclaimer.reclaimRenamedTables).
-         let renamed: RenamedTable[] = [];
-         let carried: Record<string, ManifestEntry>;
-         let derivedRefused: Record<string, RefusedSource> = {};
-         let clearedTiers: ReadonlyMap<string, EligibilityTier> | undefined;
-         if (orchestrated) {
-            instructions = opts.buildInstructions!;
-            // Seed with the caller's upstream references so a persist upstream
-            // built in a prior run resolves to its table instead of recomputing
-            // live.
-            carried = referenceManifestToEntries(opts.referenceManifest);
-            // A reference is an IDENTITY, not a full copy. Upstream entries are
-            // filled in DESCENDING precedence from:
-            //   1. the `referenceManifest` in this call;
-            //   2. the package's BOUND manifest (`manifestLocation`), which lets a
-            //      worker that never built the upstream reuse its table;
-            //   3. this worker's most recent local manifest.
-            // Each fills the storage fields (sourceName, storageDestinationName,
-            // schema) a `storage=` upstream's rebind needs. Each step is
-            // best-effort: a fetch/read failure leaves the entries as they are.
-            await this.committer.seedFromBoundManifest(
-               carried,
-               pkg,
-               instructions,
-            );
-            if (Object.keys(carried).length > 0) {
-               await this.committer.resolveReferencesFromStore(
-                  carried,
-                  environmentId,
-                  packageName,
-                  id,
-                  reader,
-               );
-            }
-         } else {
-            // Skip-if-unchanged: reuse tables from the most recent manifest for
-            // sources whose sourceEntityId is unchanged. Read under
-            // `forceRefresh` too, where nothing is carried: the entries still
-            // decide each table's name (an incremental source keeps the name
-            // its ledger is keyed by, a readable name stays put).
-            const priorEntries = await this.getMostRecentManifestEntries(
+         const incremental = this.collaborators.incrementalRunContext(
+            compiled,
+            {
                environmentId,
                packageName,
-               id,
-               reader,
-            );
-            let recheck: Record<string, BuildInstruction>;
-            ({
-               instructions,
-               carried,
-               refused: derivedRefused,
-               cleared: clearedTiers,
-               recheck = {},
-               renamed = [],
-            } = this.deriveSelfInstructions(
-               compiled,
-               opts.sourceNames,
-               priorEntries,
-               incremental,
-               {
-                  environmentName,
-                  packageName,
-                  packagePath: pkg.getPackagePath(),
-                  ...(owned !== undefined ? { ownedVersion: owned } : {}),
-               },
-               { forceRefresh: opts.forceRefresh ?? false },
-            ));
-            // A carried table at the author's `name=` is reused only while
-            // it is still marked as this package's (table_ownership.ts).
-            if (Object.keys(recheck).length > 0) {
-               await uncarryUnownedTables(
-                  recheck,
-                  carried,
-                  instructions,
-                  packageOwner(environmentName, packageName),
-                  tableSiteContext({ compiled, environment }),
-               );
-            }
-         }
+               materializationId: id,
+               // `reseed`, never `forceRefresh`: every scheduled fire sets
+               // forceRefresh, which would make a schedule all full rebuilds.
+               forceRefresh: opts.reseed ?? false,
+               now: new Date(startedAt),
+               ledger: opts.ledger,
+            },
+         );
 
-         // An auto-run of a version of a `scope: package` package rebuilds,
-         // source by source, the tables every version of the package reads.
-         // Before it does, it claims them, and marks every older run's
-         // entries for them superseded: whatever happens to this run, those
-         // tables will no longer hold what the older entries say. Then every
-         // other loaded version is rebound, so none reads rows this run's
-         // definition builds (a version that cannot be rebound is unloaded).
-         // A version's run with instructions, likewise: its tables were
-         // claimed when it was created, and another version's run may have
-         // built one of them from another definition.
-         if (
-            versionId !== undefined &&
-            instructions.length > 0 &&
-            (orchestrated || owned === undefined)
-         ) {
-            if (orchestrated) {
-               await this.claims
-                  .lockFor(environmentId, packageName)
-                  .runExclusive(() =>
-                     this.claims.markSuperseded(
-                        environmentId,
-                        packageName,
-                        id,
-                        instructions,
-                     ),
-                  );
-            } else {
-               await this.claims.claimTables(
-                  environmentId,
-                  packageName,
-                  id,
-                  instructions,
-               );
-            }
-            markedShared = true;
-            await this.committer.rebindLoadedVersions(
-               environmentName,
-               packageName,
-               versionId,
-            );
-         } else if (versionId !== undefined && instructions.length > 0) {
-            // An auto-run of a `scope: version` version builds tables of its
-            // own, named for the version. It claims them all the same: the
-            // claim, not the naming, keeps another active run off them, since
-            // a run with instructions may name any table. No other run reads
-            // them, so nothing is superseded or rebound.
-            // It also records where each table lives, which its manifest says
-            // only once it commits: the version's archive reclaims the tables
-            // of a run that failed or was cancelled part-way from this.
-            await this.claims.claimTables(
-               environmentId,
-               packageName,
-               id,
-               instructions,
-               {
-                  supersede: false,
-                  targets: writeTargetsFor(pkg.getBuildPlan(), instructions),
-               },
-            );
-         }
+         const derived = await this.deriveRunInstructions(
+            run,
+            target,
+            incremental,
+         );
+         const { instructions } = derived;
+         await this.claimRunTables(run, target, instructions, state);
 
          telemetry.started(
             runTriggerOf({
@@ -924,7 +1002,7 @@ export class MaterializationService {
          );
          // Auto-run's refusals never reach the build loop, which counts the
          // rest of the run's sources.
-         for (const refusal of Object.values(derivedRefused)) {
+         for (const refusal of Object.values(derived.refused)) {
             reportSourceRefused(
                buildKindOf(compiled, refusal.sourceID),
                refusal.tier === "storage" ? "storage" : "colocated",
@@ -940,266 +1018,23 @@ export class MaterializationService {
             instructions.map((instruction) => instruction.sourceEntityId),
          );
 
-         const {
-            entries: builtEntries,
-            failures: builtFailures,
-            sourcesRefused: instructedRefused,
-            refusedBesideBuilt: builtRefusedBeside = {},
-            uniquenessChecks,
-         } = await this.executeInstructedBuild(
-            compiled,
-            withChainBuildText(
-               environment,
-               pkg,
-               // A version's files never change; only the unversioned package
-               // a reload replaces can be stale.
-               () =>
-                  versionId === undefined &&
-                  (environment.getStaleCompileErrors?.().has(packageName) ??
-                     false),
-            ),
-            instructions,
-            carried,
-            signal,
-            opts.strictUpstreams ?? false,
-            // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
-            orchestrated ? { environmentId, packageName } : undefined,
-            {
-               // Optional: a lighter package surface resolves without a
-               // package-level layer.
-               packageMaterialization: pkg.getMaterializationConfig?.() ?? null,
-               context: {
-                  queryClass: "materialize",
-                  environment: environmentName,
-                  package: packageName,
-                  // The caller's trigger wins: it can express a publish.
-                  trigger:
-                     opts.runContext?.trigger ?? opts.trigger?.toLowerCase(),
-                  // Always set, so a build's statements group in query history.
-                  runId: opts.runContext?.runId ?? id,
-               },
-            },
+         const built = await this.runInstructedBuild(
+            run,
+            target,
+            derived,
             incremental,
-            Object.values(derivedRefused),
-            clearedTiers,
-            orchestrated,
-            opts.warehouseReach,
-            // Auto-run only: Publisher owns every write to its tables, so it
-            // can tell a joined table that has not changed since a check
-            // passed. A host's tables are its own.
-            orchestrated
-               ? undefined
-               : await (async () => {
-                    const prior = opts.forceRefresh
-                       ? undefined
-                       : await this.priorUniquenessMetadata(
-                            environmentId,
-                            packageName,
-                            id,
-                         );
-                    return new UniquenessLedger(
-                       prior ? uniquenessPassesIn(prior) : undefined,
-                       id,
-                       prior ? rollupKeyRecordsIn(prior) : undefined,
-                    );
-                 })(),
          );
-
-         // What the run records names the package's files package-relative:
-         // a compile error in a reason names its file by where the server
-         // keeps it.
-         const {
-            entries,
-            failures,
-            refused: refusedBesideBuilt,
-         } = packageRelativeRun(
-            {
-               entries: builtEntries,
-               failures: builtFailures,
-               refused: builtRefusedBeside,
-            },
-            pkg.getPackagePath(),
-         );
-         derivedRefused = packageRelativeRun(
-            { entries: {}, failures: {}, refused: derivedRefused },
-            pkg.getPackagePath(),
-         ).refused;
-
-         const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
-            entries,
-            failures,
-            carried,
-         );
-         // Auto-run refusals ride the run's free-form metadata, not the manifest
-         // a strict-schema caller parses. Orchestrated refusals are in
-         // `failures`, where that caller already looks, unless an eligible
-         // sibling built their table (then in `refusedSources`).
-         const sourcesRefused =
-            Object.keys(derivedRefused).length + instructedRefused;
-         const durationMs = Date.now() - startedAt;
-         const served = await this.commitManifest(
-            id,
-            entries,
-            failures,
-            {
-               // Recorded before any is dropped, so a crash between this
-               // commit and the drops leaves them for the next run to finish.
-               ...(renamed.length > 0 ? { [RENAMED_TABLES_KEY]: renamed } : {}),
-               forceRefresh: opts.forceRefresh,
-               sourceNames: opts.sourceNames ?? null,
-               mode,
-               trigger: opts.trigger,
-               sourcesBuilt,
-               sourcesReused,
-               ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
-               // Auto-run's refusals, plus instructed sources refused beside a
-               // table an eligible sibling built (ms2data/service#7078), which
-               // are not in `failures`.
-               ...(Object.keys(derivedRefused).length +
-                  Object.keys(refusedBesideBuilt).length >
-               0
-                  ? {
-                       refusedSources: {
-                          ...derivedRefused,
-                          ...refusedBesideBuilt,
-                       },
-                    }
-                  : {}),
-               durationMs,
-               // The inline uniqueness checks: the passes the next run may
-               // rely on, and whether each ran or was skipped.
-               ...(uniquenessChecks
-                  ? { [INLINE_UNIQUENESS_KEY]: uniquenessChecks }
-                  : {}),
-               // commitManifest replaces the metadata, so the version is set again.
-               ...(versionId !== undefined
-                  ? {
-                       versionId,
-                       scope: pkg.getPackageMetadata().scope ?? "package",
-                    }
-                  : {}),
-            },
-            // Auto-run owns distribution, and loads the manifest into its own
-            // package before the run reports MANIFEST_FILE_READY, so "done"
-            // means served. Orchestrated leaves it to the caller
-            // (manifestLocation). Other loaded versions are rebound after,
-            // below: they read the run from the store, which counts it only
-            // once it is MANIFEST_FILE_READY.
-            orchestrated
-               ? undefined
-               : (finish) =>
-                    this.autoLoadManifest(
-                       environment,
-                       packageName,
-                       entries,
-                       versionId,
-                       uniquenessChecks?.rollupKeys,
-                       // A stop that landed during the load did not cut it
-                       // short; the run says so.
-                       (served) =>
-                          finish(
-                             signal.aborted
-                                ? {
-                                     ...served,
-                                     metadata: {
-                                        ...served.metadata,
-                                        stopIgnored: true,
-                                     },
-                                  }
-                                : served,
-                          ),
-                    ),
-         );
-
-         // Whether every loaded copy of the package now reads this run: its
-         // own load, then the other versions' rebinds below.
-         let bound = !orchestrated && served?.autoLoad === "loaded";
-         if (
-            !orchestrated &&
-            versionId !== undefined &&
-            rebindsOwnVersionAfter(served)
-         ) {
-            await this.committer.rebindOwnVersionIfMoved(
-               environmentName,
-               packageName,
-               versionId,
-            );
-         }
-         if (markedShared && versionId !== undefined) {
-            // Every other loaded version is rebound to this run too: each
-            // binds only what its own definition built, and serves live what
-            // this run rebuilt from a different one (see
-            // Package.bindStorageServeBindings).
-            bound =
-               (await this.committer.rebindLoadedVersions(
-                  environmentName,
-                  packageName,
-                  versionId,
-               )) && bound;
-         }
-         // Once nothing loaded reads them, the tables readable names replaced
-         // (this run's, and any an earlier run could not finish). Only after
-         // this run's own load took, and, before any drop, once every loaded
-         // copy of the package has rebound from the store: one that did not
-         // (a version an earlier run's failed load left on the old table)
-         // still reads it.
-         if (!orchestrated) {
-            if (bound) {
-               await this.reclaimer.reclaimRenamedTables(
-                  environmentName,
-                  packageName,
-                  id,
-                  reader,
-                  () =>
-                     this.committer.rebindLoadedVersions(
-                        environmentName,
-                        packageName,
-                     ),
-               );
-            } else if (renamed.length > 0) {
-               logger.warn(
-                  "Keeping the tables readable names replaced: the package did not bind to this run",
-                  { packageName, tables: renamed.map((t) => t.previousName) },
-               );
-            }
-         }
-
-         // Carried forward, so never in the build loop: counted once the run
-         // has committed them. A host's reference to an address this run
-         // rebuilt was counted as built.
-         const kindByAddress = buildKindsByAddress(
-            compiled,
-            pkg.getBuildPlan(),
-         );
-         for (const [address, entry] of Object.entries(carried)) {
-            if (failures[address] || telemetry.builtAddresses.has(address)) {
-               continue;
-            }
-            reportSourceReused(
-               kindByAddress.get(address) ??
-                  (entry.origin === "preaggregate" ? "rollup" : "persist"),
-               entry.storageDestinationName ? "storage" : "colocated",
-            );
-         }
-         // A run that lost sources is partial: its manifest is missing tables a
-         // consumer expected. An auto-run refusal is not a loss: it is a property
-         // of the model, and counting it would make every run partial.
-         const partial = sourcesFailed > 0;
-         this.lifecycle.recordRun(
-            mode,
-            partial ? "partial" : "success",
-            startedAt,
-         );
-         telemetry.finished(partial ? "partial" : "success", durationMs);
+         const committed = await this.commitRun(run, target, derived, built);
+         await this.finishCommittedRun(run, target, derived, committed, state);
       } catch (err) {
          const outcome = outcomeFor(err, signal);
          this.lifecycle.recordRun(mode, outcome, startedAt);
          telemetry.finished(outcome, Date.now() - startedAt, err);
          markRunFailureReported(err);
-         if (packagePath !== undefined && err instanceof Error) {
-            err.message = packageRelativeText(err.message, packagePath);
+         if (state.packagePath !== undefined && err instanceof Error) {
+            err.message = packageRelativeText(err.message, state.packagePath);
          }
-         if (markedShared && opts.version !== null) {
+         if (state.markedShared && opts.version !== null) {
             // The run may have rebuilt some shared tables before it failed.
             // Its record stays, so rebinding now leaves those tables unbound
             // for every loaded version, as a restart would.
@@ -1213,116 +1048,569 @@ export class MaterializationService {
       }
    }
 
-   // ==================== BUILD SEAMS ====================
+   /**
+    * The package a run builds, loaded (its version's, or the unversioned
+    * one) and compiled; a `#@ persist` source the build walk dropped
+    * refuses the run.
+    */
+   private async loadRunPackage(
+      run: RunScope,
+      state: RunState,
+   ): Promise<RunTarget> {
+      const { environmentName, packageName, opts, signal } = run;
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      const environment = await this.host.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
+      const versionId = opts.version ?? undefined;
+      const pkg = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+         versionId !== undefined
+            ? { versionId: VersionRef.parse(versionId) }
+            : {},
+      );
+      state.packagePath = pkg.getPackagePath();
+      // The version whose own runs this run reuses from and builds into
+      // (`scope: version`); undefined, the package's shared ones.
+      const owned = versionId !== undefined ? ownedVersionOf(pkg) : undefined;
+      // Whose runs this run reuses from: its own under `scope: version`,
+      // the package's shared ones otherwise (see ServingReader).
+      const reader: ServingReader =
+         versionId !== undefined ? { versionId, owned } : {};
 
-   /** See {@link deriveSelfInstructions} (run_instructions.ts). */
-   private deriveSelfInstructions(
-      ...args: Parameters<typeof deriveSelfInstructions>
-   ): ReturnType<typeof deriveSelfInstructions> {
-      return deriveSelfInstructions(...args);
+      // A published version's tree never changes, so compiling it needs
+      // no lock; an unversioned package's can be replaced under it.
+      const compiled =
+         versionId !== undefined
+            ? await compilePackageBuildPlan(pkg, signal)
+            : await environment.withPackageLock(packageName, () =>
+                 compilePackageBuildPlan(pkg, signal),
+              );
+
+      // A `#@ persist` source Malloy's build walk did not plan fails the
+      // package's load (`persist-not-materializable`), so a package that
+      // reaches a run has none: one source's mistake never refuses the
+      // whole run. What can reach one is the files on disk changed since the
+      // load: a save the load refused (the package serves its last good
+      // model, stale). The run builds from those files, so it is refused
+      // until they are fixed, rather than build what the load refused. A
+      // version's files never change; only the unversioned package a reload
+      // replaces can be stale.
+      const stale =
+         versionId === undefined &&
+         (environment.getStaleCompileErrors?.().has(packageName) ?? false);
+      // The load gate's own text, so the run and the load agree.
+      const invalid = runLoadGateText(compiled, pkg, {
+         enforceCollisions: getPersistCollisionEnforce(),
+         versionScoped: owned !== undefined,
+      });
+      if (stale || invalid) {
+         throw new BadRequestError(
+            `Package ${packageName} is not built: ` +
+               (invalid
+                  ? `its files carry an invalid materialization annotation, which its load refuses:\n${invalid}`
+                  : "its files changed and its last reload refused them, " +
+                    "so it serves an older model") +
+               `\nFix the files and reload the package, then run again.`,
+         );
+      }
+      return {
+         environmentId,
+         environment,
+         versionId,
+         pkg,
+         owned,
+         reader,
+         compiled,
+      };
    }
 
    /**
-    * The run's incremental context over this service's ledger store. A method
-    * rather than a direct call so a test can substitute the context a run gets.
+    * The run's instructions: the caller's, with the upstream entries they
+    * reference, or an auto-run's own, with what it carries forward, refuses
+    * and renames.
     */
-   private incrementalRunContext(
-      compiled: CompiledBuildPlan,
-      run: Parameters<typeof incrementalRunContext>[1],
-   ): IncrementalRunContext | undefined {
-      return incrementalRunContext(compiled, run, this.repository);
-   }
-
-   /** See {@link InstructedBuild.run}. */
-   private executeInstructedBuild(
-      ...args: Parameters<InstructedBuild["run"]>
-   ): ReturnType<InstructedBuild["run"]> {
-      return new InstructedBuild({
-         buildOneSource: (...a) => this.buildOneSource(...a),
-         reclaimStorageTablesFromFailedRun: (...a) =>
-            this.reclaimStorageTablesFromFailedRun(...a),
-         packageRuns: async (environmentName, packageName) =>
-            (await this.repository.listMaterializations(
-               await this.resolveEnvironmentId(environmentName),
+   private async deriveRunInstructions(
+      run: RunScope,
+      target: RunTarget,
+      incremental: IncrementalRunContext | undefined,
+   ): Promise<RunInstructions> {
+      const { id, environmentName, packageName, opts, orchestrated } = run;
+      const { environmentId, environment, pkg, owned, reader, compiled } =
+         target;
+      let instructions: BuildInstruction[];
+      // Tables built under readable names in place of an earlier run's,
+      // reclaimed once this run commits (Reclaimer.reclaimRenamedTables).
+      let renamed: RenamedTable[] = [];
+      let carried: Record<string, ManifestEntry>;
+      let derivedRefused: Record<string, RefusedSource> = {};
+      let clearedTiers: ReadonlyMap<string, EligibilityTier> | undefined;
+      if (orchestrated) {
+         instructions = opts.buildInstructions!;
+         // Seed with the caller's upstream references so a persist upstream
+         // built in a prior run resolves to its table instead of recomputing
+         // live.
+         carried = referenceManifestToEntries(opts.referenceManifest);
+         // A reference is an IDENTITY, not a full copy. Upstream entries are
+         // filled in DESCENDING precedence from:
+         //   1. the `referenceManifest` in this call;
+         //   2. the package's BOUND manifest (`manifestLocation`), which lets a
+         //      worker that never built the upstream reuse its table;
+         //   3. this worker's most recent local manifest.
+         // Each fills the storage fields (sourceName, storageDestinationName,
+         // schema) a `storage=` upstream's rebind needs. Each step is
+         // best-effort: a fetch/read failure leaves the entries as they are.
+         await this.committer.seedFromBoundManifest(carried, pkg, instructions);
+         if (Object.keys(carried).length > 0) {
+            await this.committer.resolveReferencesFromStore(
+               carried,
+               environmentId,
                packageName,
-            )) ?? [],
-         tableNotOwned: async (environmentName, packageName, target) => {
-            await this.claims.markHeldElsewhere(
-               await this.resolveEnvironmentId(environmentName),
-               packageName,
-               "",
-               target,
+               id,
+               reader,
             );
-            await this.committer.rebindLoadedVersions(
+         }
+      } else {
+         // Skip-if-unchanged: reuse tables from the most recent manifest for
+         // sources whose sourceEntityId is unchanged. Read under
+         // `forceRefresh` too, where nothing is carried: the entries still
+         // decide each table's name (an incremental source keeps the name
+         // its ledger is keyed by, a readable name stays put).
+         const priorEntries =
+            await this.collaborators.getMostRecentManifestEntries(
+               environmentId,
+               packageName,
+               id,
+               reader,
+            );
+         let recheck: Record<string, BuildInstruction>;
+         ({
+            instructions,
+            carried,
+            refused: derivedRefused,
+            cleared: clearedTiers,
+            recheck = {},
+            renamed = [],
+         } = this.collaborators.deriveSelfInstructions(
+            compiled,
+            opts.sourceNames,
+            priorEntries,
+            incremental,
+            {
                environmentName,
                packageName,
+               packagePath: pkg.getPackagePath(),
+               ...(owned !== undefined ? { ownedVersion: owned } : {}),
+            },
+            { forceRefresh: opts.forceRefresh ?? false },
+         ));
+         // A carried table at the author's `name=` is reused only while
+         // it is still marked as this package's (table_ownership.ts).
+         if (Object.keys(recheck).length > 0) {
+            await uncarryUnownedTables(
+               recheck,
+               carried,
+               instructions,
+               packageOwner(environmentName, packageName),
+               tableSiteContext({ compiled, environment }),
             );
-         },
-      }).run(...args);
-   }
-
-   /** See {@link SourceBuilder.build}. */
-   private buildOneSource(
-      ...args: Parameters<SourceBuilder["build"]>
-   ): ReturnType<SourceBuilder["build"]> {
-      return new SourceBuilder((request) =>
-         this.buildOneSourceIntoStorage(request),
-      ).build(...args);
-   }
-
-   /** See {@link StorageBuildStrategy.build}. */
-   private buildOneSourceIntoStorage(
-      params: StorageBuildRequest,
-   ): Promise<ManifestEntry> {
-      return this.storageStrategy().build(params);
-   }
-
-   /** See {@link StorageBuildStrategy.buildDownstreamViaParents}. */
-   private buildDownstreamViaParents(
-      ...args: Parameters<StorageBuildStrategy["buildDownstreamViaParents"]>
-   ): ReturnType<StorageBuildStrategy["buildDownstreamViaParents"]> {
-      return this.storageStrategy().buildDownstreamViaParents(...args);
+         }
+      }
+      return {
+         instructions,
+         carried,
+         refused: derivedRefused,
+         cleared: clearedTiers,
+         renamed,
+      };
    }
 
    /**
-    * Stateless, so made per call: a build reached through the prototype alone
-    * (a spec that never constructs the service) still finds it.
+    * Before a version's run writes a table, claim what it writes; for the
+    * package's shared tables, also mark older entries superseded and rebind
+    * the other loaded versions.
     */
-   private storageStrategy(): StorageBuildStrategy {
-      return new StorageBuildStrategy({
-         buildDownstreamViaParents: (...a) =>
-            this.buildDownstreamViaParents(...a),
-      });
+   private async claimRunTables(
+      run: RunScope,
+      target: RunTarget,
+      instructions: BuildInstruction[],
+      state: RunState,
+   ): Promise<void> {
+      const { id, environmentName, packageName, orchestrated } = run;
+      const { environmentId, versionId, pkg, owned } = target;
+      // An auto-run of a version of a `scope: package` package rebuilds,
+      // source by source, the tables every version of the package reads.
+      // Before it does, it claims them, and marks every older run's
+      // entries for them superseded: whatever happens to this run, those
+      // tables will no longer hold what the older entries say. Then every
+      // other loaded version is rebound, so none reads rows this run's
+      // definition builds (a version that cannot be rebound is unloaded).
+      // A version's run with instructions, likewise: its tables were
+      // claimed when it was created, and another version's run may have
+      // built one of them from another definition.
+      if (
+         versionId !== undefined &&
+         instructions.length > 0 &&
+         (orchestrated || owned === undefined)
+      ) {
+         if (orchestrated) {
+            await this.claims
+               .lockFor(environmentId, packageName)
+               .runExclusive(() =>
+                  this.claims.markSuperseded(
+                     environmentId,
+                     packageName,
+                     id,
+                     instructions,
+                  ),
+               );
+         } else {
+            await this.claims.claimTables(
+               environmentId,
+               packageName,
+               id,
+               instructions,
+            );
+         }
+         state.markedShared = true;
+         await this.committer.rebindLoadedVersions(
+            environmentName,
+            packageName,
+            versionId,
+         );
+      } else if (versionId !== undefined && instructions.length > 0) {
+         // An auto-run of a `scope: version` version builds tables of its
+         // own, named for the version. It claims them all the same: the
+         // claim, not the naming, keeps another active run off them, since
+         // a run with instructions may name any table. No other run reads
+         // them, so nothing is superseded or rebound.
+         // It also records where each table lives, which its manifest says
+         // only once it commits: the version's archive reclaims the tables
+         // of a run that failed or was cancelled part-way from this.
+         await this.claims.claimTables(
+            environmentId,
+            packageName,
+            id,
+            instructions,
+            {
+               supersede: false,
+               targets: writeTargetsFor(pkg.getBuildPlan(), instructions),
+            },
+         );
+      }
    }
 
-   /** See {@link Reclaimer.reclaimStorageTablesFromFailedRun}. */
-   private reclaimStorageTablesFromFailedRun(
-      builtThisRun: ManifestEntry[],
-      environment: BuildEnvironment,
-      owner: { environmentId: string; packageName: string },
-   ): Promise<void> {
-      return this.reclaimer.reclaimStorageTablesFromFailedRun(
-         builtThisRun,
-         environment,
-         owner,
+   /** The instructed build of the run's sources, with its uniqueness ledger. */
+   private async runInstructedBuild(
+      run: RunScope,
+      target: RunTarget,
+      derived: RunInstructions,
+      incremental: IncrementalRunContext | undefined,
+   ): Promise<InstructedBuildResult> {
+      const { id, environmentName, packageName, opts, signal, orchestrated } =
+         run;
+      const { environmentId, environment, versionId, pkg, compiled } = target;
+      const {
+         instructions,
+         carried,
+         refused: derivedRefused,
+         cleared: clearedTiers,
+      } = derived;
+      return await this.collaborators.executeInstructedBuild(
+         compiled,
+         withChainBuildText(
+            environment,
+            pkg,
+            // A version's files never change; only the unversioned package
+            // a reload replaces can be stale.
+            () =>
+               versionId === undefined &&
+               (environment.getStaleCompileErrors?.().has(packageName) ??
+                  false),
+         ),
+         instructions,
+         carried,
+         signal,
+         opts.strictUpstreams ?? false,
+         // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
+         orchestrated ? { environmentId, packageName } : undefined,
+         {
+            // Optional: a lighter package surface resolves without a
+            // package-level layer.
+            packageMaterialization: pkg.getMaterializationConfig?.() ?? null,
+            context: {
+               queryClass: "materialize",
+               environment: environmentName,
+               package: packageName,
+               // The caller's trigger wins: it can express a publish.
+               trigger: opts.runContext?.trigger ?? opts.trigger?.toLowerCase(),
+               // Always set, so a build's statements group in query history.
+               runId: opts.runContext?.runId ?? id,
+            },
+         },
+         incremental,
+         Object.values(derivedRefused),
+         clearedTiers,
+         orchestrated,
+         opts.warehouseReach,
+         // Auto-run only: Publisher owns every write to its tables, so it
+         // can tell a joined table that has not changed since a check
+         // passed. A host's tables are its own.
+         orchestrated
+            ? undefined
+            : await (async () => {
+                 const prior = opts.forceRefresh
+                    ? undefined
+                    : await this.priorUniquenessMetadata(
+                         environmentId,
+                         packageName,
+                         id,
+                      );
+                 return new UniquenessLedger(
+                    prior ? uniquenessPassesIn(prior) : undefined,
+                    id,
+                    prior ? rollupKeyRecordsIn(prior) : undefined,
+                 );
+              })(),
       );
    }
 
-   // ==================== MANIFEST SEAMS ====================
+   /**
+    * Commit the run's manifest, its files named package-relative, and for an
+    * auto-run load it into the package before the run reports done.
+    */
+   private async commitRun(
+      run: RunScope,
+      target: RunTarget,
+      derived: RunInstructions,
+      built: InstructedBuildResult,
+   ): Promise<CommittedRun> {
+      const { id, packageName, opts, signal, orchestrated, mode, startedAt } =
+         run;
+      const { environment, versionId, pkg } = target;
+      const { carried, renamed } = derived;
+      let derivedRefused = derived.refused;
+      const {
+         entries: builtEntries,
+         failures: builtFailures,
+         sourcesRefused: instructedRefused,
+         refusedBesideBuilt: builtRefusedBeside = {},
+         uniquenessChecks,
+      } = built;
 
-   /** See {@link ManifestCommitter.commit}. */
-   private commitManifest(
-      ...args: Parameters<ManifestCommitter["commit"]>
-   ): ReturnType<ManifestCommitter["commit"]> {
-      return this.committer.commit(...args);
+      // What the run records names the package's files package-relative:
+      // a compile error in a reason names its file by where the server
+      // keeps it.
+      const {
+         entries,
+         failures,
+         refused: refusedBesideBuilt,
+      } = packageRelativeRun(
+         {
+            entries: builtEntries,
+            failures: builtFailures,
+            refused: builtRefusedBeside,
+         },
+         pkg.getPackagePath(),
+      );
+      derivedRefused = packageRelativeRun(
+         { entries: {}, failures: {}, refused: derivedRefused },
+         pkg.getPackagePath(),
+      ).refused;
+
+      const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
+         entries,
+         failures,
+         carried,
+      );
+      // Auto-run refusals ride the run's free-form metadata, not the manifest
+      // a strict-schema caller parses. Orchestrated refusals are in
+      // `failures`, where that caller already looks, unless an eligible
+      // sibling built their table (then in `refusedSources`).
+      const sourcesRefused =
+         Object.keys(derivedRefused).length + instructedRefused;
+      const durationMs = Date.now() - startedAt;
+      const served = await this.collaborators.commitManifest(
+         id,
+         entries,
+         failures,
+         {
+            // Recorded before any is dropped, so a crash between this
+            // commit and the drops leaves them for the next run to finish.
+            ...(renamed.length > 0 ? { [RENAMED_TABLES_KEY]: renamed } : {}),
+            forceRefresh: opts.forceRefresh,
+            sourceNames: opts.sourceNames ?? null,
+            mode,
+            trigger: opts.trigger,
+            sourcesBuilt,
+            sourcesReused,
+            ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
+            // Auto-run's refusals, plus instructed sources refused beside a
+            // table an eligible sibling built, which are not in `failures`.
+            ...(Object.keys(derivedRefused).length +
+               Object.keys(refusedBesideBuilt).length >
+            0
+               ? {
+                    refusedSources: {
+                       ...derivedRefused,
+                       ...refusedBesideBuilt,
+                    },
+                 }
+               : {}),
+            durationMs,
+            // The inline uniqueness checks: the passes the next run may
+            // rely on, and whether each ran or was skipped.
+            ...(uniquenessChecks
+               ? { [INLINE_UNIQUENESS_KEY]: uniquenessChecks }
+               : {}),
+            // commitManifest replaces the metadata, so the version is set again.
+            ...(versionId !== undefined
+               ? {
+                    versionId,
+                    scope: pkg.getPackageMetadata().scope ?? "package",
+                 }
+               : {}),
+         },
+         // Auto-run owns distribution, and loads the manifest into its own
+         // package before the run reports MANIFEST_FILE_READY, so "done"
+         // means served. Orchestrated leaves it to the caller
+         // (manifestLocation). Other loaded versions are rebound after,
+         // below: they read the run from the store, which counts it only
+         // once it is MANIFEST_FILE_READY.
+         orchestrated
+            ? undefined
+            : (finish) =>
+                 this.collaborators.autoLoadManifest(
+                    environment,
+                    packageName,
+                    entries,
+                    versionId,
+                    uniquenessChecks?.rollupKeys,
+                    // A stop that landed during the load did not cut it
+                    // short; the run says so.
+                    (served) =>
+                       finish(
+                          signal.aborted
+                             ? {
+                                  ...served,
+                                  metadata: {
+                                     ...served.metadata,
+                                     stopIgnored: true,
+                                  },
+                               }
+                             : served,
+                       ),
+                 ),
+      );
+      return { served, failures, sourcesFailed, durationMs };
    }
 
-   /** See {@link ManifestCommitter.autoLoad}. */
-   private autoLoadManifest(
-      ...args: Parameters<ManifestCommitter["autoLoad"]>
-   ): ReturnType<ManifestCommitter["autoLoad"]> {
-      return this.committer.autoLoad(...args);
+   /**
+    * After the commit: rebind the loaded copies of the package, reclaim the
+    * tables readable names replaced, count what was carried forward, and
+    * record how the run ended.
+    */
+   private async finishCommittedRun(
+      run: RunScope,
+      target: RunTarget,
+      derived: RunInstructions,
+      committed: CommittedRun,
+      state: RunState,
+   ): Promise<void> {
+      const {
+         telemetry,
+         id,
+         environmentName,
+         packageName,
+         orchestrated,
+         mode,
+         startedAt,
+      } = run;
+      const { versionId, pkg, reader, compiled } = target;
+      const { carried, renamed } = derived;
+      const { served, failures, sourcesFailed, durationMs } = committed;
+      // Whether every loaded copy of the package now reads this run: its
+      // own load, then the other versions' rebinds below.
+      let bound = !orchestrated && served?.autoLoad === "loaded";
+      if (
+         !orchestrated &&
+         versionId !== undefined &&
+         rebindsOwnVersionAfter(served)
+      ) {
+         await this.committer.rebindOwnVersionIfMoved(
+            environmentName,
+            packageName,
+            versionId,
+         );
+      }
+      if (state.markedShared && versionId !== undefined) {
+         // Every other loaded version is rebound to this run too: each
+         // binds only what its own definition built, and serves live what
+         // this run rebuilt from a different one (see
+         // Package.bindStorageServeBindings).
+         bound =
+            (await this.committer.rebindLoadedVersions(
+               environmentName,
+               packageName,
+               versionId,
+            )) && bound;
+      }
+      // Once nothing loaded reads them, the tables readable names replaced
+      // (this run's, and any an earlier run could not finish). Only after
+      // this run's own load took, and, before any drop, once every loaded
+      // copy of the package has rebound from the store: one that did not
+      // (a version an earlier run's failed load left on the old table)
+      // still reads it.
+      if (!orchestrated) {
+         if (bound) {
+            await this.reclaimer.reclaimRenamedTables(
+               environmentName,
+               packageName,
+               id,
+               reader,
+               () =>
+                  this.committer.rebindLoadedVersions(
+                     environmentName,
+                     packageName,
+                  ),
+            );
+         } else if (renamed.length > 0) {
+            logger.warn(
+               "Keeping the tables readable names replaced: the package did not bind to this run",
+               { packageName, tables: renamed.map((t) => t.previousName) },
+            );
+         }
+      }
+
+      // Carried forward, so never in the build loop: counted once the run
+      // has committed them. A host's reference to an address this run
+      // rebuilt was counted as built.
+      const kindByAddress = buildKindsByAddress(compiled, pkg.getBuildPlan());
+      for (const [address, entry] of Object.entries(carried)) {
+         if (failures[address] || telemetry.builtAddresses.has(address)) {
+            continue;
+         }
+         reportSourceReused(
+            kindByAddress.get(address) ??
+               (entry.origin === "preaggregate" ? "rollup" : "persist"),
+            entry.storageDestinationName ? "storage" : "colocated",
+         );
+      }
+      // A run that lost sources is partial: its manifest is missing tables a
+      // consumer expected. An auto-run refusal is not a loss: it is a property
+      // of the model, and counting it would make every run partial.
+      const partial = sourcesFailed > 0;
+      this.lifecycle.recordRun(
+         mode,
+         partial ? "partial" : "success",
+         startedAt,
+      );
+      telemetry.finished(partial ? "partial" : "success", durationMs);
    }
+
+   // ==================== UNIQUENESS PASSES ====================
 
    /**
     * The inline uniqueness passes an auto-run may rely on: those the run
@@ -1378,13 +1666,6 @@ export class MaterializationService {
             await this.repository.updateMaterialization(run.id, { metadata });
          }
       }
-   }
-
-   /** See {@link ManifestCommitter.mostRecentEntries}. */
-   private getMostRecentManifestEntries(
-      ...args: Parameters<ManifestCommitter["mostRecentEntries"]>
-   ): Promise<Record<string, ManifestEntry>> {
-      return this.committer.mostRecentEntries(...args);
    }
 
    // ==================== CANCELLATION ====================
@@ -1454,7 +1735,11 @@ export class MaterializationService {
       }
 
       if (options.dropTables) {
-         await this.dropMaterializedTables(environmentName, packageName, m);
+         await this.collaborators.dropMaterializedTables(
+            environmentName,
+            packageName,
+            m,
+         );
       }
 
       // The record is part of what proves a recorded uniqueness pass still
@@ -1470,68 +1755,6 @@ export class MaterializationService {
       // (Mirrors the load-time Environment.rebindServeBindingsFromLocalStore;
       // best-effort: a failure leaves the bindings for a later reload or build.)
       await this.committer.rebindLoadedVersions(environmentName, packageName);
-   }
-
-   // ==================== RECLAIM ====================
-
-   /** See {@link Reclaimer.dropMaterializedTables}. */
-   private dropMaterializedTables(
-      environmentName: string,
-      packageName: string,
-      m: Materialization,
-   ): Promise<void> {
-      return this.reclaimer.dropMaterializedTables(
-         environmentName,
-         packageName,
-         m,
-      );
-   }
-
-   /** See {@link Reclaimer.dropManifestEntries}. */
-   private dropManifestEntries(
-      ...args: Parameters<Reclaimer["dropManifestEntries"]>
-   ): Promise<ManifestEntry[]> {
-      return this.reclaimer.dropManifestEntries(...args);
-   }
-
-   /** See {@link Reclaimer.reclaimVersionTables}. */
-   reclaimVersionTables(
-      environmentName: string,
-      packageName: string,
-      versionId: string,
-   ): Promise<void> {
-      return this.reclaimer.reclaimVersionTables(
-         environmentName,
-         packageName,
-         versionId,
-      );
-   }
-
-   /** See {@link Reclaimer.reclaimOwedNow}. */
-   reclaimOwedNow(
-      environment: MaterializationEnvironment,
-      packageName: string,
-      versionId: string,
-   ): Promise<void> {
-      return this.reclaimer.reclaimOwedNow(environment, packageName, versionId);
-   }
-
-   /** See {@link Reclaimer.cleanUpDeletedVersion}. */
-   cleanUpDeletedVersion(
-      environmentName: string,
-      packageName: string,
-      versionId: string,
-   ): Promise<void> {
-      return this.reclaimer.cleanUpDeletedVersion(
-         environmentName,
-         packageName,
-         versionId,
-      );
-   }
-
-   /** See {@link Reclaimer.reclaimArchivedVersions}. */
-   reclaimArchivedVersions(): Promise<void> {
-      return this.reclaimer.reclaimArchivedVersions();
    }
 
    private resolveEnvironmentId(environmentName: string): Promise<string> {

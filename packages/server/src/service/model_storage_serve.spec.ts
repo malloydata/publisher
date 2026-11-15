@@ -22,8 +22,10 @@ import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
 import {
    type ServedCopyFiles,
-   writeServedCopyFiles,
-} from "../test_helpers/served_copy_files";
+   materializationFixture,
+} from "../test_helpers/materialization_fixture";
+
+const mz = materializationFixture();
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -84,7 +86,7 @@ async function buildModel(opts?: {
       opts?.originalText ?? `source: X is duckdb.sql("SELECT 0 AS total")`;
    // On disk, as a package's files are: the served copy re-roots the
    // author's own text.
-   const files = (lastFiles = writeServedCopyFiles({
+   const files = (lastFiles = mz.servedCopy({
       "m.malloy": originalText,
       ...(opts?.files ?? {}),
    }));

@@ -7,10 +7,15 @@
  * built, warned `persist-query-not-built`, and answered live) and on.
  */
 
+import {
+   modelPathsIn,
+   sourcesIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+import { buildKindOf } from "../run/run_telemetry";
 import { PERSIST_QUERY_NOT_BUILT } from "./persisted_query";
 
 const TABLE = `duckdb.sql("""
@@ -60,7 +65,7 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE off", () => {
       const c = await compiled(
          `${BASE}#@ persist name="nq_tbl"\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
       );
-      expect(Object.keys(c.sources)).toEqual([]);
+      expect(Object.keys(sourcesIn(c))).toEqual([]);
       const finding = (c.annotationFindings ?? []).find(
          (f) => f.code === PERSIST_QUERY_NOT_BUILT,
       );
@@ -108,7 +113,9 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE off", () => {
       const c = await compiled(
          `##! experimental.persistence\n${BASE}query: q is base -> { group_by: carrier; aggregate: n }\n#@ persist name="q_tbl"\nsource: q_result is q\n`,
       );
-      expect(Object.values(c.sources).map((s) => s.name)).toEqual(["q_result"]);
+      expect(Object.values(sourcesIn(c)).map((s) => s.name)).toEqual([
+         "q_result",
+      ]);
       expect(codes(c)).not.toContain(PERSIST_QUERY_NOT_BUILT);
    });
 });
@@ -120,7 +127,7 @@ const UNGATED = `${GIVENS}source: ops is ${TABLE} extend { measure: n is count()
 
 /** The build sources a package plans, by name. */
 function built(c: Awaited<ReturnType<typeof compiled>>): string[] {
-   return Object.values(c.sources)
+   return Object.values(sourcesIn(c))
       .map((s) => s.name)
       .sort();
 }
@@ -139,12 +146,15 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
       const c = await compiled(
          `${BASE}#@ persist name="nq_tbl"\nquery: q is base -> { group_by: carrier; aggregate: n; order_by: n desc; limit: 1 }\n`,
       );
-      const sources = Object.entries(c.sources);
+      const sources = Object.entries(sourcesIn(c));
       expect(sources.map(([, s]) => s.name)).toEqual(["q__query"]);
       const [id, source] = sources[0];
       expect(id).toMatch(/^q__query@.*m\.malloy\.persist-view\.malloy$/);
       // The stored rows are exactly `run: q`'s: its ordering and limit kept.
       expect(source.getSQL()).toContain("LIMIT 1");
+      // Planned, and so built and counted, as a persisted view's table.
+      expect(c.tables[id].kind).toBe("view");
+      expect(buildKindOf(c, id)).toBe("view");
       expect(notBuilt(c)).toEqual([]);
       expect(c.droppedPersistSources ?? []).toEqual([]);
    });
@@ -169,7 +179,7 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
          "b.malloy": `import "a.malloy"\nquery: q2 is q -> { select: * }\n`,
       });
       expect(built(c)).toEqual(["q__query"]);
-      expect(Object.values(c.sourceModelPaths ?? {})).toEqual(["a.malloy"]);
+      expect(Object.values(modelPathsIn(c) ?? {})).toEqual(["a.malloy"]);
    });
 
    // Each refusal beside the twin it is built as, so the check named is the

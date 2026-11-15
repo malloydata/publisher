@@ -25,6 +25,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders@<hammer>/pa/pa.malloy": "persist",
+      "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy": "rollup",
+      "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy": "rollup"
+    },
     "materializePlans": {},
     "rollupPlans": {
       "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy": {

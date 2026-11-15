@@ -90,11 +90,11 @@ async function scenario() {
    await duckdb.runSQL(SEED);
    const compiled = await compilePackageBuildPlan(pkg);
    const byName = (name: string) => {
-      const hit = Object.entries(compiled.sources).find(
-         ([, s]) => s.name === name,
+      const hit = Object.entries(compiled.tables).find(
+         ([, t]) => t.source.name === name,
       );
       if (!hit) throw new Error(`no planned source ${name}`);
-      return { id: hit[0], source: hit[1] };
+      return { id: hit[0], source: hit[1].source };
    };
    const environment = {
       getApiConnection: () => ({ name: "duckdb", type: "duckdb" }),
@@ -127,7 +127,7 @@ async function scenario() {
       return computeSourceEntityId(
          source,
          compiled.connectionDigests,
-         compiled.targets?.[id],
+         compiled.tables[id]?.target,
       );
    };
    const instruction = (name: string, destination?: string): BuildInstruction =>

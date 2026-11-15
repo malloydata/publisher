@@ -21,6 +21,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/iie/iie.malloy": "persist",
+      "regions_kept@<hammer>/iie/iie.malloy": "persist",
+      "rollup@<hammer>/iie/iie.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

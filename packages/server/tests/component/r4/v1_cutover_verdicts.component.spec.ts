@@ -15,7 +15,7 @@ import {
    freshLoadPool,
    loadFixture,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES, type Variant } from "./conformance/shapes";
 
 async function preview(

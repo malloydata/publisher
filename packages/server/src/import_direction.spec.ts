@@ -505,7 +505,7 @@ describe("import-direction allowlist", () => {
       for (const slice of Object.values(allowlist)) {
          // An architecture-plan slice, or a materialization phase 5 step.
          expect(slice).toMatch(
-            /^(U[1-4]|D[1-6]|V[1-5]|C[1-4]|L|R|2[a-l]|2g\.[1-4]|5)$/,
+            /^(U[1-4]|D[1-6]|V[1-5]|C[1-4]|L|R|2[a-p]|2g\.[1-4]|5)$/,
          );
       }
    });
