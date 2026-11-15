@@ -24,8 +24,9 @@ import { errMessage } from "../../../utils";
 import { parseEnvironmentName } from "../../identity";
 import { resolveEnvironmentId } from "../../resolve_environment";
 import {
-   newestServingEntries,
    ServingReader,
+   storageBindingResolverFor,
+   storedServingEntries,
    SUPERSEDED_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
@@ -38,7 +39,11 @@ import {
    ManifestReference,
    SourceFailure,
 } from "../domain/types";
-import { keyUniquenessAt, type RollupKeyRecord } from "./inline_uniqueness";
+import {
+   keyUniquenessAt,
+   withRollupKeyRecords,
+   type RollupKeyRecord,
+} from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import type { RunLifecycle } from "./run_lifecycle";
 
@@ -364,15 +369,26 @@ export class ManifestCommitter {
             packageName,
             reader.owned !== undefined ? { version: reader.owned } : undefined,
          )) ?? [];
-      // Legacy tolerance, removable with `ManifestEntry.error`: manifests
-      // from 0.0.245-0.0.246 record failed sources among their entries.
-      // Reusing one would never retry the source and would seed a downstream
-      // from a table that was never created.
-      return Object.fromEntries(
-         Object.entries(newestServingEntries(list, reader, excludeId)).filter(
-            ([, entry]) => !isLegacyFailedEntry(entry),
-         ),
-      );
+      return storedServingEntries(list, reader, excludeId);
+   }
+
+   /**
+    * The entries a rebind binds, read as a package load reads them
+    * (`storageBindingResolverFor`): each with the key checks the newest run
+    * stands behind (`withRollupKeyRecords`). Without them a rebind after a
+    * run would drop what the run's own load bound, and the served copy would
+    * read every recorded key as unknown.
+    */
+   private boundEntries(
+      environmentId: string,
+      packageName: string,
+      reader: ServingReader = {},
+   ): Promise<Record<string, ManifestEntry>> {
+      return storageBindingResolverFor(
+         this.repository,
+         environmentId,
+         withRollupKeyRecords,
+      )(packageName, reader);
    }
 
    /**
@@ -505,9 +521,7 @@ export class ManifestCommitter {
          await environment.rebindVersionFromStore(
             packageName,
             versionId,
-            (reader) =>
-               // "" excludes nothing — a deleted record is already gone.
-               this.mostRecentEntries(environmentId, packageName, "", reader),
+            (reader) => this.boundEntries(environmentId, packageName, reader),
             { onlyIfMoved: true },
          );
       } catch (err) {
@@ -578,41 +592,32 @@ export class ManifestCommitter {
                packageName,
                versionId,
                (reader) =>
-                  // "" excludes nothing — a deleted record is already gone.
-                  this.mostRecentEntries(
-                     environmentId,
-                     packageName,
-                     "",
-                     reader,
-                  ),
+                  this.boundEntries(environmentId, packageName, reader),
             );
             continue;
          }
          try {
-            // "" excludes nothing — a deleted record is already gone.
-            const entries = await this.mostRecentEntries(
-               environmentId,
-               packageName,
-               "",
-            );
-            const { tableNameManifest, storageEntries } = splitManifestEntries(
-               entries,
-               `rebind (package ${packageName})`,
-            );
-            // Colocated: re-derive (or clear) regardless of mode.
-            await environment.bindPackageColocatedServeManifest(
-               packageName,
-               tableNameManifest,
-               versionId,
-            );
-            // Storage=: only meaningful when the tier is not off.
-            if (getPersistStorageMode() !== "off") {
-               await environment.bindPackageStorageServeBindings(
-                  packageName,
-                  storageEntries,
-                  versionId,
-               );
-            }
+            // Read and bound under the package's lock, which an unversioned
+            // run is created under too: a run created before the read is
+            // active, so the read binds no key check of a table it may be
+            // rewriting (uncontestedAutoRun); one created after the bind
+            // forgets what was bound before it writes.
+            await environment.rebindPackageFromStore(packageName, async () => {
+               const { tableNameManifest, storageEntries } =
+                  splitManifestEntries(
+                     await this.boundEntries(environmentId, packageName),
+                     `rebind (package ${packageName})`,
+                     "store",
+                  );
+               return {
+                  // Colocated: re-derive (or clear) regardless of mode.
+                  colocated: tableNameManifest,
+                  // Storage=: only meaningful when the tier is not off.
+                  ...(getPersistStorageMode() !== "off"
+                     ? { storage: storageEntries }
+                     : {}),
+               };
+            });
          } catch (err) {
             rebound = false;
             logger.warn(
