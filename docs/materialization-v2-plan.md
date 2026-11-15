@@ -1185,7 +1185,7 @@ _Corrections after 6g (2026-11-13, from the refreshed audit)._ Factual, and fold
 | `route_outcome` (label name `outcome`) | `used`, `skipped`, `fallback` (a chosen leg whose run failed, answered live) | 3 |
 | `reason` on the route counter | `NONE` when used, else the public `SkipReason`: `NOT_BUILT`, `WARNED`, `MISSING_FIELD`, `CONTRACT`, `GRAIN_TOO_COARSE`, `TIME_ZONE`, `CROSS_CONNECTION`, `COUNT_SEMANTICS`, `STALE`, `RUN_FAILED` | 11 |
 | `bind_scope` (label name `scope`) | `manifest` (one manifest bind: REST, auto-load or rebind), `source` (one source entry deciding whether it serves) | 2 |
-| `bind_outcome` (label name `outcome`) | scope `manifest`: `success`, `failure`, `timeout`; scope `source`: `bound`, `partial` (added 2026-11-15: the source serves with a join live), `declined` | 6 |
+| `bind_outcome` (label name `outcome`) | scope `manifest`: `success`, `failure`, `timeout`; scope `source`: `bound`, `partial` (added 2026-11-15: the source serves, with a join read as written or left out), `declined` | 6 |
 | `reason` on the bind counter | `none`; `build_plan_unavailable`, `refused` (today's `colocated_bind_dropped` reasons); the served copy's `ServedCopyProblem` reasons (`compile_failed`, `cross_connection_unbuilt`, `column_types`, `no_declaration`, `range_not_found`, `definition_not_parsed`, `pair_join_not_found`, `pair_not_compiled`, `fields_not_carried`, `read_terms_not_kept`, `cross_connection_join`, `inline_join_kept`, `reroot_not_compiled`, `classification_not_kept`); `missing_table` | 18 |
 | `phase` | `reroot`, `compile`, `guard`, `retry`, `total` | 5 |
 | `cache_outcome` (label name `outcome`) | `hit`, `miss`, `evicted` | 3 |
