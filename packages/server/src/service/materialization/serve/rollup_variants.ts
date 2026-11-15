@@ -747,10 +747,7 @@ export class RollupVariantServe {
       this.checkJoinKeys(leg, q, q.usage, childDef, read, inDestination);
       const table = this.tableOf(plan, q.args.pinned);
       if (!table) {
-         throw new LegDecline(
-            "rollup_not_built",
-            "the rollup has no fresh table",
-         );
+         throw this.noFreshTable(plan, q.args.pinned);
       }
       if (inDestination) {
          return this.answerJoinInDestination(leg, q, table, inDestination);
@@ -942,10 +939,7 @@ export class RollupVariantServe {
                  ?.tableName
             : undefined;
       if (!colocatedTable) {
-         throw new LegDecline(
-            "rollup_not_built",
-            "the rollup has no fresh table",
-         );
+         throw this.noFreshTable(plan, q.args.pinned, table.sourceEntityId);
       }
       let result;
       try {
@@ -1189,10 +1183,7 @@ export class RollupVariantServe {
       if (missing) throw missing;
       const table = this.tableOf(plan, args.pinned);
       if (!table) {
-         throw new LegDecline(
-            "rollup_not_built",
-            "the rollup has no fresh table",
-         );
+         throw this.noFreshTable(plan, args.pinned);
       }
       const variant = await this.compiledVariant(
          plan,
@@ -1229,10 +1220,7 @@ export class RollupVariantServe {
                  ?.tableName
             : undefined;
       if (!table.virtualMap && !colocatedTable) {
-         throw new LegDecline(
-            "rollup_not_built",
-            "the rollup has no fresh table",
-         );
+         throw this.noFreshTable(plan, args.pinned, table.sourceEntityId);
       }
       let result;
       try {
@@ -1386,6 +1374,34 @@ export class RollupVariantServe {
          }
       }
       return undefined;
+   }
+
+   /**
+    * The rollup has no table to read at the pin: `rollup_stale` when it has
+    * one past its freshness window (a stale storage binding, or a colocated
+    * entry bound but left out of the pinned manifest), else
+    * `rollup_not_built`.
+    */
+   private noFreshTable(
+      plan: RollupVariantPlan,
+      pinned: Pinned,
+      sourceEntityId?: string,
+   ): LegDecline {
+      const sourceID = rollupSourceID(plan);
+      const lookup =
+         sourceID === undefined
+            ? undefined
+            : pinned.tableFor(sourceID, "rollup");
+      const staleColocated =
+         sourceEntityId !== undefined &&
+         Object.hasOwn(pinned.snapshot.entries, sourceEntityId) &&
+         !Object.hasOwn(pinned.compilerManifest.entries, sourceEntityId);
+      return lookup?.state === "stale" || staleColocated
+         ? new LegDecline(
+              "rollup_stale",
+              "the rollup's table is past its freshness window",
+           )
+         : new LegDecline("rollup_not_built", "the rollup has no fresh table");
    }
 
    /** The rollup's table at the pin: a fresh storage binding, or a planned colocated one. */

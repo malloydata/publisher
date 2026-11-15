@@ -32,6 +32,8 @@ type SkipReason = components["schemas"]["SkipReason"];
  * - `rollup_contract`: a joined source's gate, which the rollup read through
  *   the join does not carry; `rollup_cross_connection`: a rollup in a storage
  *   destination, across from the query source.
+ * - `rollup_stale`, `served_copy_stale`: the table the leg would read is past
+ *   its freshness window, so the query's pin leaves it out.
  * - `served_copy_time_zone`: the query sets a timezone over a stored computed
  *   dimension; `served_copy_cross_connection`: the copy waits on a join
  *   across connections, or the query reads a join it leaves out across
@@ -56,6 +58,7 @@ const DECLINES = {
    rollup_grain_too_coarse: { reason: "GRAIN_TOO_COARSE" },
    rollup_time_zone: { reason: "TIME_ZONE" },
    rollup_not_built: { reason: "NOT_BUILT" },
+   rollup_stale: { reason: "STALE" },
    rollup_contract: { reason: "CONTRACT" },
    rollup_cross_connection: { reason: "CROSS_CONNECTION" },
    view_missing_field: { reason: "MISSING_FIELD" },
@@ -63,6 +66,7 @@ const DECLINES = {
    view_stale: { reason: "STALE" },
    served_copy_time_zone: { reason: "TIME_ZONE" },
    served_copy_cross_connection: { reason: "CROSS_CONNECTION" },
+   served_copy_stale: { reason: "STALE" },
    served_copy_not_served: {
       reason: "WARNED",
       warnedCode: "served-copy-not-served",

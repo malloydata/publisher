@@ -1093,6 +1093,45 @@ export class ServedCopyServe {
       );
    }
 
+   /**
+    * `decline` read again against the pin: a `served_copy_not_served` that
+    * the pin caused, because a table on the queried source's chain is past
+    * its freshness window and was left out of the copy, is
+    * `served_copy_stale`. Anything else is returned as it is.
+    */
+   async staleDeclineFor(
+      decline: unknown,
+      authorRunnable: QueryMaterializer,
+      pinned: Pinned,
+   ): Promise<unknown> {
+      if (
+         !(decline instanceof LegDecline) ||
+         decline.code !== "served_copy_not_served"
+      ) {
+         return decline;
+      }
+      const fresh = new Set(this.freshBindings(pinned));
+      const stale = pinned.snapshot.bindings.filter(
+         (b) => this.usable(b) && !fresh.has(b),
+      );
+      if (stale.length === 0) return decline;
+      let chain: string[];
+      try {
+         const prepared = await readPreparedQuery(authorRunnable);
+         const modelDef = prepared.modelDef ?? this.host.modelDef();
+         chain = SourceMap.of(modelDef).chainOf(
+            resolveStructRefSource(prepared.structRef, modelDef as never),
+         );
+      } catch {
+         return decline;
+      }
+      return staleOnChain(stale, chain)
+         ? new LegDecline("served_copy_stale", undefined, {
+              message: "a table on the queried source's chain is stale",
+           })
+         : decline;
+   }
+
    /** The bindings the copy may read at the pin. */
    private freshBindings(pinned: Pinned): Binding[] {
       return pinned.fresh.filter((b) => this.usable(b));
@@ -3903,4 +3942,13 @@ export function chainBuildText(
    });
    copy.setContext(...model.context);
    return copy.chainBuildFiles(request.downstream.sourceID, bindings);
+}
+
+/** Whether a stale binding stores a source on `chain` (the queried source's). */
+export function staleOnChain(
+   stale: readonly Binding[],
+   chain: readonly string[],
+): boolean {
+   const ids = new Set(chain);
+   return stale.some((b) => (b.sourceIDs ?? []).some((id) => ids.has(id)));
 }

@@ -223,7 +223,13 @@ function servedLeg(servedCopy: ServedCopyServe): Leg {
       kind: "served",
       applies: () => true,
       attempt: async (q, p) => {
-         const served = await servedCopy.loadQuery(q.queryString, q.givens, p);
+         let served: Awaited<ReturnType<ServedCopyServe["loadQuery"]>>;
+         try {
+            served = await servedCopy.loadQuery(q.queryString, q.givens, p);
+         } catch (err) {
+            // A table the query would read, left out of the pin as stale.
+            throw await servedCopy.staleDeclineFor(err, q.authorRunnable, p);
+         }
          return {
             runnable: served.runnable,
             tablesRead: served.tablesRead,
