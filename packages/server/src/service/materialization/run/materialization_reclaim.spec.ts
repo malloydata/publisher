@@ -24,9 +24,9 @@ import { logger } from "../../../logger";
 import { MaterializationService } from "./materialization_service";
 import {
    storageBindingResolverFor,
-   versionTableSuffix,
    writeTargetsIn,
 } from "../../versions/materialization_scope";
+import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import {
    parseEnvironmentName,
@@ -56,7 +56,7 @@ const versionTable = (
    version: string,
    packageName = PKG,
    base = "summary",
-) => `${base}${versionTableSuffix({ environmentName, packageName, version })}`;
+) => autoRunTableName(environmentName, packageName, base, { version });
 
 /**
  * A package whose persisted `summary` answers `answer`; with `detail`, a
@@ -549,7 +549,7 @@ describe("reclaiming an archived version's tables", () => {
       // Nor does the startup sweep.
       await service.reclaimArchivedVersions();
 
-      expect(await tablesIn(env)).toEqual(["summary", TABLE_V2]);
+      expect(await tablesIn(env)).toEqual([TABLE_V2, "summary"].sort());
       expect(await statusOf(shared.id)).toBe("MANIFEST_FILE_READY");
       expect(await statusOf(owned.id)).toBe("MANIFEST_FILE_READY");
       // Back in service, 1.0.0 still reads the shared table its run built.

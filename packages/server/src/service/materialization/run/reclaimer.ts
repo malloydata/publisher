@@ -16,6 +16,9 @@ import { quoteTablePath } from "../../quoting";
 import { resolveEnvironmentId } from "../../resolve_environment";
 import {
    isVersionOwnedRun,
+   newestServingEntries,
+   readsRun,
+   type ServingReader,
    writeTargetsIn,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
@@ -39,6 +42,7 @@ import { packageOwner } from "./table_mark_sql";
 import { ownedElsewhere } from "./table_ownership";
 import { atTableSite } from "./table_site";
 import type { RunLifecycle } from "./run_lifecycle";
+import type { RenamedTable } from "./run_instructions";
 
 /** A physical table's key for drop bookkeeping: where it lives, and its name. */
 function tableKey(destination: string, physicalTableName: string): string {
@@ -628,6 +632,156 @@ export class Reclaimer {
          }
       }
       return owed;
+   }
+
+   /**
+    * Drop the tables an auto-run replaced with tables under readable names
+    * (`renamed`, from deriveSelfInstructions), once the run has committed and
+    * its package is bound to it. Each table is dropped only when every guard
+    * holds, and is otherwise left and logged; a table Publisher cannot prove
+    * is its own is never dropped:
+    *
+    * 1. It is a name Publisher gave this package's table before readable
+    *    names: re-derived exactly from the environment, the package and the
+    *    version (deriveSelfInstructions only offers such a table), never an
+    *    author's `name=`, which could not end that way.
+    * 2. Its replacement committed: this run's manifest has the same source,
+    *    at the same connection or destination, under its readable name.
+    * 3. This package's own records name it: an earlier committed run that
+    *    `reader` reads built it for the same source and place.
+    * 4. No other package has marked it as its own since (`ownedElsewhere`,
+    *    checked by the drop).
+    * 5. Nothing still serves it: this run is the newest `reader` serves from,
+    *    and no run `reader` does not read (another version's own, an
+    *    orchestrated run of another version) names it.
+    *
+    * Best-effort: a failure leaves the old table where it is.
+    */
+   async reclaimRenamedTables(
+      environmentName: string,
+      packageName: string,
+      runId: string,
+      reader: ServingReader,
+      renamed: RenamedTable[],
+   ): Promise<void> {
+      if (renamed.length === 0) return;
+      try {
+         const environmentId = await this.resolveEnvironmentId(environmentName);
+         const runs =
+            (await this.repository.listMaterializations(
+               environmentId,
+               packageName,
+            )) ?? [];
+         const run = runs.find((m) => m.id === runId);
+         const committed =
+            run?.status === "MANIFEST_FILE_READY" ? run : undefined;
+         const serving = newestServingEntries(runs, reader);
+         const place = (e: {
+            connectionName?: string | null;
+            storageDestinationName?: string | null;
+         }) =>
+            `${e.connectionName ?? ""}\u0000${e.storageDestinationName ?? ""}`;
+         const reclaimable: ManifestEntry[] = [];
+         for (const table of renamed) {
+            const guard = (failed: string): void => {
+               logger.info("Keeping a table a readable name replaced", {
+                  physicalTableName: table.previousName,
+                  replacedBy: table.physicalTableName,
+                  guard: failed,
+               });
+            };
+            const replacement =
+               committed?.manifest?.entries?.[table.sourceEntityId];
+            // 2: the replacement committed, at the same place.
+            if (
+               replacement?.physicalTableName !== table.physicalTableName ||
+               place(replacement) !== place(table)
+            ) {
+               guard("replacement-not-committed");
+               continue;
+            }
+            // 5: this run is what the package serves from now.
+            if (
+               serving[table.sourceEntityId]?.physicalTableName !==
+               table.physicalTableName
+            ) {
+               guard("not-serving-replacement");
+               continue;
+            }
+            const names = (m: Materialization) =>
+               Object.values(m.manifest?.entries ?? {}).some(
+                  (e) =>
+                     e.physicalTableName === table.previousName &&
+                     place(e) === place(table),
+               );
+            // 3: an earlier run of this package built it for this source.
+            const recorded = runs.some(
+               (m) =>
+                  m.id !== runId &&
+                  m.status === "MANIFEST_FILE_READY" &&
+                  readsRun(m, reader) &&
+                  m.manifest?.entries?.[table.sourceEntityId]
+                     ?.physicalTableName === table.previousName &&
+                  place(m.manifest.entries[table.sourceEntityId]) ===
+                     place(table),
+            );
+            if (!recorded) {
+               guard("not-in-package-records");
+               continue;
+            }
+            // 5: no run this run does not supersede still names it.
+            if (
+               runs.some(
+                  (m) =>
+                     m.status === "MANIFEST_FILE_READY" &&
+                     !readsRun(m, reader) &&
+                     names(m),
+               )
+            ) {
+               guard("still-referenced");
+               continue;
+            }
+            reclaimable.push({
+               sourceEntityId: table.sourceEntityId,
+               physicalTableName: table.previousName,
+               connectionName: table.connectionName,
+               ...(table.storageDestinationName
+                  ? { storageDestinationName: table.storageDestinationName }
+                  : {}),
+            });
+         }
+         if (reclaimable.length === 0) return;
+         const environment = await this.deps.host.getEnvironment(
+            parseEnvironmentName(environmentName),
+            false,
+         );
+         // 4 is checked by the drop, table by table.
+         const owed = await this.deps.dropManifestEntries(
+            environment,
+            environmentName,
+            packageName,
+            runId,
+            reclaimable,
+            new Set(),
+            await this.connectionResolverFor(
+               environment,
+               packageName,
+               reader.versionId ?? null,
+            ),
+         );
+         for (const entry of owed) {
+            logger.warn("Could not drop a table a readable name replaced", {
+               physicalTableName: entry.physicalTableName,
+            });
+         }
+      } catch (err) {
+         logger.warn(
+            "Reclaiming tables readable names replaced did not complete",
+            {
+               error: errMessage(err),
+            },
+         );
+      }
    }
 
    /**

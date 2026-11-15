@@ -18,10 +18,8 @@ import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
 import type { EnvironmentStore } from "../../environment_store";
 import { VersionRef } from "../../identity";
-import {
-   storageBindingResolverFor,
-   versionTableSuffix,
-} from "../../versions/materialization_scope";
+import { storageBindingResolverFor } from "../../versions/materialization_scope";
+import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { DuckDBConnection as WarehouseConnection } from "@malloydata/db-duckdb";
 import { MaterializationService } from "./materialization_service";
 import {
@@ -71,7 +69,7 @@ const WAREHOUSE = {
 
 /** The table a `scope: version` version builds `summary` into. */
 const versionTable = (version: string) =>
-   `summary${versionTableSuffix({ environmentName: ENV, packageName: PKG, version })}`;
+   autoRunTableName(ENV, PKG, "summary", { version });
 
 function materializeModel(answer: number): string {
    return [
@@ -339,11 +337,10 @@ describe("leftover name= views through real builds", () => {
       await publish("2.0.0", 2, "version", named);
       const versioned = await build({ versionId: VersionRef.parse("2.0.0") });
       expect(versioned.status).toBe("MANIFEST_FILE_READY");
-      // The version's own table: name='s leaf with the version's suffix.
-      expect(await tables()).toEqual([
-         "summary_t",
-         `summary_t${versionTableSuffix({ environmentName: ENV, packageName: PKG, version: "2.0.0" })}`,
-      ]);
+      // The version's own table: its readable name, which name= only places.
+      expect(await tables()).toEqual(
+         ["summary_t", versionTable("2.0.0")].sort(),
+      );
       expect(await views()).toEqual([]);
       expect(nameViewsIn(versioned.metadata)).toEqual([]);
    });

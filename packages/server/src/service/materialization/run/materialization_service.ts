@@ -31,8 +31,6 @@ import {
    ServingReader,
    tableIdentity,
    tableNamesIn,
-   packageTableSuffix,
-   versionTableSuffix,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
@@ -87,6 +85,7 @@ import {
 } from "./run_telemetry";
 import {
    deriveSelfInstructions,
+   type RenamedTable,
    validateInstructions,
    writeTargetsFor,
 } from "./run_instructions";
@@ -729,6 +728,9 @@ export class MaterializationService {
          });
 
          let instructions: BuildInstruction[];
+         // Tables built under readable names in place of an earlier run's,
+         // reclaimed once this run commits (Reclaimer.reclaimRenamedTables).
+         let renamed: RenamedTable[] = [];
          let carried: Record<string, ManifestEntry>;
          let derivedRefused: Record<string, RefusedSource> = {};
          let clearedTiers: ReadonlyMap<string, EligibilityTier> | undefined;
@@ -779,25 +781,17 @@ export class MaterializationService {
                refused: derivedRefused,
                cleared: clearedTiers,
                recheck = {},
+               renamed = [],
             } = this.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
                priorEntries,
                incremental,
-               owned !== undefined
-                  ? {
-                       versionSuffix: versionTableSuffix({
-                          environmentName,
-                          packageName,
-                          version: owned,
-                       }),
-                    }
-                  : {
-                       packageSuffix: packageTableSuffix({
-                          environmentName,
-                          packageName,
-                       }),
-                    },
+               {
+                  environmentName,
+                  packageName,
+                  ...(owned !== undefined ? { ownedVersion: owned } : {}),
+               },
             ));
             // A carried table at the author's `name=` is reused only while
             // it is still marked as this package's (table_ownership.ts).
@@ -1052,6 +1046,16 @@ export class MaterializationService {
                environmentName,
                packageName,
                versionId,
+            );
+         }
+         // Once nothing loaded reads them, the tables readable names replaced.
+         if (!orchestrated) {
+            await this.reclaimer.reclaimRenamedTables(
+               environmentName,
+               packageName,
+               id,
+               reader,
+               renamed,
             );
          }
 

@@ -1,7 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { PersistSource } from "@malloydata/malloy";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
+import {
+   namesBefore,
+   readableTableName,
+   sourceLabel,
+} from "../domain/table_name";
 import { getPersistStorageMode } from "../../../config";
 import {
    BadRequestError,
@@ -10,7 +16,10 @@ import {
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
 import {
+   packageTableSuffix,
+   tableIdentity,
    versionedTableName,
+   versionTableSuffix,
    type WriteTarget,
 } from "../../versions/materialization_scope";
 import {
@@ -48,22 +57,30 @@ import {
 import { hasAuthorTableName } from "./table_ownership";
 
 /**
- * The suffixes auto-run's self-assigned table names take (see
- * deriveSelfInstructions). Neither: the names as written, as only a test
- * seam asks for.
+ * Whose tables an auto-run names (see deriveSelfInstructions). Absent: the
+ * names as written, as only a test seam asks for.
  */
-interface SelfTableNaming {
-   /**
-    * A `scope: version` version's own (versionTableSuffix): on every name,
-    * `name=` included.
-    */
-   versionSuffix?: string;
-   /**
-    * The package's own (packageTableSuffix): on every name the author did
-    * not choose. A `name=` keeps its name and is checked for ownership
-    * instead (table_ownership.ts).
-    */
-   packageSuffix?: string;
+export interface SelfTableNaming {
+   environmentName: string;
+   packageName: string;
+   /** The version that owns the run's tables, under `scope: version`. */
+   ownedVersion?: string;
+}
+
+/**
+ * A table an auto-run built under its readable name, in place of the table an
+ * earlier run built for the same source under the name Publisher gave before
+ * readable names. The old table is reclaimed once the run commits, only when
+ * every guard holds (Reclaimer.reclaimRenamedTables).
+ */
+export interface RenamedTable {
+   sourceEntityId: string;
+   /** The earlier run's table: exactly the name Publisher derived for it then. */
+   previousName: string;
+   /** The table this run builds instead. */
+   physicalTableName: string;
+   connectionName: string;
+   storageDestinationName?: string;
 }
 
 /*
@@ -71,50 +88,31 @@ interface SelfTableNaming {
  * checked when a caller supplies them, and where each instructed table lives.
  */
 
+/** A source the eligibility gate cleared, at its content address. */
+interface ClearedSource {
+   persistSource: PersistSource;
+   sourceEntityId: string;
+   destination: string | undefined;
+}
+
 /**
- * Derive auto-run's own build instructions. Each persist source (respecting
- * `sourceNames`) gets a self-assigned physical name and COPY realization,
- * unless its sourceEntityId is unchanged since `priorEntries`, in which case
- * it is carried forward.
- *
- * An INCREMENTAL source is exempt from carry-forward: unchanged SQL says
- * nothing about whether its DATA moved, so carrying it would never reach its
- * delta. The ledger decides instead, and "nothing new" is a cheap skip.
- *
- * A source the eligibility gate refuses is returned in `refused`. It throws
- * instead when `sourceNames` targets it, or when every authored source the
- * run targets was refused. A refused rollup never causes the throw.
- *
- * `cleared` names the tier each source passed the gate for, so the build loop
- * consults that verdict rather than walking the source again.
+ * The persist sources a run may build (respecting `sourceNames`), in build
+ * order, and those the eligibility gate refused. Throws when `sourceNames`
+ * targets a refused source.
  */
-export function deriveSelfInstructions(
+function gateSources(
    compiled: CompiledBuildPlan,
-   sourceNames: string[] | undefined,
-   priorEntries: Record<string, ManifestEntry>,
-   incremental?: IncrementalRunContext,
-   naming: SelfTableNaming = {},
+   include: Set<string> | null,
 ): {
-   instructions: BuildInstruction[];
-   carried: Record<string, ManifestEntry>;
+   sources: ClearedSource[];
    refused: Record<string, RefusedSource>;
+   refusals: MaterializationEligibilityError[];
    cleared: Map<string, EligibilityTier>;
-   /**
-    * Carried tables at a `name=` the author chose, by content address, with
-    * the instruction that rebuilds each: carried only while the table is
-    * still marked as this package's (see uncarryUnownedTables).
-    */
-   recheck: Record<string, BuildInstruction>;
 } {
-   const include = sourceNames ? new Set(sourceNames) : null;
-   const instructions: BuildInstruction[] = [];
-   const carried: Record<string, ManifestEntry> = {};
-   const recheck: Record<string, BuildInstruction> = {};
+   const sources: ClearedSource[] = [];
    const refused: Record<string, RefusedSource> = {};
    const refusals: MaterializationEligibilityError[] = [];
    const cleared = new Map<string, EligibilityTier>();
-   const seen = new Set<string>();
-
    for (const build of compiled.builds) {
       for (const persistSource of sourcesInBuildOrder(
          build,
@@ -189,87 +187,322 @@ export function deriveSelfInstructions(
             persistSource.sourceID,
             destination ? "storage" : "colocated",
          );
-
-         const sourceEntityId = computeSourceEntityId(
+         sources.push({
             persistSource,
-            compiled.connectionDigests,
+            sourceEntityId: computeSourceEntityId(
+               persistSource,
+               compiled.connectionDigests,
+            ),
+            destination,
+         });
+      }
+   }
+   return { sources, refused, refusals, cleared };
+}
+
+/**
+ * The declaring model's package-relative path, else the base name of the
+ * file its sourceID names.
+ */
+function modelPathOf(
+   compiled: CompiledBuildPlan,
+   persistSource: PersistSource,
+): string {
+   const known = compiled.sourceModelPaths?.[persistSource.sourceID];
+   if (known) return known;
+   const url = persistSource.sourceID.slice(
+      persistSource.sourceID.indexOf("@") + 1,
+   );
+   return url.slice(url.lastIndexOf("/") + 1);
+}
+
+/** The source a table's readable name reads (see sourceLabel). */
+function labelOf(
+   compiled: CompiledBuildPlan,
+   persistSource: PersistSource,
+): string {
+   const rollup = compiled.preaggregatePlans?.[persistSource.sourceID];
+   return sourceLabel(
+      persistSource.name,
+      rollup?.baseSourceName && rollup.grainDimensions ? rollup : undefined,
+   );
+}
+
+/**
+ * Per content address, the source its table is named after: the smallest
+ * model path, then source, among the sources that share it, so the name does
+ * not depend on build order. The control plane names a shared table the same
+ * way.
+ */
+function namingSources(
+   compiled: CompiledBuildPlan,
+   sources: ClearedSource[],
+): Map<string, PersistSource> {
+   const chosen = new Map<
+      string,
+      { source: PersistSource; modelPath: string; label: string }
+   >();
+   for (const { persistSource, sourceEntityId } of sources) {
+      const candidate = {
+         source: persistSource,
+         modelPath: modelPathOf(compiled, persistSource),
+         label: labelOf(compiled, persistSource),
+      };
+      const current = chosen.get(sourceEntityId);
+      if (!current || namesBefore(candidate, current)) {
+         chosen.set(sourceEntityId, candidate);
+      }
+   }
+   return new Map([...chosen].map(([address, c]) => [address, c.source]));
+}
+
+/**
+ * The table an auto-run writes for `persistSource`. A `name=` the author chose
+ * is written as it stands in an unversioned or `scope: package` package.
+ * Every other name is Publisher's readable one (domain/table_name.ts), named
+ * after `namer` (see namingSources) and placed in the container the name the
+ * build source carries gives, if any: a `name=`'s schema or dataset under
+ * `scope: version`, or a rollup's namespace.
+ */
+function selfTableName(
+   compiled: CompiledBuildPlan,
+   persistSource: PersistSource,
+   namer: PersistSource,
+   destination: string | undefined,
+   naming: SelfTableNaming | undefined,
+): string {
+   const written = selfAssignTableName(persistSource);
+   if (!naming) return written;
+   if (
+      naming.ownedVersion === undefined &&
+      hasAuthorTableName(compiled, persistSource)
+   ) {
+      return written;
+   }
+   const dot = written.lastIndexOf(".");
+   return readableTableName({
+      identity: {
+         environmentName: naming.environmentName,
+         packageName: naming.packageName,
+         modelPath: modelPathOf(compiled, namer),
+         sourceName: namer.name,
+         ...(naming.ownedVersion !== undefined
+            ? { version: naming.ownedVersion }
+            : {}),
+      },
+      label: labelOf(compiled, namer),
+      ...(dot > 0 ? { container: written.slice(0, dot) } : {}),
+      dialect: persistSource.dialectName,
+      inDestination: !!destination,
+   });
+}
+
+/**
+ * The name Publisher gave `persistSource`'s table before readable names: the
+ * name as written with the package's suffix (`__p<8 hex>` of the environment
+ * and package), or under `scope: version` the version's, on every name. A
+ * `name=` the author chose outside `scope: version` had none, and is
+ * undefined here. Re-derived from this package's own identity, so a match
+ * proves the table was this package's default-named one.
+ */
+function previousTableName(
+   compiled: CompiledBuildPlan,
+   persistSource: PersistSource,
+   naming: SelfTableNaming,
+): string | undefined {
+   const written = selfAssignTableName(persistSource);
+   if (naming.ownedVersion !== undefined) {
+      return versionedTableName(
+         written,
+         versionTableSuffix({
+            environmentName: naming.environmentName,
+            packageName: naming.packageName,
+            version: naming.ownedVersion,
+         }),
+      );
+   }
+   if (hasAuthorTableName(compiled, persistSource)) return undefined;
+   return versionedTableName(
+      written,
+      packageTableSuffix({
+         environmentName: naming.environmentName,
+         packageName: naming.packageName,
+      }),
+   );
+}
+
+/**
+ * Derive auto-run's own build instructions. Each persist source (respecting
+ * `sourceNames`) gets a self-assigned physical name and COPY realization,
+ * unless its sourceEntityId is unchanged since `priorEntries`, in which case
+ * it is carried forward.
+ *
+ * An INCREMENTAL source is exempt from carry-forward: unchanged SQL says
+ * nothing about whether its DATA moved, so carrying it would never reach its
+ * delta. The ledger decides instead, and "nothing new" is a cheap skip.
+ *
+ * A source the eligibility gate refuses is returned in `refused`. It throws
+ * instead when `sourceNames` targets it, or when every authored source the
+ * run targets was refused. A refused rollup never causes the throw.
+ *
+ * `cleared` names the tier each source passed the gate for, so the build loop
+ * consults that verdict rather than walking the source again.
+ *
+ * A source whose readable name is another address's (only a hash collision
+ * can do it: the package's collision check refuses every other case before a
+ * run) is not built, and serves live: two sources never write one table.
+ */
+export function deriveSelfInstructions(
+   compiled: CompiledBuildPlan,
+   sourceNames: string[] | undefined,
+   priorEntries: Record<string, ManifestEntry>,
+   incremental?: IncrementalRunContext,
+   naming?: SelfTableNaming,
+): {
+   instructions: BuildInstruction[];
+   carried: Record<string, ManifestEntry>;
+   refused: Record<string, RefusedSource>;
+   cleared: Map<string, EligibilityTier>;
+   /**
+    * Carried tables at a `name=` the author chose, by content address, with
+    * the instruction that rebuilds each: carried only while the table is
+    * still marked as this package's (see uncarryUnownedTables).
+    */
+   recheck: Record<string, BuildInstruction>;
+   /** Tables this run builds under a new name in place of an earlier run's. */
+   renamed: RenamedTable[];
+} {
+   const include = sourceNames ? new Set(sourceNames) : null;
+   const instructions: BuildInstruction[] = [];
+   const carried: Record<string, ManifestEntry> = {};
+   const recheck: Record<string, BuildInstruction> = {};
+   const renamed: RenamedTable[] = [];
+   const { sources, refused, refusals, cleared } = gateSources(
+      compiled,
+      include,
+   );
+   const namers = namingSources(compiled, sources);
+   const seen = new Set<string>();
+   // Readable names this run writes, by where they live, and whose.
+   const derived = new Map<string, string>();
+
+   for (const { persistSource, sourceEntityId, destination } of sources) {
+      if (seen.has(sourceEntityId)) continue;
+      seen.add(sourceEntityId);
+
+      // Orchestrated builds use the host-supplied `physicalTableName`. A
+      // storage build replaces its table atomically (`CREATE OR REPLACE` in
+      // ONE transaction), and a colocated one swaps it in, so a rebuild
+      // never empties the table it serves and no generation is needed.
+      const named =
+         !!naming &&
+         naming.ownedVersion === undefined &&
+         hasAuthorTableName(compiled, persistSource);
+      const tableName = selfTableName(
+         compiled,
+         persistSource,
+         namers.get(sourceEntityId) ?? persistSource,
+         destination,
+         naming,
+      );
+      if (naming && !named) {
+         const key = tableKeyOf(
+            persistSource.connectionName,
+            destination,
+            tableIdentity(tableName),
          );
-         if (seen.has(sourceEntityId)) continue;
-         seen.add(sourceEntityId);
-
-         // Self-assign the name from `name=` (or the source name) for both
-         // destinations. No generational decoration is needed: a storage
-         // build replaces the table atomically (`CREATE OR REPLACE` in ONE
-         // transaction, so a rebuild never empties the table it serves).
-         // Orchestrated builds use the host-supplied `physicalTableName`. A
-         // `scope: version` run's name gains its version's suffix; any other
-         // name the author did not choose gains the package's, so two
-         // packages on one schema never build one table (packageTableSuffix).
-         const baseName = selfAssignTableName(persistSource);
-         const logicalName = naming.versionSuffix
-            ? versionedTableName(baseName, naming.versionSuffix)
-            : naming.packageSuffix &&
-                !hasAuthorTableName(compiled, persistSource)
-              ? versionedTableName(baseName, naming.packageSuffix)
-              : baseName;
-
-         // The SAME predicate the build's dispatch uses, so the two never
-         // disagree about which sources are incremental. A declaration the
-         // delta path cannot act on (unsupported dialect, unusable watermark)
-         // keeps skip-if-unchanged rather than rebuilding fully every run.
-         const deltaEligible =
-            sourceIncrementalRefresh(incremental, persistSource, {
-               physicalTableName: logicalName,
-               storageDestinationName: destination,
-               sourceEntityId,
-            }) !== undefined;
-
-         const instruction: BuildInstruction = {
-            sourceEntityId,
-            materializedTableId: `local-${sourceEntityId.substring(
-               0,
-               STAGING_ID_LEN,
-            )}`,
-            physicalTableName: logicalName,
-            realization: "COPY",
-            ...(destination ? { destination } : {}),
-         };
-         const prior = priorEntries[sourceEntityId];
-         // Carry forward only within the SAME destination, and only a table
-         // at the name this run would write: sourceEntityId encodes neither.
-         // A source that changes `storage=`, or whose table name changes (a
-         // `name=` removed or changed, a v1 source moved to `#(materialize)`,
-         // or the unsuffixed table a run before package-owned names built,
-         // which another package on the same schema may have written since)
-         // is rebuilt under its name now; the old table stays with the runs
-         // that name it, and goes when they are deleted with their tables.
-         if (
-            !deltaEligible &&
-            prior &&
-            prior.physicalTableName &&
-            (prior.storageDestinationName ?? undefined) === destination &&
-            samePath(
-               prior.physicalTableName,
-               logicalName,
-               tableNamesFoldCase(persistSource.dialectName, !!destination),
-            )
-         ) {
-            carried[sourceEntityId] = prior;
-            // A table at the author's `name=` may have been written by
-            // another package since (or before the mark existed).
-            if (
-               naming.packageSuffix &&
-               logicalName === baseName &&
-               prior.physicalTableName === logicalName &&
-               hasAuthorTableName(compiled, persistSource)
-            ) {
-               recheck[sourceEntityId] = instruction;
-            }
+         const holder = derived.get(key);
+         if (holder !== undefined && holder !== sourceEntityId) {
+            logger.warn(
+               "Not building a persist source: its table name is another source's",
+               { sourceName: persistSource.name, physicalTableName: tableName },
+            );
             continue;
          }
-
-         instructions.push(instruction);
+         derived.set(key, sourceEntityId);
       }
+
+      // The SAME predicate the build's dispatch uses, so the two never
+      // disagree about which sources are incremental. A declaration the
+      // delta path cannot act on (unsupported dialect, unusable watermark)
+      // keeps skip-if-unchanged rather than rebuilding fully every run.
+      const deltaEligible =
+         sourceIncrementalRefresh(incremental, persistSource, {
+            physicalTableName: tableName,
+            storageDestinationName: destination,
+            sourceEntityId,
+         }) !== undefined;
+
+      const prior = priorEntries[sourceEntityId];
+      const sameDestination =
+         !!prior?.physicalTableName &&
+         (prior.storageDestinationName ?? undefined) === destination;
+      // The table an earlier run built under the name Publisher gave it
+      // before readable names. An incremental source keeps it until it is
+      // reseeded: moving it would force a full re-seed, the costliest build
+      // there is. Any other source is rebuilt under its readable name, and
+      // the old table reclaimed once the run commits.
+      const previous =
+         naming && sameDestination && !named
+            ? previousTableName(compiled, persistSource, naming)
+            : undefined;
+      const renaming =
+         previous !== undefined &&
+         prior!.physicalTableName === previous &&
+         previous !== tableName;
+      const logicalName =
+         renaming && deltaEligible && !incremental?.forceRefresh
+            ? previous
+            : tableName;
+
+      const instruction: BuildInstruction = {
+         sourceEntityId,
+         materializedTableId: `local-${sourceEntityId.substring(
+            0,
+            STAGING_ID_LEN,
+         )}`,
+         physicalTableName: logicalName,
+         realization: "COPY",
+         ...(destination ? { destination } : {}),
+      };
+      // Carry forward only within the SAME destination, and only a table
+      // at the name this run would write: sourceEntityId encodes neither.
+      // A source that changes `storage=`, or whose table name changes (a
+      // `name=` removed or changed, a v1 source moved to `#(materialize)`,
+      // a table named before readable names, or the unsuffixed table a run
+      // before package-owned names built, which another package on the same
+      // schema may have written since) is rebuilt under its name now; the
+      // old table stays with the runs that name it, and goes when they are
+      // deleted with their tables, or for a name Publisher gave it, once
+      // this run commits.
+      if (
+         !deltaEligible &&
+         sameDestination &&
+         samePath(
+            prior!.physicalTableName,
+            logicalName,
+            tableNamesFoldCase(persistSource.dialectName, !!destination),
+         )
+      ) {
+         carried[sourceEntityId] = prior!;
+         // A table at the author's `name=` may have been written by
+         // another package since (or before the mark existed).
+         if (named && prior!.physicalTableName === logicalName) {
+            recheck[sourceEntityId] = instruction;
+         }
+         continue;
+      }
+
+      if (renaming && logicalName === tableName) {
+         renamed.push({
+            sourceEntityId,
+            previousName: previous!,
+            physicalTableName: tableName,
+            connectionName: persistSource.connectionName,
+            ...(destination ? { storageDestinationName: destination } : {}),
+         });
+      }
+      instructions.push(instruction);
    }
 
    if (
@@ -280,7 +513,7 @@ export function deriveSelfInstructions(
       throw allSourcesRefusedError(refusals);
    }
 
-   return { instructions, carried, refused, cleared, recheck };
+   return { instructions, carried, refused, cleared, recheck, renamed };
 }
 
 /**
