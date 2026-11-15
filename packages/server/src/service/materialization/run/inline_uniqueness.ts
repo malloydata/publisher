@@ -632,25 +632,50 @@ export function tableIdentityKey(
 }
 
 /**
- * What a rollup key record says of the colocated table `entry` names, or
- * undefined when it names another table (a record never describes a table
- * it was not taken over).
+ * The identity of the table `entry` names: in its destination for a stored
+ * table, else on its connection; undefined when it names neither.
+ */
+function entryTableIdentity(
+   entry: Pick<
+      ManifestEntry,
+      "physicalTableName" | "connectionName" | "storageDestinationName"
+   >,
+): string | undefined {
+   if (!entry.physicalTableName) return undefined;
+   if (entry.storageDestinationName) {
+      return tableIdentityKey(
+         "destination",
+         entry.storageDestinationName,
+         entry.physicalTableName,
+      );
+   }
+   return entry.connectionName
+      ? tableIdentityKey(
+           "connection",
+           entry.connectionName,
+           entry.physicalTableName,
+        )
+      : undefined;
+}
+
+/**
+ * What a rollup key record says of the table `entry` names, colocated or in a
+ * destination, or undefined when it names another table (a record never
+ * describes a table it was not taken over).
  */
 export function keyUniquenessOf(
    record: RollupKeyRecord | undefined,
-   entry: Pick<ManifestEntry, "physicalTableName" | "connectionName">,
+   entry: Pick<
+      ManifestEntry,
+      "physicalTableName" | "connectionName" | "storageDestinationName"
+   >,
 ): KeyUniqueness | undefined {
+   const table = entryTableIdentity(entry);
    if (
       !record ||
-      !entry.physicalTableName ||
-      !entry.connectionName ||
+      table === undefined ||
       record.sourceID !== undefined ||
-      record.table !==
-         tableIdentityKey(
-            "connection",
-            entry.connectionName,
-            entry.physicalTableName,
-         )
+      record.table !== table
    ) {
       return undefined;
    }
@@ -658,10 +683,10 @@ export function keyUniquenessOf(
 }
 
 /**
- * Everything `records` say of the colocated table of the rollup at `address`:
- * its own key check ({@link keyUniquenessOf}) and each query source's primary
- * key check taken at its build, by sourceID. A record over another table is
- * left out; undefined when none describes this one.
+ * Everything `records` say of the table of the rollup at `address`: its own
+ * key check ({@link keyUniquenessOf}) and each query source's primary key
+ * check taken at its build, by sourceID. A record over another table is left
+ * out; undefined when none describes this one.
  */
 export function keyUniquenessAt(
    records: Readonly<Record<string, RollupKeyRecord>> | undefined,
@@ -671,26 +696,9 @@ export function keyUniquenessAt(
       "physicalTableName" | "connectionName" | "storageDestinationName"
    >,
 ): KeyUniqueness | undefined {
-   if (!records || !entry.physicalTableName) return undefined;
-   // A stored table carries only its own source's primary key check; a
-   // colocated one, its rollup's key check and each query source's.
-   const table = entry.storageDestinationName
-      ? tableIdentityKey(
-           "destination",
-           entry.storageDestinationName,
-           entry.physicalTableName,
-        )
-      : entry.connectionName
-        ? tableIdentityKey(
-             "connection",
-             entry.connectionName,
-             entry.physicalTableName,
-          )
-        : undefined;
-   if (table === undefined) return undefined;
-   const own = entry.storageDestinationName
-      ? undefined
-      : keyUniquenessOf(records[address], entry);
+   const table = entryTableIdentity(entry);
+   if (!records || table === undefined) return undefined;
+   const own = keyUniquenessOf(records[address], entry);
    const parentKeys: Record<string, boolean> = {};
    for (const [key, record] of Object.entries(records)) {
       if (
@@ -707,7 +715,7 @@ export function keyUniquenessAt(
 }
 
 /**
- * `entries` with each colocated rollup entry carrying what `run`'s key check
+ * `entries` with each rollup entry carrying what `run`'s key check
  * records say of its table (see {@link keyUniquenessOf}), for a bind that
  * restores serving from the store. Only an {@link uncontestedAutoRun}'s
  * records are read; any doubt leaves the entries as they are, unknown.
