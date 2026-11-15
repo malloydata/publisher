@@ -6,10 +6,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import {
-   PERSISTED_VIEW_COMPANION_SUFFIX,
-   ROLLUP_COMPANION_SUFFIX,
-} from "../text/read_text";
-import {
+   authorModelPath,
    namesBefore,
    readableTableName,
    readableVersion,
@@ -213,13 +210,6 @@ function gateSources(
    return { sources, refused, refusals, cleared };
 }
 
-/** The generated companions a build source can be declared in. */
-const COMPANION_SUFFIXES = [
-   PERSISTED_VIEW_COMPANION_SUFFIX,
-   ROLLUP_COMPANION_SUFFIX,
-   ".materialize.malloy",
-];
-
 /**
  * The package-relative path of the model that declares `persistSource`, read
  * from the file its sourceID names (a generated companion's being its
@@ -236,10 +226,7 @@ function modelPathOf(
    const url = at >= 0 ? persistSource.sourceID.slice(at + 1) : "";
    if (packagePath && url.startsWith("file:")) {
       try {
-         let file = fileURLToPath(url);
-         for (const suffix of COMPANION_SUFFIXES) {
-            if (file.endsWith(suffix)) file = file.slice(0, -suffix.length);
-         }
+         const file = authorModelPath(fileURLToPath(url));
          const relative = path.relative(packagePath, file);
          if (
             relative &&

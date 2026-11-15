@@ -61,12 +61,20 @@ const LAST_FLOOR = 4;
 /** The longest a non-semantic version's segment may be. */
 const VERSION_CAP = 10;
 
-/** The extensions a model path's base name loses, a companion's included. */
-const MODEL_EXTENSIONS = [
-   ".malloynb",
-   ".malloy",
-   ".persist-view",
-   ".materialize",
+/**
+ * The generated companions' suffixes, each after its author's file name
+ * (`a.malloy.preaggregate.malloy`). The control plane keeps the same list, and
+ * both sides pin it in a test, so a suffix added on one side fails until the
+ * other has it too.
+ */
+export const COMPANION_SUFFIXES: readonly string[] = [
+   ".materialize.malloy",
+   ".materialize-build.malloy",
+   ".materialize-level.malloy",
+   ".persist-view.malloy",
+   ".preaggregate.malloy",
+   ".view-author.malloy",
+   ".rollup-author.malloy",
 ];
 
 /** The suffix a persisted view's generated build source carries. */
@@ -106,22 +114,35 @@ export function readableSegment(raw: string | undefined): string {
 }
 
 /**
- * The `file` segment of a model path: its base name, with no directory and no
- * extension. A generated companion (`orders.malloy.persist-view.malloy`) is
- * the author's file.
+ * `modelPath` with one generated companion suffix ({@link COMPANION_SUFFIXES})
+ * removed, so a companion reads as its author's file: `a.malloy.preaggregate.malloy`
+ * is `a.malloy`, and `a_preaggregate.malloy` is itself.
+ */
+export function authorModelPath(modelPath: string): string {
+   for (const suffix of COMPANION_SUFFIXES) {
+      if (modelPath.endsWith(suffix)) {
+         return modelPath.slice(0, modelPath.length - suffix.length);
+      }
+   }
+   return modelPath;
+}
+
+/**
+ * The `file` segment of a model path: its author's file's base name, with no
+ * directory and no extension (`models/orders.malloy.preaggregate.malloy` is
+ * `orders`).
  */
 export function fileSegment(modelPath: string | undefined): string {
-   let base = modelPath ?? "";
+   let base = authorModelPath(modelPath ?? "");
    base = base.slice(
       Math.max(base.lastIndexOf("/"), base.lastIndexOf("\\")) + 1,
    );
-   let previous: string;
-   do {
-      previous = base;
-      for (const ext of MODEL_EXTENSIONS) {
-         if (base.endsWith(ext)) base = base.slice(0, base.length - ext.length);
+   for (const ext of [".malloynb", ".malloy"]) {
+      if (base.endsWith(ext)) {
+         base = base.slice(0, base.length - ext.length);
+         break;
       }
-   } while (base !== previous);
+   }
    return readableSegment(base);
 }
 

@@ -3,6 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   authorModelPath,
+   COMPANION_SUFFIXES,
    fileSegment,
    fitPrefix,
    fitReadable,
@@ -194,6 +196,31 @@ describe("the prefix shared with the control plane", () => {
       );
       expect(fileSegment("orders.malloy.materialize.malloy")).toBe("orders");
       expect(fileSegment(undefined)).toBe("x");
+   });
+
+   it("maps exactly the seven companion suffixes the control plane maps to the author's file", () => {
+      // Pinned on both sides: a suffix added here fails until the control
+      // plane's list has it too, and the other way round.
+      expect([...COMPANION_SUFFIXES]).toEqual([
+         ".materialize.malloy",
+         ".materialize-build.malloy",
+         ".materialize-level.malloy",
+         ".persist-view.malloy",
+         ".preaggregate.malloy",
+         ".view-author.malloy",
+         ".rollup-author.malloy",
+      ]);
+      for (const suffix of COMPANION_SUFFIXES) {
+         expect(fileSegment(`/tmp/pkg/models/a.malloy${suffix}`)).toBe("a");
+         expect(authorModelPath(`models/a.malloy${suffix}`)).toBe(
+            "models/a.malloy",
+         );
+      }
+      // Only a suffix after the author's `.malloy` is a companion's.
+      expect(fileSegment("a_preaggregate.malloy")).toBe("a_preaggregate");
+      expect(authorModelPath("a_preaggregate.malloy")).toBe(
+         "a_preaggregate.malloy",
+      );
    });
 
    it("no segment contains a double underscore", () => {
