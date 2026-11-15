@@ -2063,6 +2063,26 @@ export function planModelMaterialize(
          });
          continue;
       }
+      // A join whose rows read the current time (its `where:`, its `on`, or
+      // the query of a query-shaped source it joins), at any level of an
+      // inlined path: its stored columns would hold the rows as of the build.
+      const timed = currentTimeFields(def.fields);
+      const timedInline = inline.find((j) =>
+         j
+            .split(".")
+            .some((_, i, all) => timed.has(all.slice(0, i + 1).join("."))),
+      );
+      if (timedInline !== undefined) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason:
+               `inline= names ${quotedName(timedInline)}, whose joined rows ` +
+               "read the current time, so its stored columns would hold the " +
+               "rows as of the build; reference the join instead",
+         });
+         continue;
+      }
       const readTime = readTimeTermsOf(def, classified, columns, givens);
       if (!readTime.ok) {
          refused.push({

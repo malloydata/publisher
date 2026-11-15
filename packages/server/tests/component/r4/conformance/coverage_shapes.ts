@@ -272,7 +272,7 @@ source: classified is orders_raw -> {
    },
    {
       name: "persist with a rolling window",
-      about: "#@ persist on a query whose body filters on now (a rolling window baked into the build), and on one whose extend block does (applied at read). The window is wide, so the goldens hold still; r4/persist_rolling_window_coverage cuts the rows at a pinned clock",
+      about: "#@ persist on a query whose body filters on now (refused, current_time: built, it would bake the window in as of the build, so it answers live), and on one whose extend block does (built, the window applied at read). The window is wide, so the goldens hold still; r4/persist_rolling_window_coverage cuts the rows at a pinned clock",
       variants: ["storage", "colocated"],
       files: {
          "m.malloy": `${HEADER}
@@ -300,6 +300,7 @@ source: recent_read is orders_raw -> {
             name: "a window in the persisted query",
             malloy:
                "run: recent_body -> { group_by: region; aggregate: total }",
+            expect: "live",
          },
          {
             name: "a window in the extend block",
