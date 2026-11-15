@@ -28,6 +28,15 @@ Workers in Credible's dev fleet on 0.13.1 looped reloads: the control plane re-b
 Binding a version (or a package loaded with a `manifestLocation`) to the manifest its models were last compiled against now fetches it and recompiles nothing; the binding is reported `bound` as before. A manifest that changed, a reload since, or another bind in between still recompiles. A `PATCH` that names a `manifestLocation` always reloads, as before, since it also applies the `publisher.json` it writes. When a package does recompile against a manifest, each model's served copy compiles once instead of starting, being discarded and starting again; a served copy with no table to read compiles nothing; and a source whose re-root does not compile is not recompiled or warned about again for the same model and tables (for ten minutes) — it keeps answering live, as it did. The served copy hands the event loop a turn between its compile passes.
 
 Answers are unchanged: the same sources are served from the same tables. No API, enum or metric value changes.
+## [Unreleased] — less main-thread work per package load
+
+0.13.1 added a check to every package load that walked each model's whole compiled definition for joins inside array queries. That walk ran on the main thread, and it remembered every node it visited in a table that outlived the walk. The check now asks first whether a model governs access at all. A model that governs nothing is not walked for joins. A model that does is walked once, and the walk keeps nothing afterwards. A load that refused such a join still refuses it, with the same message.
+
+The memory governor reads only the process's resident memory on each tick, not the full `process.memoryUsage()` object with its heap statistics. In Bun those statistics cost more as the heap grows.
+
+The render-tag check now keeps its findings for each model, keyed on a digest of the results it reads. A model loaded again unchanged reuses its findings instead of being checked again on the main thread. A change to the model's text or to the schema of a table it reads is checked afresh. The cache lives in the server process, so a new `@malloydata/render-validator` is checked afresh after the restart that installs it. The cache holds the findings of at most 1,024 models. The warnings a package reports are unchanged.
+
+No API, enum or metric value changes.
 
 ## [Unreleased] — colocated and `storage=` tables answer five shapes the same way
 

@@ -2295,8 +2295,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const messages: string[] = [];
       for (const [modelPath, model] of this.models) {
          const modelDef = model.getModelDef();
+         // Governance first: it stops at the first governing note, where the
+         // join walk reads every node, and most models govern nothing.
+         if (!governsAccess(modelDef)) continue;
          const joins = arrayQueryJoins(modelDef);
-         if (joins.length === 0 || !governsAccess(modelDef)) continue;
          const refusal = arrayQueryJoinRefusal(`Model ${modelPath}`, joins);
          if (refusal) messages.push(refusal);
       }
