@@ -2380,7 +2380,7 @@ function servedCopyProblemMessage(
       case "compile_failed":
          return "This model's served copy does not compile, so its stored sources serve through the serve shape or live.";
       case "cross_connection_unbuilt":
-         return "This model joins sources from different connections; its served copy compiles once both sides are built into one destination, and serves live until then.";
+         return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
          return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.";
       case "no_declaration":
@@ -2424,9 +2424,9 @@ function servedCopyProblemMessage(
          );
       case "classification_not_kept":
          return (
-            "This source's served copy reaches fields its compile of record does not (a join left out " +
-            "across connections, answered once both sides are built), and the load's classification " +
-            "checks flag them there, so its queries are not answered from the stored tables: " +
+            "This source's re-root changed what it exposes or how a field is classified, which the load's " +
+            "classification checks flag on the served copy, so its queries are not answered from the " +
+            "stored tables (a Publisher bug; please report it): " +
             [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
          );
    }

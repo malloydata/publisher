@@ -270,14 +270,14 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    "service/materialization/serve/serve_verdict.ts": { count: 8, step: "5" },
    "service/materialization/serve/served_copy.ts": { count: 3, step: "5" },
    "service/materialization/serve/served_copy_serve.ts": {
-      count: 6,
+      count: 5,
       step: "5",
    },
    "service/materialization/serve/storage_bindings.ts": { count: 1, step: "5" },
    "service/materialization/serve/view_variants.ts": { count: 1, step: "5" },
    "service/materialization/stored_column_types.ts": { count: 1, step: "5" },
    "service/materialization/text/cross_connection_text.ts": {
-      count: 4,
+      count: 1,
       step: "5",
    },
 };
