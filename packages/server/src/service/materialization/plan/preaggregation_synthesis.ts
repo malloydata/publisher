@@ -134,18 +134,10 @@ export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
  *
  * **A `storage=` base lends nothing — not its destination, and not a namespace.**
  *
- * Not the DESTINATION, because inheritance requires `#@ persist` on the base and
- * both cases fail:
- *  - **Query-shaped base**: it builds its own stored table, whose binding claims
- *    the author name the rollups need, so they are dropped from the serve shape
- *    — built, refreshed, and unreadable.
- *  - **Table extended with measures** (the usual case): the annotation parses,
- *    but the build refuses the whole run because the `#@ persist` source was
- *    dropped from the plan (`relevantDropped` in materialization_service.ts).
- * The destination is therefore written on the `#@ preaggregate` line. (The
- * colocated tier composes members synthesis names, with the base under an
- * import alias, so nothing keys on the author's name; that is why a `name=`
- * namespace inherits usefully.)
+ * Not the DESTINATION: a rollup's placement is its own line's and part of its
+ * identity (the rollup's name digests it), so adding or removing `storage=` on
+ * a base never moves its rollups' tables. A rollup over a stored base builds
+ * from the author's rows, not the base's table, wherever its own line puts it.
  *
  * Not the NAMESPACE, because the base's `name=` is a name in the destination's
  * catalog and means nothing in the source warehouse where the rollup is built.

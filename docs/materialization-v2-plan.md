@@ -1616,7 +1616,7 @@ The plan accounts for all 60 open issues under [ms2data/service#6647](https://gi
 | #7541 | P1 | SQL Server on the storage tier | Independent of v2; needs #6642. Conflicts with S12a (question 10). | — |
 | #6266 | P2 | Consume `getBuildTargets` | Landed in publisher#1495; publisher#1608 removes the two deprecated `PersistSource` calls (`getSQL()`, `makeBuildId()`) | 2 |
 | #6292 | P2 | A bound rollup that never serves is invisible | D2 serve verdict; T2 hit counts per table | 1, 6 |
-| #6293 | P2 | A rollup on a storage-persisted base cannot build | Interim (#1595): the rollup is left out of the plan with a `preaggregate-over-stored-base` warning; real fix with A3 over the re-rooted source | 2 (interim), 4 |
+| #6293 | P2 | A rollup on a storage-persisted base cannot build | Fixed in phase 4: a rollup builds over the author's rows, never the base's table, so a `#(preaggregate)` or (since the v1 cutover) `#@ preaggregate` rollup over a stored base builds and serves. The interim leave-out (#1595) and its `preaggregate-over-stored-base` warning are removed. | 2 (interim), 4 |
 | #6282 | P2 | Narrow the pre-aggregate fan-out refusal | The A6 rule | 4 |
 | #6425 | P2 | A derived rollup freezes a parameter's default, and rollups build for sources nobody annotated | A1: rollups only for annotated measures; variants in the user's file read givens at read. Source parameters are out of scope. | 4 |
 | #6446 | P2 | `servedFrom: null` conflates three outcomes | D1 path report | 1 |
