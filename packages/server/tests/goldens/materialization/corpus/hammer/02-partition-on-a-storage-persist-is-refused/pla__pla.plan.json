@@ -4,6 +4,7 @@
     "annotationFindings": [
       {
         "code": "persist-retired-key",
+        "key": "partition",
         "message": "#@ persist source \"orders\": `partition=` is no longer read on `#@`",
         "model": "pla.malloy",
         "rewrite": "remove it: partition= is not supported, and the stored table is written unpartitioned. It was a layout choice only, so the cost is scan time; what each caller sees is unchanged",

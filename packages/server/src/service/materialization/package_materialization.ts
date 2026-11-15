@@ -9,6 +9,7 @@ import {
 import {
    findingSeverity,
    MATERIALIZE_V2_ROUTES,
+   POLICY_REFUSED_RETIRED_KEYS,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
@@ -2085,7 +2086,7 @@ export class PackageMaterialization {
       const packageFreshness = materialization?.freshness ?? null;
       const scope = this.owner.metadata().scope ?? "package";
 
-      // Rule 1: per-source sharing/schedule, and partition=, are retired.
+      // Rule 1: per-source sharing/schedule are retired.
       for (const source of sources) {
          const fields = source.annotationFields ?? {};
          if (fields.sharing !== undefined) {
@@ -2102,14 +2103,6 @@ export class PackageMaterialization {
                   `no longer supported: a schedule is package-root-only. Declare ` +
                   `"materialization.schedule" at the ${PACKAGE_MANIFEST_NAME} root ` +
                   `(requires "scope": "version") instead.`,
-            );
-         }
-         if (fields.partition !== undefined) {
-            warnings.push(
-               `#@ persist source "${source.name}" declares partition=... which is ` +
-                  `no longer supported: remove it. The stored table is written ` +
-                  `unpartitioned; partitioning was a layout choice only, so the ` +
-                  `cost is scan time and what each caller sees is unchanged.`,
             );
          }
       }
@@ -2155,10 +2148,12 @@ export class PackageMaterialization {
    }
 
    /**
-    * The publish refusal for `#@` lines that do not parse, and for malformed
-    * materialization v2 declarations (an unknown key on `#(materialize)` or
-    * `#(preaggregate)`, whose key sets are closed), one per line, or "" when
-    * none. Publish only: a load warns (the finding rides
+    * The publish refusal for `#@` lines that do not parse, for a retired
+    * `#@ persist` key the persistence policy does not already refuse
+    * (`partition=`; {@link POLICY_REFUSED_RETIRED_KEYS}), and for malformed
+    * materialization v2 declarations (an unknown or retired key on
+    * `#(materialize)` or `#(preaggregate)`, whose key sets are closed), one per
+    * line, or "" when none. Publish only: a load warns (the finding rides
     * `Package.warnings`), so a package already published keeps loading and its
     * schedule keeps running, and a metadata PATCH is not refused for it. Kept
     * out of {@link persistencePolicyWarnings}, which the scheduler and the
@@ -2169,12 +2164,16 @@ export class PackageMaterialization {
          .filter(
             (finding) =>
                finding.code === "persist-unparseable" ||
+               (finding.code === "persist-retired-key" &&
+                  (finding.nested ||
+                     !POLICY_REFUSED_RETIRED_KEYS.has(finding.key ?? ""))) ||
                (finding.tier === "malformed" &&
                   MATERIALIZE_V2_ROUTES.has(finding.route)),
          )
          .map(
             (finding) =>
-               `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
+               `${finding.model ? `${finding.model}: ` : ""}${finding.message}` +
+               (finding.rewrite ? `; ${finding.rewrite}` : ""),
          )
          .join("\n");
    }

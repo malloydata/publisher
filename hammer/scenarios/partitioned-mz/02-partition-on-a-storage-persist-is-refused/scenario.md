@@ -62,4 +62,4 @@ cites: partition= is not supported
 
 The author-in-the-loop publish is refused, naming the key and the fix.
 
-cites: partition=... which is no longer supported: remove it
+cites: partition= is not supported

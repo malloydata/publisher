@@ -680,6 +680,26 @@
       "outcome": "ChainedUpstreamMissingError: persisted upstream of 'rollup': 'daily' is not materialized in destination 'lake' for this build — the build cannot stack on it, and the recompute that remains would rebuild the stored tables its SQL inlines"
     },
     {
+      "model": "hammer/94-a-downstream-stacks-when-its-address-folds-in-the-destination/ppu/ppu.malloy",
+      "source": "rollup",
+      "address": "255bf73dcc33ccd19af2931a6745b7733316b7d5000619fd32fb03ad12acdead",
+      "destination": "lake",
+      "upstreams": [
+        "orders_all"
+      ],
+      "outcome": "stacked (reused)",
+      "schema": [
+        {
+          "name": "org_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "total",
+          "type": "DOUBLE"
+        }
+      ]
+    },
+    {
       "model": "hammer/95-a-carried-intermediate-reading-a-given-still-compiles/cig/cig.malloy",
       "source": "rollup",
       "address": "6081f1520eaae6456f69998561d2ec83634f98e8c7dd835f5cd45f9c2e9c0234",

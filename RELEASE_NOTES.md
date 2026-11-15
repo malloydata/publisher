@@ -61,14 +61,23 @@ unpartitioned. `partition=` was a layout and never isolation, since every term t
 re-applied at read either way, so the only cost is scan cost: a read filtered to one value of the
 column reads the whole table. No answer changes.
 
-- **The refusal.** On `#@ persist` the package warning is `persist-retired-key` (severity `error`) and
-  the publish refusal says `partition=... which is no longer supported: remove it`. On
-  `#(materialize)` it is the new code `materialize-retired-key` (severity `error`), the source is not
-  built and answers live, and the publish is refused. A package that is already loaded (at startup
-  or on reload) keeps loading with the warning, as for any retired key; its next build writes the
-  table unpartitioned, under a new address, so it rebuilds once. A `#@ persist` on a view that
-  declares `partition=` stays unbuilt (`persist-view-not-built`), now with a message that says to
-  remove it.
+- **The refusal.** On `#@ persist` (written `partition="…"`, as a list, or inside the key as
+  `#@ persist { partition="…" }`) the package warning is `persist-retired-key`, severity `error`, and
+  the publish is refused with "`partition=` is no longer read …; remove it: partition= is not
+  supported". On `#(materialize)` it is the new code `materialize-retired-key` (severity `error`), the
+  source is not built and answers live, and the publish is refused. Either way it is refused at
+  publish only: a package that is already loaded (at startup or on reload) keeps loading with the
+  warning, keeps its schedule, and accepts a metadata PATCH.
+- **What a loaded package's next build does.** A `storage=` `#@ persist` source that declared
+  `partition=` has a new address, since the layout was part of it: its next build writes a new,
+  unpartitioned table, and the old one is reclaimed as any superseded generation is. A colocated
+  `#@ persist` source that declared `partition=` was refused (`partition_without_storage`) and never
+  built; it now builds, into its own warehouse. A `#@ persist` on a view that declares `partition=`
+  stays unbuilt (`persist-view-not-built`), now with a message that says to remove it.
+- **Control-plane operators: reseed partitioned incremental sources.** An incremental
+  `storage=` source that declared `partition=` is measured under its old address, so its first
+  instructed run after the upgrade fails with "measured under a different definition … set reseed".
+  Run it once with `reseed` (`--reseed`) to rebuild it in full under the new address.
 - **API.** `BuildPlan.sources[].partition` is deprecated and always absent. The three refusal
   reasons `partition_without_storage`, `partition_column_unknown` and
   `partition_column_not_public` stay in the `RefusedSource.reason` enum, so generated clients keep

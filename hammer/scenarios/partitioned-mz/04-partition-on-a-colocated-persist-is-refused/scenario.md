@@ -44,7 +44,7 @@ cites: partition= is not supported
 
 ## Republish refused pws
 
-cites: partition=... which is no longer supported: remove it
+cites: partition= is not supported
 
 ## Build refusals (pkg=pws)
 

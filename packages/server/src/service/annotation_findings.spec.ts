@@ -188,13 +188,34 @@ describe("annotation findings on a loaded package", () => {
       { timeout: 30000 },
    );
 
+   const GIVEN_IN_QUERY = `##! experimental { persistence composite_sources givens }
+given: CAT :: string is 'A'
+source: raw is duckdb.sql("""SELECT 1 AS amount, 'A' AS category""")
+#@ persist name="t" partition="category"
+source: daily is raw -> { where: category = $CAT; group_by: category; aggregate: total is amount.sum() }
+`;
    it.each([
-      ["colocated", `#@ persist name="t" partition="category"`],
-      ["storage=", `#@ persist name="t" storage="lake" partition="category"`],
+      [
+         "a colocated",
+         `${RAW}#@ persist name="t" partition="category"\n${ROLLUP}\n`,
+      ],
+      [
+         "a storage=",
+         `${RAW}#@ persist name="t" storage="lake" partition="category"\n${ROLLUP}\n`,
+      ],
+      [
+         "a list-valued",
+         `${RAW}#@ persist name="t" partition=[category]\n${ROLLUP}\n`,
+      ],
+      [
+         "a nested",
+         `${RAW}#@ persist { name="t" partition="category" }\n${ROLLUP}\n`,
+      ],
+      ["an otherwise-refused source's", GIVEN_IN_QUERY],
    ])(
-      "refuses a %s #@ persist partition= at publish, saying to remove it",
-      async (_tier, line) => {
-         const pkg = await loadPackage(`${RAW}${line}\n${ROLLUP}\n`);
+      "refuses %s #@ persist partition= at publish, saying to remove it",
+      async (_case, model) => {
+         const pkg = await loadPackage(model);
          const [warning] = coded(pkg, "persist-retired-key");
          expect(warning).toMatchObject({ severity: "error", subject: "daily" });
          expect(warning.message).toContain("`partition=`");
@@ -202,7 +223,45 @@ describe("annotation findings on a loaded package", () => {
          expect(warning.message).toContain("remove it");
          // Not the vaguer unknown-key warning, which publish would allow.
          expect(coded(pkg, "persist-unknown-key")).toEqual([]);
-         expect(formatPublishRejections(pkg)).toContain("partition=");
+         expect(formatPublishRejections(pkg)).toContain(
+            "partition= is not supported",
+         );
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses #@ persist partition= only at publish: the scheduler keeps it, and a policy PATCH is not refused",
+      async () => {
+         writePackageFiles(
+            path.join(envPath, "pkg"),
+            {
+               "model.malloy": `${RAW}#@ persist name="t" partition="category"\n${ROLLUP}\n`,
+            },
+            {
+               manifest: {
+                  name: "pkg",
+                  description: "fixture",
+                  materialization: { scope: "version", schedule: "0 * * * *" },
+               },
+            },
+         );
+         const env = await Environment.create("testEnv", envPath, []);
+         await env.addPackage("pkg");
+         const pkg = await env.getPackage(parsePackageName("pkg"), false);
+         expect(formatPublishRejections(pkg)).toContain(
+            "partition= is not supported",
+         );
+         // The scheduler disarms a package on any persistence-policy warning.
+         expect(pkg.persistencePolicyWarnings()).toEqual([]);
+         const patched = await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { schedule: "30 * * * *" },
+         });
+         expect(
+            (patched as { materialization?: { schedule?: string } })
+               .materialization?.schedule,
+         ).toBe("30 * * * *");
       },
       { timeout: 30000 },
    );
