@@ -7,12 +7,10 @@ import {
    type SourceDef,
 } from "@malloydata/malloy";
 import {
-   codedLine,
    findingSeverity,
    MATERIALIZATION_STORAGE_MODE_CODE,
    PERSIST_NOT_BUILT_CODE,
    PERSIST_SOURCE_REFUSED_ALIAS_CODE,
-   PREAGGREGATE_INVALID_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
@@ -54,6 +52,8 @@ import {
    invalidFindingLines,
    loadGateText,
    planCollisions,
+   PREAGG_WARN_ONLY,
+   preaggregateGateLines,
    relaxedCollision,
 } from "./plan/load_gate_text";
 import type { MaterializePlan } from "./plan/build_file_generator";
@@ -120,42 +120,6 @@ import type {
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
-
-/**
- * `#@ preaggregate` violations of a VALID declaration Publisher cannot build
- * here: that rollup alone is refused with a warning (its code here), its
- * measures answered live, and the package loads. Every other violation is an
- * invalid declaration and fails the load (see formatInvalidPreaggregatePolicy).
- * The planner skips each of these itself, so nothing is built.
- */
-const PREAGG_WARN_ONLY: ReadonlyMap<PreaggregateViolationCode, string> =
-   new Map([
-      // Governance: an extension that hides an inherited field cannot fix
-      // its base's annotation.
-      ["non_public_measure", "preaggregate-hidden-field"],
-      ["grain_dimension_not_public", "preaggregate-hidden-field"],
-      // A rollup over a fan-out join, as `#(preaggregate)` refuses one.
-      ["base_source_has_fanout_join", "preaggregate-join-level"],
-   ]);
-
-/**
- * The code a `#@ preaggregate` violation that fails the load is named by, the
- * same as `#(preaggregate)`'s for the same mistake.
- */
-function preaggregateViolationCode(code: PreaggregateViolationCode): string {
-   if (code === "unknown_key") return "preaggregate-unknown-key";
-   if (code === "unparseable") return "preaggregate-unparseable";
-   if (code === "non_additive_measure") return "preaggregate-not-mergeable";
-   if (code.startsWith("misplaced_")) return "preaggregate-not-a-measure";
-   if (
-      code === "unknown_grain_dimension" ||
-      code.startsWith("grain_") ||
-      code === "truncation_on_non_temporal"
-   ) {
-      return "preaggregate-unknown-grain";
-   }
-   return PREAGGREGATE_INVALID_CODE;
-}
 
 /**
  * Project wire entries to the `sourceEntityId -> { tableName }` map that
@@ -1219,6 +1183,12 @@ export class PackageMaterialization {
                                   workerPlan.outcome.materializePlans,
                             }
                           : {}),
+                       ...(workerPlan.outcome.modelGateLines
+                          ? {
+                               modelGateLines:
+                                  workerPlan.outcome.modelGateLines,
+                            }
+                          : {}),
                     },
                     {
                        enforceCollisions: getPersistCollisionEnforce(),
@@ -2259,14 +2229,9 @@ export class PackageMaterialization {
     * only warns.
     */
    formatInvalidPreaggregatePolicy(): string {
-      return this.preaggregateFindings((code) => !PREAGG_WARN_ONLY.has(code))
-         .map(
-            // Source names repeat across models; name the file.
-            ({ modelPath, violation }) =>
-               codedLine(
-                  `${modelPath}: ${violation.message}`,
-                  preaggregateViolationCode(violation.code),
-               ),
+      return [...this.owner.models()]
+         .flatMap(([modelPath, model]) =>
+            preaggregateGateLines(modelPath, model.preaggregateViolations()),
          )
          .join("\n");
    }

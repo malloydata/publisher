@@ -200,6 +200,7 @@ export async function compilePackageBuildPlan(
       sourceModelPaths: parts.sourceModelPaths,
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
+      modelGateLines: parts.modelGateLines,
       preaggregatePlans: parts.preaggregatePlans,
       ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
       materializePlans: parts.materializePlans,

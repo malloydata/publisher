@@ -21,6 +21,12 @@ import type {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { incrementalUnbuildableReason } from "./incremental_policy";
+import { nearMissGateLines, preaggregateGateLines } from "./load_gate_text";
+import { validateModelPreaggregation } from "./preaggregation_validation";
+import {
+   annotationNearMisses,
+   authoredNotes,
+} from "../../annotation_near_miss";
 import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import {
    PERSIST_INVALID_CODE,
@@ -210,6 +216,8 @@ export interface CompiledBuildPlan {
    droppedPersistSources?: { name: string; modelPath: string }[];
    /** Findings on the authored `#@` annotations (see annotation_reader). */
    annotationFindings?: PackageAnnotationFinding[];
+   /** See {@link BuildPlanParts.modelGateLines}. */
+   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
    /**
     * sourceID -> the rollup it was synthesized from; absent for an authored
     * `#@ persist` source. The provenance behind the wire plan's
@@ -567,6 +575,12 @@ export interface BuildPlanParts {
    sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
    /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
    annotationFindings: PackageAnnotationFinding[];
+   /**
+    * Each model's invalid `#@ preaggregate` declarations and misspelled
+    * materialization routes, as load-failure lines (plan/load_gate_text.ts),
+    * so a run over the files reads them as the load does.
+    */
+   modelGateLines: { preaggregate: string[]; nearMiss: string[] };
    /** See {@link CompiledBuildPlan.omittedSources}. */
    omittedSources: Omission[];
 }
@@ -582,6 +596,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       materializePlans: {},
       sourceGateOutcomes: {},
       annotationFindings: [],
+      modelGateLines: { preaggregate: [], nearMiss: [] },
       omittedSources: [],
    };
 }
@@ -608,6 +623,11 @@ export function mergeBuildPlanParts(
    for (const finding of from.annotationFindings) {
       addAnnotationFinding(into, finding);
    }
+   // `?? …`: parts a worker built before this field existed.
+   into.modelGateLines.preaggregate.push(
+      ...(from.modelGateLines?.preaggregate ?? []),
+   );
+   into.modelGateLines.nearMiss.push(...(from.modelGateLines?.nearMiss ?? []));
 }
 
 /**
@@ -1135,6 +1155,26 @@ export async function collectModelBuildPlan(
       getRuntime,
       keyCheckCompilers,
    } = args;
+   // The model's own load-failure lines, read off the author's model as the
+   // load reads them (Model.preaggregateViolations, annotationNearMisses).
+   {
+      const authorDef = modelDefOf(malloyModel);
+      parts.modelGateLines.preaggregate.push(
+         ...preaggregateGateLines(
+            modelPath,
+            validateModelPreaggregation(
+               authorDef.contents as Record<string, unknown>,
+               authorDef.modelID,
+            ),
+         ),
+      );
+      parts.modelGateLines.nearMiss.push(
+         ...nearMissGateLines(
+            modelPath,
+            annotationNearMisses(authoredNotes(authorDef)),
+         ),
+      );
+   }
    // `#@ persist` on a named query: its key findings always, and, with
    // PUBLISHER_MATERIALIZE off, the warning that it is not built. Before
    // the early `return`s below, since a query needs no persistence flag.
@@ -1685,6 +1725,8 @@ export interface BuildPlanOutcome {
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
    annotationFindings: PackageAnnotationFinding[];
+   /** See {@link BuildPlanParts.modelGateLines}. Optional: an older worker sends none. */
+   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
@@ -1771,6 +1813,9 @@ export function deriveBuildPlanOutcome(
       plan,
       droppedPersistSources,
       annotationFindings: compiled.annotationFindings ?? [],
+      ...(compiled.modelGateLines
+         ? { modelGateLines: compiled.modelGateLines }
+         : {}),
       sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,

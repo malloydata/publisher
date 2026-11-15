@@ -3,13 +3,14 @@
 
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
+import { nearMissGateLines } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
 import "@malloydata/db-duckdb/native";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { codedLine, findingSeverity } from "./annotation_reader";
+import { findingSeverity } from "./annotation_reader";
 import {
    Connection,
    ConnectionRuntime,
@@ -2385,8 +2386,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /** A misspelled materialization route or directive, one line each. */
    private materializationNearMissLines(): string[] {
-      return this.materializationNearMisses().map((w) =>
-         codedLine(`${w.model}: ${w.message}`, w.code ?? ""),
+      return [...this.models].flatMap(([modelPath, model]) =>
+         nearMissGateLines(modelPath, model.annotationNearMisses?.() ?? []),
       );
    }
 
@@ -2436,11 +2437,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    public annotationNearMissWarnings(): ApiPackageWarning[] {
       return this.nearMissWarnings().filter((w) => w.severity !== "error");
-   }
-
-   /** The near misses of a materialization route, which fail the load. */
-   private materializationNearMisses(): ApiPackageWarning[] {
-      return this.nearMissWarnings().filter((w) => w.severity === "error");
    }
 
    private nearMissWarnings(): ApiPackageWarning[] {

@@ -1,10 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import type { components } from "../../../api";
 import type { PackageAnnotationFinding } from "../../annotation_reader";
 import { loadGateText } from "./load_gate_text";
+import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
+import { computePackageBuildPlan } from "./build_plan_compile";
 
 type BuildPlan = components["schemas"]["BuildPlan"];
 
@@ -105,4 +107,54 @@ describe("loadGateText", () => {
          ),
       ).toBe("");
    });
+});
+
+describe("loadGateText over files a run compiles", () => {
+   // The model-level mistakes the load reads off its models: a run over the
+   // same files must refuse them too.
+   const packages = tempBuildPlanPackages();
+   afterAll(() => packages.cleanup());
+   const ROWS = `duckdb.sql("""SELECT 1 AS id, 'A' AS category, 10 AS amount""")`;
+   const HEADER = "##! experimental { persistence composite_sources }\n";
+   for (const [label, model, code] of [
+      [
+         "#@ preaggregate bogus=1",
+         `${HEADER}source: o is ${ROWS} extend {\n  #@ preaggregate grain="category" bogus=1\n  measure: total is amount.sum()\n}\n`,
+         "preaggregate-unknown-key",
+      ],
+      [
+         "#@ preaggregate storage=@env.X",
+         `${HEADER}source: o is ${ROWS} extend {\n  #@ preaggregate grain="category" storage=@env.X\n  measure: total is amount.sum()\n}\n`,
+         "preaggregate-invalid",
+      ],
+      [
+         "#@ persits",
+         `${HEADER}source: raw is ${ROWS}\n#@ persits name="t"\nsource: d is raw -> { group_by: category }\n`,
+         "materialization-near-miss",
+      ],
+      [
+         "#(materialise)",
+         `${HEADER}source: raw is ${ROWS}\n#(materialise) name="t"\nsource: o is raw extend { where: id > 0 }\n`,
+         "materialization-near-miss",
+      ],
+   ] as const) {
+      it(`refuses ${label}`, async () => {
+         const plan = await computePackageBuildPlan(
+            await packages.create({ "model.malloy": model }),
+         );
+         const text = loadGateText(
+            {
+               plan: plan.plan,
+               annotationFindings: plan.annotationFindings,
+               incrementalDeclarations: plan.incrementalDeclarations,
+               ...(plan.modelGateLines
+                  ? { modelGateLines: plan.modelGateLines }
+                  : {}),
+            },
+            { enforceCollisions: true, versionScoped: false },
+         );
+         expect(text).toContain(`[${code}]`);
+         expect(text).toContain("model.malloy: ");
+      });
+   }
 });

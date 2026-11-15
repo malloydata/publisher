@@ -20,8 +20,14 @@ import {
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
    PERSIST_VIEW_INVALID_CODE,
+   PREAGGREGATE_INVALID_CODE,
+   type AnnotationFinding,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
+import type {
+   PreaggregateViolation,
+   PreaggregateViolationCode,
+} from "./preaggregation_validation";
 import type { components } from "../../../api";
 import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import type { MaterializePlan } from "./build_file_generator";
@@ -44,6 +50,12 @@ interface GatedPlan {
    annotationFindings: readonly PackageAnnotationFinding[];
    incrementalDeclarations: Readonly<Record<string, IncrementalDeclaration>>;
    materializePlans?: Readonly<Record<string, MaterializePlan>>;
+   /**
+    * The models' own invalid `#@ preaggregate` and near-miss lines
+    * ({@link preaggregateGateLines}, {@link nearMissGateLines}), as the plan
+    * collected them from the files.
+    */
+   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
 }
 
 /** How this deployment judges the plan. */
@@ -250,8 +262,9 @@ export function collisionGateLines(
 /**
  * The load-failure text of a derived plan, or "" when it is valid: its
  * invalid findings, its collisions (when enforced) and its invalid
- * incremental declarations. The `#@ preaggregate` violations and the near
- * misses are the loaded models', which the load adds.
+ * incremental declarations, then the models' invalid `#@ preaggregate`
+ * declarations and near misses as the plan collected them: the same text, in
+ * the same order, as the load's (Package.formatLoadGateText).
  */
 export function loadGateText(
    gated: GatedPlan,
@@ -280,5 +293,82 @@ export function loadGateText(
             judgement.persistedViews,
          ),
       ),
+      ...(gated.modelGateLines?.preaggregate ?? []),
+      ...(gated.modelGateLines?.nearMiss ?? []),
    ].join("\n");
+}
+
+/**
+ * `#@ preaggregate` violations of a VALID declaration Publisher cannot build
+ * here: that rollup alone is refused with a warning (its code here), its
+ * measures answered live, and the package loads. Every other violation is an
+ * invalid declaration and fails the load (see formatInvalidPreaggregatePolicy).
+ * The planner skips each of these itself, so nothing is built.
+ */
+export const PREAGG_WARN_ONLY: ReadonlyMap<PreaggregateViolationCode, string> =
+   new Map([
+      // Governance: an extension that hides an inherited field cannot fix
+      // its base's annotation.
+      ["non_public_measure", "preaggregate-hidden-field"],
+      ["grain_dimension_not_public", "preaggregate-hidden-field"],
+      // A rollup over a fan-out join, as `#(preaggregate)` refuses one.
+      ["base_source_has_fanout_join", "preaggregate-join-level"],
+   ]);
+
+/**
+ * The code a `#@ preaggregate` violation that fails the load is named by, the
+ * same as `#(preaggregate)`'s for the same mistake.
+ */
+function preaggregateViolationCode(code: PreaggregateViolationCode): string {
+   if (code === "unknown_key") return "preaggregate-unknown-key";
+   if (code === "unparseable") return "preaggregate-unparseable";
+   if (code === "non_additive_measure") return "preaggregate-not-mergeable";
+   if (code.startsWith("misplaced_")) return "preaggregate-not-a-measure";
+   if (
+      code === "unknown_grain_dimension" ||
+      code.startsWith("grain_") ||
+      code === "truncation_on_non_temporal"
+   ) {
+      return "preaggregate-unknown-grain";
+   }
+   return PREAGGREGATE_INVALID_CODE;
+}
+
+/**
+ * The invalid `#@ preaggregate` declarations of one model, one line each
+ * with its code (rules in preaggregation_validation); the ones Publisher
+ * refuses alone ({@link PREAGG_WARN_ONLY}) only warn.
+ */
+export function preaggregateGateLines(
+   modelPath: string,
+   violations: readonly Readonly<PreaggregateViolation>[],
+): string[] {
+   return violations
+      .filter((v) => !PREAGG_WARN_ONLY.has(v.code))
+      .map((v) =>
+         // Source names repeat across models; name the file.
+         codedLine(
+            `${modelPath}: ${v.message}`,
+            preaggregateViolationCode(v.code),
+         ),
+      );
+}
+
+/**
+ * One model's misspelled materialization routes and directives, one line
+ * each with its code (annotation_near_miss); every other near miss only
+ * warns.
+ */
+export function nearMissGateLines(
+   modelPath: string,
+   findings: readonly AnnotationFinding[],
+): string[] {
+   return findings
+      .filter((f) => f.tier === "malformed")
+      .map((f) =>
+         codedLine(
+            `${modelPath}: ${f.message}${f.at ? ` (line ${f.at.range.start.line + 1})` : ""}; ${f.rewrite}`,
+            f.code,
+         ),
+      );
 }

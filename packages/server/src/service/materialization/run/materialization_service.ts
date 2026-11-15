@@ -738,6 +738,9 @@ export class MaterializationService {
                ...(derived.materializePlans
                   ? { materializePlans: derived.materializePlans }
                   : {}),
+               ...(derived.modelGateLines
+                  ? { modelGateLines: derived.modelGateLines }
+                  : {}),
             },
             {
                enforceCollisions: getPersistCollisionEnforce(),

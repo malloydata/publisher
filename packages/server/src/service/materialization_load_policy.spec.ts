@@ -40,6 +40,9 @@ import { Environment } from "./environment";
 import { EnvironmentStore } from "./environment_store";
 import { parseEnvironmentName, parsePackageName } from "./identity";
 import type { Package } from "./package";
+import { tempBuildPlanPackages } from "../test_helpers/incremental_test_harness";
+import { computePackageBuildPlan } from "./materialization/plan/build_plan_compile";
+import { loadGateText } from "./materialization/plan/load_gate_text";
 
 const ROWS = `duckdb.sql("""SELECT * FROM (VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 5)) AS t(id, category, amount)""")`;
 const HEADER = `##! experimental { persistence composite_sources }\n`;
@@ -372,6 +375,61 @@ describe("the load-versus-refused policy", () => {
          },
          { timeout: 180000 },
       );
+   });
+
+   describe("a run's gate text over the files equals the load's failure", () => {
+      // The run reads the load gate's text off the plan it compiles from the
+      // files (plan/load_gate_text.ts); it must say exactly what the load
+      // fails with, row for row, near misses and #@ preaggregate included.
+      const NEAR_MISSES: [string, string][] = [
+         ["#@ persits", ROUTES.persist.model('#@ persits name="t"')],
+         [
+            "#(materialise)",
+            ROUTES.materialize.model('#(materialise) name="t"'),
+         ],
+      ];
+      const rows: [string, string][] = [
+         ...CASES.map((c) => [c.label, c.model] as [string, string]),
+         ...NEAR_MISSES,
+      ];
+      for (const [label, model] of rows) {
+         it(
+            label,
+            async () => {
+               const envPath = path.join(root, "env");
+               write(path.join(envPath, "pkg"), "pkg", model);
+               const env = await Environment.create("testEnv", envPath, []);
+               const loadFailure = (await failure(() => env.addPackage("pkg")))
+                  .message;
+               const packages = tempBuildPlanPackages();
+               try {
+                  const plan = await computePackageBuildPlan(
+                     await packages.create({ "model.malloy": model }),
+                  );
+                  expect(
+                     loadGateText(
+                        {
+                           plan: plan.plan,
+                           annotationFindings: plan.annotationFindings,
+                           incrementalDeclarations:
+                              plan.incrementalDeclarations,
+                           ...(plan.materializePlans
+                              ? { materializePlans: plan.materializePlans }
+                              : {}),
+                           ...(plan.modelGateLines
+                              ? { modelGateLines: plan.modelGateLines }
+                              : {}),
+                        },
+                        { enforceCollisions: true, versionScoped: false },
+                     ),
+                  ).toBe(loadFailure);
+               } finally {
+                  await packages.cleanup();
+               }
+            },
+            60000,
+         );
+      }
    });
 
    describe("a valid annotation Publisher cannot build is refused alone", () => {
