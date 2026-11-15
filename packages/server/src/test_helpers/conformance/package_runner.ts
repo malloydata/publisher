@@ -81,6 +81,8 @@ export interface Answer {
    servedBy: string;
    /** `served_copy` when the served copy on `virtual` answered. */
    via?: string;
+   /** The view leg's skip, when it considered the query and declined it. */
+   viewSkip?: { reason?: string; detail?: string };
 }
 
 /** What querying a package produced: an answer, or the error it threw. */
@@ -284,6 +286,7 @@ export async function loadFixture(
                ...(result.path?.servedBy?.via
                   ? { via: result.path.servedBy.via }
                   : {}),
+               ...viewSkipOf(result.path?.considered),
             },
          };
       } catch (error) {
@@ -524,4 +527,22 @@ function declaredColumnsFor(
          (f) => f.expressionType === undefined || f.expressionType === "scalar",
       ),
    );
+}
+
+/** The view leg's entry in a path report's `considered`, when it skipped. */
+function viewSkipOf(considered: readonly unknown[] | undefined): {
+   viewSkip?: { reason?: string; detail?: string };
+} {
+   const skip = (considered ?? []).find(
+      (c) =>
+         (c as { kind?: unknown }).kind === "view" &&
+         (c as { outcome?: unknown }).outcome === "skipped",
+   ) as { reason?: unknown; detail?: unknown } | undefined;
+   if (!skip) return {};
+   return {
+      viewSkip: {
+         ...(typeof skip.reason === "string" ? { reason: skip.reason } : {}),
+         ...(typeof skip.detail === "string" ? { detail: skip.detail } : {}),
+      },
+   };
 }

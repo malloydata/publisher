@@ -17,7 +17,8 @@
  * live; those cases assert the decline, and rows and metadata equal to live.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { logger } from "../../../src/logger";
 import { DATA_FILES } from "./conformance/data";
 import {
    typeWithoutDrillExpression,
@@ -140,6 +141,13 @@ source: ov is orders_raw extend {
     having: order_count > 2
   }
 
+  @PVIEW(ov_mixed_flag)
+  view: mixed_flag is {
+    group_by: region
+    aggregate: big is amount.avg() { where: region != 'west' } > 100
+    order_by: region
+  }
+
   @PVIEW(ov_null_flag)
   view: null_flag is {
     group_by: region
@@ -184,7 +192,14 @@ interface Case {
    liveIn?: ("storage" | "colocated")[];
    /** A known difference this spec does not fix, by variant, with its reason. */
    knownGap?: Partial<Record<"storage" | "colocated", string>>;
+   /** Values a column must hold among the answer's rows, so the case covers each. */
+   covers?: { column: string; values: unknown[] };
+   /** Text the view leg's decline detail must carry, by variant. */
+   declinedBecause?: Partial<Record<"storage" | "colocated", string>>;
 }
+
+/** The warning a variant that fails to compile logs; a refusal never does. */
+const DID_NOT_COMPILE = "A persisted-view variant did not compile";
 
 const CASES: Case[] = [
    { name: "measures and a dimension", malloy: "run: ov -> by_region" },
@@ -209,6 +224,11 @@ const CASES: Case[] = [
    {
       name: "a later stage that selects",
       malloy: "run: ov -> by_region -> { select: region, total }",
+   },
+   {
+      name: "a boolean measure true, false and NULL by group",
+      malloy: "run: ov -> mixed_flag",
+      covers: { column: "big", values: [true, false, null] },
    },
    {
       name: "a NULL boolean measure stays NULL",
@@ -239,6 +259,7 @@ const CASES: Case[] = [
       name: "a select: nest, whose duplicate rows a regroup would merge",
       malloy: "run: ov -> select_nest",
       liveIn: ["storage", "colocated"],
+      declinedBecause: { colocated: "it nests `lines`" },
    },
    {
       name: "a later stage counting a select: nest's rows",
@@ -250,21 +271,25 @@ const CASES: Case[] = [
       name: "a nest left empty by its where:",
       malloy: "run: ov -> empty_nest",
       liveIn: ["storage", "colocated"],
+      declinedBecause: { colocated: "it nests `north_placed`" },
    },
    {
       name: "a view nested by name and a nest in a nest",
       malloy: "run: ov -> deep",
       liveIn: ["storage", "colocated"],
+      declinedBecause: { colocated: "it nests `by_status`" },
    },
    {
       name: "a nest with its own where:",
       malloy: "run: ov -> filtered_nest",
       liveIn: ["storage", "colocated"],
+      declinedBecause: { colocated: "it nests `returned`" },
    },
    {
       name: "a nest's fields",
       malloy: "run: ov -> nested",
       liveIn: ["storage", "colocated"],
+      declinedBecause: { colocated: "it nests `by_status`" },
    },
 ];
 
@@ -300,6 +325,8 @@ for (const variant of ["storage", "colocated"] as const) {
       let fixture: LoadedFixture | undefined;
       const live = new Map<string, Outcome>();
       const served = new Map<string, Outcome>();
+      /** The warnings logged while each case was served. */
+      const warnings = new Map<string, string[]>();
 
       beforeAll(async () => {
          restore = withSwitch("cutover");
@@ -313,7 +340,19 @@ for (const variant of ["storage", "colocated"] as const) {
          }
          fixture = await loader.bind({ includeRollups: true });
          for (const c of CASES) {
-            served.set(c.name, await fixture.run("m.malloy", c.malloy));
+            const logged: string[] = [];
+            const warn = spyOn(logger, "warn").mockImplementation(((
+               message: unknown,
+            ) => {
+               logged.push(String(message));
+               return logger;
+            }) as never);
+            try {
+               served.set(c.name, await fixture.run("m.malloy", c.malloy));
+            } finally {
+               warn.mockRestore();
+            }
+            warnings.set(c.name, logged);
          }
       });
 
@@ -337,6 +376,17 @@ for (const variant of ["storage", "colocated"] as const) {
                   rowDifference(l.answer.rows, s.answer.rows),
                ).toBeUndefined();
                expect(metadata(s.answer)).toEqual(metadata(l.answer));
+               // A declined shape is a refusal with its reason, never a
+               // variant that fails to compile.
+               expect(warnings.get(c.name)).not.toContain(DID_NOT_COMPILE);
+               const because = c.declinedBecause?.[variant];
+               if (because) {
+                  expect(s.answer.viewSkip?.detail).toContain(because);
+               }
+               if (c.covers) {
+                  const held = s.answer.rows.map((r) => r[c.covers!.column]);
+                  for (const v of c.covers.values) expect(held).toContain(v);
+               }
             },
          );
       }
