@@ -79,10 +79,10 @@ no destination to resolve and nothing to do with the refusal.
 ## Operator orders_pg
 
 `nw_daily_tbl` is absent — the refused source wrote nothing. Everything else is present:
-`nw_colocated_tbl` from the instructed sibling, and `colocated_daily__p<hash>` from the
-auto-run that publishing kicked off (auto-run names a table the author did not name for
-its package; the hash is the environment's and package's, so it is masked here), both of
-which are colocated and unaffected.
+`nw_colocated_tbl` from the instructed sibling, and `nw__nw__colocated_daily__p<hash>`
+from the auto-run that publishing kicked off (auto-run names a table the author did not
+name `<pkg>__<file>__<source>__p<hash>`; the hash depends on the environment, so it is
+masked here), both of which are colocated and unaffected.
 
 Asked of the warehouse directly rather than inferred from the failure, because the refusal
 and the write are separate events: a build could refuse after having already created the
@@ -94,11 +94,11 @@ SELECT regexp_replace(table_name, '__p[0-9a-f]{8}$', '__p<hash>') AS table_name 
 
 Expect:
 
-| table_name               |
-| ------------------------ |
-| colocated_daily__p<hash> |
-| nw_colocated_tbl         |
-| nw_orders                |
+| table_name                       |
+| -------------------------------- |
+| nw__nw__colocated_daily__p<hash> |
+| nw_colocated_tbl                 |
+| nw_orders                        |
 
 ## Note
 

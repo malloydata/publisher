@@ -1500,7 +1500,7 @@ paths:
         424 refusal, or 200 with the package as it would load, its `warnings` included, plus the
         `location` it was loaded from. The 200 also carries what a publish would build and serve:
         the `buildPlan`, and `serveVerdicts`, each materialized source's serve verdict with each
-        stored source's named views compiled against a serve shape (no table is built). With package versioning on, the tree's `publisher.json`
+        stored source's named views compiled against a compile-only served copy (no table is built). With package versioning on, the tree's `publisher.json`
         must declare a valid version, as a versioned publish requires (400
         `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`), and the 200 names it as
         `versionId`. Version lifecycle checks (a version that already exists, `latest`) are not
@@ -5174,9 +5174,10 @@ components:
           type: array
           description: >-
             On a dry run, for a source stored with `storage=`: each named view
-            on it, and whether it compiles against the serve shape. A view that
-            does not is answered live, and `detail` carries the compile error
-            that says why (usually a field the shape cannot reproduce).
+            on it, and whether it compiles against a compile-only served copy. A
+            view that does not is answered live, and `detail` carries the compile
+            error that says why (usually a field the stored table cannot
+            reproduce).
           items:
             $ref: "#/components/schemas/ViewServeVerdict"
 
@@ -5896,43 +5897,76 @@ components:
                   released server. A `#@ preaggregate` rollup over a
                   `#@ persist storage=` base is planned, built and served like
                   any other rollup.
-                  `persist-unparseable`: a `#@` annotation that does not
-                  parse, so Malloy drops its source from the build and it is
-                  served live (one per annotation, `model` its file; `error`;
-                  refused at publish, while a package already published keeps
-                  loading). `persist-retired-key`: a `#@ persist` key no longer
-                  read, `sharing=`, `schedule=` or `partition=`, with what to write instead
-                  (one per key, `subject` the source; `error`; refused at
-                  publish). `persist-unknown-key`: a `#@ persist` key Publisher
-                  does not read, such as a misspelled `merge_key=` (one per
-                  key, `subject` the source; `warn`).
-                  `persist-not-materializable`: a `#@ persist` source the build
-                  walk did not recognize, served live (`subject` the source;
-                  `warn`). `persist-query-not-built`: a `#@ persist` named
-                  query that is not built, so it is answered live: the feature
-                  is off (`PUBLISHER_MATERIALIZE`), or the message says why it
-                  was refused; it names the workaround, a persisted
-                  `source: x is q` (`subject` the query; `warn`).
-                  `persist-source-refused`: a `#@ persist` source a
-                  compile-time gate refused (a row-level gate, a free
-                  parameter, a given in the persisted query, or the `storage=`
-                  gate), served live, with the gate's message (`subject` the
-                  source; `warn`). `preaggregate-not-built`: a valid
-                  `#(preaggregate)` or `#@ preaggregate` rollup a compile-time
-                  gate refused alone (a read-only dialect, a base scoped by a
-                  given, a table name another rollup holds, a row-level gate on
-                  a v1 rollup's base, or the `storage=` gate), so it is not built and its measures are served live
+                  Materialization codes follow one rule: the suffix tells the
+                  outcome. An INVALID annotation (or invalid code it covers)
+                  fails the publish and the load, on every path, so its code
+                  appears only in the load failure's message (the publish 4xx
+                  and `loadErrors`), never as a warning here:
+                  `persist-invalid`, `materialize-invalid`,
+                  `preaggregate-invalid`, `persist-view-invalid` and
+                  `persist-query-invalid` (a bad value or contradictory
+                  combination: a `storage=` that names nothing, an `@env.`
+                  reference, an unusable or reserved `name=`, an `inline=`
+                  that names no join, an incremental key on a view or query);
+                  `persist-unknown-key`, `materialize-unknown-key` and
+                  `preaggregate-unknown-key` (every route's key set is closed);
+                  `persist-retired-key` and `materialize-retired-key`
+                  (`sharing=`, `schedule=`, `partition=`);
+                  `persist-unparseable`, `materialize-unparseable` and
+                  `preaggregate-unparseable`; `persist-not-materializable` (a
+                  `#@ persist` on a shape Malloy does not plan);
+                  `preaggregate-not-a-measure`, `preaggregate-unknown-grain`
+                  and `preaggregate-not-mergeable`;
+                  `materialization-table-collision` (two sources whose
+                  `name=` puts them on one table; under
+                  `PERSIST_COLLISION_ENFORCE=false` a refusal instead); and
+                  `materialization-near-miss` (a misspelled materialization
+                  route or directive, such as `#(materialise)` or
+                  `#@ persits`). `preaggregate-malformed` is retained and no
+                  longer produced: it is `preaggregate-invalid` or
+                  `preaggregate-unparseable` now.
+                  A VALID annotation Publisher cannot build here is refused
+                  alone, answered live, while the package loads, and is
+                  severity `warn`, never `error`: `persist-not-built` (a
+                  `#@ persist` source a compile-time gate refused, a row-level
+                  gate, a free parameter, a given in the persisted query, the
+                  `storage=` gate, an incremental declaration the dialect cannot
+                  honour, or, under `PERSIST_COLLISION_ENFORCE=false`, a table
+                  another source writes; `subject` the source).
+                  `persist-source-refused` is its former name: each gate
+                  refusal (the cases it named before) is repeated under it,
+                  with the same message, for one release, then the repeat is
+                  removed; the refusals new in this release carry
+                  `persist-not-built` only.
+                  `materialize-not-built` (a valid `#(materialize)` Publisher
+                  cannot lay out or build; `subject` the source).
+                  `persist-view-not-built` and `persist-query-not-built` (a
+                  persisted view or named query that is not built: the feature
+                  is off (`PUBLISHER_MATERIALIZE`), or the message says why;
+                  `subject` the view or query). `preaggregate-not-built`: a
+                  valid `#(preaggregate)` or `#@ preaggregate` rollup a
+                  compile-time gate refused alone (a read-only dialect, a base
+                  scoped by a given, a table name another rollup holds, a
+                  row-level gate on a v1 rollup's base, or the `storage=`
+                  gate), so it is not built and its measures are served live
                   while the rest of the package loads; the message names the
                   base, the grain and the gate's reason (`subject` the base;
-                  `warn`).
+                  `warn`). The rollup sub-family keeps its own codes:
+                  `preaggregate-hidden-field`, `-access-filter`, `-time-zone`,
+                  `-current-time`, `-reads-given`, `-unreadable-measure`,
+                  `-join-level` (also a `#@ preaggregate` over a source with a
+                  fan-out join), and `-name-clash`.
+                  `materialization-storage-mode`: a `storage=` source the
+                  deployment's `PERSIST_STORAGE_MODE` (`off` or `write-only`)
+                  does not serve from storage (`subject` the source, or a
+                  rollup's base; `warn`).
                   `persist-incremental-no-merge-key`: an incremental source
                   with no `merge_key=`, so each refresh replaces its watermark
                   range (`subject` the source; `warn`).
                   `persist-incremental-shared-address`: sources that compile to
                   the same SQL on one connection, so they share one table and
                   one boundary, where at least one is incremental (one per
-                  source; `warn`). `preaggregate-hidden-field`: a `#@ preaggregate` on a
-                  private or internal field or grain dimension (`warn`).
+                  source; `warn`).
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always
@@ -8519,26 +8553,20 @@ components:
             2. It was answered from a **colocated** materialized table. The
                query never reached the routing decision, so a fully materialized
                answer reports the same null a fully live one does.
-            3. The storage transform was **ineligible** for this query, so it was
-               served live. The query DID reach the routing decision and the tier
+            3. The served copy did **not answer** this query, so it was served
+               live. The query DID reach the routing decision and the tier
                declined it — a storage-tier miss, reported identically to "no
                materialization exists anywhere."
 
             Case 3 is the one that costs time, because nothing about this field
             distinguishes it from case 1. `path`, the path report, does: it names
             the table that answered in every tier, and why each table that could
-            have answered did not. The server does log it: one
-            `storage serve-shape ineligible for this query; serving live` line at
-            INFO per routed query, carrying the compile error that made the shape
-            ineligible, plus `shapeSources` (what the shape offered) and
-            `staleSources` (bound, but withheld by the freshness gate). The
-            compile error alone does not separate those: `Reference to undefined
-            object 'x'` reads identically whether `x` carries no `#@ persist` at
-            all or is materialized and merely past its freshness window. That log
-            is currently the only per-query account of a storage-tier miss. It is not a hypothetical shape — a source
-            warehouse that folds unquoted identifiers to upper case made every
-            query on every `storage=` source in a package ineligible, and the
-            whole tier reported null for months while looking exactly like a
+            have answered did not. The server also logs one
+            `served copy cannot answer this query` line at DEBUG per declined
+            query, carrying the error that declined it. It is not hypothetical —
+            a source warehouse that folds unquoted identifiers to upper case once
+            made every query on every `storage=` source in a package miss, and
+            the whole tier reported null for months while looking exactly like a
             deployment that had never enabled it.
 
             For the colocated tier there is no per-query signal at all. The
@@ -10586,9 +10614,10 @@ components:
             copy of a model file without
             `##! experimental.persistence` did not compile, so none of its
             `#@ persist` sources were planned);
-            `persist_annotation_unparseable` (none of the source's `#@` lines
-            parse, so Malloy planned nothing for it; the package warning
-            names the line).
+            `persist_annotation_unparseable` is retained and no longer
+            produced: a `#@` line that does not parse is an invalid annotation
+            (`persist-unparseable`), which fails the publish and the load, so
+            no served plan carries it.
 
     OmittedFile:
       type: object
@@ -10680,6 +10709,7 @@ components:
               rollup_name_collision,
               empty_storage,
               table_name_collision,
+              current_time,
             ]
           description: >-
             The bounded refusal reason. Only the compile-time reasons can
@@ -10699,16 +10729,17 @@ components:
             a given, which has no read-time re-application to put the term back),
             `read_only_dialect` (a colocated `#@ persist` on a source whose
             dialect cannot create tables; SQL Server today, whose connection
-            reports `canPersist: false`), `env_reference` (a source with an
-            `@env.` reference on one of its `#@` lines, whose directives are all
-            ignored, so it serves live rather than build into the source
-            warehouse), and `rollup_name_collision` (a
+            reports `canPersist: false`), `rollup_name_collision` (a
             pre-aggregation rollup whose generated name, and so its table, is
             also another model's rollup with different content; neither builds
             or serves, and each model answers from its base), and
-            `empty_storage` (a `#@ persist` whose `storage=` names no
-            destination: written empty, `storage=""`, or as a value that is not
-            a name, such as a list; it is not built and is answered live) —
+            `current_time` (a `#@ persist` whose build reads the current
+            time, `now`: in its persisted query, a view it runs, the
+            `where:`, a field or a join of the source that query reads, or
+            the query of a query-shaped source it is built from or joins; its
+            table would hold the rows as of the build, so it is not built and
+            is answered live. `now` in the source's own extend block is
+            applied at every read and is admitted) —
             those being the only reasons the two
             compile-time eligibility asserts this collection is computed from
             produce. One more appears only in a run's
@@ -10718,7 +10749,11 @@ components:
             another source's table already takes in that run: two sources of
             one model that share a name, such as a `#@ persist` source named
             like a persisted view's generated build source beside it, or a
-            hash collision; it is not built and is answered live).
+            hash collision; it is not built and is answered live), or a
+            source whose `name=` puts it on one table with another source,
+            under `PERSIST_COLLISION_ENFORCE=false` (by default such a
+            package does not load); neither is built, so neither overwrites
+            the other, and both are answered live).
 
 
             `given_in_persisted_query` is raised by BOTH gates, for one
@@ -10740,9 +10775,13 @@ components:
             answered live. The three `partition_*` reasons
             (`partition_without_storage`, `partition_column_unknown`,
             `partition_column_not_public`) are likewise retained and no longer
-            produced: `partition=` is a retired key, refused at publish as
-            `persist-retired-key` or `materialize-retired-key`, never as a plan
-            refusal. `public_surface_unknown` is raised by the build-time
+            produced: `partition=` is a retired key, which fails the publish
+            and the load as `persist-retired-key` or `materialize-retired-key`,
+            never a plan refusal. `env_reference` and `empty_storage` are
+            likewise retained and no longer produced: an `@env.` reference on a
+            `#@` line, and a `storage=` that names no destination, are invalid
+            annotations (`persist-invalid`), which fail the publish and the
+            load, so no served plan carries them. `public_surface_unknown` is raised by the build-time
             narrowing of a stored table to the source's public columns; both
             are listed only because they share the enum the runtime
             eligibility metric uses.
@@ -10793,8 +10832,8 @@ components:
       description: >-
         One `where:` conjunct a storage build leaves out of the artifact and the
         read puts back. Its `code` is the author's verbatim expression, which is
-        what a serve shape re-emits; `givens` are the names that expression reads,
-        which is what the shape must declare for it to compile.
+        what the served copy re-emits; `givens` are the names that expression
+        reads, which the served copy must declare for it to compile.
       properties:
         code:
           type: string

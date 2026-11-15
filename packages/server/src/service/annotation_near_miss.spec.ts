@@ -15,6 +15,7 @@ import {
    authoredNotes,
 } from "./annotation_near_miss";
 import { collectAuthorizeNearMisses, misspelledGateRoute } from "./authorize";
+import { MATERIALIZATION_NEAR_MISS_CODE } from "./annotation_reader";
 import { nearMissLogMessages } from "./compile_source";
 import { withSettings } from "../test_helpers/settings_env";
 
@@ -49,10 +50,13 @@ describe("annotationNearMisses", () => {
    for (const [text, meant] of nearMisses) {
       it(`reads \`${text}\` as an attempt at \`${meant}\``, () => {
          const [finding] = scan(text);
-         expect(finding).toMatchObject({
-            code: ANNOTATION_NEAR_MISS_CODE,
-            tier: "unservable",
-         });
+         // A near miss of a materialization route fails the load; any other
+         // only warns.
+         expect(finding).toMatchObject(
+            meant.startsWith("#@ ")
+               ? { code: MATERIALIZATION_NEAR_MISS_CODE, tier: "malformed" }
+               : { code: ANNOTATION_NEAR_MISS_CODE, tier: "unservable" },
+         );
          expect(finding?.message).toContain(`did you mean \`${meant}\`?`);
          expect(finding?.rewrite).toBe(`write \`${meant}\``);
       });
@@ -79,7 +83,10 @@ describe("annotationNearMisses", () => {
          '# Persist name="t"',
       ]) {
          const [finding] = scan(text);
-         expect(finding).toMatchObject({ code: ANNOTATION_NEAR_MISS_CODE });
+         expect(finding).toMatchObject({
+            code: MATERIALIZATION_NEAR_MISS_CODE,
+            tier: "malformed",
+         });
          expect(finding?.message).toContain("`#@ persist`");
       }
       expect(scan('#@ persist name="t"')).toEqual([]);
@@ -132,7 +139,10 @@ describe("annotationNearMisses", () => {
             ['#(preagregate) grain=["a"]', "#(preaggregate)"],
          ]) {
             const [finding] = scan(text);
-            expect(finding).toMatchObject({ code: ANNOTATION_NEAR_MISS_CODE });
+            expect(finding).toMatchObject({
+               code: MATERIALIZATION_NEAR_MISS_CODE,
+               tier: "malformed",
+            });
             expect(finding?.message).toContain(`did you mean \`${meant}\`?`);
          }
          expect(scan('#(materialize) name="t"')).toEqual([]);
@@ -278,5 +288,21 @@ query: q is orders -> by_b
       const messages = nearMissLogMessages(modelDef);
       expect(messages).toHaveLength(5);
       expect(messages.every((m) => m.severity === "warn" && m.at)).toBe(true);
+   });
+
+   it("tells the editor a misspelled materialization directive is an error, the load's outcome", async () => {
+      const modelDef = await compile(
+         {
+            "m.malloy": `##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS a")
+#@persist name="t"
+source: daily is base -> { group_by: a }
+`,
+         },
+         "m.malloy",
+      );
+      expect(
+         nearMissLogMessages(modelDef).map((m) => [m.code, m.severity]),
+      ).toEqual([[MATERIALIZATION_NEAR_MISS_CODE, "error"]]);
    });
 });

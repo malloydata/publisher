@@ -1,6 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * A host-computed build manifest, fetched and split by tier
+ * ({@link fetchManifestEntries}, {@link splitManifestEntries}): colocated
+ * entries become the same-connection `tableName` substitution, `storage=`
+ * entries are kept whole for their serve bindings. Read by environment.ts when
+ * it binds a package's manifest, and by the manifest committer.
+ *
+ * Reads the manifest from a file, GCS or S3 location; logs and skips an entry
+ * that recorded a failed source or names no table. Never filters on freshness,
+ * which the serve path does per query.
+ */
+
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";

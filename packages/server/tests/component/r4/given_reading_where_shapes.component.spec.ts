@@ -33,7 +33,7 @@ import {
    loadFixture,
    type LoadedFixture,
    type Outcome,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
 const HEAD = `##! experimental { persistence givens }`;

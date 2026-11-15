@@ -11,6 +11,7 @@
  * at a seam; here it runs for real, over a plain-DuckDB file destination.
  */
 
+import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
 import { compiledTextReader } from "../../../utils";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -136,13 +137,13 @@ async function planChain(
       runtime,
       getRuntime: async () => ({ runtime, importBaseURL: base }),
    });
-   const facts = chainedPlanFacts(parts.sources, { duckdb: "digest" });
+   const facts = chainedPlanFacts(parts.tables, { duckdb: "digest" });
    return {
       dir,
-      sources: parts.sources,
+      sources: sourcesIn(parts),
       facts,
       byName(name) {
-         const hit = Object.entries(parts.sources).find(
+         const hit = Object.entries(sourcesIn(parts)).find(
             ([, s]) => s.name === name,
          );
          if (!hit) throw new Error(`no planned source ${name}`);

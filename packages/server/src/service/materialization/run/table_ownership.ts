@@ -1,33 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { PersistSource } from "@malloydata/malloy";
-import { Mutex } from "async-mutex";
-import { BadRequestError } from "../../../errors";
-import { logger } from "../../../logger";
-import type { Materialization } from "../../../storage/DatabaseInterface";
-import { errMessage } from "../../../utils";
-import { quoteTablePath } from "../../quoting";
-import type { CompiledBuildPlan } from "../plan/build_plan";
-import { deriveAnnotationFields } from "../plan/persist_source_fields";
-import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
-import {
-   OWNED_TABLE_MARK,
-   parseNameViewComment,
-   parseOwnedTableComment,
-   relationProbeSql,
-   relationProbeSupported,
-   sqlString,
-} from "./table_mark_sql";
-import {
-   atTableSite,
-   type TableSite,
-   type TableSiteContext,
-} from "./table_site";
-import type { BuildInstruction } from "../domain/types";
-
-export { OWNED_TABLE_MARK, parseOwnedTableComment };
-
 /**
  * Who owns a table an auto-run writes at a name the author chose.
  *
@@ -76,10 +49,38 @@ export { OWNED_TABLE_MARK, parseOwnedTableComment };
  * once wrote that another package has built since is no longer this
  * package's to drop.
  *
+ * The SQL of the ownership probe and mark is in warehouse_sql.ts.
+ *
  * Host-orchestrated builds are not checked: the host chooses their names.
  * Within one server only: two servers whose environments and packages have
  * the same names write the same mark.
  */
+
+import type { PersistSource } from "@malloydata/malloy";
+import { Mutex } from "async-mutex";
+import { BadRequestError } from "../../../errors";
+import { logger } from "../../../logger";
+import type { Materialization } from "../../../storage/DatabaseInterface";
+import { errMessage } from "../../../utils";
+import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
+import { deriveAnnotationFields } from "../plan/persist_source_fields";
+import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
+import { capabilitiesOf } from "../domain/dialect";
+import { hasReservedTableSuffix } from "../domain/table_name";
+import {
+   OWNED_TABLE_MARK,
+   parseNameViewComment,
+   parseOwnedTableComment,
+} from "./table_mark_sql";
+import { ownedTableProbeSql, tableCommentSql } from "./warehouse_sql";
+import {
+   atTableSite,
+   type TableSite,
+   type TableSiteContext,
+} from "./table_site";
+import type { BuildInstruction } from "../domain/types";
+
+export { parseOwnedTableComment };
 
 /** The code of a build refused because another holds its `name=`. */
 export const TABLE_OWNED_ELSEWHERE = "table-owned-elsewhere";
@@ -99,25 +100,6 @@ export class TableOwnershipError extends BadRequestError {
    ) {
       super(message);
    }
-}
-
-/**
- * The table-segment endings Publisher gives the names it chooses: every
- * readable name (`__p<8 hex>`, domain/table_name.ts, a `scope: version`
- * one's included), and the names from before readable names, a package's
- * own (`__p<8 hex>`) and a version's own (`__v<version>_<8 hex>`), which
- * tables built then still carry until their next build. Those tables carry no mark
- * and are built without a probe, since no other package's name ends that
- * way. An author's `name=` spelled with one could be another package's
- * default name, which that package would then build over (and the other way
- * round), so it is refused. Case-insensitive, as DuckDB, MySQL and SQL
- * Server resolve names.
- */
-const RESERVED_TABLE_SUFFIX = /__(?:p[0-9a-f]{8}|v[a-z0-9_]*_[0-9a-f]{8})$/i;
-
-/** Whether `name`'s table segment ends the way Publisher's own names do. */
-export function hasReservedTableSuffix(name: string): boolean {
-   return RESERVED_TABLE_SUFFIX.test(name.slice(name.lastIndexOf(".") + 1));
 }
 
 /**
@@ -164,11 +146,12 @@ export async function acquireOwnedNameLock(
  * table that defaults to its source's name are Publisher's.
  */
 export function hasAuthorTableName(
-   compiled: Pick<CompiledBuildPlan, "preaggregatePlans" | "materializePlans">,
+   compiled: Pick<CompiledBuildPlan, "tables">,
    persistSource: PersistSource,
 ): boolean {
-   if (compiled.preaggregatePlans?.[persistSource.sourceID]) return false;
-   const materialize = compiled.materializePlans?.[persistSource.sourceID];
+   const table = compiled.tables[persistSource.sourceID];
+   if (table?.rollup) return false;
+   const materialize = table?.materialize;
    if (materialize) return !materialize.nameDefaulted;
    return !!deriveAnnotationFields(persistSource).name;
 }
@@ -185,51 +168,7 @@ export function ownedTableComment(owner: string): string {
 
 /** The dialects whose tables' holders can be read (and marked). */
 function tableOwnershipDialectSupported(dialect: string): boolean {
-   return (
-      relationProbeSupported(dialect) ||
-      dialect === "mysql" ||
-      dialect === "presto"
-   );
-}
-
-/**
- * A query answering what holds the name `segments` names: one row per
- * relation, with `kind` (`VIEW`, or anything else for a table) and `comment`.
- * The shared probe (table_mark_sql.ts), plus MySQL, and Presto with no
- * comments (a Presto table is never read as marked, only as this package's
- * by its records).
- */
-export function ownedTableProbeSql(
-   segments: string[],
-   dialect: string,
-): string {
-   const lit = (v: string) => sqlString(v, dialect);
-   const name = segments[segments.length - 1];
-   if (dialect === "mysql") {
-      const schema =
-         segments.length > 1
-            ? lit(segments[segments.length - 2])
-            : "DATABASE()";
-      return (
-         `SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES ` +
-         `WHERE TABLE_SCHEMA = ${schema} AND TABLE_NAME = ${lit(name)}`
-      );
-   }
-   if (dialect === "presto") {
-      const schema =
-         segments.length > 1
-            ? `lower(${lit(segments[segments.length - 2])})`
-            : "current_schema";
-      const from =
-         segments.length === 3
-            ? `${quoteTablePath(segments[0], dialect)}.information_schema.tables`
-            : "information_schema.tables";
-      return (
-         `SELECT table_type AS kind, CAST(NULL AS varchar) AS comment FROM ${from} ` +
-         `WHERE table_schema = ${schema} AND table_name = lower(${lit(name)})`
-      );
-   }
-   return relationProbeSql(segments, dialect);
+   return capabilitiesOf(dialect).tableOwnership;
 }
 
 /** The DDL that marks the table `segments` names as `owner`'s. */
@@ -238,35 +177,7 @@ export function ownedTableMarkSql(
    owner: string,
    dialect: string,
 ): string {
-   const table = quoteTablePath(segments.join("."), dialect);
-   const comment = sqlString(ownedTableComment(owner), dialect);
-   switch (dialect) {
-      case "standardsql":
-         return `ALTER TABLE ${table} SET OPTIONS(description = ${comment})`;
-      case "mysql":
-         return `ALTER TABLE ${table} COMMENT = ${comment}`;
-      case "sqlserver": {
-         const schema =
-            segments.length === 2
-               ? sqlString(segments[0], dialect)
-               : "SCHEMA_NAME()";
-         const name = sqlString(segments[segments.length - 1], dialect);
-         const property =
-            `@name = N'MS_Description', @value = ${comment}, @level0type = N'SCHEMA', ` +
-            `@level0name = @schema, @level1type = N'TABLE', @level1name = ${name}`;
-         return [
-            `DECLARE @schema sysname = ${schema};`,
-            `IF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 ` +
-               `AND major_id = OBJECT_ID(${sqlString(table, dialect)}) AND minor_id = 0 ` +
-               `AND name = N'MS_Description')`,
-            `   EXEC sys.sp_updateextendedproperty ${property};`,
-            "ELSE",
-            `   EXEC sys.sp_addextendedproperty ${property};`,
-         ].join("\n");
-      }
-      default:
-         return `COMMENT ON TABLE ${table} IS ${comment}`;
-   }
+   return tableCommentSql(segments, ownedTableComment(owner), dialect);
 }
 
 /** What holds a table's name, as `owner` sees it. */
@@ -492,7 +403,7 @@ export async function ownedElsewhere(
          if (marked !== undefined && marked !== owner) return marked;
       }
    } catch {
-      // Unknown: the caller drops as before.
+      // Unknown: the caller drops.
    }
    return undefined;
 }

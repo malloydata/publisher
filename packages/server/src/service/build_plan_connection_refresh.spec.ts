@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   sourcesIn,
+   targetsIn,
+} from "../test_helpers/materialization_test_fixtures";
+import {
    afterEach,
    beforeEach,
    describe,
@@ -166,11 +170,11 @@ function planned(pkg: Package): string[] {
 /** The addresses a run computes: a fresh compile with the connections as they are now. */
 async function compiled(pkg: Package): Promise<string[]> {
    const plan = await compilePackageBuildPlan(pkg);
-   return Object.values(plan.sources).map((s) =>
+   return Object.values(sourcesIn(plan)).map((s) =>
       computeSourceEntityId(
          s,
          plan.connectionDigests,
-         plan.targets?.[s.sourceID],
+         targetsIn(plan)?.[s.sourceID],
       ),
    );
 }
@@ -289,6 +293,53 @@ describe("re-deriving after a connection edit", () => {
          })
          .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(BuildPlanUnavailableError);
+   });
+
+   it("a re-derivation over files carrying an invalid annotation fails: no run builds what the load refuses", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      const [before] = planned(v1);
+      v1.markBuildPlanStale();
+      const derived = await (
+         v1 as unknown as {
+            materialization: {
+               refreshBuildPlan(d: () => Promise<unknown>): Promise<boolean>;
+            };
+         }
+      ).materialization.refreshBuildPlan(async () => ({
+         ok: true,
+         durationMs: 0,
+         digestSkipped: [],
+         eligibilityRefused: {},
+         outcome: {
+            annotationFindings: [
+               {
+                  route: "@",
+                  tier: "malformed",
+                  code: "persist-unknown-key",
+                  message: '#@ persist source "s": `nmae=` is not a key',
+                  model: "m.malloy",
+               },
+            ],
+         },
+      }));
+      expect(derived).toBe(false);
+      expect(v1.isBuildPlanUnavailable()).toBe(true);
+      const err = await serviceOver(env)
+         .createMaterialization("testEnv", PKG, {
+            buildInstructions: [instruction(before)],
+         })
+         .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BuildPlanUnavailableError);
+   });
+
+   it("a re-derivation of a package that serves an older model than its files fails", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      v1.markBuildPlanStale();
+      const derived = await v1.refreshBuildPlan({ isStale: () => true });
+      expect(derived).toBe(false);
+      expect(v1.isBuildPlanUnavailable()).toBe(true);
    });
 
    it("run creation waits for the re-derivation and validates against the new plan, end to end", async () => {

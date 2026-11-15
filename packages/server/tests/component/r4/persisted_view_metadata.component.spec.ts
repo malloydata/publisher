@@ -39,7 +39,7 @@ import {
    loadFixture,
    type Outcome,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, type Shape } from "./conformance/shapes";
 import { rowDifference } from "./harness";
 

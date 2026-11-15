@@ -7,10 +7,15 @@
  * built, warned `persist-query-not-built`, and answered live) and on.
  */
 
+import {
+   modelPathsIn,
+   sourcesIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+import { buildKindOf } from "../run/run_telemetry";
 import { PERSIST_QUERY_NOT_BUILT } from "./persisted_query";
 
 const TABLE = `duckdb.sql("""
@@ -60,7 +65,7 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE off", () => {
       const c = await compiled(
          `${BASE}#@ persist name="nq_tbl"\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
       );
-      expect(Object.keys(c.sources)).toEqual([]);
+      expect(Object.keys(sourcesIn(c))).toEqual([]);
       const finding = (c.annotationFindings ?? []).find(
          (f) => f.code === PERSIST_QUERY_NOT_BUILT,
       );
@@ -108,7 +113,9 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE off", () => {
       const c = await compiled(
          `##! experimental.persistence\n${BASE}query: q is base -> { group_by: carrier; aggregate: n }\n#@ persist name="q_tbl"\nsource: q_result is q\n`,
       );
-      expect(Object.values(c.sources).map((s) => s.name)).toEqual(["q_result"]);
+      expect(Object.values(sourcesIn(c)).map((s) => s.name)).toEqual([
+         "q_result",
+      ]);
       expect(codes(c)).not.toContain(PERSIST_QUERY_NOT_BUILT);
    });
 });
@@ -120,7 +127,7 @@ const UNGATED = `${GIVENS}source: ops is ${TABLE} extend { measure: n is count()
 
 /** The build sources a package plans, by name. */
 function built(c: Awaited<ReturnType<typeof compiled>>): string[] {
-   return Object.values(c.sources)
+   return Object.values(sourcesIn(c))
       .map((s) => s.name)
       .sort();
 }
@@ -139,12 +146,15 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
       const c = await compiled(
          `${BASE}#@ persist name="nq_tbl"\nquery: q is base -> { group_by: carrier; aggregate: n; order_by: n desc; limit: 1 }\n`,
       );
-      const sources = Object.entries(c.sources);
+      const sources = Object.entries(sourcesIn(c));
       expect(sources.map(([, s]) => s.name)).toEqual(["q__query"]);
       const [id, source] = sources[0];
       expect(id).toMatch(/^q__query@.*m\.malloy\.persist-view\.malloy$/);
       // The stored rows are exactly `run: q`'s: its ordering and limit kept.
       expect(source.getSQL()).toContain("LIMIT 1");
+      // Planned, and so built and counted, as a persisted view's table.
+      expect(c.tables[id].kind).toBe("view");
+      expect(buildKindOf(c, id)).toBe("view");
       expect(notBuilt(c)).toEqual([]);
       expect(c.droppedPersistSources ?? []).toEqual([]);
    });
@@ -169,7 +179,7 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
          "b.malloy": `import "a.malloy"\nquery: q2 is q -> { select: * }\n`,
       });
       expect(built(c)).toEqual(["q__query"]);
-      expect(Object.values(c.sourceModelPaths ?? {})).toEqual(["a.malloy"]);
+      expect(Object.values(modelPathsIn(c) ?? {})).toEqual(["a.malloy"]);
    });
 
    // Each refusal beside the twin it is built as, so the check named is the
@@ -191,6 +201,18 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
          name: "a query that reads the current time",
          refused: `source: base is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") extend { measure: c is count() }\n#@ persist\nquery: q is base -> { where: ts > now - 30 days; aggregate: c }\n`,
          twin: `source: base is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") extend { measure: c is count() }\n#@ persist\nquery: q is base -> { where: ts > @2025-01-01; aggregate: c }\n`,
+         reason: "current time",
+      },
+      {
+         name: "a query whose select: * reads a current-time dimension",
+         refused: `source: base is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") extend { dimension: past is ts < now }\n#@ persist\nquery: q is base -> { select: * }\n`,
+         twin: `source: base is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") extend { dimension: past is ts < @2025-01-01 }\n#@ persist\nquery: q is base -> { select: * }\n`,
+         reason: "current time",
+      },
+      {
+         name: "a query over a query-shaped source whose query reads the current time",
+         refused: `source: qb is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") -> { where: ts > now - 30 days; select: * } extend { measure: c is count() }\n#@ persist\nquery: q is qb -> { group_by: n; aggregate: c }\n`,
+         twin: `source: qb is duckdb.sql("select 1 as n, timestamp '2026-01-01' as ts") -> { where: ts > @2025-01-01; select: * } extend { measure: c is count() }\n#@ persist\nquery: q is qb -> { group_by: n; aggregate: c }\n`,
          reason: "current time",
       },
       {
@@ -267,18 +289,6 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
          reason: "nests",
       },
       {
-         name: "an @env. reference on the line",
-         refused: `${BASE}#@ persist name=@env.TBL\nquery: q is base -> { group_by: carrier }\n`,
-         twin: `${BASE}#@ persist name="tbl"\nquery: q is base -> { group_by: carrier }\n`,
-         reason: "@env.",
-      },
-      {
-         name: "an incremental key",
-         refused: `${BASE}#@ persist watermark=id\nquery: q is base -> { group_by: carrier }\n`,
-         twin: `${BASE}#@ persist\nquery: q is base -> { group_by: carrier }\n`,
-         reason: "incremental key",
-      },
-      {
          name: "a generated name another source already has",
          refused: `${BASE}source: q__query is base\n#@ persist\nquery: q is base -> { group_by: carrier }\n`,
          twin: `${BASE}source: q__other is base\n#@ persist\nquery: q is base -> { group_by: carrier }\n`,
@@ -301,6 +311,28 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
          expect(notBuilt(twin)).toEqual([]);
       });
    }
+
+   it.each([
+      ["an @env. reference on the line", "#@ persist name=@env.TBL", "@env."],
+      ["an incremental key", "#@ persist watermark=id", "incremental key"],
+      ["an empty storage=", '#@ persist storage=""', "names no destination"],
+      ["a line that does not parse", '#@ persist name="tbl', "does not parse"],
+   ])(
+      "finds %s invalid, which fails the load, and plans nothing",
+      async (_case, line, reason) => {
+         enable(true);
+         const c = await compiled(
+            `${BASE}${line}\nquery: q is base -> { group_by: carrier }\n`,
+         );
+         expect(built(c)).not.toContain("q__query");
+         expect(notBuilt(c)).toEqual([]);
+         const invalid = (c.annotationFindings ?? []).filter(
+            (f) => f.tier === "malformed",
+         );
+         expect(invalid.map((f) => f.code)).toEqual(["persist-query-invalid"]);
+         expect(invalid[0].message).toContain(reason);
+      },
+   );
 
    it("builds a query over an ungated source declared in another file", async () => {
       const c = await compiledFiles({

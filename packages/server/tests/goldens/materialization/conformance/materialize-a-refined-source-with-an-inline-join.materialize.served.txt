@@ -22,10 +22,11 @@ import "raw.malloy"
 #(materialize) storage="lake"
 source: enriched is __served_copy_alias_of_lake.virtual('58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909')::enriched__served extend {
   internal rename:
+    order_month__stored is order_month
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
-    order_month__stored is order_month
   dimension:
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
@@ -65,10 +66,11 @@ import "raw.malloy"
 #(materialize) storage="lake"
 source: enriched is __served_copy_alias_of_lake.virtual('58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909')::enriched__served extend {
   internal rename:
+    order_month__stored is order_month
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
-    order_month__stored is order_month
   dimension:
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"

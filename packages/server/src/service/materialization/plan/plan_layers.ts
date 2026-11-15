@@ -4,8 +4,7 @@
 /**
  * The layered settings a persist source's plan entry resolves: freshness and
  * query metadata, each read from the source's tag, its model's tags and the
- * package's materialization config, most specific first. Split out of
- * build_plan.ts; behaviour unchanged.
+ * package's materialization config, most specific first.
  */
 
 import type { PersistSource } from "@malloydata/malloy";

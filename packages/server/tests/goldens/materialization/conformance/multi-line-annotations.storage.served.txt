@@ -20,7 +20,7 @@ import "raw.malloy"
 #@ persist name="annotated" storage="lake"
 # dashboard
 source: annotated is __served_copy_alias_of_lake.virtual('e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924')::annotated__served extend {
-  internal rename:
+  private rename:
     order_month__stored is order_month
   dimension:
     order_month is order_month__stored.month

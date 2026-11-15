@@ -1,6 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * What one instructed run reads and records ({@link InstructedRun}): its fixed
+ * inputs and the per-source outcomes its build loop accumulates. Also the
+ * instruction lookup ({@link indexInstructions}, {@link resolveInstruction}),
+ * the refusals made before anything is written
+ * ({@link assertNoTableCollisions}, {@link assertInstructedDestinationWritable}),
+ * and {@link recordInstructedBuildFailure}. Read by the materialization
+ * service, the instructed build and run instructions.
+ *
+ * Writes nothing outside the run object; logs and counts instructions that
+ * give one content address two tables, and logs two definitions on one table.
+ * The checks throw before any table is touched.
+ */
+
 import type { Manifest, PersistSource } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -29,11 +43,11 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets } from "../../../pg_helpers";
+import { computeSourceEntityId } from "../plan/build_plan";
 import {
-   computeSourceEntityId,
    sourcesInBuildOrder,
    type CompiledBuildPlan,
-} from "../plan/build_plan";
+} from "../domain/compiled_build_plan";
 import type { IncrementalRunContext } from "./incremental_build";
 import {
    classifySourceFailure,
@@ -42,13 +56,14 @@ import {
 } from "./build_failure_class";
 import {
    declaredStorage,
-   physicalTargetKey,
    redactConnectionSecrets,
    type BuildEnvironment,
    type BuildQueryMetadata,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
 import type { UniquenessLedger } from "./inline_uniqueness";
+import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
 
 /** The eligibility gate a source was cleared by. */
@@ -88,7 +103,7 @@ export interface InstructedRun {
    failedReasons: string[];
    refusals: MaterializationEligibilityError[];
    /**
-    * Refusals not yet recorded against their address (ms2data/service#7078).
+    * Refusals not yet recorded against their address.
     * A refused source can share its content address with an eligible sibling
     * (a base and its `extend`); the refusal is decided after the loop, so it
     * fails the address only when no sibling built it, whatever the order.
@@ -273,17 +288,20 @@ export function resolveInstruction(
  */
 export function assertNoTableCollisions(
    builds: CompiledBuildPlan["builds"],
-   sources: CompiledBuildPlan["sources"],
+   tables: CompiledBuildPlan["tables"],
    connectionDigests: CompiledBuildPlan["connectionDigests"],
    index: InstructionIndex,
 ): void {
+   // Keyed by the table segment on its connection or destination: `main.t`
+   // and `t` may be one table, as the plan's collision check reads them
+   // (tableNamesMeet).
    const claimedBy = new Map<
       string,
-      { sourceName: string; sourceEntityId: string }
+      { sourceName: string; sourceEntityId: string; table: string }[]
    >();
    const collisions: { first: string; second: string; table: string }[] = [];
    for (const build of builds) {
-      for (const persistSource of sourcesInBuildOrder(build, sources)) {
+      for (const persistSource of sourcesInBuildOrder(build, tables)) {
          let address: string;
          try {
             address = computeSourceEntityId(persistSource, connectionDigests);
@@ -297,22 +315,37 @@ export function assertNoTableCollisions(
             index.bySourceID.get(persistSource.sourceID) ??
             index.bySourceEntityId.get(address);
          if (!instruction) continue;
-         // Must be the same key as the build loop's write guard, or this
-         // pre-pass and the guard disagree on what a collision is.
-         const target = physicalTargetKey(instruction, build.connectionName);
-         const claim = claimedBy.get(target);
-         if (!claim) {
-            claimedBy.set(target, {
-               sourceName: persistSource.name,
-               sourceEntityId: address,
-            });
-         } else if (claim.sourceEntityId !== address) {
+         // Compared as the plan compares them: folded where the
+         // destination folds table names to one case.
+         const table = tableNamesFoldCase(
+            persistSource.dialectName,
+            !!instruction.destination,
+         )
+            ? instruction.physicalTableName.toLowerCase()
+            : instruction.physicalTableName;
+         const target = JSON.stringify([
+            instruction.destination ? "destination" : "connection",
+            instruction.destination ?? build.connectionName,
+            tableNameParts(table).leaf,
+         ]);
+         const claims = claimedBy.get(target) ?? [];
+         const other = claims.find(
+            (c) =>
+               c.sourceEntityId !== address && tableNamesMeet(c.table, table),
+         );
+         if (other) {
             collisions.push({
-               first: claim.sourceName,
+               first: other.sourceName,
                second: persistSource.name,
                table: instruction.physicalTableName,
             });
          }
+         claims.push({
+            sourceName: persistSource.name,
+            sourceEntityId: address,
+            table,
+         });
+         claimedBy.set(target, claims);
       }
    }
    for (const c of collisions) {
@@ -378,7 +411,7 @@ export function assertInstructedDestinationWritable(
       // synthesized, so it is named by its base and grain, which the author
       // wrote. The grain renders as a set: the wire plan sorts and dedupes
       // dimensions, so quoting it would misrepresent the author's order.
-      const rollup = compiled.preaggregatePlans?.[persistSource.sourceID];
+      const rollup = compiled.tables[persistSource.sourceID]?.rollup;
       throw new BadRequestError(
          (rollup
             ? `Measures of \`${rollup.baseSourceName}\` ` +

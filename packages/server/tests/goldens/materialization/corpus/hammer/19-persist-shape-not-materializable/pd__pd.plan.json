@@ -6,7 +6,16 @@
     }
   ],
   "internal": {
-    "annotationFindings": [],
+    "annotationFindings": [
+      {
+        "code": "persist-not-materializable",
+        "message": "#@ persist source \"high_value\" is not a source Malloy can materialize: only a query or aggregate source builds, and a filtered pass-through, a table with only added fields, or an unbound parameterized source does not. Persist a query source over it, invoke a parameterized source with a bound argument, or remove the annotation",
+        "model": "pd.malloy",
+        "route": "@",
+        "subject": "high_value",
+        "tier": "malformed"
+      }
+    ],
     "builds": [],
     "droppedPersistSources": [
       {
@@ -14,6 +23,7 @@
         "name": "high_value"
       }
     ],
+    "kinds": {},
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {},

@@ -15,6 +15,7 @@ import { BuildInstruction } from "../domain/types";
 import {
    compiledWith,
    fakeSource,
+   persistTables,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
 import { logger } from "../../../logger";
@@ -70,7 +71,7 @@ describe("executeInstructedBuild", () => {
          getEnvironmentPath: () => "/tmp/env",
       };
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             executeInstructedBuild: (
                c: unknown,
                env: unknown,
@@ -153,7 +154,7 @@ describe("executeInstructedBuild", () => {
       });
       const compiled = {
          builds: [{ connectionName: "duckdb", order: ["only"], dependsOn: {} }],
-         sources: { only },
+         tables: persistTables({ only }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -228,7 +229,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -302,20 +303,24 @@ describe("executeInstructedBuild", () => {
                dependsOn: {},
             },
          ],
-         sources: { orders, orders__preagg__category: rollup },
+         tables: {
+            ...persistTables({ orders }),
+            orders__preagg__category: {
+               kind: "rollup" as const,
+               source: rollup,
+               rollup: {
+                  variant: true,
+                  baseSourceName: "orders",
+                  baseSourceID: "orders",
+                  grainDimensions: ["category"],
+                  measures: [],
+               },
+            },
+         },
          connectionDigests: { duckdb: "dig" },
          connections: new Map([
             ["duckdb", { runSQL } as unknown as MalloyConnection],
          ]),
-         preaggregatePlans: {
-            orders__preagg__category: {
-               variant: true,
-               baseSourceName: "orders",
-               baseSourceID: "orders",
-               grainDimensions: ["category"],
-               measures: [],
-            },
-         },
       };
       // Only the rollup instructed, with no destination: refused for that,
       // as a storage rollup over any base is, so the run has nothing to build.
@@ -387,7 +392,7 @@ describe("executeInstructedBuild", () => {
                   dependsOn: { down: ["up"] },
                },
             ],
-            sources: { ok, up, down },
+            tables: persistTables({ ok, up, down }),
             connectionDigests: { duckdb: "dig" },
             connections: new Map([["duckdb", connection]]),
          };
@@ -442,7 +447,7 @@ describe("executeInstructedBuild", () => {
                builds: [
                   { connectionName: "duckdb", order: ["only"], dependsOn: {} },
                ],
-               sources: { only },
+               tables: persistTables({ only }),
                connectionDigests: { duckdb: "dig" },
                connections: new Map([
                   ["duckdb", { runSQL } as unknown as MalloyConnection],
@@ -528,7 +533,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -599,7 +604,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -657,7 +662,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -785,7 +790,7 @@ describe("executeInstructedBuild", () => {
       });
       const compiled = {
          builds: [{ connectionName: "duckdb", order: ["only"], dependsOn: {} }],
-         sources: { only },
+         tables: persistTables({ only }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -822,7 +827,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["mid", "root"], dependsOn: {} },
          ],
-         sources: { root, mid },
+         tables: persistTables({ root, mid }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -888,7 +893,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["base", "ext"], dependsOn: {} },
          ],
-         sources: { base, ext },
+         tables: persistTables({ base, ext }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -937,7 +942,7 @@ describe("executeInstructedBuild", () => {
             { connectionName: "duckdb", order: ["shared"], dependsOn: {} },
             { connectionName: "postgres", order: ["shared"], dependsOn: {} },
          ],
-         sources: { shared },
+         tables: persistTables({ shared }),
          connectionDigests: { duckdb: "dig", postgres: "dig2" },
          connections: new Map([
             ["duckdb", { runSQL: runDuck } as unknown as MalloyConnection],
@@ -979,7 +984,7 @@ describe("executeInstructedBuild", () => {
       };
       const compiled = {
          builds: [build, build],
-         sources: { shared },
+         tables: persistTables({ shared }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -1008,7 +1013,10 @@ describe("executeInstructedBuild", () => {
     * than the model declares, which is the case `persistenceCollisionWarnings`
     * cannot see at load.
     */
-   function collidingBuild(runSQL: sinon.SinonStub) {
+   function collidingBuild(
+      runSQL: sinon.SinonStub,
+      names: [string, string] = ["rollup", "rollup"],
+   ) {
       const connection = { runSQL } as unknown as MalloyConnection;
       const a = fakeSource({
          name: "a",
@@ -1030,13 +1038,13 @@ describe("executeInstructedBuild", () => {
             {
                sourceEntityId: "baaaaaaaaaaaaaa",
                materializedTableId: "mt-a",
-               physicalTableName: "rollup",
+               physicalTableName: names[0],
                realization: "COPY",
             },
             {
                sourceEntityId: "bbbbbbbbbbbbbbb",
                materializedTableId: "mt-b",
-               physicalTableName: "rollup",
+               physicalTableName: names[1],
                realization: "COPY",
             },
          ],
@@ -1071,6 +1079,30 @@ describe("executeInstructedBuild", () => {
          restore();
          warn.restore();
       }
+   });
+
+   it.each([[["main.rollup", "rollup"]], [["rollup", "main.rollup"]]] as [
+      [string, string],
+   ][])(
+      "refuses two definitions on %p: a name with the default schema and one without it are one table",
+      async (names) => {
+         const runSQL = sinon.stub().resolves();
+         const err = await collidingBuild(runSQL, names).catch(
+            (e: unknown) => e,
+         );
+         expect(String((err as Error)?.message)).toContain(
+            "both materialize into table",
+         );
+         expect(createsFrom(runSQL)).toEqual([]);
+      },
+   );
+
+   it("builds two definitions in two named schemas, which are two tables", async () => {
+      const runSQL = sinon.stub().resolves();
+      await collidingBuild(runSQL, ["s1.rollup", "s2.rollup"]);
+      expect(
+         createsFrom(runSQL).filter((s) => s.includes("rollup")),
+      ).toHaveLength(2);
    });
 
    it("builds only the last of several same-address instructions with no sourceID", async () => {
@@ -2071,7 +2103,7 @@ describe("executeInstructedBuild", () => {
             },
             getEnvironmentPath: () => "/tmp/env",
          };
-         const service = ctx.service as unknown as {
+         const service = ctx.service.collaborators as unknown as {
             executeInstructedBuild: (
                ...args: unknown[]
             ) => Promise<ExecuteResult & { refusalsInFailures: number }>;

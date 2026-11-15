@@ -1,14 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * An error reduced to a code a log may carry ({@link errorCodeOf}): never the
+ * error's message, which can quote SQL or a value. Read by the tier
+ * strategies, incremental apply, the build session, the run lifecycle and
+ * run telemetry.
+ *
+ * A leaf module, so a strategy or the build session can reduce an error without
+ * importing run_telemetry.ts, which imports them.
+ */
+
 import { causeChain } from "../../../driver_errors";
 import {
    ChainedShapeNotCarriedError,
    MaterializationEligibilityError,
 } from "../../../errors";
-
-// A leaf module, so a strategy or the build session can reduce an error to a
-// log code without importing run_telemetry, which imports them.
 
 // A code is a short identifier; anything else (a message, a path) is dropped.
 const CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;

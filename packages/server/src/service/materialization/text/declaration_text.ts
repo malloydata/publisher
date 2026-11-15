@@ -42,8 +42,8 @@ export function declarationSpans(
    options: {
       /**
        * Walk back over trailing `include { … }` blocks too, so the run is
-       * everything after the base (a v1 query-shaped source's re-root under
-       * the cutover keeps its author's `include`, review F3).
+       * everything after the base (a v1 query-shaped source's re-root keeps
+       * its author's `include`).
        */
       throughIncludes?: boolean;
    } = {},
@@ -617,7 +617,7 @@ export function hiddenIncludeNames(run: string): string[] | undefined {
  * top-level block's own statement that `removable` accepts, and an `except:`
  * statement left with no item. For a
  * stored table that never held an excluded column (a v1 `storage=` table
- * stores public columns only), `except: region` names nothing the re-rooted
+ * does not store one), `except: region` names nothing the re-rooted
  * source has, which Malloy refuses; with nothing to exclude, deleting it
  * leaves the surface as it was. An item whose name appears anywhere else in
  * the text (a field the text itself defines) is kept: it may hide something.

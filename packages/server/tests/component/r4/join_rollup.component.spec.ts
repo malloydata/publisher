@@ -367,7 +367,7 @@ describe("R4: join-to-rollup (A7), a joined source's colocated rollup, equal to 
 
 /**
  * Row 27: a joined source's rollup with a fan-out grain dimension (A6) or a
- * join-level measure (A2), read through the join under the base leg's rule.
+ * join-level measure (A2), read through the join under the base branch's rule.
  * Segment 10 has two line kinds (the fan-out), segments 11, 13 and 15 have no
  * lines, segment 14's one line has no kind and segment 16's no qty; flight 4
  * has no segments. Kinds `p` and `q` are each reached from several flights,

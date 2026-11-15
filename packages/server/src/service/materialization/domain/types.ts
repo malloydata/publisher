@@ -56,9 +56,10 @@ export type SourceFailure = components["schemas"]["SourceFailure"];
 export type RefusedSource = components["schemas"]["RefusedSource"];
 
 /**
- * Whether a manifest entry records a FAILED source, in the deprecated shape.
+ * Whether a run manifest entry records a FAILED source, in the deprecated
+ * shape.
  *
- * Manifests at rest (in `publisher.db` and bound manifest files) may hold a
+ * Run manifests at rest (in `publisher.db` and bound manifest files) may hold a
  * failed source INTO `entries`, and this build still mirrors failures there.
  * Its `physicalTableName` names a table the build never created; with stable
  * auto-run names (`selfAssignTableName`) that is the PREVIOUS generation's real
@@ -104,7 +105,7 @@ export interface BuildManifest {
 export interface FreshnessAwareManifestEntry {
    tableName: string;
    /**
-    * The connection the physical table lives on, carried from the wire
+    * The connection the physical table lives on, carried from the run
     * manifest so the bind step can quote `tableName` for that connection's
     * dialect (see Package.quoteBoundTableNames). Absent on entries whose
     * producer didn't record it; those bind verbatim.
@@ -115,8 +116,8 @@ export interface FreshnessAwareManifestEntry {
    freshnessFallback?: "live" | "stale_ok" | "fail";
    /**
     * The colocated table's columns as its build captured them (the wire
-    * entry's `schema`), in DuckDB's spelling; absent for a table built
-    * before the v1 cutover captured one. The served copy binds a v1 colocated
+    * entry's `schema`), in DuckDB's spelling; absent for a table whose
+    * build captured none. The served copy binds a v1 colocated
     * table with it (colocated_bindings.ts).
     */
    schema?: { name: string; type: string }[];
@@ -143,7 +144,7 @@ export interface KeyUniqueness {
    /**
     * Each query source's primary key check the rollup's build ran, by the
     * source's sourceID: true when its key was held once per row and never
-    * NULL. The join-to-rollup leg reads a join read as a join_many only for a
+    * NULL. The join-to-rollup branch reads a join read as a join_many only for a
     * source known true here.
     */
    parentKeys?: Record<string, boolean>;

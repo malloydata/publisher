@@ -28,7 +28,7 @@ source: orders_ny is orders_raw extend {
 
 #@ persist name="inherits_zone"
 source: inherits_zone is duckdb.virtual('2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306')::inherits_zone__served extend { timezone: 'America/New_York' } extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -41,7 +41,7 @@ source: inherits_zone is duckdb.virtual('2ea58d1747888cfe4c616813579a380b00f03d1
 
 #@ persist name="sets_zone"
 source: sets_zone is duckdb.virtual('3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a')::sets_zone__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"BIGINT"

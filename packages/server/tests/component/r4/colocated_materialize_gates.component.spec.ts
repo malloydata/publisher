@@ -23,7 +23,8 @@
  *   re-applied gate makes the per-caller check fail.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { QueryMaterializer } from "@malloydata/malloy";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
@@ -31,7 +32,7 @@ import {
    type LoadedFixture,
    loadFixture,
    type Outcome,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference, type Row } from "./harness";
 
 // Each materialized source selects its own columns, so no two share a
@@ -497,4 +498,140 @@ describe("the same package with the gated-sources switch on, as before", () => {
          await freshLoadPool();
       }
    }, 120_000);
+});
+
+describe("a served answer that names a storage= table beside a colocated one, spelled another way (G3, gated sources off)", () => {
+   // A gated colocated table and an ungated storage= table, both bound in
+   // the served copy. G3 admits an answer past the gate only when every
+   // table it reads is colocated.
+   const MIXED = `##! experimental { givens }
+import "raw.malloy"
+
+given: REGIONS :: string[]
+
+#(materialize) name="g3w_cust" storage="lake"
+source: cust_sto is customers_raw -> { select: id, segment } extend {
+  primary_key: id
+}
+
+#(access_filter) region in $REGIONS
+#(materialize) name="g3w_gated"
+source: gated_mix is orders_raw -> {
+  select: id, customer_id, region, amount
+} extend {
+  join_one: c is cust_sto on c.id = customer_id
+  measure: n is count()
+}
+`;
+   const CALLER: Givens = { REGIONS: ["north"] };
+   const QUERY = "run: gated_mix -> { group_by: region; aggregate: n }";
+   let restore: () => void = () => {};
+   let fixture: LoadedFixture;
+   let live: Outcome;
+
+   beforeAll(async () => {
+      restore = installSettings({ env: G3_ONLY }).restore;
+      await freshLoadPool();
+      const loader = await loadFixture({
+         ...DATA_FILES,
+         "raw.malloy": RAW_MODEL,
+         "m.malloy": MIXED,
+      });
+      live = await loader.run("m.malloy", QUERY, CALLER);
+      fixture = await loader.bind();
+   }, 120_000);
+   afterAll(async () => {
+      await fixture?.dispose();
+      restore();
+      await freshLoadPool();
+   });
+
+   /** What the served copy answered with, each time it was asked. */
+   type Served = {
+      tablesRead: { tier: string }[];
+      gateTablesRead?: { tier: string }[];
+   };
+   async function runRecording(respell: boolean): Promise<{
+      outcome: Outcome;
+      served: Served[];
+   }> {
+      const copy = (
+         fixture.pkg.getModel("m.malloy") as unknown as {
+            servedCopy: { loadQuery: (...args: unknown[]) => Promise<Served> };
+         }
+      ).servedCopy;
+      const loadQuery = copy.loadQuery;
+      const served: Served[] = [];
+      copy.loadQuery = async (...args) => {
+         const answer = await loadQuery.apply(copy, args);
+         served.push(answer);
+         return answer;
+      };
+      const getSQL = QueryMaterializer.prototype.getSQL;
+      // The served copy's SQL also reads the storage table, quoted
+      // differently from the bound `"lake"."g3w_cust"`. Only the quoting
+      // defeats the served copy's exact match (sqlTableReads ignores case).
+      const respelled = respell
+         ? spyOn(QueryMaterializer.prototype, "getSQL").mockImplementation(
+              async function (
+                 this: QueryMaterializer,
+                 ...args: Parameters<typeof getSQL>
+              ) {
+                 const sql = await getSQL.apply(this, args);
+                 return sql.replace(
+                    /FROM "g3w_gated" as base/,
+                    'FROM "g3w_gated" as base LEFT JOIN (SELECT 1 AS one FROM "lake".g3w_cust LIMIT 0) AS g3w_probe ON TRUE',
+                 );
+              },
+           )
+         : undefined;
+      try {
+         const outcome = await fixture.run("m.malloy", QUERY, CALLER);
+         return { outcome, served };
+      } finally {
+         copy.loadQuery = loadQuery;
+         respelled?.mockRestore();
+      }
+   }
+
+   it("binds both tables", () => {
+      expect([...fixture.verdicts].sort()).toEqual([
+         "cust_sto:serves",
+         "gated_mix:serves",
+      ]);
+   });
+
+   it("baseline: a colocated-only answer is served from the copy past its gate", async () => {
+      const { outcome, served } = await runRecording(false);
+      if ("error" in outcome || "error" in live) throw new Error("failed");
+      expect(outcome.answer.via).toBe("served_copy");
+      expect(
+         rowDifference(live.answer.rows, outcome.answer.rows),
+      ).toBeUndefined();
+      expect(served.at(-1)?.gateTablesRead?.map((b) => b.tier)).toEqual([
+         "colocated",
+      ]);
+   });
+
+   it("judges the answer to read the storage table too, and answers live, not from the copy past its gate", async () => {
+      const { outcome, served } = await runRecording(true);
+      // The served copy's exact match finds the colocated table alone…
+      expect(served.at(-1)?.tablesRead.map((b) => b.tier)).toEqual([
+         "colocated",
+      ]);
+      // …and the gate judgement sees the storage binding beside it.
+      expect(
+         served
+            .at(-1)
+            ?.gateTablesRead?.map((b) => b.tier)
+            .sort(),
+      ).toEqual(["colocated", "storage"]);
+      // So the router keeps it off G3: answered exactly as live.
+      if ("error" in live) throw new Error(live.error);
+      if ("error" in outcome) throw new Error(outcome.error);
+      expect(outcome.answer.via ?? outcome.answer.servedBy).toBe("live");
+      expect(
+         rowDifference(live.answer.rows, outcome.answer.rows),
+      ).toBeUndefined();
+   });
 });

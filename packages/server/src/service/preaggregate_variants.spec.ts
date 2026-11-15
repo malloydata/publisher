@@ -5,6 +5,7 @@
 // plan lists each rollup once however many models import its base (review bug
 // 8), a malformed declaration is refused at publish, a rollup over a stored
 // base is planned (#6293), and with the switch off nothing of it runs.
+import { rollupPlansIn } from "../test_helpers/materialization_test_fixtures";
 import {
    afterAll,
    afterEach,
@@ -19,6 +20,7 @@ import * as os from "os";
 import * as path from "path";
 
 import { formatPublishRejections } from "./publish_checks";
+import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
 import { parsePackageName } from "./identity";
@@ -144,23 +146,27 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category") -> {
    );
 
    it(
-      "refuses a malformed declaration at publish, and warns at load",
+      "fails the load for an invalid declaration, with its code",
       async () => {
          switchOn(true);
-         const pkg = await loadPackage({
-            "m.malloy": `source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category") extend {
+         let error: unknown;
+         try {
+            await loadPackage({
+               "m.malloy": `source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category") extend {
   #(preaggregate) grain=["category"]
   measure: average is amount.avg()
 }
 `,
-         });
-         expect(rollups(pkg)).toEqual([]);
-         const warning = pkg
-            .annotationFindingWarnings()
-            .find((w) => w.code === "preaggregate-not-mergeable");
-         expect(warning?.severity).toBe("error");
-         expect(formatPublishRejections(pkg)).toContain(
+            });
+         } catch (e) {
+            error = e;
+         }
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect((error as Error).message).toContain(
             "its partials cannot be merged",
+         );
+         expect((error as Error).message).toContain(
+            "[preaggregate-not-mergeable]",
          );
       },
       { timeout: 60000 },
@@ -198,7 +204,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
          const plan = await compilePackageBuildPlan(
             await buildPlanPackages.create({ "orders.malloy": ORDERS }),
          );
-         expect(Object.keys(plan.preaggregatePlans ?? {})).toEqual([]);
+         expect(Object.keys(rollupPlansIn(plan) ?? {})).toEqual([]);
          const pkg = await loadPackage({ "orders.malloy": ORDERS });
          expect(pkg.annotationFindingWarnings().map((w) => w.code)).toContain(
             "annotation-near-miss",

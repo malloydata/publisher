@@ -51,6 +51,8 @@
  * 400.
  */
 
+import { hasEnvReference } from "../../motly";
+import { nearestKey } from "../../annotation_reader";
 import { placementOf, readNotes } from "./declaration";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
 import type { LogMessage } from "@malloydata/malloy";
@@ -94,7 +96,10 @@ interface PreaggregateDeclarationError {
       | "empty_grain"
       | "invalid_namespace"
       | "empty_storage"
-      | "invalid_storage";
+      | "invalid_storage"
+      | "unknown_key"
+      | "unparseable"
+      | "env_reference";
    /** Names the measure and the fix; becomes the body of a publish-time 400. */
    message: string;
 }
@@ -143,8 +148,30 @@ export function parseGrainDimensions(grainText: string): string[] {
    return [...new Set(parts)].sort();
 }
 
-/** A note that turns the annotation off. The one text pattern this module reads. */
+/** A note that turns the annotation off. */
 const NEGATION = /#@\s*-\s*preaggregate\b/;
+
+/**
+ * A note that declares `#@ preaggregate`, told from its text when the line
+ * cannot be read (it does not parse, or it reads the environment and the
+ * reader drops it).
+ */
+const DECLARATION = /^\s*#@\s*preaggregate\b/;
+
+/** The keys a `#@ preaggregate` line takes, beside the directive. A closed set. */
+const LINE_KEYS: ReadonlySet<string> = new Set([
+   "preaggregate",
+   "grain",
+   "namespace",
+   "storage",
+]);
+
+/** The keys `#@ preaggregate { … }` takes inside the directive. */
+const DIRECTIVE_KEYS: ReadonlySet<string> = new Set([
+   "grain",
+   "namespace",
+   "storage",
+]);
 
 interface OrderedNote {
    text: string;
@@ -209,18 +236,73 @@ export function readPreaggregateAnnotation(
          continue;
       }
 
+      const declaring = DECLARATION.test(note.text);
+      // The reader drops a line that reads the environment whole, so the
+      // declaration would vanish: an invalid line, reported as one.
+      if (declaring && hasEnvReference(note.text)) {
+         declared = true;
+         errors.push({
+            kind: "env_reference",
+            message: `Measure \`${name}\` declares \`#@ preaggregate\` on a line that reads the server's environment (\`@env.\`), which a materialization annotation may not: Publisher never reads it. Write the value into the model.`,
+         });
+         continue;
+      }
       let tag;
+      let parseErrors: string[];
       try {
          const parsed = readNotes([note.raw], "@");
          tag = parsed.tag;
          parseLog.push(...parsed.log);
-      } catch {
-         // Mirrors deriveAnnotationFields: a malformed annotation must not take
-         // the package down. An unreadable line cannot have declared anything.
+         parseErrors = parsed.log
+            .filter((entry) => entry.severity === "error")
+            .map((entry) => entry.message);
+      } catch (error) {
+         // Never thrown into a package load: reported as a finding instead.
+         tag = undefined;
+         parseErrors = [error instanceof Error ? error.message : String(error)];
+      }
+      if (!tag || parseErrors.length > 0) {
+         // A line that does not parse declares nothing it can be read for; on
+         // a `#@ preaggregate` line that is an invalid declaration.
+         if (declaring) {
+            declared = true;
+            errors.push({
+               kind: "unparseable",
+               message: `Measure \`${name}\` declares \`#@ preaggregate\` on a line that does not parse (${parseErrors.join("; ")}). Fix the line's syntax.`,
+            });
+         }
          continue;
       }
       if (!tag.has("preaggregate")) continue;
       declared = true;
+
+      // The key set is closed: a typo (`stroage="lake"`) would otherwise
+      // build the rollup somewhere its author did not say.
+      const unknown = [
+         ...[...tag.entries()]
+            .map(([key]) => key)
+            .filter((key) => !LINE_KEYS.has(key))
+            .map((key) => ({ key, near: nearestKey(key, LINE_KEYS) })),
+         ...[...(tag.tag("preaggregate")?.entries() ?? [])]
+            .map(([key]) => key)
+            .filter((key) => !DIRECTIVE_KEYS.has(key))
+            .map((key) => ({ key, near: nearestKey(key, DIRECTIVE_KEYS) })),
+      ];
+      if (unknown.length > 0) {
+         errors.push({
+            kind: "unknown_key",
+            message:
+               `Measure \`${name}\` declares \`#@ preaggregate\` with ` +
+               unknown
+                  .map(
+                     ({ key, near }) =>
+                        `\`${key}=\`${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+                  )
+                  .join(", ") +
+               `, which is not a key it reads. Use grain=, namespace= or storage=.`,
+         });
+         continue;
+      }
 
       // Nested form wins; the documented sibling-key form is the fallback. Both
       // parse per line, so this is the same precedence the merged tag applied.
@@ -259,7 +341,7 @@ export function readPreaggregateAnnotation(
               : undefined;
       if (placedIn !== undefined) {
          const candidate = placedIn;
-         // Empty refuses this line's rollup alone, with a warning.
+         // Names nothing: an invalid declaration, which fails the load.
          if (candidate === "") {
             errors.push({
                kind: "empty_storage",

@@ -25,6 +25,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders@<hammer>/pla/pla.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

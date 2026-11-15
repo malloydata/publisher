@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   tableNamesMeet,
    authorModelPath,
    COMPANION_SUFFIXES,
    fileSegment,
@@ -182,6 +183,8 @@ describe("the prefix shared with the control plane", () => {
          expect(leafBudget(d, false)).toBe(50);
       }
       expect(leafBudget("sqlserver", false)).toBe(115);
+      expect(leafBudget("DuckDB", false)).toBe(120);
+      expect(leafBudget("unknown_dialect", false)).toBe(50);
       for (const d of ["duckdb", "snowflake", "standardsql", "databricks"]) {
          expect(leafBudget(d, false)).toBe(120);
       }
@@ -358,5 +361,24 @@ describe("which source a shared table is named after", () => {
             { modelPath: "a.malloy", label: "a" },
          ),
       ).toBe(false);
+   });
+});
+
+describe("tableNamesMeet", () => {
+   it("meets on one table segment with the same container, or none on either", () => {
+      expect(tableNamesMeet("t", "t")).toBe(true);
+      expect(tableNamesMeet("main.t", "t")).toBe(true);
+      expect(tableNamesMeet("t", "main.t")).toBe(true);
+      expect(tableNamesMeet("a.b.t", "a.b.t")).toBe(true);
+      expect(tableNamesMeet("s1.t", "s2.t")).toBe(false);
+      expect(tableNamesMeet("main.t", "main.u")).toBe(false);
+   });
+
+   it("meets when one name's containers end the other's: a shorter name lands in the connection's defaults", () => {
+      expect(tableNamesMeet("proj.ds.t", "ds.t")).toBe(true);
+      expect(tableNamesMeet("ds.t", "proj.ds.t")).toBe(true);
+      expect(tableNamesMeet("DB.S.T", "S.T")).toBe(true);
+      expect(tableNamesMeet("proj.ds.t", "other.t")).toBe(false);
+      expect(tableNamesMeet("p1.ds.t", "p2.ds.t")).toBe(false);
    });
 });

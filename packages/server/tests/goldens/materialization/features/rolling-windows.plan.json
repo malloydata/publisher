@@ -19,6 +19,12 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "between@<pkg>/m.malloy": "materialize",
+      "older@<pkg>/m.malloy": "materialize",
+      "older_inherited@<pkg>/m.malloy": "materialize",
+      "recent@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "between@<pkg>/m.malloy": {
         "buildSourceName": "between__mat",

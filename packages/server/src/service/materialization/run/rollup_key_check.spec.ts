@@ -15,7 +15,12 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { makeMaterialization } from "../../../test_helpers/materialization_test_fixtures";
+import {
+   makeMaterialization,
+   rollupPlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
@@ -107,16 +112,16 @@ async function scenario(model: string) {
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
-   const [rollupID] = Object.keys(compiled.preaggregatePlans ?? {});
-   const rollup = compiled.preaggregatePlans?.[rollupID ?? ""] as
+   const [rollupID] = Object.keys(rollupPlansIn(compiled) ?? {});
+   const rollup = rollupPlansIn(compiled)?.[rollupID ?? ""] as
       | RollupVariantPlan
       | undefined;
-   const source = compiled.sources[rollupID ?? ""];
+   const source = sourcesIn(compiled)[rollupID ?? ""];
    const address = source
       ? computeSourceEntityId(
            source,
            compiled.connectionDigests,
-           compiled.targets?.[rollupID ?? ""],
+           targetsIn(compiled)?.[rollupID ?? ""],
         )
       : "";
    const environment = {
@@ -413,7 +418,7 @@ describe("the joined source's own primary key check, on a build", () => {
 
 /**
  * A source stored in a destination, checked over its table at its own build
- * (the join-to-rollup leg in a destination reads that table). The destination
+ * (the join-to-rollup branch in a destination reads that table). The destination
  * is a plain DuckDB file under the environment, as a `storage=` destination
  * of type duckdb is; the stand-in build writes the source's rows there.
  */
@@ -429,13 +434,13 @@ async function storedScenario(
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
-   const [sourceID] = Object.keys(compiled.preaggregatePlans ?? {});
-   const source = compiled.sources[sourceID ?? ""];
+   const [sourceID] = Object.keys(rollupPlansIn(compiled) ?? {});
+   const source = sourcesIn(compiled)[sourceID ?? ""];
    if (!sourceID || !source) throw new Error("no planned source");
-   compiled.storedKeyChecks = { [sourceID]: "flight_id" };
+   compiled.tables[sourceID].storedKeyCheck = "flight_id";
    if (baseChecks.length > 0) {
       (
-         compiled.preaggregatePlans?.[sourceID] as RollupVariantPlan
+         rollupPlansIn(compiled)?.[sourceID] as RollupVariantPlan
       ).parentKeyChecks = baseChecks.map((c) => ({
          ...c,
          connectionName: "duckdb",
@@ -444,7 +449,7 @@ async function storedScenario(
    const address = computeSourceEntityId(
       source,
       compiled.connectionDigests,
-      compiled.targets?.[sourceID],
+      targetsIn(compiled)?.[sourceID],
    );
    const root = storageDestinationRoot(pkg.getPackagePath());
    fs.mkdirSync(root, { recursive: true });
@@ -528,9 +533,8 @@ async function storedScenario(
    }
    const record = (m: Metadata | undefined, id: string = sourceID) =>
       m?.rollupKeys?.[rollupKeyRecordKey(address, id)];
-   const baseSourceID = (
-      compiled.preaggregatePlans?.[sourceID] as RollupVariantPlan
-   ).baseSourceID;
+   const baseSourceID = (compiled.tables[sourceID]?.rollup as RollupVariantPlan)
+      .baseSourceID;
    return { duckdb, run, record, address, baseSourceID, compiled, sourceID };
 }
 
@@ -686,19 +690,20 @@ describe("a colocated rollup over a base that is itself stored", () => {
          )) as unknown as MalloyConnection;
          for (const sql of SEED) await duckdb.runSQL(sql);
          const compiled = await compilePackageBuildPlan(pkg);
-         const [rollupID] = Object.keys(compiled.preaggregatePlans ?? {});
-         const rollup = compiled.preaggregatePlans?.[
-            rollupID ?? ""
-         ] as RollupVariantPlan;
+         const [rollupID] = Object.keys(compiled.tables).filter(
+            (id) => compiled.tables[id]?.rollup,
+         );
+         const rollup = compiled.tables[rollupID ?? ""]
+            ?.rollup as RollupVariantPlan;
          // A join_one is keyed on its grain, so a check is planned.
          expect(rollup.keyCheck?.keyColumn).toBe("flight_id");
          const addressOf = (id: string) =>
             computeSourceEntityId(
-               compiled.sources[id]!,
+               compiled.tables[id]!.source,
                compiled.connectionDigests,
-               compiled.targets?.[id],
+               compiled.tables[id]?.target,
             );
-         const baseID = Object.keys(compiled.sources).find((id) =>
+         const baseID = Object.keys(compiled.tables).find((id) =>
             id.startsWith("crew_base@"),
          )!;
          const instruction = (id: string, table: string) =>
@@ -783,7 +788,7 @@ describe("a rollup built over a stored base, on a build into a destination", () 
             sql: "SELECT 1 AS k WHERE false",
          };
          (
-            s.compiled.preaggregatePlans?.[s.sourceID] as RollupVariantPlan
+            s.compiled.tables[s.sourceID]?.rollup as RollupVariantPlan
          ).parentKeyChecks = [
             { ...check, sourceID: s.baseSourceID, connectionName: "duckdb" },
             { ...check, sourceID: "other@x", connectionName: "duckdb" },

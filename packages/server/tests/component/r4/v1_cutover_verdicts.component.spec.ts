@@ -15,7 +15,7 @@ import {
    freshLoadPool,
    loadFixture,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES, type Variant } from "./conformance/shapes";
 
 async function preview(
@@ -52,27 +52,28 @@ describe("v1 cutover: the dry run's serve path", () => {
       }
    }, 120_000);
 
-   it("names the served copy for a colocated source with hidden columns (G2)", async () => {
-      const paths = await preview(
-         "joined persisted source with hidden fields, from an index",
-         "colocated",
-         "cutover",
-      );
-      expect(paths.customer_dim?.[0]).toBe("served_copy");
-      expect(paths.order_facts?.[0]).toBe("served_copy");
+   it("names the served copy for a source with hidden columns, colocated or storage= (G2)", async () => {
+      for (const variant of ["colocated", "storage"] as const) {
+         const paths = await preview(
+            "joined persisted source with hidden fields, from an index",
+            variant,
+            "cutover",
+         );
+         expect(paths.customer_dim?.[0]).toBe("served_copy");
+         expect(paths.order_facts?.[0]).toBe("served_copy");
+      }
    }, 120_000);
 
-   it("says live, with the served copy's reason, for a source it leaves as written", async () => {
-      // A v1 storage= table holds public columns only, so a measure over
-      // the internal column does not compile on it.
+   it("says live, with the reason, for a source it leaves as written", async () => {
+      // A gated source is refused for storage= by design.
       const paths = await preview(
-         "joined persisted source with hidden fields, from an index",
+         "givens and access filters",
          "storage",
          "cutover",
       );
-      expect(paths.customer_dim?.[0]).toBe("live");
-      expect(paths.customer_dim?.[1]).toBeDefined();
-      expect(paths.customer_dim?.[1]).not.toBe("not_rerooted");
+      expect(paths.gated?.[0]).toBe("live");
+      expect(paths.gated?.[1]).toBeDefined();
+      expect(paths.gated?.[1]).not.toBe("not_rerooted");
    }, 120_000);
 
    it("names the rollup leg for a v1 rollup", async () => {

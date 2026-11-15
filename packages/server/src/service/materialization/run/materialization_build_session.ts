@@ -1,6 +1,23 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Build-scoped DuckDB sessions on a `storage=` destination: the isolated
+ * session a build runs in, the native passthrough read that lets the source
+ * warehouse compute the rows ({@link wrapPassthrough},
+ * {@link issuePassthroughRead}), the CTAS that writes a stored table with its
+ * declared types ({@link buildSourceIntoStorage},
+ * {@link createTableWithDeclaredTypes}), the chained build that stacks a
+ * downstream on stored parents ({@link planChainedDownstream},
+ * {@link buildDownstreamIntoStorage}), and the destination's drops, listing and
+ * file cleanup. Read by the `storage=` tier, incremental storage, table sites,
+ * catalog_admin.ts and the destination controller.
+ *
+ * Effects: SQL in the source warehouse (through the passthrough) and in the
+ * destination; the warehouse's billed read cost, from its session history;
+ * logs and counts.
+ */
+
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -44,8 +61,8 @@ import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics
 import {
    buildSQLOf,
    plannedSources,
-   projectToPublicColumns,
-   publicColumnNames,
+   projectToStoredColumns,
+   storedColumnNames,
 } from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
@@ -53,14 +70,13 @@ import {
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
 import {
-   BIGQUERY_COST_COLUMNS,
    bigQueryReadCost,
    pickSnowflakeReadRow,
-   snowflakeCostSQL,
    snowflakeReadCost,
    str,
    type BuildReadCost,
 } from "./build_read_cost";
+import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./warehouse_sql";
 import { recordAttributionSkipped } from "../../../materialization_metrics";
 import type { QueryMetadata } from "../../query_metadata";
 import {
@@ -81,6 +97,7 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -97,16 +114,9 @@ const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
  * Warehouse types the build can materialize INTO. Wider than
  * `DECLARABLE_STORAGE_DESTINATION_TYPES`, which is what a storage destination may
  * be declared as and admits `ducklake` only — so the `duckdb` branch here is not
- * reachable from configuration today.
+ * reachable from configuration.
  */
 const STORAGE_DESTINATION_TYPES = ["ducklake", "duckdb"] as const;
-
-/**
- * The Malloy dialect every storage destination speaks (both types are
- * DuckDB-family): the dialect of a stored table's DDL, DML and identifier
- * quoting, which is NOT the source's.
- */
-export const STORAGE_TARGET_DIALECT = "duckdb";
 
 /**
  * Wrap a source-dialect SELECT as a native per-engine query-passthrough call, so
@@ -570,9 +580,9 @@ export function createIsolatedBuildSession(sessionName: string): {
       // with the destination ATTACH and federated source credentials — survives
       // (e.g. idle Postgres backends stranded until process exit).
       //
-      // db-duckdb cannot disconnect unconditionally (reverted upstream in
-      // PR #2793: malloy's translate layer holds weak_ptrs to the
-      // Connection). A build session is server-owned and single-use, so it can.
+      // db-duckdb cannot disconnect unconditionally (malloy's translate
+      // layer holds weak_ptrs to the Connection). A build session is
+      // server-owned and single-use, so it can.
       // Reached through a cast because the handle is library-internal; use an
       // explicit hard-close if db-duckdb adds one.
       const nodeConnection = (
@@ -710,6 +720,80 @@ export interface BuildSessionDeps {
 }
 
 /**
+ * Ready a build's session: its resource limits, the destination attached
+ * read-write with its schema present, DuckLake row inlining off, and UTC.
+ */
+async function prepareBuildSession(
+   session: DuckDBConnection,
+   workDir: string,
+   destinationName: string,
+   destinationConnection: ApiConnection,
+   environmentPath: string,
+): Promise<void> {
+   // Before the destination attach, which applies (and latches) the limits
+   // without a `tempDirectory` for DuckLake: afterwards, spill would go to the
+   // shared configured path, outliving `dispose` and colliding between
+   // builds. It also bounds memory during the attach itself.
+   await applySessionResourceLimits(session, { tempDirectory: workDir });
+   await attachDestinationReadWrite(
+      session,
+      destinationName,
+      destinationConnection,
+      environmentPath,
+   );
+   await assertDestinationSchemaExists(
+      session,
+      destinationName,
+      destinationName,
+      destinationConnection,
+   );
+
+   if (destinationConnection.type === "ducklake") {
+      // Disable row inlining for this session so rows land as Parquet in the
+      // data store, not in the catalog database — in a shared catalog,
+      // inlining would push tenant data into the catalog Postgres.
+      // Session-scoped; the catalog's persisted options are untouched.
+      await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+   }
+   // Before any predicate is rendered (incremental refresh only); see
+   // pinSessionToUTC.
+   await pinSessionToUTC(session);
+}
+
+/**
+ * Advance an incremental table in place when its plan can: the result, or
+ * undefined for a full build.
+ */
+async function refreshInPlace(
+   incremental: StorageIncrementalRefresh,
+   session: DuckDBConnection,
+   sourceType: ReturnType<typeof passthroughSourceType>,
+   handle: string,
+   target: string,
+   destinationName: string,
+): Promise<StorageBuildResult | undefined> {
+   const refreshed = await incremental.plan({
+      session,
+      sourceType,
+      handle,
+      quotedTablePath: target,
+   });
+   if (refreshed) {
+      return {
+         storageDestinationName: destinationName,
+         // A delta cannot change the shape, but the manifest entry
+         // declares the schema on every publication; omitting it would
+         // leave the source unservable until its next full build.
+         schema: await describeTable(session, target),
+         rowCount: await countStoredRows(session, target),
+         readCost: refreshed.readCost,
+         refresh: refreshed,
+      };
+   }
+   return undefined;
+}
+
+/**
  * Build one persist source into a `storage=` destination via native
  * query-passthrough CTAS, on a build-scoped DuckDB session created and disposed
  * here — so the read-write destination attach and the source credentials exist
@@ -737,7 +821,7 @@ export async function buildSourceIntoStorage(params: {
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    /**
-    * The source's public columns as Malloy declares them; the CTAS casts the
+    * The source's columns as Malloy declares them; the CTAS casts the
     * ones with a single faithful DuckDB type to it ({@link castToDeclaredTypes}).
     * Absent or empty stores whatever the warehouse returned.
     */
@@ -793,34 +877,13 @@ export async function buildSourceIntoStorage(params: {
    // the session does not close a listener opened outside it.
    let federatedClose: (() => Promise<void>) | undefined;
    try {
-      // Before the destination attach, which applies (and latches) the limits
-      // without a `tempDirectory` for DuckLake: afterwards, spill would go to the
-      // shared configured path, outliving `dispose` and colliding between
-      // builds. It also bounds memory during the attach itself.
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
-      await attachDestinationReadWrite(
+      await prepareBuildSession(
          session,
+         workDir,
          destinationName,
          destinationConnection,
          environmentPath,
       );
-      await assertDestinationSchemaExists(
-         session,
-         destinationName,
-         destinationName,
-         destinationConnection,
-      );
-
-      if (destinationConnection.type === "ducklake") {
-         // Disable row inlining for this session so rows land as Parquet in the
-         // data store, not in the catalog database — in a shared catalog,
-         // inlining would push tenant data into the catalog Postgres.
-         // Session-scoped; the catalog's persisted options are untouched.
-         await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
-      }
-      // Before any predicate is rendered (incremental refresh only); see
-      // pinSessionToUTC.
-      await pinSessionToUTC(session);
 
       const federated = await federate(
          session,
@@ -848,31 +911,22 @@ export async function buildSourceIntoStorage(params: {
             physicalTableName,
             destinationSchemaOf(destinationConnection),
          ),
-         STORAGE_TARGET_DIALECT,
+         STORAGE_DIALECT,
       );
 
       // After the attach and federation, because the plan probes this
       // destination to decide; a seed then continues on the same session.
-      if (params.incremental) {
-         const refreshed = await params.incremental.plan({
-            session,
-            sourceType,
-            handle: federated.handle,
-            quotedTablePath: target,
-         });
-         if (refreshed) {
-            return {
-               storageDestinationName: destinationName,
-               // A delta cannot change the shape, but the manifest entry
-               // declares the schema on every publication; omitting it would
-               // leave the source unservable until its next full build.
-               schema: await describeTable(session, target),
-               rowCount: await countStoredRows(session, target),
-               readCost: refreshed.readCost,
-               refresh: refreshed,
-            };
-         }
-      }
+      const refreshed = params.incremental
+         ? await refreshInPlace(
+              params.incremental,
+              session,
+              sourceType,
+              federated.handle,
+              target,
+              destinationName,
+           )
+         : undefined;
+      if (refreshed) return refreshed;
 
       const passthrough = await read(
          session,
@@ -945,9 +999,8 @@ export async function buildSourceIntoStorage(params: {
  *
  * The session is read-write on the catalog, so it runs only SQL Malloy
  * generated: a source whose compiled definition carries author SQL (an `.sql()`
- * source, a `sql_number()` and its kind) is refused, as every DuckLake source
- * was before, which keeps the invariant the build path has always held: no
- * user SQL runs on a read-write lake session.
+ * source, a `sql_number()` and its kind) is refused, which keeps the build
+ * path's invariant: no user SQL runs on a read-write lake session.
  *
  * The catalog is attached under the SOURCE connection's name, not the
  * destination's: the two may differ (sameness is decided by catalog identity),
@@ -1008,7 +1061,7 @@ async function buildSameCatalogIntoStorage(params: {
             physicalTableName,
             destinationSchemaOf(destinationConnection),
          ),
-         STORAGE_TARGET_DIALECT,
+         STORAGE_DIALECT,
       );
       const schema = await createTableWithDeclaredTypes(
          session,
@@ -1032,7 +1085,7 @@ async function buildSameCatalogIntoStorage(params: {
 /**
  * Compile a chained `storage=` build's model over `connections` (the
  * destination alone) and plan its downstream under `virtualMap`: the SQL to
- * CTAS, projected to its public columns, and the downstream it built. The
+ * CTAS, projected to the columns it declares, and the downstream it built. The
  * model is `files` by URL, loaded from `entry`: a one-file model of the build's
  * own, or the author's files with the upstreams re-rooted (the host port's
  * `chainBuildText`).
@@ -1109,7 +1162,7 @@ export async function planChainedDownstream(params: {
    connections: FixedConnectionMap;
    /**
     * The planned source a recompute of the downstream builds. A chained
-    * build whose downstream lacks one of its public columns (a column read
+    * build whose downstream lacks one of its stored columns (a column read
     * through a definition left out of a stored upstream, as a `select: *`
     * does) is a shape it could not carry: stored, the table would answer
     * with fewer columns than live. Absent: not checked.
@@ -1182,8 +1235,8 @@ export async function planChainedDownstream(params: {
       let expected: string[] = [];
       let built: string[] = [];
       try {
-         expected = publicColumnNames(params.recomputes);
-         built = publicColumnNames(downstream);
+         expected = storedColumnNames(params.recomputes);
+         built = storedColumnNames(downstream);
       } catch {
          // An unknown surface is refused where the table is projected to it.
       }
@@ -1213,9 +1266,9 @@ export async function planChainedDownstream(params: {
             `which does not run on the destination's read-write session.`,
       });
    }
-   // Projected to public columns so hidden (`except:` / access-restricted)
-   // values are not stored at rest.
-   const sql = projectToPublicColumns(
+   // Projected to the columns the source declares, hidden ones included, as
+   // a recompute writes them; a column `except:` drops is left out.
+   const sql = projectToStoredColumns(
       downstream,
       buildSQLOf(downstream, { entries: {} }),
    );
@@ -1289,8 +1342,8 @@ export async function buildDownstreamIntoStorage(params: {
          // See buildSourceIntoStorage: keep rows out of the catalog database.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       }
-      // No predicate runs here today (chained sources are excluded from the
-      // delta path); pinned so lifting that exclusion stays correct.
+      // No predicate runs here (chained sources are excluded from the delta
+      // path); pinned so lifting that exclusion stays correct.
       await pinSessionToUTC(session);
 
       const connectionName = params.connectionName ?? destinationName;
@@ -1312,7 +1365,7 @@ export async function buildDownstreamIntoStorage(params: {
             physicalTableName,
             destinationSchemaOf(destinationConnection),
          ),
-         STORAGE_TARGET_DIALECT,
+         STORAGE_DIALECT,
       );
       // The downstream's own declared types, as for a recompute.
       const casts = storageBuildCasts(downstream);
@@ -1346,7 +1399,7 @@ export function dropStorageTableSql(
    // Must name the table the way the build CREATEd it (see the CTAS sites).
    return `DROP TABLE IF EXISTS ${quoteManifestTablePath(
       storageTablePath(destinationName, physicalTableName, schema),
-      STORAGE_TARGET_DIALECT,
+      STORAGE_DIALECT,
    )}`;
 }
 
@@ -1505,7 +1558,7 @@ export async function listStorageTables(params: {
          }
          const dbPath = path.join(destinationRoot, fileName);
          await session.runSQL(
-            `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT)} (READ_ONLY)`,
+            `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)} (READ_ONLY)`,
          );
       }
       const rows = resultRows(
@@ -1634,7 +1687,7 @@ async function attachDestinationReadWrite(
    mkdirSync(storageDestinationRoot(environmentPath), { recursive: true });
    const dbPath = destinationDatabasePath(environmentPath, destinationName);
    await session.runSQL(
-      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT)}`,
+      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)}`,
    );
 }
 
@@ -1705,10 +1758,10 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
 
 /**
  * {@link createTableAndDescribe} over `selectSQL` with its columns cast to their
- * declared types (ms2data/service#6642). A value a cast cannot convert (a
- * boolean the warehouse returned as 'Y'/'N') retries the CTAS without the
- * casts, storing what the warehouse returned, rather than failing a build that
- * used to succeed; the serve side then decides that column. Never TRY_CAST,
+ * declared types (stored_types_ducklake.spec.ts). A value a cast cannot
+ * convert (a boolean the warehouse returned as 'Y'/'N') retries the CTAS
+ * without the casts, storing what the warehouse returned, rather than failing
+ * the build; the serve side then decides that column. Never TRY_CAST,
  * whose NULLs would be wrong answers. The retry re-reads the source, so it is
  * paid only by a source whose data the cast rejects.
  */
@@ -1778,7 +1831,7 @@ export async function createTableWithDeclaredTypes(
  * statement and runs nothing, and only Postgres's dialect declares such a
  * column `string`. No other passthrough is described: whether it runs (and
  * bills) the query is not known. A describe that fails changes nothing: every
- * column is cast, as before, and the build itself reports the error.
+ * column is cast, and the build itself reports the error.
  */
 async function columnsToCast(
    session: DuckDBConnection,
@@ -1857,7 +1910,7 @@ const BUCKET_TRANSFORM = /^bucket\((\d+)\)$/;
  * defines is refused rather than written as some other layout.
  */
 export function partitionKeySql(key: PartitionKey): string {
-   const column = quoteIdentifier(key.column, STORAGE_TARGET_DIALECT);
+   const column = quoteIdentifier(key.column, STORAGE_DIALECT);
    if (key.transform === "identity") return column;
    if (TIME_TRANSFORMS.has(key.transform)) return `${key.transform}(${column})`;
    const bucket = BUCKET_TRANSFORM.exec(key.transform);
@@ -1891,7 +1944,7 @@ export function partitionOrderSql(keys: readonly PartitionKey[]): string[] {
    }
    for (const key of keys) {
       if (key.transform !== "identity") {
-         add(quoteIdentifier(key.column, STORAGE_TARGET_DIALECT));
+         add(quoteIdentifier(key.column, STORAGE_DIALECT));
       }
    }
    return terms;
