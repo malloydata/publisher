@@ -38,6 +38,7 @@ import {
    nameViewDropSql,
    nameViewProbeSql,
    nameViewReplaceDdl,
+   nameViewReplaceIsTransactional,
    nameViewReplaceTableDdl,
    renameTableSql,
    nameViewSlotOf,
@@ -1127,7 +1128,7 @@ export function viewToTableSwap(
    const segments = pathSegments(intent.viewName);
    const drop = nameViewDropSql(segments, dialect);
    const expected = { target: previousTarget, owner: intent.owner };
-   const transactional = dialect === "duckdb" || dialect === "postgres";
+   const transactional = nameViewReplaceIsTransactional(dialect);
    return {
       replacesView: expected,
       attempts: () => [

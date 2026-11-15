@@ -311,6 +311,12 @@ function duckdbNameMatch(segments: string[], column: string): string {
    );
 }
 
+/** The session's current schema, in the dialects whose catalog reads it bare. */
+const CURRENT_SCHEMA_SQL: Readonly<Record<string, string>> = {
+   databricks: "current_schema()",
+   trino: "current_schema",
+};
+
 /**
  * A query answering the definition of the view `segments` names, as one row
  * with `definition` (no row when no view holds the name). Read with
@@ -373,9 +379,7 @@ export function nameViewDefinitionSql(
          const schema =
             segments.length > 1
                ? `lower(${lit(segments[segments.length - 2])})`
-               : dialect === "databricks"
-                 ? "current_schema()"
-                 : "current_schema";
+               : CURRENT_SCHEMA_SQL[dialect];
          return (
             `SELECT view_definition AS definition FROM ${from} ` +
             `WHERE table_schema = ${schema} AND table_name = lower(${lit(name)})`
@@ -562,7 +566,7 @@ function viewChangedMessage(segments: string[], dialect: string): string {
 export class NameViewChangedError extends Error {}
 
 /** Whether a probed slot is exactly the view `expected` marks (or empty). */
-export function nameViewSlotHolds(
+function nameViewSlotHolds(
    slot: NameViewSlot,
    expected: NameViewMark | undefined,
 ): boolean {
@@ -758,7 +762,7 @@ const TRANSACTIONAL_REPLACE_DIALECTS: ReadonlySet<string> = new Set([
 ]);
 
 /** Whether a table at a name can be replaced by a view as one transaction. */
-function nameViewReplaceIsTransactional(dialect: string): boolean {
+export function nameViewReplaceIsTransactional(dialect: string): boolean {
    return TRANSACTIONAL_REPLACE_DIALECTS.has(dialect);
 }
 
