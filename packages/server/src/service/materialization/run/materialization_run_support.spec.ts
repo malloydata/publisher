@@ -652,6 +652,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             { tier_up: up, tier_stored: stored },
             { duckdb: "dig" },
+            undefined,
             (sourceID) =>
                sourceID === "tier_up" ? { destination: "lake2" } : undefined,
          ),
@@ -665,9 +666,14 @@ describe("current tiers (implied destinations, the source's own connection)", ()
    it("reads an instructed destination that is the source's own connection as the warehouse", () => {
       const up = fakeSource({ name: "tier_own", sourceEntityId: "tierown" });
       const facts = withMode("on", () =>
-         chainedPlanFacts({ tier_own: up }, { duckdb: "dig" }, () => ({
-            destination: "duckdb",
-         })),
+         chainedPlanFacts(
+            { tier_own: up },
+            { duckdb: "dig" },
+            undefined,
+            () => ({
+               destination: "duckdb",
+            }),
+         ),
       );
       expect(facts.declaredTiersByAddress?.tierown).toEqual([null]);
    });
@@ -679,11 +685,11 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          annotationFields: { storage: "lake" },
       });
       const off = withMode("off", () =>
-         chainedPlanFacts({ tier_mode: stored }, { duckdb: "dig" }),
+         chainedPlanFacts({ tier_mode: stored }, { duckdb: "dig" }, undefined),
       );
       expect(off.declaredTiersByAddress?.tiermode).toEqual([null]);
       const writeOnly = withMode("write-only", () =>
-         chainedPlanFacts({ tier_mode: stored }, { duckdb: "dig" }),
+         chainedPlanFacts({ tier_mode: stored }, { duckdb: "dig" }, undefined),
       );
       expect(writeOnly.declaredTiersByAddress?.tiermode).toEqual(["lake"]);
    });
@@ -702,6 +708,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             { split_base: base, split_ext: ext },
             { duckdb: "dig" },
+            undefined,
          ),
       );
       expect([...(facts.declaredTiersByAddress?.splitab ?? [])].sort()).toEqual(

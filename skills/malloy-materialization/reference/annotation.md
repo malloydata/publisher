@@ -34,7 +34,7 @@ source: my_rollup is some_source -> { group_by: ...; aggregate: ... }
 A persist source's identity is its **`sourceEntityId`**: a content address of its connection and its canonical SQL. Not the name, not the file, not the package version. So:
 
 - **A rebuild with unchanged persist logic reuses the existing table** (skip-if-unchanged); changing the SQL builds fresh under a new address. `--force-refresh` and every scheduler fire defeat the skip; an incremental source is exempt from it and advances by its boundary instead (`reference/refresh.md`).
-- **Two sources whose bodies compile to the same SQL share one table**, however they are named, and share one freshness policy and one incremental boundary with it.
+- **Two sources whose bodies compile to the same SQL share one table** when they name the same one (the same `name=`, or none), and share one freshness policy and one incremental boundary with it. Different `name=`s are different tables, each built under its own name.
 - **A republish by itself builds nothing on a standalone server**; reuse is a property of the next *run*.
 
 ## Readers of a persisted source

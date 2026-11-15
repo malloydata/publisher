@@ -9,13 +9,23 @@
 // table, at the address they always had.
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
    compiledWith,
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
+import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
+import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { BuildInstruction } from "../domain/types";
+import {
+   computeSourceEntityId,
+   foldDistinctTableNames,
+} from "../plan/addressing";
+import {
+   assertNoTableCollisions,
+   indexInstructions,
+} from "./materialization_instructed_run";
 import { deriveSelfInstructions } from "./run_instructions";
 
 const ADDRESS = "shared";
@@ -53,7 +63,7 @@ const ORDERS = [
 function tables(instructions: BuildInstruction[]): [string, string][] {
    return instructions
       .map((i): [string, string] => [i.sourceEntityId, i.physicalTableName])
-      .sort((x, y) => x[1].localeCompare(y[1]));
+      .sort((x, y) => x[1].localeCompare(y[1]) || x[0].localeCompare(y[0]));
 }
 
 describe("one table per name=", () => {
@@ -178,23 +188,53 @@ describe("one table per stored projection", () => {
       expect(results[1]).toEqual(results[0]);
    });
 
-   it("keeps sources of one name= on its one table, whatever each stores", () => {
-      const built = withStorage(() =>
-         tables(
-            derive(
+   it("splits one name= stored as two projections, in either order: a collision the run refuses, naming the columns", () => {
+      const results = withStorage(() =>
+         ORDERS.map((order) => {
+            const a = {
+               annotationFields: { ...STORED, name: "t" },
+               columns: ["id", "region", "status"],
+            };
+            const b = {
+               annotationFields: { ...STORED, name: "t" },
+               columns: ["id", "region"],
+            };
+            const instructions = derive(a, b, order);
+            const compiled = compiledWith(
                {
-                  annotationFields: { ...STORED, name: "t" },
-                  columns: ["id", "region", "status"],
+                  a: fakeSource({ name: "a", sourceEntityId: ADDRESS, ...a }),
+                  b: fakeSource({ name: "b", sourceEntityId: ADDRESS, ...b }),
                },
-               {
-                  annotationFields: { ...STORED, name: "t" },
-                  columns: ["id", "region"],
-               },
-               [["a"], ["b"]],
-            ),
-         ),
+               order,
+               CONNECTIONS,
+            );
+            const tableFolds = foldDistinctTableNames(compiled);
+            let refusal: string | undefined;
+            try {
+               assertNoTableCollisions(
+                  compiled.builds,
+                  compiled.sources,
+                  compiled.connectionDigests,
+                  indexInstructions(instructions),
+                  tableFolds,
+               );
+            } catch (err) {
+               refusal = (err as Error).message;
+            }
+            return { built: tables(instructions), refusal };
+         }),
       );
-      expect(built).toEqual([[ADDRESS, "t"]]);
+      for (const { built, refusal } of results) {
+         // Two addresses, one table: neither projection is written over the
+         // other's; the run refuses the pair before anything is written.
+         expect(built.map(([, t]) => t)).toEqual(["t", "t"]);
+         expect(new Set(built.map(([a]) => a)).size).toBe(2);
+         expect(built.map(([a]) => a)).not.toContain(ADDRESS);
+         expect(refusal).toContain(
+            "compile to the same query but store different columns, yet both materialize into table 't'",
+         );
+      }
+      expect(results[1].built).toEqual(results[0].built);
    });
 
    it("leaves a colocated source of the build on the address it had", () => {
@@ -221,5 +261,64 @@ describe("one table per stored projection", () => {
          ),
       );
       expect(built.map(([a]) => a)).toEqual([ADDRESS]);
+   });
+});
+
+describe("one table per stored projection, over the real compiler", () => {
+   const packages = tempBuildPlanPackages();
+   afterEach(() => packages.cleanup());
+
+   const RAW = `source: raw is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'east', 'open'), (2, 'west', 'closed')) AS t(id, region, status)
+""")`;
+   const HIDES = `#@ persist name="proj_t" storage="lake"
+source: b_hides is raw -> { select: id, region, status } include { public: id, region; private: status }`;
+   const DROPS = `#@ persist name="proj_t" storage="lake"
+source: a_drops is raw -> { select: id, region, status } extend { except: status }`;
+
+   async function addressesOf(model: string) {
+      const { restore } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
+      try {
+         const compiled = await compilePackageBuildPlan(
+            await packages.create(model),
+         );
+         return Object.fromEntries(
+            Object.values(compiled.sources).map((s) => [
+               s.name,
+               computeSourceEntityId(
+                  s,
+                  compiled.connectionDigests,
+                  compiled.targets?.[s.sourceID],
+                  compiled.tableFolds,
+               ),
+            ]),
+         );
+      } finally {
+         restore();
+      }
+   }
+
+   it("addresses one name= stored as two projections apart, in either order", async () => {
+      const header = "##! experimental { persistence access_modifiers }";
+      const one = await addressesOf([header, RAW, HIDES, DROPS].join("\n"));
+      const two = await addressesOf([header, RAW, DROPS, HIDES].join("\n"));
+      expect(one.a_drops).not.toBe(one.b_hides);
+      // The same two addresses whichever is declared first.
+      expect(two).toEqual(one);
+   });
+
+   it("keeps an extension on its base's table, whatever it renames or adds", async () => {
+      const addresses = await addressesOf(
+         [
+            "##! experimental.persistence",
+            RAW,
+            '#@ persist name="base_t" storage="lake"',
+            "source: base is raw -> { group_by: area is region, status } extend { rename: state is status }",
+            "source: ext is base extend { rename: zone is area; dimension: one is 1 }",
+         ].join("\n"),
+      );
+      expect(addresses.ext).toBe(addresses.base);
    });
 });

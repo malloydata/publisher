@@ -12,7 +12,7 @@ import { tableNamesFoldCase } from "../domain/storage_table_path";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
-import { computeSourceEntityId } from "./addressing";
+import { computeSourceEntityId, type TableFolds } from "./addressing";
 import {
    assertMaterializationEligible,
    assertRollupNameUnshared,
@@ -40,6 +40,8 @@ interface EligibilityPlan {
    sources: Record<string, PersistSource>;
    targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;
+   /** The plan's table folds (CompiledBuildPlan.tableFolds). */
+   tableFolds?: TableFolds;
    preaggregatePlans?: Record<string, RollupPlan>;
    /** The `#(materialize)` plans, by the author's sourceID. */
    /**
@@ -72,6 +74,7 @@ export function collidingRollups(compiled: {
    sources: Record<string, PersistSource>;
    targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;
+   tableFolds?: TableFolds;
    preaggregatePlans?: Record<string, RollupPlan>;
    sourceModelPaths?: Record<string, string>;
 }): ReadonlyMap<string, string> {
@@ -89,6 +92,7 @@ export function collidingRollups(compiled: {
             source,
             compiled.connectionDigests,
             compiled.targets?.[sourceID],
+            compiled.tableFolds,
          );
       } catch {
          // No address: the other gates refuse it on their own.
@@ -221,6 +225,7 @@ function sharedTableGroups(
             source,
             compiled.connectionDigests,
             compiled.targets?.[sourceID],
+            compiled.tableFolds,
          );
          target = physicalTarget(
             source,
@@ -465,6 +470,7 @@ export function collectColocatedSourceEligibility(
                source,
                compiled.connectionDigests,
                compiled.targets?.[sourceID],
+               compiled.tableFolds,
             );
          } catch (idErr) {
             // No id to key the refusal under; the log is the only record that
@@ -493,6 +499,7 @@ export function collectColocatedSourceEligibility(
             source,
             compiled.connectionDigests,
             compiled.targets?.[sourceID],
+            compiled.tableFolds,
          );
       } catch (err) {
          logger.warn(

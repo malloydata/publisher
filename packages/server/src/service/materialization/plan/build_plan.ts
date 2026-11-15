@@ -106,6 +106,7 @@ import {
    withoutSourceIDs,
    sourceBuildsOf,
    type SourceBuild,
+   type TableFolds,
 } from "./addressing";
 import {
    collectColocatedSourceEligibility,
@@ -140,6 +141,7 @@ export {
    sourceBuildsOf,
    sourcesInBuildOrder,
    type SourceBuild,
+   type TableFolds,
 } from "./addressing";
 export {
    collidingRollups,
@@ -188,6 +190,12 @@ export interface CompiledBuildPlan {
    targets?: Record<string, BuildTarget>;
    connectionDigests: Record<string, string>;
    connections: Map<string, MalloyConnection>;
+   /**
+    * What each moved source's address folds in (foldDistinctTableNames), by
+    * sourceID: decided over the whole package before any refusal. Pass it to
+    * every computeSourceEntityId of a plan source.
+    */
+   tableFolds?: TableFolds;
    /**
     * sourceID -> package-relative path of the declaring `.malloy` model. Only
     * known here: a sourceID embeds an absolute `file://` URL with no package
@@ -1357,6 +1365,8 @@ export function deriveBuildPlan(
       sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
       /** See {@link CompiledBuildPlan.omittedSources}. */
       omittedSources?: Omission[];
+      /** See {@link CompiledBuildPlan.tableFolds}. */
+      tableFolds?: TableFolds;
    },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
@@ -1523,7 +1533,12 @@ export function deriveBuildPlan(
                     measures: rollup.measures.map((m) => m.name),
                  }
                : null,
-            sourceEntityId: computeSourceEntityId(source, connectionDigests),
+            sourceEntityId: computeSourceEntityId(
+               source,
+               connectionDigests,
+               undefined,
+               options?.tableFolds,
+            ),
             sql: addressSQL(source),
             // Verbatim; the resolved declaration is deliberately not a wire field
             // (see resolveIncrementalDeclaration).
@@ -1554,6 +1569,7 @@ export function deriveBuildPlan(
    refuseColocatedTablesSharedWithARefusal(
       sources,
       connectionDigests,
+      options?.tableFolds,
       options,
       wireSources,
       refusedSources,
@@ -1580,6 +1596,7 @@ export function deriveBuildPlan(
 function refuseColocatedTablesSharedWithARefusal(
    sources: Record<string, PersistSource>,
    connectionDigests: Record<string, string>,
+   tableFolds: TableFolds | undefined,
    options: TierGateInputs | undefined,
    wireSources: Record<string, WirePersistSourcePlan>,
    refusedSources: Record<string, WireRefusedSource>,
@@ -1604,7 +1621,12 @@ function refuseColocatedTablesSharedWithARefusal(
       if (options?.preaggregatePlans?.[id] || !v1(id)) continue;
       let address: string;
       try {
-         address = computeSourceEntityId(source, connectionDigests);
+         address = computeSourceEntityId(
+            source,
+            connectionDigests,
+            undefined,
+            tableFolds,
+         );
       } catch {
          continue;
       }
@@ -1707,15 +1729,19 @@ export function deriveBuildPlanOutcome(
    /** The package's materialization `scope` (`"version"` suffixes every name). */
    scope?: string | null,
 ): BuildPlanOutcome {
-   // Before anything addresses a source: each author `name=` its own table.
-   foldDistinctTableNames({
-      ...collected,
-      ...(scope === "version" ? { versionScoped: true } : {}),
-   });
+   // Before anything addresses a source: each author `name=` its own table,
+   // decided over the whole package unless the compile already decided it.
+   const tableFolds =
+      collected.tableFolds ??
+      foldDistinctTableNames({
+         ...collected,
+         ...(scope === "version" ? { versionScoped: true } : {}),
+      });
    // Before anything reads the plan: a refused source is neither built nor
    // served, and its warning replaces it (#6644).
    const compiled = refuseCollidingMaterialize({
       ...collected,
+      tableFolds,
       ...(scope === "version" ? { versionScoped: true } : {}),
    });
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
@@ -1740,6 +1766,7 @@ export function deriveBuildPlanOutcome(
                  materializePlans: compiled.materializePlans,
                  sourceGateOutcomes: compiled.sourceGateOutcomes,
                  omittedSources: compiled.omittedSources,
+                 tableFolds: compiled.tableFolds,
               },
            );
    return {
@@ -1766,7 +1793,7 @@ export function deriveBuildPlanOutcome(
 function compilerKeysOf(
    compiled: Pick<
       CompiledBuildPlan,
-      "sources" | "targets" | "connectionDigests"
+      "sources" | "targets" | "connectionDigests" | "tableFolds"
    >,
 ): Record<string, string> {
    const keys: Record<string, string> = {};
@@ -1777,6 +1804,7 @@ function compilerKeysOf(
             source,
             compiled.connectionDigests,
             target,
+            compiled.tableFolds,
          );
          const key = compilerBuildId(
             source,

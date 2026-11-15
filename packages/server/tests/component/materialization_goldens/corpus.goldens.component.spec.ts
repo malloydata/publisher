@@ -157,7 +157,7 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    }
    // As a package's plan is: each `name=` its own table, before anything
    // reads an address.
-   foldDistinctTableNames(compiled);
+   compiled = { ...compiled, tableFolds: foldDistinctTableNames(compiled) };
    const addresses = addressesOf(compiled);
    learnAddresses(normalizer, addresses);
    const { connections: _connections, ...collected } = compiled;

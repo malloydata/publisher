@@ -305,6 +305,8 @@ export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
    target?: BuildTarget,
+   /** The plan's {@link TableFolds}; absent, nothing is folded. */
+   tableFolds?: TableFolds,
 ): string {
    // The target's `sql` is load-bearing: this address keys the covered_through
    // ledger (incremental_build.ts), so it must describe WHAT the source
@@ -320,14 +322,15 @@ export function computeSourceEntityId(
    // `manifestForCompiler` carries an entry under both. The digest stays the
    // caller's, so the same SQL on another connection is another table.
    const resolved = buildTargetOf(source, target);
+   const fold = tableFolds?.[source.sourceID];
    const chosen = testAddresses.get(resolved);
    if (chosen !== undefined) {
-      const layout = addressText(source, "");
+      const layout = addressText(source, "", fold);
       return layout === "" ? chosen : makeDigest(chosen, layout);
    }
    return makeDigest(
       connectionDigests[source.connectionName],
-      addressText(source, resolved.sql),
+      addressText(source, resolved.sql, fold),
    );
 }
 
@@ -383,18 +386,40 @@ export function addressDestination(source: PersistSource): string | undefined {
  * colocated address (#7087), and two `name=`s on one build would get one
  * table.
  *
- * Derived here rather than passed in so every caller agrees
- * (`build_targets_address_equality` pins it). Nothing to fold appends
+ * The destination is derived here rather than passed in so every caller
+ * agrees (`build_targets_address_equality` pins it); the table fold is the
+ * plan's, which every caller addressing a plan's source passes. Nothing to fold appends
  * nothing, keeping such addresses stable; a change moves the address once,
  * which is the rebuild the author asked for.
  */
-export function addressText(source: PersistSource, sql: string): string {
+export function addressText(
+   source: PersistSource,
+   sql: string,
+   /** The source's entry in its plan's {@link TableFolds}. */
+   tableFold?: string,
+): string {
    let text = sql;
    const destination = addressDestination(source);
    if (destination !== undefined) text += `\n-- stored in: ${destination}`;
-   const table = tableNameFolds.get(source);
-   if (table) text += `\n-- table: ${table}`;
+   if (tableFold) text += `\n-- table: ${tableFold}`;
    return text;
+}
+
+/**
+ * Where `source`'s `#@` persist declaration is written: an extension that
+ * inherits its base's declaration names the base's line. Its sourceID when it
+ * carries no located note.
+ */
+function declarationOf(source: PersistSource): string {
+   try {
+      const note = source.annotations.forRoute("@")[0] as
+         | { at?: { url: string; range: { start: { line: number } } } }
+         | undefined;
+      if (note?.at) return `${note.at.url}:${note.at.range.start.line}`;
+   } catch {
+      // Unreadable: its own declaration.
+   }
+   return source.sourceID;
 }
 
 /**
@@ -416,12 +441,13 @@ function storedProjection(source: PersistSource): string {
 }
 
 /**
- * What {@link foldDistinctTableNames} folded into each planned source's
- * address: the name's identity, or the stored columns where projections
- * differ, or "" when nothing is folded. A source with no entry has not been
- * decided.
+ * What {@link foldDistinctTableNames} folds into each moved source's address,
+ * by sourceID: its name's identity, and its stored columns where projections
+ * differ. A source not listed keeps its plain address. Carried on the plan
+ * (`CompiledBuildPlan.tableFolds`) and handed to every
+ * {@link computeSourceEntityId} that addresses a plan's source.
  */
-const tableNameFolds = new WeakMap<PersistSource, string>();
+export type TableFolds = Readonly<Record<string, string>>;
 
 /**
  * Give each author `name=` its own table: two sources that compile to one
@@ -432,14 +458,17 @@ const tableNameFolds = new WeakMap<PersistSource, string>();
  * every source of an address whose sources all name one table: the same
  * source reached from two models, or identical SQL with no `name=`.
  *
- * Likewise two `storage=` sources of one build with no `name=` that store
- * different columns (one keeps a column `private:`, the other drops it with
- * `except:`): each is addressed with its projection folded in, so each gets
- * its own readable table and a column one drops is never at rest in its
- * table. Sources of one `name=` stay on that one table.
+ * Likewise two `storage=` sources of one build that store different columns
+ * (one keeps a column `private:`, the other drops it with `except:`): each is
+ * addressed with its projection folded in, so a column one drops is never at
+ * rest in the other's table. Two such sources with one `name=` then sit on
+ * two addresses at one table, which is the author's collision, reported and
+ * refused as any other (see sharedTables).
  *
  * So only an address that held sources naming or storing different tables
- * moves, and the result does not depend on build order.
+ * moves, and the result does not depend on build order. A source moves when
+ * a same-build source naming another table is added or removed, so its table
+ * is rebuilt once then.
  *
  * A name is its {@link tableIdentity}, so two names a warehouse may read as
  * one table (`T` and `t`, `s.t` and `t`) are never split onto two addresses
@@ -447,37 +476,29 @@ const tableNameFolds = new WeakMap<PersistSource, string>();
  * that equals an author's is that author's table, as persistTableTarget
  * keys it.
  *
- * Decided once per source object, over the package's whole plan, before any
- * source is refused: a later call (on a plan less its refused sources) keeps
- * those decisions, so its addresses agree with the plan's. `force` decides
- * again, as a fresh compile of the package does.
+ * Decided over the package's whole plan, before any source is refused, and
+ * carried on the plan, so a plan less its refused sources keeps the
+ * addresses.
  */
-export function foldDistinctTableNames(
-   plan: {
-      sources: Record<string, PersistSource>;
-      targets?: Record<string, BuildTarget>;
-      connectionDigests: Record<string, string>;
-      preaggregatePlans?: Record<string, unknown>;
-      materializePlans?: Record<string, { nameDefaulted?: true }>;
-      versionScoped?: boolean;
-   },
-   options: { force?: boolean } = {},
-): void {
-   const entries = Object.entries(plan.sources);
-   if (!options.force && entries.every(([, s]) => tableNameFolds.has(s))) {
-      return;
-   }
+export function foldDistinctTableNames(plan: {
+   sources: Record<string, PersistSource>;
+   targets?: Record<string, BuildTarget>;
+   connectionDigests: Record<string, string>;
+   preaggregatePlans?: Record<string, unknown>;
+   materializePlans?: Record<string, { nameDefaulted?: true }>;
+   versionScoped?: boolean;
+}): TableFolds {
    const groups = new Map<
       string,
       {
-         source: PersistSource;
+         sourceID: string;
          name: string;
          defaulted: boolean;
          stores: string;
+         declaration: string;
       }[]
    >();
-   for (const [sourceID, source] of entries) {
-      tableNameFolds.set(source, "");
+   for (const [sourceID, source] of Object.entries(plan.sources)) {
       let address: string;
       try {
          address = computeSourceEntityId(
@@ -488,22 +509,22 @@ export function foldDistinctTableNames(
       } catch {
          continue; // Unaddressable: refused on its own path.
       }
+      const rollup = !!plan.preaggregatePlans?.[sourceID];
       const declared = deriveAnnotationFields(source).name?.trim();
       const materialize = plan.materializePlans?.[sourceID];
       const defaulted =
-         !!plan.preaggregatePlans?.[sourceID] ||
-         (materialize ? !!materialize.nameDefaulted : !declared);
+         rollup || (materialize ? !!materialize.nameDefaulted : !declared);
       const group = groups.get(address) ?? [];
       group.push({
-         source,
+         sourceID,
          name: tableIdentity(declared || source.name),
          defaulted,
-         stores: plan.preaggregatePlans?.[sourceID]
-            ? ""
-            : storedProjection(source),
+         stores: rollup ? "" : storedProjection(source),
+         declaration: declarationOf(source),
       });
       groups.set(address, group);
    }
+   const folds: Record<string, string> = {};
    for (const group of groups.values()) {
       const authored = new Set(
          group.filter((m) => !m.defaulted).map((m) => m.name),
@@ -512,19 +533,32 @@ export function foldDistinctTableNames(
          !m.defaulted || (plan.versionScoped && authored.has(m.name))
             ? m.name
             : "";
-      // Projections split only `storage=` sources with no table name of
-      // their own: one `name=` is one table, whatever each source stores in
-      // it, and a colocated build stores its whole query.
-      const projected = (m: (typeof group)[number]) =>
-         nameOf(m) === "" && m.stores !== "";
-      const projections = new Set(group.filter(projected).map((m) => m.stores));
+      // A colocated build stores its whole query, so only `storage=`
+      // sources are told apart by what they store, and only one declaration
+      // from another: an extension that inherits its base's `#@ persist` is
+      // its base's table, whatever it renames or adds.
+      const declared = new Map<string, string>();
+      for (const m of group) {
+         if (m.stores === "") continue;
+         const held = declared.get(m.declaration);
+         if (held === undefined || m.stores < held) {
+            declared.set(m.declaration, m.stores);
+         }
+      }
+      const storesOf = (m: (typeof group)[number]) =>
+         m.stores === "" ? "" : declared.get(m.declaration)!;
+      const projections = new Set(group.map(storesOf).filter((p) => p !== ""));
       const keyOf = (m: (typeof group)[number]) =>
-         projected(m) && projections.size > 1 ? `\u0000${m.stores}` : nameOf(m);
+         storesOf(m) !== "" && projections.size > 1
+            ? `${nameOf(m)}\u0000${storesOf(m)}`
+            : nameOf(m);
       if (new Set(group.map(keyOf)).size < 2) continue;
       for (const member of group) {
-         tableNameFolds.set(member.source, keyOf(member));
+         const key = keyOf(member);
+         if (key) folds[member.sourceID] = key;
       }
    }
+   return folds;
 }
 
 /**

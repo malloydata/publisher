@@ -274,6 +274,7 @@ export class InstructedBuild {
             ...chainedPlanFacts(
                sources,
                connectionDigests,
+               compiled.tableFolds,
                // A host can imply a destination the annotation does not declare,
                // so the instruction decides a source's current tier (#7087).
                (sourceID, sourceEntityId) =>
@@ -301,7 +302,13 @@ export class InstructedBuild {
          ...(uniqueness ? { uniqueness } : {}),
          signal,
       };
-      assertNoTableCollisions(builds, sources, connectionDigests, index);
+      assertNoTableCollisions(
+         builds,
+         sources,
+         connectionDigests,
+         index,
+         compiled.tableFolds,
+      );
 
       let settled: ReturnType<typeof settleRefusals> = {
          refusalsInFailures: 0,
@@ -542,6 +549,7 @@ export class InstructedBuild {
          run.index,
          persistSource,
          compiled.connectionDigests,
+         compiled.tableFolds,
       );
       if (!resolved) return;
       const { instruction, orchestrated } = resolved;
@@ -559,6 +567,7 @@ export class InstructedBuild {
             persistSource,
             compiled.connectionDigests,
             compiled.targets?.[persistSource.sourceID],
+            compiled.tableFolds,
          );
 
       // A colocated table is served by its address, so the bind refuses the
@@ -1001,6 +1010,7 @@ function authorNamedInstructions(
             run.index,
             source,
             run.compiled.connectionDigests,
+            run.compiled.tableFolds,
          )?.instruction;
          if (
             instruction?.physicalTableName === selfAssignTableName(source) &&
@@ -1209,6 +1219,7 @@ function colocatedRefusalOn(
                source,
                compiled.connectionDigests,
                compiled.targets?.[id],
+               compiled.tableFolds,
             );
          } catch {
             // No address, so no table it could share.
@@ -1309,6 +1320,7 @@ async function storedJoinOf(
          joined,
          compiled.connectionDigests,
          compiled.targets?.[check.joinedSourceID],
+         compiled.tableFolds,
       );
       const entry = run.entries[address];
       if (
@@ -1671,6 +1683,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          source,
          compiled.connectionDigests,
          compiled.targets?.[sourceID],
+         compiled.tableFolds,
       );
       const entry = run.entries[address];
       if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
@@ -1710,6 +1723,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          source,
          compiled.connectionDigests,
          compiled.targets?.[sourceID],
+         compiled.tableFolds,
       );
       const entry = run.entries[address];
       if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
@@ -1743,6 +1757,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          source,
          compiled.connectionDigests,
          compiled.targets?.[sourceID],
+         compiled.tableFolds,
       );
       const entry = run.entries[address];
       if (!entry || run.builtAddresses.has(address)) continue;

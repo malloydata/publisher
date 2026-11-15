@@ -136,7 +136,11 @@ async function planChain(
       runtime,
       getRuntime: async () => ({ runtime, importBaseURL: base }),
    });
-   const facts = chainedPlanFacts(parts.sources, { duckdb: "digest" });
+   const facts = chainedPlanFacts(
+      parts.sources,
+      { duckdb: "digest" },
+      undefined,
+   );
    return {
       dir,
       sources: parts.sources,

@@ -123,6 +123,9 @@ function gateSources(
    const refused: Record<string, RefusedSource> = {};
    const refusals: MaterializationEligibilityError[] = [];
    const cleared = new Map<string, EligibilityTier>();
+   // A compiled package's plan carries its folds; a hand-made one is decided
+   // here, over every source.
+   const tableFolds = compiled.tableFolds ?? foldDistinctTableNames(compiled);
    for (const build of compiled.builds) {
       for (const persistSource of sourcesInBuildOrder(
          build,
@@ -199,6 +202,8 @@ function gateSources(
             sourceEntityId: computeSourceEntityId(
                persistSource,
                compiled.connectionDigests,
+               undefined,
+               tableFolds,
             ),
             destination,
          });
@@ -545,8 +550,6 @@ export function deriveSelfInstructions(
    /** Tables this run builds under a new name in place of an earlier run's. */
    renamed: RenamedTable[];
 } {
-   // A compiled package's plan is decided already; a hand-made one here.
-   foldDistinctTableNames(compiled);
    const include = sourceNames ? new Set(sourceNames) : null;
    const instructions: BuildInstruction[] = [];
    const carried: Record<string, ManifestEntry> = {};

@@ -177,11 +177,13 @@ export async function compilePackageBuildPlan(
    );
 
    const versionScoped = pkg.getPackageMetadata?.()?.scope === "version";
-   // Before anything addresses a source: each author `name=` its own table.
-   foldDistinctTableNames(
-      { ...parts, connectionDigests, versionScoped },
-      { force: true },
-   );
+   // Before anything addresses a source: each author `name=` its own table,
+   // decided over every source before any is refused.
+   const tableFolds = foldDistinctTableNames({
+      ...parts,
+      connectionDigests,
+      versionScoped,
+   });
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name must not build here either.
    return refuseCollidingMaterialize({
@@ -191,6 +193,7 @@ export async function compilePackageBuildPlan(
       targets: parts.targets,
       connectionDigests,
       connections,
+      tableFolds,
       sourceModelPaths: parts.sourceModelPaths,
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,

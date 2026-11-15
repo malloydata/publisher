@@ -31,6 +31,7 @@ import {
    computeSourceEntityId,
    deriveAnnotationFields,
    compilerBuildId,
+   type TableFolds,
 } from "../plan/build_plan";
 import { declaredStorage } from "../plan/persist_source_fields";
 import { type QueryContext, type QueryMetadata } from "../../query_metadata";
@@ -364,6 +365,8 @@ export function compilerMissingUpstream(
 export function chainedPlanFacts(
    sources: Record<string, PersistSource>,
    connectionDigests: Record<string, string>,
+   /** The plan's table folds (CompiledBuildPlan.tableFolds). */
+   tableFolds: TableFolds | undefined,
    /**
     * The run's instruction for a source, when it has one: its `destination`
     * decides the source's current tier over the `storage=` annotation, since a
@@ -388,7 +391,12 @@ export function chainedPlanFacts(
    for (const [sourceID, source] of Object.entries(sources)) {
       let sourceEntityId: string | undefined;
       try {
-         sourceEntityId = computeSourceEntityId(source, connectionDigests);
+         sourceEntityId = computeSourceEntityId(
+            source,
+            connectionDigests,
+            undefined,
+            tableFolds,
+         );
          compilerKeyBySourceId[sourceID] = compilerBuildId(
             source,
             connectionDigests,
