@@ -10709,6 +10709,7 @@ components:
               rollup_name_collision,
               empty_storage,
               table_name_collision,
+              current_time,
             ]
           description: >-
             The bounded refusal reason. Only the compile-time reasons can
@@ -10728,10 +10729,17 @@ components:
             a given, which has no read-time re-application to put the term back),
             `read_only_dialect` (a colocated `#@ persist` on a source whose
             dialect cannot create tables; SQL Server today, whose connection
-            reports `canPersist: false`), and `rollup_name_collision` (a
+            reports `canPersist: false`), `rollup_name_collision` (a
             pre-aggregation rollup whose generated name, and so its table, is
             also another model's rollup with different content; neither builds
-            or serves, and each model answers from its base) —
+            or serves, and each model answers from its base), and
+            `current_time` (a `#@ persist` whose build reads the current
+            time, `now`: in its persisted query, a view it runs, the
+            `where:`, a field or a join of the source that query reads, or
+            the query of a query-shaped source it is built from or joins; its
+            table would hold the rows as of the build, so it is not built and
+            is answered live. `now` in the source's own extend block is
+            applied at every read and is admitted) —
             those being the only reasons the two
             compile-time eligibility asserts this collection is computed from
             produce. One more appears only in a run's

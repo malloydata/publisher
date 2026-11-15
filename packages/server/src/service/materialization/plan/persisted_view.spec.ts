@@ -153,6 +153,52 @@ source: ops is ${TABLE} extend {
       expect(findings.some((m) => m.includes("current time"))).toBe(true);
    });
 
+   it("leaves out a view whose select: * reads a current-time dimension, and keeps its twin", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="star"
+  view: star is { select: * }
+}
+source: ops2 is ${TABLE} extend {
+  dimension: plain is carrier
+  #@ persist name="star2"
+  view: star2 is { select: * }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops2__star2__view"]);
+      expect(viewFindings(c).some((m) => m.includes("current time"))).toBe(
+         true,
+      );
+   });
+
+   it("plans a view whose later stage names a field like a current-time dimension", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="later"
+  view: later is { group_by: carrier, past is ts > @2000-01-01 } -> { select: carrier, past }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops__later__view"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
+   it("leaves out a view on a query-shaped source whose query reads now", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: qb is ${TABLE} -> { where: ts < now; select: * }
+source: ops is qb extend {
+  measure: n is count()
+  #@ persist name="by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c).some((m) => m.includes("current time"))).toBe(
+         true,
+      );
+   });
+
    it("finds an incremental key and an @env. reference invalid", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {

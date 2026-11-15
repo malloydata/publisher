@@ -186,6 +186,121 @@ function argumentBindsAGiven(node: unknown, depth = 0): boolean {
 }
 
 /**
+ * Whether the BUILD of a v1 `#@ persist` source reads the current time
+ * (`now`), so its table holds the rows as of the build while a live query
+ * reads them as of each read. The build is the persisted relation alone
+ * (probed: the relation's own SQL, never the source's extend block), so the
+ * positions are those of {@link buildSubstitutesAGiven}: the persisted query
+ * ({@link pipelineReadsCurrentTime}) and, for a non-query source, everything
+ * but the read-time `filterList` and `fields`. Fails closed: unreadable IR is
+ * a refusal.
+ */
+export function buildReadsCurrentTime(persistSource: PersistSource): boolean {
+   try {
+      const def = sourceDefOf(persistSource) as unknown;
+      if (def === null || typeof def !== "object") return true;
+      const query = (def as { query?: unknown }).query;
+      if (query !== null && typeof query === "object") {
+         return queryReadsCurrentTime(query, 0);
+      }
+      const {
+         filterList: _readTimeFilters,
+         fields: _readTimeFields,
+         ...relation
+      } = def as Record<string, unknown>;
+      return readsCurrentTime(relation);
+   } catch {
+      return true;
+   }
+}
+
+/**
+ * Whether a compiled query reads the current time, as its SQL would: its
+ * stages ({@link pipelineReadsCurrentTime}) over the source it reads. A source
+ * referenced by name rather than inlined is decided by the whole query.
+ */
+function queryReadsCurrentTime(query: unknown, depth: number): boolean {
+   if (depth > MAX_WALK_DEPTH) return true; // fail closed
+   if (query === null || typeof query !== "object") return false;
+   const { structRef, pipeline } = query as {
+      structRef?: unknown;
+      pipeline?: unknown;
+   };
+   if (structRef === null || typeof structRef !== "object") {
+      return readsCurrentTime(query);
+   }
+   return pipelineReadsCurrentTime(
+      structRef,
+      Array.isArray(pipeline) ? pipeline : [],
+      depth,
+   );
+}
+
+/**
+ * Whether a pipeline's result reads the current time: `now` in a stage, or in
+ * the `where:` of the source it reads (inherited terms included), or in a
+ * field or join of that source a stage reads (a `select: *` included), or
+ * anywhere in the query that source is itself built from (a query-shaped base
+ * at any depth, imported or not, or an upstream persist inlined into it).
+ * The rule both a v1 `#@ persist` build and a persisted view or query use.
+ */
+export function pipelineReadsCurrentTime(
+   input: unknown,
+   stages: readonly unknown[],
+   depth = 0,
+): boolean {
+   const source = (input ?? {}) as {
+      fields?: unknown;
+      filterList?: unknown;
+      query?: unknown;
+   };
+   if (readsCurrentTime(source.filterList) || readsCurrentTime(stages)) {
+      return true;
+   }
+   if (
+      source.query !== undefined &&
+      queryReadsCurrentTime(source.query, depth + 1)
+   ) {
+      return true;
+   }
+   const timed = currentTimeFields(source.fields);
+   if (timed.size === 0) return false;
+   return stagesReadPaths(stages).some((p) => dependsOnCurrentTime(p, timed));
+}
+
+const STAGE_PATH_SKIPPED_KEYS: ReadonlySet<string> = new Set([
+   "at",
+   "location",
+   "annotations",
+   "outputStruct",
+]);
+
+/**
+ * The dotted field paths of the input source a compiled pipeline reads: its
+ * first stage's expanded usage, and every field reference in that stage, its
+ * nests included (a `select: *` names each field of the source as a
+ * `fieldref`, and its expanded usage lists only the columns those fields read
+ * in turn). A later stage names the previous stage's outputs, not the
+ * source's fields; its own `now` is caught by the walk over every stage.
+ */
+function stagesReadPaths(stages: readonly unknown[]): string[] {
+   const out = new Set<string>();
+   const first = stages[0];
+   if (first === undefined) return [];
+   const usage = (first as { expandedFieldUsage?: unknown } | null)
+      ?.expandedFieldUsage;
+   for (const u of Array.isArray(usage) ? usage : []) {
+      const p = (u as { path?: unknown } | null)?.path;
+      if (Array.isArray(p) && p.length > 0) out.add(p.join("."));
+   }
+   forEachFieldPath(first, (path) => out.add(path.join(".")), {
+      fieldrefs: true,
+      skipKeys: STAGE_PATH_SKIPPED_KEYS,
+   });
+   return [...out];
+}
+
+/**
  * Admit or refuse a persist source by the POSITION of every given it reads,
  * returning the extend-block `where:` terms that may be stripped from the
  * build and re-applied at read, or the first position that cannot be.
@@ -1054,15 +1169,19 @@ function readsTimeField(e: unknown, timeFields: ReadonlySet<string>): boolean {
  * Every field of a source whose value depends on the current time, as a dotted
  * path: it reads `now`, or reads (through any chain of the source's fields,
  * joined ones included) one that does. A join whose own `where:` or `on` reads
- * the current time is listed by its own name, since every value read through
+ * the current time, or whose query does, is listed by its own name, since every value read through
  * it depends on it. Such a dimension is never stored, since its value differs
  * per read.
  */
 export function currentTimeFields(fields: unknown): Set<string> {
    return fieldsDependingOn(fields, {
       field: (f) => readsCurrentTime(f.e),
+      // A joined query-shaped source whose query reads it (its own stages or
+      // the source it is built from) is read through the join every time.
       join: (f) =>
-         readsCurrentTime(f.filterList) || readsCurrentTime(f.onExpression),
+         readsCurrentTime(f.filterList) ||
+         readsCurrentTime(f.onExpression) ||
+         (f.query !== undefined && queryReadsCurrentTime(f.query, 0)),
    });
 }
 
@@ -1096,6 +1215,7 @@ interface FieldLikeForDependence {
    fields?: unknown;
    filterList?: unknown;
    onExpression?: unknown;
+   query?: unknown;
 }
 
 /**

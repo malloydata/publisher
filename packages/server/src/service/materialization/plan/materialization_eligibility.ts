@@ -42,6 +42,7 @@ import type {
    TablePlan,
 } from "../domain/table_plans";
 import {
+   buildReadsCurrentTime,
    buildSubstitutesAGiven,
    admitGivenPositions,
    inheritedGivenWhereRefusal,
@@ -879,6 +880,7 @@ export function assertTierEligible(
       assertMaterializationEligible(source, annotationFields, {
          gateEnforcedAtRead: gateEnforcedAtRead(source.sourceID, plan, true),
       });
+      assertBuildReadsNoCurrentTime(source, plan);
       return;
    }
    const table = plan?.tables?.[source.sourceID];
@@ -916,4 +918,38 @@ export function assertTierEligible(
             `table keeps the gate through Malloy's build manifest.`,
       });
    }
+   assertBuildReadsNoCurrentTime(source, plan);
+}
+
+/**
+ * Refuse a v1 `#@ persist` source whose build reads the current time
+ * ({@link buildReadsCurrentTime}): its table would hold the rows as of the
+ * build and serve them until the next rebuild, while a live query reads `now`
+ * again every time. Not built, and answered live. `now` in the source's own
+ * extend block is re-applied at every read, so it is admitted. A rollup
+ * (rollup_plan.ts, `preaggregate-current-time`) and a `#(materialize)` source
+ * (materialize_plan.ts) are judged by their own planners.
+ */
+export function assertBuildReadsNoCurrentTime(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): void {
+   const table = plan?.tables?.[source.sourceID];
+   if (table?.rollup || table?.materialize) return;
+   if (!buildReadsCurrentTime(source)) return;
+   recordEligibilityRefused("current_time");
+   throw new MaterializationEligibilityError({
+      reason: "current_time",
+      message:
+         `Source '${source.name}' cannot be materialized: the relation it ` +
+         `persists reads the current time (\`now\`), in its query, a view ` +
+         `it runs, the \`where:\`, a field or a join of the source that ` +
+         `query reads, or the query of a query-shaped source it is built ` +
+         `from or joins. Its table would hold the rows as of the build and ` +
+         `serve them until the next rebuild, while a live query reads \`now\` ` +
+         `again every time, so it is not built and is answered live. To serve ` +
+         `it from a table, move the \`now\` into the persisted source's own ` +
+         `extend block (a \`where:\`, dimension or measure there is applied ` +
+         `at every read), or stop persisting this source.`,
+   });
 }
