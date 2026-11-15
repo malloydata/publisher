@@ -188,7 +188,7 @@ describe("one table per stored projection", () => {
       expect(results[1]).toEqual(results[0]);
    });
 
-   it("splits one name= stored as two projections, in either order: a collision the run refuses, naming the columns", () => {
+   it("splits one name= stored as two projections, in either order: a collision an auto-run builds neither of, and a host run refuses, naming the columns", () => {
       const results = withStorage(() =>
          ORDERS.map((order) => {
             const a = {
@@ -199,7 +199,12 @@ describe("one table per stored projection", () => {
                annotationFields: { ...STORED, name: "t" },
                columns: ["id", "region"],
             };
-            const instructions = derive(a, b, order);
+            let autoRun: string | undefined;
+            try {
+               derive(a, b, order);
+            } catch (err) {
+               autoRun = (err as Error).message;
+            }
             const compiled = compiledWith(
                {
                   a: fakeSource({ name: "a", sourceEntityId: ADDRESS, ...a }),
@@ -209,32 +214,49 @@ describe("one table per stored projection", () => {
                CONNECTIONS,
             );
             const tableFolds = foldDistinctTableNames(compiled);
-            let refusal: string | undefined;
+            const addresses = Object.values(compiled.sources).map((s) =>
+               computeSourceEntityId(
+                  s,
+                  compiled.connectionDigests,
+                  undefined,
+                  tableFolds,
+               ),
+            );
+            let hostRun: string | undefined;
             try {
                assertNoTableCollisions(
                   compiled.builds,
                   compiled.sources,
                   compiled.connectionDigests,
-                  indexInstructions(instructions),
+                  indexInstructions(
+                     addresses.map((sourceEntityId, i) => ({
+                        sourceEntityId,
+                        materializedTableId: `m${i}`,
+                        physicalTableName: "t",
+                        realization: "COPY" as const,
+                        destination: "lake",
+                     })),
+                  ),
                   tableFolds,
                );
             } catch (err) {
-               refusal = (err as Error).message;
+               hostRun = (err as Error).message;
             }
-            return { built: tables(instructions), refusal };
+            return { addresses: [...addresses].sort(), autoRun, hostRun };
          }),
       );
-      for (const { built, refusal } of results) {
-         // Two addresses, one table: neither projection is written over the
-         // other's; the run refuses the pair before anything is written.
-         expect(built.map(([, t]) => t)).toEqual(["t", "t"]);
-         expect(new Set(built.map(([a]) => a)).size).toBe(2);
-         expect(built.map(([a]) => a)).not.toContain(ADDRESS);
-         expect(refusal).toContain(
+      for (const { addresses, autoRun, hostRun } of results) {
+         // Two addresses, one table: the auto-run builds neither, so neither
+         // projection is written over the other's.
+         expect(new Set(addresses).size).toBe(2);
+         expect(addresses).not.toContain(ADDRESS);
+         expect(autoRun).toContain("is not built");
+         expect(autoRun).toContain('all write the table "t"');
+         expect(hostRun).toContain(
             "compile to the same query but store different columns, yet both materialize into table 't'",
          );
       }
-      expect(results[1].built).toEqual(results[0].built);
+      expect(results[1].addresses).toEqual(results[0].addresses);
    });
 
    it("leaves a colocated source of the build on the address it had", () => {

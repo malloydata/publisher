@@ -423,6 +423,23 @@ function declarationOf(source: PersistSource): string {
 }
 
 /**
+ * Whether `source` writes its own `#@` persist declaration, rather than
+ * inheriting its base's (an extension). A source whose annotation cannot be
+ * read counts as declaring.
+ */
+function declaresOwnPersist(source: PersistSource): boolean {
+   try {
+      const own = source.annotation;
+      if (!own) return true;
+      return [...(own.blockNotes ?? []), ...(own.notes ?? [])].some((n) =>
+         n.text.trimStart().startsWith("#@"),
+      );
+   } catch {
+      return true;
+   }
+}
+
+/**
  * The columns a `storage=` build of `source` stores (its public columns,
  * as projectToPublicColumns writes them), sorted; "" for a colocated source,
  * whose build writes its whole query, or one whose columns cannot be read
@@ -458,12 +475,13 @@ export type TableFolds = Readonly<Record<string, string>>;
  * every source of an address whose sources all name one table: the same
  * source reached from two models, or identical SQL with no `name=`.
  *
- * Likewise two `storage=` sources of one build that store different columns
- * (one keeps a column `private:`, the other drops it with `except:`): each is
- * addressed with its projection folded in, so a column one drops is never at
- * rest in the other's table. Two such sources with one `name=` then sit on
- * two addresses at one table, which is the author's collision, reported and
- * refused as any other (see sharedTables).
+ * Likewise two `storage=` declarations of one build that store different
+ * columns (one keeps a column `private:`, the other drops it with `except:`):
+ * each is addressed with its declaring source's projection folded in, so a
+ * column one drops is never at rest in the other's table. An extension that
+ * inherits a declaration is on its table. Two such sources with one `name=`
+ * then sit on two addresses at one table, which is the author's collision,
+ * reported, and refused by an auto-run (see sharedTables).
  *
  * So only an address that held sources naming or storing different tables
  * moves, and the result does not depend on build order. A source moves when
@@ -496,6 +514,7 @@ export function foldDistinctTableNames(plan: {
          defaulted: boolean;
          stores: string;
          declaration: string;
+         declares: boolean;
       }[]
    >();
    for (const [sourceID, source] of Object.entries(plan.sources)) {
@@ -521,6 +540,7 @@ export function foldDistinctTableNames(plan: {
          defaulted,
          stores: rollup ? "" : storedProjection(source),
          declaration: declarationOf(source),
+         declares: declaresOwnPersist(source),
       });
       groups.set(address, group);
    }
@@ -537,16 +557,24 @@ export function foldDistinctTableNames(plan: {
       // sources are told apart by what they store, and only one declaration
       // from another: an extension that inherits its base's `#@ persist` is
       // its base's table, whatever it renames or adds.
-      const declared = new Map<string, string>();
-      for (const m of group) {
+      // A declaration stores what its declaring source projects; an
+      // extension reads that table. With no declaring source among them (a
+      // hand-made plan), the first by sourceID.
+      const declared = new Map<string, { stores: string; declares: boolean }>();
+      for (const m of [...group].sort((a, b) =>
+         a.sourceID.localeCompare(b.sourceID),
+      )) {
          if (m.stores === "") continue;
          const held = declared.get(m.declaration);
-         if (held === undefined || m.stores < held) {
-            declared.set(m.declaration, m.stores);
+         if (held === undefined || (m.declares && !held.declares)) {
+            declared.set(m.declaration, {
+               stores: m.stores,
+               declares: m.declares,
+            });
          }
       }
       const storesOf = (m: (typeof group)[number]) =>
-         m.stores === "" ? "" : declared.get(m.declaration)!;
+         m.stores === "" ? "" : declared.get(m.declaration)!.stores;
       const projections = new Set(group.map(storesOf).filter((p) => p !== ""));
       const keyOf = (m: (typeof group)[number]) =>
          storesOf(m) !== "" && projections.size > 1

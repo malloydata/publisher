@@ -634,5 +634,107 @@ describe.skipIf(process.platform === "win32")(
          expect(tableOf(m, "owned")).toBe("shared_t");
          expect(tableOf(m, "plain")).toBe(tableOf(firstRun, "plain"));
       });
+
+      /** Reload the package with `extra` declared after the model. */
+      async function reload(extra: string): Promise<void> {
+         fs.writeFileSync(
+            path.join(root, "env", PKG, "m.malloy"),
+            `${MODEL}\n${extra}\n`,
+         );
+         pkg = await env.getPackage(parsePackageName(PKG), true);
+         await reopenServe();
+      }
+
+      /** A table's columns in the lake, in order. */
+      function columnsOf(table: string): Promise<string[]> {
+         return inspect(async (c) =>
+            (
+               await c.runSQL(
+                  `SELECT column_name FROM duckdb_columns() WHERE database_name = '${LAKE}' AND table_name = '${table}' ORDER BY column_index`,
+               )
+            ).rows.map((r) => String(r.column_name)),
+         );
+      }
+
+      /** The manifest's entries on `table`, by source name. */
+      function entriesOn(m: Materialization, table: string): string[] {
+         return Object.values(
+            (m.manifest as { entries: Record<string, Entry> }).entries,
+         )
+            .filter((e) => e.physicalTableName === table)
+            .map((e) => e.sourceName)
+            .sort();
+      }
+
+      /**
+       * A source that drops `status` (`except:`) and one that keeps it
+       * (`private:`) on one build and one `name=`: two definitions of one
+       * table, whichever was built first and is carried. Neither is built
+       * once both are declared, the table keeps what was written before,
+       * no manifest puts both on it, and both answer live.
+       */
+      for (const [label, first, second, where] of [
+         ["the dropping source first", "drops", "hides", "id > 0"],
+         ["the keeping source first", "hides", "drops", "id > -1"],
+      ] as const) {
+         it(`never writes a second projection into one name= when the second source arrives later: ${label}`, async () => {
+            const table = `proj_${first}_t`;
+            const query = `orders_raw -> { where: ${where}; select: id, region, status }`;
+            const declare = (kind: "drops" | "hides") =>
+               kind === "drops"
+                  ? `#@ persist name="${table}" storage="lake"\nsource: ${table}_drops is ${query} extend { except: status }`
+                  : `#@ persist name="${table}" storage="lake"\nsource: ${table}_hides is ${query} include { public: id, region; private: status }`;
+            // Phase 0: the first, beside an unnamed sibling that keeps every
+            // column, so the first is on an address of its own already.
+            const sibling = `#@ persist storage="lake"\nsource: ${table}_all is ${query}`;
+            await reload([sibling, declare(first)].join("\n\n"));
+            const before = await run();
+            expect([before.status, before.error]).toEqual([
+               "MANIFEST_FILE_READY",
+               null,
+            ]);
+            expect(entriesOn(before, table)).toEqual([`${table}_${first}`]);
+            const columns = await columnsOf(table);
+            expect(columns.includes("status")).toBe(first === "hides");
+
+            // Phase 1: the second arrives; the first is unchanged.
+            await reload(
+               [sibling, declare(first), declare(second)].join("\n\n"),
+            );
+            const after = await run();
+            expect([after.status, after.error]).toEqual([
+               "MANIFEST_FILE_READY",
+               null,
+            ]);
+            expect(entriesOn(after, table)).toEqual([]);
+            expect(await columnsOf(table)).toEqual(columns);
+            for (const kind of ["drops", "hides"]) {
+               expect(
+                  (
+                     await askQuery(
+                        `run: ${table}_${kind} -> { select: id, region }`,
+                     )
+                  ).servedFrom,
+               ).toBeNull();
+            }
+            const refused = Object.values(
+               (
+                  after.metadata as {
+                     refusedSources?: Record<
+                        string,
+                        { name: string; reason: string }
+                     >;
+                  }
+               ).refusedSources ?? {},
+            )
+               .filter((r) => r.name.startsWith(table))
+               .map((r) => `${r.name}:${r.reason}`)
+               .sort();
+            expect(refused).toEqual([
+               `${table}_drops:table_name_collision`,
+               `${table}_hides:table_name_collision`,
+            ]);
+         });
+      }
    },
 );

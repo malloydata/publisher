@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Colocated persisted views and persisted queries that compile to one build
- * but name different tables (`name=`), through the real package path (load,
+ * Colocated persisted views and persisted queries, of both kinds together,
+ * that compile to one build but name different tables (`name=`), through the real package path (load,
  * build, bind, query). Each names its own table, so each has its own address
  * (foldDistinctTableNames) and its own table; Malloy files all four under one
  * key (the build's `buildId`), so the view and query legs substitute each
@@ -98,6 +98,13 @@ describe("colocated persisted views and queries of one build, each under its own
       );
       expect(addresses.every((a) => a !== undefined)).toBe(true);
       expect(new Set(addresses).size).toBe(CALLS.length);
+      // One build: the views and the queries, across kinds, compile to the
+      // same SQL, which alone would be one address.
+      const sql = CALLS.map(
+         ([, , name]) => sources.find((s) => s.name === name)?.sql,
+      );
+      expect(sql[0]).toBeDefined();
+      expect(new Set(sql).size).toBe(1);
       expect(fixture.buildErrors).toEqual({});
    });
 

@@ -145,6 +145,7 @@ export {
 } from "./addressing";
 export {
    collidingRollups,
+   sharedTables,
    tierGateInputs,
    type ColocatedSourceEligibility,
    type SourceEligibility,
