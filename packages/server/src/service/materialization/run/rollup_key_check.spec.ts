@@ -610,6 +610,48 @@ describe("a storage rollup's base key check, on a build into a destination", () 
    );
 });
 
+describe("a storage rollup's own key check, on a build into a destination", () => {
+   it(
+      "runs over the base's rows, records against the table in the destination, carries while it stands, and checks again on a rebuild",
+      async () => {
+         const s = await storedScenario();
+         const own = (m: Metadata | undefined) =>
+            m?.rollupKeys?.[rollupKeyRecordKey(s.address)];
+         const table = tableIdentityKey("destination", "lake", "crew_stored_t");
+         const first = await s.run(true);
+         expect(own(first.uniquenessChecks)).toMatchObject({
+            table,
+            keyColumn: "flight_id",
+            unique: true,
+            checkedInRun: "run-1",
+         });
+         const second = await s.run(false);
+         expect(own(second.uniquenessChecks)).toEqual(
+            own(first.uniquenessChecks),
+         );
+         // Bound with the storage entry, as the join_one leg reads it.
+         expect(
+            keyUniquenessAt(
+               rollupKeyRecordsIn({
+                  [INLINE_UNIQUENESS_KEY]: second.uniquenessChecks!,
+               }),
+               s.address,
+               second.entries[s.address]!,
+            ),
+         ).toMatchObject({ keyColumn: "flight_id", unique: true });
+         // A rebuild over a duplicate checks again and says so.
+         await s.duckdb.runSQL("INSERT INTO crew_src VALUES (1, 9)");
+         const third = await s.run(true);
+         expect(own(third.uniquenessChecks)).toMatchObject({
+            table,
+            unique: false,
+            checkedInRun: "run-3",
+         });
+      },
+      { timeout: 60000 },
+   );
+});
+
 describe("the rollup key record in the run ledger", () => {
    const table = tableIdentityKey("connection", "duckdb", "r_t");
    const record: RollupKeyRecord = {
@@ -825,8 +867,21 @@ describe("the rollup key record, bound for serving", () => {
             ),
          ).toBeUndefined();
       }
-      // A rollup's own check never describes a stored table.
+      // A rollup's own check over another table never describes it; over
+      // its table in its destination, it does, as a colocated rollup's.
       expect(keyUniquenessAt({ h: record }, "h", stored)).toBeUndefined();
+      const own = {
+         ...record,
+         table: tableIdentityKey("destination", "lake", "flights_t"),
+      };
+      expect(keyUniquenessAt({ h: own }, "h", stored)).toEqual({
+         keyColumn: "k",
+         unique: true,
+      });
+      expect(keyUniquenessOf(own, stored)).toEqual({
+         keyColumn: "k",
+         unique: true,
+      });
    });
 
    it("restores a stored table's own key check from an uncontested auto-run", () => {
@@ -919,6 +974,70 @@ describe("the rollup key record, bound for serving", () => {
       expect(held.storageBindings[1]?.primaryKeys).toEqual({
          flights: true,
       });
+   });
+
+   it("binds a stored rollup's own key check, warns while it says repeated, and forgets it", () => {
+      const stored = (id: string, unique: boolean) =>
+         ({
+            sourceEntityId: id,
+            sourceName: `crew_${id}__rollup`,
+            physicalTableName: `crew_${id}_t`,
+            connectionName: "duckdb",
+            storageDestinationName: "lake",
+            origin: "preaggregate",
+            schema: [{ name: "flight_id", type: "INTEGER" }],
+            keyUniqueness: { keyColumn: "flight_id", unique },
+         }) as unknown as ManifestEntry;
+      const bindings = deriveServeBindings(
+         splitManifestEntries(
+            { a: stored("a", false), b: stored("b", true) },
+            "store",
+            true,
+         ).storageEntries,
+         {},
+      );
+      expect(bindings.map((b) => [b.virtualHandle, b.rollupKey])).toEqual([
+         ["a", { keyColumn: "flight_id", unique: false }],
+         ["b", { keyColumn: "flight_id", unique: true }],
+      ]);
+      // A host's manifest never brings one.
+      expect(
+         deriveServeBindings(
+            splitManifestEntries({ a: stored("a", false) }, "host")
+               .storageEntries,
+            {},
+         )[0]?.rollupKey,
+      ).toBeUndefined();
+      const materialization = new PackageMaterialization({
+         models: () => new Map(),
+         packageName: () => "pkg",
+      } as unknown as PackageMaterializationOwner);
+      materialization.buildPlan = {
+         sources: {
+            "ra@m": {
+               name: "crew_a__rollup",
+               sourceEntityId: "a",
+               modelPath: "m.malloy",
+               preaggregate: {
+                  baseSourceName: "crew",
+                  grainDimensions: ["flight_id"],
+                  measures: ["crew_size"],
+               },
+            },
+         },
+      } as never;
+      (
+         materialization as unknown as {
+            storageBindings: typeof bindings;
+         }
+      ).storageBindings = bindings;
+      expect(
+         materialization
+            .repeatedJoinOneKeyWarnings()
+            .map((w) => [w.subject, w.code]),
+      ).toEqual([["crew", "preaggregate-join-one-key-repeated"]]);
+      materialization.forgetKeyUniqueness(["a"]);
+      expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
    });
 
    it("asks for stored-table key checks only when a storage rollup is read as a join_many", () => {

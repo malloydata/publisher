@@ -835,15 +835,18 @@ export class PackageMaterialization {
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       const ids = new Set(sourceEntityIds);
-      // A stored table's own primary key check, on its storage binding.
-      if (
-         this.storageBindings.some(
-            (b) => b.primaryKeys && ids.has(b.virtualHandle),
-         )
-      ) {
+      // A stored table's own primary key check, and a stored rollup's key
+      // check, on its storage binding.
+      const checked = (b: Binding) =>
+         (b.primaryKeys || b.rollupKey) && ids.has(b.virtualHandle);
+      if (this.storageBindings.some(checked)) {
          this.storageBindings = this.storageBindings.map((b) => {
-            if (!b.primaryKeys || !ids.has(b.virtualHandle)) return b;
-            const { primaryKeys: _forgotten, ...rest } = b;
+            if (!checked(b)) return b;
+            const {
+               primaryKeys: _forgotten,
+               rollupKey: _forgottenKey,
+               ...rest
+            } = b;
             return rest;
          });
       }
@@ -1313,13 +1316,19 @@ export class PackageMaterialization {
             source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
          ),
       );
-      for (const [sourceEntityId, entry] of Object.entries(
-         this.colocatedEntries ?? {},
-      )) {
-         // The rollup's own key check only: an entry may carry just the
-         // query sources' primary key checks (`parentKeys`), which say
-         // nothing of a join_one keyed on the rollup's grain.
-         const check = entry.keyUniqueness;
+      // The rollup's own key check only: an entry may carry just the query
+      // sources' primary key checks (`parentKeys`), which say nothing of a
+      // join_one keyed on the rollup's grain. A stored rollup's rides on its
+      // binding, once per table.
+      const checks = new Map<string, { keyColumn?: string; unique?: boolean }>(
+         Object.entries(this.colocatedEntries ?? {}).flatMap(([id, entry]) =>
+            entry.keyUniqueness ? [[id, entry.keyUniqueness]] : [],
+         ),
+      );
+      for (const b of this.storageBindings) {
+         if (b.rollupKey) checks.set(b.virtualHandle, b.rollupKey);
+      }
+      for (const [sourceEntityId, check] of checks) {
          if (check?.unique !== false || check.keyColumn === undefined) {
             continue;
          }

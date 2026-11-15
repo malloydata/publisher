@@ -483,8 +483,8 @@ export interface RollupVariantPlan extends RollupPlan {
    internalGrain: string[];
    /**
     * The uniqueness check of the grain's one dimension (known limitation 29):
-    * set when the grain is one dimension of the base, the rollup is
-    * colocated, and the companion compiled the check. A run builds it only
+    * set when the grain is one dimension of the base and the companion
+    * compiled the check, for a colocated and a `storage=` rollup alike. A run builds it only
     * when a join_one in the package is keyed on that dimension (see
     * {@link joinOneKeysOf}); the join-to-rollup leg (A7) reads its outcome.
     */

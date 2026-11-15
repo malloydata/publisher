@@ -179,7 +179,7 @@ export interface R4Scenario {
     */
    preaggregate?: boolean;
    /**
-    * With {@link preaggregate}: run each colocated rollup's key check (known
+    * With {@link preaggregate}: run each rollup's key check (known
     * limitation 29) once its table is built, as an auto-run does, and bind
     * what it found. `false` binds no check, as for a table a host's manifest
     * binds or a build that could not check; `"unique"` binds a pass without
@@ -1008,6 +1008,41 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ...entry.keyUniqueness,
             parentKeys: { ...entry.keyUniqueness?.parentKeys, ...parentKeys },
          };
+      }
+      // A storage rollup's own key check (known limitation 29), run on its
+      // base's connection over the rows its build reads, as a colocated
+      // one's is, when a join_one is keyed on its grain.
+      const rollupKey = rollupOrigin.has(source.sourceID)
+         ? rollupPlanByName.get(source.name)?.keyCheck
+         : undefined;
+      if (
+         rollupKey &&
+         checks !== false &&
+         joinOneKeys.has(
+            joinOneKey(
+               rollupPlanByName.get(source.name)?.baseSourceID ?? "",
+               rollupKey.keyColumn,
+            ),
+         )
+      ) {
+         const record =
+            checks === "unique"
+               ? { keyColumn: rollupKey.keyColumn, unique: true }
+               : await runRollupKeyCheck(
+                    rollupKey,
+                    connections.get(source.connectionName) ?? duckdb,
+                    table,
+                 );
+         if (record) {
+            const entry = entries[`h${i}`] as ManifestEntry & {
+               keyUniqueness?: KeyUniqueness;
+            };
+            entry.keyUniqueness = {
+               ...entry.keyUniqueness,
+               keyColumn: record.keyColumn,
+               unique: record.unique,
+            };
+         }
       }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }

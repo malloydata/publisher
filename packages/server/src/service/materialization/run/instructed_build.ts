@@ -835,9 +835,11 @@ export class InstructedBuild {
       run.entries[sourceEntityId] = entry;
       run.builtAddresses.add(sourceEntityId);
       // A rollup a join_one reads through its key (known limitation 29):
-      // check the key's uniqueness over the rows its build read, once the
-      // table is written. Auto-run only; never fails the build.
-      if (!orchestrated && run.uniqueness && !entry.storageDestinationName) {
+      // check the key's uniqueness over the rows its build read, the base's
+      // on its own connection (a `storage=` build reads them from there too),
+      // once the table is written, and record it against the table written.
+      // Auto-run only; never fails the build.
+      if (!orchestrated && run.uniqueness) {
          await checkRollupKey(
             run.uniqueness,
             rollupKeyCheckOf(run.compiled, persistSource.sourceID),
@@ -846,22 +848,10 @@ export class InstructedBuild {
             sourceEntityId,
             writtenTableIdentity(instruction, graphConnectionName),
          );
-         // The query sources that read it through a join_many keyed on
-         // their primary key: that key unique and never NULL.
-         await checkParentKeys(
-            run.uniqueness,
-            rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
-            connection,
-            graphConnectionName,
-            persistSource.name,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-      }
-      // A rollup in a destination whose base a join reaches on a column
-      // other than its primary key: that key unique and never NULL, checked
-      // over the base's rows on its own connection.
-      if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
+         // The query sources that read a colocated rollup through a
+         // join_many keyed on their primary key, and the base of one in a
+         // destination that a join reaches on a column other than its
+         // primary key: that key unique and never NULL.
          await checkParentKeys(
             run.uniqueness,
             rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
@@ -1640,8 +1630,9 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
       if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
          continue;
       }
-      // A rollup in a destination carries only its base's own key check
-      // (`compileParentKeyChecks`), recorded against its table there.
+      // A rollup in a destination carries its own key check and its base's
+      // primary key check (`compileParentKeyChecks`), recorded against its
+      // table there.
       const stored = entry.storageDestinationName;
       const table = stored
          ? tableIdentityKey("destination", stored, entry.physicalTableName)
@@ -1650,7 +1641,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
               source.connectionName,
               entry.physicalTableName,
            );
-      if (check && !stored) {
+      if (check) {
          ledger.carryRollupKey(address, table, checkDigest(table, check.sql));
       }
       for (const parent of parentChecks) {

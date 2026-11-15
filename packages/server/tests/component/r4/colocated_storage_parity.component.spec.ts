@@ -17,6 +17,9 @@
  *    SQL are each served as their own source: colocated, they share one table
  *    at one content address, which the pair check once read as a read
  *    through a join.
+ * 3. A rollup a join_one reads beside the parent's own aggregates is served
+ *    once its build checked the key unique, in a destination as colocated; a
+ *    `storage=` rollup's key check was never planned.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -62,6 +65,26 @@ function expectServedCopy(run: R4Run): void {
       comparableFields(run.liveFields),
    );
    expect(run.servedVia).toBe("served_copy");
+}
+
+/** A run a rollup answered, as live did. */
+function expectServedFromRollup(run: R4Run, servedFrom: string | null): void {
+   expect(run.live.length).toBeGreaterThan(0);
+   expect(rowDifference(run.live, run.served)).toBeUndefined();
+   expect(run.servedBy?.kind).toBe("rollup");
+   expect(run.servedFrom).toBe(servedFrom);
+}
+
+/** Why each rollup a query considered was not read. */
+async function rollupReasons(
+   fixture: R4Fixture,
+   malloy: string,
+): Promise<(string | undefined)[] | undefined> {
+   fixture.setBindings(fixture.bindings);
+   const { path } = await fixture.runAsIs(malloy);
+   return path?.considered
+      .filter((c) => c.kind === "rollup")
+      .map((c) => c.reason);
 }
 
 for (const tier of TIERS) {
@@ -180,6 +203,86 @@ ${pairSource("pairs_b")}
          });
          expectPairServedVia(run, []);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   });
+
+   describe(`R4 parity (${tier.label}): a rollup read beside a join_one, its key checked at build`, () => {
+      const place = tier.label === "storage=" ? tier.place("") : "";
+      // The query source is read in the rollup's destination for a
+      // `storage=` rollup (#1704), so it is stored there too.
+      const model = `source: crew is duckdb.table('crew_raw') extend {
+  primary_key: flight_id
+  #(preaggregate) grain=["flight_id"]${place}
+  measure: crew_size is size.sum()
+}
+${tier.label === "storage=" ? `#(materialize)${place}\n` : ""}source: flights is duckdb.table('flights_raw') extend {
+  primary_key: id
+  join_one: crew with id
+  measure: flight_count is count()
+  measure: total_distance is distance.sum()
+}
+`;
+      const flights = `CREATE TABLE flights_raw AS SELECT * FROM (VALUES
+         (1, 'AA', 100), (2, 'AA', 200), (3, 'BB', 300), (4, 'BB', 50), (5, 'CC', 70)
+       ) AS t(id, carrier, distance)`;
+      // At most one per flight: flights 2 and 4 have none.
+      const unique = `CREATE TABLE crew_raw AS SELECT * FROM (VALUES
+         (1, 3), (3, 2), (5, 4)
+       ) AS t(flight_id, size)`;
+      // Flight 3 held twice: the join_one is not unique in the data.
+      const repeated = `CREATE TABLE crew_raw AS SELECT * FROM (VALUES
+         (1, 3), (3, 2), (3, 5), (5, 4)
+       ) AS t(flight_id, size)`;
+      const malloy =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, crew.crew_size; order_by: carrier }";
+      let restore: () => void;
+      let checked: R4Fixture;
+      let broken: R4Fixture;
+      let unchecked: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         const scenario = (crew: string, rollupKeyChecks = true) =>
+            buildScenario({
+               files: { "m.malloy": model },
+               seedSql: [flights, crew],
+               materialize: tier.label === "storage=",
+               preaggregate: true,
+               rollupKeyChecks,
+            });
+         checked = await scenario(unique);
+         broken = await scenario(repeated);
+         unchecked = await scenario(unique, false);
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+
+      it("serves the parent's own aggregates beside the join_one from the rollup, equal to live", async () => {
+         expectServedFromRollup(
+            await checked.run({ name: "checked", malloy }),
+            tier.servedFrom,
+         );
+      });
+
+      it("answers live, equal to live, when the build found the key repeated", async () => {
+         const run = await broken.run({ name: "repeated", malloy });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedBy?.kind).not.toBe("rollup");
+         expect(await rollupReasons(broken, malloy)).toContain(
+            "COUNT_SEMANTICS",
+         );
+      });
+
+      it("answers live, equal to live, when no build checked the key", async () => {
+         const run = await unchecked.run({ name: "unchecked", malloy });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedBy?.kind).not.toBe("rollup");
+         expect(await rollupReasons(unchecked, malloy)).toContain(
+            "COUNT_SEMANTICS",
+         );
       });
    });
 

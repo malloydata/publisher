@@ -1114,19 +1114,17 @@ export function rollupRefusalFinding(
 
 /**
  * The Malloy text of a rollup's key check (known limitation 29), or undefined
- * when the rollup's grain is not one dimension or it is not colocated (the
- * join-to-rollup leg reads a colocated rollup only). Run against the rollup
+ * when the rollup's grain is not one dimension. Run against the rollup
  * companion, which imports the base under {@link rollupBaseAlias}, so it reads
- * exactly the rows the rollup's build groups. A NULL key meets no joining
- * row, so its repeats do not count.
+ * exactly the rows the rollup's build groups: the base's, on its own
+ * connection, for a colocated and a `storage=` rollup alike. A NULL key meets
+ * no joining row, so its repeats do not count.
  */
 export function rollupKeyCheckQuery(
    plan: RollupVariantPlan,
 ): string | undefined {
    const [key, ...rest] = plan.grainDimensions;
-   if (key === undefined || rest.length > 0 || plan.storage !== undefined) {
-      return undefined;
-   }
+   if (key === undefined || rest.length > 0) return undefined;
    // malloy-text: keyCheckPipeline writes its names through identifier
    return `run: ${keyCheckPipeline("rollup_key", rollupBaseAlias(plan.baseDeclaredName), key)}`;
 }
