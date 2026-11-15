@@ -133,7 +133,13 @@ export type MaterializationOutcome = (typeof MATERIALIZATION_OUTCOMES)[number];
 type ManifestBindOutcome = "success" | "failure" | "timeout";
 
 /** `publisher_query_route_total{leg}`: the legs, and `live`. */
-export const ROUTE_LEGS = ["view", "rollup", "served", "live"] as const;
+export const ROUTE_LEGS = [
+   "view",
+   "query",
+   "rollup",
+   "served",
+   "live",
+] as const;
 export type RouteLeg = (typeof ROUTE_LEGS)[number];
 /** `publisher_query_route_total{outcome}`. */
 export const ROUTE_OUTCOMES = ["used", "skipped", "fallback"] as const;
@@ -365,7 +371,8 @@ const scheduledFireCounter = lazyCounter(
 const queryRouteCounter = lazyCounter(
    "publisher_query_route_total",
    "The router's decision on each leg it considered for a query, counted once " +
-      "the query is answered. Labels: leg ('view'|'rollup'|'served'|'live'), " +
+      "the query is answered. Labels: leg ('view'|'query'|'rollup'|'served'|'live'; " +
+      "'query' is a persisted named query), " +
       "outcome ('used'|'skipped'|'fallback': a chosen leg whose run failed and " +
       "was answered live), reason ('NONE' when used, else the path report's " +
       "SkipReason; 'RUN_FAILED' with 'fallback'). A leg that does not apply to " +

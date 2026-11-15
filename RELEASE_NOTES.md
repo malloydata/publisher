@@ -41,6 +41,33 @@ Also:
 - Other loaded versions that share the run's tables (`scope: "package"`) are rebound just after the run reports `MANIFEST_FILE_READY`, as before.
 - An orchestrated run never loads its manifest (the host distributes it), so for it nothing changes.
 - No status is added. `MANIFEST_ROWS_READY` now also spans the load, so a run can be seen there a little longer.
+## [Unreleased] — `#@ persist` on a named query stores its result (`PUBLISHER_MATERIALIZE`)
+
+With `PUBLISHER_MATERIALIZE` on (the default), `#@ persist` on a top-level `query:` builds the query's result as a generated source, `<query>__query`, in the same companion as the file's persisted views, colocated or with `storage=`. Its table answers exactly the calls of the query, and answers them equal to live:
+
+- **Served from the table:** REST and MCP `queryName`, a single-query report and a report tile naming the query, `run: q`, and `run: q -> { … }`. The answer keeps the query's name, its columns in order, each column's kind (an aggregate is still a measure) and annotations, its ordering and its render tags.
+- **Answered live:** `run: q + { … }` (a refinement; the path report skips the table `MISSING_FIELD`), any use of `q` inside another definition, and a query text that, outside the call, names the run target, any named query, or any source from another file (`MISSING_FIELD`). A later stage that joins a source declared in another file answers live; join it in the model instead.
+- **Fixes wrong rows from a persisted view.** The view leg on main answered a later stage that joined the view's source back (`run: fv -> by_c -> { extend: { join_many: f is fv … } }`), or a caller's source built over it, from the stored result, so the join read the stored rows: `f.count()` was 1 for every row. A text that, outside the call (in a later stage, or a definition before the `run:`), names the run target, any named query, or any source from another file now declines (`MISSING_FIELD`) and is answered live, on both the view and query legs; the caller's own definitions before the `run:`, a dimension-only `extend:` and a join to another source of the declaring file are still served.
+- **Ordering:** rows that tie on `order_by:`, or a query or later stage with no `order_by:`, may come back in another order than live's.
+- **Governance fails closed.** Not built, with `persist-query-not-built` naming why: a query that reads a given or the current time, whose source has a given-reading `where:`, and any query that reaches a row-level gate (`#(access_filter)` or `#(authorize)`: its source's own, one it inherits, or one on a source it joins), whatever `PUBLISHER_MATERIALIZE_GATED_SOURCES` says. Such a query is answered live under its gate, and the leg is never tried past an entry-point gate (`publisher_query_route_total` counts it `leg="query"`, `skipped`, `CONTRACT`).
+- **Regrouped as a persisted view is.** The table answers with each measure a measure again by the persisted view's regroup rule: only when the last stage groups by at least one dimension and nests nothing. A query that aggregates with no `group_by:` is built but answered live (`MISSING_FIELD`); a result that nests is not built.
+- **Changed meaning of a signal: a new `leg` value.** `publisher_query_route_total` gains `leg="query"`, which counts the persisted-query leg's routes (`used`, `skipped` with the path report's reason, `fallback`). This value is new. A persisted view's routes stay `leg="view"`. The path report names the table `kind: "query"`.
+- **Not yet:** persisting a query from inside a report file.
+
+**API addition.** `QueryPathTableKind` (the path report's `servedBy.kind` and each candidate's `kind`) gains `query`, a persisted named query's table. A client treats a kind it does not know as a stored table it cannot name. The build plan lists a persisted query as an ordinary persist source (`origin: persist`); its serve verdict reads `The persisted query \`<query>\``.
+
+Off, nothing changes from the entry below: the query is warned `persist-query-not-built` and answered live.
+
+## [Unreleased] — `#@ persist` on a named query says what it does
+
+`#@ persist` on a top-level `query:` builds nothing: Malloy's persistence planner walks sources only. The package used to warn with the source warning, `persist-not-materializable`, which told the author to "persist a query source" about something that already is a query, and a materialization run over the whole package was refused because of it.
+
+- **A dedicated warning.** The query now carries `persist-query-not-built` (`warn`, `subject` the query), which says it is answered live and names the workaround: persist a source over the query (`#@ persist` on `source: q_result is q`) and query that source. The code is an open string.
+- **A misspelled key is reported.** An unknown or retired key on the query's `#@` line is reported as on a source (`persist-unknown-key`, `persist-retired-key`).
+- **A build run is no longer refused.** A persisted query is not a dropped persist source, so it no longer fails a whole-package run.
+
+No API change beyond the new warning code.
+
 
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 
