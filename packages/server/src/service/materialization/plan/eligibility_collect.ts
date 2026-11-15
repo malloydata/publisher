@@ -537,7 +537,7 @@ export function collectSourceEligibility(
       try {
          assertRollupNameUnshared(source, gate);
          assertMaterializationEligible(source, deriveAnnotationFields(source), {
-            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled),
+            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled, true),
          });
          eligible.push(sourceID);
       } catch (err) {

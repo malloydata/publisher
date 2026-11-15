@@ -4,7 +4,8 @@
 /**
  * How serving reads a bound stored table: its quoted path, the virtual map a
  * compile resolves virtual sources through, whether generated SQL reads a
- * table, a stored schema narrowed to a source's public columns, and whether a
+ * table (and, failing closed, which tables an answer is judged to read for its
+ * gates), a stored schema narrowed to a source's public columns, and whether a
  * source opts out of serving from its table (`#@ -persist`).
  *
  * Read by the served copy, the rollup and view legs, storage bindings and
@@ -132,9 +133,44 @@ export function boundTablePath(b: Binding): string {
  * same name (`AS "orders"`) also spells.
  */
 export function sqlReadsTable(sql: string, tablePath: string): boolean {
+   return sqlTableReads(sql, tablePath) > 0;
+}
+
+/** How many times `sql` reads the table at `tablePath` ({@link sqlReadsTable}). */
+export function sqlTableReads(sql: string, tablePath: string): number {
    const path = tablePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-   return new RegExp(`\\b(?:FROM|JOIN)\\s+${path}(?![\\w$".\x60])`, "i").test(
-      sql,
+   return (
+      sql.match(
+         new RegExp(`\\b(?:FROM|JOIN)\\s+${path}(?![\\w$".\x60])`, "gi"),
+      ) ?? []
+   ).length;
+}
+
+/**
+ * The tables an answer is judged to read when deciding whether it keeps an
+ * entry point's gate (`answerKeepsGates`): the tables `sql` was found to read,
+ * and every re-rooted `storage=` table it was not proven NOT to read. Fail
+ * closed: {@link sqlReadsTable} matches one spelling, so a storage table
+ * spelled another way (other quoting or case) would drop out and the answer
+ * would read as colocated only. A storage table counts as absent only when
+ * its path, quotes and case aside, appears nowhere in `sql`.
+ */
+export function tablesReadForGates(
+   sql: string,
+   rerooted: readonly Binding[],
+   tablesRead: readonly Binding[],
+): Binding[] {
+   const bare = (text: string) => text.replace(/["`]/g, "").toLowerCase();
+   const text = bare(sql);
+   const mentions = (path: string) =>
+      new RegExp(
+         `(?<![\\w$.])${bare(path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w$])`,
+      ).test(text);
+   return rerooted.filter(
+      (b) =>
+         tablesRead.includes(b) ||
+         (b.tier === "storage" &&
+            [b.tablePath, boundTablePath(b)].some(mentions)),
    );
 }
 

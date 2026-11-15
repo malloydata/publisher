@@ -215,10 +215,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       count: 1,
       step: "5",
    },
-   "service/materialization/plan/materialization_eligibility.ts": {
-      count: 1,
-      step: "5",
-   },
    "service/materialization/plan/persisted_view.ts": { count: 2, step: "5" },
    "service/materialization/plan/rolling_window.ts": { count: 2, step: "5" },
    "service/materialization/plan/rollup_compile.ts": { count: 2, step: "5" },

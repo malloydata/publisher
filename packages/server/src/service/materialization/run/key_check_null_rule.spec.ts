@@ -127,7 +127,7 @@ describe("a rollup's own key check", () => {
       baseDeclaredName: "base",
    } as unknown as RollupVariantPlan;
 
-   it("is this Malloy, only for a one-dimension colocated grain", () => {
+   it("is this Malloy, only for a one-dimension grain, colocated or stored", () => {
       expect(rollupKeyCheckQuery(plan)).toBe(`run: base__rollup_base -> {
   where: k != null
   group_by: k
@@ -138,9 +138,9 @@ describe("a rollup's own key check", () => {
       expect(
          rollupKeyCheckQuery({ ...plan, grainDimensions: ["k", "j"] }),
       ).toBeUndefined();
-      expect(
-         rollupKeyCheckQuery({ ...plan, storage: "lake" } as never),
-      ).toBeUndefined();
+      expect(rollupKeyCheckQuery({ ...plan, storage: "lake" } as never)).toBe(
+         rollupKeyCheckQuery(plan),
+      );
    });
 
    it("ignores a NULL key", async () => {
