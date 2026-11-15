@@ -5,8 +5,9 @@ import { Materialization, MaterializationStatus } from "../../client";
 
 /**
  * Non-terminal phases of a build: PENDING (building) -> MANIFEST_ROWS_READY
- * (tables built) -> MANIFEST_FILE_READY (terminal). Any non-terminal phase may
- * be polled and stopped.
+ * (tables built, manifest recorded, and an auto-run's manifest loading into
+ * its package) -> MANIFEST_FILE_READY (terminal: an auto-run's package serves
+ * the new tables). Any non-terminal phase may be polled and stopped.
  */
 export function isActiveStatus(status?: MaterializationStatus): boolean {
    return (

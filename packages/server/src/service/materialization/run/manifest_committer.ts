@@ -28,6 +28,14 @@ import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import type { RunLifecycle } from "./run_lifecycle";
 
 /**
+ * How an auto-run's manifest load went, recorded on the run's metadata when it
+ * reaches MANIFEST_FILE_READY.
+ */
+type AutoLoadOutcome =
+   | { autoLoad: "loaded" }
+   | { autoLoad: "failed"; autoLoadError: string };
+
+/**
  * A run's manifest, from commit to serving: it commits the manifest a build
  * assembled, binds it into the package models, rebinds every loaded slot of a
  * package from the store, and reads back the committed manifests a later run
@@ -47,17 +55,33 @@ export class ManifestCommitter {
    }
 
    /**
-    * Finalize a successful build: advance to MANIFEST_ROWS_READY then
-    * MANIFEST_FILE_READY and persist the assembled manifest. The caller
-    * supplies the per-run metadata. The build itself happens before this.
+    * Finalize a successful build: persist the assembled manifest on the move to
+    * MANIFEST_ROWS_READY, run `serve` (an auto-run's {@link autoLoad}), then
+    * advance to MANIFEST_FILE_READY with what `serve` reports merged into the
+    * metadata. So a caller that waits for MANIFEST_FILE_READY and then queries
+    * is answered by the package this run's manifest is loaded into, never by
+    * the one before it. The caller supplies the per-run metadata; the build
+    * itself happens before this.
+    *
+    * Every store reader counts MANIFEST_FILE_READY runs only (the serving
+    * fold, the reclaimer, table claims, boot restore, skip-if-unchanged), so
+    * the manifest persisted at MANIFEST_ROWS_READY is invisible to them until
+    * the final move. A run interrupted in between (a crash) is settled FAILED
+    * when the store next opens, as one interrupted while PENDING is
+    * (`failInterrupted`), so its manifest is never served or restored.
+    *
+    * A stop that lands while `serve` runs aborts nothing here: the load is
+    * awaited and the run still reaches MANIFEST_FILE_READY, since its package
+    * may already serve the new tables. The window was a single statement
+    * before the load moved into it, so no stop could land there then either.
     */
    async commit(
       id: string,
       entries: Record<string, ManifestEntry>,
       failures: Record<string, SourceFailure>,
       metadata: Record<string, unknown>,
+      serve?: () => Promise<Record<string, unknown>>,
    ): Promise<void> {
-      await this.deps.lifecycle.transition(id, "MANIFEST_ROWS_READY");
       const manifest: BuildManifestResult = {
          builtAt: new Date().toISOString(),
          entries,
@@ -65,17 +89,26 @@ export class ManifestCommitter {
          ...(Object.keys(failures).length > 0 ? { failures } : {}),
          strict: false,
       };
+      await this.deps.lifecycle.transition(id, "MANIFEST_ROWS_READY", {
+         manifest,
+         metadata,
+      });
+      const served = serve ? await serve() : {};
       await this.deps.lifecycle.transition(id, "MANIFEST_FILE_READY", {
          completedAt: new Date(),
          manifest,
-         metadata,
+         metadata: { ...metadata, ...served },
       });
    }
 
    /**
     * Load a freshly produced manifest into the package's models so persist
-    * references resolve to the materialized tables. Best-effort: a load failure
-    * is logged, not fatal (the run already reached MANIFEST_FILE_READY).
+    * references resolve to the materialized tables, and say how it went, for
+    * the run's metadata: `autoLoad: "loaded"`, or `autoLoad: "failed"` with
+    * `autoLoadError`. Run before the run reaches MANIFEST_FILE_READY
+    * ({@link commit}). A failure does not fail the run, whose tables were
+    * built: the package keeps serving what it served before, and the run
+    * says so.
     */
    async autoLoad(
       environment: {
@@ -96,7 +129,7 @@ export class ManifestCommitter {
       versionId?: string,
       // The rollup key checks this run stands behind (known limitation 29).
       rollupKeys?: Readonly<Record<string, RollupKeyRecord>>,
-   ): Promise<void> {
+   ): Promise<AutoLoadOutcome> {
       // Bound un-gated: freshness is stamped only on the control plane's wire
       // manifest. A failed source mirrored into `entries` (the
       // `ManifestEntry.error` deprecation window) names the previous
@@ -162,12 +195,15 @@ export class ManifestCommitter {
             packageName,
             entryCount: Object.keys(manifestEntries).length,
          });
+         return { autoLoad: "loaded" };
       } catch (err) {
          recordAutoLoadOutcome("failure");
+         const error = err instanceof Error ? err.message : String(err);
          logger.warn("Auto-run: failed to load manifest into package models", {
             packageName,
-            error: err instanceof Error ? err.message : String(err),
+            error,
          });
+         return { autoLoad: "failed", autoLoadError: error };
       }
    }
 

@@ -3,10 +3,11 @@
 
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { Environment } from "../../../src/service/environment";
 import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -326,15 +327,10 @@ describe("Materialization REST API: single-call (E2E)", () => {
 
             // The payoff: the served query now scans the materialized table and
             // no longer recomputes from the base CSV, and /compile previews the
-            // same routed SQL it would execute. The run reports
-            // MANIFEST_FILE_READY before its auto-load binds the table, so wait
-            // for the routing rather than assume it.
-            const routedExecuted = await pollFor(
-               executedSql,
-               (sql) => !sql.includes("data/orders.csv"),
-               "the served query never routed to the materialized table",
-               30_000,
-            );
+            // same routed SQL it would execute. Asked at once: an auto-run
+            // reports MANIFEST_FILE_READY only after its manifest is loaded.
+            expect(built.metadata).toMatchObject({ autoLoad: "loaded" });
+            const routedExecuted = await executedSql();
             const routedCompiled = await compiledSql();
             expect(routedExecuted).not.toContain("data/orders.csv");
             expect(routedCompiled).not.toContain("data/orders.csv");
@@ -354,6 +350,118 @@ describe("Materialization REST API: single-call (E2E)", () => {
             );
             expect(deleteRes.status).toBe(204);
             await fetch(`${baseUrl}${API}?reload=true`);
+         },
+         { timeout: 120_000 },
+      );
+   });
+
+   // ── Group C2: "done" means served ────────────────────────────────
+   //
+   // An auto-run loads its manifest into its package BEFORE it reports
+   // MANIFEST_FILE_READY, so a caller that waits for it and queries at once is
+   // answered from the new table. The load is held open here, so a run that
+   // reported done first would be caught reporting it.
+   describe("an auto-run reports MANIFEST_FILE_READY only once it serves", () => {
+      const MODEL_PATH = "persist_test.malloy";
+      const QUERY = "run: order_summary -> { aggregate: c is count() }";
+
+      async function executedSql(): Promise<string> {
+         const res = await fetch(
+            `${baseUrl}${API}/models/${MODEL_PATH}/query`,
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ query: QUERY }),
+            },
+         );
+         expect(res.status).toBe(200);
+         const body = (await res.json()) as { result: string };
+         return (JSON.parse(body.result) as { sql: string }).sql;
+      }
+
+      async function dropRun(id: string): Promise<void> {
+         await fetch(url(`/materializations/${id}?dropTables=true`), {
+            method: "DELETE",
+         });
+         await fetch(`${baseUrl}${API}?reload=true`);
+      }
+
+      it(
+         "holds MANIFEST_ROWS_READY while the load runs, then answers from the table at once",
+         async () => {
+            await fetch(`${baseUrl}${API}?reload=true`);
+            expect(await executedSql()).toContain("data/orders.csv");
+
+            let entered!: () => void;
+            const loading = new Promise<void>((r) => (entered = r));
+            let release!: () => void;
+            const released = new Promise<void>((r) => (release = r));
+            const original = Environment.prototype.reloadAllModelsForPackage;
+            const spy = spyOn(
+               Environment.prototype,
+               "reloadAllModelsForPackage",
+            ).mockImplementation(async function (
+               this: Environment,
+               ...args: Parameters<Environment["reloadAllModelsForPackage"]>
+            ) {
+               entered();
+               await released;
+               return original.apply(this, args);
+            });
+            let id = "";
+            try {
+               const createRes = await createMaterialization();
+               expect(createRes.status).toBe(201);
+               id = ((await createRes.json()) as { id: string }).id;
+               await loading;
+               // Built and recorded, not yet served: not done.
+               const mid = await getMaterialization(id);
+               expect(mid.status).toBe("MANIFEST_ROWS_READY");
+               expect(mid.manifest).not.toBeNull();
+               expect(await executedSql()).toContain("data/orders.csv");
+               release();
+               const built = await pollUntilTerminal(id);
+               expect(built.status).toBe("MANIFEST_FILE_READY");
+               expect(built.metadata).toMatchObject({ autoLoad: "loaded" });
+               // At once, no polling: done means served.
+               expect(await executedSql()).not.toContain("data/orders.csv");
+            } finally {
+               release();
+               spy.mockRestore();
+               if (id) await dropRun(id);
+            }
+         },
+         { timeout: 120_000 },
+      );
+
+      it(
+         "records a load that fails on the run, which still settles, and the package serves as before",
+         async () => {
+            await fetch(`${baseUrl}${API}?reload=true`);
+            const spy = spyOn(
+               Environment.prototype,
+               "reloadAllModelsForPackage",
+            ).mockImplementation(async () => {
+               throw new Error("the package no longer compiles");
+            });
+            let id = "";
+            try {
+               const createRes = await createMaterialization();
+               expect(createRes.status).toBe(201);
+               id = ((await createRes.json()) as { id: string }).id;
+               const settled = await pollUntilTerminal(id);
+               // The tables were built: the run settles, and says the load
+               // did not take.
+               expect(settled.status).toBe("MANIFEST_FILE_READY");
+               expect(settled.metadata).toMatchObject({
+                  autoLoad: "failed",
+                  autoLoadError: "the package no longer compiles",
+               });
+               expect(await executedSql()).toContain("data/orders.csv");
+            } finally {
+               spy.mockRestore();
+               if (id) await dropRun(id);
+            }
          },
          { timeout: 120_000 },
       );

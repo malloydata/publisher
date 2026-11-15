@@ -583,7 +583,7 @@ Publisher enforces these rules identically at **publish** (strict — rejected),
 
 ## Build a materialization
 
-A materialization run compiles the package, builds every `#@ persist` source into its table, writes a manifest, and loads it so queries serve from the built tables. It settles at `MANIFEST_FILE_READY` (success) or `FAILED` / `CANCELLED`.
+A materialization run compiles the package, builds every `#@ persist` source into its table, writes a manifest, and loads it so queries serve from the built tables. It settles at `MANIFEST_FILE_READY` (success) or `FAILED` / `CANCELLED`. An auto-run reaches `MANIFEST_FILE_READY` only after its manifest is loaded into the package it built, so a query sent once the run reports `MANIFEST_FILE_READY` is answered from the new tables. If that load fails (the package no longer compiles, say), the run still settles at `MANIFEST_FILE_READY`, since its tables were built, with `autoLoad: "failed"` and `autoLoadError` in its `metadata`, and the package keeps serving what it served before; a load that took is `autoLoad: "loaded"`. Other loaded versions of the package that share the run's tables are rebound just after. An orchestrated run never loads its manifest (the host distributes it), so for it `MANIFEST_FILE_READY` means built.
 
 A build ignores the package's [published surface](discovery-and-access.md). It builds every `#@ persist` source in every model, including one `index.malloy` does not export, so a hidden intermediate can be persisted and an exported source that reads it reads the built table.
 

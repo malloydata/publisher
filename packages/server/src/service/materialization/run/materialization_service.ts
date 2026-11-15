@@ -996,53 +996,63 @@ export class MaterializationService {
          const sourcesRefused =
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
-         await this.commitManifest(id, entries, failures, {
-            forceRefresh: opts.forceRefresh,
-            sourceNames: opts.sourceNames ?? null,
-            mode,
-            trigger: opts.trigger,
-            sourcesBuilt,
-            sourcesReused,
-            ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
-            // Auto-run's refusals, plus instructed sources refused beside a
-            // table an eligible sibling built (ms2data/service#7078), which
-            // are not in `failures`.
-            ...(Object.keys(derivedRefused).length +
-               Object.keys(refusedBesideBuilt).length >
-            0
-               ? {
-                    refusedSources: {
-                       ...derivedRefused,
-                       ...refusedBesideBuilt,
-                    },
-                 }
-               : {}),
-            durationMs,
-            // The inline uniqueness checks: the passes the next run may
-            // rely on, and whether each ran or was skipped.
-            ...(uniquenessChecks
-               ? { [INLINE_UNIQUENESS_KEY]: uniquenessChecks }
-               : {}),
-            // commitManifest replaces the metadata, so the version is set again.
-            ...(versionId !== undefined
-               ? {
-                    versionId,
-                    scope: pkg.getPackageMetadata().scope ?? "package",
-                 }
-               : {}),
-         });
+         await this.commitManifest(
+            id,
+            entries,
+            failures,
+            {
+               forceRefresh: opts.forceRefresh,
+               sourceNames: opts.sourceNames ?? null,
+               mode,
+               trigger: opts.trigger,
+               sourcesBuilt,
+               sourcesReused,
+               ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
+               // Auto-run's refusals, plus instructed sources refused beside a
+               // table an eligible sibling built (ms2data/service#7078), which
+               // are not in `failures`.
+               ...(Object.keys(derivedRefused).length +
+                  Object.keys(refusedBesideBuilt).length >
+               0
+                  ? {
+                       refusedSources: {
+                          ...derivedRefused,
+                          ...refusedBesideBuilt,
+                       },
+                    }
+                  : {}),
+               durationMs,
+               // The inline uniqueness checks: the passes the next run may
+               // rely on, and whether each ran or was skipped.
+               ...(uniquenessChecks
+                  ? { [INLINE_UNIQUENESS_KEY]: uniquenessChecks }
+                  : {}),
+               // commitManifest replaces the metadata, so the version is set again.
+               ...(versionId !== undefined
+                  ? {
+                       versionId,
+                       scope: pkg.getPackageMetadata().scope ?? "package",
+                    }
+                  : {}),
+            },
+            // Auto-run owns distribution, and loads the manifest into its own
+            // package before the run reports MANIFEST_FILE_READY, so "done"
+            // means served. Orchestrated leaves it to the caller
+            // (manifestLocation). Other loaded versions are rebound after,
+            // below: they read the run from the store, which counts it only
+            // once it is MANIFEST_FILE_READY.
+            orchestrated
+               ? undefined
+               : () =>
+                    this.autoLoadManifest(
+                       environment,
+                       packageName,
+                       entries,
+                       versionId,
+                       uniquenessChecks?.rollupKeys,
+                    ),
+         );
 
-         // Auto-run owns distribution; orchestrated leaves it to the caller
-         // (manifestLocation).
-         if (!orchestrated) {
-            await this.autoLoadManifest(
-               environment,
-               packageName,
-               entries,
-               versionId,
-               uniquenessChecks?.rollupKeys,
-            );
-         }
          if (markedShared && versionId !== undefined) {
             // Every other loaded version is rebound to this run too: each
             // binds only what its own definition built, and serves live what
@@ -1211,7 +1221,7 @@ export class MaterializationService {
    /** See {@link ManifestCommitter.autoLoad}. */
    private autoLoadManifest(
       ...args: Parameters<ManifestCommitter["autoLoad"]>
-   ): Promise<void> {
+   ): ReturnType<ManifestCommitter["autoLoad"]> {
       return this.committer.autoLoad(...args);
    }
 

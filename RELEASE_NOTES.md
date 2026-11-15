@@ -11,7 +11,17 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — an auto-run reports `MANIFEST_FILE_READY` only once its package serves the new tables
+
+A materialization auto-run used to report `MANIFEST_FILE_READY` and then load its manifest into the package. A caller that waited for `MANIFEST_FILE_READY` (the REST `GET …/materializations/{id}`, `malloy-pub materializations create --wait`, the Console) and queried at once could be answered live, or from the previous table, until the load finished.
+
+Now the run records its manifest when it reaches `MANIFEST_ROWS_READY`, loads it into its package, and only then reports `MANIFEST_FILE_READY`, so a query sent after it is answered from the new tables. The run's `metadata` says how the load went: `autoLoad: "loaded"`, or `autoLoad: "failed"` with `autoLoadError` when it did not take, in which case the run still settles at `MANIFEST_FILE_READY` (its tables were built) and the package keeps serving what it served before. A run's `manifest` is now present from `MANIFEST_ROWS_READY`, not only from `MANIFEST_FILE_READY`.
+
+- Other loaded versions that share the run's tables (`scope: "package"`) are rebound just after the run reports `MANIFEST_FILE_READY`, as before.
+- An orchestrated run never loads its manifest (the host distributes it), so for it nothing changes.
+- No status is added. `MANIFEST_ROWS_READY` now also spans the load, so a run can be seen there a little longer.
+
+## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
 One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
 

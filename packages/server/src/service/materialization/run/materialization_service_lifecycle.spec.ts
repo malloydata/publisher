@@ -616,6 +616,8 @@ describe("runBuild (branch behavior)", () => {
          sourcesBuilt: 1,
          sourcesReused: 1,
       });
+      // The host distributes an orchestrated manifest: nothing is loaded.
+      expect(svc.commitManifest.firstCall.args[4]).toBeUndefined();
    });
 
    // ms2data/service#6756: the host's warehouseReach reaches the run, last.
@@ -659,7 +661,12 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "auto",
       });
-      // Auto-run owns distribution: it loads the fresh manifest into the models.
+      // Auto-run owns distribution: it loads the fresh manifest into the
+      // models, inside the commit, before the run reports MANIFEST_FILE_READY.
+      expect(svc.autoLoadManifest.called).toBe(false);
+      const serve = svc.commitManifest.firstCall.args[4] as () => unknown;
+      expect(typeof serve).toBe("function");
+      await serve();
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
    });
 
