@@ -71,6 +71,12 @@ export const PACKAGE_LOAD_PROTOCOL_VERSION = 2;
 export interface ConnectionMetadata {
    name: string;
    dialectName: string;
+   /**
+    * The connection's configured type (`postgres`, `duckdb`, `ducklake`, ...),
+    * which the build plan's `storage=` eligibility reads; absent when the main
+    * thread recorded none.
+    */
+   connectionType?: string;
    digest: string;
    /**
     * Identifies the main thread's connection instance, so the worker's schema

@@ -40,6 +40,8 @@ interface EligibilityPlan {
    connectionDigests: Record<string, string>;
    /** The plan's table folds (CompiledBuildPlan.tableFolds). */
    tableFolds?: TableFolds;
+   /** See `CompiledBuildPlan.connectionTypes`. */
+   connectionTypes?: Record<string, string>;
    /**
     * The package is a published version of a `scope: "version"` package:
     * every table name, `name=` included, is a readable name with its
@@ -484,6 +486,7 @@ export function tierGateInputs(compiled: EligibilityPlan): TierGateInputs {
    return {
       tables: compiled.tables,
       collidingRollups: collidingRollups(compiled),
+      connectionTypes: compiled.connectionTypes,
    };
 }
 
@@ -525,6 +528,7 @@ export function collectSourceEligibility(
          assertRollupNameUnshared(source, gate);
          assertMaterializationEligible(source, deriveAnnotationFields(source), {
             gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled, true),
+            connectionTypes: compiled.connectionTypes,
          });
          // A table built before this refusal existed is not served either.
          assertBuildReadsNoCurrentTime(source, gate);

@@ -71,6 +71,7 @@ import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepositor
 import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -341,6 +342,11 @@ describe.skipIf(process.platform === "win32")(
                } as never,
             ],
          );
+         // The plan reads the warehouse's recorded type, so it is reported as
+         // Postgres there too, or its `storage=` sources would be refused.
+         spies.push({
+            mockRestore: recordConnectionsAsForTests({ warehouse: "postgres" }),
+         });
          const apiConnection = env.getApiConnection.bind(env);
          spies.push(
             spyOn(env, "getApiConnection").mockImplementation((name) =>
@@ -979,6 +985,11 @@ class LakeFixture {
             } as never,
          ],
       );
+      // The plan reads the warehouse's recorded type, so it is reported as
+      // Postgres there too, or its `storage=` sources would be refused.
+      this.spies.push({
+         mockRestore: recordConnectionsAsForTests({ warehouse: "postgres" }),
+      });
       const apiConnection = this.env.getApiConnection.bind(this.env);
       this.spies.push(
          spyOn(this.env, "getApiConnection").mockImplementation((name) =>
@@ -2219,6 +2230,126 @@ describe.skipIf(process.platform === "win32")(
                tableId: entries[name].sourceEntityId,
                via: "served_copy",
             });
+         }
+      });
+   },
+);
+
+describe.skipIf(process.platform === "win32")(
+   "a storage= source on the package's DuckDB sandbox beside a warehouse one",
+   () => {
+      // A `storage=` build passes a query through to the source's warehouse
+      // and cannot read the package's DuckDB sandbox. Every run used to fail
+      // such a source with "Connection duckdb not found" (and a run with
+      // nothing else to build failed whole); now the plan refuses it on every
+      // route, it answers live, and the run builds its warehouse sibling.
+      const SANDBOX = `duckdb.sql("""
+  SELECT * FROM (VALUES ('a', 1.0), ('a', 2.0), ('b', 4.0)) AS t(cat, amt)
+""")`;
+      const lake = new LakeFixture(
+         "sandbox",
+         () => ({
+            "m.malloy": `##! experimental.persistence
+source: raw is warehouse.sql("""
+  SELECT * FROM (VALUES ('a', 1.0), ('a', 2.0), ('b', 4.0)) AS t(cat, amt)
+""")
+source: sb_raw is ${SANDBOX}
+
+#@ persist storage="lake"
+source: daily is raw -> { group_by: cat; aggregate: total is amt.sum() }
+
+#@ persist storage="lake"
+source: sb_daily is sb_raw -> { group_by: cat; aggregate: total is amt.sum() }
+
+#(materialize) storage="lake"
+source: sb_orders is sb_raw extend { measure: total is amt.sum() }
+
+source: sb_viewed is sb_raw extend {
+  measure: total is amt.sum()
+  #@ persist storage="lake"
+  view: by_cat is { group_by: cat; aggregate: total }
+}
+
+#@ persist storage="lake"
+query: sb_query is sb_raw -> { group_by: cat; aggregate: total is amt.sum() }
+
+source: sb_sales is sb_raw extend {
+  #(preaggregate) grain=["cat"] storage="lake"
+  measure: total is amt.sum()
+}
+`,
+         }),
+         { PUBLISHER_MATERIALIZE: "true" },
+      );
+      beforeAll(() => lake.setUp());
+      afterAll(() => lake.tearDown());
+
+      const LIVE = [
+         { cat: "a", total: 3 },
+         { cat: "b", total: 4 },
+      ];
+
+      it("loads, refusing each sandbox route under its own not-built code", () => {
+         const warnings = lake.pkg.getPackageMetadata().warnings ?? [];
+         const refusals = warnings
+            .filter((w) => w.message?.includes("cannot be passed through"))
+            .map((w) => `${w.code}:${w.subject}`)
+            .sort();
+         expect(refusals).toEqual(
+            [
+               "materialize-not-built:sb_orders",
+               "persist-not-built:sb_daily",
+               "persist-query-not-built:sb_query__query",
+               "persist-view-not-built:sb_viewed__by_cat__view",
+               "preaggregate-not-built:sb_sales",
+               // The former code, repeated for one release.
+               "persist-source-refused:sb_daily",
+               "persist-source-refused:sb_orders",
+               "persist-source-refused:sb_query__query",
+               "persist-source-refused:sb_viewed__by_cat__view",
+            ].sort(),
+         );
+         const plan = lake.pkg.getBuildPlan();
+         expect(
+            Object.values(plan?.refusedSources ?? {})
+               .map((r) => r.reason)
+               .filter((r) => r === "storage_source_unsupported"),
+         ).toHaveLength(5);
+         expect(Object.values(plan?.sources ?? {}).map((s) => s.name)).toEqual([
+            "daily",
+         ]);
+      });
+
+      it("builds the warehouse sibling, fails nothing, and serves it from storage", async () => {
+         const m = await lake.run();
+         expect(m.status).toBe("MANIFEST_FILE_READY");
+         expect(m.error ?? null).toBeNull();
+         expect(
+            (m.manifest as { failures?: Record<string, unknown> } | null)
+               ?.failures ?? {},
+         ).toEqual({});
+         expect(Object.keys(lake.entriesByName(m))).toEqual(["daily"]);
+         const served = await lake.ask(
+            "run: daily -> { group_by: cat; aggregate: t is total.sum() }",
+         );
+         expect(served.servedFrom).toBe("storage");
+         expect(served.rows).toEqual([
+            { cat: "a", t: 3 },
+            { cat: "b", t: 4 },
+         ]);
+      });
+
+      it("answers each refused sandbox source live", async () => {
+         for (const query of [
+            "run: sb_daily -> { group_by: cat; aggregate: total is total.sum() }",
+            "run: sb_orders -> { group_by: cat; aggregate: total }",
+            "run: sb_viewed -> by_cat",
+            "run: sb_query",
+            "run: sb_sales -> { group_by: cat; aggregate: total }",
+         ]) {
+            const answer = await lake.ask(query);
+            expect(answer.servedBy.kind, query).toBe("live");
+            expect(answer.rows, query).toEqual(LIVE);
          }
       });
    },

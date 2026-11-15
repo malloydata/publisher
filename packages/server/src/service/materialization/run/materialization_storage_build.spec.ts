@@ -167,7 +167,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       const manifest = new Manifest();
       manifest.strict = opts.strict;
       const environment = buildEnvironmentStub({
-         connections: { duckdb: { name: "duckdb", type: "duckdb" } },
+         connections: { duckdb: { name: "duckdb", type: "postgres" } },
          destinations: { lake: { name: "lake", type: "duckdb" } },
       });
       // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
@@ -635,7 +635,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
 
    it("materializes into the destination the destination list holds", async () => {
       const environment = buildEnvironmentStub({
-         connections: { duckdb: { name: "duckdb", type: "duckdb" } },
+         connections: { duckdb: { name: "duckdb", type: "postgres" } },
          destinations: { shared: MANAGED_DESTINATION },
       });
       const { run, write } = callInto(environment);
@@ -657,7 +657,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       // warehouse.
       const environment = buildEnvironmentStub({
          connections: {
-            duckdb: { name: "duckdb", type: "duckdb" },
+            duckdb: { name: "duckdb", type: "postgres" },
             shared: TENANT_CONNECTION,
          },
          destinations: {},
@@ -678,4 +678,37 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       // Reported as a misconfigured target, not as a missing connection.
       expect(internalErrorToHttpError(error as Error).status).toBe(422);
    });
+
+   // The plan's gate refuses a source the build cannot read; one that reaches
+   // the build anyway is refused alone, never failing the run with a missing
+   // connection.
+   for (const [what, connections] of [
+      ["the package's sandbox, which the environment does not hold", {}],
+      [
+         "an environment DuckDB connection",
+         { duckdb: { name: "duckdb", type: "duckdb" } },
+      ],
+   ] as const) {
+      it(`refuses a source on ${what}, writing nothing`, async () => {
+         const environment = buildEnvironmentStub({
+            connections,
+            destinations: { shared: MANAGED_DESTINATION },
+         });
+         const { run, write } = callInto(environment);
+
+         let error: unknown;
+         try {
+            await run();
+         } catch (caught) {
+            error = caught;
+         }
+
+         expect(error).toBeInstanceOf(MaterializationEligibilityError);
+         expect((error as MaterializationEligibilityError).reason).toBe(
+            "storage_source_unsupported",
+         );
+         expect((error as Error).message).toContain("connection 'duckdb'");
+         expect(write.called).toBe(false);
+      });
+   }
 });

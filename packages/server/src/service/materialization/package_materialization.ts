@@ -36,7 +36,6 @@ import {
 import {
    findingSeverity,
    MATERIALIZATION_STORAGE_MODE_CODE,
-   PERSIST_NOT_BUILT_CODE,
    PERSIST_SOURCE_REFUSED_ALIAS_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
@@ -81,6 +80,7 @@ import {
    planCollisions,
    PREAGG_WARN_ONLY,
    preaggregateGateLines,
+   refusalCodeOf,
    relaxedCollision,
 } from "./plan/load_gate_text";
 import type { MaterializePlan } from "./domain/table_plans";
@@ -1420,7 +1420,9 @@ export class PackageMaterialization {
     * Warnings for the sources the compile-time gates refused. Not an
     * annotation finding: the annotation is well formed; the source it sits on
     * cannot be materialized. A `#@ persist` source's is coded
-    * {@link PERSIST_NOT_BUILT_CODE} and carries the gate's message verbatim,
+    * {@link PERSIST_NOT_BUILT_CODE} (a `#(materialize)` source's
+    * `materialize-not-built`, a persisted view's or query's its own) and
+    * carries the gate's message verbatim,
     * so there is one wording to maintain, and is repeated under its former
     * code, {@link PERSIST_SOURCE_REFUSED_ALIAS_CODE}, for one release. A rollup's is coded
     * {@link PREAGGREGATE_NOT_BUILT_CODE}, its message naming its base and
@@ -1457,7 +1459,11 @@ export class PackageMaterialization {
                  }
                : {
                     message: source.message,
-                    code: PERSIST_NOT_BUILT_CODE,
+                    // The route's own code: a `#(materialize)` source's, a
+                    // persisted view's or query's, else a source's.
+                    code: this.materializePlans[sourceID]
+                       ? "materialize-not-built"
+                       : refusalCodeOf(sourceID, source.name),
                     severity: "warn",
                  };
          if (source.modelPath) warning.model = source.modelPath;
@@ -1466,7 +1472,7 @@ export class PackageMaterialization {
          // release, for exactly these gate refusals: each is repeated under
          // its former code, with the same message, for one release, then the
          // alias is removed. Display surfaces show it once.
-         return warning.code === PERSIST_NOT_BUILT_CODE
+         return source.tier !== "preaggregate"
             ? [warning, { ...warning, code: PERSIST_SOURCE_REFUSED_ALIAS_CODE }]
             : [warning];
       });

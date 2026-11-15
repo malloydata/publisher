@@ -488,8 +488,16 @@ A colocated build creates a table in the source warehouse, so it needs a connect
 connection whose static attributes report `canPersist: false` (SQL Server today: the connector is
 read-only) has a plain `#@ persist` refused at load with reason `read_only_dialect`; the source
 serves live and the package's warnings carry the refusal. A `storage=` destination is a different
-question — it reads from the source and writes elsewhere — and the storage build names the source
-types it can read.
+question — it reads from the source and writes elsewhere — and the storage build can read only a
+source whose connection it can pass a query through to: Postgres, BigQuery or Snowflake, or a
+DuckLake catalog building into that same catalog. A `storage=` source on any other connection, the
+package's own DuckDB sandbox (`duckdb.sql(...)`, `duckdb.table(...)`) and an environment DuckDB
+connection included, is refused at load with reason `storage_source_unsupported`, on every route
+(`#@ persist`, `#(materialize)`, a persisted view or query, and a `storage=` rollup over such a
+base): it is not built, its queries are answered live, the route's `*-not-built` warning names the
+connection, and a run builds the rest of the package. Drop `storage=` to build it in its own
+connection, or put the source on a warehouse connection. The decision is the connection's
+configured type, never its name.
 
 ### Stored column types follow the model, not the warehouse
 
@@ -599,7 +607,7 @@ Fix the annotation each line names, then publish or reload. What fails the load:
 - Two different sources on one table in one destination, by their `name=` ([`materialization-table-collision`](#whose-table-it-is)).
 - A misspelled route or directive: `#(materialise)`, `#(Materialize)`, `#@persist`, `#@ persits`, `# persist`, `#(persist)` (`materialization-near-miss`). `#(materialize)` and `#(preaggregate)` spelled exactly while `PUBLISHER_MATERIALIZE=false` are ignored, not a failure.
 
-**A valid annotation Publisher cannot build is refused alone.** An annotation that is right, but asks for what this environment, dialect, capacity or governance cannot give (an unconfigured `storage=` destination, a gate, a free parameter or given, a read-only dialect, an incremental source on a dialect without a bounded range, a hidden field in a rollup), refuses that item only: it is not built, its queries are answered live with live's rows, the rest of the package loads and serves, and the package carries a warning with severity `warn` saying why.
+**A valid annotation Publisher cannot build is refused alone.** An annotation that is right, but asks for what this environment, dialect, capacity or governance cannot give (an unconfigured `storage=` destination, a gate, a free parameter or given, a read-only dialect, a `storage=` source on a connection the build cannot pass through, an incremental source on a dialect without a bounded range, a hidden field in a rollup), refuses that item only: it is not built, its queries are answered live with live's rows, the rest of the package loads and serves, and the package carries a warning with severity `warn` saying why.
 
 The code says which outcome it is:
 

@@ -42,6 +42,16 @@ import { routeQuery } from "../query_router";
 import { EMPTY_SNAPSHOT, pin } from "./domain/binding";
 import { gateEnforcedAtRead } from "./plan/materialization_eligibility";
 import { allowGatedStorageRollupsForTests } from "../../config";
+import { recordConnectionsAsForTests } from "../connection_type";
+
+// The package sandbox stands in for a warehouse in these fixtures: a
+// `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
+// source on it (storage_source_unsupported).
+let restoreConnectionTypes: () => void;
+beforeAll(() => {
+   restoreConnectionTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+});
+afterAll(() => restoreConnectionTypes());
 
 const DUMP = process.env.GATE_KEEPING_DUMP;
 

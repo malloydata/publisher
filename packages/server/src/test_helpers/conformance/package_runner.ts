@@ -63,6 +63,7 @@ import {
 import { queryTimezoneOf } from "../../service/governance/ir/compiled_model";
 import { planModelPersistedViews } from "../../service/materialization/plan/persisted_view";
 import { SourceMap } from "../../service/materialization/text/source_map";
+import { recordConnectionsAsForTests } from "../../service/connection_type";
 /** A result row, as `compactResult` carries it. */
 export type Row = Record<string, unknown>;
 
@@ -257,7 +258,12 @@ export async function loadFixture(
    }
    const lake = new DuckDBConnection(LAKE, path.join(root, `${LAKE}.duckdb`));
    let env: Environment | undefined;
+   // `buildAll` builds a `storage=` table from the sandbox by hand, through
+   // Parquet, which no real build can, so while the fixture lives its sandbox
+   // stands in for a warehouse the plan's `storage=` gate admits.
+   const releaseSandbox = recordConnectionsAsForTests({ duckdb: "postgres" });
    const dispose = async () => {
+      releaseSandbox();
       await env?.closeAllConnections().catch(() => {});
       await lake.close().catch(() => {});
       fs.rmSync(root, { recursive: true, force: true });
