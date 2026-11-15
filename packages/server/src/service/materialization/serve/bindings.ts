@@ -14,7 +14,7 @@
  */
 
 import { quoteManifestTablePath } from "../../quoting";
-import type { ServeBinding } from "../domain/serve_binding";
+import type { Binding } from "../domain/binding";
 import type { DerivedSourceDef } from "../text/author_model";
 
 /**
@@ -118,8 +118,8 @@ export function narrowSchemaToPublic(
  * DuckDB (the destination), a colocated table's as bound, already canonical
  * for its own connection's dialect.
  */
-export function boundTablePath(b: ServeBinding): string {
-   return b.colocated
+export function boundTablePath(b: Binding): string {
+   return b.tier === "colocated"
       ? b.tablePath
       : quoteManifestTablePath(b.tablePath, "duckdb");
 }
@@ -145,7 +145,7 @@ export function sqlReadsTable(sql: string, tablePath: string): boolean {
  * manifest binds use, and never double-quotes an author-quoted `name=`.
  */
 export function buildVirtualMap(
-   bindings: ServeBinding[],
+   bindings: Binding[],
 ): Map<string, Map<string, string>> {
    const map = new Map<string, Map<string, string>>();
    for (const b of bindings) {

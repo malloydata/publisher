@@ -18,7 +18,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { doubleQuotedString, identifier } from "../../malloy_text";
 import { overlayKey } from "../../overlay_key";
-import { splitSourceID } from "../plan/persisted_view";
+import { splitSourceID } from "../domain/table_plans";
 
 /** `url` relative to `from`'s directory, for an `import`, or undefined. */
 export function relativeImport(from: URL, url: string): string | undefined {

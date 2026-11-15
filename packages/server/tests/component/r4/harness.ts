@@ -51,7 +51,10 @@ import {
 } from "../../../src/service/materialization/run/materialization_build_session";
 import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
-import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
+import {
+   deriveColocatedServeBindings,
+   kindFromPlan,
+} from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
@@ -81,8 +84,9 @@ import {
 import { buildVirtualMap } from "../../../src/service/materialization/serve/bindings";
 import {
    deriveServeBindings,
-   type ServeBinding,
-} from "../../../src/service/materialization/domain/serve_binding";
+   makeSnapshot,
+   type Binding,
+} from "../../../src/service/materialization/domain/binding";
 import {
    groupAliasesByName,
    planSourceIds,
@@ -235,7 +239,7 @@ export interface R4Run {
 
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
-   bindings: ServeBinding[];
+   bindings: Binding[];
    /** Each built source's table id (its content address in the plan), by name. */
    tableIds: Record<string, string>;
    /**
@@ -276,7 +280,7 @@ export interface R4Fixture {
     * serve shape, so the next served query compiles it again. Kept apart from
     * {@link runAsIs} so a benchmark can do it outside its stopwatch.
     */
-   setBindings(bindings: ServeBinding[]): void;
+   setBindings(bindings: Binding[]): void;
    /** One query under the bindings already set, with nothing around it. */
    runAsIs(
       malloy: string,
@@ -679,6 +683,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // `#@ persist` views (phase 4, P14): their generated build sources keep
    // their own sourceIDs, as the package's build plan keeps them.
    const viewRefusals: string[] = [];
+   const viewBuildSourceIDs = new Set<string>();
    if (scenario.persistedViews) {
       const views = await tryCompilePersistedViewCompanion({
          packagePath: dir,
@@ -709,6 +714,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const names = new Set(
             views.generated.plans.map((p) => p.buildSourceName),
          );
+         for (const p of views.generated.plans) {
+            viewBuildSourceIDs.add(p.buildSourceID);
+         }
          for (const target of targets.connections.flatMap((c) => c.targets)) {
             if (target.readsGivens) {
                for (const s of target.sources) {
@@ -896,6 +904,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             downstreamName: materializePlans[source.sourceID].buildSourceName,
             virtualMap: buildVirtualMap([
                {
+                  kind: "persist",
+                  tier: "storage",
                   sourceName: over.overStored.parentBuildSourceName,
                   destinationName: DESTINATION,
                   virtualHandle: parentEntry.sourceEntityId,
@@ -1028,13 +1038,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
+   // Each kind read off the plan, as the package's bind reads it.
+   const kinds = {
+      materializeSourceIDs: new Set(Object.keys(materializePlans)),
+      viewBuildSourceIDs,
+   };
    const bindings = [
       ...deriveServeBindings(
          entries,
          groupAliasesByName(Object.values(plan)),
          undefined,
          planSourceIds(plan),
-      ),
+      ).map((b) => ({ ...b, kind: kindFromPlan(b, kinds) })),
       // The colocated `#(materialize)` tables, through the package's own
       // derivation.
       ...deriveColocatedServeBindings({
@@ -1061,10 +1076,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // The manifest is passed only on a served run, so a live run reads live.
    let manifestOn = false;
    const policy = ModelPolicy.fixed({
-      freshBuildManifestEntries: () =>
-         manifestOn && Object.keys(colocatedEntries).length > 0
-            ? colocatedEntries
-            : undefined,
+      snapshot: () => makeSnapshot([], manifestOn ? colocatedEntries : {}),
       materializedTables: {
          planned: new Map([
             ...sources.map(
@@ -1168,7 +1180,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          (e) => [e.sourceName, e.physicalTableName] as const,
       ),
       ...bindings
-         .filter((b) => b.colocated)
+         .filter((b) => b.tier === "colocated")
          .map((b) => [b.sourceName, b.tablePath] as const),
    ]);
    return {

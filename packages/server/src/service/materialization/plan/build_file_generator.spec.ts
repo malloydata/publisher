@@ -19,7 +19,7 @@ import {
    pairLeafKeyChecksOf,
    runRollupKeyCheck,
 } from "../run/inline_uniqueness";
-import { rollingWindowsOf } from "./rolling_window";
+import { rollingWindowsOf } from "../domain/read_time_terms";
 import {
    buildCopyText,
    buildSourceName,

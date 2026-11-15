@@ -120,5 +120,15 @@ A run commits one manifest; serving reads it through three legs (a persisted vie
 rollup, and the served copy, the author's source re-rooted on its stored table) and answers live
 whenever none of them can prove the same answer.
 
+**The query path.** `ModelServing` (`service/model_serving.ts`) answers one query in six stages:
+**pin** the model's snapshot once, so every leg, the run and the path report read the tables bound
+at one instant; **prepare** the caller's own compile (the boundary, the caller-text guards, filter
+injection); **route** over the legs `makeLegs` made for that pin, each `{ kind, applies, attempt }`,
+with the router asking the gate policy before an attempt and over the bindings the answer read;
+**govern** whatever answered, the authority on every answer, routed or live; **run** it with the
+manifest or virtual map the answer names, retrying live only when every binding it read allows it;
+and **report**: the caps, the metrics, the access record and the path report, all read off the one
+`Answer`. A notebook cell is governed and run on its own compile, not routed.
+
 The module's [README](../packages/server/src/service/materialization/README.md) has the glossary, and
 each layer's README lists its modules and what reads them.

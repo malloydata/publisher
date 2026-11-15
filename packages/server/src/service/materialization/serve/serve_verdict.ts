@@ -267,37 +267,8 @@ function verdictFor(
    source: PersistSourcePlan,
    facts: ServeVerdictFacts,
 ): ServeVerdict {
-   const origin = source.origin === "preaggregate" ? "preaggregate" : "persist";
-   const tier = planTier(source);
-   const base: Omit<ServeVerdict, "verdict" | "message"> = {
-      sourceName: source.name,
-      sourceID,
-      ...(source.modelPath ? { modelPath: source.modelPath } : {}),
-      origin,
-      tier,
-   };
-   // A rollup is never queried by name: its base is what a query names.
-   const rollupBase = source.preaggregate?.baseSourceName;
-   // Nor is a persisted view's build source: a call of the view on its source.
-   const view = facts.persistedViewOf?.(sourceID);
-   // malloy-text: markdown code formatting in a verdict message, not Malloy
-   const named = rollupBase
-      ? `The rollup of \`${rollupBase}\` at (${source.preaggregate?.grainDimensions.join(", ")})`
-      : `\`${source.name}\``;
-   const subject = view
-      ? `The persisted view \`${view.viewName}\` of \`${view.sourceName}\``
-      : named;
-   const live = (
-      reason: ServeVerdictReason,
-      message: string,
-      fixes: string[],
-   ): ServeVerdict => ({
-      ...base,
-      verdict: "live",
-      reason,
-      message,
-      fixes,
-   });
+   const s = verdictSubjectOf(sourceID, source, facts);
+   const { origin, tier, rollupBase, view, subject, live } = s;
 
    // Deployment facts (P13), ahead of the storage mode: under `write-only` the
    // build runs and fails on them, so they are the reason worth naming. Under
@@ -307,47 +278,8 @@ function verdictFor(
    const destination = source.annotationFields?.storage?.trim();
    // Read once, here and in the storage branch below: one name-keyed lookup.
    const storageBound = facts.boundStorageNames.has(source.name);
-   if (
-      tier === "storage" &&
-      destination &&
-      facts.storageMode !== "off" &&
-      !storageBound &&
-      facts.destinationConfigured?.(destination) === false
-   ) {
-      // A preview's per-view verdicts still say what would serve once the
-      // destination exists, so they are kept.
-      const views = facts.views?.get(sourceID);
-      return {
-         ...(views && views.length > 0 ? { views } : {}),
-         ...live(
-            "destination_missing",
-            `${subject} declares storage="${destination}", but this environment ` +
-               `configures no storage destination of that name, so no build can ` +
-               `write its table and queries on it are answered live.`,
-            [
-               `Configure a storage destination named "${destination}" on the environment ` +
-                  `(one the config lists but the server rejected, such as an unsupported type, is skipped with the reason in the server log).`,
-               "Or name a configured destination in storage=, or drop storage= to build it in its own warehouse.",
-            ],
-         ),
-      };
-   }
-   if (
-      tier === "colocated" &&
-      !facts.boundEntityIds.has(source.sourceEntityId) &&
-      facts.connectionCanHoldTable?.(source.connectionName) === false
-   ) {
-      return live(
-         "connection_cannot_hold_table",
-         `${subject} is materialized in its own warehouse, but its connection ` +
-            `'${source.connectionName}' cannot create tables, so no build can ` +
-            `write its table and queries on it are answered live.`,
-         [
-            "Add storage= naming a configured storage destination, so the table is written there instead.",
-            "Or drop the annotation if the source is not meant to be materialized.",
-         ],
-      );
-   }
+   const deployment = deploymentVerdict(s, destination, storageBound);
+   if (deployment) return deployment;
 
    if (tier === "storage" && facts.storageMode !== "on") {
       return live(
@@ -428,6 +360,145 @@ function verdictFor(
          ],
       );
    }
+   return boundVerdict(s, storageBound, materialized);
+}
+
+/** One planned source, as every phase of its verdict names and reads it. */
+interface VerdictSubject {
+   sourceID: string;
+   source: PersistSourcePlan;
+   facts: ServeVerdictFacts;
+   origin: ServeVerdict["origin"];
+   tier: "colocated" | "storage";
+   base: Omit<ServeVerdict, "verdict" | "message">;
+   rollupBase: string | undefined;
+   view: ReturnType<NonNullable<ServeVerdictFacts["persistedViewOf"]>>;
+   /** How a message names the source: a rollup, a persisted view, or itself. */
+   subject: string;
+   live(
+      reason: ServeVerdictReason,
+      message: string,
+      fixes: string[],
+   ): ServeVerdict;
+}
+
+/** What a source's verdict says it about: its names and its `live` verdict. */
+function verdictSubjectOf(
+   sourceID: string,
+   source: PersistSourcePlan,
+   facts: ServeVerdictFacts,
+): VerdictSubject {
+   const origin = source.origin === "preaggregate" ? "preaggregate" : "persist";
+   const tier = planTier(source);
+   const base: Omit<ServeVerdict, "verdict" | "message"> = {
+      sourceName: source.name,
+      sourceID,
+      ...(source.modelPath ? { modelPath: source.modelPath } : {}),
+      origin,
+      tier,
+   };
+   // A rollup is never queried by name: its base is what a query names.
+   const rollupBase = source.preaggregate?.baseSourceName;
+   // Nor is a persisted view's build source: a call of the view on its source.
+   const view = facts.persistedViewOf?.(sourceID);
+   // malloy-text: markdown code formatting in a verdict message, not Malloy
+   const named = rollupBase
+      ? `The rollup of \`${rollupBase}\` at (${source.preaggregate?.grainDimensions.join(", ")})`
+      : `\`${source.name}\``;
+   const subject = view
+      ? `The persisted view \`${view.viewName}\` of \`${view.sourceName}\``
+      : named;
+   const live = (
+      reason: ServeVerdictReason,
+      message: string,
+      fixes: string[],
+   ): ServeVerdict => ({
+      ...base,
+      verdict: "live",
+      reason,
+      message,
+      fixes,
+   });
+   return {
+      sourceID,
+      source,
+      facts,
+      origin,
+      tier,
+      base,
+      rollupBase,
+      view,
+      subject,
+      live,
+   };
+}
+
+/**
+ * A deployment fact (P13) that sends the source live: a `storage=`
+ * destination the environment does not configure, or a colocated connection
+ * that cannot hold a table. Undefined when neither does.
+ */
+function deploymentVerdict(
+   s: VerdictSubject,
+   destination: string | undefined,
+   storageBound: boolean,
+): ServeVerdict | undefined {
+   const { sourceID, source, facts, tier, subject, live } = s;
+   if (
+      tier === "storage" &&
+      destination &&
+      facts.storageMode !== "off" &&
+      !storageBound &&
+      facts.destinationConfigured?.(destination) === false
+   ) {
+      // A preview's per-view verdicts still say what would serve once the
+      // destination exists, so they are kept.
+      const views = facts.views?.get(sourceID);
+      return {
+         ...(views && views.length > 0 ? { views } : {}),
+         ...live(
+            "destination_missing",
+            `${subject} declares storage="${destination}", but this environment ` +
+               `configures no storage destination of that name, so no build can ` +
+               `write its table and queries on it are answered live.`,
+            [
+               `Configure a storage destination named "${destination}" on the environment ` +
+                  `(one the config lists but the server rejected, such as an unsupported type, is skipped with the reason in the server log).`,
+               "Or name a configured destination in storage=, or drop storage= to build it in its own warehouse.",
+            ],
+         ),
+      };
+   }
+   if (
+      tier === "colocated" &&
+      !facts.boundEntityIds.has(source.sourceEntityId) &&
+      facts.connectionCanHoldTable?.(source.connectionName) === false
+   ) {
+      return live(
+         "connection_cannot_hold_table",
+         `${subject} is materialized in its own warehouse, but its connection ` +
+            `'${source.connectionName}' cannot create tables, so no build can ` +
+            `write its table and queries on it are answered live.`,
+         [
+            "Add storage= naming a configured storage destination, so the table is written there instead.",
+            "Or drop the annotation if the source is not meant to be materialized.",
+         ],
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The verdict of a source no deployment fact, storage mode, reach, gate or
+ * refusal sends live: served from its bound table, not built yet, or live
+ * for what its binding says (stale, shadowed, not read by the served copy).
+ */
+function boundVerdict(
+   s: VerdictSubject,
+   storageBound: boolean,
+   materialized: ReturnType<NonNullable<ServeVerdictFacts["materialize"]>>,
+): ServeVerdict {
+   const { sourceID, source, facts, origin, tier, base, subject, live } = s;
    const notServed = (): ServeVerdict =>
       live(
          "served_copy",

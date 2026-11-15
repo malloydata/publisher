@@ -450,3 +450,71 @@ source: yext is ysrc extend { measure: q is carriers.cc }
       }
    });
 });
+
+/**
+ * The bind guard's confirmation of a term kept as written
+ * (`keepsTermsAsWritten`): a current-time term the re-root leaves to the kept
+ * text must be found in the served source's compiled filters, or the source
+ * is left as written (`read_terms_not_kept`) and answered live. Forced here
+ * by making the plan expect a term the kept text does not apply, as if the
+ * re-root had dropped the author's.
+ */
+describe("R4: a term kept as written that the served compile does not apply", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: { "m.malloy": model },
+         seedSql,
+         materialize: true,
+         clock: B,
+      });
+      const plans = (
+         fixture.model as unknown as {
+            servedCopy: {
+               materializePlans: Record<
+                  string,
+                  {
+                     sourceName?: string;
+                     readTimeTerms?: { kind: string; code: string }[];
+                  }
+               >;
+            };
+         }
+      ).servedCopy.materializePlans;
+      let tampered = 0;
+      for (const plan of Object.values(plans)) {
+         if (plan.sourceName !== "w_internal") continue;
+         for (const term of plan.readTimeTerms ?? []) {
+            if (term.kind !== "current_time") continue;
+            term.code = "t2 >= now - 61 days";
+            tampered++;
+         }
+      }
+      expect(tampered).toBe(1);
+   });
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("leaves the source as written, reported, and answers it live", async () => {
+      const problems = await fixture.servedCopyProblems();
+      expect(
+         problems
+            .filter((p) => p.sourceName === "w_internal")
+            .map((p) => p.reason),
+      ).toEqual(["read_terms_not_kept"]);
+      fixture.setClock(READS[1]);
+      const run = await fixture.run({
+         name: "w_internal",
+         malloy: "run: w_internal -> { aggregate: n, total }",
+         expectLive: true,
+      });
+      expect(run.servedVia).toBeUndefined();
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+});

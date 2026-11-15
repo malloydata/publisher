@@ -35,12 +35,9 @@ import {
    type MaterializePlan,
 } from "../plan/build_file_generator";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import {
-   parentKeyCheckQuery,
-   rollupBaseAlias,
-   rollupKeyCheckQuery,
-   type RollupVariantPlan,
-} from "../plan/rollup_plan";
+import { parentKeyCheckQuery, rollupKeyCheckQuery } from "../plan/rollup_plan";
+import { rollupBaseAlias } from "../text/read_text";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import { storedKeyCheckSql } from "../text/key_check_text";
 
 const duckdb = new DuckDBConnection("key_checks", ":memory:");

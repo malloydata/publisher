@@ -317,6 +317,8 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          model.setServedCopyContext(packageDir, pkg.getMalloyConfig());
          model.setServeBindings([
             {
+               kind: "persist",
+               tier: "storage",
                sourceName: "nums",
                destinationName: DESTINATION_NAME,
                virtualHandle: "h",

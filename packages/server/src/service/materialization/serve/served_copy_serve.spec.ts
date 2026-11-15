@@ -3,7 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 import type { FieldClassification } from "../../classification";
-import { storedColumnNotes } from "./served_copy_serve";
+import type { Binding } from "../domain/binding";
+import { staleOnChain, storedColumnNotes } from "./served_copy_serve";
 
 const classified = (c: Partial<FieldClassification>): FieldClassification =>
    ({ declared: [], classifications: [], ...c }) as FieldClassification;
@@ -39,5 +40,16 @@ describe("storedColumnNotes", () => {
             classified({ malformed: "is malformed", classifications: ["x"] }),
          ),
       ).toEqual(["#(classification) bad"]);
+   });
+});
+
+describe("staleOnChain", () => {
+   const stale = (sourceIDs: string[]) => ({ sourceIDs }) as unknown as Binding;
+   it("is a stale table storing a source on the queried source's chain", () => {
+      expect(staleOnChain([stale(["base"])], ["daily", "base"])).toBe(true);
+   });
+   it("is not a stale table off the chain, or none at all", () => {
+      expect(staleOnChain([stale(["other"])], ["daily", "base"])).toBe(false);
+      expect(staleOnChain([], ["daily"])).toBe(false);
    });
 });

@@ -63,8 +63,8 @@
 
 import { requireUnique, type KeyVerdict } from "../domain/key_check";
 import type { SourceJoin } from "../text/source_map";
-import type { RollupVariantPlan } from "../plan/rollup_plan";
-import type { MeasureExpr } from "../plan/rollup_measure_grammar";
+import type { RollupVariantPlan } from "../domain/table_plans";
+import type { MeasureExpr } from "../domain/rollup_measures";
 import type {
    QueryLevelFacts,
    QueryLevelField,

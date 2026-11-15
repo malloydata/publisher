@@ -35,7 +35,8 @@ import { getDialect } from "@malloydata/malloy";
 import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
-import type { ServeBinding } from "./domain/serve_binding";
+import type { Binding } from "./domain/binding";
+import type { StoredColumn } from "./domain/table_plans";
 
 /**
  * The `code` of the package warning, and of the build and serve log lines, for
@@ -419,12 +420,6 @@ export function serveTypePlan(
       }
    }
    return { casts, unservable };
-}
-
-/** A stored column's name and type, in DuckDB's spelling (`DESCRIBE`'s). */
-export interface StoredColumn {
-   name: string;
-   type: string;
 }
 
 /**
@@ -1088,11 +1083,11 @@ export function boundNativeSchemaOf(
  * answers that column live, which no dry run can foresee.
  */
 export function previewNativeSchema(
-   binding: ServeBinding,
+   binding: Binding,
    sources: Readonly<Record<string, { dialect?: string }>>,
-): ServeBinding {
+): Binding {
    const dialect = sources[binding.sourceIDs?.[0] ?? ""]?.dialect;
-   if (!binding.colocated || !dialect) return binding;
+   if (binding.tier !== "colocated" || !dialect) return binding;
    let type: string;
    try {
       type = getDialect(dialect).malloyTypeToSQLType({

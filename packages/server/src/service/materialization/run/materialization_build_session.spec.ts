@@ -31,7 +31,7 @@ import {
 import { identifier } from "../../malloy_text";
 import { declarableColumns } from "../stored_column_types";
 import { buildVirtualMap } from "../serve/bindings";
-import { type ServeBinding } from "../domain/serve_binding";
+import { type Binding } from "../domain/binding";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -41,7 +41,7 @@ type ApiConnection = components["schemas"]["Connection"];
  * declarable columns only), then the downstream as a persist source.
  */
 function buildChainedStorageBuildModel(params: {
-   upstreams: ServeBinding[];
+   upstreams: Binding[];
    downstreamName: string;
    downstreamDefText: string;
    destinationName: string;
@@ -453,7 +453,9 @@ describe("buildSourceIntoStorage bounds the incremental delta's session too", ()
 describe.skipIf(process.platform === "win32")(
    "buildDownstreamIntoStorage (stack-on-parent, real DuckDB)",
    () => {
-      const parent: ServeBinding = {
+      const parent: Binding = {
+         kind: "persist",
+         tier: "storage",
          sourceName: "daily_orders",
          destinationName: "lake",
          virtualHandle: "daily_h",
@@ -795,7 +797,7 @@ describe.skipIf(process.platform === "win32")(
       // every such column was declared `json`, which Malloy refuses in a
       // `type:`, so no chained build over such a parent could lift.
       describe("over a parent with list, struct and MAP columns", () => {
-         const exotic: ServeBinding = {
+         const exotic: Binding = {
             ...parent,
             sourceName: "tagged_orders",
             virtualHandle: "tagged_h",
