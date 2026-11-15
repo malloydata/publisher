@@ -3614,6 +3614,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             `Package manifest for ${packagePath} does not exist.`,
          );
       };
+      // A package directory Publisher may not open is reported as such (its
+      // errno), not as a missing manifest: that is the operator's own tree.
+      try {
+         await fs.realpath(packagePath);
+      } catch (error) {
+         const code = (error as NodeJS.ErrnoException).code;
+         if (code === "ENOENT" || code === "ENOTDIR") throw notThere();
+         throw error;
+      }
       let real: string;
       try {
          real = await confinedPackagePath(

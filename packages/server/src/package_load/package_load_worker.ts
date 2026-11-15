@@ -694,7 +694,10 @@ async function readPackageMetadata(
    let contents: string;
    try {
       contents = await readPackageURL(packagePath, pathToFileURL(manifestPath));
-   } catch {
+   } catch (error) {
+      // The package's own file it may not read keeps its errno for the
+      // operator; a refusal (a link out, to anything or nothing) says nothing.
+      if (!(error instanceof ImportOutsidePackageError)) throw error;
       throw new PackageManifestError(
          `${PACKAGE_MANIFEST_NAME} could not be read. It must be a readable ` +
             `file inside the package.`,

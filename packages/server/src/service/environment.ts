@@ -3695,6 +3695,13 @@ export class Environment {
       try {
          // Where the write lands, settled before it: inside the package.
          await confinedPackagePath(packagePath, pathToFileURL(manifestPath));
+         // The rename below would replace a file its mode says not to write;
+         // a read-only manifest is refused with its errno, as a write was.
+         await fs.promises
+            .access(manifestPath, fs.constants.W_OK)
+            .catch((error: NodeJS.ErrnoException) => {
+               if (error.code !== "ENOENT") throw error;
+            });
          let existingManifest: Record<string, unknown> = {};
          try {
             existingManifest = JSON.parse(
