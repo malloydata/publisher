@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a stored table built in another zone, read through a join, answers live
+
+A `#(materialize)` table holds its zone-dependent values (a computed dimension such as `hour(ts)`, a truncation) as its build computed them, in its source's own zone. Read through a join, Malloy does not apply that source's `timezone:`, so a query that set no zone read the table in UTC while the table held, say, New York's values. The served copy answered it from the table and returned wrong rows: hours 16 to 21 where live gives 21 to 23 and 0 to 2. Such a query now answers live, with the `TIME_ZONE` reason. A query reads a table in the zone it sets, or the one its source sets or inherits, or the default; if that differs from the zone the table was built in, it answers live.
+
+Two related changes:
+- Only the spelling `'UTC'` counts as the default zone. An alias such as `'Etc/UTC'` is treated as another zone, and answers live, because a dialect may not know it (MySQL without its time zone tables converts it to NULL).
+- A stored table whose source the served copy cannot identify is treated as built in an unknown zone, so a query that reads its zone-dependent values answers live.
+
+The decline message now says "the query reads a table in another time zone than it was built in". No table is rebuilt or re-addressed, and no API change.
+
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 
 A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.

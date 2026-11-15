@@ -1029,7 +1029,7 @@ export class ServedCopyServe {
       if (readsInAnotherZone(compiled, await prepared(), zoned)) {
          decline(
             computed
-               ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
+               ? "the query reads a table in another time zone than it was built in (a stored computed dimension or a row filter that depends on it)"
                : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
             "served_copy_time_zone",
          );
@@ -2854,9 +2854,9 @@ function v1ColumnsOf(
  * Whether a query reads any of `tables` in another time zone than the one it
  * was built in: a zone its own text sets (`timezone:` in any stage), or the
  * zone the source it runs on sets or inherits from anything on its chain
- * (`ny is orders extend { timezone: … }`), which its text never names. A
- * table is built in its stored source's own zone, and an explicit `'UTC'` is
- * the default zone ({@link sameZone}). One rule for every zone-dependent
+ * (`ny is orders extend { timezone: … }`), which its text never names, or
+ * the default when neither sets one. A table is built in its stored source's
+ * own zone, and an explicit `'UTC'` is the default zone ({@link sameZone}). One rule for every zone-dependent
  * stored value: a computed dimension, a rolling window's cut-off, and a
  * restated timestamp truncation. Fails closed: a source that cannot be
  * resolved counts as another zone.
@@ -2868,11 +2868,13 @@ function readsInAnotherZone(
 ): boolean {
    try {
       const map = SourceMap.of(compiled.modelDef);
-      const built = tables.map((b) => {
-         const id = b.sourceIDs?.[0];
-         return id ? queryTimezoneOf(map.node(id)?.def) : undefined;
-      });
-      const another = (zone: string) => built.some((z) => !sameZone(z, zone));
+      // A table whose stored source is not known has no known build zone.
+      if (tables.some((b) => b.sourceIDs?.[0] === undefined)) return true;
+      const built = tables.map((b) =>
+         queryTimezoneOf(map.node(b.sourceIDs![0])?.def),
+      );
+      const another = (zone: string | undefined) =>
+         built.some((z) => !sameZone(z, zone));
       if (queryTimezones(view.query).some(another)) return true;
       const struct = resolveStructRefSource<unknown>(
          view.structRef as never,
@@ -2885,7 +2887,10 @@ function readsInAnotherZone(
             .chainOf(struct)
             .map((id) => queryTimezoneOf(map.node(id)?.def))
             .find((z) => z !== undefined);
-      return zone !== undefined && another(zone);
+      // No zone set or inherited is the default: a table built in another
+      // zone (a joined source's own `timezone:`, which Malloy does not apply
+      // through the join) is read in another zone too.
+      return another(zone);
    } catch {
       return true;
    }
@@ -4176,9 +4181,13 @@ async function checkTruncationZone(
    }
 }
 
-/** Whether two query time zones are one: unset is UTC, Malloy's default. */
+/**
+ * Whether two query time zones are one: unset is `'UTC'`, Malloy's default,
+ * which compiles to the same SQL. Only that spelling: an alias such as
+ * `'Etc/UTC'` is another zone, since a dialect may not know it (MySQL without
+ * its time zone tables converts it to NULL).
+ */
 function sameZone(a: string | undefined, b: string | undefined): boolean {
-   const utc = (z: string | undefined) =>
-      z === undefined || z === "UTC" || z === "Etc/UTC" ? undefined : z;
+   const utc = (z: string | undefined) => (z === "UTC" ? undefined : z);
    return utc(a) === utc(b);
 }
