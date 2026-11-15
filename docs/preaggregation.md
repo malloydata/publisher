@@ -11,7 +11,7 @@ Queries do not change. They name the source they always named, ask for the measu
 
 This is the same machinery as [materialization](materialization.md) with a different trigger. `#@ persist` stores a source you wrote; `#@ preaggregate` stores a rollup Publisher derives from a measure you annotated. Both build through the same plan, manifest, and scheduler.
 
-Since the v1 cutover, a `#@ preaggregate` line is read as a `#(preaggregate)` declaration: planned once in its base's model, built under the v2 rollup's table name (`<base>__rollup__<grain>__<hash>`; a rollup built before the cutover under `__preagg__` is built again once), and served by the same rollup leg, so the limits below are the rollup leg's for both spellings. Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`; [materialization-migration.md](materialization-migration.md#preaggregate) maps one to the other. Which to write depends on the server: with `PUBLISHER_MATERIALIZE` on, write `#(preaggregate)` (below), and `#@ preaggregate` carries a deprecation warning; with it off (the default), `#(preaggregate)` is not read (an `annotation-near-miss` warning) and its measure serves live, so `#@ preaggregate` is the spelling that builds.
+Since the v1 cutover, a `#@ preaggregate` line is read as a `#(preaggregate)` declaration: planned once in its base's model, built under the v2 rollup's table name (its [readable name](materialization.md#readable-table-names), `<package>__<file>__<base>_by_<grain>__p<hash>`; a rollup built before the cutover under `__preagg__` is built again once), and served by the same rollup leg, so the limits below are the rollup leg's for both spellings. Materialization v2 renames `#@ preaggregate` to `#(preaggregate)`; [materialization-migration.md](materialization-migration.md#preaggregate) maps one to the other. Which to write depends on the server: with `PUBLISHER_MATERIALIZE` on, write `#(preaggregate)` (below), and `#@ preaggregate` carries a deprecation warning; with it off (the default), `#(preaggregate)` is not read (an `annotation-near-miss` warning) and its measure serves live, so `#@ preaggregate` is the spelling that builds.
 
 ## `#(preaggregate)` (materialization v2, behind `PUBLISHER_MATERIALIZE`)
 
@@ -203,7 +203,8 @@ source: orders is bigquery.table('project.raw.orders') extend {
 }
 ```
 
-That builds `analytics.orders__preagg__category__<digest>`.
+That builds `analytics.<package>__<file>__orders_by_category__p<hash>`, the rollup's
+[readable name](materialization.md#readable-table-names) in the `analytics` namespace.
 
 **BigQuery requires it.** An unqualified `CREATE` is rejected outright there
 (`must be qualified with a dataset`), so a rollup without a namespace cannot be built
