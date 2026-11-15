@@ -271,7 +271,10 @@ it changed owner) keeps serving to its former owner until the source rebuilds. S
 [materialization.md](materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source)
 for the full contract and how to bound that staleness. `storage=` and `#@ preaggregate` remain
 unconditionally refused for any `#(access_filter)`-gated source — the relaxation applies to colocated
-persistence only.
+persistence only. A colocated `#(materialize)` (no `storage=`) meets the same bar with
+`PUBLISHER_MATERIALIZE_GATED_SOURCES` off, exactly as a colocated `#@ persist` does: its table stays in
+the author's warehouse with every caller's rows, and the gate is grafted and proven on each read. A
+`#(materialize) storage=` source behind a gate still needs that switch.
 
 **Colocated `#(preaggregate)` rollups.** With `PUBLISHER_MATERIALIZE` (on by default) and
 `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(preaggregate)` rollup over a gated

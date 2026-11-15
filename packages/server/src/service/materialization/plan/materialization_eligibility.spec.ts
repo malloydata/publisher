@@ -718,6 +718,52 @@ source: by_category is orders -> {
          }
       });
 
+      it("admits a colocated #(materialize) source's own row-level gate with the gated-sources switch off (G3), and nothing more", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const G3_ONLY = {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         };
+         expect(
+            withEnv(G3_ONLY, () => gateEnforcedAtRead(id, inputs(id))),
+         ).toBe(true);
+         withEnv(G3_ONLY, () => assertTierEligible(source, false, inputs(id)));
+         // Asked as storage, by the caller or by the plan, it is refused.
+         expect(
+            withEnv(G3_ONLY, () => gateEnforcedAtRead(id, inputs(id), true)),
+         ).toBe(false);
+         expect(
+            withEnv(G3_ONLY, () =>
+               gateEnforcedAtRead(id, {
+                  ...inputs(id),
+                  materializePlans: { [id]: { persist: { storage: "lake" } } },
+               } as never),
+            ),
+         ).toBe(false);
+         // G3's other conditions hold as for v1: an inherited, unproven or
+         // joined gate, a #@ persist source, and v2's switch off.
+         for (const plan of [
+            inputs(id, {
+               classification: "row_level",
+               attributed: true,
+               inheritedRowFilter: true,
+            }),
+            inputs(id, { classification: "rejected", attributed: true }),
+            inputs(id, { classification: "row_level", attributed: false }),
+            inputs(id, undefined, false),
+         ]) {
+            expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
+               false,
+            );
+         }
+         expect(
+            withEnv({ ...G3_ONLY, PUBLISHER_MATERIALIZE: "false" }, () =>
+               gateEnforcedAtRead(id, inputs(id)),
+            ),
+         ).toBe(false);
+      });
+
       it("never admits a row filter the source inherits: the served copy cannot graft it", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
