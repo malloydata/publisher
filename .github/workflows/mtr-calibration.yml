@@ -1,5 +1,5 @@
 # TEMPORARY: calibration runs for the main-thread regression check. Removed
-# before merge. (round 3)
+# before merge. (round 4)
 name: mtr-calibration
 
 on:
@@ -46,7 +46,7 @@ jobs:
         env:
           PAIR: ${{ matrix.pair }}
         run: |
-          main=44fbcb53357c5671d0ace9f72c98041271d6164b
+          main=6008e527292aff1305c4a3f3baa369d43f4f338d
           case "$PAIR" in
             120-vs-121) b=git:v0.12.0; c=git:v0.12.1 ;;
             120-vs-125) b=git:v0.12.0; c=git:v0.12.5 ;;
