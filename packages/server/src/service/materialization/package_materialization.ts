@@ -1011,7 +1011,6 @@ export class PackageMaterialization {
       const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const sources = plan?.sources ?? {};
       const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
-      const v1 = true;
       const viewBuilds = this.persistedViewBuildIDs();
       return deriveColocatedServeBindings({
          entries: this.colocatedEntries,
@@ -1019,13 +1018,9 @@ export class PackageMaterialization {
          materializePlans: this.materializePlans,
          eligible: (sourceID) =>
             !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
-         ...(v1
-            ? {
-                 v1Schema: (sourceID: string) =>
-                    v1StoredColumnsOf(this.declarationOf(sourceID)),
-                 notV1: (sourceID: string) => !!viewBuilds?.has(sourceID),
-              }
-            : {}),
+         v1Schema: (sourceID) =>
+            v1StoredColumnsOf(this.declarationOf(sourceID)),
+         notV1: (sourceID) => !!viewBuilds?.has(sourceID),
       });
    }
 

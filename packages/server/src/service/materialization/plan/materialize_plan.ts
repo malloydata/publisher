@@ -114,9 +114,6 @@ export function materializeTableName(sourceName: string): string {
 /** Keys `#(materialize)` reads for the plan itself, not the persist line. */
 const PLANNED_KEYS = ["inline"] as const;
 
-/** Keys `#(materialize)` accepts but does not implement; none at present. */
-const DEFERRED_KEYS: Readonly<Record<string, string>> = {};
-
 /**
  * The code of the warning on a pair table whose `refresh="incremental"` is
  * not honoured: the table is rebuilt in full on every refresh, and served.
@@ -131,7 +128,6 @@ export const GENERATOR_KEYS: readonly string[] = [
    ...CARRIED_KEYS,
    ...CARRIED_GROUPS,
    ...PLANNED_KEYS,
-   ...Object.keys(DEFERRED_KEYS),
 ];
 
 /** The code of a `#(materialize)` key outside the route's closed set. */
@@ -1389,8 +1385,6 @@ function materializeDeclarationOf(
             "source that does not inherit #@ persist, or drop the #@ persist",
       );
    }
-   const deferred = declaration.keys.find((key) => key in DEFERRED_KEYS);
-   if (deferred) return new Declined(DEFERRED_KEYS[deferred]);
    return declaration;
 }
 

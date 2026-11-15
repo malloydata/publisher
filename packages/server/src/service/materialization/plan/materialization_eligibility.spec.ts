@@ -153,11 +153,12 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 #@ persist name="mz_given_outside" storage=lake
 source: mz_given_outside is base -> { select: * } extend { where: tenant = $tenant }`);
       expect(sources.mz_given_outside).toBeDefined();
-      const plan = assertMaterializationEligible(
+      assertMaterializationEligible(
          sources.mz_given_outside,
          deriveAnnotationFields(sources.mz_given_outside),
       );
-      expect(plan.terms).toEqual([
+      const admitted = admitGivenPositions(sources.mz_given_outside);
+      expect(admitted.ok && admitted.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
    });
@@ -604,11 +605,12 @@ source: mz_joined_unread is joiner extend {
       // Unread: the join is pruned, so nothing given-derived reaches the
       // artifact and there is nothing to strip or re-apply.
       expect(await sources.mz_joined_unread.getSQL()).not.toContain("JOIN");
-      const plan = assertMaterializationEligible(
+      assertMaterializationEligible(
          sources.mz_joined_unread,
          deriveAnnotationFields(sources.mz_joined_unread),
       );
-      expect(plan.terms).toEqual([]);
+      const admitted = admitGivenPositions(sources.mz_joined_unread);
+      expect(admitted.ok && admitted.terms).toEqual([]);
    });
 });
 
@@ -840,11 +842,12 @@ source: mz_colocated_given is base -> { select: * } extend { where: tenant = $te
       // and the storage side additionally reports the term it will re-apply at
       // read. What still separates the tiers is what they do with that term,
       // not whether they tolerate it.
-      const plan = assertMaterializationEligible(
+      assertMaterializationEligible(
          sources.mz_colocated_given,
          deriveAnnotationFields(sources.mz_colocated_given),
       );
-      expect(plan.terms).toEqual([
+      const admitted = admitGivenPositions(sources.mz_colocated_given);
+      expect(admitted.ok && admitted.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
    });

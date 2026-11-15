@@ -46,7 +46,6 @@ import {
    admitGivenPositions,
    inheritedGivenWhereRefusal,
    readTimeDynamicTerms,
-   type DynamicTerm,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
 import { EMPTY_STORAGE_REASON } from "./declaration";
@@ -57,11 +56,6 @@ import { rollupGateEnforcedAtRead } from "./rollup_plan";
  * than re-derived, because it is only valid because the gate proved it: where
  * each term sits.
  */
-interface PersistDynamicPlan {
-   /** Terms absent from the build, re-applied per caller at read. */
-   terms: DynamicTerm[];
-}
-
 /**
  * Compile-time HARD REFUSE gate for materializing a persist source into a
  * *storage* destination (a DuckDB/DuckLake table). Such a table is built once
@@ -99,7 +93,6 @@ interface PersistDynamicPlan {
  *
  * @param annotationFields the source's `#@ persist` key=value fields, which is
  *   where `merge_key=` is read from.
- * @returns the terms the build strips.
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source and the
  *   specific reason, so the author can either fix the source or drop `storage=`.
  */
@@ -110,7 +103,7 @@ export function assertMaterializationEligible(
       /** From {@link gateEnforcedAtRead}: skip only the gate refusal (3). */
       gateEnforcedAtRead?: boolean;
    } = {},
-): PersistDynamicPlan {
+): void {
    const sourceName = persistSource.name;
 
    // Fail closed: an unreadable parameter surface is a refusal.
@@ -176,8 +169,6 @@ export function assertMaterializationEligible(
             `'storage=').`,
       });
    }
-
-   return { terms: classified.terms };
 }
 
 /**
