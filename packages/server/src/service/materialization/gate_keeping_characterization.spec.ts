@@ -33,7 +33,8 @@ import {
 import { installSettings } from "../../test_helpers/settings_env";
 import { writeTempPackage } from "../../test_helpers/temp_package";
 import { Package } from "../package";
-import { routeCandidates, type QueryServingHost } from "../query_serving";
+import { variantsOf } from "../query_serving";
+import { type LegContext, makeLegs } from "./serve/leg";
 import { routeQuery } from "../query_router";
 import { EMPTY_SNAPSHOT, pin } from "./domain/binding";
 import { gateEnforcedAtRead } from "./plan/materialization_eligibility";
@@ -700,10 +701,10 @@ describe("gate keeping at the router, under an entry-point veto", () => {
    };
    const runnable = {} as never;
 
-   function host(tables: ReturnType<typeof table>[]): QueryServingHost {
+   function host(tables: ReturnType<typeof table>[]): Required<LegContext> {
       return {
-         modelPath: "m.malloy",
          servedCopy: {
+            hasBindings: () => true,
             loadQuery: async () => ({
                runnable,
                virtualMap: new Map(),
@@ -728,7 +729,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
                ...(tables[0] ? { binding: tables[0] } : {}),
             }),
          },
-      } as unknown as QueryServingHost;
+      } as unknown as Required<LegContext>;
    }
 
    for (const s of SWITCHES) {
@@ -745,20 +746,28 @@ describe("gate keeping at the router, under an entry-point veto", () => {
                const rows: Record<string, string> = {};
                for (const leg of ["view", "rollup", "served"] as const) {
                   for (const [read, tables] of Object.entries(reads)) {
-                     const candidates = routeCandidates(host(tables), {
-                        queryString: "run: s -> v",
-                        surfaceGivens: undefined,
-                        pinned: pin(EMPTY_SNAPSHOT, new Date(0)),
-                        buildManifest: undefined,
-                        servedCopyPossible: leg === "served",
-                        colocatedKeepsContracts,
-                        ...(leg === "rollup"
-                           ? { rollupVariantsFor: runnable }
-                           : {}),
-                        ...(leg === "view"
-                           ? { persistedViewsFor: runnable }
-                           : {}),
-                     });
+                     const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                     const legs = host(tables);
+                     const candidates = variantsOf(
+                        makeLegs(pinned, {
+                           ...(leg === "served"
+                              ? { servedCopy: legs.servedCopy }
+                              : {}),
+                           ...(leg === "rollup"
+                              ? { rollupVariants: legs.rollupVariants }
+                              : {}),
+                           ...(leg === "view"
+                              ? { persistedViews: legs.persistedViews }
+                              : {}),
+                        }),
+                        {
+                           queryString: "run: s -> v",
+                           givens: undefined,
+                           authorRunnable: runnable,
+                        },
+                        pinned,
+                        { modelPath: "m.malloy", colocatedKeepsContracts },
+                     );
                      const decision = await routeQuery(
                         candidates,
                         async () => "entry_point",

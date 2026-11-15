@@ -2,43 +2,29 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Serving one query: which compiled form answers it, and the one record of
- * what happened that every reader derives from.
+ * Routing one query over the serving legs, and the reports that read how it
+ * was served.
  *
- * `Model.runQueryResults` asks the router (`routeQuery`) over the candidates
- * {@link routeCandidates} lists, then runs the chosen runnable. What the
- * router decided and what the run did are captured in an immutable
- * {@link Answer}: built once from the route ({@link routedAnswer}), replaced
- * (never mutated) when a storage run fails and falls back live
- * ({@link liveFallbackAnswer}), and finished with the manifest entries the
- * answering run read ({@link answeredWith}). `servedFrom`, the routing metrics,
- * the path report, the access record's `path`/`pathUnavailable` and the
- * workload log all read that one record, so no two of them can disagree about
- * how a query was served.
+ * The query pipeline (`model_serving.ts`) makes the legs for its pin
+ * (`makeLegs`, serve/leg.ts) and routes over them with {@link variantsOf}:
+ * each leg becomes one router candidate, and this is where the gate policy is
+ * asked (before an attempt, by leg kind; after it, over the bindings the
+ * answer read), where a `LegDecline` is read for the path report, and where a
+ * leg's skip is logged. A leg does neither. {@link answerOf} turns the
+ * router's decision into the {@link Answer} every reader derives from, and
+ * {@link queryPathFor} assembles the path report from it.
  *
- * Adding a leg. Phase 3's re-rooted served copy, phase 4's persisted-view and
- * join-to-rollup legs plug in here without touching the query path in
- * `model.ts`: add the variant kind to `query_router.ts`'s `VariantKind`, its
- * run-time extras to {@link RoutedExtra}, its candidate to
- * {@link routeCandidates} (with its own logs and metrics), and how it maps onto
- * {@link Answer} in {@link routedAnswer}. The path report and metrics then read
- * it through the record. The query path keeps one rule: route, govern, run the
- * runnable the answer names, and on a run failure ask
- * {@link canDegradeToLive}.
+ * Adding a leg needs nothing here: a leg module, its `makeLegs` entry and its
+ * decline rows, and the router, the gate policy and the reports read it
+ * through the answer.
  */
 
-import type {
-   GivenValue,
-   ModelDef,
-   QueryMaterializer,
-   VirtualMap,
-} from "@malloydata/malloy";
+import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../config";
 import {
    answerKeepsGates,
    legMayPassGate,
 } from "./materialization/domain/gate_policy";
-import type { GraftScope } from "./gate_classification";
 import { logger } from "../logger";
 import { recordStorageServeRouting } from "../materialization_metrics";
 import { sourceChain } from "./materialization/text/source_map";
@@ -49,7 +35,7 @@ import {
    type Snapshot,
 } from "./materialization/domain/binding";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
-import { explainDecline } from "./materialization/domain/leg_decline";
+import { isDeclineOf } from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -59,276 +45,121 @@ import {
 } from "./materialization/serve/query_path";
 import type { BuildManifest } from "./materialization/domain/types";
 import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import type { PersistedViewServe } from "./materialization/serve/view_variants";
 import type {
-   PersistedViewServe,
-   ViewTable,
-} from "./materialization/serve/view_variants";
+   Answer,
+   Leg,
+   LegAnswer,
+   LegKind,
+   QueryFacts,
+} from "./materialization/serve/leg";
 import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "./governance/ir/prepared_query";
-import type { ConsideredVariant, RouteDecision, Variant } from "./query_router";
+import type {
+   RouteDecision,
+   Variant,
+   VariantSkipExplanation,
+} from "./query_router";
+
+/** The decline vocabulary's name for each leg's codes. */
+const DECLINING_LEG = {
+   view: "view",
+   rollup: "rollup",
+   served: "served_copy",
+} as const satisfies Record<LegKind, string>;
+
+/** What each leg's skip is logged as, at debug. */
+const SKIP_MESSAGE: Record<LegKind, string> = {
+   view: "the persisted view does not answer this query",
+   rollup: "no #(preaggregate) rollup answers this query",
+   served: "served copy cannot answer this query",
+};
 
 /**
- * How a query's answer was ultimately produced, once it reached the storage
- * routing decision at all. `storage` = served from the materialized table via
- * the virtual-source transform. `live_fallback` = it routed, then a run-time
- * store failure degraded it to the live warehouse (a success the caller cannot
- * distinguish from a storage hit, which is exactly why it is reported
- * separately; on the error metric, the live retry failed too). Absent means
- * the query never had a storage binding to consider.
+ * The router's candidates for one query: one per leg, in the legs' order.
+ * The gate policy (`domain/gate_policy.ts`) decides, its switches read once
+ * for the query, whether a leg may be tried past an entry-point gate (R3:
+ * the leg compiles the author's own text, gates included, so `govern()`
+ * grafts and proves the gate on it) and whether the answer it produced keeps
+ * the gates given the tables it read.
  */
-export type ServedFrom = "storage" | "live_fallback";
-
-/**
- * What a routed variant carries into the run, by kind: the storage tier needs
- * its virtual map and the bindings that produced the shape; a rollup needs
- * nothing beyond its runnable.
- */
-export type RoutedExtra =
-   | {
-        kind: "served";
-        virtualMap: VirtualMap;
-        bindings: Binding[];
-        tablesRead: Binding[];
-        /** The served copy's graft scope, for `govern()` (see ServedCopyServe.loadQuery). */
-        graftScope?: GraftScope;
-     }
-   | {
-        kind: "view";
-        /** The persisted view's table that answered. */
-        table: ViewTable;
-        /** For a `storage=` view: how its `virtual()` handle resolves. */
-        virtualMap?: VirtualMap;
-        /** For a `storage=` view: its binding. */
-        binding?: Binding;
-        /** The variant's graft scope, for `govern()` (R3). */
-        graftScope: GraftScope;
-     }
-   | {
-        kind: "rollup";
-        /** The rollup that answered. */
-        resolvedMember?: string;
-        /** A `#(preaggregate) storage=` rollup: how its table resolves. */
-        virtualMap?: VirtualMap;
-        /** A `#(preaggregate) storage=` rollup: its binding. */
-        binding?: Binding;
-        /**
-         * Every stored table the answer reads, when that is more than the
-         * rollup's (a join leg answered in a storage destination reads the
-         * query source's table there too): together they decide whether a
-         * failed run may be retried live.
-         */
-        bindings?: Binding[];
-        /**
-         * A `#(preaggregate)` rollup's graft scope, for `govern()` (R3): the
-         * variant that redeclares the run target over the rollup, gates
-         * included. Absent for a v1 `#@ preaggregate` rollup, which no gated
-         * entry point reaches.
-         */
-        graftScope?: GraftScope;
-     };
-
-/** The tier of each stored table a served-copy answer reads. */
-function tiersRead(extra: RoutedExtra): { tier: "colocated" | "storage" }[] {
-   return extra.kind === "served"
-      ? extra.tablesRead.map((b) => ({
-           tier: b.tier,
-        }))
-      : [];
+export function variantsOf(
+   legs: readonly Leg[],
+   facts: QueryFacts,
+   pinned: Pinned,
+   args: {
+      modelPath: string;
+      /**
+       * The v1 cutover's contracts at read for colocated tables (G3): the
+       * served copy goes past an entry-point gate when every table it reads
+       * is colocated, even with `materialize.gatedSources` off, since a
+       * colocated table never leaves the author's warehouse.
+       */
+      colocatedKeepsContracts?: boolean;
+   },
+): Variant<LegAnswer>[] {
+   const switches = gateSwitches();
+   const gateContext = {
+      colocatedReadsKeepGates: !!args.colocatedKeepsContracts,
+   };
+   return legs.map((leg) => ({
+      kind: leg.kind,
+      applicable: leg.applies(facts, pinned),
+      keepsContracts: legMayPassGate(leg.kind, switches, gateContext),
+      keepsContractsFor: (answer: LegAnswer) =>
+         answerKeepsGates(
+            leg.kind,
+            answer.tablesRead ?? [],
+            switches,
+            gateContext,
+         ),
+      attempt: async () => {
+         const answer = await leg.attempt(facts, pinned);
+         if (leg.kind === "served") {
+            logger.debug("Serving query from the served copy (virtual)", {
+               modelPath: args.modelPath,
+               tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
+            });
+         }
+         return { runnable: answer.runnable, extra: answer };
+      },
+      explain: (err): VariantSkipExplanation | undefined =>
+         isDeclineOf(err, DECLINING_LEG[leg.kind])
+            ? {
+                 code: err.code,
+                 ...(err.callerDetail
+                    ? { callerDetail: err.callerDetail }
+                    : {}),
+              }
+            : undefined,
+      onSkip: (err) => {
+         logger.debug(SKIP_MESSAGE[leg.kind], {
+            modelPath: args.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      },
+   }));
 }
-
-/**
- * One query's serving, as the router decided it and the run carried it out.
- * Immutable: each stage returns a new record. Everything that reports how a
- * query was served derives from it.
- */
-export interface Answer {
-   /** Each candidate the router considered, and what it decided. */
-   readonly considered: readonly ConsideredVariant[];
-   /** The tier the router chose: a persisted view, a stored table, a rollup, or live. */
-   readonly tier: "view" | "served" | "rollup" | "live";
-   /** For a view answer: the persisted view's table. */
-   readonly viewTable: ViewTable | undefined;
-   /** The routed runnable, or undefined when live answers (the caller's own compile runs). */
-   readonly routedRunnable: QueryMaterializer | undefined;
-   /** For a storage answer: how the shape's virtual sources resolve to tables. */
-   readonly virtualMap: VirtualMap | undefined;
-   /** For a storage answer: the bindings that produced the shape (decide per-binding behaviour from these, never the package-wide set). */
-   readonly serveShapeBindings: readonly Binding[];
-   /** For a storage answer: the stored tables the query reads. */
-   readonly storageTablesRead: readonly Binding[] | undefined;
-   /** For a served-copy, persisted-view or rollup answer: where `govern()` grafts a row-level gate (R3). */
-   readonly graftScope: GraftScope | undefined;
-   /**
-    * The answering variant was let past an entry-point gate because it keeps
-    * the contracts (R3): `govern()` must find and enforce that gate on it.
-    */
-   readonly pastEntryPointGate: boolean;
-   /** For a rollup answer: the rollup that answered. */
-   readonly rollupMember: string | undefined;
-   /** A storage read failed at run time and the query was answered live. */
-   readonly runFailed: boolean;
-   /** The colocated manifest entries the answering run read. */
-   readonly colocatedRead: ReadonlySet<string>;
-}
-
-/** The answer before routing, and when nothing could route. */
-export const LIVE_ANSWER: Answer = Object.freeze({
-   considered: [],
-   tier: "live",
-   routedRunnable: undefined,
-   virtualMap: undefined,
-   serveShapeBindings: [],
-   storageTablesRead: undefined,
-   graftScope: undefined,
-   pastEntryPointGate: false,
-   rollupMember: undefined,
-   viewTable: undefined,
-   runFailed: false,
-   colocatedRead: new Set<string>(),
-});
 
 /** The answer the router's decision describes, before anything runs. */
-export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
+export function answerOf(route: RouteDecision<LegAnswer>): Answer {
    if (route.served !== "variant") {
-      return Object.freeze({ ...LIVE_ANSWER, considered: route.considered });
-   }
-   if (route.extra.kind === "view") {
       return Object.freeze({
-         ...LIVE_ANSWER,
+         leg: "live",
          considered: route.considered,
-         tier: "view",
-         routedRunnable: route.runnable,
-         virtualMap: route.extra.virtualMap,
-         serveShapeBindings: route.extra.binding ? [route.extra.binding] : [],
-         storageTablesRead: route.extra.binding
-            ? [route.extra.binding]
-            : undefined,
-         graftScope: route.extra.graftScope,
-         pastEntryPointGate: route.pastEntryPointGate === true,
-         viewTable: route.extra.table,
-      });
-   }
-   if (route.extra.kind === "served") {
-      return Object.freeze({
-         ...LIVE_ANSWER,
-         considered: route.considered,
-         tier: "served",
-         routedRunnable: route.runnable,
-         virtualMap: route.extra.virtualMap,
-         serveShapeBindings: route.extra.bindings,
-         storageTablesRead: route.extra.tablesRead,
-         graftScope: route.extra.graftScope,
-         pastEntryPointGate: route.pastEntryPointGate === true,
+         colocatedRead: new Set<string>(),
       });
    }
    return Object.freeze({
-      ...LIVE_ANSWER,
+      leg: route.kind,
       considered: route.considered,
+      answer: route.extra,
       pastEntryPointGate: route.pastEntryPointGate === true,
-      tier: "rollup",
-      routedRunnable: route.runnable,
-      rollupMember: route.extra.resolvedMember,
-      graftScope: route.extra.graftScope,
-      // A stored rollup reads through `virtual()`; a run failure on it may
-      // degrade to live, since a rollup only accelerates (its binding's
-      // `preaggregate` origin never vetoes).
-      ...(route.extra.virtualMap
-         ? {
-              virtualMap: route.extra.virtualMap,
-              serveShapeBindings:
-                 route.extra.bindings ??
-                 (route.extra.binding ? [route.extra.binding] : []),
-           }
-         : {}),
+      runFailed: false,
+      colocatedRead: new Set<string>(),
    });
-}
-
-/** The same answer after its storage run failed and the live retry ran. */
-export function liveFallbackAnswer(answer: Answer): Answer {
-   return Object.freeze({ ...answer, runFailed: true });
-}
-
-/** The answer with the manifest entries its answering run read. */
-export function answeredWith(
-   answer: Answer,
-   colocatedRead: ReadonlySet<string>,
-): Answer {
-   return Object.freeze({ ...answer, colocatedRead });
-}
-
-/**
- * `servedFrom` for the answer: a storage hit, a storage run that fell back
- * live (`live_fallback`, a success that must NOT count as a storage hit), or
- * undefined for everything else.
- */
-export function servedFromOf(answer: Answer): ServedFrom | undefined {
-   if (answer.runFailed) return "live_fallback";
-   // A served-copy answer that read only colocated `#(materialize)` tables
-   // read the source's own warehouse, as a colocated `#@ persist` answer
-   // does, which reports no storage hit; its path report names the table.
-   if (
-      answer.tier === "served" &&
-      answer.storageTablesRead !== undefined &&
-      answer.storageTablesRead.length > 0 &&
-      answer.storageTablesRead.every(isColocated)
-   ) {
-      return undefined;
-   }
-   // A `storage=` persisted view or `#(preaggregate)` rollup reads the
-   // storage tier too, through `virtual()`.
-   return answer.tier === "served" ||
-      ((answer.tier === "view" || answer.tier === "rollup") &&
-         answer.virtualMap !== undefined)
-      ? "storage"
-      : undefined;
-}
-
-/**
- * Whether a run-time store failure may be retried against the live warehouse,
- * decided from the bindings that produced the serve shape. Exported for tests.
- *
- * An authored binding declaring anything but `live` vetoes for the whole shape
- * (deliberately coarse). A rollup binding never vetoes and never enables on its
- * own: pre-aggregation has no correctness dimension (docs/preaggregation.md: a
- * stale rollup recomputes from the base with the same answer), so a rollup must
- * not error on a store failure. A rollup must also not be filtered out, or a
- * rollup-only package could never degrade. Empty is false: nothing routed.
- */
-export function bindingsAllowDegradeToLive(
-   bindings: readonly Binding[],
-): boolean {
-   return (
-      bindings.length > 0 &&
-      bindings.every(
-         (b) => b.kind === "rollup" || b.freshnessFallback === "live",
-      )
-   );
-}
-
-/**
- * Whether a run failure under this answer may be retried live:
- * `freshnessFallback=live` marks the tier as an optimisation, not a
- * dependency. Deliberately narrow: only a storage answer, only per
- * {@link bindingsAllowDegradeToLive} over the bindings that produced THIS
- * shape (a sibling source must not decide), never for a client error (a bad
- * given) or an abort.
- */
-export function canDegradeToLive(
-   answer: Answer,
-   error: unknown,
-   opts: { hasLiveRunnable: boolean; aborted: boolean },
-): boolean {
-   return (
-      !!answer.virtualMap &&
-      opts.hasLiveRunnable &&
-      !opts.aborted &&
-      !String((error as { code?: string })?.code ?? "").startsWith(
-         "runtime-given-",
-      ) &&
-      bindingsAllowDegradeToLive(answer.serveShapeBindings)
-   );
 }
 
 /**
@@ -339,7 +170,7 @@ export function canDegradeToLive(
  * candidate (storage, rollup, or both) before any was tried. Otherwise nothing
  * when the storage tier was not a candidate.
  */
-export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
+export function recordRoutingDecision(route: RouteDecision<LegAnswer>): void {
    // The gate vetoes every applicable candidate at once, before any compile,
    // so it is recorded once per query whichever tiers were candidates: the
    // label's contract (see recordStorageServeRouting) covers both tiers.
@@ -354,7 +185,7 @@ export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
    // The served copy reads the same stored tables, so its answer counts as
    // the tier's. Its decline counts nothing: only the retired serve shape's
    // candidate reported a miss (`live_fallback`).
-   if (route.served === "variant" && route.extra.kind === "served") {
+   if (route.served === "variant" && route.kind === "served") {
       recordStorageServeRouting("storage", "persist");
    }
 }
@@ -446,191 +277,6 @@ export interface QueryServingHost {
 }
 
 /**
- * The router's candidates for one query, in catalog order: the served copy on
- * `virtual` (when `materialize.enabled` is on), the `storage=` serve shape,
- * then the pre-aggregation companion. A candidate is listed
- * only when its variant exists for this model (so the gate check runs
- * exactly when one could route), and is inapplicable when it cannot help
- * this request. Each keeps its own logs and metrics.
- */
-export function routeCandidates(
-   host: QueryServingHost,
-   args: {
-      queryString: string;
-      surfaceGivens: Record<string, GivenValue> | undefined;
-      /** The query's pinned tables, which every leg reads. */
-      pinned: Pinned;
-      /** The pinned build manifest, or undefined when nothing is bound. */
-      buildManifest: BuildManifest | undefined;
-      servedCopyPossible: boolean;
-      /**
-       * The v1 cutover's contracts at read for colocated tables (G3): the
-       * served copy goes past an entry-point gate when every table it reads
-       * is colocated, even with `materialize.gatedSources` off, since a
-       * colocated table never leaves the author's warehouse.
-       */
-      colocatedKeepsContracts?: boolean;
-      /**
-       * The caller's own compile, for the `#(preaggregate)` leg; absent when
-       * the leg is off (`materialize.enabled`) or the model has no rollup.
-       */
-      rollupVariantsFor?: QueryMaterializer;
-      /**
-       * The caller's own compile, for the persisted-view leg; absent when the
-       * leg is off (`materialize.enabled`) or the model has no persisted view.
-       */
-      persistedViewsFor?: QueryMaterializer;
-   },
-): Variant<RoutedExtra>[] {
-   const {
-      queryString,
-      surfaceGivens,
-      pinned,
-      buildManifest,
-      servedCopyPossible,
-   } = args;
-   // Gate keeping, one policy (`domain/gate_policy.ts`), its switches read
-   // once for the query.
-   const switches = gateSwitches();
-   const gateContext = {
-      colocatedReadsKeepGates: !!args.colocatedKeepsContracts,
-   };
-   const candidates: Variant<RoutedExtra>[] = [];
-   // A persisted view first (R1: view by exact call, rollup, nearest table,
-   // live). Listed only when the model has one; applicable only when the text
-   // calls one, so a look-alike or a nest never costs a compile.
-   if (args.persistedViewsFor) {
-      const authorRunnable = args.persistedViewsFor;
-      candidates.push({
-         kind: "view",
-         applicable: !!host.persistedViews.calledView(queryString),
-         // R3, behind the same switch as the served copy (question 14): the
-         // source's gates are written on the variant and grafted there.
-         keepsContracts: legMayPassGate("view", switches, gateContext),
-         attempt: async () => {
-            const answer = await host.persistedViews.attempt({
-               queryString,
-               givens: surfaceGivens,
-               authorRunnable,
-               pinned,
-               buildManifest,
-            });
-            return {
-               runnable: answer.runnable,
-               extra: {
-                  kind: "view",
-                  table: answer.table,
-                  graftScope: answer.graftScope,
-                  ...(answer.virtualMap
-                     ? { virtualMap: answer.virtualMap }
-                     : {}),
-                  ...(answer.binding ? { binding: answer.binding } : {}),
-               },
-            };
-         },
-         explain: (err) => explainDecline(err, "view"),
-         onSkip: (err) => {
-            logger.debug("the persisted view does not answer this query", {
-               modelPath: host.modelPath,
-               error: err instanceof Error ? err.message : String(err),
-            });
-         },
-      });
-   }
-   // Then `#(preaggregate)` rollups (R1: view, rollup, the nearest table,
-   // live): the caller's text compiled where its source's name means the
-   // coarsest rollup that reproduces it.
-   if (args.rollupVariantsFor) {
-      const authorRunnable = args.rollupVariantsFor;
-      candidates.push({
-         kind: "rollup",
-         applicable: true,
-         // R3 for rollups, behind the served copy's switch: the run target is
-         // redeclared over the rollup with its gates, proven exact on the
-         // rollup before it is used (RollupVariantServe), then grafted and
-         // re-proven by `govern()`. A `storage=` rollup over a gated base
-         // waits for question 14's review (the gate policy's rollup row).
-         keepsContracts: legMayPassGate("rollup", switches, gateContext),
-         attempt: async () => {
-            const answer = await host.rollupVariants.attempt({
-               queryString,
-               givens: surfaceGivens,
-               authorRunnable,
-               pinned,
-            });
-            return {
-               runnable: answer.runnable,
-               extra: {
-                  kind: "rollup",
-                  resolvedMember: answer.rollupSourceName,
-                  ...(answer.graftScope
-                     ? { graftScope: answer.graftScope }
-                     : {}),
-                  ...(answer.virtualMap
-                     ? { virtualMap: answer.virtualMap }
-                     : {}),
-                  ...(answer.binding ? { binding: answer.binding } : {}),
-                  ...(answer.bindings ? { bindings: answer.bindings } : {}),
-               },
-            };
-         },
-         explain: (err) => explainDecline(err, "rollup"),
-         onSkip: (err) => {
-            logger.debug("no #(preaggregate) rollup answers this query", {
-               modelPath: host.modelPath,
-               error: err instanceof Error ? err.message : String(err),
-            });
-         },
-      });
-   }
-   // The served copy on `virtual` (materialization v2): the author's own
-   // files with each stored source re-rooted on its table. Tried first when
-   // enabled; a query it cannot answer falls through to the serve shape.
-   if (servedCopyPossible) {
-      candidates.push({
-         kind: "served",
-         applicable: true,
-         // R3, behind its own switch until the managed-tier review (plan,
-         // question 14): a row-level gate is grafted on the served copy.
-         // Under the v1 cutover, also for an answer reading only colocated
-         // tables (decided per answer, below).
-         keepsContracts: legMayPassGate("served", switches, gateContext),
-         keepsContractsFor: (extra: RoutedExtra) =>
-            answerKeepsGates("served", tiersRead(extra), switches, gateContext),
-         attempt: async () => {
-            const served = await host.servedCopy.loadQuery(
-               queryString,
-               surfaceGivens,
-               pinned,
-            );
-            logger.debug("Serving query from the served copy (virtual)", {
-               modelPath: host.modelPath,
-               tables: served.tablesRead.map((b) => b.sourceName),
-            });
-            return {
-               runnable: served.runnable,
-               extra: {
-                  kind: "served",
-                  virtualMap: served.virtualMap,
-                  bindings: served.bindings,
-                  tablesRead: served.tablesRead,
-                  graftScope: served.graftScope,
-               },
-            };
-         },
-         explain: (err) => explainDecline(err, "served_copy"),
-         onSkip: (err) => {
-            logger.debug("served copy cannot answer this query", {
-               modelPath: host.modelPath,
-               error: err instanceof Error ? err.message : String(err),
-            });
-         },
-      });
-   }
-   return candidates;
-}
-
-/**
  * The path report for one answered query, or undefined when it cannot be
  * assembled (logged at debug). Reads the author's compile, the
  * {@link Answer} and the query's pin; changes nothing.
@@ -678,8 +324,9 @@ export async function queryPathFor(
          : [];
       // The persisted view the query calls, if any: its table is the first
       // candidate (R1), whatever the router decided about it.
+      const routed = answer.leg === "live" ? undefined : answer.answer;
       const viewTable =
-         answer.viewTable ??
+         routed?.viewTable ??
          (args.queryString !== undefined
             ? host.persistedViews.reportedTable(args.queryString, pinned)
             : undefined);
@@ -739,24 +386,24 @@ export async function queryPathFor(
          // is off or write-only (see storageWarnings).
          storageWarned: getPersistStorageMode() !== "on",
          considered: answer.considered,
-         storageTablesRead: answer.storageTablesRead?.map(toTable),
-         ...(answer.tier === "rollup"
+         storageTablesRead: routed?.tablesRead?.map(toTable),
+         ...(answer.leg === "rollup"
             ? {
-                 rollupTablesRead: answer.serveShapeBindings
+                 rollupTablesRead: answer.answer.shapeBindings
                     .filter((b) => b.kind !== "rollup")
                     .map(toTable),
               }
             : {}),
-         ...(answer.tier === "served" ? { via: "served_copy" as const } : {}),
+         ...(answer.leg === "served" ? { via: "served_copy" as const } : {}),
          servedCopyTables: new Set(
             host.servedCopy
                .materializeBindings(pinned, "bound")
                .map((b) => b.tablePath),
          ),
-         runFailed: answer.runFailed,
+         runFailed: answer.leg !== "live" && answer.runFailed,
          colocatedRead: answer.colocatedRead,
          ...(viewTable ? { view: viewTable } : {}),
-         ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),
+         ...(routed?.rollupMember ? { rollupMember: routed.rollupMember } : {}),
          ...(variantRollups.length > 0
             ? {
                  joinedRollupBases: host.rollupVariants.joinedRollupBaseIDs(

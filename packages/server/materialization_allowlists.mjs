@@ -138,7 +138,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.2",
    "service/model.ts -> service/materialization/plan/preaggregation_validation":
       "2g.2",
-   "service/model.ts -> service/materialization/serve/query_path": "2g.2",
    "service/model.ts -> service/materialization/serve/rollup_variants": "2g.2",
    "service/model.ts -> service/materialization/serve/serve_verdict": "2g.2",
    "service/model.ts -> service/materialization/serve/served_copy_serve":
@@ -157,6 +156,13 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/package.ts -> service/materialization/plan/persist_annotation_validation":
       "2g.3",
+   "service/model_serving.ts -> service/materialization/serve/leg": "2g.3",
+   "service/model_serving.ts -> service/materialization/serve/query_path":
+      "2g.3",
+   "service/model_serving.ts -> service/materialization/serve/served_copy_serve":
+      "2g.3",
+   "service/model.ts -> service/materialization/serve/leg": "2g.3",
+   "service/query_serving.ts -> service/materialization/serve/leg": "2g.3",
    "service/query_serving.ts -> service/materialization/serve/query_path":
       "2g.2",
    "service/query_serving.ts -> service/materialization/serve/rollup_variants":
@@ -418,6 +424,4 @@ export const RATCHET_LONG_FUNCTIONS = {
    "service/materialization/serve/served_copy_serve.ts#ServedCopyServe.rerootFor":
       "2g.2",
    "service/materialization/serve/served_copy_serve.ts#pairRerootOf": "2g.2",
-   "service/model.ts#Model.runNotebookCell": "2g.2",
-   "service/model.ts#Model.runQueryResults": "2g.2",
 };

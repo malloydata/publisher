@@ -15,15 +15,15 @@ import { installSettings } from "../test_helpers/settings_env";
 import {
    answeredWith,
    canDegradeToLive,
+   type LegAnswer,
    LIVE_ANSWER,
    liveFallbackAnswer,
-   recordingManifest,
-   routeCandidates,
-   type QueryServingHost,
-   type RoutedExtra,
-   routedAnswer,
+   makeLegs,
+   type RoutedAnswer,
    servedFromOf,
-} from "./query_serving";
+} from "./materialization/serve/leg";
+import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import { answerOf, recordingManifest, variantsOf } from "./query_serving";
 
 const runnable = { tag: "routed" } as unknown as QueryMaterializer;
 const virtualMap = new Map() as unknown as VirtualMap;
@@ -45,26 +45,34 @@ const manifest = (keys: string[]): BuildManifest =>
       entries: Object.fromEntries(keys.map((k) => [k, { tableName: k }])),
    }) as unknown as BuildManifest;
 
-function storageRoute(bindings: Binding[]): RouteDecision<RoutedExtra> {
+const legAnswer = (extra: Partial<LegAnswer> = {}): LegAnswer => ({
+   runnable,
+   tablesRead: undefined,
+   shapeBindings: [],
+   virtualMap: undefined,
+   graftScope: undefined,
+   ...extra,
+});
+
+function storageRoute(bindings: Binding[]): RouteDecision<LegAnswer> {
    return {
       served: "variant",
       kind: "served",
       runnable,
-      extra: {
-         kind: "served",
+      extra: legAnswer({
          virtualMap,
-         bindings,
+         shapeBindings: bindings,
          tablesRead: bindings,
-      },
+      }),
       considered: [{ kind: "served", outcome: "used" }],
    };
 }
 
-const rollupRoute: RouteDecision<RoutedExtra> = {
+const rollupRoute: RouteDecision<LegAnswer> = {
    served: "variant",
    kind: "rollup",
    runnable,
-   extra: { kind: "rollup", resolvedMember: "orders__by_day" },
+   extra: legAnswer({ rollupMember: "orders__by_day" }),
    considered: [
       { kind: "served", outcome: "skipped", reason: "does_not_answer" },
       { kind: "rollup", outcome: "used" },
@@ -73,68 +81,65 @@ const rollupRoute: RouteDecision<RoutedExtra> = {
 
 describe("Answer", () => {
    it("reads a live route as live, keeping what the router considered", () => {
-      const answer = routedAnswer({
+      const answer = answerOf({
          served: "live",
          considered: [
             { kind: "rollup", outcome: "skipped", reason: "row_level_gate" },
          ],
       });
-      expect(answer.tier).toBe("live");
-      expect(answer.routedRunnable).toBeUndefined();
+      expect(answer.leg).toBe("live");
+      expect("answer" in answer).toBe(false);
       expect(answer.considered).toHaveLength(1);
       expect(servedFromOf(answer)).toBeUndefined();
    });
 
    it("reads a storage route as a storage hit with its tables", () => {
       const bindings = [binding("daily")];
-      const answer = routedAnswer(storageRoute(bindings));
-      expect(answer.tier).toBe("served");
-      expect(answer.routedRunnable).toBe(runnable);
-      expect(answer.virtualMap).toBe(virtualMap);
-      expect(answer.serveShapeBindings).toEqual(bindings);
-      expect(answer.storageTablesRead).toEqual(bindings);
+      const answer = answerOf(storageRoute(bindings)) as RoutedAnswer;
+      expect(answer.leg).toBe("served");
+      expect(answer.answer.runnable).toBe(runnable);
+      expect(answer.answer.virtualMap).toBe(virtualMap);
+      expect(answer.answer.shapeBindings).toEqual(bindings);
+      expect(answer.answer.tablesRead).toEqual(bindings);
       expect(servedFromOf(answer)).toBe("storage");
    });
 
    it("reads a rollup route as a rollup, not a storage hit", () => {
-      const answer = routedAnswer(rollupRoute);
-      expect(answer.tier).toBe("rollup");
-      expect(answer.rollupMember).toBe("orders__by_day");
-      expect(answer.virtualMap).toBeUndefined();
+      const answer = answerOf(rollupRoute) as RoutedAnswer;
+      expect(answer.leg).toBe("rollup");
+      expect(answer.answer.rollupMember).toBe("orders__by_day");
+      expect(answer.answer.virtualMap).toBeUndefined();
       expect(servedFromOf(answer)).toBeUndefined();
    });
 
    it("reads a storage= #(preaggregate) rollup route as a storage hit", () => {
       const b = { ...binding("rollup"), kind: "rollup" as const };
-      const answer = routedAnswer({
+      const answer = answerOf({
          ...rollupRoute,
-         extra: {
-            kind: "rollup",
-            resolvedMember: "orders__rollup__category",
+         extra: legAnswer({
+            rollupMember: "orders__rollup__category",
             virtualMap,
-            binding: b,
-         },
-      });
-      expect(answer.tier).toBe("rollup");
-      expect(answer.virtualMap).toBe(virtualMap);
-      expect(answer.serveShapeBindings).toEqual([b]);
+            shapeBindings: [b],
+         }),
+      }) as RoutedAnswer;
+      expect(answer.leg).toBe("rollup");
+      expect(answer.answer.virtualMap).toBe(virtualMap);
+      expect(answer.answer.shapeBindings).toEqual([b]);
       expect(servedFromOf(answer)).toBe("storage");
    });
 
    it("lets a join-to-rollup answer's query-source table decide whether a failed run degrades (known limitation 26)", () => {
       const rollup = { ...binding("rollup"), kind: "rollup" as const };
       const source = binding("flights", { freshnessFallback: "fail" });
-      const answer = routedAnswer({
+      const answer = answerOf({
          ...rollupRoute,
-         extra: {
-            kind: "rollup",
-            resolvedMember: "segments__rollup",
+         extra: legAnswer({
+            rollupMember: "segments__rollup",
             virtualMap,
-            binding: rollup,
-            bindings: [source, rollup],
-         },
-      });
-      expect(answer.serveShapeBindings).toEqual([source, rollup]);
+            shapeBindings: [source, rollup],
+         }),
+      }) as RoutedAnswer;
+      expect(answer.answer.shapeBindings).toEqual([source, rollup]);
       expect(servedFromOf(answer)).toBe("storage");
       // The rollup alone would degrade; the query source's table vetoes.
       expect(
@@ -146,7 +151,7 @@ describe("Answer", () => {
    });
 
    it("never mutates: each stage returns a new frozen record", () => {
-      const routed = routedAnswer(storageRoute([binding("daily")]));
+      const routed = answerOf(storageRoute([binding("daily")])) as RoutedAnswer;
       const failed = liveFallbackAnswer(routed);
       const read = new Set(["k1"]);
       const answered = answeredWith(failed, read);
@@ -155,7 +160,7 @@ describe("Answer", () => {
          expect(Object.isFrozen(a)).toBe(true);
       }
       expect(routed.runFailed).toBe(false);
-      expect(failed.runFailed).toBe(true);
+      expect((failed as RoutedAnswer).runFailed).toBe(true);
       expect(failed.colocatedRead.size).toBe(0);
       expect(answered.colocatedRead).toBe(read);
       expect(LIVE_ANSWER.colocatedRead.size).toBe(0);
@@ -163,7 +168,7 @@ describe("Answer", () => {
 
    it("reads a failed storage run answered live as live_fallback, never a hit", () => {
       const answer = liveFallbackAnswer(
-         routedAnswer(storageRoute([binding("daily")])),
+         answerOf(storageRoute([binding("daily")])) as RoutedAnswer,
       );
       expect(servedFromOf(answer)).toBe("live_fallback");
    });
@@ -172,7 +177,7 @@ describe("Answer", () => {
 describe("canDegradeToLive", () => {
    const open = { hasLiveRunnable: true, aborted: false };
    const storage = (fallback?: string) =>
-      routedAnswer(
+      answerOf(
          storageRoute([
             binding("daily", {
                freshnessFallback: fallback,
@@ -189,7 +194,7 @@ describe("canDegradeToLive", () => {
    it("never degrades a live or rollup answer (nothing stored was read)", () => {
       expect(canDegradeToLive(LIVE_ANSWER, new Error("x"), open)).toBe(false);
       expect(
-         canDegradeToLive(routedAnswer(rollupRoute), new Error("x"), open),
+         canDegradeToLive(answerOf(rollupRoute), new Error("x"), open),
       ).toBe(false);
    });
 
@@ -267,20 +272,20 @@ describe("recordingManifest", () => {
 });
 
 describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)", () => {
-   const host = {
-      modelPath: "m.malloy",
-      rollupVariants: {},
-      persistedViews: {},
-   } as unknown as QueryServingHost;
-   const rollupCandidate = () =>
-      routeCandidates(host, {
-         queryString: "run: orders -> { aggregate: total }",
-         surfaceGivens: undefined,
-         pinned: pin(EMPTY_SNAPSHOT, new Date(0)),
-         buildManifest: undefined,
-         servedCopyPossible: false,
-         rollupVariantsFor: runnable,
-      }).find((c) => c.kind === "rollup");
+   const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+   const rollupCandidate = (rollupVariants: unknown = {}) =>
+      variantsOf(
+         makeLegs(pinned, {
+            rollupVariants: rollupVariants as RollupVariantServe,
+         }),
+         {
+            queryString: "run: orders -> { aggregate: total }",
+            givens: undefined,
+            authorRunnable: runnable,
+         },
+         pinned,
+         { modelPath: "m.malloy" },
+      ).find((c) => c.kind === "rollup");
 
    for (const on of [true, false]) {
       it(`keeps the contracts only with gated sources on (${on ? "on" : "off"})`, () => {
@@ -301,45 +306,34 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
    it("carries every table a join leg in a storage destination reads into the route", async () => {
       const rollup = { ...binding("rollup"), kind: "rollup" as const };
       const source = binding("flights");
-      const reading = {
-         ...host,
-         rollupVariants: {
-            attempt: async () => ({
-               runnable,
-               rollupSourceName: "segments__rollup",
-               virtualMap,
-               binding: rollup,
-               bindings: [source, rollup],
-            }),
-         },
-      } as unknown as QueryServingHost;
-      const candidate = routeCandidates(reading, {
-         queryString: "run: flights -> { aggregate: segments.seg_miles }",
-         surfaceGivens: undefined,
-         pinned: pin(EMPTY_SNAPSHOT, new Date(0)),
-         buildManifest: undefined,
-         servedCopyPossible: false,
-         rollupVariantsFor: runnable,
-      }).find((c) => c.kind === "rollup");
+      const candidate = rollupCandidate({
+         attempt: async () => ({
+            runnable,
+            rollupSourceName: "segments__rollup",
+            virtualMap,
+            binding: rollup,
+            bindings: [source, rollup],
+         }),
+      });
       const routed = await candidate?.attempt();
       expect(routed?.extra).toMatchObject({
-         kind: "rollup",
-         binding: rollup,
-         bindings: [source, rollup],
+         rollupMember: "segments__rollup",
+         virtualMap,
+         shapeBindings: [source, rollup],
       });
    });
 
    it("carries the variant's graft scope into the answer, for govern()", () => {
       const graftScope = { cacheScope: "rollup" } as unknown as GraftScope;
-      const answer = routedAnswer({
+      const answer = answerOf({
          served: "variant",
          kind: "rollup",
          runnable,
-         extra: { kind: "rollup", resolvedMember: "r", graftScope },
+         extra: legAnswer({ rollupMember: "r", graftScope }),
          considered: [],
          pastEntryPointGate: true,
-      });
-      expect(answer.graftScope).toBe(graftScope);
+      }) as RoutedAnswer;
+      expect(answer.answer.graftScope).toBe(graftScope);
       expect(answer.pastEntryPointGate).toBe(true);
    });
 });

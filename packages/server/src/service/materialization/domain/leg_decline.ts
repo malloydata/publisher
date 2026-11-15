@@ -134,18 +134,6 @@ export function isDeclineOf(
    return error instanceof LegDecline && error.leg === leg;
 }
 
-/** A decline of `leg` as the router records it (see Variant.explain). */
-export function explainDecline(
-   error: unknown,
-   leg: DecliningLeg,
-): VariantSkipExplanation | undefined {
-   if (!isDeclineOf(error, leg)) return undefined;
-   return {
-      code: error.code,
-      ...(error.callerDetail ? { callerDetail: error.callerDetail } : {}),
-   };
-}
-
 /** The public reason and warning code of a decline the router recorded by code. */
 export function declineOfCode(
    code: string | undefined,

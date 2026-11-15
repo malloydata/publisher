@@ -8,7 +8,8 @@ import {
    startMetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { resetInstrumentsForTesting } from "../telemetry";
-import { recordRoutingDecision, type RoutedExtra } from "./model";
+import type { LegAnswer } from "./materialization/serve/leg";
+import { recordRoutingDecision } from "./query_serving";
 import type { RouteDecision } from "./query_router";
 
 const METRIC = "publisher_storage_serve_routing_total";
@@ -30,7 +31,7 @@ describe("recordRoutingDecision", () => {
    it("records a gate block once per query, whichever tiers it vetoed", async () => {
       // The label's contract covers both tiers: a model whose only candidate
       // is a rollup still records the block, or a blocked query records nothing.
-      const rollupOnly: RouteDecision<RoutedExtra> = {
+      const rollupOnly: RouteDecision<LegAnswer> = {
          served: "live",
          considered: [
             { kind: "rollup", outcome: "skipped", reason: "row_level_gate" },
@@ -39,7 +40,7 @@ describe("recordRoutingDecision", () => {
       recordRoutingDecision(rollupOnly);
       expect(await count("blocked_by_row_level_gate")).toBe(1);
 
-      const both: RouteDecision<RoutedExtra> = {
+      const both: RouteDecision<LegAnswer> = {
          served: "live",
          considered: [
             { kind: "served", outcome: "skipped", reason: "row_level_gate" },
@@ -69,10 +70,11 @@ describe("recordRoutingDecision", () => {
          kind: "served",
          runnable: {} as QueryMaterializer,
          extra: {
-            kind: "served",
+            runnable: {} as QueryMaterializer,
             virtualMap: new Map(),
-            bindings: [],
+            shapeBindings: [],
             tablesRead: [],
+            graftScope: undefined,
          },
          considered: [{ kind: "served", outcome: "used" }],
       });
