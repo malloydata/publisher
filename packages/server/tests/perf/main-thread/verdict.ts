@@ -43,10 +43,11 @@ export interface RunEnv {
 // Calibrated on GitHub-hosted ubuntu-latest (4 vCPU), 3 A/B jobs each of
 // 0.12.6 vs 0.13.1, 0.12.6 vs 0.12.6 and 0.12.6 vs the three
 // ms2data/service#7795 fixes merged, two rounds a side (README.md):
-//  - /status p90: with the indexed package placed (the #7641 round), 0.12.6
-//    801-1260 ms, main with the #7795 fixes 171-236, 0.13.1 2009-2652. 500 ms
-//    would fail 0.12.6 itself on this runner; 1600 sits between. (Before the
-//    indexed package: 0.12.6 373-728, 0.13.1 1516-2392.)
+//  - /status p90, with the indexed package placed (18 A/Bs on main after
+//    #1779): 0.12.6 689-1213 ms, main 149-332, 0.13.1 1345-2415. 500 ms would
+//    fail 0.12.6 itself on this runner; 1600 sits above it, so 0.13.1 fails
+//    it in most runs, not all (its re-bind compiles fail every run). Before
+//    the indexed package: 0.12.6 373-728, 0.13.1 1516-2392.
 //  - longest block: 0.12.6 724-2211 ms, fixed 854-1778, 0.13.1 963-2211. It
 //    does not separate them (the common cost is hydrating the large generated
 //    package), so it only guards against a gross stall, like 0.12.5's 47 s.
