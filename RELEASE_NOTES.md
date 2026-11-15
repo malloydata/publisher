@@ -27,6 +27,12 @@ A `#(materialize)` source with no `storage=`, whose own `#(access_filter)` or ro
 
 Nothing else moves. A `#(materialize) storage=` source behind a gate still needs `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, and is refused without it. A gate the source inherits from one it extends, one reached through a join, and a gate over a source whose build would substitute a given stay refused on every tier, and an answer that would also read a `storage=` table is answered live. A model with no gated colocated `#(materialize)` source behaves exactly as before. As with every gate, it holds only behind the gateway that sets the givens from a verified identity ([operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 
+## [Unreleased] — a `storage=` rollup returns exact big-integer sums and keeps `timestamptz` grains
+
+A rollup stored in a `storage=` destination (`#(preaggregate)` or v1 `#@ preaggregate`) read its stored table with the wrong types in two cases. A big-integer measure (a `sum` of a BIGINT) whose total passed 2^53 came back rounded, as `-9007199254740992` where live gives `-9007199254740993`; it is now read through its native type and returns every digit, as live does. A grain dimension live types as `timestamptz` came back typed `timestamp`, with equal rows; it now keeps its `timestamptz` type. A big-integer column the destination stored where no cast reads it exactly (a float, its digits already lost) is no longer served: the rollup is skipped with reason `MISSING_FIELD` and the query is answered live. Colocated rollups are unchanged; they were already exact.
+
+No API, enum or metric value changes.
+
 ## [Unreleased] — a `#@ preaggregate` rollup over a stored base builds and serves, as documented now
 
 A `#@ preaggregate` on a measure of a source that is itself `#@ persist storage=` builds and serves, with no change to the model. It has since 0.13.0, when the v1 cutover began reading each `#@ preaggregate` line as the `#(preaggregate)` it spells: that rollup is built from the author's rows, never from the base's stored table, so neither reason such rollups were once left out holds. The documentation still said they were left out with a `preaggregate-over-stored-base` warning; it now says what happens, and the code that would have left them out, which nothing reached any more, is removed.
