@@ -35,6 +35,7 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import { parentPort, threadId, workerData } from "node:worker_threads";
 import { fileURLToPath, pathToFileURL } from "url";
 
@@ -1004,7 +1005,7 @@ async function compileMalloyModel(
       await extractCheckedModel(mm, compiled);
 
    const compileDurationMs = performance.now() - compileStart;
-   const { renderTagResults, preaggregateCompanion } =
+   const { renderTagResults, renderTagResultsDigest, preaggregateCompanion } =
       await prepareForMainThread(job, malloyConfig, load, {
          modelPath,
          materializer: mm,
@@ -1049,6 +1050,7 @@ async function compileMalloyModel(
       authorizeWarnings:
          warnings.length > 0 ? warnings.map((w) => w.message) : undefined,
       renderTagResults,
+      renderTagResultsDigest,
       preaggregateCompanion,
       entities,
    };
@@ -1104,6 +1106,37 @@ async function planEntitiesForMainThread(
 }
 
 /**
+ * A field's `reference_id` in a result's annotation text, as JSON quotes it:
+ * a UUID Malloy draws afresh on every compile, an identity for drilling and
+ * not part of any tag the check reads.
+ */
+const REFERENCE_ID = /reference_id = \\"[0-9a-f-]{36}\\"/g;
+
+/**
+ * The digest of every render-tag target's prepared result, labels included:
+ * the whole input of the main thread's tag check bar the validator itself, so
+ * equal digests mean equal findings (SerializedModel.renderTagResultsDigest).
+ * Each compile's fresh `reference_id`s are blanked first, or no two loads of
+ * one model would agree. `JSON.stringify` drops an undefined property and
+ * writes NaN as null, so results differing only there share a digest; a
+ * `Malloy.Result` is plain JSON-shaped data, where neither carries meaning.
+ * Undefined when a result cannot be serialized.
+ */
+function digestRenderTagResults(
+   results: { label: string; result?: Malloy.Result }[],
+): string | undefined {
+   try {
+      const json = JSON.stringify(results).replace(
+         REFERENCE_ID,
+         'reference_id = \\"\\"',
+      );
+      return createHash("sha256").update(json).digest("hex");
+   } catch {
+      return undefined;
+   }
+}
+
+/**
  * Do one compiled model's share of the main thread's work: render-tag
  * results, pre-aggregation companion, build-plan parts. Past the soft
  * deadline (checked before each target and the companion) the rest is left to
@@ -1126,6 +1159,7 @@ async function prepareForMainThread(
    },
 ): Promise<{
    renderTagResults?: { label: string; result?: Malloy.Result }[];
+   renderTagResultsDigest?: string;
    preaggregateCompanion?: { modelDef?: unknown };
 }> {
    if (load.failed) return {};
@@ -1164,6 +1198,11 @@ async function prepareForMainThread(
          renderTagResults.push({ label: target.label });
       }
    }
+
+   const renderTagResultsDigest =
+      renderTagResults.length === targets.length
+         ? digestRenderTagResults(renderTagResults)
+         : undefined;
 
    const order = load.modelOrder.get(modelPath) ?? 0;
    let wantsPlan =
@@ -1231,6 +1270,7 @@ async function prepareForMainThread(
 
    return {
       renderTagResults,
+      renderTagResultsDigest,
       // No composite companion is compiled any more (G4): `{}` says so.
       preaggregateCompanion:
          !job.withPreaggregateCompanions || companion === undefined

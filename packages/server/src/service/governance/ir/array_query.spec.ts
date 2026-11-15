@@ -4,10 +4,13 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { isSourceDef } from "@malloydata/malloy";
 import {
+   arrayQueryJoinRefusal,
    arrayQueryJoins,
    forEachFieldPath,
    governsAccess,
+   type ArrayQueryJoin,
 } from "./array_query";
 
 const MODEL = `##! experimental.array_queries
@@ -92,6 +95,133 @@ describe("arrayQueryJoins", () => {
          expect(arrayQueryJoins(fields[name])).toEqual([]);
       }
       expect(arrayQueryJoins(modelDef).length).toBe(2);
+   });
+});
+
+/**
+ * The walk as malloydata/publisher#1744 shipped it, memo and all (a fresh
+ * memo per call, which is what a freshly hydrated ModelDef saw): the oracle
+ * for the single-visit walk, which must find the same joins in the same order.
+ */
+function shippedArrayQueryJoins(root: unknown): ArrayQueryJoin[] {
+   type O = Record<string, unknown>;
+   const isObj = (v: unknown): v is O => v !== null && typeof v === "object";
+   const NOT_IR = new Set(["at", "location", "annotations"]);
+   const memo = new WeakMap<object, ArrayQueryJoin[]>();
+   const locationOf = (f: O): ArrayQueryJoin["at"] => {
+      const loc = isObj(f.location) ? f.location : undefined;
+      if (!loc) return undefined;
+      const range = isObj(loc.range) ? loc.range : undefined;
+      const start = range && isObj(range.start) ? range.start : undefined;
+      return {
+         ...(typeof loc.url === "string" ? { url: loc.url } : {}),
+         ...(typeof start?.line === "number" ? { line: start.line + 1 } : {}),
+      };
+   };
+   const joinsInside = (arrayQuery: O): ArrayQueryJoin[] => {
+      const found: ArrayQueryJoin[] = [];
+      const seen = new Set<object>();
+      const walk = (v: unknown): void => {
+         if (!isObj(v) || seen.has(v)) return;
+         seen.add(v);
+         if (Array.isArray(v.extendSource)) {
+            for (const f of v.extendSource) {
+               if (isObj(f) && f.join && isSourceDef(f as never)) {
+                  const alias = typeof f.as === "string" ? f.as : f.name;
+                  const at = locationOf(f);
+                  found.push({
+                     alias: typeof alias === "string" ? alias : "",
+                     ...(at ? { at } : {}),
+                  });
+               }
+            }
+         }
+         for (const [k, child] of Object.entries(v)) {
+            if (!NOT_IR.has(k)) walk(child);
+         }
+      };
+      walk(arrayQuery);
+      return found;
+   };
+   const inProgress = new Set<object>();
+   const walk = (v: unknown): ArrayQueryJoin[] => {
+      if (!isObj(v)) return [];
+      const hit = memo.get(v);
+      if (hit) return hit;
+      if (inProgress.has(v)) return [];
+      inProgress.add(v);
+      let found: ArrayQueryJoin[] = [];
+      if (v.node === "arrayQuery") {
+         found = joinsInside(v);
+      } else {
+         for (const [k, child] of Object.entries(v)) {
+            if (NOT_IR.has(k)) continue;
+            const under = walk(child);
+            if (under.length > 0) found = [...found, ...under];
+         }
+      }
+      inProgress.delete(v);
+      memo.set(v, found);
+      return found;
+   };
+   return walk(root);
+}
+
+/** Each join once, in first-reached order, compared by value. */
+function distinct(joins: ArrayQueryJoin[]): string[] {
+   return Array.from(new Set(joins.map((j) => JSON.stringify(j))));
+}
+
+describe("arrayQueryJoins against the walk it replaced", () => {
+   /** Joins reached by many paths: views, a query and an extending source. */
+   const SHARED = `${MODEL}
+source: q is p extend {
+  view: v1 is { group_by: joined, nested_join }
+  view: v2 is { group_by: joined; nest: v1 }
+}
+query: r is q -> v2
+source: s is q extend { dimension: again is items -> { extend: { join_one: o2 is other on sku = o2.k } aggregate: s2 is o2.v.sum() } }
+`;
+
+   async function compiled(text: string): Promise<unknown> {
+      const runtime = new SingleConnectionRuntime({ connection: duckdb });
+      const model = await runtime.loadModel(text).getModel();
+      return (model as unknown as { _modelDef: unknown })._modelDef;
+   }
+
+   it("finds the same joins in the same order, governed or not, compiled or structured-cloned", async () => {
+      let sawSharing = false;
+      for (const text of [
+         MODEL,
+         SHARED,
+         `${SHARED}\n#(authorize) false\nsource: g is duckdb.sql("select 1 as x")\n`,
+         `${SHARED}\n#(carries) ["none"]\nsource: g is duckdb.sql("select 1 as x")\n`,
+      ]) {
+         const def = await compiled(text);
+         // A structured clone keeps the aliasing, as the load worker's does.
+         for (const root of [def, structuredClone(def)]) {
+            const shipped = shippedArrayQueryJoins(root);
+            const now = arrayQueryJoins(root);
+            expect(now.length).toBeGreaterThan(0);
+            expect(now.map((j) => JSON.stringify(j))).toEqual(
+               distinct(shipped),
+            );
+            expect(arrayQueryJoinRefusal("Model m", now)).toBe(
+               arrayQueryJoinRefusal("Model m", shipped) as string,
+            );
+            if (shipped.length > now.length) sawSharing = true;
+         }
+      }
+      // The fixture reaches some join by two paths, so "once" was exercised.
+      expect(sawSharing).toBe(true);
+   });
+
+   it("finds nothing where the model holds no array query join", async () => {
+      const def = await compiled(
+         `source: plain is duckdb.sql("select 1 as x") extend { view: v is { group_by: x } }`,
+      );
+      expect(arrayQueryJoins(def)).toEqual([]);
+      expect(shippedArrayQueryJoins(def)).toEqual([]);
    });
 });
 

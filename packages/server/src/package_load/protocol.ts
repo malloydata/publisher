@@ -199,6 +199,15 @@ export interface SerializedModel {
     */
    renderTagResults?: { label: string; result?: unknown }[];
    /**
+    * SHA-256 of `renderTagResults` as JSON, set only when they cover every
+    * render-tag target. The results are the whole input of the tag check, so
+    * the main thread keys its findings cache on this digest and skips the
+    * check for a model it has already judged (ms2data/service#7795). It
+    * covers what model text alone would miss: a table whose schema changed
+    * under the same text prepares different results.
+    */
+   renderTagResultsDigest?: string;
+   /**
     * The model's pre-aggregation companion, for the main thread to hydrate
     * rather than compile (see Model.buildPreaggregateServeModel). `{}` when
     * there is none or it failed; absent when not attempted, and the main

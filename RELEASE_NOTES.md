@@ -57,6 +57,16 @@ The load failure is a 400, in the publish's response and in `/status` `loadError
 
 **API.** Warning codes are open strings, so the new codes are not an API break. Three enum values are retained in `api-doc.yaml` and no longer produced, as `partition_*` and `given` were: `RefusedSource.reason` `empty_storage` and `env_reference`, and `OmittedSource.reason` `persist_annotation_unparseable`. No field or enum value is removed. The package manifest's own policy (`publisher.json` schedule rules) is unchanged: refused at publish, warned at load.
 
+## [Unreleased] — less main-thread work per package load
+
+0.13.1 added a check to every package load that walked each model's whole compiled definition for joins inside array queries. That walk ran on the main thread, and it remembered every node it visited in a table that outlived the walk. The check now asks first whether a model governs access at all. A model that governs nothing is not walked for joins. A model that does is walked once, and the walk keeps nothing afterwards. A load that refused such a join still refuses it, with the same message.
+
+The memory governor reads only the process's resident memory on each tick, not the full `process.memoryUsage()` object with its heap statistics. In Bun those statistics cost more as the heap grows.
+
+The render-tag check now keeps its findings for each model, keyed on a digest of the results it reads. A model loaded again unchanged reuses its findings instead of being checked again on the main thread. A change to the model's text or to the schema of a table it reads is checked afresh. The cache lives in the server process, so a new `@malloydata/render-validator` is checked afresh after the restart that installs it. The cache holds the findings of at most 1,024 models. The warnings a package reports are unchanged.
+
+No API, enum or metric value changes.
+
 ## [Unreleased] — colocated and `storage=` tables answer five shapes the same way
 
 Five shapes were answered differently by a colocated table and a `storage=` one, by accident rather than for any reason inherent to where the table lives. Each now gives the same outcome in both tiers, equal to live:
