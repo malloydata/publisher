@@ -19,7 +19,6 @@
 
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect } from "bun:test";
-import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import {
@@ -459,46 +458,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          ]),
       ),
    );
-   let runtime = new Runtime({ urlReader, connections: authorConnections });
-   let materializer = runtime.loadModel(new URL(urlOf(entry)), {
+   const runtime = new Runtime({ urlReader, connections: authorConnections });
+   const materializer = runtime.loadModel(new URL(urlOf(entry)), {
       importBaseURL: new URL(root),
    });
-   // A model joining sources across origin connections does not compile;
-   // with the materialize switch it loads from its build view (#6982), as a
-   // package load does.
-   let buildView: ReadonlyMap<string, string> = new Map();
-   let compiled: Awaited<ReturnType<typeof materializer.getModel>>;
-   try {
-      compiled = await materializer.getModel();
-   } catch (first) {
-      const view = await loadLeavingOutCrossConnectionJoins({
-         firstError: first,
-         readText: (url) =>
-            Object.entries(scenario.files).find(([f]) => urlOf(f) === url)?.[1],
-         load: async (overlay) => {
-            const rt = new Runtime({
-               urlReader: new InMemoryURLReader(
-                  new Map([
-                     ...Object.entries(scenario.files).map(
-                        ([file, text]) => [urlOf(file), text] as const,
-                     ),
-                     ...overlay,
-                  ]),
-               ),
-               connections: authorConnections,
-            });
-            const mm = rt.loadModel(new URL(urlOf(entry)), {
-               importBaseURL: new URL(root),
-            });
-            return { rt, mm, model: await mm.getModel() };
-         },
-      });
-      if (!view) throw first;
-      runtime = view.result.rt;
-      materializer = view.result.mm;
-      compiled = view.result.model;
-      buildView = view.overlay;
-   }
+   const compiled = await materializer.getModel();
 
    // Build each persist source with its real SQL.
    const entries: Record<string, ManifestEntry> = {};
@@ -518,7 +482,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                        ...Object.entries(scenario.files).map(
                           ([file, text]) => [urlOf(file), text] as const,
                        ),
-                       ...buildView,
                        ...overlay,
                     ]),
                  ),
@@ -697,7 +660,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                      ...Object.entries(scenario.files).map(
                         ([file, text]) => [urlOf(file), text] as const,
                      ),
-                     ...buildView,
                      ...overlay,
                   ]),
                ),

@@ -708,8 +708,7 @@ export class ModelServing {
             source: () => compiledSource ?? sourceName,
             // Read on the compile that answers: the served copy is the
             // author's text with its classifications kept (the load's checks
-            // decline a copy that does not keep them), and the only compile
-            // that has a join a cross-connection build view leaves out.
+            // decline a copy that does not keep them).
             ...(answer.leg === "served"
                ? { answeredBy: "served_copy" as const }
                : {}),

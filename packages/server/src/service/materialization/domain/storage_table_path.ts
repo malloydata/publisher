@@ -59,3 +59,28 @@ export function storageTablePath(
    }
    return `${destinationName}.${schema}.${physicalTableName}`;
 }
+
+/**
+ * The dialects whose table names resolve case-insensitively, quoted or not:
+ * DuckDB (and so every `storage=` destination), Trino, Presto, Databricks and
+ * SQL Server under its default collation. Not MySQL: whether it folds depends
+ * on the server's `lower_case_table_names`, which Publisher cannot see.
+ */
+const CASE_FOLDING_DIALECTS: ReadonlySet<string> = new Set([
+   "duckdb",
+   "trino",
+   "presto",
+   "databricks",
+   "sqlserver",
+]);
+
+/**
+ * Whether two table names that differ only by case name one table: in a
+ * `storage=` destination (DuckDB), or on a connection whose dialect folds.
+ */
+export function tableNamesFoldCase(
+   dialect: string | undefined,
+   inStorage: boolean,
+): boolean {
+   return inStorage || (!!dialect && CASE_FOLDING_DIALECTS.has(dialect));
+}

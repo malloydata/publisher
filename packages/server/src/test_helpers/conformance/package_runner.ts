@@ -416,11 +416,23 @@ async function buildAll(
       for (const entry of entries) {
          if (seen.has(entry.sourceEntityId)) continue;
          seen.add(entry.sourceEntityId);
-         // The name a build writes: `name=`, else the source's name, so two
-         // sources resolving to one name overwrite each other as they would
-         // in a real destination. Quoted in DDL; recorded unquoted, as a
+         // The name a build writes: `name=`, else the source's name with a
+         // suffix standing for the package's (`__p<hash>`), which no author's
+         // name carries, so two sources resolving to one name overwrite each
+         // other as they would in a real destination, and a defaulted name
+         // never meets an author's. Quoted in DDL; recorded unquoted, as a
          // build records it.
-         const table = (entry.annotationFields?.name || entry.name).trim();
+         const plan = (
+            materializePlans as Record<string, { nameDefaulted?: true }>
+         )[entry.sourceID];
+         const declared = plan
+            ? !plan.nameDefaulted
+            : !!entry.annotationFields?.name?.trim();
+         const base = (entry.annotationFields?.name || entry.name).trim();
+         const table =
+            declared || entry.origin === "preaggregate"
+               ? base
+               : `${base}__p00000000`;
          const quoted = `"${table.replace(/"/g, '""')}"`;
          const storage = entry.annotationFields?.storage;
          try {
