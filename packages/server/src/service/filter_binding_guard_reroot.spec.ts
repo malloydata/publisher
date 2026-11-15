@@ -338,14 +338,18 @@ describe("classificationNotKept", () => {
       const record = new Map([
          ["s", { leaks: ["old leak"], coverage: [] }],
          ["t", { leaks: [], coverage: [] }],
+         ["u", { leaks: [], coverage: [] }],
       ]);
       const served = new Map([
          ["s", { leaks: ["old leak", "new leak"], coverage: ["`j.x`"] }],
          ["t", { leaks: [], coverage: [] }],
+         // Its only finding is coverage: a field the copy leaves unclassified.
+         ["u", { leaks: [], coverage: ["`y`"] }],
          ["generated", { leaks: ["only the copy has it"], coverage: [] }],
       ]);
       expect([...classificationNotKept(record, served)]).toEqual([
          ["s", { leaks: ["new leak"], coverage: ["`j.x`"] }],
+         ["u", { leaks: [], coverage: ["`y`"] }],
       ]);
    });
 });

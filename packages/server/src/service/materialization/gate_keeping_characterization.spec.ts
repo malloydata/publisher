@@ -506,15 +506,15 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
          sourceGateOutcomes: { [ID]: gate },
       },
       "materialize, storage": {
-         materializePlans: { [ID]: { storage: "lake" } },
+         materializePlans: { [ID]: { persist: { storage: "lake" } } },
          sourceGateOutcomes: { [ID]: gate },
       },
       "materialize, storage, an inherited row filter": {
-         materializePlans: { [ID]: { storage: "lake" } },
+         materializePlans: { [ID]: { persist: { storage: "lake" } } },
          sourceGateOutcomes: { [ID]: { ...gate, inheritedRowFilter: true } },
       },
       "materialize, storage, a gate not row-level": {
-         materializePlans: { [ID]: { storage: "lake" } },
+         materializePlans: { [ID]: { persist: { storage: "lake" } } },
          sourceGateOutcomes: {
             [ID]: { classification: "unclassified", attributed: true },
          },
@@ -762,6 +762,12 @@ describe("gate keeping at the router, under an entry-point veto", () => {
                         { recordMetrics: false },
                      );
                      const c = decision.considered[0];
+                     // A use under the veto is a use past the gate, which is
+                     // what sends the answer to `govern()` to graft and prove.
+                     expect(
+                        decision.served === "variant" &&
+                           decision.pastEntryPointGate === true,
+                     ).toBe(c.outcome === "used");
                      rows[`${leg}, ${read}`] =
                         c.outcome === "used"
                            ? "used, past the gate"
