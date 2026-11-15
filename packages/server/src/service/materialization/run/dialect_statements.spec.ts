@@ -314,13 +314,17 @@ async function statements(): Promise<Record<string, unknown>> {
    // The swap's failure paths: the statement at `failAt` (1-based) fails
    // once, as a warehouse error that is not a missing table, and every
    // statement sent is recorded with the refusal the swap answers with.
-   const failingSwap = async (dialect: string, failAt: number) => {
+   const failingSwap = async (
+      dialect: string,
+      failAt: number,
+      error = "permission denied",
+   ) => {
       const statements: string[] = [];
       let n = 0;
       const runSQL = async (sql: string) => {
          statements.push(sql);
          n++;
-         if (n === failAt) throw new Error("permission denied");
+         if (n === failAt) throw new Error(error);
          return { rows: [] };
       };
       let refused: string | null = null;
@@ -347,6 +351,15 @@ async function statements(): Promise<Record<string, unknown>> {
    // came first.
    out["swapIntoPlace.failsSecond"] = await perDialectAsync((d) =>
       failingSwap(d, 2),
+   );
+   // The move aside answers a missing table: the first build of the name,
+   // where no probe runs.
+   out["swapIntoPlace.firstBuild"] = await perDialectAsync((d) =>
+      failingSwap(d, 1, "Table sch.orders__m1 does not exist"),
+   );
+   // The third: the backup's drop once the new table holds the name.
+   out["swapIntoPlace.failsThird"] = await perDialectAsync((d) =>
+      failingSwap(d, 3),
    );
 
    // The native-type catalog read.

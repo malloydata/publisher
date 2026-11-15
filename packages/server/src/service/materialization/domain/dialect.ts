@@ -14,6 +14,14 @@
  * An allowlist, not a probe: a dialect this table does not name has no
  * capability, so whatever asks refuses it or rebuilds in full. Adding a dialect
  * is a row here, and the record is total, so a missing flag does not compile.
+ *
+ * Not here: whether a dialect can hold a table at all. That is a deny-list
+ * (`READ_ONLY_DIALECTS` in `plan/materialization_eligibility.ts`, and a
+ * connection type's `canPersist` in `connection_config.ts`), so an unknown
+ * dialect is writable; as a capability here it would turn every unknown
+ * dialect read-only. A new read-only dialect is added there too.
+ *
+ * Every row is frozen: a dialect's capabilities change only here.
  */
 
 /** Every dialect a decision branches on: Malloy's registered dialects. */
@@ -109,7 +117,7 @@ export interface Capabilities {
    foldsTableNameCase: boolean;
 }
 
-const NONE: Capabilities = {
+const NONE: Capabilities = Object.freeze({
    incrementalSourceRange: false,
    incrementalTargetDml: false,
    merge: false,
@@ -125,11 +133,11 @@ const NONE: Capabilities = {
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
-};
+});
 
 /** Each dialect's capabilities. */
 export const CAPABILITIES: Record<DialectName, Capabilities> = {
-   duckdb: {
+   duckdb: Object.freeze({
       ...NONE,
       incrementalTargetDml: true,
       merge: true,
@@ -141,8 +149,8 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       driverKeepsBigIntegers: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
-   },
-   postgres: {
+   }),
+   postgres: Object.freeze({
       ...NONE,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
@@ -153,8 +161,8 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       relationProbe: true,
       tableOwnership: true,
       castsToIntegerType: true,
-   },
-   standardsql: {
+   }),
+   standardsql: Object.freeze({
       ...NONE,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
@@ -164,8 +172,8 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       needsQualifiedTable: true,
       castsToIntegerType: true,
       onlyBigIntegerType: "INT64",
-   },
-   snowflake: {
+   }),
+   snowflake: Object.freeze({
       ...NONE,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
@@ -173,38 +181,38 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       relationProbe: true,
       tableOwnership: true,
       castsToIntegerType: true,
-   },
-   databricks: {
+   }),
+   databricks: Object.freeze({
       ...NONE,
       relationProbe: true,
       tableOwnership: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
-   },
-   trino: {
+   }),
+   trino: Object.freeze({
       ...NONE,
       relationProbe: true,
       tableOwnership: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
-   },
-   presto: {
+   }),
+   presto: Object.freeze({
       ...NONE,
       tableOwnership: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
-   },
-   mysql: {
+   }),
+   mysql: Object.freeze({
       ...NONE,
       tableOwnership: true,
-   },
-   sqlserver: {
+   }),
+   sqlserver: Object.freeze({
       ...NONE,
       relationProbe: true,
       tableOwnership: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
-   },
+   }),
 };
 
 /** A dialect's capabilities; none for a dialect the table does not name. */

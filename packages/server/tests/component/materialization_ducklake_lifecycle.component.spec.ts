@@ -56,7 +56,7 @@ import * as connection from "../../src/service/connection";
 import { Environment } from "../../src/service/environment";
 import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName } from "../../src/service/identity";
-import { CAPABILITIES } from "../../src/service/materialization/domain/dialect";
+import * as dialects from "../../src/service/materialization/domain/dialect";
 import { backupSuffix } from "../../src/service/materialization/run/materialization_run_support";
 import { listStorageTables } from "../../src/service/materialization/run/materialization_build_session";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
@@ -1353,15 +1353,22 @@ source: events is warehouse.sql("""
       });
       // The warehouse fake is DuckDB, a dialect incremental refresh does not
       // take as a source; the build sees it as Postgres (see the header), and
-      // the dialect table gives DuckDB an incremental source range for this suite so
+      // DuckDB reads as having an incremental source range for this suite so
       // the package loads and the run plans a delta. Every other check runs.
+      let widened: ReturnType<typeof spyOn> | undefined;
       beforeAll(() => {
-         CAPABILITIES.duckdb.incrementalSourceRange = true;
+         const original = dialects.capabilitiesOf;
+         widened = spyOn(dialects, "capabilitiesOf").mockImplementation(
+            (dialect) =>
+               dialect === "duckdb"
+                  ? { ...original("duckdb"), incrementalSourceRange: true }
+                  : original(dialect),
+         );
          return lake.setUp();
       });
       afterAll(async () => {
          await lake.tearDown();
-         CAPABILITIES.duckdb.incrementalSourceRange = false;
+         widened?.mockRestore();
       });
 
       const TABLE = selfName("events");

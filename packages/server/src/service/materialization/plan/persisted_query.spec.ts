@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+import { buildKindOf } from "../run/run_telemetry";
 import { PERSIST_QUERY_NOT_BUILT } from "./persisted_query";
 
 const TABLE = `duckdb.sql("""
@@ -151,6 +152,9 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
       expect(id).toMatch(/^q__query@.*m\.malloy\.persist-view\.malloy$/);
       // The stored rows are exactly `run: q`'s: its ordering and limit kept.
       expect(source.getSQL()).toContain("LIMIT 1");
+      // Planned, and so built and counted, as a persisted view's table.
+      expect(c.tables[id].kind).toBe("view");
+      expect(buildKindOf(c, id)).toBe("view");
       expect(notBuilt(c)).toEqual([]);
       expect(c.droppedPersistSources ?? []).toEqual([]);
    });
