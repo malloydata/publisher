@@ -251,7 +251,7 @@ const sharedTablesByTables = new WeakMap<
  * {@link sharedTableGroups}), by sourceID, each with the refusal to report.
  * Neither may be served from that table: it holds whichever build ran last,
  * so serving it hands one source's readers the other's rows. Both are still
- * planned and built, as before; a query on either is answered live until each
+ * planned and built; a query on either is answered live until each
  * has a `name=` of its own. Serving is refused whatever
  * `PERSIST_COLLISION_ENFORCE` says: that flag (on by default) decides whether
  * a publish is refused, and a wrong answer is never the alternative.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The join_one uniqueness check (materialization v2, P8): before a
+ * The join_one uniqueness check (P8): before a
  * `#(materialize)` source that inlines a join_one is built, its joined source
  * is grouped on the join's key, and any key held twice fails the build. A
  * duplicate would store the parent row once per match, so every count over

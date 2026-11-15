@@ -447,7 +447,7 @@ export function chainedPlanFacts(
 
 /**
  * Whether a manifest entry describes the table its source is declared to have
- * NOW (pinned by reference_manifest_entries.spec.ts). An entry's tier is its
+ * NOW (pinned by materialization_run_support.spec.ts). An entry's tier is its
  * `storageDestinationName`, or null for a warehouse table. A source moved to
  * or from `storage=` keeps its content address, so a carried or referenced
  * entry can be the table from before the move: a warehouse table for a source

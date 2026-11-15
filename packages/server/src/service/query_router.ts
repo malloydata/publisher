@@ -18,10 +18,11 @@
  *
  * Route, then govern: the router runs before `QueryGovernor.govern()`, which
  * grafts and proves the gates on whatever it chose. A row-level gate vetoes
- * candidates first ({@link RowLevelVeto}): a gate the query reaches beyond
- * its entry point skips every candidate, and a gate on the entry point alone
- * skips every candidate but one that {@link Variant.keepsContracts}. A
- * vetoed candidate is skipped with reason `row_level_gate`. Which legs keep
+ * candidates first ({@link RowLevelVeto}): a candidate is skipped with
+ * reason `row_level_gate` for a row-level gate the variant cannot keep: one
+ * beyond the entry point, one the walk could not decide, or the entry
+ * point's own on a variant that does not keep the contracts
+ * ({@link Variant.keepsContracts}). Which legs keep
  * the contracts is the gate policy's call
  * (`materialization/domain/gate_policy.ts`), made where the candidates are
  * built.
@@ -51,7 +52,11 @@ export type VariantKind = "view" | "query" | "served" | "rollup";
  * metric onto its `RouteReason` ({@link routeReasonOf}).
  */
 type RouterSkipReason =
-   /** The entry point carries a row-level gate the variant cannot keep. */
+   /**
+    * A row-level gate the variant cannot keep: one beyond the entry point,
+    * one the walk could not decide, or the entry point's own on a variant
+    * that does not keep the contracts.
+    */
    | "row_level_gate"
    /** The candidate does not apply to this model or request at all. */
    | "not_applicable"

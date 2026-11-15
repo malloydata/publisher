@@ -156,7 +156,8 @@ interface LegGateContext {
    /**
     * Contracts at read for colocated tables: a served answer reading only
     * colocated tables keeps the gates even with the gated-sources switch
-    * off, since a colocated table never leaves the author's warehouse. Every model passes it; the serve verdict does not.
+    * off, since a colocated table never leaves the author's warehouse.
+    * Every model passes it; the serve verdict does not.
     */
    readonly colocatedReadsKeepGates: boolean;
 }

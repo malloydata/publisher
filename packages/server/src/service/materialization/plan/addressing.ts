@@ -317,7 +317,7 @@ export function compilerBuildId(
  * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` is on and
  * `PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
  * builds colocated). Undefined for every colocated source, so turning the
- * switch on moves no colocated address (materialization v2's P12).
+ * switch on moves no colocated address (P12).
  */
 export function addressDestination(source: PersistSource): string | undefined {
    if (!getPersistAddressIncludesDestination()) return undefined;

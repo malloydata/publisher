@@ -208,7 +208,7 @@ async function planWithProbes(
       try {
          return path.resolve(fileURLToPath(declaringURL)) === modelFile;
       } catch {
-         // Not a local file (a host, another scheme): planned, as before.
+         // Not a local file (a host, another scheme): planned.
          return true;
       }
    };
@@ -1310,8 +1310,8 @@ const MAX_OMISSION_ROUNDS = 4;
  * its parent's table. Any other source is refused (`refuse`, reported as
  * `materialize-not-built`) and answers live, and the rest are compiled again.
  * A failure no source can be told for sends every extension to the raw chain
- * once, as before; one that still cannot be told throws, costing the model
- * its builds (logged by the caller as a Publisher bug, as before).
+ * once; one that still cannot be told throws, costing the model its builds
+ * (logged by the caller as a Publisher bug).
  */
 async function compileContained(
    args: Parameters<typeof compileCompanion>[0],

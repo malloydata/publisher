@@ -50,7 +50,7 @@ export function v1BuildCompanionText(text: string): string {
  * The model and runtime to ask for build targets for a model file that lacks
  * the flag: its build copy, compiled over the file's own URL. Undefined when
  * the file declares no `#@ persist`, cannot be read, or its copy does not
- * compile (the file then plans no persisted source, as before).
+ * compile (the file then plans no persisted source).
  *
  * The copy is made from the text the author's model compiled from, read
  * through `getRuntime`'s reader: a worker's file map or an overlay, not

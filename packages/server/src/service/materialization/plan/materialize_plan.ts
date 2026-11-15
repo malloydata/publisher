@@ -1749,7 +1749,7 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key"];
  * `extend` re-applies that term, which would scope the extension's build to
  * one caller) and no current-time `where:` its build leaves out (the
  * re-rooted parent keeps it as written). A plan that does not qualify
- * builds over the raw chain, as before: the same rows.
+ * builds over the raw chain: the same rows.
  */
 function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
    const byID = new Map(plans.map((p) => [p.sourceID, p]));

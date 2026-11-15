@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The path report (materialization v2, D1): what answered a query and why.
+ * The path report (D1): what answered a query and why.
  *
  * Built after the query runs, from three things Publisher already has:
  *

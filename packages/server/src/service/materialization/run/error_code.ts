@@ -4,8 +4,8 @@
 /**
  * An error reduced to a code a log may carry ({@link errorCodeOf}): never the
  * error's message, which can quote SQL or a value. Read by the tier
- * strategies, incremental apply, the build session, run support, the run
- * lifecycle and run telemetry.
+ * strategies, incremental apply, the build session, the run lifecycle and
+ * run telemetry.
  *
  * A leaf module, so a strategy or the build session can reduce an error without
  * importing run_telemetry.ts, which imports them.

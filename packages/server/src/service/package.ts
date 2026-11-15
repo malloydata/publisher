@@ -2412,8 +2412,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /**
     * {@link getServeVerdicts} with each stored source's named views compiled
-    * against a serve shape declared from the plan, before anything is built
-    * (ms2data/service#7090). For a dry run: it compiles.
+    * against a compile-only served copy over bindings declared from the
+    * plan's output columns, before anything is built. For a dry run: it
+    * compiles.
     */
    public async previewServeVerdicts(): Promise<ApiServeVerdict[]> {
       return this.materialization.previewServeVerdicts();

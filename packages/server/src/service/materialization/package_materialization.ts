@@ -8,11 +8,10 @@
  * compiled again on a connection edit), its snapshot of bindings, its serve
  * verdicts and its package warnings.
  *
- * Its contract is nine methods, not all of them written yet. Each is listed
- * with the methods that serve it now; the rest of the surface, and
- * `Package`'s forwarders to it, go as each caller moves onto these.
+ * Its contract is nine methods, each listed with the methods that implement
+ * it.
  *
- * | Method | What it does | Served now by |
+ * | Method | What it does | Implemented by |
  * | --- | --- | --- |
  * | `load(plan)` | Take the load worker's plan, or its absence | `applyLoadBuildPlan` |
  * | `replan(changedConnections)` | Derive the plan again after a connection edit | `markBuildPlanStale`, `refreshBuildPlan`, `whenBuildPlanCurrent` |
@@ -1779,10 +1778,11 @@ export class PackageMaterialization {
 
    /**
     * {@link serveVerdicts} with each stored source's named views compiled
-    * against a serve shape, before anything is built:
-    * the shape is declared from the plan's output columns, the types the build
-    * stores, so it needs no table. Costs one shape compile per model and one
-    * compile per view, so it runs only where a caller asks for a preview.
+    * against a compile-only served copy over bindings declared from the
+    * plan's output columns, the types the build stores, before anything is
+    * built, so it needs no table. Costs one served-copy compile per model and
+    * one compile per view, so it runs only where a caller asks for a
+    * preview.
     */
    async previewServeVerdicts(): Promise<ServeVerdict[]> {
       let bindings: Binding[];
@@ -1826,10 +1826,10 @@ export class PackageMaterialization {
    }
 
    /**
-    * The v1 cutover's serve path on each verdict: the
+    * Each verdict's serve path for v1 and v2 declarations: the
     * served copy compiled over bindings declared from the plan's output
     * columns, `storage=` ones as {@link previewServeBindings} declares them
-    * and colocated ones as the cutover binds them, names the sources it
+    * and colocated ones as the served copy binds them, names the sources it
     * re-roots; a rollup is the rollup leg's. Nothing is built or read.
     */
    private async withCutoverPaths(

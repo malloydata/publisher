@@ -91,7 +91,11 @@ export type PersistedResultOf =
      }
    | { queryName: string; sourceID?: string; sourceName?: string };
 
-/** Whether one named view of a stored source compiles against its serve shape, on a preview. */
+/**
+ * Whether one named view of a stored source compiles against a compile-only
+ * served copy over bindings declared from the plan's output columns, on a
+ * preview.
+ */
 export interface ViewServeVerdict {
    view: string;
    verdict: "serves" | "live";

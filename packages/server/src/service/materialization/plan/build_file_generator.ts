@@ -213,8 +213,8 @@
  * parent to the extension as the build copy writes them, and nothing else of
  * the file, which the plan compiles against a stand-in for the destination
  * before it chains. An extension that does not chain, or whose chained build
- * does not compile, builds over the raw chain as before: the same rows, from
- * the warehouse.
+ * does not compile, builds over the raw chain: the same rows, from the
+ * warehouse.
  *
  * A declaration that is not built is reported as a package warning
  * (`materialize-not-built`), so an author sees why, and the source serves live.

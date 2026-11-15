@@ -671,8 +671,8 @@ function walkForAuthorizeNotes(
 
 /**
  * Whether a gated source may be built into a storage destination because its
- * gate is enforced when the table is read (materialization v2's R3, contracts
- * at read). True only when all hold:
+ * gate is enforced when the table is read (R3, contracts at read). True only
+ * when all hold:
  *
  * - `materialize.gatedSources` is on (with `materialize.enabled`), so the
  *   router lets the served copy past the gate; off, the managed tier never

@@ -421,7 +421,7 @@ export async function ownedElsewhere(
          if (marked !== undefined && marked !== owner) return marked;
       }
    } catch {
-      // Unknown: the caller drops as before.
+      // Unknown: the caller drops.
    }
    return undefined;
 }
