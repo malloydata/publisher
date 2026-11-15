@@ -897,7 +897,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
        * entities-findings counts, and logs a failure as the caller's answer
        * rather than as an error, since nothing served is affected.
        */
-      options: { dryRun?: boolean } = {},
+      options: {
+         dryRun?: boolean;
+         /**
+          * The published version this load is, which names its tables per
+          * version under `scope: "version"`: set before the load is judged, so
+          * the collision check keys the names the version's runs write.
+          */
+         versionId?: string;
+      } = {},
    ): Promise<Package> {
       return withSpan(
          "publisher.package.load",
@@ -917,6 +925,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   environmentMalloyConfig,
                   cleanupDirectoryOnFailure,
                   options.dryRun === true,
+                  options.versionId,
                ),
             ),
       );
@@ -929,6 +938,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       environmentMalloyConfig: PackageConnectionInput,
       cleanupDirectoryOnFailure: boolean,
       dryRun: boolean,
+      versionId?: string,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -960,6 +970,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             startTime,
             manifestValidationTime,
             dryRun,
+            versionId,
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
@@ -1351,6 +1362,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       startTime: number,
       manifestValidationTime: number,
       dryRun: boolean,
+      versionId?: string,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
@@ -1365,6 +1377,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
             withEntities: true,
+            ...(versionId !== undefined ? { publishedVersion: true } : {}),
          }),
       );
       const [outcome, databases] = await Promise.all([
@@ -1461,6 +1474,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          pkg.renderTagWarnings =
             pkg.surfacedRenderTagWarnings(renderTagWarnings);
          pkg.adoptOutcomeMetadata(outcome);
+         // Before the gates judge it: a version names its tables per version.
+         if (versionId !== undefined) {
+            pkg.setPackageMetadata({ ...pkg.getPackageMetadata(), versionId });
+         }
          // No manifest is bound yet, so this serves live until a bind.
          pkg.materialization.wireServingResolvers();
          pkg.refreshServingIdentity();
@@ -2147,6 +2164,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                malloyConfig: this.malloyConfig,
                defaultConnectionName: "duckdb",
                computeBuildPlan: true,
+               ...(this.getVersionId() !== undefined
+                  ? { publishedVersion: true }
+                  : {}),
                // Behind publishes, reloads and compiles: a connection edit's
                // re-derivations never hold a user's load up for more than
                // the one already running.

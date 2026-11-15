@@ -191,9 +191,7 @@ export async function compilePackageBuildPlan(
    // refused for its table name, or a source whose incremental declaration
    // this deployment cannot honour, must not build here either.
    const compiled = refuseCollidingMaterialize({
-      ...(pkg.getPackageMetadata?.()?.scope === "version"
-         ? { versionScoped: true }
-         : {}),
+      ...(versionOwnsTables(pkg) ? { versionScoped: true } : {}),
       builds: parts.builds,
       sources: parts.sources,
       targets: parts.targets,
@@ -228,6 +226,18 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
-      pkg.getPackageMetadata?.()?.scope,
+      versionOwnsTables(pkg) ? "version" : undefined,
+   );
+}
+
+/**
+ * Whether the package's tables are named per version: a published version
+ * of a `scope: "version"` package (the run's `ownedVersionOf`). An
+ * unversioned package writes an author's `name=` as given whatever its scope.
+ */
+function versionOwnsTables(pkg: BuildPlanPackage): boolean {
+   return (
+      pkg.getPackageMetadata?.()?.scope === "version" &&
+      pkg.getVersionId?.() !== undefined
    );
 }

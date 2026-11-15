@@ -25,7 +25,7 @@ import {
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { Environment } from "./environment";
 import { parsePackageName } from "./identity";
-import type { Package } from "./package";
+import { Package } from "./package";
 import { formatPublishRejections } from "./publish_checks";
 import {
    PackageMaterialization,
@@ -425,7 +425,7 @@ describe("an invalid #(materialize) fails the load", () => {
    );
 
    it(
-      "a defaulted name never meets another source's table: readable names, whatever the scope; two equal name=s do, unversioned",
+      "a defaulted name never meets another source's table; two equal name=s do, unless a published scope: version version names them per version",
       async () => {
          await withMaterialize(
             async () => {
@@ -452,29 +452,64 @@ source: other is raw extend { where: amount < 0 }
                   const pkg = await reload(defaultedAndNamed, manifest);
                   expect(coded(pkg, "materialize-not-built")).toEqual([]);
                }
-               // Under scope: version a name= only starts a readable name, so
-               // two equal name=s are two tables as well.
                const twoNamed = `${RAW}#(materialize) name="t" storage="lake"
 source: daily is raw extend { where: amount > 0 }
 
 #(materialize) name="t" storage="lake"
 source: other is raw extend { where: amount < 0 }
 `;
-               await reload(twoNamed, {
-                  materialization: { scope: "version" },
-               });
-               await fs.rm(path.join(envPath, "pkg"), {
-                  recursive: true,
-                  force: true,
-               });
-               const message = await loadError(twoNamed);
-               expect(
+               const collisions = (message: string) =>
                   message
                      .split("\n")
                      .filter((l) =>
                         l.includes("[materialization-table-collision]"),
-                     ),
-               ).toHaveLength(2);
+                     );
+               // Unversioned, a name= is written as given, whatever the
+               // scope: two equal ones are one table.
+               for (const manifest of [
+                  {},
+                  { materialization: { scope: "version" } },
+               ]) {
+                  await fs.rm(path.join(envPath, "pkg"), {
+                     recursive: true,
+                     force: true,
+                  });
+                  expect(
+                     collisions(await loadError(twoNamed, manifest)),
+                  ).toHaveLength(2);
+               }
+               // A published version of a scope: version package takes the
+               // name= as the start of a readable name hashed over the
+               // version and source: two tables.
+               await fs.rm(path.join(envPath, "pkg"), {
+                  recursive: true,
+                  force: true,
+               });
+               writePackageFiles(
+                  path.join(envPath, "pkg"),
+                  { "model.malloy": twoNamed, "rows.csv": "a\n1\n" },
+                  {
+                     manifest: {
+                        name: "pkg",
+                        description: "fixture",
+                        materialization: { scope: "version" },
+                     },
+                  },
+               );
+               const version = await Package.create(
+                  "testEnv",
+                  "pkg",
+                  path.join(envPath, "pkg"),
+                  new Map(),
+                  false,
+                  { versionId: "1.0.0" },
+               );
+               try {
+                  expect(coded(version, "materialize-not-built")).toEqual([]);
+                  expect(version.formatInvalidAnnotations()).toBe("");
+               } finally {
+                  await version.getMalloyConfig().shutdown("close");
+               }
             },
             { PERSIST_STORAGE_MODE: "on" },
          );

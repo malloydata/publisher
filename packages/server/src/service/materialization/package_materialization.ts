@@ -2340,7 +2340,9 @@ export class PackageMaterialization {
                   ? { defaulted: !!materialize.nameDefaulted }
                   : {}),
                ...(source.dialect ? { dialect: source.dialect } : {}),
-               ...(this.owner.metadata().scope === "version"
+               // Only a published version names its tables per version.
+               ...(this.owner.metadata().scope === "version" &&
+               this.owner.versionId() !== undefined
                   ? { versionScoped: true }
                   : {}),
                identity: sourceID,

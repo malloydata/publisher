@@ -46,9 +46,10 @@ interface EligibilityPlan {
    preaggregatePlans?: Record<string, RollupPlan>;
    /** The `#(materialize)` plans, by the author's sourceID. */
    /**
-    * The package is `scope: "version"`: every table name, `name=` included,
-    * is a readable name with its source's identity hash, so no two
-    * declarations share one (see {@link persistTableTarget}).
+    * The package is a published version of a `scope: "version"` package:
+    * every table name, `name=` included, is a readable name with its
+    * source's identity hash, so no two declarations share one (see
+    * {@link persistTableTarget}).
     */
    versionScoped?: boolean;
    materializePlans?: Record<string, unknown>;
@@ -145,8 +146,9 @@ export function collidingRollups(compiled: {
  * {@link tableNamesFoldCase}) are one table. Every other name is Publisher's
  * readable name (domain/table_name.ts): a name the author did not choose
  * (`defaulted`: no `name=` on a `#@ persist`, or a `#(materialize)` with
- * none), and under `scope: "version"` (`versionScoped`) every name, `name=`
- * included, which then sets only the readable prefix. A readable name ends in
+ * none), and in a published version of a `scope: "version"` package
+ * (`versionScoped`) every name, `name=` included, which then sets only the
+ * readable prefix. A readable name ends in
  * a hash of the source's identity (its declaring model and name, and the
  * version), so two different declarations never share one but by a hash
  * collision, which the run refuses (`table_name_collision`); its key is that

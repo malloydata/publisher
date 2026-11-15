@@ -1448,7 +1448,8 @@ async function loadPackage(
       modelPaths,
       load,
       packageMetadata.materialization ?? null,
-      packageMetadata.scope,
+      // Only a published version's tables are named per version.
+      job.publishedVersion ? packageMetadata.scope : undefined,
    );
    const loadEnd = performance.now();
    return {

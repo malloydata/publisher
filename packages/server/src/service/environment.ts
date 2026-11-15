@@ -2485,6 +2485,8 @@ export class Environment {
             packageName,
             versionPath,
             () => this.malloyConfig.malloyConfig,
+            false,
+            { versionId: version.versionId },
          );
          this.attachDestinationServeConfig(loaded);
          // The version's serving state lives on its registry row, not in its
