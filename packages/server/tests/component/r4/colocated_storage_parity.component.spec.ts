@@ -494,7 +494,7 @@ for (const tier of PAIR_TIERS) {
                expect(plan.persist.refresh).toBe("incremental");
             } else {
                expect(plan.pairFullRefresh).toMatch(
-                  /colocated in its source's postgres warehouse/,
+                  /colocated in its source's warehouse \(dialect postgres\)/,
                );
                expect(plan.persist.refresh).toBeUndefined();
             }

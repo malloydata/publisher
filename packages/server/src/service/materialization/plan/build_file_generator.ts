@@ -2112,8 +2112,8 @@ export function planModelMaterialize(
          ) {
             incremental = {
                fullRefresh:
-                  `its table is colocated in its source's ${String(def.dialect)} ` +
-                  `warehouse, and a pair table's delta is applied only in DuckDB ` +
+                  `its table is colocated in its source's warehouse (dialect ` +
+                  `${String(def.dialect)}), and a pair table's delta is applied only in DuckDB ` +
                   `(a \`storage=\` destination, or a DuckDB warehouse); declare ` +
                   `storage= to refresh it incrementally`,
             };

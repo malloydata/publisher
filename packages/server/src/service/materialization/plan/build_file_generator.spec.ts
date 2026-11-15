@@ -1723,7 +1723,7 @@ source: orders is orders_raw extend {
          );
          const [plan] = planModelMaterialize(inPostgres).plans;
          expect(plan.pairFullRefresh).toMatch(
-            /colocated in its source's postgres warehouse.*declare storage=/,
+            /colocated in its source's warehouse \(dialect postgres\).*declare storage=/,
          );
          expect(plan.persist).not.toHaveProperty("refresh");
          expect(plan.persist).not.toHaveProperty("watermark");
