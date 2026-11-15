@@ -33,6 +33,30 @@ No API, enum, warning code or metric value changes. The incremental shared-addre
 
 Two consequences of sources no longer sharing a table across different `name=`s. A `name=` refused because another package (or nobody provable) holds that table now refuses only its own source: a same-build source with no `name=` of its own builds and serves its own readable table, and still never writes the refused name. And a v1 colocated `#@ persist` source over a join that a gated sibling of the same build is refused for (the annotated-join case in the gated-downstream suite) now builds and serves its own table, with answers equal to live, where it used to be refused with that sibling. This also supersedes the note below where it says sources that differ only in their `name=` share one colocated table.
 
+## [Unreleased] — `GET /status` answers from a snapshot, and never loads a package
+
+`GET /api/v0/status` (and the MCP `get_status`) is the control plane's heartbeat, and it did real work on every poll: it built every loaded package's and version's full metadata (the warnings pass and, with `PUBLISHER_PACKAGE_INLINE_FIELDS` on, the inline fields), read every environment's version rows from the database, and loaded a package registered from config that was not in memory. Each environment now keeps a status snapshot current as it changes: a package copy's metadata is captured when a load, reload, install, bind or metadata PATCH of it settles, and a package's version rows are re-read after each write to them. A poll reads that snapshot and what the server already holds in memory, and builds no metadata, reads nothing from the database and starts no load. In a benchmark of 3 environments × 8 packages × 3 versions, the server's CPU time per poll fell from about 8 ms to about 1 ms.
+
+The body is unchanged, field for field, including `includeLoading=true`. Two differences in timing, neither of a field a reconcile reads: with inline fields on, a package entry's metadata (its warnings, `buildPlan`, description) is as of the last load, reload, bind or PATCH of that package, while `status` and the manifest-binding fields are read live on every poll as before; and a package registered from the config that nothing has loaded yet is no longer loaded, or listed, by a `/status` poll. Startup loads every configured package itself, so this is only a package registered and not yet loaded; the first request that names it, a listing of its environment, or a reload loads it as before. (A package whose startup load failed was not retried by polls before either.)
+
+The snapshot makes `/status` cheap with `PUBLISHER_PACKAGE_INLINE_FIELDS` on or off. With it on, the body still carries every entry's full metadata, about 357 KB per poll for 480 versions, so a fleet polling often may still want it `off` to save bandwidth.
+## [Unreleased] — re-binding the same build manifest no longer recompiles the package
+
+Workers in Credible's dev fleet on 0.13.1 looped reloads: the control plane re-binds a version's build manifest whenever a heartbeat does not show it bound, and every such bind, even of the manifest the package was already serving, recompiled every model in the load pool and then every model's served copy on the main thread. With the main thread busy, `/status` heartbeats timed out, which made the control plane re-bind and reload again.
+
+Binding a version (or a package loaded with a `manifestLocation`) to the manifest its models were last compiled against now fetches it and recompiles nothing; the binding is reported `bound` as before. A manifest that changed, a reload since, or another bind in between still recompiles. A `PATCH` that names a `manifestLocation` always reloads, as before, since it also applies the `publisher.json` it writes. When a package does recompile against a manifest, each model's served copy compiles once instead of starting, being discarded and starting again; a served copy with no table to read compiles nothing; and a source whose re-root does not compile is not recompiled or warned about again for the same model and tables (for ten minutes) — it keeps answering live, as it did. The served copy hands the event loop a turn between its compile passes.
+
+Answers are unchanged: the same sources are served from the same tables. No API, enum or metric value changes.
+## [Unreleased] — less main-thread work per package load
+
+0.13.1 added a check to every package load that walked each model's whole compiled definition for joins inside array queries. That walk ran on the main thread, and it remembered every node it visited in a table that outlived the walk. The check now asks first whether a model governs access at all. A model that governs nothing is not walked for joins. A model that does is walked once, and the walk keeps nothing afterwards. A load that refused such a join still refuses it, with the same message.
+
+The memory governor reads only the process's resident memory on each tick, not the full `process.memoryUsage()` object with its heap statistics. In Bun those statistics cost more as the heap grows.
+
+The render-tag check now keeps its findings for each model, keyed on a digest of the results it reads. A model loaded again unchanged reuses its findings instead of being checked again on the main thread. A change to the model's text or to the schema of a table it reads is checked afresh. The cache lives in the server process, so a new `@malloydata/render-validator` is checked afresh after the restart that installs it. The cache holds the findings of at most 1,024 models. The warnings a package reports are unchanged.
+
+No API, enum or metric value changes.
+
 ## [Unreleased] — colocated and `storage=` tables answer five shapes the same way
 
 Five shapes were answered differently by a colocated table and a `storage=` one, by accident rather than for any reason inherent to where the table lives. Each now gives the same outcome in both tiers, equal to live:

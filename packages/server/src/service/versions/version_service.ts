@@ -109,6 +109,12 @@ export interface VersionHost<P> {
    boundManifestOf?(loaded: P): string | null;
    /** A version became served; `isLatest` says whether it is `latest`. */
    onVersionLoaded?(packageName: string, loaded: P, isLatest: boolean): void;
+   /**
+    * A write to the package's version rows or its `latest` settled (or
+    * failed). Awaited before the write returns, so what the host reads then
+    * is what the write left. Must not throw.
+    */
+   recordsChanged?(packageName: string): Promise<void>;
    /** Whether a materialization of this version is running now. */
    isVersionBuilding?(packageName: string, versionId: string): boolean;
    /**
@@ -356,6 +362,20 @@ export class VersionService<P = unknown> {
       return records.versions.has(raw) ? raw : undefined;
    }
 
+   /**
+    * The package's `latest` and its versions in publish order, read from the
+    * registry now. Not kept: what requests read is unchanged by this read.
+    */
+   async versionRecords(
+      packageName: string,
+   ): Promise<{ latest: string | null; versions: Version[] }> {
+      const records = await this.readRecords(packageName);
+      return {
+         latest: records.latest,
+         versions: [...records.versions.values()],
+      };
+   }
+
    /** Whether the package has any published version. */
    async isVersioned(packageName: string): Promise<boolean> {
       return (await this.recordsOf(packageName)).versions.size > 0;
@@ -417,6 +437,12 @@ export class VersionService<P = unknown> {
     */
    private forgetRecords(packageName: string): void {
       this.records.delete(packageName);
+   }
+
+   /** A write to the package's rows settled: forget them, and tell the host. */
+   private async recordsWritten(packageName: string): Promise<void> {
+      this.forgetRecords(packageName);
+      await this.host?.recordsChanged?.(packageName);
    }
 
    /**
@@ -1258,7 +1284,7 @@ export class VersionService<P = unknown> {
             versionId,
          );
       } finally {
-         this.forgetRecords(packageName);
+         await this.recordsWritten(packageName);
       }
       if (moved) {
          this.latestSeen.set(packageName, versionId);
@@ -1300,7 +1326,7 @@ export class VersionService<P = unknown> {
          try {
             return await fn();
          } finally {
-            this.forgetRecords(packageName);
+            await this.recordsWritten(packageName);
          }
       });
    }
