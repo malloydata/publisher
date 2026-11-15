@@ -1,5 +1,5 @@
 # TEMPORARY: calibration runs for the main-thread regression check. Removed
-# before merge. (round 2)
+# before merge. (round 3)
 name: mtr-calibration
 
 on:
