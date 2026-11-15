@@ -12,21 +12,21 @@ import type { CompiledBuildPlan } from "../plan/build_plan";
 import { deriveAnnotationFields } from "../plan/persist_source_fields";
 import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
 import {
-   nameViewDialectSupported,
-   nameViewProbeSql,
    OWNED_TABLE_MARK,
    parseNameViewComment,
    parseOwnedTableComment,
+   relationProbeSql,
+   relationProbeSupported,
    sqlString,
-} from "./name_view_sql";
+} from "./table_mark_sql";
+import {
+   atTableSite,
+   type TableSite,
+   type TableSiteContext,
+} from "./table_site";
+import type { BuildInstruction } from "../domain/types";
 
 export { OWNED_TABLE_MARK, parseOwnedTableComment };
-import {
-   atNameViewSite,
-   type NameViewContext,
-   type NameViewSite,
-} from "./name_view";
-import type { BuildInstruction } from "../domain/types";
 
 /**
  * Who owns a table an auto-run writes at a name the author chose.
@@ -41,7 +41,8 @@ import type { BuildInstruction } from "../domain/types";
  *
  * - nothing: built, and the table marked as this package's;
  * - a table marked as this package's, or this package's own `name=` view
- *   (which the table replaces, name_view.ts): built;
+ *   an earlier release left there (dropped first, leftover_name_views.ts):
+ *   built;
  * - a table with no mark that this package's own committed runs say they
  *   wrote (a table built before the mark existed, or one whose mark could not
  *   be written): built, and marked;
@@ -182,7 +183,7 @@ export function ownedTableComment(owner: string): string {
 /** The dialects whose tables' holders can be read (and marked). */
 function tableOwnershipDialectSupported(dialect: string): boolean {
    return (
-      nameViewDialectSupported(dialect) ||
+      relationProbeSupported(dialect) ||
       dialect === "mysql" ||
       dialect === "presto"
    );
@@ -191,7 +192,7 @@ function tableOwnershipDialectSupported(dialect: string): boolean {
 /**
  * A query answering what holds the name `segments` names: one row per
  * relation, with `kind` (`VIEW`, or anything else for a table) and `comment`.
- * The `name=` view's probe (name_view_sql.ts), plus MySQL, and Presto with no
+ * The shared probe (table_mark_sql.ts), plus MySQL, and Presto with no
  * comments (a Presto table is never read as marked, only as this package's
  * by its records).
  */
@@ -225,7 +226,7 @@ export function ownedTableProbeSql(
          `WHERE table_schema = ${schema} AND table_name = lower(${lit(name)})`
       );
    }
-   return nameViewProbeSql(segments, dialect);
+   return relationProbeSql(segments, dialect);
 }
 
 /** The DDL that marks the table `segments` names as `owner`'s. */
@@ -269,8 +270,8 @@ export function ownedTableMarkSql(
 type TableHolder =
    | { state: "free" }
    /**
-    * A table marked as `owner`'s, or (`view`) `owner`'s own `name=` view,
-    * which a build of the table replaces.
+    * A table marked as `owner`'s, or (`view`) `owner`'s own `name=` view an
+    * earlier release left, which a build of the table replaces.
     */
    | { state: "ours"; view?: true }
    /** A table with no mark: `owner`'s only if its records say so. */
@@ -358,7 +359,7 @@ export function packageRecordsName(
 
 /** What holds `physicalTableName` at `site`, as `owner` sees it. */
 export async function probeTableHolder(
-   site: Pick<NameViewSite, "dialect" | "segments" | "run">,
+   site: Pick<TableSite, "dialect" | "segments" | "run">,
    physicalTableName: string,
    owner: string,
 ): Promise<TableHolder> {
@@ -375,15 +376,17 @@ export async function probeTableHolder(
  * {@link TableOwnershipError} unless the name is free or `owner`'s
  * (`ownRecords` answers whether this package's records name the table, asked
  * only for a table with no mark). `site` is undefined when the table's
- * connection or destination cannot be reached, which refuses too.
+ * connection or destination cannot be reached, which refuses too. Returns
+ * whether the name holds `owner`'s own leftover `name=` view, which the
+ * caller drops before it builds (leftover_name_views.ts).
  */
 export async function assertTableOwnable(
-   site: Pick<NameViewSite, "dialect" | "segments" | "run"> | undefined,
+   site: Pick<TableSite, "dialect" | "segments" | "run"> | undefined,
    target: OwnedTableTarget,
    owner: string,
    sourceName: string,
    ownRecords: () => Promise<boolean>,
-): Promise<void> {
+): Promise<{ ownView: boolean }> {
    const where = target.storageDestinationName
       ? `in storage destination '${target.storageDestinationName}'`
       : `on connection '${target.connectionName}'`;
@@ -416,7 +419,7 @@ export async function assertTableOwnable(
       throw unverified(errMessage(err));
    }
    if (holder.state === "unmarked") {
-      if (await ownRecords()) return;
+      if (await ownRecords()) return { ownView: false };
       holder = {
          state: "taken",
          holder:
@@ -433,6 +436,7 @@ export async function assertTableOwnable(
             `needs it.`,
       );
    }
+   return { ownView: holder.state === "ours" && holder.view === true };
 }
 
 /**
@@ -441,7 +445,7 @@ export async function assertTableOwnable(
  * records once the run commits.
  */
 export async function markOwnedTable(
-   site: Pick<NameViewSite, "dialect" | "segments" | "run">,
+   site: Pick<TableSite, "dialect" | "segments" | "run">,
    physicalTableName: string,
    owner: string,
 ): Promise<void> {
@@ -468,7 +472,7 @@ export async function markOwnedTable(
  * before, since the table is in this package's records.
  */
 export async function ownedElsewhere(
-   site: Pick<NameViewSite, "dialect" | "segments" | "run">,
+   site: Pick<TableSite, "dialect" | "segments" | "run">,
    physicalTableName: string,
    owner: string,
 ): Promise<string | undefined> {
@@ -504,7 +508,7 @@ export async function uncarryUnownedTables(
    carried: Record<string, ManifestEntry>,
    instructions: BuildInstruction[],
    owner: string,
-   context: NameViewContext,
+   context: TableSiteContext,
 ): Promise<void> {
    for (const [address, instruction] of Object.entries(recheck)) {
       const entry = carried[address];
@@ -518,7 +522,7 @@ export async function uncarryUnownedTables(
       let ours = false;
       try {
          ours =
-            (await atNameViewSite(target, context, async (site) => {
+            (await atTableSite(target, context, async (site) => {
                if (!tableOwnershipDialectSupported(site.dialect)) return false;
                const holder = await probeTableHolder(
                   site,

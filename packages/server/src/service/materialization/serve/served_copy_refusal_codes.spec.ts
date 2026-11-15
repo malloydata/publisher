@@ -72,7 +72,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: null,
          message:
-            "This model joins sources from different connections; its served copy compiles once both sides are built into one destination, and serves live until then.",
+            "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.",
       },
    ],
    column_types: [
@@ -168,7 +168,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's served copy reaches fields its compile of record does not (a join left out across connections, answered once both sides are built), and the load's classification checks flag them there, so its queries are not answered from the stored tables: `s` carries [pii] but exposes `j.email`. `j.email` is not classified.",
+            "This source's re-root changed what it exposes or how a field is classified, which the load's classification checks flag on the served copy, so its queries are not answered from the stored tables (a Publisher bug; please report it): `s` carries [pii] but exposes `j.email`. `j.email` is not classified.",
       },
       {
          code: "classification-coverage",
@@ -180,7 +180,6 @@ const WARNINGS: Record<
 
 function warningsFor(problems: ServedCopyProblem[]) {
    const model = {
-      crossConnectionLeftOutDefinitions: () => [],
       servedCopyProblems: () => problems,
    };
    const materialization = new PackageMaterialization({

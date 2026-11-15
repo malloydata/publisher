@@ -36,4 +36,11 @@ export interface BuildPlanPackage {
     * it resolve with no package default.
     */
    getMaterializationConfig?(): WirePackageMaterialization | null;
+   /**
+    * The package's metadata, for its materialization `scope`: under
+    * `scope: "version"` every table name takes the version's suffix, which
+    * decides which sources share a table. Optional: callers without it plan
+    * as unversioned.
+    */
+   getPackageMetadata?(): { scope?: string | null };
 }
