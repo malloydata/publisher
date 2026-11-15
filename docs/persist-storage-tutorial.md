@@ -423,7 +423,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/pers
 # Rebuild, then query — now it reflects the new row (375 + 999 = 1374):
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations \
   -H 'content-type: application/json' -d '{"forceRefresh": true}' >/dev/null
-# (wait for MANIFEST_FILE_READY, then query again) -> [{"t":1374}]
+# (wait for MANIFEST_FILE_READY, which an auto-run reaches only once the package serves the new table, then query again) -> [{"t":1374}]
 ```
 
 That's the point: queries serve from the store you materialized into, and

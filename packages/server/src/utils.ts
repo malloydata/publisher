@@ -4,7 +4,7 @@
 import { type LogMessage, MalloyError, URLReader } from "@malloydata/malloy";
 import * as fs from "fs";
 import * as path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { stepsOutside } from "./path_safety";
 
 /**
@@ -101,6 +101,26 @@ export function linkTextSteps(
  * fails there as the kernel would rather than landing on a file the spelling
  * reaches. A link loop or an unreadable link is refused.
  */
+/**
+ * Where a walk stopped at `at` as a path whose open fails the same way the
+ * kernel's would: a missing `at` with the last name still to walk (ENOENT),
+ * or a file `at` with the next step still under it (ENOTDIR; `f.md/..` stays
+ * `f.md/..`, spelled, never collapsed to the file). Never the rest of the
+ * walk, which may climb out (`newdir/../../outside/secret`): a directory
+ * appearing at `at` between the check and the open then cannot carry the
+ * open out. (A symlink appearing there, or at a component already checked,
+ * still could; only a change to the served tree at runtime can do that.)
+ */
+function stopped(
+   at: string,
+   pending: readonly string[],
+   isFile: boolean,
+): Resolution {
+   if (isFile) return { at, path: `${at}${path.sep}${pending[0] ?? ".."}` };
+   const last = [...pending].reverse().find((name) => name !== "..");
+   return { at, path: last === undefined ? at : path.join(at, last) };
+}
+
 function* resolveSteps(
    p: string,
    givenRoot: string,
@@ -128,9 +148,7 @@ function* resolveSteps(
       const next = path.join(cur, name);
       if (!mayLook(next)) throw new ImportOutsidePackageError();
       const stat = (yield { op: "lstat", path: next }) as fs.Stats | undefined;
-      if (stat === undefined) {
-         return { at: next, path: [next, ...pending].join(path.sep) };
-      }
+      if (stat === undefined) return stopped(next, pending, false);
       if (stat.isSymbolicLink()) {
          if (++hops > MAX_LINK_HOPS) throw new ImportOutsidePackageError();
          const text = (yield { op: "readlink", path: next }) as
@@ -144,7 +162,7 @@ function* resolveSteps(
       }
       if (!stat.isDirectory() && pending.length > 0) {
          // A file with more to walk: the kernel stops here (ENOTDIR).
-         return { at: next, path: [next, ...pending].join(path.sep) };
+         return stopped(next, pending, true);
       }
       cur = next;
    }
@@ -443,37 +461,45 @@ export function packageURLReader(packageRoot: string): URLReader {
 export async function listPackageTree(root: string): Promise<string[]> {
    const realRoot = await fs.promises.realpath(root);
    const files: string[] = [];
+   // Each link's target is walked once (so a link loop ends); a directory
+   // reached both directly and through a link is listed under both names.
    const walked = new Set<string>([realRoot]);
-   const visit = async (dir: string): Promise<void> => {
-      for (const entry of await fs.promises.readdir(dir, {
+   // `dir` is how the files are listed; `readFrom` is where the walk resolved
+   // it, which is what is read, so a link is not followed again by spelling.
+   const visit = async (dir: string, readFrom: string): Promise<void> => {
+      for (const entry of await fs.promises.readdir(readFrom, {
          withFileTypes: true,
       })) {
          if (ignoreDotfiles(entry.name)) continue;
          const full = path.join(dir, entry.name);
          if (entry.isDirectory()) {
-            await visit(full);
+            await visit(full, path.join(readFrom, entry.name));
          } else if (entry.isSymbolicLink()) {
-            const target = await fs.promises.stat(full).catch(() => undefined);
-            if (!target?.isDirectory()) {
+            // Resolved by the package's own walk, which never looks outside
+            // the package: a link out (or one that passes out and back) is
+            // listed as itself, the same whatever lies outside, and a model
+            // path among them is refused at compile.
+            let real: string;
+            try {
+               real = await confinedPackagePath(root, pathToFileURL(full));
+            } catch {
                files.push(full);
                continue;
             }
-            const real = await fs.promises.realpath(full);
-            if (!within(realRoot, real)) {
-               // Listed like any link out, so the load answers the same
-               // whatever it leads to: a model path is refused at compile.
+            const target = await fs.promises.stat(real).catch(() => undefined);
+            if (!target?.isDirectory()) {
                files.push(full);
                continue;
             }
             if (walked.has(real)) continue;
             walked.add(real);
-            await visit(full);
+            await visit(full, real);
          } else {
             files.push(full);
          }
       }
    };
-   await visit(root);
+   await visit(root, realRoot);
    return files;
 }
 

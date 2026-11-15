@@ -86,6 +86,7 @@ import {
    splitManifestEntries,
    type FetchedManifest,
 } from "./materialization/run/manifest_loader";
+import type { RunManifestLoad } from "./materialization/domain/types";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import { applyLoadGates } from "./package_load_gates";
@@ -1618,6 +1619,16 @@ export class Environment {
             await fs.promises.lstat(p).catch(() => undefined)
          )?.isSymbolicLink() === true;
       if (await isLink(target)) throw outside();
+      // Where the target leads, settled by the package's own walk, which
+      // never looks outside the package: a directory link on the way that
+      // passes out (and back, or not) is refused here, the same whatever
+      // lies outside, before the stats below would follow it.
+      try {
+         await confinedPackagePath(packageRoot, pathToFileURL(target));
+      } catch (error) {
+         if (error instanceof ImportOutsidePackageError) throw outside();
+         throw error;
+      }
       const missing: string[] = [];
       let dir = path.dirname(target);
       while (dir.startsWith(packageRoot)) {
@@ -1933,8 +1944,8 @@ export class Environment {
     * from the database at startup, the one place the restore ran before
     * versions existed (see {@link restoreUnversionedFromLocalStore}).
     */
-   public restoreUnversionedBindingsFromLocalStore(): void {
-      this.restoreUnversionedFromLocalStore = true;
+   public restoreUnversionedBindingsFromLocalStore(restore = true): void {
+      this.restoreUnversionedFromLocalStore = restore;
    }
 
    /**
@@ -3471,6 +3482,80 @@ export class Environment {
             if (!has && !had) return;
             await pkg.reloadAllModels(manifest);
          }),
+      );
+   }
+
+   /**
+    * Load an auto-run's manifest into the package it built (or that version),
+    * then run `commit`, all under the package's lock (a version's, for a
+    * published version), and say how the load went.
+    *
+    * One lock across the reload, the storage bind and `commit` (the run's move
+    * to MANIFEST_FILE_READY), so no other reload, publish or version load can
+    * slip between them: one that waits on the lock reads the store after the
+    * run is MANIFEST_FILE_READY, so it binds this run's manifest, never the
+    * one before it. A version that is not loaded binds from the store when
+    * it next loads, which is after `commit`, so it counts as loaded.
+    */
+   public async loadRunManifest(params: {
+      packageName: string;
+      versionId?: string;
+      /** The colocated entries, compiled in as the build manifest. */
+      colocated: FreshnessManifest;
+      /** The full entries, of which the `storage=` ones are bound. */
+      storage: Record<string, ManifestEntry>;
+      commit: (outcome: RunManifestLoad) => Promise<void>;
+   }): Promise<RunManifestLoad> {
+      const { packageName, versionId } = params;
+      assertSafePackageName(packageName);
+      const load = async (
+         pkg: Package | undefined,
+      ): Promise<RunManifestLoad> => {
+         if (!pkg) {
+            return versionId !== undefined
+               ? { loaded: true }
+               : {
+                    loaded: false,
+                    step: "reload",
+                    error: `Package ${packageName} is not loaded`,
+                 };
+         }
+         try {
+            const has = Object.keys(params.colocated).length > 0;
+            if (has || pkg.hasBoundTableNameManifest()) {
+               await pkg.reloadAllModels(params.colocated);
+            }
+         } catch (err) {
+            return { loaded: false, step: "reload", error: errMessage(err) };
+         }
+         try {
+            // With a manifestLocation the host is authoritative.
+            if (!pkg.getPackageMetadata().manifestLocation) {
+               pkg.bindStorageServeBindings(params.storage);
+            }
+         } catch (err) {
+            return { loaded: false, step: "bind", error: errMessage(err) };
+         }
+         return { loaded: true };
+      };
+      const loadAndCommit = async (pkg: Package | undefined) => {
+         const outcome = await load(pkg);
+         await params.commit(outcome);
+         return outcome;
+      };
+      if (versionId !== undefined) {
+         const versions = this.versionService;
+         if (!versions) return loadAndCommit(undefined);
+         return this.trackPackageLoad(packageName, () =>
+            versions.withVersionLock(packageName, versionId, () =>
+               loadAndCommit(versions.cache.peek(packageName, versionId)),
+            ),
+         );
+      }
+      return this.trackPackageLoad(packageName, () =>
+         this.withPackageLock(packageName, () =>
+            loadAndCommit(this.packages.get(packageName)),
+         ),
       );
    }
 

@@ -67,6 +67,7 @@ describe("view-call recognition: result schema and query text agree", () => {
          view: "by_carrier",
          refined: false,
          laterStages: 0,
+         otherNames: new Set(["run"]),
       });
    });
 

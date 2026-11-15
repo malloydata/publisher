@@ -40,7 +40,7 @@ import { splitSourceID } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import type { GeneratedFiles } from "../text/generated_files";
 import { packageFiles } from "../text/package_files";
-import { authorNameImports } from "./author_imports";
+import { authorNameImports, relativeImport } from "./author_imports";
 
 /** A variant compiled over the author's declaring file. */
 interface CompiledDeclaringFileVariant {
@@ -59,7 +59,11 @@ interface DeclaringFileContext {
    copyURL: URL;
    /** The copy's basename, for an `import` beside the declaring file. */
    copyName: string;
-   /** The redeclared source's name in its declaring file. */
+   /**
+    * The redeclared source's name in its declaring file; empty for a variant
+    * that redeclares no source (only {@link compileDeclaringFileVariant}'s
+    * `alsoRedeclared` names).
+    */
    sourceName: string;
    /**
     * The source's gates, as note lines ending in a newline, to write right
@@ -88,8 +92,24 @@ export async function compileDeclaringFileVariant(args: {
    /** The connections the variant compiles with (a destination's included). */
    config: ModelConnectionInput;
    modelDef: ModelDef;
-   /** The redeclared source's `sourceID` (the author's). */
-   sourceID: string;
+   /**
+    * The redeclared source's `sourceID` (the author's). Absent for a variant
+    * that redeclares only `alsoRedeclared` names, in `declaringURL`.
+    */
+   sourceID?: string;
+   /** The declaring file's URL, when no `sourceID` names it. */
+   declaringURL?: string;
+   /**
+    * Other names the declaring file declares that the overlay redeclares too
+    * (a named query over the redeclared source), so neither the overlay nor
+    * the query model imports them from the copy.
+    */
+   alsoRedeclared?: readonly string[];
+   /**
+    * Names the declaration adds to the overlay that the query model must see
+    * as well (a generated source a redeclared query names).
+    */
+   alsoExported?: readonly string[];
    /** Appended to the declaring file's path to name its copy. */
    copySuffix: string;
    /** The query model's URL, beside the author's model. */
@@ -101,7 +121,12 @@ export async function compileDeclaringFileVariant(args: {
    ): string | { error: string } | Promise<string | { error: string }>;
 }): Promise<CompiledDeclaringFileVariant> {
    const { packagePath, modelPath, packageConfig, modelDef } = args;
-   const declared = declaringFileOf(args.sourceID, args.copySuffix);
+   const declared =
+      args.sourceID !== undefined
+         ? declaringFileOf(args.sourceID, args.copySuffix)
+         : args.declaringURL !== undefined
+           ? declaringFileAt("", args.declaringURL, args.copySuffix)
+           : { error: "no declaring file" };
    if ("error" in declared) return declared;
    const { declaringURL, copyURL, copyName } = declared;
    const modelFile = path.join(packagePath, modelPath);
@@ -121,13 +146,19 @@ export async function compileDeclaringFileVariant(args: {
    overlay.set(copyURL.href, declaringText);
    // The copy's own names, to import into the declaring file's overlay.
    const copyNames = await namesDeclaredIn(authorFiles, overlay, copyURL);
-   let gates: string;
+   let gates = "";
    try {
-      gates = gateLines(modelDef, args.sourceID);
+      if (args.sourceID !== undefined) {
+         gates = gateLines(modelDef, args.sourceID);
+      }
    } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) };
    }
    const source = declared.name;
+   const redeclared = new Set([
+      ...(source !== "" ? [source] : []),
+      ...(args.alsoRedeclared ?? []),
+   ]);
    const declaration = await args.declare({
       declaringURL,
       copyURL,
@@ -137,7 +168,7 @@ export async function compileDeclaringFileVariant(args: {
       addFile: (url, text) => overlay.set(url.href, text),
    });
    if (typeof declaration !== "string") return declaration;
-   const others = copyNames.names.filter((n) => n !== source);
+   const others = copyNames.names.filter((n) => !redeclared.has(n));
    const importOthers =
       others.length > 0
          ? `import { ${others.map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(copyName)}\n`
@@ -145,10 +176,13 @@ export async function compileDeclaringFileVariant(args: {
    // Exported again, so a file that imports the declaring file whole (an
    // `index.malloy` re-exporting its sources) still sees every source and
    // query the author's file declares, not only the redeclared one.
-   const reexported = others.filter((n) => !copyNames.givens.has(n));
+   const reexported = [
+      ...others.filter((n) => !copyNames.givens.has(n)),
+      ...(args.alsoExported ?? []),
+   ];
    const exportAll =
       reexported.length > 0
-         ? `export { ${[source, ...reexported].map((n) => identifier(n)).join(", ")} }\n`
+         ? `export { ${[...redeclared, ...reexported].map((n) => identifier(n)).join(", ")} }\n`
          : "";
    overlay.set(
       declaringURL.href,
@@ -164,18 +198,23 @@ ${exportAll}`,
       args.queryModelURL,
       pathToFileURL(modelFile).href,
       {
+         // Seen from the overlay instead (see alsoExported).
+         skip: new Set(args.alsoExported ?? []),
          redirect: {
             from: overlayKey(declaringURL),
             to: copyURL.href,
-            keep: source,
+            keep: redeclared,
          },
       },
    );
+   const extra = (args.alsoExported ?? []).length
+      ? `import { ${(args.alsoExported ?? []).map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(relativeImport(args.queryModelURL, declaringURL.href) ?? "")}\n`
+      : "";
    overlay.set(
       args.queryModelURL.href,
       `${args.flags}
 ${imports}
-`,
+${extra}`,
    );
    const { runtime, materializer, model } = await packageFiles(
       packagePath,
@@ -198,21 +237,32 @@ ${imports}
 export function declaringFileOf(
    sourceID: string,
    copySuffix: string,
-):
-   | { error: string }
-   | { name: string; declaringURL: URL; copyURL: URL; copyName: string } {
+): DeclaringFile {
    const declared = splitSourceID(sourceID);
    if (!declared) return { error: "no declaring file" };
+   return declaringFileAt(declared.name, declared.url, copySuffix);
+}
+
+type DeclaringFile =
+   | { error: string }
+   | { name: string; declaringURL: URL; copyURL: URL; copyName: string };
+
+/** {@link declaringFileOf} for a file named by its URL, declaring `name`. */
+function declaringFileAt(
+   name: string,
+   url: string,
+   copySuffix: string,
+): DeclaringFile {
    let declaringFile: string;
    try {
-      declaringFile = fileURLToPath(declared.url);
+      declaringFile = fileURLToPath(url);
    } catch {
       return { error: "not a local file" };
    }
    const declaringURL = pathToFileURL(declaringFile);
    const copyURL = pathToFileURL(`${declaringFile}${copySuffix}`);
    const copyName = path.basename(fileURLToPath(copyURL));
-   return { name: declared.name, declaringURL, copyURL, copyName };
+   return { name, declaringURL, copyURL, copyName };
 }
 
 /**

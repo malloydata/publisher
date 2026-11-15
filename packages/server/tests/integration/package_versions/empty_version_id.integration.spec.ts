@@ -155,16 +155,6 @@ const withoutRunIds = (text: string) =>
       "<id>",
    );
 
-/**
- * An agent read stamps the load that served it (`servedRevision`, a fresh id on
- * every load). The settled run's manifest is loaded into the package just after
- * the run reports MANIFEST_FILE_READY (ManifestCommitter.autoLoad), so that
- * reload can land between the two reads of a pair. The tree is pinned by the
- * marker and `sourceContentSha`, not by which load served it.
- */
-const withoutServedRevision = (text: string) =>
-   text.replace(/"servedRevision":"[^"]*"/g, '"servedRevision":"<load>"');
-
 /** A read route, and a text its answer carries only when tree `n` served it. */
 interface ReadRoute {
    name: string;
@@ -202,13 +192,11 @@ const READ_ROUTES: ReadRoute[] = [
       name: "GET agent",
       path: "/agents/analyst",
       marker: (n) => `instructions v${n}`,
-      normalize: withoutServedRevision,
    },
    {
       name: "GET agent skill file",
       path: "/agents/analyst/skills/conventions/SKILL.md",
       marker: (n) => `conventions v${n}`,
-      normalize: withoutServedRevision,
    },
    // The package's duckdb sandbox is in memory, one per loaded tree, and the
    // suite's build of `latest` puts `summary` in that tree's alone. So the
@@ -243,22 +231,11 @@ async function expectEmptyReadsAsNone(pkg: string, n: number): Promise<void> {
          statuses: [none.status, empty.status],
          body: empty.body,
          marked: JSON.stringify(empty.body).includes(route.marker(n)),
-         // The normalization found the stamp it exists to mask.
-         ...(route.normalize === withoutServedRevision
-            ? {
-                 stamped: JSON.stringify(empty.body).includes(
-                    '"servedRevision":"<load>"',
-                 ),
-              }
-            : {}),
       };
       wanted[route.name] = {
          statuses: [200, 200],
          body: none.body,
          marked: true,
-         ...(route.normalize === withoutServedRevision
-            ? { stamped: true }
-            : {}),
       };
    }
    expect(actual).toEqual(wanted);

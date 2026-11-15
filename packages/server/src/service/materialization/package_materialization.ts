@@ -85,6 +85,7 @@ import {
 import {
    computeServeVerdicts,
    VERDICT_WARNING_CODES,
+   type PersistedResultOf,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
@@ -436,6 +437,8 @@ export class PackageMaterialization {
          >();
          for (const model of this.owner.models().values()) {
             for (const v of model.persistedViewBuilds?.() ?? []) {
+               // A persisted query takes no incremental key.
+               if (v.queryName !== undefined) continue;
                persistedViews.set(v.buildSourceID, {
                   sourceName: v.sourceName,
                   viewName: v.viewName,
@@ -1552,10 +1555,7 @@ export class PackageMaterialization {
    ): ServeVerdict[] {
       const models = this.owner.models();
       const index = this.entryPointIndex(models);
-      const persistedViews = new Map<
-         string,
-         { sourceID: string; sourceName: string; viewName: string }
-      >();
+      const persistedViews = new Map<string, PersistedResultOf>();
       for (const model of models.values()) {
          for (const v of model.persistedViewBuilds?.() ?? []) {
             persistedViews.set(v.buildSourceID, v);

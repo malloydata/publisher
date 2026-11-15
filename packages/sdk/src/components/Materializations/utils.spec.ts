@@ -11,6 +11,8 @@ import {
    isTerminalStatus,
    parseMetadata,
    refusedSourcesOf,
+   runColor,
+   runLabel,
    sourcesSummary,
    statusColor,
    statusLabel,
@@ -100,6 +102,27 @@ describe("statusColor", () => {
       const allowed = ["default", "info", "success", "error", "warning"];
       for (const status of ALL) expect(allowed).toContain(statusColor(status));
       expect(allowed).toContain(statusColor(undefined));
+   });
+});
+
+describe("runLabel and runColor", () => {
+   const run = (metadata: Record<string, unknown>) =>
+      ({
+         status: MaterializationStatus.ManifestFileReady,
+         metadata,
+      }) as unknown as Materialization;
+
+   it("reads a run whose manifest did not load as built, not served, a warning", () => {
+      const failed = run({ autoLoad: "failed", autoLoadError: "boom" });
+      expect(runLabel(failed)).toBe("Built, not served");
+      expect(runColor(failed)).toBe("warning");
+   });
+
+   it("reads a served run, or one with no load recorded, as done", () => {
+      for (const m of [run({ autoLoad: "loaded" }), run({})]) {
+         expect(runLabel(m)).toBe("Done");
+         expect(runColor(m)).toBe("success");
+      }
    });
 });
 

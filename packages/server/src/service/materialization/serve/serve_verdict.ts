@@ -84,6 +84,16 @@ type ServeVerdictReason =
     */
    | "served_copy";
 
+/** What a persisted result's build source stores: a view of a source, or a named query. */
+export type PersistedResultOf =
+   | {
+        sourceID: string;
+        sourceName: string;
+        viewName: string;
+        queryName?: never;
+     }
+   | { queryName: string; sourceID?: string; sourceName?: string };
+
 /** Whether one named view of a stored source compiles against its serve shape (#7090). */
 export interface ViewServeVerdict {
    view: string;
@@ -185,10 +195,11 @@ export interface ServeVerdictFacts {
     * A persisted view's generated build source (`#@ persist` on a view, P14),
     * by its plan sourceID: the source and view it stores. A query reaches it
     * by calling the view on that source, so reach and gates are the source's.
+    * A persisted named query's build source carries `queryName`, and its run
+    * target's `sourceID` and name when it runs a named source (absent for an
+    * inline run target, whose reach is not judged).
     */
-   persistedViewOf?(
-      sourceID: string,
-   ): { sourceID: string; sourceName: string; viewName: string } | undefined;
+   persistedViewOf?(sourceID: string): PersistedResultOf | undefined;
    /** Per stored source's plan sourceID, its views' verdicts (a preview). */
    views?: ReadonlyMap<string, ViewServeVerdict[]>;
    /**
@@ -293,8 +304,10 @@ function verdictFor(
    }
 
    const readName = rollupBase ?? view?.sourceName ?? source.name;
-   const readID = rollupBase ? undefined : (view?.sourceID ?? sourceID);
-   if (!facts.reachable(readID, readName)) {
+   const readID = rollupBase ? undefined : view ? view.sourceID : sourceID;
+   // A named query over an inline run target has no source to reach it by.
+   const inlineQuery = view?.queryName !== undefined && !view.sourceID;
+   if (!inlineQuery && !facts.reachable(readID, readName)) {
       return live(
          "unreachable",
          `${subject} is materialized, but no source on the package's published ` +
@@ -406,7 +419,9 @@ function verdictSubjectOf(
       ? `The rollup of \`${rollupBase}\` at (${source.preaggregate?.grainDimensions.join(", ")})`
       : `\`${source.name}\``;
    const subject = view
-      ? `The persisted view \`${view.viewName}\` of \`${view.sourceName}\``
+      ? view.queryName !== undefined
+         ? `The persisted query \`${view.queryName}\``
+         : `The persisted view \`${view.viewName}\` of \`${view.sourceName}\``
       : named;
    const live = (
       reason: ServeVerdictReason,
