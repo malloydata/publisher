@@ -279,4 +279,34 @@ describe("a table named before readable names", () => {
       expect(readableNames(second)).toEqual([name]);
       expect(await tables()).toEqual([name]);
    });
+
+   it("keeps the old table while the package did not load the run, and drops it once a later run loads", async () => {
+      await earlierRelease();
+      // This run's load fails: the package still serves the old table.
+      const load = env.loadRunManifest.bind(env);
+      env.loadRunManifest = async (params) => {
+         const outcome = {
+            loaded: false as const,
+            step: "reload" as const,
+            error: "boom",
+         };
+         await params.commit(outcome);
+         return outcome;
+      };
+      const failed = await build();
+      env.loadRunManifest = load;
+      expect(failed.metadata?.autoLoad).toBe("failed");
+      const [name] = readableNames(failed);
+      expect((await tables()).sort()).toEqual([LEGACY, name].sort());
+      expect(failed.metadata?.renamedTables).toHaveLength(1);
+
+      // The next run carries the table, loads, and finishes the reclaim.
+      const next = await build();
+      expect(next.metadata?.autoLoad).toBe("loaded");
+      expect(await tables()).toEqual([name]);
+      expect(
+         (await repo.getMaterializationById(failed.id))?.metadata
+            ?.renamedTables,
+      ).toBeUndefined();
+   });
 });

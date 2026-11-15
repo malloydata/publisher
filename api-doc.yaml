@@ -10699,9 +10699,10 @@ components:
             `metadata.refusedSources`, never in a build plan:
             `table_name_collision` (a source whose readable table name, the
             name a standalone run gives a table it names itself, is a name
-            another source's table already takes in that run; only a hash
-            collision can do it, as the package's collision check refuses
-            every other case first; it is not built and is answered live).
+            another source's table already takes in that run: two sources of
+            one model that share a name, such as a `#@ persist` source named
+            like a persisted view's generated build source beside it, or a
+            hash collision; it is not built and is answered live).
 
 
             `given_in_persisted_query` is raised by BOTH gates, for one

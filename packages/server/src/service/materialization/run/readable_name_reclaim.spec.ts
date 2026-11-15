@@ -59,11 +59,14 @@ async function reclaim(
    runs: Materialization[],
    runId: string,
    owe: string[] = [],
+   options: { bound?: boolean; skip?: string[] } = {},
 ): Promise<{
    dropped: string[];
    forgotten: string[];
    records: Map<string, Record<string, unknown> | null>;
+   rebinds: number;
 }> {
+   let rebinds = 0;
    const dropped: string[] = [];
    const forgotten: string[] = [];
    const records = new Map(runs.map((m) => [m.id, m.metadata ?? null]));
@@ -96,14 +99,33 @@ async function reclaim(
             }) as never,
       } as never,
       lifecycle: {} as never,
-      dropManifestEntries: async (_e, _en, _p, _id, entries) => {
-         dropped.push(...entries.map((e) => e.physicalTableName));
+      dropManifestEntries: async (
+         _e,
+         _en,
+         _p,
+         _id,
+         entries,
+         _ref,
+         _conn,
+         _views,
+         skipped,
+      ) => {
+         for (const e of entries) {
+            if (options.skip?.includes(e.physicalTableName)) {
+               skipped?.push(e);
+            } else {
+               dropped.push(e.physicalTableName);
+            }
+         }
          return entries.filter((e) => owe.includes(e.physicalTableName));
       },
       reclaimVersionTables: async () => undefined,
    });
-   await reclaimer.reclaimRenamedTables("e1", "pa", runId, {});
-   return { dropped, forgotten, records };
+   await reclaimer.reclaimRenamedTables("e1", "pa", runId, {}, async () => {
+      rebinds += 1;
+      return options.bound ?? true;
+   });
+   return { dropped, forgotten, records, rebinds };
 }
 
 const withRenamed = { mode: "auto", [RENAMED_TABLES_KEY]: [renamed] };
@@ -206,5 +228,44 @@ describe("reclaiming a table a readable name replaced", () => {
       const r = await reclaim([old, now], "now");
       expect(r.dropped).toEqual([]);
       expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toEqual([renamed]);
+   });
+
+   it("rebinds every loaded copy before a drop, and drops nothing while one does not rebind", async () => {
+      // A record an earlier run left (its own load failed, so a version it
+      // built may still read the old table), retried by a run that carried
+      // everything and rebound no other version itself.
+      const old = run("old", { a1: entry(OLD) });
+      const failedLoad = run(
+         "failed-load",
+         { a1: entry(NEW) },
+         { metadata: withRenamed },
+      );
+      const next = run("next", { a1: entry(NEW) });
+      const kept = await reclaim([old, failedLoad, next], "next", [], {
+         bound: false,
+      });
+      expect(kept.rebinds).toBe(1);
+      expect(kept.dropped).toEqual([]);
+      // Still recorded, for a run whose rebind succeeds.
+      expect(kept.records.get("failed-load")?.[RENAMED_TABLES_KEY]).toEqual([
+         renamed,
+      ]);
+      const done = await reclaim([old, failedLoad, next], "next");
+      expect(done.rebinds).toBe(1);
+      expect(done.dropped).toEqual([OLD]);
+   });
+
+   it("asks for no rebind when nothing passes the guards", async () => {
+      const now = run("now", { a1: entry(NEW) }, { metadata: withRenamed });
+      const r = await reclaim([now], "now");
+      expect(r.rebinds).toBe(0);
+   });
+
+   it("reads a table the drop left in place as kept: its boundary stays", async () => {
+      const old = run("old", { a1: entry(OLD) });
+      const now = run("now", { a1: entry(NEW) }, { metadata: withRenamed });
+      const r = await reclaim([old, now], "now", [], { skip: [OLD] });
+      expect(r.dropped).toEqual([]);
+      expect(r.forgotten).toEqual([]);
    });
 });

@@ -745,3 +745,65 @@ describe("a forced refresh (every scheduled fire)", () => {
       ]);
    });
 });
+
+describe("a recorded readable name another source now takes fresh", () => {
+   const legacy = Object.assign(
+      fakeSource({ name: "orders_legacy", sourceEntityId: "aaa" }),
+      { sourceID: "orders_legacy@file:///pkg/m.malloy" },
+   );
+   const fresh = Object.assign(
+      fakeSource({ name: "orders", sourceEntityId: "ccc" }),
+      { sourceID: "orders@file:///pkg/m.malloy" },
+   );
+   const naming: SelfTableNaming = { ...PKG, packagePath: "/pkg" };
+   // The table `orders` built at address `aaa`, before it was renamed.
+   const ordersTable = deriveSelfInstructions(
+      compiledWith({ fresh }, [["fresh"]]),
+      undefined,
+      {},
+      undefined,
+      naming,
+   ).instructions[0].physicalTableName;
+
+   for (const order of [
+      ["legacy", "fresh"],
+      ["fresh", "legacy"],
+   ]) {
+      it(`goes to that source, and the renamed one moves (${order.join(" then ")})`, () => {
+         // `orders` renamed to `orders_legacy` (same SQL, same address), and
+         // a new `orders` beside it.
+         const r = deriveSelfInstructions(
+            compiledWith({ legacy, fresh }, [order]),
+            undefined,
+            { aaa: prior(ordersTable, "aaa") },
+            undefined,
+            naming,
+         );
+         expect(r.refused).toEqual({});
+         expect(names(r)).toEqual({
+            ccc: ordersTable,
+            aaa: expect.stringMatching(/^pa__m__orders_legacy__p[0-9a-f]{8}$/),
+         });
+      });
+   }
+});
+
+describe("removing a name= under scope: version", () => {
+   it("changes the prefix, so the table takes its readable name", () => {
+      const c = compiledWith(
+         { named: fakeSource({ name: "named", sourceEntityId: "a2" }) },
+         [["named"]],
+      );
+      const r = deriveSelfInstructions(
+         {
+            ...c,
+            sourceModelPaths: { named: "models/sales.malloy" },
+         },
+         undefined,
+         { a2: prior("named_t__v1_2_0__p0123abcd", "a2") },
+         undefined,
+         V120,
+      );
+      expect(names(r).a2).toMatch(/^pa__sales__named__v1_2_0__p[0-9a-f]{8}$/);
+   });
+});

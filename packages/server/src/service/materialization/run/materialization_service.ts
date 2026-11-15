@@ -1098,8 +1098,10 @@ export class MaterializationService {
          }
          // Once nothing loaded reads them, the tables readable names replaced
          // (this run's, and any an earlier run could not finish). Only after
-         // every loaded copy is bound to this run: one that failed to rebind
-         // still reads the old table.
+         // this run's own load took, and, before any drop, once every loaded
+         // copy of the package has rebound from the store: one that did not
+         // (a version an earlier run's failed load left on the old table)
+         // still reads it.
          if (!orchestrated) {
             if (bound) {
                await this.reclaimer.reclaimRenamedTables(
@@ -1107,6 +1109,11 @@ export class MaterializationService {
                   packageName,
                   id,
                   reader,
+                  () =>
+                     this.committer.rebindLoadedVersions(
+                        environmentName,
+                        packageName,
+                     ),
                );
             } else if (renamed.length > 0) {
                logger.warn(

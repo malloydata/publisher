@@ -445,6 +445,10 @@ export class Reclaimer {
       // The `name=` views earlier releases recorded, dropped with the tables
       // they read (leftover_name_views.ts).
       nameViews?: RecordedNameView[],
+      // Filled with the entries left in place without a drop (still
+      // referenced, another package's now, or in an unloaded version's
+      // in-memory duckdb), for a caller that must not read them as dropped.
+      skipped?: ManifestEntry[],
    ): Promise<ManifestEntry[]> {
       const m = { id: materializationId };
       const connectionCache = new Map<string, MalloyConnection>();
@@ -512,6 +516,7 @@ export class Reclaimer {
                   destination: destForKey,
                },
             );
+            skipped?.push(entry);
             continue;
          }
 
@@ -538,6 +543,7 @@ export class Reclaimer {
                   markedBy,
                },
             );
+            skipped?.push(entry);
             continue;
          }
 
@@ -608,6 +614,7 @@ export class Reclaimer {
                   "Skipping drop: the table lived in an unloaded version's in-memory duckdb",
                   { materializationId: m.id, physicalTableName },
                );
+               skipped?.push(entry);
                continue;
             }
             // Quoted as buildOneSource quoted it, so what built also drops.
@@ -702,6 +709,13 @@ export class Reclaimer {
       packageName: string,
       runId: string,
       reader: ServingReader,
+      /**
+       * Rebind every loaded copy of the package from the store, answering
+       * whether each now reads it; asked before any drop, since a table an
+       * earlier run recorded may still be read by a copy this run did not
+       * rebind.
+       */
+      ensureBound: () => Promise<boolean>,
    ): Promise<void> {
       try {
          const environmentId = await this.resolveEnvironmentId(environmentName);
@@ -747,6 +761,14 @@ export class Reclaimer {
             });
          }
          let owed: ManifestEntry[] = [];
+         const skipped: ManifestEntry[] = [];
+         if (reclaimable.length > 0 && !(await ensureBound())) {
+            logger.warn(
+               "Keeping the tables readable names replaced: a loaded copy of the package did not rebind",
+               { packageName },
+            );
+            return;
+         }
          if (reclaimable.length > 0) {
             const environment = await this.deps.host.getEnvironment(
                parseEnvironmentName(environmentName),
@@ -765,8 +787,19 @@ export class Reclaimer {
                   packageName,
                   reader.versionId ?? null,
                ),
+               undefined,
+               skipped,
             );
          }
+         const skippedKeys = new Set(
+            skipped.map((e) =>
+               renamedKey({
+                  previousName: e.physicalTableName,
+                  connectionName: e.connectionName ?? "",
+                  storageDestinationName: e.storageDestinationName,
+               }),
+            ),
+         );
          const owedKeys = new Set(
             owed.map((e) =>
                renamedKey({
@@ -788,7 +821,8 @@ export class Reclaimer {
                connectionName: entry.connectionName ?? "",
                storageDestinationName: entry.storageDestinationName,
             });
-            if (owedKeys.has(key)) continue;
+            // Owed, or left in place by the drop: not dropped.
+            if (owedKeys.has(key) || skippedKeys.has(key)) continue;
             await this.repository
                .deleteIncrementalLedgerEntry(environmentId, {
                   connectionName: entry.connectionName ?? "",

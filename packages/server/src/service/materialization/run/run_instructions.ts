@@ -338,7 +338,8 @@ const READABLE_TAIL = /__p[0-9a-f]{8}$/;
  * `fresh`: when `recorded` is a readable name this scheme gave it (all
  * sanitized, ending `__p<8 hex>`, under this run's version, if any), in the
  * same container. A `name=` under `scope: version` sets the name's prefix, so
- * its table keeps its name only while that prefix is the same.
+ * its table keeps its name only while that prefix is the same, and removing
+ * the `name=` changes it.
  */
 function keepsReadableName(
    recorded: string,
@@ -364,6 +365,11 @@ function keepsReadableName(
       if (!head(was.leaf).endsWith(version)) return false;
       if (hasAuthorTableName(compiled, persistSource)) {
          return head(was.leaf) === head(now.leaf);
+      }
+      // A recorded name with no `__` before its version was a `name=`
+      // prefix: the `name=` is gone, so the prefix changed.
+      if (!head(was.leaf).slice(0, -version.length).includes("__")) {
+         return false;
       }
    }
    return true;
@@ -454,10 +460,11 @@ function tableNameCollision(
  * `cleared` names the tier each source passed the gate for, so the build loop
  * consults that verdict rather than walking the source again.
  *
- * A source whose readable name is another address's (only a hash collision
- * can do it: the package's collision check refuses every other case before a
- * run) is not built, and serves live: two sources never write one table. It
- * is returned in `refused`, `table_name_collision`.
+ * A source whose readable name is another address's (two sources of one
+ * model that share a name, or a hash collision) is not built, and serves
+ * live: two sources never write one table. It is returned in `refused`,
+ * `table_name_collision`. A recorded name another address takes fresh is
+ * never kept (see takenByAnother), so a sticky name does not cause one.
  */
 export function deriveSelfInstructions(
    compiled: CompiledBuildPlan,
@@ -494,6 +501,47 @@ export function deriveSelfInstructions(
       include,
    );
    const namers = namingSources(compiled, sources, naming?.packagePath);
+   // Each address's fresh name, and which addresses take each one fresh: a
+   // table keeps a recorded name only while no other address takes it fresh,
+   // so a source renamed beside a new source of its old name never locks the
+   // new one out of its table.
+   const freshNames = new Map<string, string>();
+   const takenFresh = new Map<string, Set<string>>();
+   for (const { persistSource, sourceEntityId, destination } of sources) {
+      if (freshNames.has(sourceEntityId)) continue;
+      const fresh = selfTableName(
+         compiled,
+         persistSource,
+         namers.get(sourceEntityId) ?? persistSource,
+         destination,
+         naming,
+      );
+      freshNames.set(sourceEntityId, fresh);
+      const key = tableKeyOf(
+         persistSource.connectionName,
+         destination,
+         tableIdentity(fresh),
+      );
+      takenFresh.set(
+         key,
+         (takenFresh.get(key) ?? new Set()).add(sourceEntityId),
+      );
+   }
+   const takenByAnother = (
+      persistSource: PersistSource,
+      destination: string | undefined,
+      name: string,
+      sourceEntityId: string,
+   ) =>
+      [
+         ...(takenFresh.get(
+            tableKeyOf(
+               persistSource.connectionName,
+               destination,
+               tableIdentity(name),
+            ),
+         ) ?? []),
+      ].some((address) => address !== sourceEntityId);
    const seen = new Set<string>();
    // Readable names this run writes, by where they live, and whose.
    const derived = new Map<string, string>();
@@ -514,13 +562,7 @@ export function deriveSelfInstructions(
       const sameDestination =
          !!prior?.physicalTableName &&
          (prior.storageDestinationName ?? undefined) === destination;
-      const fresh = selfTableName(
-         compiled,
-         persistSource,
-         namers.get(sourceEntityId) ?? persistSource,
-         destination,
-         naming,
-      );
+      const fresh = freshNames.get(sourceEntityId)!;
       // The table an earlier run built under the name Publisher gave it
       // before readable names (see previousTableName).
       const previous =
@@ -545,6 +587,12 @@ export function deriveSelfInstructions(
             naming,
             compiled,
             persistSource,
+         ) &&
+         !takenByAnother(
+            persistSource,
+            destination,
+            prior!.physicalTableName,
+            sourceEntityId,
          )
             ? prior!.physicalTableName
             : fresh;
