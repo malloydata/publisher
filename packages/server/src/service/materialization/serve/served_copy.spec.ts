@@ -445,6 +445,30 @@ source: raw is duckdb.sql("""SELECT region, amount FROM t""") include {
       ).toMatchObject({ connectionRooted: true, connectionBased: true });
    });
 
+   it("refuses a kept include that hides a column the table does not store, naming it", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT r, total, id FROM t""") include {
+  public: r, total
+  #(doc) "kept out of the table"
+  private: id
+  internal: \`r\`
+}
+`;
+      expect(
+         buildServedCopy(
+            [reroot(raw, "raw", { keepsIncludes: true })],
+            () => raw,
+         ).refused,
+      ).toEqual([
+         {
+            sourceName: "raw",
+            url: "file:///m.malloy",
+            reason: "definition_not_parsed",
+            hiddenUnstored: ["id"],
+         },
+      ]);
+   });
+
    it("refuses every re-root of a file it cannot read", () => {
       const copy = buildServedCopy([reroot(file, "daily")], () => undefined);
       expect(copy.refused.map((r) => r.reason)).toEqual(["range_not_found"]);

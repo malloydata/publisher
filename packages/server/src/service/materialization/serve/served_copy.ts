@@ -50,6 +50,7 @@ import {
    declaredBaseName,
    dropDimensions,
    dropExceptItems,
+   hiddenIncludeNames,
    inverseRenameBlocks,
    inverselyRenamedColumns,
    rewriteDimensions,
@@ -571,15 +572,21 @@ interface RerootRefusal {
     * would drop its base's `where:`. It is left as written; it still inherits
     * a re-rooted base by name.
     *
-    * `definition_not_parsed`: the declaration could not be read, or its base
+    * `definition_not_parsed`: the declaration could not be read, its base
     * is a connection's table or SQL followed by something the re-root does
-    * not keep.
+    * not keep, or the `include { … }` it keeps hides a column its table does
+    * not store ({@link hiddenUnstored}).
     */
    reason:
       | "range_not_found"
       | "definition_not_parsed"
       | "not_query_shaped"
       | "pair_join_not_found";
+   /**
+    * With `definition_not_parsed`: the columns the declaration's kept
+    * `include { … }` hides that its table does not store.
+    */
+   hiddenUnstored?: string[];
 }
 
 /**
@@ -702,6 +709,25 @@ export function buildServedCopy(
                reason: spans.connectionBased
                   ? "definition_not_parsed"
                   : "not_query_shaped",
+            });
+            continue;
+         }
+         // A kept `include { … }` that hides a column the table does not
+         // store (a v1 `storage=` table stores public columns only) cannot
+         // compile on it: refused before the re-root, saying why.
+         const hiddenUnstored =
+            r.keepsIncludes && spans?.extendStart !== undefined
+               ? (
+                    hiddenIncludeNames(declaration.slice(spans.extendStart)) ??
+                    []
+                 ).filter((n) => !r.columns.some((c) => c.name === n))
+               : [];
+         if (hiddenUnstored.length > 0) {
+            refused.push({
+               sourceName: r.sourceName,
+               url,
+               reason: "definition_not_parsed",
+               hiddenUnstored,
             });
             continue;
          }

@@ -543,6 +543,45 @@ export function documentFlagLines(text: string): string[] {
 }
 
 /**
+ * The names a run of trailing blocks (`include { … } extend { … }`, a
+ * declaration's text after its base) hides in a top-level `include { … }`,
+ * under `private:` or `internal:`, that it names nowhere else: a column the
+ * stored table must hold for the kept block to compile, since nothing in the
+ * run defines it (a `rename:`, a dimension). Undefined when the text does not
+ * lex.
+ */
+export function hiddenIncludeNames(run: string): string[] | undefined {
+   const tokens = lexAll(run);
+   if (!tokens) return undefined;
+   const nameOf = (t: Token) =>
+      t.text.startsWith("`") ? t.text.slice(1, -1) : t.text;
+   const hidden: number[] = [];
+   for (let k = 0; k + 1 < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.depth !== 0 || t.kind !== "word" || t.text !== "include") continue;
+      if (tokens[k + 1].text !== "{") continue;
+      let label: string | undefined;
+      for (let j = k + 2; j < tokens.length && tokens[j].depth > 0; j++) {
+         const u = tokens[j];
+         if (u.depth !== 1 || !isName(u)) continue;
+         const colon = tokens[j + 1];
+         if (colon?.text === ":" && colon.start === u.end) {
+            label = u.text;
+            j++;
+            continue;
+         }
+         if (label === "private" || label === "internal") hidden.push(j);
+      }
+   }
+   const elsewhere = new Set(
+      tokens.flatMap((t, k) =>
+         isName(t) && !hidden.includes(k) ? [nameOf(t)] : [],
+      ),
+   );
+   return hidden.map((k) => nameOf(tokens[k])).filter((n) => !elsewhere.has(n));
+}
+
+/**
  * In a run of `extend { … }` blocks, delete each `except:` item of a
  * top-level block's own statement that `removable` accepts, and an `except:`
  * statement left with no item. For a

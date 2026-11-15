@@ -2469,6 +2469,15 @@ function servedCopyProblemMessage(
          return "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.";
       case "range_not_found":
       case "definition_not_parsed":
+         if (problem.hiddenUnstored?.length) {
+            return (
+               "This source's `include` hides " +
+               problem.hiddenUnstored.map((c) => "`" + c + "`").join(", ") +
+               " (private or internal), which its v1 `storage=` table does not store: such a table stores " +
+               "public columns only. The served copy leaves the source as written, so it answers live. " +
+               "To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`."
+            );
+         }
          return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
       case "pair_join_not_found":
          return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
