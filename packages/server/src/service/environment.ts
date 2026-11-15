@@ -40,7 +40,10 @@ import {
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
-import { withPackageRelativeErrors } from "../package_relative_text";
+import {
+   withoutAbsolutePaths,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -4120,7 +4123,7 @@ export class Environment {
 
    /** Every change to a package's phase or problems goes through here. */
    private transition(packageName: string, event: PackageLifecycleEvent): void {
-      this.lifecycle.apply(packageName, event);
+      this.lifecycle.apply(packageName, callerVisibleEvent(event));
    }
 
    public async deletePackage(
@@ -4558,5 +4561,32 @@ function servingVerdicts(pkg: Package | undefined): {
          error: error instanceof Error ? error.message : String(error),
       });
       return {};
+   }
+}
+
+/**
+ * `event` with the message it records (a load, mount or stale-reload error,
+ * read back by /status `loadErrors`, MCP `get_status` and `list_packages`)
+ * naming no server path. A load error is already package-relative; this is
+ * the backstop for every other record, such as a configured location that
+ * did not mount.
+ */
+function callerVisibleEvent(
+   event: PackageLifecycleEvent,
+): PackageLifecycleEvent {
+   switch (event.type) {
+      case "recordLoadError":
+      case "recordMountError":
+         return { ...event, message: withoutAbsolutePaths(event.message) };
+      case "reloadFailed":
+         return {
+            ...event,
+            stale: {
+               ...event.stale,
+               message: withoutAbsolutePaths(event.stale.message),
+            },
+         };
+      default:
+         return event;
    }
 }

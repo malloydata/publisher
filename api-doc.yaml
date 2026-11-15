@@ -10244,8 +10244,12 @@ components:
             url:
               type: string
               description: >-
-                The source file: a package file's path relative to the package
-                root (`orders.malloy`), never where the server keeps it.
+                The source file, never where the server keeps it: a package
+                file's path relative to the package root, decoded
+                (`sub dir/orders.malloy`). At scope `append` the problem points
+                into a temporary compile-check overlay beside the model,
+                `__compile_check.malloy` (`model` names the model it extends).
+                A file outside the package reads `<outside package>`.
             range:
               type: object
               description: Character range within the source file

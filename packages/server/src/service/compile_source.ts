@@ -35,6 +35,8 @@ import {
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
 import {
+   callerVisibleText,
+   OUTSIDE_PACKAGE,
    packageRelativeText,
    withPackageRelativeErrors,
 } from "../package_relative_text";
@@ -279,8 +281,10 @@ export async function compileSource(
 }
 
 /**
- * `problem` with its message and its `at.url` naming the package's files
- * package-relative: `file:///srv/data/env/pkg/m.malloy` reads `m.malloy`.
+ * `problem` as a caller may read it: its message naming the package's files
+ * package-relative, and its `at.url` a package file's path relative to the
+ * package root, decoded (`sub dir/a b.malloy`, not `sub%20dir/…`), or
+ * {@link OUTSIDE_PACKAGE} for a file outside the package.
  */
 function packageRelativeProblem(
    problem: TaggedLogMessage,
@@ -289,11 +293,24 @@ function packageRelativeProblem(
    const at = (problem as { at?: { url?: string } }).at;
    return {
       ...problem,
-      message: packageRelativeText(problem.message, packagePath),
+      message: callerVisibleText(problem.message, packagePath),
       ...(at?.url !== undefined && {
-         at: { ...at, url: packageRelativeText(at.url, packagePath) },
+         at: { ...at, url: callerVisibleUrl(at.url, packagePath) },
       }),
    } as TaggedLogMessage;
+}
+
+function callerVisibleUrl(url: string, packagePath: string): string {
+   if (!url.toLowerCase().startsWith("file:")) {
+      return callerVisibleText(url, packagePath);
+   }
+   const relative = packageRelativeText(url, packagePath);
+   if (relative.toLowerCase().startsWith("file:")) return OUTSIDE_PACKAGE;
+   try {
+      return decodeURIComponent(relative);
+   } catch {
+      return relative;
+   }
 }
 
 /** The argument checks every scope runs before taking the package lock. */

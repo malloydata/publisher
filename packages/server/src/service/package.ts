@@ -186,7 +186,11 @@ import {
 import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
-import { withPackageRelativeErrors } from "../package_relative_text";
+import {
+   callerVisibleText,
+   rewriteErrorMessage,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import {
    PackageModelPolicy,
    type OffSurfaceContext,
@@ -1093,6 +1097,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
       const timings = { hydrateMs: 0, renderValidationMs: 0 };
+      // A model's compile error is read by every caller of the package (a
+      // query's 424, get_context, the package's warnings): it names the
+      // package's files package-relative and no other server path, whether
+      // it is thrown or kept on a placeholder.
+      const callerVisible = (err: Error): Error => {
+         rewriteErrorMessage(err, (message) =>
+            callerVisibleText(message, packagePath),
+         );
+         return err;
+      };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -1101,7 +1115,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             packageName,
             sm.modelPath,
             sm.modelType,
-            err,
+            callerVisible(err),
             {
                policy: ctx.modelPolicy.forModel(sm.modelPath),
                sourceText:
@@ -1116,7 +1130,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       for (const sm of outcome.models) {
          await yielder.maybeYield();
          if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
+            const err = callerVisible(
+               Model.deserializeCompilationError(sm.compilationError),
+            );
             if (onCompileError === "throw") {
                logger.error("Model compilation failed", {
                   packageName,
@@ -2627,14 +2643,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * models, which a fresh package has none of yet.
     */
    public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
-      // A recompile that fails names the files package-relative, as a load's
-      // failure does.
-      return withPackageRelativeErrors(this.packagePath, () =>
-         this.recompileAllModels(entries),
-      );
-   }
-
-   private async recompileAllModels(entries: FreshnessManifest): Promise<void> {
       // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
       const buildManifest = toTableNameManifest(entries);

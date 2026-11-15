@@ -102,13 +102,71 @@ function escapeRegExp(text: string): string {
    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** What a path outside the package reads as in a caller-visible message. */
+export const OUTSIDE_PACKAGE = "<outside package>";
+
+// A `file:` URL, to the end of its token.
+const FILE_URL = /file:\/\/[^\s'"`<>|]+/gi;
+// An absolute POSIX path of two or more segments, not the tail of a longer
+// token (`a/b/c`, `../q/x`, `https://h/p`, `1/2/3` are not one).
+const POSIX_ABSOLUTE = /(?<![\w.:/\\~@%+-])\/(?:[\w.@%+~-]+\/)+[\w.@%+~-]*/g;
+// An absolute Windows path: a drive and a separator, or a UNC share.
+const WINDOWS_ABSOLUTE =
+   /(?<![\w.:/\\-])(?:[A-Za-z]:[\\/]|\\\\)(?:[^\s'"`<>|*?:\\/]+[\\/])*[^\s'"`<>|*?:\\/]*/g;
+
+/**
+ * `text` as a caller may read it: the package's own files package-relative
+ * ({@link packageRelativeText}), and every other absolute path or `file:` URL
+ * (another package, the environment's folder, the server root, a configured
+ * location) replaced by {@link OUTSIDE_PACKAGE}. A message that reaches an API
+ * caller must not tell them where this server keeps anything.
+ */
+export function callerVisibleText(
+   text: string,
+   packagePath: string | undefined,
+   pathModule: PathModule = path,
+): string {
+   if (!text) return text;
+   const relative = packagePath
+      ? packageRelativeText(text, packagePath, pathModule)
+      : text;
+   return withoutAbsolutePaths(relative);
+}
+
+/** `text` with every absolute path and `file:` URL read {@link OUTSIDE_PACKAGE}. */
+export function withoutAbsolutePaths(text: string): string {
+   if (!text) return text;
+   return text
+      .replace(FILE_URL, OUTSIDE_PACKAGE)
+      .replace(WINDOWS_ABSOLUTE, OUTSIDE_PACKAGE)
+      .replace(POSIX_ABSOLUTE, OUTSIDE_PACKAGE);
+}
+
+/**
+ * Rewrite `error`'s message in place with `rewrite`. An error whose message
+ * cannot be written (frozen, or a getter) is left as it is: the rewrite must
+ * never replace the error it describes with one of its own.
+ */
+export function rewriteErrorMessage(
+   error: unknown,
+   rewrite: (message: string) => string,
+): void {
+   if (!(error instanceof Error)) return;
+   try {
+      error.message = rewrite(error.message);
+   } catch {
+      // Not writable: the original error is the answer.
+   }
+}
+
 /**
  * Run `load`, and if it throws, name the package's files package-relative in
- * the error's message before rethrowing it. The one wrapper every package
- * load goes through (a boot, a reload, a published version, a staged
- * publish), so no surface that reports the failure (/status `loadErrors`,
- * the package resource, a publish or reload answer, MCP) can tell its reader
- * where this server keeps its files, and no load path can drift from another.
+ * the error's message, and any other server path as outside the package,
+ * before rethrowing it. The one wrapper every package load goes through (a
+ * boot, a reload, a published version, a staged publish), so no surface that
+ * reports the failure (/status `loadErrors`, the package resource, a publish
+ * or reload answer, MCP) can tell its reader where this server keeps its
+ * files, and no load path can drift from another.
  */
 export async function withPackageRelativeErrors<T>(
    packagePath: string,
@@ -117,9 +175,9 @@ export async function withPackageRelativeErrors<T>(
    try {
       return await load();
    } catch (error) {
-      if (error instanceof Error) {
-         error.message = packageRelativeText(error.message, packagePath);
-      }
+      rewriteErrorMessage(error, (message) =>
+         callerVisibleText(message, packagePath),
+      );
       throw error;
    }
 }
