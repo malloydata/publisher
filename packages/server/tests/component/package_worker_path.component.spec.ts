@@ -1004,7 +1004,8 @@ run: mid_ungated -> { aggregate: c }`,
       [
          "JSON that is not an object",
          `["pkg"]`,
-         /Invalid publisher\.json: expected a JSON object, got \["pkg"\]/,
+         // The kind of value, never the value: the file is not quoted.
+         /Invalid publisher\.json: expected a JSON object, got an array\./,
       ],
       [
          "an unknown retrieval key",

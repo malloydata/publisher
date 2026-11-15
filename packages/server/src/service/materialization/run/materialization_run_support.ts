@@ -620,6 +620,12 @@ export interface BuildEnvironment {
     * and recomputes, or under strict upstreams refuses.
     */
    chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The root of the package being built, which the build's reads of author
+    * files stay inside. Absent in test doubles: those reads are then confined
+    * to the files the model compiled from alone.
+    */
+   getPackagePath?(): string;
 }
 
 /**
@@ -628,7 +634,10 @@ export interface BuildEnvironment {
  */
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
-   pkg: { chainBuildText?(request: ChainBuildRequest): ChainBuildText },
+   pkg: {
+      chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+      getPackagePath?(): string;
+   },
    /**
     * Whether the package serves a model older than its files (a reload that
     * did not compile), asked at each build: its files are not what the plan's
@@ -636,8 +645,13 @@ export function withChainBuildText<E extends BuildEnvironment>(
     */
    isStale: () => boolean = () => false,
 ): E {
-   if (!pkg.chainBuildText) return environment;
+   if (!pkg.chainBuildText && !pkg.getPackagePath) return environment;
    const scoped = Object.create(environment) as E;
+   if (pkg.getPackagePath) {
+      const packagePath = pkg.getPackagePath();
+      scoped.getPackagePath = () => packagePath;
+   }
+   if (!pkg.chainBuildText) return scoped;
    scoped.chainBuildText = (request) =>
       isStale()
          ? {

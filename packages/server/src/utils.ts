@@ -173,8 +173,8 @@ export async function readPackageURL(
    );
 }
 
-/** {@link readPackageURL}, synchronously, for the synchronous text readers. */
-export function readPackageURLSync(
+/** {@link confinedPackagePath}, synchronously. */
+export function confinedPackagePathSync(
    packageRoot: string,
    url: URL | string,
 ): string {
@@ -188,7 +188,15 @@ export function readPackageURLSync(
    refuseLexically(packageRoot, realRoot, filePath);
    const realFile = resolveThroughLinksSync(filePath);
    if (!within(realRoot, realFile)) throw new ImportOutsidePackageError();
-   return fs.readFileSync(realFile, "utf8");
+   return realFile;
+}
+
+/** {@link readPackageURL}, synchronously, for the synchronous text readers. */
+export function readPackageURLSync(
+   packageRoot: string,
+   url: URL | string,
+): string {
+   return fs.readFileSync(confinedPackagePathSync(packageRoot, url), "utf8");
 }
 
 /**
@@ -325,10 +333,11 @@ export function packageURLReader(packageRoot: string): URLReader {
 /**
  * Every file in the package at `root`, by absolute path, dotfiles and dot
  * directories left out. A directory reached through a symlink is walked only
- * when its realpath is inside the package (each once), so a link out of the
- * package lists nothing of what lies outside it. A link to a file, dangling or
- * not, is listed as a file: the compile reads it through the package's reader,
- * which refuses one that leads out, the same whether or not its target exists.
+ * when its realpath is inside the package (each once). Every other link is
+ * listed as a file, whatever it leads to (a file or a directory outside the
+ * package, or nothing), so nothing outside is listed and the load answers the
+ * same for each: the compile reads a model path through the package's reader,
+ * which refuses one that leads out.
  */
 export async function listPackageTree(root: string): Promise<string[]> {
    const realRoot = await fs.promises.realpath(root);
@@ -349,7 +358,13 @@ export async function listPackageTree(root: string): Promise<string[]> {
                continue;
             }
             const real = await fs.promises.realpath(full);
-            if (!within(realRoot, real) || walked.has(real)) continue;
+            if (!within(realRoot, real)) {
+               // Listed like any link out, so the load answers the same
+               // whatever it leads to: a model path is refused at compile.
+               files.push(full);
+               continue;
+            }
+            if (walked.has(real)) continue;
             walked.add(real);
             await visit(full);
          } else {

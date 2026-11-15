@@ -107,6 +107,20 @@ Concretely:
   compiler, not the query: SQL a model runs through DuckDB (`read_text`, `read_blob`,
   `read_csv`, `read_parquet`) reaches the filesystem through the connection and is not confined
   by this rule (see gap 6), which remains the larger open hole for a package author.
+- **A package's `publisher.json` is read and written only as a file inside the package.** A
+  manifest that is a link out of the package, to anything or to nothing, a directory, or a file
+  Publisher cannot read, gets one answer, that the manifest does not exist, and none of what it
+  leads to is echoed: an invalid manifest's error names the kind of value, never the value or
+  the parser's quote of it. The versioned publish reads the declared version the same way. A
+  PATCH never writes through a link: a `publisher.json` that is a symlink is refused with 400,
+  and a plain one is replaced through a temporary file and a rename, so a link that appears in
+  between is replaced rather than followed. A report write (`PUT …/models/{path}`) onto a link
+  planted at the file, or onto a dangling link on the way to it, is refused with the answer a
+  link out of the package gets, before anything about where it leads is looked at.
+- **A copied package keeps its links as written.** Every copy of a package tree (an install
+  from a local location, an environment's packages at boot) copies a symlink verbatim, so a
+  relative link inside the package still leads inside the copy, and is served, rather than
+  being rewritten to an absolute path back into the source, which the rule above refuses.
 - **Registering a package is an operator action.** Packages come from `publisher.config.json` or a
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker

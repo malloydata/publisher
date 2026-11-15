@@ -73,6 +73,8 @@ interface ModelStorageTables {
 export function modelStorageTables(
    bindings: readonly Binding[],
    modelDef: ModelDef | undefined,
+   /** The package's root, which the model's files are read inside. */
+   packageRoot?: string,
 ): ModelStorageTables {
    const stored = bindings.filter(
       (b) => b.kind === "persist" && b.tier === "storage",
@@ -80,7 +82,7 @@ export function modelStorageTables(
    if (stored.length === 0) {
       return { kept: [], shadowed: [], mismatches: [], findings: [] };
    }
-   const { contents } = authorModelLift(modelDef);
+   const { contents } = authorModelLift(modelDef, packageRoot);
    const { kept, shadowed } = ownBindingsIn(stored, contents);
    const mismatches: SourceTypeMismatches[] = [];
    const findings: BindingTypeFinding[] = [];
@@ -123,11 +125,15 @@ export function modelStorageTables(
 export function ownBindings(
    bindings: readonly Binding[],
    modelDef: ModelDef | undefined,
+   packageRoot?: string,
 ): { kept: Binding[]; shadowed: string[] } {
    if (!bindings.some((b) => b.sourceIDs)) {
       return { kept: [...bindings], shadowed: [] };
    }
-   return ownBindingsIn(bindings, authorModelLift(modelDef).contents);
+   return ownBindingsIn(
+      bindings,
+      authorModelLift(modelDef, packageRoot).contents,
+   );
 }
 
 function ownBindingsIn(
@@ -148,10 +154,16 @@ function ownBindingsIn(
  * contents, not the model's: they also hold the hidden dependencies from
  * `sourceRegistry`, which `contents` leaves out.
  */
-function authorModelLift(modelDef: ModelDef | undefined): {
+function authorModelLift(
+   modelDef: ModelDef | undefined,
+   packageRoot?: string,
+): {
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
 } {
-   return authorModelLiftContext(modelDef, compiledTextReader(modelDef));
+   return authorModelLiftContext(
+      modelDef,
+      compiledTextReader(modelDef, packageRoot),
+   );
 }
 
 /**

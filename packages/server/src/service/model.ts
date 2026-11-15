@@ -2793,7 +2793,11 @@ export class Model {
       ) {
          return memo.tables;
       }
-      const tables = modelStorageTables(snapshot.bindings, this.modelDef);
+      const tables = modelStorageTables(
+         snapshot.bindings,
+         this.modelDef,
+         this.servedCopyContext?.[0],
+      );
       this.storageTablesMemo = {
          bindings: snapshot.bindings,
          modelDef: this.modelDef,
@@ -2946,6 +2950,7 @@ export class Model {
       const stored = ownBindings(
          bindings.filter((b) => b.kind !== "rollup"),
          this.modelDef,
+         this.servedCopyContext[0],
       ).kept;
       if (stored.length === 0) return out;
       const pinned = pin(makeSnapshot(stored), new Date(0));

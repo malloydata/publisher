@@ -102,7 +102,12 @@ import type {
    ChainBuildRequest,
    ChainBuildText,
 } from "./materialization/domain/chain_build";
-import { errMessage, listPackageTree, readPackageURL } from "../utils";
+import {
+   confinedPackagePath,
+   errMessage,
+   listPackageTree,
+   readPackageURL,
+} from "../utils";
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
@@ -1391,9 +1396,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                // because `#@ persist` cannot appear in a `.malloynb`; widen this
                // if that changes, to keep the identifier-injection check.
                if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-                  const modelSource = await fs.readFile(
-                     path.join(packagePath, sm.modelPath),
-                     "utf-8",
+                  const modelSource = await readPackageURL(
+                     packagePath,
+                     pathToFileURL(path.join(packagePath, sm.modelPath)),
                   );
                   assertPersistNamesQuoted(modelSource, sm.modelPath);
                }
@@ -3600,17 +3605,34 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          packagePath,
          PACKAGE_MANIFEST_NAME,
       );
+      // One answer for every manifest Publisher will not read: missing, a
+      // link out of the package (whatever it leads to, or nothing), or not a
+      // file. So the manifest cannot tell what lies outside the package.
+      const notThere = () => {
+         logger.error(`Can't find ${packageConfigPath}`);
+         return new PackageNotFoundError(
+            `Package manifest for ${packagePath} does not exist.`,
+         );
+      };
+      let real: string;
       try {
-         await fs.stat(packageConfigPath);
+         real = await confinedPackagePath(
+            packagePath,
+            pathToFileURL(packageConfigPath),
+         );
+      } catch {
+         throw notThere();
+      }
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+         stat = await fs.stat(real);
       } catch (error) {
          // Only ENOENT/ENOTDIR mean "does not exist"; an EACCES is rethrown as itself.
          const code = (error as NodeJS.ErrnoException).code;
          if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-         logger.error(`Can't find ${packageConfigPath}`);
-         throw new PackageNotFoundError(
-            `Package manifest for ${packagePath} does not exist.`,
-         );
+         throw notThere();
       }
+      if (!stat.isFile()) throw notThere();
    }
 
    private static async readDatabases(

@@ -229,7 +229,7 @@ describe("readPackageURLSync and packageTextReader", () => {
 });
 
 describe("listPackageTree", () => {
-   it("lists the package's files, a dangling link among them, and nothing behind a directory link out", async () => {
+   it("lists the package's files, every link out as itself, and nothing behind one", async () => {
       const listed = (await listPackageTree(pkg))
          .map((p) => path.relative(pkg, p))
          .sort();
@@ -239,6 +239,8 @@ describe("listPackageTree", () => {
          "gone",
          "models/a.malloy",
          "models/sub/b.malloy",
+         // The directory link out, listed as itself: nothing behind it.
+         "out",
          "top.malloy",
       ]);
    });

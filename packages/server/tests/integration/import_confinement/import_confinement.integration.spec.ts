@@ -498,5 +498,127 @@ describe("a model or notebook file that is itself a link out of the package", ()
       expect(dangling.text.replaceAll("mlinx", "<pkg>")).toBe(
          refused.text.replaceAll("mlink", "<pkg>"),
       );
+      // A directory outside, linked under a model's name, is listed and
+      // refused the same way: its existence does not decide whether it loads.
+      fs.mkdirSync(path.join(secrets, "dir.malloy"), { recursive: true });
+      const directory = await publishing(
+         "mlinz",
+         linkedPackage(
+            "mlinz",
+            "leak.malloy",
+            path.join(secrets, "dir.malloy"),
+         ),
+      );
+      expectRefusedImport(directory);
+      expect(directory.text.replaceAll("mlinz", "<pkg>")).toBe(
+         refused.text.replaceAll("mlink", "<pkg>"),
+      );
+   });
+
+   it("loads a package with a directory link out under a name that is not a model, as one with a link to nothing", async () => {
+      fs.mkdirSync(path.join(secrets, "adir"), { recursive: true });
+      for (const [folder, target] of [
+         ["dlink1", path.join(secrets, "adir")],
+         ["dlink2", path.join(secrets, "nope")],
+      ]) {
+         expect(
+            await publish(folder, linkedPackage(folder, "lib", target)),
+         ).toBe(200);
+      }
+   });
+});
+
+describe("publisher.json that is a link out of the package", () => {
+   const MARKER = "TOPSECRET-MANIFEST";
+   let outside = "";
+   beforeAll(() => {
+      outside = path.join(root, "manifests");
+      fs.mkdirSync(path.join(outside, "dir"), { recursive: true });
+      fs.writeFileSync(
+         path.join(outside, "array.json"),
+         JSON.stringify([MARKER, MARKER]),
+      );
+      fs.writeFileSync(
+         path.join(outside, "objct.json"),
+         JSON.stringify({ name: "x", description: MARKER }),
+      );
+      fs.writeFileSync(
+         path.join(outside, "dened.json"),
+         JSON.stringify({ name: "x", description: MARKER }),
+      );
+      fs.chmodSync(path.join(outside, "dened.json"), 0);
+   });
+   afterAll(() => {
+      fs.chmodSync(path.join(outside, "dened.json"), 0o644);
+   });
+
+   /** A package whose publisher.json is a link to `target`. */
+   function linkedManifest(folder: string, target: string): string {
+      const dir = writePackage(folder, { "ok.malloy": BASE });
+      fs.rmSync(path.join(dir, "publisher.json"));
+      fs.symlinkSync(target, path.join(dir, "publisher.json"));
+      return dir;
+   }
+
+   it("refuses every one identically, naming none of what it leads to", async () => {
+      // Package names and targets of one length, so the answers can match.
+      const cases: [string, string][] = [
+         ["pjarr", path.join(outside, "array.json")],
+         ["pjobj", path.join(outside, "objct.json")],
+         ["pjmis", path.join(outside, "absnt.json")],
+         ["pjdir", path.join(outside, "dir")],
+         ["pjden", path.join(outside, "dened.json")],
+      ];
+      const answers: string[] = [];
+      for (const [folder, target] of cases) {
+         const refused = await publishing(
+            folder,
+            linkedManifest(folder, target),
+         );
+         expect(refused.status).toBeGreaterThanOrEqual(400);
+         expect(refused.text).not.toContain(MARKER);
+         answers.push(
+            `${refused.status} ${refused.text.replaceAll(folder, "<pkg>")}`,
+         );
+      }
+      expect(new Set(answers).size).toBe(1);
+      const status = await (await fetch(`${baseUrl}/api/v0/status`)).text();
+      expect(status).not.toContain(MARKER);
+   });
+});
+
+describe("a copy-installed package's relative in-package links", () => {
+   it("stay relative, so the copy loads and serves through them", async () => {
+      const dir = writePackage("rellinks", {
+         "shared/s.malloy": BASE,
+         "shared/t.malloy": `source: more is duckdb.sql("SELECT 2 AS answer")\n`,
+         "m.malloy":
+            'import "models/s.malloy"\nimport "models/sh/t.malloy"\nsource: n2 is numbers\nsource: m2 is more\n',
+      });
+      fs.mkdirSync(path.join(dir, "models"));
+      fs.symlinkSync(
+         "../shared/s.malloy",
+         path.join(dir, "models", "s.malloy"),
+      );
+      fs.symlinkSync("../shared", path.join(dir, "models", "sh"));
+      expect(await publish("rellinks", dir)).toBe(200);
+      const served = await packagePath("rellinks");
+      expect(fs.readlinkSync(path.join(served, "models", "s.malloy"))).toBe(
+         "../shared/s.malloy",
+      );
+      expect(
+         await answerOf(
+            "rellinks",
+            "m.malloy",
+            "run: n2 -> { select: answer }",
+         ),
+      ).toBe(1);
+      expect(
+         await answerOf(
+            "rellinks",
+            "m.malloy",
+            "run: m2 -> { select: answer }",
+         ),
+      ).toBe(2);
    });
 });

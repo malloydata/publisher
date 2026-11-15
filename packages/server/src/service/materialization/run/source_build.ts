@@ -198,7 +198,7 @@ export class SourceBuilder {
       const plannedDef = plannedModelDefOf(persistSource);
       const lift = authorModelLiftContext(
          plannedDef,
-         compiledTextReader(plannedDef),
+         compiledTextReader(plannedDef, environment.getPackagePath?.()),
       );
       // A strict miss as a reason names it: a name only the generated files
       // declare by the author's source it stands for, read from the

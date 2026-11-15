@@ -57,7 +57,8 @@ import {
    FreshnessManifest,
    ManifestEntry,
 } from "./materialization/domain/types";
-import { errMessage } from "../utils";
+import { confinedPackagePath, errMessage, readPackageURL } from "../utils";
+import { pathToFileURL } from "url";
 import {
    buildEnvironmentMalloyConfig,
    deleteDuckLakeConnectionFile,
@@ -1595,6 +1596,19 @@ export class Environment {
       packageRoot: string,
       target: string,
    ): Promise<string[]> {
+      // A link planted at the file, or a dangling link on the way to it, is
+      // refused before anything about where it leads is looked at, with the
+      // answer a link out of the package gets, so a write cannot tell a
+      // target that exists from one that does not.
+      const outside = () =>
+         new InvalidModelPathError(
+            `Invalid model path: it resolves outside the package.`,
+         );
+      const isLink = async (p: string) =>
+         (
+            await fs.promises.lstat(p).catch(() => undefined)
+         )?.isSymbolicLink() === true;
+      if (await isLink(target)) throw outside();
       const missing: string[] = [];
       let dir = path.dirname(target);
       while (dir.startsWith(packageRoot)) {
@@ -1605,6 +1619,7 @@ export class Environment {
             throw error;
          });
          if (stat === undefined) {
+            if (await isLink(dir)) throw outside();
             missing.push(dir);
             dir = path.dirname(dir);
             continue;
@@ -3663,12 +3678,28 @@ export class Environment {
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
+      // Never written through a link: one planted as the manifest could lead
+      // to any writable JSON file, another package's manifest or the server's
+      // config among them. Refused whatever it leads to.
+      const linked = await fs.promises
+         .lstat(manifestPath)
+         .then((stat) => stat.isSymbolicLink())
+         .catch(() => false);
+      if (linked) {
+         throw new BadRequestError(
+            `The package's publisher.json is a symbolic link; Publisher does ` +
+               `not write through one. Replace it with the file itself.`,
+         );
+      }
 
       try {
+         // Where the write lands, settled before it: inside the package.
+         await confinedPackagePath(packagePath, pathToFileURL(manifestPath));
          let existingManifest: Record<string, unknown> = {};
          try {
-            const content = await fs.promises.readFile(manifestPath, "utf-8");
-            existingManifest = JSON.parse(content);
+            existingManifest = JSON.parse(
+               await readPackageURL(packagePath, pathToFileURL(manifestPath)),
+            );
          } catch (_err) {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
@@ -3678,11 +3709,24 @@ export class Environment {
             metadata,
          );
 
-         await fs.promises.writeFile(
-            manifestPath,
-            JSON.stringify(updatedManifest, null, 2),
-            "utf-8",
+         // A temporary file beside it, renamed over it: the rename replaces
+         // whatever is at the path, a link that appeared since included,
+         // rather than writing through it.
+         const temporary = path.join(
+            packagePath,
+            `.publisher.json.${crypto.randomUUID()}.tmp`,
          );
+         try {
+            await fs.promises.writeFile(
+               temporary,
+               JSON.stringify(updatedManifest, null, 2),
+               { encoding: "utf-8", flag: "wx" },
+            );
+            await fs.promises.rename(temporary, manifestPath);
+         } catch (error) {
+            await fs.promises.rm(temporary, { force: true }).catch(() => {});
+            throw error;
+         }
          // Recorded outside the package directory so nothing the package's
          // content carries is ever read as its install location. Never
          // cleared from here.

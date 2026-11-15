@@ -167,7 +167,10 @@ export class StorageBuildStrategy
          baseReuse = {},
          lift = authorModelLiftContext(
             plannedModelDefOf(params.persistSource),
-            compiledTextReader(plannedModelDefOf(params.persistSource)),
+            compiledTextReader(
+               plannedModelDefOf(params.persistSource),
+               params.environment.getPackagePath?.(),
+            ),
          ),
       } = params;
       const sourceEntityId = instruction.sourceEntityId;

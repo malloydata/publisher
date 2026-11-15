@@ -688,7 +688,18 @@ async function readPackageMetadata(
    agents?: unknown;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
-   const contents = await fs.promises.readFile(manifestPath, "utf8");
+   // Inside the package only, and one answer for any manifest that cannot be
+   // read (a link out of the package, a directory, no permission), naming
+   // nothing it holds or where it leads.
+   let contents: string;
+   try {
+      contents = await readPackageURL(packagePath, pathToFileURL(manifestPath));
+   } catch {
+      throw new PackageManifestError(
+         `${PACKAGE_MANIFEST_NAME} could not be read. It must be a readable ` +
+            `file inside the package.`,
+      );
+   }
    let parsed: {
       name?: string;
       description?: string;
@@ -704,12 +715,12 @@ async function readPackageMetadata(
    };
    try {
       parsed = JSON.parse(contents);
-   } catch (error) {
+   } catch {
       // A PackageManifestError (424), not a bare SyntaxError the pool would
-      // report as a worker outage.
+      // report as a worker outage. The parser's message quotes the text, so
+      // it is not repeated.
       throw new PackageManifestError(
-         `Invalid ${PACKAGE_MANIFEST_NAME}: it is not valid JSON ` +
-            `(${error instanceof Error ? error.message : String(error)}). ` +
+         `Invalid ${PACKAGE_MANIFEST_NAME}: it is not valid JSON. ` +
             `The package is not served until the file parses. Fix: make it ` +
             `valid JSON; a trailing comma or an unquoted key is the usual cause.`,
       );
@@ -717,7 +728,8 @@ async function readPackageMetadata(
    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new PackageManifestError(
          `Invalid ${PACKAGE_MANIFEST_NAME}: expected a JSON object, got ` +
-            `${JSON.stringify(parsed)}. Fix: { "name": "my-package" }.`,
+            `${Array.isArray(parsed) ? "an array" : parsed === null ? "null" : `a ${typeof parsed}`}. ` +
+            `Fix: { "name": "my-package" }.`,
       );
    }
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
