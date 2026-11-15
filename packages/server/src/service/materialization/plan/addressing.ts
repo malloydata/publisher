@@ -600,13 +600,25 @@ export function foldDistinctTableNames(
 }
 
 /**
- * Each written name's table, as the smallest name of the names that may be
- * one table with it ({@link tableNamesMeet}, taken transitively): `main.t`
- * and `t` are one table, and `s1.t` and `s2.t` two, unless a bare `t`
- * beside them may be either.
+ * Each written name's table, as the smallest name of the names that are one
+ * table with it: names merge only where every pair of them meets
+ * ({@link tableNamesMeet}). `main.t` and `t` are one table, and `s1.t` and
+ * `s2.t` two. A name that meets two names which do not meet each other (a
+ * bare `t` beside `s1.t` and `s2.t`) merges with none: it is left on an
+ * address of its own, for the collision check to refuse, so it never stands
+ * for either of them and leaves the other unwritten.
  */
 function tableClusters(names: string[]): Map<string, string> {
    const distinct = [...new Set(names)].sort();
+   // A name whose every meeting name meets every other: only it may merge.
+   const settled = new Set(
+      distinct.filter((n) => {
+         const near = distinct.filter((m) => m !== n && tableNamesMeet(n, m));
+         return near.every((a, i) =>
+            near.slice(i + 1).every((b) => tableNamesMeet(a, b)),
+         );
+      }),
+   );
    const root = new Map(distinct.map((n) => [n, n]));
    const find = (n: string): string => {
       const r = root.get(n)!;
@@ -614,8 +626,13 @@ function tableClusters(names: string[]): Map<string, string> {
    };
    for (let i = 0; i < distinct.length; i++) {
       for (let j = i + 1; j < distinct.length; j++) {
-         if (!tableNamesMeet(distinct[i], distinct[j])) continue;
-         const [a, b] = [find(distinct[i]), find(distinct[j])];
+         const [x, y] = [distinct[i], distinct[j]];
+         // Both settled: every component is then a set of names that all
+         // meet one another.
+         if (!settled.has(x) || !settled.has(y) || !tableNamesMeet(x, y)) {
+            continue;
+         }
+         const [a, b] = [find(x), find(y)];
          if (a !== b) root.set(a < b ? b : a, a < b ? a : b);
       }
    }

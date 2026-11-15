@@ -17,6 +17,11 @@ import {
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
+import {
+   deriveBuildPlanOutcome,
+   loadGateText,
+   sharedTables,
+} from "../plan/build_plan";
 import type { BuildInstruction } from "../domain/types";
 import { computeSourceEntityId } from "../plan/addressing";
 import { planTableFolds } from "../plan/build_plan";
@@ -385,4 +390,152 @@ source: a_drops is raw -> { select: id, region, status } extend { except: status
       );
       expect(addresses.ext).toBe(addresses.base);
    });
+});
+
+describe("a bare name between two schemas", () => {
+   const NAMES: Record<string, string> = { a: "s1.t", b: "s2.t", c: "t" };
+   /** Every declaration order of the three. */
+   const ORDERS3 = [
+      ["a", "b", "c"],
+      ["a", "c", "b"],
+      ["b", "a", "c"],
+      ["b", "c", "a"],
+      ["c", "a", "b"],
+      ["c", "b", "a"],
+   ];
+
+   function trio(order: string[], storage: boolean) {
+      const sources = Object.fromEntries(
+         order.map((id) => [
+            id,
+            fakeSource({
+               name: id,
+               sourceEntityId: ADDRESS,
+               annotationFields: {
+                  name: NAMES[id],
+                  ...(storage ? { storage: "lake" } : {}),
+               },
+            }),
+         ]),
+      );
+      const compiled = compiledWith(
+         sources,
+         order.map((id) => [id]),
+         CONNECTIONS,
+      );
+      return { ...compiled, tableFolds: planTableFolds(compiled) };
+   }
+
+   for (const storage of [false, true]) {
+      it(`gives each of s1.t and s2.t its own address, and t neither's, in every order (${storage ? "storage=" : "colocated"})`, () => {
+         const results = withStorage(() =>
+            ORDERS3.map((order) => {
+               const compiled = trio(order, storage);
+               const addressOf = (id: string) =>
+                  computeSourceEntityId(
+                     compiled.sources[id],
+                     compiled.connectionDigests,
+                     undefined,
+                     compiled.tableFolds,
+                  );
+               return {
+                  addresses: ["a", "b", "c"].map(addressOf),
+                  shared: [...sharedTables(compiled).keys()].sort(),
+               };
+            }),
+         );
+         for (const { addresses, shared } of results) {
+            // Three addresses: neither schema's table is stood in for by t.
+            expect(new Set(addresses).size).toBe(3);
+            // t may be either table, so it collides with both, and each of
+            // the three is refused rather than one written for all.
+            expect(shared).toEqual(
+               ["a", "b", "c"]
+                  .map(
+                     (id) =>
+                        trio(["a", "b", "c"], storage).sources[id].sourceID,
+                  )
+                  .sort(),
+            );
+         }
+         for (const r of results.slice(1)) {
+            expect(r.addresses).toEqual(results[0].addresses);
+         }
+      });
+   }
+
+   it("refuses each of the three alone in an auto-run, in every order", () => {
+      for (const order of ORDERS3) {
+         const compiled = trio(order, false);
+         let error: string | undefined;
+         try {
+            deriveSelfInstructions(compiled, undefined, {}, undefined, NAMING);
+         } catch (err) {
+            error = (err as Error).message;
+         }
+         // Nothing else to build: every source refused for the collision.
+         expect(error).toContain('all write the table "');
+      }
+   });
+});
+
+function withStorage<T>(fn: () => T): T {
+   const { restore } = installSettings({ env: { PERSIST_STORAGE_MODE: "on" } });
+   try {
+      return fn();
+   } finally {
+      restore();
+   }
+}
+
+describe("a bare name between two schemas, over the real compiler", () => {
+   const packages = tempBuildPlanPackages();
+   afterEach(() => packages.cleanup());
+
+   const RAW = `source: raw is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'east'), (2, 'west')) AS t(id, region)
+""")`;
+
+   for (const storage of [false, true]) {
+      for (const order of [
+         ["s1.t", "s2.t", "t"],
+         ["t", "s2.t", "s1.t"],
+         ["s2.t", "t", "s1.t"],
+      ]) {
+         it(`fails the load with materialization-table-collision (${storage ? "storage=" : "colocated"}, ${order.join(" ")})`, async () => {
+            const model = [
+               "##! experimental.persistence",
+               RAW,
+               ...order.map(
+                  (name, i) =>
+                     `#@ persist name="${name}"${storage ? ' storage="lake"' : ""}\nsource: src${i} is raw -> { select: id, region }`,
+               ),
+            ].join("\n");
+            const { restore } = installSettings({
+               env: { PERSIST_STORAGE_MODE: "on" },
+            });
+            try {
+               const compiled = await compilePackageBuildPlan(
+                  await packages.create(model),
+               );
+               const outcome = deriveBuildPlanOutcome(compiled, null);
+               const text = loadGateText(
+                  {
+                     plan: outcome.plan,
+                     annotationFindings: outcome.annotationFindings,
+                     incrementalDeclarations: outcome.incrementalDeclarations,
+                     ...(outcome.materializePlans
+                        ? { materializePlans: outcome.materializePlans }
+                        : {}),
+                  },
+                  { enforceCollisions: true, versionScoped: false },
+               );
+               expect(text).toContain("[materialization-table-collision]");
+               for (const i of [0, 1, 2]) expect(text).toContain(`"src${i}"`);
+            } finally {
+               restore();
+            }
+         });
+      }
+   }
 });

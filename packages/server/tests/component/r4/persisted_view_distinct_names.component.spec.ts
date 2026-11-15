@@ -39,6 +39,22 @@ query: q_region_a is orders -> { group_by: region; aggregate: total; order_by: r
 
 #@ persist name="q_region_b"
 query: q_region_b is orders -> { group_by: region; aggregate: total; order_by: region }
+
+source: lines is duckdb.sql("""
+  select * from (values (1, 'a', 2), (2, 'b', 3), (3, 'a', 4)) as t(id, sku, qty)
+""") extend {
+  measure: units is qty.sum()
+  #@ persist name="pv_t"
+  view: by_sku is { group_by: sku; aggregate: units; order_by: sku }
+  #@ persist name="shared_t"
+  view: by_sku_shared is { where: id > 0; group_by: sku; aggregate: units; order_by: sku }
+}
+
+#@ persist name="pq_t"
+query: q_by_sku is lines -> { group_by: sku; aggregate: units; order_by: sku }
+
+#@ persist name="shared_t"
+query: q_by_sku_shared is lines -> { where: id > 0; group_by: sku; aggregate: units; order_by: sku }
 `;
 
 /** Each call, the leg that answers it, and its build source's plan name. */
@@ -47,6 +63,33 @@ const CALLS: [string, "view" | "query", string][] = [
    ["run: orders -> by_region_b", "view", "orders__by_region_b__view"],
    ["run: q_region_a", "query", "q_region_a__query"],
    ["run: q_region_b", "query", "q_region_b__query"],
+];
+
+/**
+ * A persisted view and a persisted query of one build: under different
+ * `name=`s a table each, under one `name=` one table between them.
+ */
+const PAIRS: {
+   label: string;
+   calls: [string, "view" | "query", string][];
+   tables: number;
+}[] = [
+   {
+      label: "different name=s (pv_t, pq_t)",
+      calls: [
+         ["run: lines -> by_sku", "view", "lines__by_sku__view"],
+         ["run: q_by_sku", "query", "q_by_sku__query"],
+      ],
+      tables: 2,
+   },
+   {
+      label: "one name= (shared_t)",
+      calls: [
+         ["run: lines -> by_sku_shared", "view", "lines__by_sku_shared__view"],
+         ["run: q_by_sku_shared", "query", "q_by_sku_shared__query"],
+      ],
+      tables: 1,
+   },
 ];
 
 describe("colocated persisted views and queries of one build, each under its own name=", () => {
@@ -77,7 +120,7 @@ describe("colocated persisted views and queries of one build, each under its own
       }).restore;
       await freshLoadPool();
       loader = await loadFixture({ "m.malloy": MODEL });
-      for (const [malloy] of CALLS) {
+      for (const [malloy] of [...CALLS, ...PAIRS.flatMap((p) => p.calls)]) {
          const out = await loader.run("m.malloy", malloy);
          if ("error" in out) throw new Error(`${malloy}: ${out.error}`);
          live.set(malloy, out.answer.rows);
@@ -116,6 +159,30 @@ describe("colocated persisted views and queries of one build, each under its own
          expect(served.servedBy?.kind).toBe(leg);
          expect(served.servedBy?.tableId).toBe(own);
          expect(rowDifference(live.get(malloy)!, served.rows)).toBeUndefined();
+      });
+   }
+
+   for (const { label, calls, tables } of PAIRS) {
+      it(`a persisted view and query of one build, ${label}: ${tables} table(s), each answered by its own leg, equal to live`, async () => {
+         const plan = Object.values(fixture.pkg.getBuildPlan()?.sources ?? {});
+         const planned = calls.map(([, , name]) =>
+            plan.find((s) => s.name === name),
+         );
+         expect(planned.every((s) => s !== undefined)).toBe(true);
+         // One build: alone, the same SQL would be one address.
+         expect(new Set(planned.map((s) => s!.sql)).size).toBe(1);
+         expect(new Set(planned.map((s) => s!.sourceEntityId)).size).toBe(
+            tables,
+         );
+         for (const [malloy, leg, name] of calls) {
+            const own = plan.find((s) => s.name === name)?.sourceEntityId;
+            const served = await ask(malloy);
+            expect(served.servedBy?.kind).toBe(leg);
+            expect(served.servedBy?.tableId).toBe(own);
+            expect(
+               rowDifference(live.get(malloy)!, served.rows),
+            ).toBeUndefined();
+         }
       });
    }
 });
