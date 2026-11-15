@@ -187,6 +187,13 @@ export interface BindOptions {
     * false: most callers serve no rollup, so they build none).
     */
    includeRollups?: boolean;
+   /**
+    * Store each `storage=` table as the warehouse returned it, uncast, as a
+    * build stores it when it declines a cast (a `date` under a query time
+    * zone) or a cast fails and it retries without them (default false: cast
+    * to the declared types, as a build does).
+    */
+   storeUncast?: boolean;
 }
 
 /**
@@ -447,9 +454,11 @@ async function buildAll(
                await lake.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${castToDeclaredTypes(
                      select,
-                     declaredColumnsFor(pkg, entry).filter((c) =>
-                        present.has(c.name),
-                     ),
+                     options.storeUncast
+                        ? []
+                        : declaredColumnsFor(pkg, entry).filter((c) =>
+                             present.has(c.name),
+                          ),
                   )}`,
                );
                const described = await lake.runSQL(`DESCRIBE ${quoted}`, {
@@ -508,13 +517,14 @@ async function buildAll(
 
 /**
  * The scalar dimensions the planned source declares, read from its model's
- * compiled definition: what a storage build casts its columns to. None when
- * the definition cannot be found (the build then runs uncast, as a build does
- * when it cannot read the field list).
+ * compiled definition, or for a generated build source its plan entry's
+ * columns: what a storage build casts its columns to. None when neither can
+ * be read (the build then runs uncast, as a build does when it cannot read
+ * the field list).
  */
 function declaredColumnsFor(
    pkg: Package,
-   entry: { name: string; modelPath?: string },
+   entry: { name: string; modelPath?: string; columns?: unknown[] },
 ): DeclaredColumn[] {
    const def = entry.modelPath
       ? pkg.getModel(entry.modelPath)?.getModelDef()
@@ -522,6 +532,10 @@ function declaredColumnsFor(
    const struct = def?.contents?.[entry.name] as
       | { fields?: { expressionType?: string }[] }
       | undefined;
+   // A generated build source (a persisted view's) is no name of the author's
+   // model: its plan entry's columns are the ones a build casts to
+   // (`storageBuildCasts`, from the same field list).
+   if (!struct) return declaredColumnsOf(entry.columns);
    return declaredColumnsOf(
       (struct?.fields ?? []).filter(
          (f) => f.expressionType === undefined || f.expressionType === "scalar",
