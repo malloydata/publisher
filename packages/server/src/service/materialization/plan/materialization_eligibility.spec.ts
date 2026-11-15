@@ -856,7 +856,11 @@ source: by_category is orders -> {
                "v__by_x__view@file:///elig/m.malloy.persist-view.malloy";
             expect(
                withEnv(env, () =>
-                  gateEnforcedAtRead(view, inputs(view, undefined, false), true),
+                  gateEnforcedAtRead(
+                     view,
+                     inputs(view, undefined, false),
+                     true,
+                  ),
                ),
             ).toBe(false);
          }
@@ -937,7 +941,9 @@ source: by_category is orders -> {
                            source,
                         },
                      },
-                  } as unknown as Parameters<typeof collectSourceEligibility>[0]),
+                  } as unknown as Parameters<
+                     typeof collectSourceEligibility
+                  >[0]),
                );
                expect(eligible).toEqual([id]);
                expect(gateKept).toEqual([]);

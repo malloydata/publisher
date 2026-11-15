@@ -190,16 +190,38 @@ describe("the gate policy's rows at their edges", () => {
       }
    });
 
-   it("keeps no persist table's gate, v1 or not, under every switch", () => {
+   it("keeps a persist table's gate only on the storage tier and only its own row-level gate (G3), under every switch", () => {
       const all: GateSwitches = {
          materialize: true,
          gatedSources: true,
          gatedStorageRollupsReviewed: true,
       };
       for (const v1 of [true, false]) {
-         expect(tableKeepsGates(table({ kind: "persist", v1 }), all)).toBe(
-            false,
-         );
+         // A colocated v1 table is the colocated tier check's to decide.
+         expect(
+            tableKeepsGates(
+               table({ kind: "persist", v1, tier: "colocated" }),
+               all,
+            ),
+         ).toBe(false);
+         expect(
+            tableKeepsGates(
+               table({ kind: "persist", v1, tier: "storage" }),
+               all,
+            ),
+         ).toBe(true);
+         for (const gate of [
+            { ...OWN_GATE, rowLevel: false },
+            { ...OWN_GATE, attributed: false },
+            { ...OWN_GATE, inheritedRowFilter: true },
+         ]) {
+            expect(
+               tableKeepsGates(
+                  table({ kind: "persist", v1, tier: "storage", gate }),
+                  all,
+               ),
+            ).toBe(false);
+         }
       }
       expect(tableKeepsGates(table({ kind: "view" }), all)).toBe(false);
    });
