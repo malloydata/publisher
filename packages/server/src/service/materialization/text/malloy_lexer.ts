@@ -3,9 +3,9 @@
 
 /**
  * The statement lexer the materialization rewriters read the author's files
- * with: the re-root rewriter (serve/served_copy.ts), the build view that
- * leaves out joins across connections (cross_connection_text.ts) and
- * the text readers here. A thin layer over the one Malloy lexer core
+ * with: the re-root rewriter (serve/served_copy.ts), the served copy's
+ * leaving out of joins it moves across connections (cross_connection_text.ts)
+ * and the text readers here. A thin layer over the one Malloy lexer core
  * (`service/malloy_lexer_core.ts`), which the caller-text reader shares: it
  * adds only brackets and their depth, which is all a statement-level edit
  * needs; it never parses Malloy.

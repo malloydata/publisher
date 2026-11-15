@@ -416,7 +416,7 @@ describe("same-named sources in two models (#6644)", () => {
       }
    });
 
-   it("#(materialize) whose default name collides with a v1 table is refused; the v1 source still serves", async () => {
+   it("#(materialize) whose default name is a v1 name= is not refused: a defaulted table carries the package's suffix, and both serve", async () => {
       const files = {
          "a.malloy": `${HEADER}
 import "raw.malloy"
@@ -447,10 +447,11 @@ source: summary is orders_raw -> {
       };
       const { fixture, live } = await loadBuilt(files, queries);
       try {
-         expect(fixture.built).toEqual([{ name: "placed", tier: "storage" }]);
-         const refused = codes(fixture, "materialize-not-built");
-         expect(refused).toHaveLength(1);
-         expect(refused[0].message).toContain('"placed" (a.malloy)');
+         expect(fixture.built.map((b) => b.name).sort()).toEqual([
+            "placed",
+            "summary",
+         ]);
+         expect(codes(fixture, "materialize-not-built")).toEqual([]);
          for (const key of ["a", "b"] as const) {
             const ran = await run(
                fixture,
@@ -459,7 +460,10 @@ source: summary is orders_raw -> {
             );
             expect(rowDifference(live[key], ran.rows)).toBeUndefined();
          }
-         expect(fixture.verdicts).toEqual(["placed:serves"]);
+         expect(fixture.verdicts.sort()).toEqual([
+            "placed:serves",
+            "summary:serves",
+         ]);
       } finally {
          await fixture.dispose();
       }

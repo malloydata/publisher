@@ -16,8 +16,8 @@
  *    through a runtime factory: a host's (the load worker's, which reads its
  *    own file map), or `package_files.ts`'s, which reads them from disk;
  *  - {@link GeneratedFiles.read} is the one reader of an author file's text
- *    as the compile reads it (a package's build view, a worker's files, an
- *    overlay), never the file on disk behind it;
+ *    as the compile reads it (a worker's files, an overlay), never the
+ *    file on disk behind it;
  *  - {@link GeneratedFiles.blanked} is the author's files with every
  *    source-level `#@` note blanked (`persist_blanking.ts`);
  *  - {@link GeneratedFiles.load} and {@link GeneratedFiles.compile} compile
@@ -98,7 +98,7 @@ export class GeneratedFiles {
    ) {}
 
    /**
-    * Over a runtime factory: a host's (the load worker's, a build view's),
+    * Over a runtime factory: a host's (the load worker's),
     * or a package's files on disk (`package_files.ts`), which also names
     * the package's own model.
     */

@@ -1572,10 +1572,15 @@ export interface BuildPlanOutcome {
 export function deriveBuildPlanOutcome(
    collected: Omit<CompiledBuildPlan, "connections">,
    materializationConfig: WirePackageMaterialization | null,
+   /** The package's materialization `scope` (`"version"` suffixes every name). */
+   scope?: string | null,
 ): BuildPlanOutcome {
    // Before anything reads the plan: a refused source is neither built nor
    // served, and its warning replaces it (#6644).
-   const compiled = refuseCollidingMaterialize(collected);
+   const compiled = refuseCollidingMaterialize({
+      ...collected,
+      ...(scope === "version" ? { versionScoped: true } : {}),
+   });
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,
