@@ -1350,6 +1350,90 @@
       "refused": null
     }
   },
+  "ColocatedTier.drop": {
+    "duckdb": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "postgres": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "standardsql": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`"
+    ],
+    "snowflake": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "databricks": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`"
+    ],
+    "trino": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "presto": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "mysql": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`"
+    ],
+    "sqlserver": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "unknown_dialect": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ]
+  },
+  "ColocatedTier.drop.leftoversOf": {
+    "duckdb": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "postgres": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "standardsql": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_orders`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_oorders`"
+    ],
+    "snowflake": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "databricks": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_orders`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_oorders`"
+    ],
+    "trino": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "presto": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "mysql": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_orders`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_oorders`"
+    ],
+    "sqlserver": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "unknown_dialect": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ]
+  },
   "capturedNativeSchema.one": {
     "duckdb": [
       "DESCRIBE \"orders\""

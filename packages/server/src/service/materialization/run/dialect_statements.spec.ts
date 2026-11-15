@@ -5,9 +5,9 @@
  * Every statement whose text depends on the warehouse dialect, per dialect,
  * frozen in `dialect_statements.golden.json`: the ownership probe and mark,
  * the relation and view probes and the view drop, the incremental refresh's
- * probes, bounds, range replace, merge and pair delta, the colocated swap,
- * the native-type catalog read, the read-cost and query-tag statements, and
- * the leftover `name=` view's in-transaction drop. A statement a dialect
+ * probes, bounds, range replace, merge and pair delta, the colocated swap
+ * and drop, the native-type catalog read, the read-cost and query-tag
+ * statements, and the leftover `name=` view's in-transaction drop. A statement a dialect
  * refuses is recorded as the refusal's message.
  *
  * It pins the text so that moving these emitters behind one dialect table
@@ -25,7 +25,7 @@ import {
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
 import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./build_read_cost";
-import { swapIntoPlace } from "./colocated_build_strategy";
+import { ColocatedTier, swapIntoPlace } from "./colocated_build_strategy";
 import { capturedNativeSchema } from "./colocated_native_types";
 import {
    decodeTablePathSegments,
@@ -361,6 +361,23 @@ async function statements(): Promise<Record<string, unknown>> {
    out["swapIntoPlace.failsThird"] = await perDialectAsync((d) =>
       failingSwap(d, 3),
    );
+
+   // The colocated drop: the table, then the staging and backup names a
+   // crash can leave beside it when the table names its source.
+   const colocatedDrop = (leftoversOf?: string) =>
+      perDialectAsync(async (d) => {
+         const r = recorder();
+         await new ColocatedTier().drop(
+            {
+               connection: { runSQL: r.run, dialectName: d } as never,
+               runOptions: {},
+            },
+            { physicalTableName: "sch.Orders x__m1", leftoversOf },
+         );
+         return r.statements;
+      });
+   out["ColocatedTier.drop"] = await colocatedDrop();
+   out["ColocatedTier.drop.leftoversOf"] = await colocatedDrop("orders");
 
    // The native-type catalog read.
    for (const [shape, segments] of Object.entries(PATHS)) {
