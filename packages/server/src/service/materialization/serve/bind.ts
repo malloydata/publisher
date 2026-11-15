@@ -76,7 +76,12 @@ export function bindStorageEntries(args: {
    destinationSchema?: (destinationName: string) => string | undefined;
    /** The plan's eligible sourceIDs, and why each other was refused; undefined when unknown. */
    eligibility:
-      | { eligible: readonly string[]; refused: Record<string, string> }
+      | {
+           eligible: readonly string[];
+           refused: Record<string, string>;
+           /** The eligible sourceIDs admitted past their own gate (G3). */
+           gateKept?: readonly string[];
+        }
       | undefined;
    /** Each binding's kind, from the plan (see {@link kindFromPlan}). */
    kindOf: (binding: Binding) => BindingKind;
@@ -111,12 +116,19 @@ export function bindStorageEntries(args: {
       sourceIDsFor,
    );
    const eligible = new Set(eligibility?.eligible ?? []);
+   const gateKept = new Set(eligibility?.gateKept ?? []);
+   // The tables (content addresses) plan admitted past a stored source's own
+   // row-level gate (G3).
+   const keptTables = new Set<string>();
    const declined: StorageBindDecline[] = [];
-   const bindings = derived.flatMap((derivedBinding) => {
+   const admittedBindings = derived.flatMap((derivedBinding) => {
       const binding = { ...derivedBinding, kind: args.kindOf(derivedBinding) };
       const ids = binding.sourceIDs ?? [];
       const admitted = ids.filter((id) => eligible.has(id));
       if (admitted.length > 0) {
+         if (admitted.some((id) => gateKept.has(id))) {
+            keptTables.add(binding.virtualHandle);
+         }
          return [
             admitted.length === ids.length
                ? binding
@@ -141,6 +153,16 @@ export function bindStorageEntries(args: {
       });
       return [];
    });
+   // Every name a G3 table is bound under reads that one table, so each is
+   // marked: an extension that shares its base's table re-roots the base. A
+   // rollup or a view is never marked (their legs pass a gate only with the
+   // switch).
+   const bindings = admittedBindings.map((binding) =>
+      keptTables.has(binding.virtualHandle) &&
+      (binding.kind === "persist" || binding.kind === "materialize")
+         ? { ...binding, ownGateKept: true }
+         : binding,
+   );
    return { bindings, otherDefinition, declined };
 }
 

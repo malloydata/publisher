@@ -27,8 +27,12 @@
  * Frozen until the security review (plan question 14): gated sources stay
  * behind `PUBLISHER_MATERIALIZE_GATED_SOURCES`, and no new leg, tier or kind
  * may keep its gates, nor a row be loosened, without that review's sign-off.
- * One row was loosened outside it, by maintainer decision: colocated
- * `#(materialize)` keeps its own row-level gate under G3, as v1 does.
+ * Rows were loosened outside it by maintainer decision, for consistency,
+ * ahead of the review: G3 keeps a source's own row-level gate (an attributed
+ * row filter or lock, no inherited row filter) on the served leg for a
+ * colocated `#(materialize)` table, as v1 colocated does, and for a `storage=`
+ * table under exactly the same conditions, v1 `#@ persist` and
+ * `#(materialize)` alike. The review then covers that consistent behaviour.
  * `gate_policy_frozen.spec.ts` enumerates every row this file allows and
  * fails on any change, naming the review.
  */
@@ -106,13 +110,13 @@ type Row = (t: GatedTable, s: GateSwitches) => boolean;
  */
 const ROWS: Record<GateKind, Row> = {
    // A v1 table is substituted by Malloy (colocated) or re-rooted by the
-   // served copy, which the router lets past a gate per leg; plan refuses a
-   // gated one by its own tier checks, never by keeping its gates.
-   persist: () => false,
+   // served copy, which the router lets past a gate per leg. A colocated one
+   // is decided by plan's colocated tier check; a `storage=` one keeps its
+   // source's own row-level gate under G3, as a colocated one does.
+   persist: (t) => persistKeepsGates(t),
    // Read only through the served copy, which keeps the author's gates;
-   // admitted only for the entry point's own row-level gate, with v2's switch
-   // and the gated-sources switch (the managed-tier review), or colocated
-   // under G3 without it.
+   // admitted only for the entry point's own row-level gate, with v2's
+   // switch, on either tier under G3.
    materialize: (t, s) => materializedKeepsGates(t, s),
    pair: (t, s) => materializedKeepsGates(t, s),
    // A `#(preaggregate)` rollup's variant redeclares its base with its gates,
@@ -129,19 +133,33 @@ const ROWS: Record<GateKind, Row> = {
    view: () => false,
 };
 
-function materializedKeepsGates(t: GatedTable, s: GateSwitches): boolean {
+/**
+ * G3: the table's own row-level gate (an attributed row filter or lock, no
+ * row filter inherited from a source it derives from or extends), which the
+ * served copy grafts and `govern()` re-proves on every read, so the table
+ * holds every caller's rows and each caller gets live's.
+ */
+function ownRowLevelGate(t: GatedTable): boolean {
    return (
-      s.materialize &&
-      // G3 for `#(materialize)`: a colocated table never leaves the author's
-      // warehouse, so it keeps the entry point's own row-level gate with the
-      // gated-sources switch off, as a v1 colocated table does. A
-      // maintainer-approved exception made outside the question-14 review;
-      // `storage=` still waits for that review.
-      (s.gatedSources || t.tier === "colocated") &&
       t.gate?.rowLevel === true &&
       t.gate.attributed &&
       !t.gate.inheritedRowFilter
    );
+}
+
+function materializedKeepsGates(t: GatedTable, s: GateSwitches): boolean {
+   // G3 for `#(materialize)`, colocated or `storage=`, with the gated-sources
+   // switch on or off. A maintainer-approved exception made ahead of the
+   // question-14 review, for consistency: colocated and `storage=` behave the
+   // same under a source's own row-level gate, and the review covers that.
+   return s.materialize && ownRowLevelGate(t);
+}
+
+function persistKeepsGates(t: GatedTable): boolean {
+   // G3 for a v1 `storage=` table, on the conditions a colocated one meets.
+   // The same maintainer-approved exception made ahead of the question-14
+   // review: the switch is not read, as it is not for v1 colocated.
+   return t.tier === "storage" && ownRowLevelGate(t);
 }
 
 /**
@@ -162,12 +180,29 @@ type GateLeg = (typeof GATE_LEGS)[number];
 /** What the router's caller adds to the switches. */
 interface LegGateContext {
    /**
-    * The v1 cutover's contracts at read for colocated tables (G3): a served
-    * answer reading only colocated tables keeps the gates even with the
-    * gated-sources switch off, since a colocated table never leaves the
-    * author's warehouse. Every model passes it; the serve verdict does not.
+    * The v1 cutover's contracts at read (G3): a served answer reading only
+    * G3 tables keeps the gates even with the gated-sources switch off. Every
+    * model passes it; the serve verdict does not.
     */
    readonly colocatedReadsKeepGates: boolean;
+}
+
+/** A table an answer read, as the policy judges it. */
+export interface TableRead {
+   readonly tier: GateTier;
+   /**
+    * A `storage=` table plan admitted past its source's own row-level gate
+    * under G3 (`Binding.ownGateKept`). Absent reads false: fail closed.
+    */
+   readonly ownGateKept?: boolean;
+}
+
+/**
+ * Whether a table an answer read is a G3 table: a colocated one (as since
+ * the v1 cutover), or a `storage=` one plan admitted past its own gate.
+ */
+function g3Table(t: TableRead): boolean {
+   return t.tier === "colocated" || t.ownGateKept === true;
 }
 
 /**
@@ -196,11 +231,11 @@ export function legMayPassGate(
  * Whether an answer a leg produced past an entry-point gate keeps the gates,
  * given the tables it read: always under the gated-sources switch; for the
  * served copy under G3 alone, only when it read at least one table and every
- * one is colocated.
+ * one is a G3 table (colocated, or `storage=` admitted past its own gate).
  */
 export function answerKeepsGates(
    leg: GateLeg,
-   tablesRead: readonly { readonly tier: GateTier }[],
+   tablesRead: readonly TableRead[],
    s: GateSwitches,
    ctx: LegGateContext,
 ): boolean {
@@ -210,6 +245,6 @@ export function answerKeepsGates(
       leg === "served" &&
       ctx.colocatedReadsKeepGates &&
       tablesRead.length > 0 &&
-      tablesRead.every((t) => t.tier === "colocated")
+      tablesRead.every(g3Table)
    );
 }

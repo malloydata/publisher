@@ -29,16 +29,19 @@ const table = (t: Partial<GatedTable>): GatedTable => ({
 });
 
 describe("the gate policy's rows", () => {
-   it("keeps a materialized or pair table's own row-level gate, with both switches", () => {
+   it("keeps a materialized or pair table's own row-level gate on either tier, with v2's switch and with or without the gated-sources one (G3)", () => {
       for (const kind of ["materialize", "pair"] as const) {
          for (const tier of ["colocated", "storage"] as const) {
             expect(tableKeepsGates(table({ kind, tier }), ON)).toBe(true);
+            expect(
+               tableKeepsGates(table({ kind, tier }), {
+                  ...ON,
+                  gatedSources: false,
+               }),
+            ).toBe(true);
          }
          expect(
             tableKeepsGates(table({ kind }), { ...ON, materialize: false }),
-         ).toBe(false);
-         expect(
-            tableKeepsGates(table({ kind }), { ...ON, gatedSources: false }),
          ).toBe(false);
          for (const gate of [
             { ...OWN_GATE, rowLevel: false },
@@ -83,10 +86,30 @@ describe("the gate policy's rows", () => {
       );
    });
 
-   it("keeps no persist or view table's gates, and fails closed on a kind with no row", () => {
-      expect(tableKeepsGates(table({ kind: "persist", v1: true }), ON)).toBe(
-         false,
-      );
+   it("keeps a v1 storage= table's own row-level gate under G3, whatever the switches, and nothing else of v1", () => {
+      const persist = (t: Partial<GatedTable>) =>
+         table({ kind: "persist", v1: true, ...t });
+      const NONE: GateSwitches = {
+         materialize: false,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      for (const s of [ON, NONE]) {
+         expect(tableKeepsGates(persist({ tier: "storage" }), s)).toBe(true);
+         // A colocated one is plan's colocated tier check's to decide.
+         expect(tableKeepsGates(persist({ tier: "colocated" }), s)).toBe(false);
+         for (const gate of [
+            { ...OWN_GATE, rowLevel: false },
+            { ...OWN_GATE, attributed: false },
+            { ...OWN_GATE, inheritedRowFilter: true },
+            undefined,
+         ]) {
+            expect(tableKeepsGates(persist({ gate }), s)).toBe(false);
+         }
+      }
+   });
+
+   it("keeps no view table's gates, and fails closed on a kind with no row", () => {
       expect(tableKeepsGates(table({ kind: "view" }), ON)).toBe(false);
       expect(
          tableKeepsGates(
@@ -122,6 +145,21 @@ describe("the gate policy at the router", () => {
       expect(answerKeepsGates("rollup", colocated, OFF, G3)).toBe(false);
       expect(legMayPassGate("served", OFF, NO_G3)).toBe(false);
       expect(answerKeepsGates("served", colocated, OFF, NO_G3)).toBe(false);
+   });
+
+   it("counts a storage= table admitted past its own gate as a G3 table, and no other storage= table", () => {
+      const own = { tier: "storage" as const, ownGateKept: true };
+      const other = { tier: "storage" as const };
+      expect(answerKeepsGates("served", [own], OFF, G3)).toBe(true);
+      expect(answerKeepsGates("served", [own, ...colocated], OFF, G3)).toBe(
+         true,
+      );
+      // A mixed answer, an own-gate table beside one plan did not admit.
+      expect(answerKeepsGates("served", [own, other], OFF, G3)).toBe(false);
+      expect(answerKeepsGates("served", [other], OFF, G3)).toBe(false);
+      expect(answerKeepsGates("served", [own], OFF, NO_G3)).toBe(false);
+      expect(answerKeepsGates("view", [own], OFF, G3)).toBe(false);
+      expect(answerKeepsGates("rollup", [own], OFF, G3)).toBe(false);
    });
 
    it("fails closed on a leg with no row", () => {

@@ -76,11 +76,11 @@ source: hidden_grants_opps is raw -> { where: amount > 1; select: * } extend {
   measure: total is amount.sum()
 } include { private: g; public: * }
 
-// A gated v1 storage= source is refused at plan (served live); its colocated
-// form is read with the gate grafted and proven (contracts at read).
+// A gated v1 storage= source is read past its own gate, grafted and proven,
+// as its colocated form is (G3, contracts at read).
 #(access_filter) org_id = $ORG_ID
-#@ persist name="refused_opps" storage="lake"
-source: refused_opps is raw -> { where: amount > 2; select: * } extend {
+#@ persist name="gated_opps" storage="lake"
+source: gated_opps is raw -> { where: amount > 2; select: * } extend {
   measure: total is amount.sum()
 }
 
@@ -138,8 +138,8 @@ const QUERIES: [string, string, Givens[]][] = [
       CALLERS.map(([, g]) => g),
    ],
    [
-      "a gated storage= source (refused at plan)",
-      "run: refused_opps -> { group_by: org_id; aggregate: total; order_by: org_id }",
+      "a gated storage= source (G3)",
+      "run: gated_opps -> { group_by: org_id; aggregate: total; order_by: org_id }",
       CALLERS.map(([, g]) => g),
    ],
    [
@@ -266,17 +266,13 @@ for (const gated of [false, true]) {
             "an #(access_filter) source with a given-scoped join#2",
             "an #(authorize) source#0",
             "a join to an #(authorize) source#0",
+            "a gated storage= source (G3)#0",
          ]) {
             expect([key, servedBy.get(`all bound|${key}`)]).toEqual([
                key,
                "materialized",
             ]);
          }
-         expect(
-            servedBy.get(
-               "all bound|a gated storage= source (refused at plan)#0",
-            ),
-         ).toBe("live");
       });
 
       it("the callers' live answers differ, so one caller's rows could not pass for another's", () => {

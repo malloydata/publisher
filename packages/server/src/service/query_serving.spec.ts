@@ -419,4 +419,34 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          expect(candidate.keepsContractsFor!(routed.extra!)).toBe(true);
       });
    });
+
+   it("keeps an answer reading only storage tables plan admitted past their own gate, and judges a mixed one by every table it may read", async () => {
+      const kept = { ...storage, ownGateKept: true };
+      const other = binding("o", {
+         kind: "materialize",
+         tablePath: "main.o_tbl",
+      });
+      await withG3(async () => {
+         for (const [read, keeps] of [
+            [[kept], true],
+            [[colocated, kept], true],
+            [[kept, other], false],
+            [[storage], false],
+         ] as const) {
+            const candidate = servedCandidate([...read]);
+            const routed = await candidate.attempt();
+            expect(candidate.keepsContractsFor!(routed.extra!)).toBe(keeps);
+         }
+         // The kept table found, the other spelled another way: the fail
+         // closed read still counts the other, so the answer stays live.
+         const respelled =
+            'SELECT 1 FROM "main"."s_tbl" AS base LEFT JOIN MAIN.O_TBL AS j ON TRUE';
+         const judged = tablesReadForGates(respelled, [kept, other], [kept]);
+         expect(judged).toEqual([kept, other]);
+         const candidate = servedCandidate(judged);
+         expect(
+            candidate.keepsContractsFor!((await candidate.attempt()).extra!),
+         ).toBe(false);
+      });
+   });
 });

@@ -430,6 +430,71 @@ describe("bindStorageEntries", () => {
       });
       expect(bound.bindings.map((b) => b.kind)).toEqual(["materialize"]);
    });
+
+   it("marks a source's own table kept past its own gate only as plan decided (G3), and never a rollup's or a view's", () => {
+      const eligibility = {
+         eligible: ["orders@m", "gated@m"],
+         refused: {},
+         gateKept: ["gated@m"],
+      };
+      const kept = (kind: Binding["kind"]) =>
+         bindStorageEntries({
+            entries,
+            plan,
+            eligibility,
+            kindOf: () => kind,
+         }).bindings.map((b) => [b.sourceName, b.ownGateKept === true]);
+      for (const kind of ["persist", "materialize"] as const) {
+         expect(kept(kind)).toEqual([
+            ["orders", false],
+            ["gated", true],
+         ]);
+      }
+      for (const kind of ["rollup", "view"] as const) {
+         expect(kept(kind)).toEqual([
+            ["orders", false],
+            ["gated", false],
+         ]);
+      }
+      // An extension sharing the gated source's table (one address, two
+      // names): the table is a G3 table under both names, since the served
+      // copy reads it re-rooting the base.
+      const shared = bindStorageEntries({
+         entries: { addr_gated: entry("gated", "addr_gated") },
+         plan: {
+            sources: {
+               "gated@m": {
+                  name: "gated",
+                  sourceEntityId: "addr_gated",
+                  connectionName: "duckdb",
+               },
+               "gated_ext@m": {
+                  name: "gated_ext",
+                  sourceEntityId: "addr_gated",
+                  connectionName: "duckdb",
+               },
+            },
+         } as unknown as BuildPlan,
+         eligibility: {
+            eligible: ["gated@m", "gated_ext@m"],
+            refused: {},
+            gateKept: ["gated_ext@m"],
+         },
+         kindOf: (b) => b.kind,
+      });
+      expect(
+         shared.bindings.map((b) => [b.sourceName, b.ownGateKept === true]),
+      ).toEqual([
+         ["gated", true],
+         ["gated_ext", true],
+      ]);
+      // No record of it (an older plan's): none is kept, failing closed.
+      expect(
+         bind({ eligible: ["orders@m", "gated@m"], refused: {} }).bindings.map(
+            (b) => b.ownGateKept === true,
+         ),
+      ).toEqual([false, false]);
+   });
 });
 
 describe("bindColocatedEntries", () => {

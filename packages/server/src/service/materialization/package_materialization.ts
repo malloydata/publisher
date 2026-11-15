@@ -1657,6 +1657,14 @@ export class PackageMaterialization {
       }
       const servedCopy = this.servedCopyState(models);
       const materializeIDs = new Set(Object.keys(this.materializePlans));
+      // The tables plan admitted past a stored source's own gate (G3), by
+      // content address: the bind marks every name bound to one.
+      const keptTables = new Set(
+         (this.sourceEligibility?.gateKept ?? []).flatMap((id) => {
+            const address = this.buildPlan?.sources?.[id]?.sourceEntityId;
+            return address ? [address] : [];
+         }),
+      );
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(this.snapshot(), new Date());
       const freshStorageNames = new Set(
@@ -1690,6 +1698,10 @@ export class PackageMaterialization {
          servedCopyKeepsGates: legMayPassGate("served", gateSwitches(), {
             colocatedReadsKeepGates: false,
          }),
+         storageKeepsOwnGate: (sourceID) =>
+            keptTables.has(
+               this.buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            ),
          rollupKeepsGates: (sourceID) => this.rollupsKeepingGates.has(sourceID),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),

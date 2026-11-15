@@ -26,6 +26,7 @@ import {
 import { routeReadsEnv } from "../../motly";
 import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 
 /**
  * What an eligible source carries into the build and the serve shape. Returned
@@ -55,9 +56,10 @@ interface PersistDynamicPlan {
  *  3. **No `#(authorize)` / `#(access_filter)` gate.** Both are evaluated per
  *     request and the served shape carries neither, so the table would bypass
  *     them. Fails closed. The one exception is `gateEnforcedAtRead` (see
- *     {@link gateEnforcedAtRead}): a `#(materialize)` source read only through
- *     the served copy, which keeps the author's gates and has them grafted and
- *     re-proven on every query (R3). Every other check here still applies.
+ *     {@link gateEnforcedAtRead}): a source's own row-level gate, kept by the
+ *     served copy, which re-roots the author's text, gates included, and has
+ *     them grafted and re-proven on every query (R3, and G3 for a `storage=`
+ *     table as for a colocated one). Every other check here still applies.
  *
  *     Join reach is PARTIAL: the deep walk finds a gate on a plainly-joined
  *     source and under `annotations.inherits`, but NOT through an ANNOTATED
@@ -657,26 +659,32 @@ function walkForAuthorizeNotes(
 
 /**
  * Whether a gated source may be built because its gate is enforced when the
- * table is read (materialization v2's R3, contracts at read). True only when
- * all hold:
+ * table is read (materialization v2's R3, contracts at read; G3). True only
+ * when all hold:
  *
- * - `materialize.enabled` is on, and either `materialize.gatedSources` is on,
- *   so the router lets the served copy past the gate, or the table is
- *   colocated, which the served copy reads past its own row-level gate under
- *   G3 as v1 colocated does; off, the managed tier never holds a gated
- *   source's columns (plan, question 14);
- * - the source is a `#(materialize)` source (`materializePlans`), so its table
- *   is read only through the served copy, which keeps the author's gates; the
- *   router keeps every other stored shape away from a gated entry point;
+ * - the source is a `#(materialize)` source (`materializePlans`) with
+ *   `materialize.enabled` on, colocated or `storage=`, or a v1 `#@ persist`
+ *   source asked about as `storage=` (a colocated one is decided by
+ *   {@link assertColocatedPersistNotAuthorizeGated}); never a persisted
+ *   view's or query's build, whose leg passes a gate only with
+ *   `materialize.gatedSources`. Its table is read past a gate only through
+ *   the served copy, which keeps the author's gates; the router keeps every
+ *   other stored shape away from a gated entry point;
  * - its gate is the entry point's own and classifies `row_level` against the
- *   author's model (`sourceGateOutcomes`), the bar the colocated tier sets.
+ *   author's model (`sourceGateOutcomes`), an attributed row filter or lock
+ *   with no row filter inherited from a source it extends: the bar the
+ *   colocated tier sets. Under G3 this holds on both tiers with
+ *   `materialize.gatedSources` off, by maintainer decision ahead of the
+ *   question-14 review; the managed tier then holds the gated source's
+ *   columns, every caller's rows.
  *
  * A rollup is asked {@link rollupGateEnforcedAtRead} instead (rows 1 and 21).
  *
  * The build, the serve bind and the host-instructed build all ask this one
  * question, so a table is never built that cannot be served, nor served
  * because it was built. A caller deciding a `storage=` table passes
- * `storage`, so the table is asked about as stored whatever the plan says.
+ * `storage`, so the table is asked about as stored whatever the plan says:
+ * it decides whether a v1 source is asked at all.
  */
 export function gateEnforcedAtRead(
    sourceID: string,
@@ -697,8 +705,22 @@ export function gateEnforcedAtRead(
    // switch, not with the v1 cutover that also enables the gated switch, and
    // only for the entry point's own row-level gate (the gate policy).
    const materialized = plan?.materializePlans?.[sourceID];
-   if (!materialized) return false;
-   const outcome = plan.sourceGateOutcomes?.[sourceID];
+   const outcome = plan?.sourceGateOutcomes?.[sourceID];
+   const gate = {
+      rowLevel: outcome?.classification === "row_level",
+      attributed: outcome?.attributed === true,
+      // The served copy cannot graft a row filter the entry point inherits.
+      inheritedRowFilter: outcome?.inheritedRowFilter === true,
+   };
+   if (!materialized) {
+      // A v1 `#@ persist` source, asked only as `storage=`. A persisted
+      // view's or query's build (its companion file) is not one.
+      if (!storage || isPersistedResultBuild(sourceID)) return false;
+      return tableKeepsGates(
+         { kind: "persist", tier: "storage", v1: true, gate },
+         gateSwitches(),
+      );
+   }
    return tableKeepsGates(
       {
          kind: "materialize",
@@ -711,14 +733,32 @@ export function gateEnforcedAtRead(
                ? "colocated"
                : "storage",
          v1: false,
-         gate: {
-            rowLevel: outcome?.classification === "row_level",
-            attributed: outcome?.attributed === true,
-            // The served copy cannot graft a row filter the entry point inherits.
-            inheritedRowFilter: outcome?.inheritedRowFilter === true,
-         },
+         gate,
       },
       gateSwitches(),
+   );
+}
+
+/** Whether `sourceID` is a persisted view's or query's generated build source. */
+function isPersistedResultBuild(sourceID: string): boolean {
+   return sourceID
+      .slice(sourceID.indexOf("@") + 1)
+      .endsWith(PERSISTED_VIEW_COMPANION_SUFFIX);
+}
+
+/**
+ * Whether a source's `storage=` table is read past its own row-level gate
+ * under G3: it is gated, and {@link gateEnforcedAtRead} admits it as stored.
+ * Its bindings carry `ownGateKept`, so a served answer reading it may pass
+ * that gate as one reading a colocated table may.
+ */
+export function storageKeepsOwnGate(
+   source: PersistSource,
+   plan: Parameters<typeof gateEnforcedAtRead>[1],
+): boolean {
+   return (
+      referencesAuthorize(source) &&
+      gateEnforcedAtRead(source.sourceID, plan, true)
    );
 }
 

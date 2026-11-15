@@ -269,12 +269,17 @@ above — a materialized entry point is not served frozen with respect to who ma
 stale between rebuilds is the row DATA the gate filters on: a row whose access decision changed (say,
 it changed owner) keeps serving to its former owner until the source rebuilds. See
 [materialization.md](materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source)
-for the full contract and how to bound that staleness. `storage=` and `#@ preaggregate` remain
-unconditionally refused for any `#(access_filter)`-gated source — the relaxation applies to colocated
-persistence only. A colocated `#(materialize)` (no `storage=`) meets the same bar with
-`PUBLISHER_MATERIALIZE_GATED_SOURCES` off, exactly as a colocated `#@ persist` does: its table stays in
-the author's warehouse with every caller's rows, and the gate is grafted and proven on each read. A
-`#(materialize) storage=` source behind a gate still needs that switch.
+for the full contract and how to bound that staleness. The same bar admits the source on every tier,
+with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off: a `#@ persist` or a `#(materialize)`, colocated or
+`storage=`, whose own gate is a row filter, an `#(authorize)` lock (its own or one it inherits from a
+source it derives from or extends), or both. Its table holds every caller's rows, and the gate is grafted and proven
+on each read through Publisher, exactly as on live. A colocated table stays in the author's warehouse;
+a `storage=` table puts those rows, ungated, at rest in the destination, readable by anyone with
+direct access to it, a maintainer-approved exception made ahead of the managed tier's security
+review, for consistency between the tiers. A row filter the source inherits, a gate reached only
+through a join, and a gate over a source whose build would substitute a given stay refused on every
+tier. A v1 `#@ preaggregate` rollup over a gated source is never read past a gate, and a `storage=`
+rollup over one waits for that review.
 
 **Colocated `#(preaggregate)` rollups.** With `PUBLISHER_MATERIALIZE` (on by default) and
 `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(preaggregate)` rollup over a gated

@@ -288,8 +288,21 @@ source: daily_s is orders -> {
   view: by_region is { group_by: region; aggregate: tt is t.sum() }
 }
 
+// Its own lock: read past it from the shared table (G3, as colocated).
 #(authorize) 'admin' in $ROLES
-source: daily_s_secure is daily_s extend { dimension: r2 is region }
+source: daily_s_locked is daily_s extend { dimension: r2 is region }
+
+#(access_filter) region in $ROLES
+source: gated_orders is orders extend {}
+
+// A row filter it inherits: refused on every tier.
+#@ persist name="daily_s_secure" storage="lake"
+source: daily_s_secure is gated_orders -> {
+  group_by: region
+  aggregate: t is amount.sum(), m is amount.max()
+} extend {
+  dimension: r2 is region
+}
 
 #@ persist name="txt_s" storage="lake"
 source: txt_s is orders -> {
@@ -298,7 +311,7 @@ source: txt_s is orders -> {
 `;
 
 const AGREEMENT_INDEX = `import "model.malloy"
-export { orders, daily_c, daily_s, daily_s_secure, txt_s }
+export { orders, daily_c, daily_s, daily_s_locked, daily_s_secure, txt_s }
 `;
 
 /**
@@ -419,23 +432,31 @@ describe("the verdicts, path report, preview and warnings agree on one package",
       );
       expect(r.path?.servedBy.kind).toBe("rollup");
 
-      // The gated extension shares its base's table. Its verdict says live
-      // because the gate refused it, and the path report says why the query
-      // didn't use the table: WARNED with the verdict's code, `refused`
-      // (decided 2026-11-11), so both surfaces name the same cause.
-      const secure = verdictOf("daily_s_secure");
-      expect(secure).toMatchObject({ verdict: "live", reason: "refused" });
-      expect(secure.message).toContain("protected by a gate");
-      const g = await query(
-         "run: daily_s_secure -> { group_by: r2; aggregate: x is t.sum() }",
+      // The locked extension shares its base's table and is read past its
+      // own lock, from storage, as a colocated one is (G3).
+      expect(verdictOf("daily_s_locked")).toMatchObject({
+         verdict: "serves",
+         tier: "storage",
+      });
+      const locked = await query(
+         "run: daily_s_locked -> { group_by: r2; aggregate: x is t.sum() }",
          { ROLES: ["admin"] },
       );
-      expect(g.path?.servedBy.kind).not.toBe("materialized");
-      const skipped = g.path?.considered.find(
-         (entry) =>
-            entry.outcome === "skipped" && entry.kind === "materialized",
+      expect(locked.servedFrom).toBe("storage");
+
+      // A source that inherits a row filter is refused on every tier. Its
+      // verdict says live because the gate refused it, and no table of it
+      // is built, so the query is answered live and the path report names
+      // no table it used.
+      const secure = verdictOf("daily_s_secure");
+      expect(secure).toMatchObject({ verdict: "live", reason: "refused" });
+      expect(secure.message).toContain("row-level gate");
+      const g = await query(
+         "run: daily_s_secure -> { group_by: r2; aggregate: x is t.sum() }",
+         { ROLES: ["east"] },
       );
-      expect(skipped).toMatchObject({ reason: "WARNED", code: "refused" });
+      expect(g.path?.servedBy.kind).toBe("live");
+      expect(g.servedFrom).not.toBe("storage");
 
       // A mistyped column: the package warns about it, the source still
       // serves, and a query reading that column is answered live.

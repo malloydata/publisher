@@ -43,16 +43,36 @@
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {
+    "refusedSources": {},
+    "sources": {
       "daily@<hammer>/az/az.malloy": {
-        "message": "Source 'daily' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "annotationFields": {
+          "name": "az_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
         "modelPath": "az.malloy",
         "name": "daily",
-        "reason": "authorize",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "9442be6ad28254a8935b20635504036a68343102de66f6114514f04a44f0d18d",
         "sourceID": "daily@<hammer>/az/az.malloy",
-        "tier": "storage"
+        "sql": "sha256:18b086bca63c4b32"
       }
-    },
-    "sources": {}
+    }
   }
 }

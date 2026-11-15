@@ -21,6 +21,7 @@ import {
    assertRollupNameUnshared,
    assertTierEligible,
    gateEnforcedAtRead,
+   storageKeepsOwnGate,
    type TierGateInputs,
 } from "./materialization_eligibility";
 import {
@@ -522,12 +523,19 @@ export type SourceEligibility = {
    eligible: string[];
    /** sourceID -> why it was refused; for the operator-facing log. */
    refused: Record<string, string>;
+   /**
+    * The eligible sourceIDs admitted past their own row-level gate under G3
+    * (`gateEnforcedAtRead`), whose bindings the router lets a served answer
+    * read past that gate. Absent, as in a record made before it: none.
+    */
+   gateKept?: string[];
 };
 
 export function collectSourceEligibility(
    compiled: EligibilityPlan,
 ): SourceEligibility {
    const eligible: string[] = [];
+   const gateKept: string[] = [];
    const refused: Record<string, string> = {};
    const gate = tierGateInputs(compiled);
    const shared = sharedTables(compiled);
@@ -539,17 +547,21 @@ export function collectSourceEligibility(
       }
       try {
          assertRollupNameUnshared(source, gate);
+         const kept = gateEnforcedAtRead(sourceID, compiled, true);
          assertMaterializationEligible(source, deriveAnnotationFields(source), {
-            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled, true),
+            gateEnforcedAtRead: kept,
          });
          // A table built before this refusal existed is not served either.
          assertBuildReadsNoCurrentTime(source, gate);
          eligible.push(sourceID);
+         if (kept && storageKeepsOwnGate(source, compiled)) {
+            gateKept.push(sourceID);
+         }
       } catch (err) {
          refused[sourceID] = errMessage(err);
       }
    }
-   return { eligible, refused };
+   return { eligible, refused, gateKept };
 }
 
 /**
