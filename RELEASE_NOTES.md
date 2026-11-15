@@ -27,7 +27,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 The memory governor reads only the process's resident memory on each tick, not the full `process.memoryUsage()` object with its heap statistics. In Bun those statistics cost more as the heap grows.
 
-The render-tag check now keeps its findings for each model, keyed on a digest of the results it reads and on the installed `@malloydata/render-validator` version. A model loaded again unchanged reuses its findings instead of being checked again on the main thread. A change to the model's text, to the schema of a table it reads, or to the validator is checked afresh. The cache holds the findings of at most 1,024 models. The warnings a package reports are unchanged.
+The render-tag check now keeps its findings for each model, keyed on a digest of the results it reads. A model loaded again unchanged reuses its findings instead of being checked again on the main thread. A change to the model's text or to the schema of a table it reads is checked afresh. The cache lives in the server process, so a new `@malloydata/render-validator` is checked afresh after the restart that installs it. The cache holds the findings of at most 1,024 models. The warnings a package reports are unchanged.
 
 No API, enum or metric value changes.
 

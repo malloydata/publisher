@@ -4,11 +4,24 @@
 import { createRequire } from "module";
 
 /** The installed `@malloydata/render-validator`, part of every key. */
-export const RENDER_VALIDATOR_VERSION = (
-   createRequire(import.meta.url)(
-      "@malloydata/render-validator/package.json",
-   ) as { version: string }
-).version;
+export const RENDER_VALIDATOR_VERSION = readValidatorVersion();
+
+/**
+ * The validator's version from its package.json. A bundled `dist` may ship
+ * without it in node_modules, and importing `model.ts` must not throw for
+ * that: the version then reads "unknown". The cache lives in one process,
+ * which runs one validator, so the key loses nothing that could change.
+ */
+function readValidatorVersion(): string {
+   try {
+      const pkg = createRequire(import.meta.url)(
+         "@malloydata/render-validator/package.json",
+      ) as { version?: unknown };
+      return typeof pkg.version === "string" ? pkg.version : "unknown";
+   } catch {
+      return "unknown";
+   }
+}
 
 /**
  * The key for one model's findings: the digest of the results the check read

@@ -1116,7 +1116,10 @@ const REFERENCE_ID = /reference_id = \\"[0-9a-f-]{36}\\"/g;
  * the whole input of the main thread's tag check bar the validator itself, so
  * equal digests mean equal findings (SerializedModel.renderTagResultsDigest).
  * Each compile's fresh `reference_id`s are blanked first, or no two loads of
- * one model would agree. Undefined when a result cannot be serialized.
+ * one model would agree. `JSON.stringify` drops an undefined property and
+ * writes NaN as null, so results differing only there share a digest; a
+ * `Malloy.Result` is plain JSON-shaped data, where neither carries meaning.
+ * Undefined when a result cannot be serialized.
  */
 function digestRenderTagResults(
    results: { label: string; result?: Malloy.Result }[],
