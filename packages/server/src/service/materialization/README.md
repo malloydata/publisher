@@ -62,13 +62,13 @@ listed with the step that removes it in
 
 ## Modules here
 
-| Module                       | Responsibility                                                                           | Read by                                     |
-| ---------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `index.ts`                   | The module's one public entry                                                            | (callers move onto it step by step; R10)    |
-| `package_materialization.ts` | The package facade: one package version's plan, bindings, verdicts and warnings          | `package.ts`, `environment.ts`              |
-| `host.ts`                    | What the module needs from the rest of the server, as interfaces it owns (the host port) | the service, the facade                     |
-| `stored_column_types.ts`     | A stored column's type against the type Malloy declares, both directions                 | the `storage=` build, the served copy       |
-| `subselect.ts`               | `FROM (<select>) AS <alias>`, safe for any SELECT a build produces                       | `stored_column_types.ts`, the build session |
+| Module                       | Responsibility                                                                                                                     | Read by                                     |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `index.ts`                   | The module's one public entry                                                                                                      | (callers move onto it step by step; R10)    |
+| `package_materialization.ts` | The package facade: one package version's plan, bindings, verdicts and warnings; its header lists the nine methods of its contract | `package.ts`, `environment.ts`              |
+| `host.ts`                    | What the module needs from the rest of the server, as interfaces it owns (the host port)                                           | the service, the facade                     |
+| `stored_column_types.ts`     | A stored column's type against the type Malloy declares, both directions                                                           | the `storage=` build, the served copy       |
+| `subselect.ts`               | `FROM (<select>) AS <alias>`, safe for any SELECT a build produces                                                                 | `stored_column_types.ts`, the build session |
 
 ## Glossary
 

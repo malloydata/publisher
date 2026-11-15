@@ -51,7 +51,7 @@ describe("buildOneSource", () => {
          realization: "COPY",
       };
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (
                s: unknown,
                i: BuildInstruction,
@@ -330,7 +330,7 @@ describe("buildOneSource", () => {
          },
       };
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...a: unknown[]) => Promise<unknown>;
          }
       ).buildOneSource(
@@ -441,7 +441,7 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
          realization: "COPY",
       };
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                upstreamReuse?: string;
                upstreamRecomputeReason?: string;

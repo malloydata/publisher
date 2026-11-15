@@ -1,6 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Publish-time checks of `#@ persist` lines, read from the model's raw text
+ * because the tag parser discards whether a value was quoted.
+ *
+ * Surface: `assertPersistNamesQuoted`, called by `package.ts` on each model
+ * as a package loads. It refuses a `name=` that is unquoted (the build plan
+ * would drop it, so the source would never build) or that is not a plain
+ * identifier path (the name is inlined into table DDL, so anything else is an
+ * injection vector). Pure: it throws a `ModelCompilationError` and has no
+ * other effect.
+ */
+
 import { ModelCompilationError } from "../../../errors";
 import type { Annotations } from "@malloydata/malloy";
 import { hasEnvReference, routeReadsEnv } from "../../motly";

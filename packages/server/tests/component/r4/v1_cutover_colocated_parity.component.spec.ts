@@ -15,7 +15,7 @@ import {
    type Outcome,
    type Switch,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 
 type Q = {
    name: string;

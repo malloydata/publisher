@@ -24,6 +24,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders_base@<pkg>/base.malloy": "materialize",
+      "orders_rollup@<pkg>/base.malloy": "materialize",
+      "orders_rollup_x@<pkg>/rollup.malloy": "materialize"
+    },
     "materializePlans": {
       "orders_base@<pkg>/base.malloy": {
         "buildSourceName": "orders_base__mat",

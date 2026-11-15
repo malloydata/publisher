@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy": "rollup"
+    },
     "materializePlans": {},
     "rollupPlans": {
       "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy": {

@@ -5,6 +5,7 @@
 // plan lists each rollup once however many models import its base (review bug
 // 8), a malformed declaration is refused at publish, a rollup over a stored
 // base is planned (#6293), and with the switch off nothing of it runs.
+import { rollupPlansIn } from "../test_helpers/materialization_test_fixtures";
 import {
    afterAll,
    afterEach,
@@ -203,7 +204,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
          const plan = await compilePackageBuildPlan(
             await buildPlanPackages.create({ "orders.malloy": ORDERS }),
          );
-         expect(Object.keys(plan.preaggregatePlans ?? {})).toEqual([]);
+         expect(Object.keys(rollupPlansIn(plan) ?? {})).toEqual([]);
          const pkg = await loadPackage({ "orders.malloy": ORDERS });
          expect(pkg.annotationFindingWarnings().map((w) => w.code)).toContain(
             "annotation-near-miss",

@@ -8,6 +8,7 @@
  * and the gate's reason, while a refused `#@ persist` source keeps
  * `persist-source-refused`. Which rollups are refused does not change.
  */
+import { rollupPlansIn } from "../../test_helpers/materialization_test_fixtures";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { components } from "../../api";
 import { tempBuildPlanPackages } from "../../test_helpers/incremental_test_harness";
@@ -90,7 +91,7 @@ describe("preaggregate-not-built", () => {
          const compiled = await compilePackageBuildPlan(
             await buildPlanPackages.create({ "orders.malloy": ORDERS }),
          );
-         const [rollupID] = Object.keys(compiled.preaggregatePlans ?? {});
+         const [rollupID] = Object.keys(rollupPlansIn(compiled));
          expect(rollupID).toBeDefined();
          // A rollup on a dialect whose connection creates no table: the
          // colocated gate refuses it, and nothing else about it changes. The
@@ -98,7 +99,7 @@ describe("preaggregate-not-built", () => {
          // still projects that same object and keeps the rollup in
          // `sources`, as a real read-only-dialect refusal does.
          Object.defineProperty(
-            compiled.sources[rollupID as string],
+            compiled.tables[rollupID as string].source,
             "dialectName",
             { get: () => "sqlserver" },
          );

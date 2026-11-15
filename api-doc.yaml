@@ -1500,7 +1500,7 @@ paths:
         424 refusal, or 200 with the package as it would load, its `warnings` included, plus the
         `location` it was loaded from. The 200 also carries what a publish would build and serve:
         the `buildPlan`, and `serveVerdicts`, each materialized source's serve verdict with each
-        stored source's named views compiled against a serve shape (no table is built). With package versioning on, the tree's `publisher.json`
+        stored source's named views compiled against a compile-only served copy (no table is built). With package versioning on, the tree's `publisher.json`
         must declare a valid version, as a versioned publish requires (400
         `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`), and the 200 names it as
         `versionId`. Version lifecycle checks (a version that already exists, `latest`) are not
@@ -5174,9 +5174,10 @@ components:
           type: array
           description: >-
             On a dry run, for a source stored with `storage=`: each named view
-            on it, and whether it compiles against the serve shape. A view that
-            does not is answered live, and `detail` carries the compile error
-            that says why (usually a field the shape cannot reproduce).
+            on it, and whether it compiles against a compile-only served copy. A
+            view that does not is answered live, and `detail` carries the compile
+            error that says why (usually a field the stored table cannot
+            reproduce).
           items:
             $ref: "#/components/schemas/ViewServeVerdict"
 
@@ -8552,26 +8553,20 @@ components:
             2. It was answered from a **colocated** materialized table. The
                query never reached the routing decision, so a fully materialized
                answer reports the same null a fully live one does.
-            3. The storage transform was **ineligible** for this query, so it was
-               served live. The query DID reach the routing decision and the tier
+            3. The served copy did **not answer** this query, so it was served
+               live. The query DID reach the routing decision and the tier
                declined it — a storage-tier miss, reported identically to "no
                materialization exists anywhere."
 
             Case 3 is the one that costs time, because nothing about this field
             distinguishes it from case 1. `path`, the path report, does: it names
             the table that answered in every tier, and why each table that could
-            have answered did not. The server does log it: one
-            `storage serve-shape ineligible for this query; serving live` line at
-            INFO per routed query, carrying the compile error that made the shape
-            ineligible, plus `shapeSources` (what the shape offered) and
-            `staleSources` (bound, but withheld by the freshness gate). The
-            compile error alone does not separate those: `Reference to undefined
-            object 'x'` reads identically whether `x` carries no `#@ persist` at
-            all or is materialized and merely past its freshness window. That log
-            is currently the only per-query account of a storage-tier miss. It is not a hypothetical shape — a source
-            warehouse that folds unquoted identifiers to upper case made every
-            query on every `storage=` source in a package ineligible, and the
-            whole tier reported null for months while looking exactly like a
+            have answered did not. The server also logs one
+            `served copy cannot answer this query` line at DEBUG per declined
+            query, carrying the error that declined it. It is not hypothetical —
+            a source warehouse that folds unquoted identifiers to upper case once
+            made every query on every `storage=` source in a package miss, and
+            the whole tier reported null for months while looking exactly like a
             deployment that had never enabled it.
 
             For the colocated tier there is no per-query signal at all. The
@@ -10837,8 +10832,8 @@ components:
       description: >-
         One `where:` conjunct a storage build leaves out of the artifact and the
         read puts back. Its `code` is the author's verbatim expression, which is
-        what a serve shape re-emits; `givens` are the names that expression reads,
-        which is what the shape must declare for it to compile.
+        what the served copy re-emits; `givens` are the names that expression
+        reads, which the served copy must declare for it to compile.
       properties:
         code:
           type: string

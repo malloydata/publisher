@@ -206,13 +206,12 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
       const before = await olderRelease();
       // Its manifest bound, as a restart or a host binds it: not this
       // release's table, so live.
-      await env.bindPackageColocatedServeManifest(
-         "pa",
-         splitManifestEntries(
+      await env.rebindPackageFromStore("pa", async () => ({
+         colocated: splitManifestEntries(
             before.manifest!.entries as never,
             "the earlier release's run",
          ).tableNameManifest,
-      );
+      }));
       expect(await ask()).toEqual({ rows: LIVE, servedBy: "live" });
 
       const after = await build();

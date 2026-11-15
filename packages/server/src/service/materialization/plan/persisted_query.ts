@@ -206,7 +206,7 @@ export function persistQueryInvalidFindings(
 /** The workaround a not-built persisted query's warning names. */
 function workaround(name: string): string {
    return (
-      `To store its result today, persist a source over it instead ` +
+      `To store its result, persist a source over it instead ` +
       `(\`#@ persist\` on \`source: ${name}_result is ${name}\`) and query ` +
       `that source.`
    );

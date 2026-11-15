@@ -12,7 +12,8 @@ SPDX-License-Identifier: MIT
 
 A persist source's build SQL is the persisted relation alone: an extend-block
 `where:` on the source is not in its table and refines the relation when it
-is read — which is why the serve shape re-emits it. `daily` is declared with
+is read — which is why the served copy keeps it: a re-root replaces only the
+declaration's base and keeps its `extend` blocks as written. `daily` is declared with
 `extend { where: total_amount > 100 }`, so its stored table holds every day,
 and reading `daily` means reading the filtered rows.
 

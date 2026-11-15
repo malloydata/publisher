@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "inherits_zone@<pkg>/m.malloy": "materialize",
+      "sets_zone@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "inherits_zone@<pkg>/m.malloy": {
         "buildSourceName": "inherits_zone__mat",

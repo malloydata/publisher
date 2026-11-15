@@ -1,6 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Which tables an active run of a package writes ({@link TableClaims}), so two
+ * runs never write one table at once: a per-package lock, the check that
+ * refuses a table another active run holds, and the run's record of what it
+ * writes. Read by the materialization service.
+ *
+ * Writes the run's metadata in the run store. In-process: one Publisher owns
+ * its store.
+ */
+
 import { Mutex } from "async-mutex";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";

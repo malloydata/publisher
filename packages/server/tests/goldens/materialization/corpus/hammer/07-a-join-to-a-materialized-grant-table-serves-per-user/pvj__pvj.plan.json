@@ -20,6 +20,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "accounts@<hammer>/pvj/pvj.malloy": "persist",
+      "grants@<hammer>/pvj/pvj.malloy": "persist",
+      "opps@<hammer>/pvj/pvj.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

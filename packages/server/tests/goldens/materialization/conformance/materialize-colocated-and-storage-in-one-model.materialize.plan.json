@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "mz_dim@<pkg>/m.malloy": "materialize",
+      "mz_fact@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "mz_dim@<pkg>/m.malloy": {
         "buildSourceName": "mz_dim__mat",

@@ -1,6 +1,27 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The run-level half of incremental materialization: per source, decide whether
+ * this refresh is a bounded DELTA or a full SEED, and record the boundary reached.
+ *
+ * The mechanics (probes, range arithmetic, DML text) live in incremental_apply.ts,
+ * which knows nothing about a run. This module reads the ledger, calls the
+ * planner, issues the DML and writes the boundary back, keeping the planner
+ * testable against fakes and the build loop free of ledger bookkeeping.
+ *
+ * Surface: the run's context ({@link incrementalRunContext}), a source's
+ * refresh and lineage ({@link sourceIncrementalRefresh},
+ * {@link incrementalLineage}), the plan and its step
+ * ({@link planSourceRefresh}, {@link applyIncrementalStep},
+ * {@link refreshOneSourceIncrementally}, {@link storageRefreshFor}), and the
+ * ledger writes ({@link resetLedger}, {@link advanceLedgerAfterSeed}). Read by
+ * the two tier strategies, the instructed build and the service.
+ *
+ * Effects: the delta's SQL in the warehouse or destination, the incremental
+ * ledger in the run store; logs and counts each step.
+ */
+
 import { logger } from "../../../logger";
 import {
    persistSourceDeclaredColumns,
@@ -24,22 +45,18 @@ import type {
 } from "../domain/types";
 import {
    collectIncrementalDeclarations,
-   CompiledBuildPlan,
    deriveColumns,
    storedColumnOf,
 } from "../plan/build_plan";
+import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import { storageDeltaTarget } from "./incremental_storage";
-import {
-   STORAGE_TARGET_DIALECT,
-   type StorageIncrementalRefresh,
-} from "./materialization_build_session";
+import { type StorageIncrementalRefresh } from "./materialization_build_session";
 import type { QueryMetadata } from "../../query_metadata";
 import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
    isPairGuardFailure,
-   INCREMENTAL_SOURCE_RANGE_DIALECTS,
-   INCREMENTAL_TARGET_DML_DIALECTS,
    isRenderableWatermarkType,
    planIncrementalStep,
    probePostgresVersion,
@@ -52,17 +69,7 @@ import {
    type WatermarkBound,
 } from "./incremental_apply";
 import { capturedNativeSchema } from "./colocated_native_types";
-import type { IncrementalDeclaration } from "../plan/incremental_declaration";
-
-/**
- * The run-level half of incremental materialization: per source, decide whether
- * this refresh is a bounded DELTA or a full SEED, and record the boundary reached.
- *
- * The mechanics (probes, range arithmetic, DML text) live in incremental_apply.ts,
- * which knows nothing about a run. This module reads the ledger, calls the
- * planner, issues the DML and writes the boundary back, keeping the planner
- * testable against fakes and the build loop free of ledger bookkeeping.
- */
+import type { IncrementalDeclaration } from "../domain/incremental";
 
 /**
  * The ledger surface a build needs; a narrowing of ResourceRepository. Addressed
@@ -184,7 +191,7 @@ export function sourceIncrementalRefresh(
       dialect: persistSource.dialectName,
       targetDialect:
          table.storageDestinationName !== undefined
-            ? STORAGE_TARGET_DIALECT
+            ? STORAGE_DIALECT
             : persistSource.dialectName,
       physicalTableName: table.physicalTableName,
       connectionName: persistSource.connectionName,
@@ -233,11 +240,11 @@ export function incrementalLineage(params: {
    ) {
       return undefined;
    }
-   if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(params.dialect)) return undefined;
+   if (!capabilitiesOf(params.dialect).incrementalSourceRange) return undefined;
    // The DML engine must be one whose transactional apply is proven. A legal
    // `storage=` destination is always DuckDB-family; this states the invariant
    // where it is relied on.
-   if (!INCREMENTAL_TARGET_DML_DIALECTS.has(params.targetDialect)) {
+   if (!capabilitiesOf(params.targetDialect).incrementalTargetDml) {
       return undefined;
    }
    const mergeKeys = d.mergeKeys
@@ -256,7 +263,7 @@ export function incrementalLineage(params: {
    // planned wrong.
    if (
       d.pair &&
-      (params.targetDialect !== "duckdb" ||
+      (!capabilitiesOf(params.targetDialect).pairDelta ||
          mergeKeys.length !== 1 ||
          mergeKeys[0] !== d.pair.parentKey)
    ) {
@@ -342,7 +349,7 @@ export async function planSourceRefresh(params: {
    // recorded boundary the source seeds regardless.
    const postgresVersionNum =
       lineage.strategy === "merge" &&
-      target.dialect === "postgres" &&
+      capabilitiesOf(target.dialect).mergeGatedByServerVersion &&
       ledgerEntry !== null
          ? await probePostgresVersion(target.runner)
          : undefined;
@@ -722,10 +729,7 @@ export function incrementalRunContext(
    // declaration, so that source builds full.
    const declarations: Record<string, IncrementalDeclaration> = {};
    for (const [sourceID, declaration] of Object.entries(
-      collectIncrementalDeclarations(
-         compiled.sources,
-         compiled.materializePlans,
-      ),
+      collectIncrementalDeclarations(compiled.tables),
    )) {
       if (declaration.incremental) declarations[sourceID] = declaration;
    }
@@ -862,8 +866,9 @@ export function storageRefreshFor(params: {
             buildSQL: params.buildSQL,
             queryMetadata: params.queryMetadata,
          });
-         // A table an older build typed (ms2data/service#6642): a delta only
-         // INSERTs into the columns it has, so only a re-seed's CTAS casts them.
+         // A table an older build typed (incremental_recast.spec.ts): a delta
+         // only INSERTs into the columns it has, so only a re-seed's CTAS casts
+         // them.
          const recast = await columnsARebuildWouldRecast(
             session,
             quotedTablePath,
@@ -931,7 +936,7 @@ export function storageRefreshFor(params: {
             context,
             lineage,
             quotedTablePath,
-            dialect: STORAGE_TARGET_DIALECT,
+            dialect: STORAGE_DIALECT,
             runner: (sql) => session.runSQL(sql),
             storedColumn: storedColumnOf(persistSource),
          }),

@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "nested@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "nested@<pkg>/m.malloy": {
         "buildSourceName": "nested__mat",

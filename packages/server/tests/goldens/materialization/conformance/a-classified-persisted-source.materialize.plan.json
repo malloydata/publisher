@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "classified@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "classified@<pkg>/m.malloy": {
         "buildSourceName": "classified__mat",

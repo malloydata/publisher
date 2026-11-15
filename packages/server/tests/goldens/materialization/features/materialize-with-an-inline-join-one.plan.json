@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders_wide@<pkg>/m.malloy": "materialize",
+      "orders_wide_local@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "orders_wide@<pkg>/m.malloy": {
         "buildSourceName": "orders_wide__mat",

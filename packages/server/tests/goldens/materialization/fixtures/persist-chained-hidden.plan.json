@@ -17,6 +17,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "customers_hidden@<pkg>/chained_hidden.malloy": "persist",
+      "west_spend@<pkg>/chained_hidden.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

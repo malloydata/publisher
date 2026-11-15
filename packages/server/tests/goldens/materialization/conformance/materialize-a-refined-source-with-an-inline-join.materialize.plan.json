@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "enriched@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "enriched@<pkg>/m.malloy": {
         "buildSourceName": "enriched__mat",

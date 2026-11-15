@@ -1,10 +1,24 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   generatedNameOwner,
-   type MaterializePlan,
-} from "../plan/build_file_generator";
+/**
+ * What a build needs from the plan about stored tables, and the run's shared
+ * helpers. The plan's facts ({@link ChainedPlanFacts}, {@link chainedPlanFacts})
+ * and the manifest the compiler renders over ({@link manifestForCompiler},
+ * {@link upstreamReuseFromManifest}); which upstream entries are current for
+ * their declared tier, and the refusal of one a host supplied at the wrong
+ * tier ({@link HostSuppliedWrongTierError}); the environment surface a build
+ * reads ({@link BuildEnvironment}); staging and backup names, the run's status
+ * transitions, its tallies and its table keys. Read by most of `run/` and the
+ * materialization controller.
+ *
+ * Mostly pure. The exceptions log and count: a wrong-tier recompute
+ * ({@link noteWrongTierRecompute}) and the storage tables a failed run keeps
+ * ({@link reportRetainedStorageTables}).
+ */
+
+import { generatedNameOwner } from "../plan/build_file_generator";
+import { type MaterializePlan } from "../domain/table_plans";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
@@ -75,7 +89,7 @@ export interface ChainedPlanFacts {
     * The plan's own sourceIDs for a source name at a content address
     * ({@link planSourceIds}), so a chained build rebinds an upstream only where
     * the downstream's model means that source. Absent without a plan, which
-    * leaves upstreams matched by name, as before.
+    * leaves upstreams matched by name.
     */
    sourceIDsFor?: (sourceName: string, sourceEntityId: string) => string[];
    /**
@@ -89,7 +103,7 @@ export interface ChainedPlanFacts {
     * The address does not include the destination (P12), so a source that moved
     * tier keeps its address, and an entry for it may describe the table it had
     * before the move. {@link upstreamEntryIsCurrent} reads this. Absent without
-    * a plan, which leaves every entry trusted, as before.
+    * a plan, which leaves every entry trusted.
     */
    declaredTiersByAddress?: Record<string, readonly (string | null)[]>;
    /** The plan's source names at each content address, for messages. */
@@ -106,8 +120,8 @@ export interface ChainedPlanFacts {
    hostInstructed?: boolean;
    /**
     * What a strict build does with a source whose only build recomputes a
-    * stored upstream from the warehouse (ms2data/service#6756): `recompute`
-    * builds it and reports `upstreamReuse: recomputed`; `refuse` fails it
+    * stored upstream from the warehouse: `recompute` builds it and reports
+    * `upstreamReuse: recomputed`; `refuse` fails it
     * ({@link WarehouseRecomputeRefusedError}). Only a host sets it; absent
     * means `recompute`, and a non-strict build ignores it.
     */
@@ -233,9 +247,9 @@ export function upstreamReuseFromManifest(params: {
                destination
                   ? `persisted upstream '${name}' is materialized in storage ` +
                        `destination '${destination}', which a warehouse build cannot read`
-                  : // A warehouse entry for a source now declared `storage=`
-                    // (#7087): the table from before it moved, or a stored
-                    // table a reference did not label. Neither is read here.
+                  : // A warehouse entry for a source now declared `storage=`:
+                    // the table from before it moved, or a stored table a
+                    // reference did not label. Neither is read here.
                     `persisted upstream '${name}' is declared in a storage ` +
                        `destination, and its manifest entry is not a table a ` +
                        `warehouse build can read`,
@@ -286,10 +300,10 @@ export function upstreamReuseFromManifest(params: {
 
 /**
  * A compiler strict manifest miss, recognized by its `code` (the contract),
- * with the `sourceID` parsed from the message when it has today's shape. A
- * reworded message yields a miss of an unnamed source, not no miss. The
- * real-compiler spec pins the wording; the id belongs on the error object
- * (malloydata/malloy#3133).
+ * with the `sourceID` parsed from the message when it has the shape the
+ * real-compiler spec pins. A reworded message yields a miss of an unnamed
+ * source, not no miss. The id belongs on the error object, which Malloy does
+ * not put there.
  */
 export function strictMissSourceId(
    err: unknown,
@@ -362,7 +376,7 @@ export function compilerMissingUpstream(
  * by `manifestForCompiler`).
  */
 export function chainedPlanFacts(
-   sources: Record<string, PersistSource>,
+   tables: Readonly<Record<string, { source: PersistSource }>>,
    connectionDigests: Record<string, string>,
    /**
     * The run's instruction for a source, when it has one: its `destination`
@@ -385,7 +399,7 @@ export function chainedPlanFacts(
    const declaredTiersByAddress: Record<string, (string | null)[]> = {};
    const namesByAddress: Record<string, string[]> = {};
    const storageOn = getPersistStorageMode() !== "off";
-   for (const [sourceID, source] of Object.entries(sources)) {
+   for (const [sourceID, { source }] of Object.entries(tables)) {
       let sourceEntityId: string | undefined;
       try {
          sourceEntityId = computeSourceEntityId(source, connectionDigests);
@@ -421,7 +435,7 @@ export function chainedPlanFacts(
       }
    }
    return {
-      persistSourceIds: new Set(Object.keys(sources)),
+      persistSourceIds: new Set(Object.keys(tables)),
       aliasesBySourceName: groupAliasesByName(planSources),
       addressBySourceId,
       compilerKeyBySourceId,
@@ -433,14 +447,14 @@ export function chainedPlanFacts(
 
 /**
  * Whether a manifest entry describes the table its source is declared to have
- * NOW (ms2data/service#7087). An entry's tier is its `storageDestinationName`,
- * or null for a warehouse table. A source moved to or from `storage=` keeps its
- * content address, so a carried or referenced entry can be the table from
- * before the move: a warehouse table for a source now stored, or a stored table
- * for a source now colocated or in another destination. Such an entry is stale
- * and is never used as an upstream: not rendered into warehouse SQL, and not
- * stacked on. An address the plan does not know, or a run with no plan, keeps
- * every entry, as before.
+ * NOW (pinned by materialization_run_support.spec.ts). An entry's tier is its
+ * `storageDestinationName`, or null for a warehouse table. A source moved to
+ * or from `storage=` keeps its content address, so a carried or referenced
+ * entry can be the table from before the move: a warehouse table for a source
+ * now stored, or a stored table for a source now colocated or in another
+ * destination. Such an entry is stale and is never used as an upstream: not
+ * rendered into warehouse SQL, and not stacked on. An address the plan does
+ * not know, or a run with no plan, keeps every entry.
  */
 export function upstreamEntryIsCurrent(
    address: string,
@@ -490,9 +504,9 @@ export function currentUpstreamEntries(
 
 /**
  * A host-instructed build refused because the host supplied an upstream's
- * entry at the wrong tier for the upstream as declared now (ms2data/service#7087,
- * decided 2026-11-12). Deterministic: the same instructions fail the same way,
- * so `retryable: false` (build_failure_class.ts), and the host sees why.
+ * entry at the wrong tier for the upstream as declared now. Deterministic:
+ * the same instructions fail the same way, so `retryable: false`
+ * (build_failure_class.ts), and the host sees why.
  */
 export class HostSuppliedWrongTierError extends Error {
    readonly missing: readonly string[];
@@ -757,7 +771,7 @@ export function manifestExcludingStorage(
       // A warehouse entry for a source now declared `storage=` is either the
       // table from before the move or a stored table a reference did not label
       // (a reference that omits `storageDestinationName` reads as a warehouse
-      // table): either way its name must never reach warehouse SQL (#7087).
+      // table): either way its name must never reach warehouse SQL.
       if (
          !entry.storageDestinationName &&
          quoted[id] &&
@@ -767,7 +781,7 @@ export function manifestExcludingStorage(
             planFacts.declaredTiersByAddress &&
             !(id in planFacts.declaredTiersByAddress)
          ) {
-            // Kept as before: the plan does not know this address, so nothing
+            // Kept: the plan does not know this address, so nothing
             // says whether it is current. Logged, since an unlabeled reference
             // here could still be a stored table's name.
             logger.debug(

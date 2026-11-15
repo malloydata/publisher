@@ -21,7 +21,11 @@ import { Environment } from "../../environment";
 import { EnvironmentStore } from "../../environment_store";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { logger } from "../../../logger";
-import { MaterializationService } from "./materialization_service";
+import {
+   MaterializationService,
+   type RunCollaboratorOverrides,
+   type RunCollaborators,
+} from "./materialization_service";
 import {
    storageBindingResolverFor,
    writeTargetsIn,
@@ -219,28 +223,52 @@ describe("reclaiming an archived version's tables", () => {
       return created;
    }
 
-   /** A MaterializationService over `environment`, its archives reclaiming. */
-   function newService(environment: Environment): MaterializationService {
+   /**
+    * A MaterializationService over `environment`, its archives reclaiming,
+    * with any run collaborators a case replaces.
+    */
+   function newService(
+      environment: Environment,
+      collaborators: RunCollaboratorOverrides = {},
+   ): MaterializationService {
       const store = {
          storageManager: { getRepository: () => repo },
          getEnvironment: async () => environment,
          getLoadedEnvironments: () => [environment],
       } as unknown as EnvironmentStore;
-      const created = new MaterializationService(store);
+      const created = new MaterializationService(store, collaborators);
       environment.setVersionArchivedHook((packageName, versionId) => {
          reclaims.push(
-            created.reclaimVersionTables(ENV, packageName, versionId),
+            created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
          );
       });
       environment.setVersionDeletedHook((packageName, versionId) => {
          reclaims.push(
-            created.cleanUpDeletedVersion(ENV, packageName, versionId),
+            created.reclaimer.cleanUpDeletedVersion(
+               ENV,
+               packageName,
+               versionId,
+            ),
          );
       });
       environment.setOwedReclaimHook((packageName, versionId) =>
-         created.reclaimOwedNow(environment, packageName, versionId),
+         created.reclaimer.reclaimOwedNow(environment, packageName, versionId),
       );
       return created;
+   }
+
+   /** Run collaborators whose first commit the store refuses. */
+   function failingFirstCommit(
+      real: RunCollaborators,
+   ): Partial<RunCollaborators> {
+      let failed = false;
+      return {
+         commitManifest: async (...args) => {
+            if (failed) return real.commitManifest(...args);
+            failed = true;
+            throw new Error("the store refused the commit");
+         },
+      };
    }
 
    /** A restart: a fresh Environment and service over the same store. */
@@ -461,16 +489,8 @@ describe("reclaiming an archived version's tables", () => {
       await publish("2.0.0", 2, "version");
       // The run builds both tables, then cannot commit: it ends FAILED with
       // no manifest, the shape a cancelled or crashed run leaves too.
-      const commit = spyOn(
-         service as unknown as {
-            commitManifest: (...args: unknown[]) => Promise<void>;
-         },
-         "commitManifest",
-      ).mockImplementationOnce(async () => {
-         throw new Error("the store refused the commit");
-      });
+      service = newService(env, failingFirstCommit);
       const failed = await build({ versionId: VersionRef.parse("1.0.0") });
-      commit.mockRestore();
       expect(failed.status).toBe("FAILED");
       expect(Object.keys(failed.manifest?.entries ?? {})).toEqual([]);
       expect((await tablesIn(env)).sort()).toEqual(
@@ -495,16 +515,8 @@ describe("reclaiming an archived version's tables", () => {
       await publish("1.0.0", 1, "version", { detail: true });
       await publish("2.0.0", 2, "version");
       // The run builds both tables; the commit never comes back.
-      const commit = spyOn(
-         service as unknown as {
-            commitManifest: (...args: unknown[]) => Promise<void>;
-         },
-         "commitManifest",
-      ).mockImplementationOnce(async () => {
-         throw new Error("the store refused the commit");
-      });
+      service = newService(env, failingFirstCommit);
       const built = await build({ versionId: VersionRef.parse("1.0.0") });
-      commit.mockRestore();
       // As the process died mid-run: the record still says it is running and
       // holds its version's slot. Nothing in this process tracks it.
       await db.run(
@@ -529,7 +541,7 @@ describe("reclaiming an archived version's tables", () => {
       const settled = (await repo.getMaterializationById(built.id))!;
       expect(settled.status).toBe("FAILED");
       expect(settled.error).toBe(INTERRUPTED_RUN_ERROR);
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
 
       expect(await tablesIn(env)).toEqual([]);
       expect(await statusOf(built.id)).toBeNull();
@@ -553,7 +565,7 @@ describe("reclaiming an archived version's tables", () => {
 
       await archive("1.0.0");
       // Nor does the startup sweep.
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
 
       expect(await tablesIn(env)).toEqual([TABLE_V2, "summary"].sort());
       expect(await statusOf(shared.id)).toBe("MANIFEST_FILE_READY");
@@ -591,7 +603,7 @@ describe("reclaiming an archived version's tables", () => {
       );
 
       await restart();
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
 
       expect(await tablesIn(env)).toEqual([TABLE_V2]);
       expect(await statusOf(v1.id)).toBeNull();
@@ -616,7 +628,7 @@ describe("reclaiming an archived version's tables", () => {
       await versions.setArchiveStatus(PKG, "1.0.0", "archive");
       await versions.setArchiveStatus(PKG, "1.0.0", "unarchive");
       expect(started).toEqual([[PKG, "1.0.0"]]);
-      await service.reclaimVersionTables(ENV, PKG, "1.0.0");
+      await service.reclaimer.reclaimVersionTables(ENV, PKG, "1.0.0");
 
       expect(await tablesIn(env)).toEqual([TABLE_V1]);
       expect(await statusOf(v1.id)).toBe("MANIFEST_FILE_READY");
@@ -683,7 +695,7 @@ describe("reclaiming an archived version's tables", () => {
       expect(await statusOf(v1.id)).toBe("MANIFEST_FILE_READY");
 
       await restart();
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
       expect(await tablesIn(env)).toEqual([]);
       expect(await statusOf(v1.id)).toBeNull();
    });
@@ -951,7 +963,7 @@ describe("reclaiming an archived version's tables", () => {
       expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
 
       await restart();
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
       expect(await tablesIn(env)).toEqual([]);
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
    });
@@ -963,12 +975,16 @@ describe("reclaiming an archived version's tables", () => {
       const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
 
       // The delete's drop fails: every table is left.
-      const drop = spyOn(
-         service as unknown as {
-            dropManifestEntries: (...args: unknown[]) => Promise<unknown>;
-         },
-         "dropManifestEntries",
-      ).mockImplementationOnce(async (...args: unknown[]) => args[4]);
+      service = newService(env, (real) => {
+         let failed = false;
+         return {
+            dropManifestEntries: async (...args) => {
+               if (failed) return real.dropManifestEntries(...args);
+               failed = true;
+               return args[4];
+            },
+         };
+      });
       const warn = spyOn(logger, "warn");
       try {
          await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
@@ -979,7 +995,6 @@ describe("reclaiming an archived version's tables", () => {
          expect(left).toHaveLength(1);
          expect(JSON.stringify(left[0][1])).toContain(TABLE_V1);
       } finally {
-         drop.mockRestore();
          warn.mockRestore();
       }
       expect(await repo.getVersion(ENV_ID, PKG, "1.0.0")).toBeNull();
@@ -988,7 +1003,7 @@ describe("reclaiming an archived version's tables", () => {
       expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
 
       await restart();
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
 
       expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
       expect(await statusOf(v2.id)).toBe("MANIFEST_FILE_READY");
@@ -1036,12 +1051,18 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       const materializationService = new MaterializationService(store);
       const calls: string[][] = [];
       const reclaims: Promise<void>[] = [];
-      const reclaim = materializationService.reclaimVersionTables.bind(
-         materializationService,
-      );
-      spyOn(materializationService, "reclaimVersionTables").mockImplementation(
+      const reclaim =
+         materializationService.reclaimer.reclaimVersionTables.bind(
+            materializationService.reclaimer,
+         );
+      spyOn(
+         materializationService.reclaimer,
+         "reclaimVersionTables",
+      ).mockImplementation(
          (
-            ...args: Parameters<MaterializationService["reclaimVersionTables"]>
+            ...args: Parameters<
+               MaterializationService["reclaimer"]["reclaimVersionTables"]
+            >
          ) => {
             calls.push([...args]);
             const started = reclaim(...args);
@@ -1055,7 +1076,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          // Archiving a version reclaims the tables it alone owns, in the background.
          environmentStore.setVersionArchivedHook(
             (environmentName, packageName, versionId) => {
-               void materializationService.reclaimVersionTables(
+               void materializationService.reclaimer.reclaimVersionTables(
                   environmentName,
                   packageName,
                   versionId,
@@ -1066,7 +1087,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          // background, once its row is gone.
          environmentStore.setVersionDeletedHook(
             (environmentName, packageName, versionId) => {
-               void materializationService.cleanUpDeletedVersion(
+               void materializationService.reclaimer.cleanUpDeletedVersion(
                   environmentName,
                   packageName,
                   versionId,
@@ -1077,7 +1098,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          // version still owes, if that delete's cleanup has not run yet.
          environmentStore.setOwedReclaimHook(
             (environment, packageName, versionId) =>
-               materializationService.reclaimOwedNow(
+               materializationService.reclaimer.reclaimOwedNow(
                   environment,
                   packageName,
                   versionId,
@@ -1086,7 +1107,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          // A reclaim that a crash cut short is finished once the environments have
          // loaded: nothing else would start it again.
          sweep = environmentStore.finishedInitialization.then(
-            () => materializationService.reclaimArchivedVersions(),
+            () => materializationService.reclaimer.reclaimArchivedVersions(),
             () => undefined,
          );
       }
@@ -1626,7 +1647,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       expect(server).toContain(
          squash(`environmentStore.setVersionArchivedHook(
             (environmentName, packageName, versionId) => {
-               void materializationService.reclaimVersionTables(
+               void materializationService.reclaimer.reclaimVersionTables(
                   environmentName,
                   packageName,
                   versionId,
@@ -1637,7 +1658,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       expect(server).toContain(
          squash(`environmentStore.setVersionDeletedHook(
             (environmentName, packageName, versionId) => {
-               void materializationService.cleanUpDeletedVersion(
+               void materializationService.reclaimer.cleanUpDeletedVersion(
                   environmentName,
                   packageName,
                   versionId,
@@ -1647,12 +1668,12 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       );
       expect(server).toContain(
          squash(`environmentStore.setOwedReclaimHook((environment, packageName, versionId) =>
-            materializationService.reclaimOwedNow(environment, packageName, versionId),
+            materializationService.reclaimer.reclaimOwedNow(environment, packageName, versionId),
          );`),
       );
       expect(server).toContain(
          squash(`environmentStore.finishedInitialization.then(
-            () => materializationService.reclaimArchivedVersions(),
+            () => materializationService.reclaimer.reclaimArchivedVersions(),
             () => undefined,
          );`),
       );

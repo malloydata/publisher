@@ -493,3 +493,114 @@ describe("kindFromPlan", () => {
       expect(kindFromPlan({ kind: "persist" }, plan)).toBe("persist");
    });
 });
+
+describe("the bind functions at their edges", () => {
+   const entry = (sourceName: string, sourceEntityId: string): ManifestEntry =>
+      ({
+         sourceName,
+         sourceEntityId,
+         storageDestinationName: "lake",
+         physicalTableName: `${sourceName}_t`,
+         schema: [{ name: "x", type: "INTEGER" }],
+      }) as ManifestEntry;
+   /** Two models declaring `orders` with one SQL: one table, two sourceIDs. */
+   const twoModels = {
+      sources: {
+         "orders@a": {
+            name: "orders",
+            sourceEntityId: "addr_orders",
+            connectionName: "duckdb",
+         },
+         "orders@b": {
+            name: "orders",
+            sourceEntityId: "addr_orders",
+            connectionName: "duckdb",
+         },
+      },
+   } as unknown as BuildPlan;
+
+   it("narrows a shared table's binding to its eligible sourceIDs", () => {
+      const bound = bindStorageEntries({
+         entries: { addr_orders: entry("orders", "addr_orders") },
+         plan: twoModels,
+         eligibility: {
+            eligible: ["orders@a"],
+            refused: { "orders@b": "gated" },
+         },
+         kindOf: (b) => b.kind,
+      });
+      expect(bound.bindings.map((b) => b.sourceIDs)).toEqual([["orders@a"]]);
+      expect(bound.declined).toEqual([]);
+   });
+
+   it("keeps a binding whole when every sourceID is eligible", () => {
+      const bound = bindStorageEntries({
+         entries: { addr_orders: entry("orders", "addr_orders") },
+         plan: twoModels,
+         eligibility: { eligible: ["orders@a", "orders@b"], refused: {} },
+         kindOf: (b) => b.kind,
+      });
+      expect(bound.bindings.map((b) => b.sourceIDs)).toEqual([
+         ["orders@a", "orders@b"],
+      ]);
+   });
+
+   it("says a source never examined is not in the plan, and marks a declined rollup", () => {
+      const bound = bindStorageEntries({
+         entries: { addr_orders: entry("orders", "addr_orders") },
+         plan: twoModels,
+         eligibility: { eligible: [], refused: {} },
+         kindOf: () => "rollup",
+      });
+      expect(bound.bindings).toEqual([]);
+      expect(bound.declined).toHaveLength(1);
+      expect(bound.declined[0].reason).toBe("refused");
+      expect(bound.declined[0].rollup).toBe(true);
+      expect(bound.declined[0].detail).toContain(
+         "not in the package build plan",
+      );
+   });
+
+   it("with no plan, calls no entry another definition's and binds none", () => {
+      const bound = bindStorageEntries({
+         entries: { addr_orders: entry("orders", "addr_orders") },
+         plan: null,
+         eligibility: undefined,
+         kindOf: (b) => b.kind,
+      });
+      expect(bound.otherDefinition).toEqual([]);
+      expect(bound.bindings).toEqual([]);
+      expect(bound.declined.map((d) => d.reason)).toEqual([
+         "build_plan_unavailable",
+      ]);
+   });
+
+   it("passes a colocated name already quoted, and says why an unrefused miss declines", () => {
+      const bound = bindColocatedEntries({
+         entries: {
+            a: { tableName: '"order"' },
+            b: { tableName: "missed" },
+         },
+         eligibility: { eligibleEntityIds: new Set(["a"]), refused: {} },
+         dialects: new Map([["a", "postgres"]]),
+      });
+      expect(bound.entries).toEqual({ a: { tableName: '"order"' } });
+      expect(bound.declined).toHaveLength(1);
+      expect(bound.declined[0].sourceEntityId).toBe("b");
+      expect(bound.declined[0].detail).toContain(
+         "not in the package build plan",
+      );
+   });
+
+   it("reads a view's build source as a view before a #(materialize) table", () => {
+      expect(
+         kindFromPlan(
+            { kind: "persist", sourceIDs: ["m@x", "v@x"] },
+            {
+               materializeSourceIDs: new Set(["m@x"]),
+               viewBuildSourceIDs: new Set(["v@x"]),
+            },
+         ),
+      ).toBe("view");
+   });
+});

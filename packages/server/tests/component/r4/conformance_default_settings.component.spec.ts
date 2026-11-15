@@ -22,7 +22,7 @@ import {
    freshLoadPool,
    loadFixture,
    type Outcome,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { LIVE_WRONG_NEST, renderFiles, SHAPES } from "./conformance/shapes";
 import { withoutDrillExpression } from "./conformance/drill_expression";
 import { rowDifference } from "./harness";
