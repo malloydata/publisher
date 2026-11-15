@@ -277,7 +277,6 @@ export const RATCHET_DIALECT_LITERALS = {
    },
    "service/materialization/run/table_mark_sql.ts": { count: 3, step: "2l" },
    "service/materialization/run/table_ownership.ts": { count: 2, step: "2l" },
-   "service/materialization/stored_column_types.ts": { count: 2, step: "2l" },
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};

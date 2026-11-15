@@ -440,7 +440,8 @@ describe("the ratchets", () => {
          "dialect literals",
          countMatches(
             mzFiles(),
-            /\b\w*[dD]ialect\w*\s*[!=]==?\s*["'`][a-z_]+["'`]|["'`][a-z_]+["'`]\s*[!=]==?\s*[\w.]*[dD]ialect\w*\b/,
+            // Not a type test (`typeof dialect !== "string"`).
+            /(?<!typeof\s+)\b\w*[dD]ialect\w*\s*[!=]==?\s*["'`][a-z_]+["'`]|["'`][a-z_]+["'`]\s*[!=]==?\s*[\w.]*[dD]ialect\w*\b/,
          ),
          lists.RATCHET_DIALECT_LITERALS,
       );
