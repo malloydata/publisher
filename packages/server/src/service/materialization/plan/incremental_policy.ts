@@ -61,6 +61,7 @@ const MODE = `refresh="incremental"`;
 
 /** How a message names the declaration: the author's source, or view. */
 function declaredOn(source: IncrementalPolicySource): string {
+   // malloy-text: names quoted in a rejection message, not generated Malloy
    return source.viewName === undefined
       ? `#@ persist source "${source.sourceName}"`
       : `#@ persist on view "${source.viewName}" of source "${source.sourceName}"`;
