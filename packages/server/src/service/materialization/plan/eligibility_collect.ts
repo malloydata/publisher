@@ -326,8 +326,10 @@ export function authorNameOf(sourceID: string, name: string): string {
 function collisionSubjectOf(sourceID: string, name: string): string {
    const author = authorNameOf(sourceID, name);
    const view = /^view (.+) of (.+)$/.exec(author);
+   // malloy-text: names quoted in a finding's message, not generated Malloy
    if (view) return `#@ persist on view "${view[1]}" of source "${view[2]}"`;
    const query = /^query (.+)$/.exec(author);
+   // malloy-text: names quoted in a finding's message, not generated Malloy
    if (query) return `#@ persist on query "${query[1]}"`;
    return `#@ persist source "${name}"`;
 }
