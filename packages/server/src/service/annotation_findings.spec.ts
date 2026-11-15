@@ -389,6 +389,73 @@ describe("annotation findings on a loaded package", () => {
    );
 });
 
+describe("a collision across routes", () => {
+   const MIXED = `${RAW}#@ persist name="t4"
+source: v1 is raw -> { group_by: category; aggregate: total is amount.sum() }
+
+#(materialize) name="t4"
+source: v2 is raw extend { where: amount > 0 }
+`;
+   it(
+      "fails the load naming both sides of a #@ persist and a #(materialize) at one name=",
+      async () => {
+         await withMaterialize(async () => {
+            const lines = (await loadError(MIXED))
+               .split("\n")
+               .filter((l) => l.includes("[materialization-table-collision]"));
+            expect(
+               lines.some((l) => l.includes('#@ persist source "v1"')),
+            ).toBe(true);
+            expect(lines.some((l) => l.includes('source "v2"'))).toBe(true);
+         });
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "under PERSIST_COLLISION_ENFORCE=false, plans neither side, each refused under its own code",
+      async () => {
+         await withMaterialize(
+            async () => {
+               const pkg = await loadPackage(MIXED);
+               expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual(
+                  [],
+               );
+               expect(
+                  coded(pkg, "persist-not-built").map((w) => w.subject),
+               ).toEqual(["v1"]);
+               expect(
+                  coded(pkg, "materialize-not-built").map((w) => w.subject),
+               ).toEqual(["v2"]);
+            },
+            { PERSIST_COLLISION_ENFORCE: "false" },
+         );
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "names the author's views, not their generated build sources",
+      async () => {
+         await withMaterialize(async () => {
+            const message =
+               await loadError(`${RAW}source: orders is raw extend {
+  measure: n is count()
+  #@ persist name="t5"
+  view: by_a is { group_by: category; aggregate: n }
+  #@ persist name="t5"
+  view: by_b is { group_by: amount; aggregate: n }
+}
+`);
+            expect(message).toContain("view by_a of orders");
+            expect(message).toContain("view by_b of orders");
+            expect(message).not.toContain("__view");
+         });
+      },
+      { timeout: 30000 },
+   );
+});
+
 describe("an invalid #(materialize) fails the load", () => {
    it.each([
       [

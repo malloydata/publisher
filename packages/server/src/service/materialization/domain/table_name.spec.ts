@@ -371,4 +371,12 @@ describe("tableNamesMeet", () => {
       expect(tableNamesMeet("s1.t", "s2.t")).toBe(false);
       expect(tableNamesMeet("main.t", "main.u")).toBe(false);
    });
+
+   it("meets when one name's containers end the other's: a shorter name lands in the connection's defaults", () => {
+      expect(tableNamesMeet("proj.ds.t", "ds.t")).toBe(true);
+      expect(tableNamesMeet("ds.t", "proj.ds.t")).toBe(true);
+      expect(tableNamesMeet("DB.S.T", "S.T")).toBe(true);
+      expect(tableNamesMeet("proj.ds.t", "other.t")).toBe(false);
+      expect(tableNamesMeet("p1.ds.t", "p2.ds.t")).toBe(false);
+   });
 });

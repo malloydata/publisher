@@ -421,6 +421,25 @@ source: b is raw -> { group_by: x }
    );
 
    it(
+      'fails the load on name="t" beside name="other.t": a bare name may land in that schema, so it is judged one table',
+      async () => {
+         // A known false positive when the connection's default schema is
+         // not `other`: a bare name's schema cannot be told at load, and a
+         // missed collision would serve one source the other's rows.
+         const message = await loadError(`##! experimental.persistence
+
+#@ persist name="t"
+source: a is duckdb.sql("SELECT 1 as x")
+
+#@ persist name="other.t"
+source: b is duckdb.sql("SELECT 2 as y")
+`);
+         expect(message).toContain("[materialization-table-collision]");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "does not collide two name=s in two named schemas",
       async () => {
          const pkg = await loadPackage(`##! experimental.persistence

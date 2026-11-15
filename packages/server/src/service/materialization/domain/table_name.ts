@@ -357,20 +357,19 @@ export function tableNameParts(name: string): {
 
 /**
  * Whether two written table names, on one connection or destination, may be
- * one table: the same table segment, and the same container or no container
- * on either. A name with no container is written into the connection's
- * default schema or dataset, which cannot be told from here (`main.t` and
- * `t` are one table on DuckDB), so a bare name meets any container: the
- * conservative answer, since a missed one serves one source the other's
- * rows. Compared as given; the caller folds case where the destination does.
+ * one table: the same table segment, and containers of which the shorter is
+ * a segment-wise suffix of the longer. A name written with fewer containers
+ * is placed in the connection's defaults, which cannot be told from here
+ * (`main.t` and `t` are one table on DuckDB, `proj.ds.t` and `ds.t` on
+ * BigQuery, `DB.S.T` and `S.T` on Snowflake), so it meets any name that
+ * ends the same way: the conservative answer, since a missed one serves one
+ * source the other's rows. Compared as given; the caller folds case where
+ * the destination does.
  */
 export function tableNamesMeet(a: string, b: string): boolean {
-   const x = tableNameParts(a);
-   const y = tableNameParts(b);
-   return (
-      x.leaf === y.leaf &&
-      (x.container === undefined ||
-         y.container === undefined ||
-         x.container === y.container)
-   );
+   const x = a.split(".");
+   const y = b.split(".");
+   const [shorter, longer] = x.length <= y.length ? [x, y] : [y, x];
+   const offset = longer.length - shorter.length;
+   return shorter.every((segment, i) => segment === longer[offset + i]);
 }

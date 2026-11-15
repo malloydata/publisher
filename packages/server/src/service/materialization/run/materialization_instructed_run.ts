@@ -49,6 +49,7 @@ import {
 } from "./materialization_run_support";
 import type { UniquenessLedger } from "./inline_uniqueness";
 import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
 
 /** The eligibility gate a source was cleared by. */
@@ -300,7 +301,14 @@ export function assertNoTableCollisions(
             index.bySourceID.get(persistSource.sourceID) ??
             index.bySourceEntityId.get(address);
          if (!instruction) continue;
-         const table = instruction.physicalTableName;
+         // Compared as the plan compares them: folded where the
+         // destination folds table names to one case.
+         const table = tableNamesFoldCase(
+            persistSource.dialectName,
+            !!instruction.destination,
+         )
+            ? instruction.physicalTableName.toLowerCase()
+            : instruction.physicalTableName;
          const target = JSON.stringify([
             instruction.destination ? "destination" : "connection",
             instruction.destination ?? build.connectionName,
@@ -315,7 +323,7 @@ export function assertNoTableCollisions(
             collisions.push({
                first: other.sourceName,
                second: persistSource.name,
-               table,
+               table: instruction.physicalTableName,
             });
          }
          claims.push({

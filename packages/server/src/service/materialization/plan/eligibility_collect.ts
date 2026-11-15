@@ -10,6 +10,7 @@
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -242,6 +243,7 @@ function physicalTarget(
 /** One source sharing a table with another, for {@link sharedTables}. */
 interface SharedTableMember {
    sourceID: string;
+   /** As its author wrote it: a source's name, or a view's or query's. */
    name: string;
    address: string;
    model?: string;
@@ -292,7 +294,7 @@ function sharedTableGroups(
       };
       group.members.push({
          sourceID,
-         name: source.name,
+         name: authorNameOf(sourceID, source.name),
          address,
          model: compiled.sourceModelPaths?.[sourceID],
          ...(target.written !== undefined ? { written: target.written } : {}),
@@ -302,6 +304,32 @@ function sharedTableGroups(
    return [...byTarget.values()]
       .map((g) => ({ ...g, members: membersOnOneTable(g.members) }))
       .filter((g) => g.members.length > 1);
+}
+
+/**
+ * A planned source named as its author wrote it: a persisted view's or
+ * query's generated build source (`<source>__<view>__view`,
+ * `<query>__query`) as that view or query, every other source by its name.
+ */
+export function authorNameOf(sourceID: string, name: string): string {
+   const url = sourceID.slice(sourceID.indexOf("@") + 1);
+   if (url.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) {
+      const view = /^(.+)__(.+)__view$/.exec(name);
+      if (view) return `view ${view[2]} of ${view[1]}`;
+      const query = /^(.+)__query$/.exec(name);
+      if (query) return `query ${query[1]}`;
+   }
+   return name;
+}
+
+/** The text a collision's message names a member by: `#@ persist source "x"`. */
+function collisionSubjectOf(sourceID: string, name: string): string {
+   const author = authorNameOf(sourceID, name);
+   const view = /^view (.+) of (.+)$/.exec(author);
+   if (view) return `#@ persist on view "${view[1]}" of source "${view[2]}"`;
+   const query = /^query (.+)$/.exec(author);
+   if (query) return `#@ persist on query "${query[1]}"`;
+   return `#@ persist source "${name}"`;
 }
 
 /** Each member as `"name" (model)`, sorted, for a collision's message. */
@@ -373,41 +401,54 @@ export function refuseCollidingMaterialize<
    },
 >(compiled: T): T {
    const plans = compiled.materializePlans ?? {};
-   const refused = new Map<string, string>();
+   const refused = new Map<string, PackageAnnotationFinding>();
    for (const { table, destination, members } of sharedTableGroups(compiled)) {
+      // Only a group a `#(materialize)` source is in: one of v1 sources alone
+      // is the persistence check's (persistenceCollisionWarnings).
+      if (!members.some((m) => plans[m.sourceID])) continue;
       for (const member of members) {
          const plan = plans[member.sourceID];
-         if (!plan) continue;
          const others = members.filter((m) => m.address !== member.address);
-         const named = plan.nameDefaulted
+         const named = plan?.nameDefaulted
             ? `with no name=, its table takes the source's name \`${table}\``
             : `its name= \`${table}\` is a table`;
+         const reason =
+            `${named} in "${destination}", which ${describeMembers(others)} also ` +
+            `${others.length > 1 ? "write" : "writes"}, so each build would ` +
+            `overwrite the other and one source would read the other's rows; ` +
+            `give each source a distinct name=`;
+         const model = compiled.sourceModelPaths?.[member.sourceID] ?? "";
+         // An author's names collide: invalid, unless the deployment opts
+         // out (PERSIST_COLLISION_ENFORCE=false, applied where the package
+         // loads), which refuses each source alone. A `#@ persist` partner is
+         // refused with it, so neither side is built.
          refused.set(
             member.sourceID,
-            `${named} in "${destination}", which ${describeMembers(others)} also ` +
-               `${others.length > 1 ? "write" : "writes"}, so each build would ` +
-               `overwrite the other and one source would read the other's rows; ` +
-               `give each source a distinct name=`,
+            plan
+               ? materializeRefusalFinding(
+                    {
+                       sourceName: compiled.sources[member.sourceID].name,
+                       sourceID: member.sourceID,
+                       reason,
+                       malformedCode: MATERIALIZATION_TABLE_COLLISION_CODE,
+                    },
+                    model,
+                 )
+               : {
+                    route: "@",
+                    tier: "malformed",
+                    code: MATERIALIZATION_TABLE_COLLISION_CODE,
+                    message: `${collisionSubjectOf(member.sourceID, compiled.sources[member.sourceID].name)} is invalid: ${reason}.`,
+                    subject: compiled.sources[member.sourceID].name,
+                    model,
+                 },
          );
       }
    }
    if (refused.size === 0) return compiled;
    return withoutSources(
       compiled,
-      [...refused].map(([sourceID, reason]) =>
-         materializeRefusalFinding(
-            {
-               sourceName: compiled.sources[sourceID].name,
-               sourceID,
-               reason,
-               // An author's names collide: invalid, unless the deployment
-               // opts out (PERSIST_COLLISION_ENFORCE=false, applied where the
-               // package loads), which refuses the source alone.
-               malformedCode: MATERIALIZATION_TABLE_COLLISION_CODE,
-            },
-            compiled.sourceModelPaths?.[sourceID] ?? "",
-         ),
-      ),
+      [...refused.values()],
       new Set(refused.keys()),
    );
 }

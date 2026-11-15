@@ -32,6 +32,7 @@ import type { components } from "../../../api";
 import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import type { MaterializePlan } from "./build_file_generator";
 import {
+   authorNameOf,
    describeMembers,
    membersOnOneTable,
    persistTableTarget,
@@ -72,9 +73,11 @@ interface GateJudgement {
 }
 
 /**
- * A `#(materialize)` table collision as this deployment judges it: invalid
- * (it fails the load) by default, or, under `PERSIST_COLLISION_ENFORCE=false`,
- * that source refused alone, as `materialize-not-built`.
+ * A table collision found as the plan is refused alone (a `#(materialize)`
+ * source, or a `#@ persist` partner on its table) as this deployment judges
+ * it: invalid (it fails the load) by default, or, under
+ * `PERSIST_COLLISION_ENFORCE=false`, that source refused alone under its
+ * own not-built code.
  */
 export function relaxedCollision(
    finding: PackageAnnotationFinding,
@@ -89,7 +92,15 @@ export function relaxedCollision(
    return {
       ...finding,
       tier: "unservable",
-      code: "materialize-not-built",
+      // Each source under its own not-built code.
+      code:
+         finding.route !== "@"
+            ? "materialize-not-built"
+            : finding.message.startsWith("#@ persist on view")
+              ? "persist-view-not-built"
+              : finding.message.startsWith("#@ persist on query")
+                ? "persist-query-not-built"
+                : PERSIST_NOT_BUILT_CODE,
       message: finding.message.replace(
          " is invalid: ",
          " is not built, so the source is served live: ",
@@ -170,7 +181,7 @@ export function planCollisions(
       if (!bucket.members.some((m) => m.address === source.sourceEntityId)) {
          bucket.members.push({
             address: source.sourceEntityId,
-            name: source.name,
+            name: authorNameOf(sourceID, source.name),
             ...(source.modelPath ? { model: source.modelPath } : {}),
             ...(target.written !== undefined
                ? { written: target.written }
