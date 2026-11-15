@@ -61,6 +61,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
+import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";
 import {
    recordReportDiscovery,
@@ -994,12 +995,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          // No caller ever holds a package whose load failed, so its own
          // connections (the package DuckDB the load opened) close here; the
          // environment's connections are not the package's and stay open.
-         await malloyConfig?.shutdown("close").catch((shutdownError) => {
-            logger.warn(
-               `Failed to close the connections of package ${packageName} after a failed load`,
-               { error: errMessage(shutdownError) },
-            );
-         });
+         if (malloyConfig) {
+            await closeMalloyConfig(malloyConfig).catch((shutdownError) => {
+               logger.warn(
+                  `Failed to close the connections of package ${packageName} after a failed load`,
+                  { error: errMessage(shutdownError) },
+               );
+            });
+         }
          Package.reportFailedLoad(packageName, error, startTime, dryRun);
          if (cleanupDirectoryOnFailure) {
             await Package.removeFailedPackageDirectory(packagePath);
@@ -2708,6 +2711,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return out;
    }
 
+   /**
+    * Close this package's own connections (its DuckDB sandbox), freeing the
+    * sandbox's native database once its last query settles
+    * (duckdb_hard_close.ts). The environment's connections are not the
+    * package's and stay open.
+    */
+   public releaseConnections(): Promise<void> {
+      return closeMalloyConfig(this.malloyConfig);
+   }
+
    public getMalloyConfig(): MalloyConfig {
       return this.malloyConfig;
    }
@@ -3720,6 +3733,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          lookupConnection: async (name?: string) => {
             if (!name || name === "duckdb") {
                const connection = await base.lookupConnection(name);
+               // The package's own sandbox: releasing the package frees it.
+               ownDuckDBConnection(malloyConfig, connection);
                // Pin the sandbox against implicit auto-install too, or
                // EXTENSION_FETCH_POLICY local-only would have a network hole.
                if (connection instanceof DuckDBConnection) {

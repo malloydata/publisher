@@ -96,11 +96,19 @@ import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
+import {
+   hardCloseOwnedDuckDBConnections,
+   installDuckDBHardClose,
+   ownDuckDBConnection,
+} from "./duckdb_hard_close";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
 
 // One DuckDB instance per database file (duckdb_instance_sharing.ts).
 installDuckDBInstanceSharing();
+// Retired DuckDB connections free their native database at once
+// (duckdb_hard_close.ts).
+installDuckDBHardClose();
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -111,7 +119,57 @@ type PublisherDuckDBOptions = {
    databasePath?: string;
    workingDirectory?: string;
    motherDuckToken?: string;
+   threads?: number;
+   memoryLimit?: string;
 };
+
+/**
+ * A storage destination's serve session reads small stored tables (rollups a
+ * build already reduced), so it gets a budget of its own rather than the one
+ * every other DuckDB instance gets: this many threads, and at most
+ * {@link DESTINATION_SERVE_MEMORY_LIMIT_BYTES}. An internal default, not a
+ * setting. Builds write through their own isolated sessions
+ * (createIsolatedBuildSession), which keep the global limits.
+ */
+const DESTINATION_SERVE_THREADS = 2;
+const DESTINATION_SERVE_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
+
+const DUCKDB_SIZE_UNITS: Record<string, number> = {
+   B: 1,
+   KB: 1e3,
+   KIB: 1024,
+   MB: 1e6,
+   MIB: 1024 ** 2,
+   GB: 1e9,
+   GIB: 1024 ** 3,
+   TB: 1e12,
+   TIB: 1024 ** 4,
+};
+
+/** Bytes in a DuckDB size such as `768MB`, or undefined if it is not one. */
+export function duckDBSizeBytes(size: string): number | undefined {
+   const match = /^(\d+(?:\.\d+)?)\s*([A-Za-z]+)$/.exec(size.trim());
+   const unit = match && DUCKDB_SIZE_UNITS[match[2].toUpperCase()];
+   return unit ? Number(match[1]) * unit : undefined;
+}
+
+/**
+ * A destination serve session's `memory_limit`: the configured limit when it
+ * is already smaller, else {@link DESTINATION_SERVE_MEMORY_LIMIT_BYTES}.
+ */
+export function destinationServeMemoryLimit(): string {
+   const configured = getDuckDBMemoryLimit();
+   const bytes =
+      configured === undefined ? undefined : duckDBSizeBytes(configured);
+   return configured !== undefined &&
+      bytes !== undefined &&
+      bytes <= DESTINATION_SERVE_MEMORY_LIMIT_BYTES
+      ? configured
+      : `${DESTINATION_SERVE_MEMORY_LIMIT_BYTES / 1024 ** 2}MiB`;
+}
+
+/** Sessions whose `memory_limit` is their own rather than the global one. */
+const sessionMemoryLimits = new WeakMap<DuckDBConnection, string>();
 
 // The API connection plus the per-type objects that carry passwords and
 // connection strings.
@@ -237,7 +295,8 @@ export async function applySessionResourceLimits(
    connection: DuckDBConnection,
    { tempDirectory }: { tempDirectory?: string } = {},
 ): Promise<void> {
-   const memoryLimit = getDuckDBMemoryLimit();
+   const memoryLimit =
+      sessionMemoryLimits.get(connection) ?? getDuckDBMemoryLimit();
    const temp = tempDirectory ?? getDuckDBTempDirectory();
    if (sessionLimitsApplied.has(connection)) {
       const applied = sessionLimitsApplied.get(connection);
@@ -3218,14 +3277,26 @@ function statementTimeoutSetupSQL(
 function buildDuckLakeConnection(
    metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
+   origin: ConnectionOrigin,
 ): DuckLakeConnection {
-   return new DuckLakeConnection(
-      entryToDuckDBOptions(
-         metadata.apiConnection.name!,
-         entry,
-         metadata.workingDirectory,
-      ),
+   const options = entryToDuckDBOptions(
+      metadata.apiConnection.name!,
+      entry,
+      metadata.workingDirectory,
    );
+   if (origin !== "storage-destination") {
+      return new DuckLakeConnection(options);
+   }
+   // Fixed at open (threads, the instance's starting memory_limit) and again
+   // per session (applySessionResourceLimits), so neither path widens it.
+   const memoryLimit = destinationServeMemoryLimit();
+   const connection = new DuckLakeConnection({
+      ...options,
+      threads: DESTINATION_SERVE_THREADS,
+      memoryLimit,
+   });
+   sessionMemoryLimits.set(connection, memoryLimit);
+   return connection;
 }
 
 function buildAzureDuckDBConnection(
@@ -3389,9 +3460,13 @@ export function buildEnvironmentMalloyConfig(
                let connectionPromise = duckLakeCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
-                  connectionPromise = Promise.resolve(
-                     buildDuckLakeConnection(metadata, entry),
+                  const built = buildDuckLakeConnection(
+                     metadata,
+                     entry,
+                     origin,
                   );
+                  ownDuckDBConnection(malloyConfig, built);
+                  connectionPromise = Promise.resolve(built);
                   duckLakeCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
@@ -3510,9 +3585,9 @@ export function buildEnvironmentMalloyConfig(
                let connectionPromise = azureDuckDBCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
-                  connectionPromise = Promise.resolve(
-                     buildAzureDuckDBConnection(metadata, entry),
-                  );
+                  const built = buildAzureDuckDBConnection(metadata, entry);
+                  ownDuckDBConnection(malloyConfig, built);
+                  connectionPromise = Promise.resolve(built);
                   azureDuckDBCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
@@ -3544,6 +3619,9 @@ export function buildEnvironmentMalloyConfig(
             }
 
             const connection = await base.lookupConnection(name);
+            // This generation's lookup created it, so releasing the generation
+            // hard-closes it.
+            ownDuckDBConnection(malloyConfig, connection);
             if (metadata) {
                await attachOnce(connection, metadata);
             }
@@ -3603,6 +3681,9 @@ export function buildEnvironmentMalloyConfig(
             }),
             ...evictions,
          ]);
+         // Every DuckDB connection this generation created is closed now, so
+         // free each native database as soon as its last query settles.
+         hardCloseOwnedDuckDBConnections(malloyConfig);
          // Tunnels close only after the builds above settle: an in-flight
          // openProxy registers its endpoint inside that promise, and the tunnel
          // must stay up while the DB connections drain.
