@@ -2,21 +2,38 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * R4 for P3, adversarial: with a `#(materialize)` source's private and
- * internal fields now in the stored table, every way a caller could reach a
- * hidden column is run live and served, and the served answer must be live's
- * own: refused exactly where live refuses, and otherwise live's rows, read
- * from storage. A shape that live answers (Malloy lets a caller's `extend` or
- * `include` read an `internal` field) must not answer more from storage.
+ * R4 for P3, adversarial, as one matrix: with a `#(materialize)` source's
+ * private and internal fields in the stored table, every way a caller could
+ * reach a hidden column is run live and served, per scenario, and the served
+ * answer must be live's own: refused exactly where live refuses (carrying no
+ * hidden value, and refused by the served copy's own compile too), and
+ * otherwise live's rows, read from storage. A shape that live answers (Malloy
+ * lets a caller's `extend` or `include` read an `internal` field) must not
+ * answer more from storage.
  *
- * Raw SQL and the storage connection itself are covered too: restricted mode
- * refuses `sql_*`, `<conn>.table(…)` and `<conn>.sql(…)`, and a caller cannot
- * write `<conn>.virtual(…)`, so the stored table is reachable only through
- * the served copy's re-rooted source, which re-hides its hidden columns.
+ * The scenarios:
  *
- * A hidden source the queried model holds only through a join (#6643) is the
- * conformance shape "joined persisted source with hidden fields, from an
- * index": this harness plans `#(materialize)` in its entry file only.
+ * - hidden fields on a source and its base in another file. Raw SQL and the
+ *   storage connection itself are covered too: restricted mode refuses
+ *   `sql_*`, `<conn>.table(…)` and `<conn>.sql(…)`, and a caller cannot write
+ *   `<conn>.virtual(…)`, so the stored table is reachable only through the
+ *   served copy's re-rooted source, which re-hides its hidden columns. A
+ *   hidden source the queried model holds only through a join (#6643) is the
+ *   conformance shape "joined persisted source with hidden fields, from an
+ *   index": this harness plans `#(materialize)` in its entry file only.
+ * - hidden fields on extension tables (P3 with P10). A parent declares or
+ *   hides fields (`private`, `internal`, in an `include` and in its own
+ *   `extend`); a `storage=` extension of it, built over the parent's stored
+ *   table (chained), reads one of them, is gated on one, and declares a
+ *   private field of its own; a second extension reaches the parent through
+ *   an unmaterialized source that hides a field of its own. The chained build
+ *   re-roots the parent on its build source, whose columns are plain (public)
+ *   in the build copy; the extension still stores only the hidden fields its
+ *   own build copy over the raw chain could select, so a field private on the
+ *   parent is never in the extension's table.
+ *
+ * An inlined join_one's hidden fields, last, are a scenario of their own
+ * shape: what a caller reads through the join's record.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -48,7 +65,7 @@ source: base is duckdb.table('orders') include { private: id; internal: org_id; 
 }
 `;
 
-const model = `##! experimental { access_modifiers }
+const p3Model = `##! experimental { access_modifiers }
 import "base.malloy"
 
 #(materialize) storage="lake"
@@ -73,7 +90,7 @@ source: rollup is orders -> { group_by: region; aggregate: total }
 `;
 
 /** Live refuses each; the served copy must too, carrying no hidden value. */
-const refused: [string, string][] = [
+const p3Refused: [string, string][] = [
    ["a private computed column", "run: orders -> { select: secret }"],
    ["an internal column", "run: orders -> { group_by: org_id }"],
    ["an inherited internal column", "run: orders -> { group_by: region_code }"],
@@ -148,7 +165,7 @@ const refused: [string, string][] = [
  * caller's own `extend` or `include` read an `internal` field); the served
  * copy must answer from storage with exactly live's rows, no more columns.
  */
-const answered: [string, string][] = [
+const p3Answered: [string, string][] = [
    ["select: *", "run: orders -> { select: * }"],
    [
       "select: * through a query stage",
@@ -176,6 +193,165 @@ const answered: [string, string][] = [
       "the author's join into it",
       "run: joiner -> { group_by: o.region; aggregate: o.total, o.n }",
    ],
+];
+
+// Hidden fields on extension tables (P3 with P10).
+const extensionModel = `##! experimental { access_modifiers }
+
+#(materialize) storage="lake"
+source: parent is duckdb.table('orders') include { private: id; internal: org_id; public: * } extend {
+  internal dimension: region_code is upper(region)
+  private dimension: secret is amount * 2
+  private measure: secret_m is secret.sum()
+  measure: total is amount.sum(), n is count()
+  measure: secret_total is secret.sum()
+}
+
+#(materialize) storage="lake"
+source: ext is parent extend {
+  where: region_code = 'EAST'
+  dimension: org_upper is upper(org_id)
+  private dimension: mine is amount + 1
+  measure: org_count is count(org_id)
+  measure: mine_total is mine.sum()
+}
+
+source: mid is parent extend {
+  internal dimension: tier is amount > 20
+}
+
+#(materialize) storage="lake"
+source: ext2 is mid extend {
+  dimension: tier_label is pick 'big' when tier else 'small'
+}
+
+#(materialize) storage="lake"
+source: narrowed is parent include { private: region; public: * } extend {
+  measure: region_count is count(region)
+}
+`;
+
+/** Live refuses each; the served copy must too, carrying no hidden value. */
+const extensionRefused: [string, string][] = [
+   [
+      "the parent's internal computed column, on the extension",
+      "run: ext -> { group_by: region_code }",
+   ],
+   [
+      "the parent's include-internal column, on the extension",
+      "run: ext -> { group_by: org_id }",
+   ],
+   [
+      "the parent's include-private column, on the extension",
+      "run: ext -> { group_by: id }",
+   ],
+   [
+      "the parent's private computed column, on the extension",
+      "run: ext -> { select: secret }",
+   ],
+   [
+      "the parent's private measure, on the extension",
+      "run: ext -> { aggregate: secret_m }",
+   ],
+   ["the extension's own private column", "run: ext -> { select: mine }"],
+   [
+      "the parent's private column through a caller extend",
+      "run: ext extend { dimension: s is secret } -> { group_by: s }",
+   ],
+   [
+      "the extension's private column through a caller extend",
+      "run: ext extend { dimension: s is mine } -> { group_by: s }",
+   ],
+   [
+      "the parent's private column made public by a caller include",
+      "run: ext include { public: secret } -> { select: secret }",
+   ],
+   [
+      "the extension's private column through a caller include",
+      "run: ext include { public: * } -> { select: mine }",
+   ],
+   [
+      "the parent's include-private column made public by a caller include",
+      "run: ext include { public: id } -> { select: id }",
+   ],
+   [
+      "a renamed internal column, still internal",
+      "run: ext extend { rename: o is region_code } -> { group_by: o }",
+   ],
+   [
+      "a private column in a nest",
+      "run: ext -> { nest: x is { group_by: mine } }",
+   ],
+   ["an internal column indexed by name", "run: ext -> { index: region_code }"],
+   ["a private column after a wildcard", "run: ext -> { select: *, mine }"],
+   [
+      "raw SQL naming the parent's private column",
+      'run: ext -> { group_by: x is sql_number("secret") }',
+   ],
+   [
+      "raw SQL naming the extension's private column",
+      'run: ext -> { group_by: x is sql_number("mine") }',
+   ],
+   [
+      "an intermediate source's internal column, on its extension table",
+      "run: ext2 -> { group_by: tier }",
+   ],
+   [
+      "the parent's private column, through an unmaterialized intermediate",
+      "run: ext2 -> { select: secret }",
+   ],
+   [
+      "the parent's internal column, through an unmaterialized intermediate",
+      "run: ext2 -> { group_by: region_code }",
+   ],
+   [
+      "a column the extension's own include makes private",
+      "run: narrowed -> { group_by: region }",
+   ],
+   [
+      "a column the extension's own include makes private, through a caller extend",
+      "run: narrowed extend { dimension: r is region } -> { group_by: r }",
+   ],
+   [
+      "a column the extension's own include makes private, lifted by a caller include",
+      "run: narrowed include { public: region } -> { group_by: region }",
+   ],
+];
+
+/**
+ * Live answers each (wildcards list public fields only; Malloy lets a
+ * caller's own `extend` or `include` read an `internal` field); the served
+ * copy must answer from storage with exactly live's rows, no more columns.
+ */
+const extensionAnswered: [string, string][] = [
+   ["select: * on the extension", "run: ext -> { select: * }"],
+   ["index: * on the extension", "run: ext -> { index: * }"],
+   [
+      "the parent's measures, one over a private column, on the extension",
+      "run: ext -> { aggregate: total, n, secret_total }",
+   ],
+   [
+      "the extension's public fields over hidden ones",
+      "run: ext -> { group_by: org_upper; aggregate: org_count, mine_total }",
+   ],
+   [
+      "an inherited internal column through a caller extend",
+      "run: ext extend { dimension: o is org_id } -> { group_by: o; aggregate: total }",
+   ],
+   [
+      "an inherited internal column lifted by a caller include",
+      "run: ext include { public: region_code, total } -> { group_by: region_code; aggregate: total }",
+   ],
+   [
+      "a dimension over an intermediate's internal column",
+      "run: ext2 -> { group_by: tier_label; aggregate: total, secret_total }",
+   ],
+   ["select: * on the second extension", "run: ext2 -> { select: * }"],
+   [
+      "a measure over a column the extension's include makes private, and the parent's dimension over it",
+      "run: narrowed -> { group_by: tier is amount > 20; aggregate: region_count, total }",
+   ],
+   ["select: * on the narrowed extension", "run: narrowed -> { select: * }"],
 ];
 
 /** The error a run throws, or undefined when it answers. */
@@ -224,83 +400,226 @@ async function expectParity(
    expect(rowDifference(live ?? [], served?.rows ?? [])).toBeUndefined();
 }
 
-describe("R4 P3 adversarial: a caller reads no hidden column from storage that live refuses", () => {
-   let restore: () => void;
-   let fixture: R4Fixture;
-   beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
-      fixture = await buildScenario({
-         files: { "m.malloy": model, "base.malloy": base },
-         seedSql,
-         materialize: true,
+/** One scenario: its package, what live refuses and answers, and its own checks. */
+interface HiddenScenario {
+   title: string;
+   files: Record<string, string>;
+   refused: [string, string][];
+   answered: [string, string][];
+   /** Checks of the scenario's own, ahead of the parity rows. */
+   before: (fixture: () => R4Fixture) => void;
+   /** Checks of the scenario's own, after the parity rows. */
+   after: (fixture: () => R4Fixture) => void;
+}
+
+const scenarios: HiddenScenario[] = [
+   {
+      title: "R4 P3 adversarial: a caller reads no hidden column from storage that live refuses",
+      files: { "m.malloy": p3Model, "base.malloy": base },
+      refused: p3Refused,
+      answered: p3Answered,
+      before: (get) => {
+         it("re-roots both sources, with no problem", async () => {
+            expect(await get().servedCopyProblems()).toEqual([]);
+         });
+
+         it("keeps hidden measures and views hidden on the served source", async () => {
+            const def = (await get().servedCopy().compiledModelDef()) as {
+               contents: Record<
+                  string,
+                  {
+                     fields: {
+                        name: string;
+                        as?: string;
+                        accessModifier?: string;
+                     }[];
+                  }
+               >;
+            };
+            const access = Object.fromEntries(
+               def.contents.orders.fields.map((f) => [
+                  f.as ?? f.name,
+                  f.accessModifier ?? "public",
+               ]),
+            );
+            expect(access).toMatchObject({
+               secret: "private",
+               secret_m: "private",
+               by_org: "internal",
+               org_id: "internal",
+               region_code: "internal",
+               total: "public",
+            });
+            expect(access.id).toBeUndefined();
+         });
+      },
+      after: (get) => {
+         it("never lets a caller name the storage connection or its virtual source", async () => {
+            const def = (await get().servedCopy().compiledModelDef()) as {
+               contents: Record<string, { connection?: string; name?: string }>;
+            };
+            const { connection, name } = def.contents.orders;
+            expect(connection).toMatch(/^__publisher_storage_/);
+            for (const malloy of [
+               `run: ${connection}.virtual('${name}')::orders__served -> { select: * }`,
+               `run: ${connection}.virtual('${name}') -> { select: * }`,
+               `run: ${connection}.table('orders') -> { select: * }`,
+               `run: ${connection}.sql("select * from orders") -> { select: * }`,
+            ]) {
+               get().setBindings(get().bindings);
+               const error = await failure(() => get().runAsIs(malloy));
+               expect(error).toBeDefined();
+               expect(String(error)).not.toMatch(HIDDEN_VALUES);
+            }
+         });
+      },
+   },
+   {
+      title: "R4 P3 with P10 adversarial: hidden fields on extension tables",
+      files: { "m.malloy": extensionModel },
+      refused: extensionRefused,
+      answered: extensionAnswered,
+      before: (get) => {
+         it("builds each extension over its parent's stored table, in the destination", () => {
+            expect(get().buildReads).toEqual({
+               parent: [],
+               ext: ["parent"],
+               ext2: ["parent"],
+               // An `include` hop is no extend: it builds over the raw chain.
+               narrowed: [],
+            });
+            for (const name of ["ext", "ext2"]) {
+               expect(get().storedBuildSQL[name]).toContain(
+                  get().physicalTables.parent,
+               );
+               expect(get().storedBuildSQL[name]).not.toMatch(/\borders\b/);
+            }
+         });
+
+         it("re-roots every source but the include-narrowed one, which fails closed", async () => {
+            // `narrowed`'s base is `parent include { … }`, so no ancestor block is
+            // kept; its re-root would lose the parent's fields, and it is left as
+            // written (it reads the parent's re-root by name).
+            expect(await get().servedCopyProblems()).toEqual([
+               { reason: "fields_not_carried", sourceName: "narrowed" },
+            ]);
+         });
+
+         it("stores the extension's selectable hidden fields, and never a field private on its parent", async () => {
+            const columns = async (name: string) =>
+               (
+                  await get().storedSQL(
+                     (t) => `DESCRIBE SELECT * FROM ${t(name)}`,
+                  )
+               ).map((c) => String(c.column_name));
+            // The parent stores its own hidden fields (P3).
+            expect(await columns("parent")).toEqual(
+               expect.arrayContaining([
+                  "id",
+                  "org_id",
+                  "region_code",
+                  "secret",
+               ]),
+            );
+            const ext = await columns("ext");
+            expect(ext).toEqual(
+               expect.arrayContaining(["org_id", "region_code", "mine"]),
+            );
+            // Private on the parent: the extension cannot read it, live or in its
+            // build over the raw chain, so its chained build never stores it.
+            expect(ext).not.toContain("id");
+            expect(ext).not.toContain("secret");
+            const ext2 = await columns("ext2");
+            expect(ext2).toEqual(
+               expect.arrayContaining(["org_id", "region_code", "tier"]),
+            );
+            expect(ext2).not.toContain("id");
+            expect(ext2).not.toContain("secret");
+         });
+
+         it("keeps every field of each served extension exactly as hidden as the author's", async () => {
+            const def = (await get().servedCopy().compiledModelDef()) as {
+               contents: Record<
+                  string,
+                  {
+                     fields: {
+                        name: string;
+                        as?: string;
+                        accessModifier?: string;
+                     }[];
+                  }
+               >;
+            };
+            const access = (name: string) =>
+               Object.fromEntries(
+                  def.contents[name].fields.map((f) => [
+                     f.as ?? f.name,
+                     f.accessModifier ?? "public",
+                  ]),
+               );
+            expect(access("ext")).toMatchObject({
+               org_id: "internal",
+               region_code: "internal",
+               secret: "private",
+               secret_m: "private",
+               mine: "private",
+               org_upper: "public",
+               total: "public",
+            });
+            // Left as written: the author's own include (its `public: *` lifts the
+            // parent's internal fields, as live).
+            expect(access("narrowed")).toMatchObject({
+               region: "private",
+               region_count: "public",
+            });
+            expect(access("ext2")).toMatchObject({
+               tier: "internal",
+               region_code: "internal",
+               org_id: "internal",
+               tier_label: "public",
+            });
+         });
+      },
+      after: () => {},
+   },
+];
+
+for (const scenario of scenarios) {
+   describe(scenario.title, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         fixture = await buildScenario({
+            files: scenario.files,
+            seedSql,
+            materialize: true,
+         });
       });
-   });
-   afterAll(async () => {
-      restore();
-      await disposeScenarios();
-   });
-
-   it("re-roots both sources, with no problem", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
-
-   it("keeps hidden measures and views hidden on the served source", async () => {
-      const def = (await fixture.servedCopy().compiledModelDef()) as {
-         contents: Record<
-            string,
-            { fields: { name: string; as?: string; accessModifier?: string }[] }
-         >;
-      };
-      const access = Object.fromEntries(
-         def.contents.orders.fields.map((f) => [
-            f.as ?? f.name,
-            f.accessModifier ?? "public",
-         ]),
-      );
-      expect(access).toMatchObject({
-         secret: "private",
-         secret_m: "private",
-         by_org: "internal",
-         org_id: "internal",
-         region_code: "internal",
-         total: "public",
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
       });
-      expect(access.id).toBeUndefined();
-   });
 
-   for (const [name, malloy] of refused) {
-      it(`refuses ${name}, as live does`, async () => {
-         await expectParity(fixture, malloy, false);
-      });
-   }
+      scenario.before(() => fixture);
 
-   for (const [name, malloy] of answered) {
-      it(`answers ${name} with exactly live's rows`, async () => {
-         await expectParity(fixture, malloy, true);
-      });
-   }
-
-   it("never lets a caller name the storage connection or its virtual source", async () => {
-      const def = (await fixture.servedCopy().compiledModelDef()) as {
-         contents: Record<string, { connection?: string; name?: string }>;
-      };
-      const { connection, name } = def.contents.orders;
-      expect(connection).toMatch(/^__publisher_storage_/);
-      for (const malloy of [
-         `run: ${connection}.virtual('${name}')::orders__served -> { select: * }`,
-         `run: ${connection}.virtual('${name}') -> { select: * }`,
-         `run: ${connection}.table('orders') -> { select: * }`,
-         `run: ${connection}.sql("select * from orders") -> { select: * }`,
-      ]) {
-         fixture.setBindings(fixture.bindings);
-         const error = await failure(() => fixture.runAsIs(malloy));
-         expect(error).toBeDefined();
-         expect(String(error)).not.toMatch(HIDDEN_VALUES);
+      for (const [name, malloy] of scenario.refused) {
+         it(`refuses ${name}, as live does`, async () => {
+            await expectParity(fixture, malloy, false);
+         });
       }
+
+      for (const [name, malloy] of scenario.answered) {
+         it(`answers ${name} with exactly live's rows`, async () => {
+            await expectParity(fixture, malloy, true);
+         });
+      }
+
+      scenario.after(() => fixture);
    });
-});
+}
 
 /**
  * An inlined join_one (#1665) is served from its stored `<join>__<field>`

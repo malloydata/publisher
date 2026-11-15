@@ -35,7 +35,7 @@ import {
    type LoadedFixture,
    loadFixture,
    type Outcome,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
 /** The gated upstreams, by prefix. `xf` is declared in base.malloy. */

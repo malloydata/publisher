@@ -4,7 +4,7 @@
 /**
  * Wrong answers and misleading reports the conformance fixture
  * (ms2data/service#7098) found on main, each proven through the real package
- * path (conformance/package_harness.ts): a package is loaded, its plan built
+ * path (src/test_helpers/conformance/package_runner.ts): a package is loaded, its plan built
  * as a build would build it, bound, and queried.
  *
  * Where a report is the subject, the proof is the SQL that ran: the tables a
@@ -22,7 +22,7 @@ import {
    type LoadedFixture,
    loadFixture,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference, type Row } from "./harness";
 
 const HEADER = "##! experimental { persistence }";

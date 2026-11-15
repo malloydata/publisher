@@ -2,13 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The package-level runner for the conformance fixture (ms2data/service#7098),
- * and the library the v1 cutover's conformance runner is built on
- * (`v1_cutover_runner.ts`, plan question 15):
- * a synthetic package goes through the real production path (Environment,
- * Package.create, the package's own build plan, its colocated manifest bind
- * and its `storage=` bind), and every query runs live first, then served with
- * the materialize switch off (today's serve shape) and on (the served copy).
+ * The package-case runner: a synthetic package (or a real package snapshot)
+ * goes through the real production path (Environment, Package.create, the
+ * package's own build plan, its colocated manifest bind and its `storage=`
+ * bind), and every query runs live first, then served with the materialize
+ * switch off and on ({@link runPackageCase}). Three reporters read what it
+ * produces, each comparing through `answer_difference.ts`:
+ *
+ * - R4 rows: the conformance fixture (tests/component/r4/conformance*)
+ *   compares each served answer with live, row by row;
+ * - conformance verdicts: the v1 cutover's conformance runner
+ *   (`v1_cutover_runner.ts`, plan question 15), whose entry point and output
+ *   columns Credible's private CI reads;
+ * - golden capture: the materialization goldens
+ *   (tests/component/materialization_goldens/package_case.ts).
  *
  * The R4 model harness (tests/component/r4/harness.ts) drives one Model with bindings it
  * derives itself; this one lets the package derive them, so it sees what a
@@ -359,6 +366,116 @@ export async function loadFixture(
          };
       },
    };
+}
+
+/** One query a package case runs: in a model of the package, with its givens. */
+export interface CaseQuery {
+   model: string;
+   malloy: string;
+   givens?: Record<string, GivenValue>;
+}
+
+/** The package could not be loaded; `cause` is what loading threw. */
+export class PackageCaseLoadError extends Error {
+   constructor(readonly cause: unknown) {
+      super(cause instanceof Error ? cause.message : String(cause));
+   }
+}
+
+/** How {@link runPackageCase} runs one case. */
+export interface PackageCase<Q extends CaseQuery, S> {
+   /** The package: its files by relative path, or a directory to copy. */
+   package: Parameters<typeof loadFixture>[0];
+   queries: readonly Q[];
+   /**
+    * Install the case's settings for the load (`undefined`) or for a served
+    * pass under one switch; returns the restore.
+    */
+   settings: (pass: Switch | undefined) => () => void;
+   /**
+    * The switches the served queries run under, one pass each, its settings
+    * installed in place of the load's; undefined for one pass under the
+    * load's settings.
+    */
+   passes?: readonly Switch[];
+   /** Load in a pool made under the case's settings, and drop it after. */
+   freshPool: boolean;
+   bindOptions?: BindOptions;
+   /** After the live answers, before the bind. */
+   afterLive?: (
+      loader: Awaited<ReturnType<typeof loadFixture>>,
+   ) => Promise<void>;
+   /** Around the bind (to record what it generates). */
+   aroundBind?: (bind: () => Promise<LoadedFixture>) => Promise<LoadedFixture>;
+   /** Answer one query served, against its live outcome. */
+   serve: (
+      fixture: LoadedFixture,
+      query: Q,
+      live: Outcome,
+      pass: Switch | undefined,
+   ) => Promise<S>;
+}
+
+/** What a package case produced: live outcomes and each pass's served results, by query position. */
+export interface PackageCaseRun<S> {
+   live: Outcome[];
+   fixture: LoadedFixture;
+   served: { pass: Switch | undefined; results: S[] }[];
+}
+
+/**
+ * Run one package case: load the package under the case's settings, answer
+ * every query live, bind, then answer every query served in each pass. The
+ * package is disposed and the settings restored before it returns. A
+ * package that does not load throws {@link PackageCaseLoadError}.
+ */
+export async function runPackageCase<Q extends CaseQuery, S>(
+   c: PackageCase<Q, S>,
+): Promise<PackageCaseRun<S>> {
+   let restore = c.settings(undefined);
+   try {
+      if (c.freshPool) await freshLoadPool();
+      let loader: Awaited<ReturnType<typeof loadFixture>>;
+      try {
+         loader = await loadFixture(c.package);
+      } catch (error) {
+         throw new PackageCaseLoadError(error);
+      }
+      try {
+         // By position: two queries may share a name.
+         const live: Outcome[] = [];
+         for (const q of c.queries) {
+            live.push(await loader.run(q.model, q.malloy, q.givens));
+         }
+         await c.afterLive?.(loader);
+         const bind = () => loader.bind(c.bindOptions);
+         const fixture = await (c.aroundBind ? c.aroundBind(bind) : bind());
+         const served: PackageCaseRun<S>["served"] = [];
+         for (const pass of c.passes ?? [undefined]) {
+            let restorePass = () => {};
+            if (pass !== undefined) {
+               restore();
+               restore = () => {};
+               restorePass = c.settings(pass);
+            }
+            try {
+               const results: S[] = [];
+               for (const [i, q] of c.queries.entries()) {
+                  results.push(await c.serve(fixture, q, live[i], pass));
+               }
+               served.push({ pass, results });
+            } finally {
+               restorePass();
+            }
+         }
+         return { live, fixture, served };
+      } finally {
+         await loader.dispose();
+      }
+   } finally {
+      restore();
+      if (c.freshPool) await freshLoadPool();
+   }
 }
 
 /**
