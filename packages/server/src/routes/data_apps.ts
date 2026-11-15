@@ -15,6 +15,8 @@ import * as path from "path";
 import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
 import { safeJoinUnderRoot } from "../path_safety";
+import { confinedPackagePath } from "../utils";
+import { pathToFileURL } from "url";
 import type { PackageLookup } from "../service/environment_ports";
 import { versionRefOf } from "../route_params";
 import { apiRoute } from "./json_route";
@@ -89,22 +91,26 @@ async function serveFromPackage(
       // touching the disk.
       const fullPath = safeJoinUnderRoot(publicRoot, subPath);
 
-      // Then realpath containment: rejects symlinks inside public/ that point
-      // out (403), while tolerating a symlinked package root (watch mode's
-      // in-place mount). A missing directory or file 404s here.
-      let realPublicRoot: string;
-      let realFullPath: string;
+      // Then containment by the package's own walk, which never looks
+      // outside public/: a link out answers 403 whatever it leads to (a file,
+      // a directory, or nothing), while a symlinked package root (watch
+      // mode's in-place mount) is tolerated. No public/ 404s here, and a
+      // missing file 404s when it is sent.
       try {
-         realPublicRoot = await fsp.realpath(publicRoot);
-         realFullPath = await fsp.realpath(fullPath);
+         await fsp.realpath(publicRoot);
       } catch {
          if (!res.headersSent) {
             res.status(404).type("text/html").send(PACKAGE_FILE_NOT_FOUND_HTML);
          }
          return;
       }
-      const rel = path.relative(realPublicRoot, realFullPath);
-      if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      let realFullPath: string;
+      try {
+         realFullPath = await confinedPackagePath(
+            publicRoot,
+            pathToFileURL(fullPath),
+         );
+      } catch {
          res.status(403).end();
          return;
       }
@@ -261,12 +267,11 @@ async function listPackageDataApps(
 ): Promise<DataAppItem[]> {
    const out: DataAppItem[] = [];
 
-   // Same realpath containment as serveFromPackage, applied before reading any
-   // file's head, so a symlink out of public/ is never opened. No public/
-   // directory yields an empty list.
-   let realPublicRoot: string;
+   // Same containment as serveFromPackage, applied before reading any file's
+   // head, so a symlink out of public/ is never opened, nor looked through.
+   // No public/ directory yields an empty list.
    try {
-      realPublicRoot = await fsp.realpath(publicRoot);
+      await fsp.realpath(publicRoot);
    } catch {
       return out;
    }
@@ -283,14 +288,11 @@ async function listPackageDataApps(
          if (entry.name.startsWith(".") || entry.name === "node_modules")
             continue;
          const full = path.join(dir, entry.name);
-         let realFull: string;
          try {
-            realFull = await fsp.realpath(full);
+            await confinedPackagePath(publicRoot, pathToFileURL(full));
          } catch {
             continue;
          }
-         const contained = path.relative(realPublicRoot, realFull);
-         if (contained.startsWith("..") || path.isAbsolute(contained)) continue;
          if (entry.isDirectory()) {
             await walk(full, depth + 1);
          } else if (

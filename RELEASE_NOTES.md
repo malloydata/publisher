@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — the remaining lookups through a package author's links stay inside the package
+
+Every lookup Publisher makes through a path a package author controls now resolves it with the walk that confines model imports, which never looks at a path outside the package. A link that leads out, or out and back through another directory, gets the same answer whether or not what it passes through exists:
+
+- **HTML data apps.** A link in `public/` that leads out answers 403 whether or not its target exists (before, 403 when it existed and 404 when it did not), and is left out of the data-app listing.
+- **Package listing.** A directory link that passes out of the package and back is listed as itself, so whether the outside directory exists no longer decides whether the package loads.
+- **Retrieval prompts** (`retrieval.prompts.*` in `publisher.json`), **package and agent skills** (the skills directory, a skill directory, `reference/`, an agent's skills root and its assets), and **the report write path** (`PUT …/models/{path}`) refuse a link out the same way whatever it leads to.
+- **Data probe errors** (`GET …/databases`) name the file by its package-relative path with the connection's reason, rather than echoing the SQL the probe compiled; a path inside Malloy's escaped quotes is no longer mangled (`'bad.parquet/'`).
+
+No API change.
+
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 
 A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.

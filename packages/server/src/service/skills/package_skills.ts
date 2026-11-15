@@ -16,7 +16,11 @@ import { compareText } from "../../compare_text";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../../constants";
 import { CronEvaluator } from "../materialization/run/cron_evaluator";
 import { canonicalSha } from "../package_revision";
-import { stepsOutside } from "../../path_safety";
+import {
+   confinedPackagePathSync,
+   ImportOutsidePackageError,
+} from "../../utils";
+import { pathToFileURL } from "url";
 
 /** The build-time bundle of the repo's skills, served as MCP prompts and through get_skill. */
 export const BUNDLED_SKILLS = (skillsBundle as { skills: SkillEntry[] }).skills;
@@ -55,16 +59,31 @@ const ASSET_SNIFF_BYTES = 8 * 1024;
 export const PACKAGE_SKILL_FILE_MAX_BYTES = 256 * 1024;
 
 /**
+ * `p` resolved inside the package at `packageRoot` (spelled as `p` is: the
+ * walk resolves both), by the package's own walk, which never looks outside
+ * it; undefined when `p` leads out, to anything or to nothing, so what lies
+ * outside decides nothing.
+ */
+function insidePackage(packageRoot: string, p: string): string | undefined {
+   try {
+      return confinedPackagePathSync(packageRoot, pathToFileURL(p));
+   } catch (error) {
+      if (error instanceof ImportOutsidePackageError) return undefined;
+      throw error;
+   }
+}
+
+/**
  * A file's text, or why it cannot be served. The real path must sit inside the
  * real package root: a symlink in a package can point anywhere, and this text
  * is returned over unauthenticated MCP and REST.
  *
- * `asset` reads a non-Markdown skill asset instead: `realRoot` is then the
- * skill's real `assets/` directory, the file itself may not be a link, and its
+ * `asset` reads a non-Markdown skill asset instead: `packageRoot` is then the
+ * skill's checked `assets/` directory, the file itself may not be a link, and its
  * bytes must be UTF-8 text without a NUL.
  */
 function readFileInside(
-   realRoot: string,
+   packageRoot: string,
    file: string,
    maxBytes: number,
    asset = false,
@@ -73,8 +92,8 @@ function readFileInside(
       if (asset && fs.lstatSync(file).isSymbolicLink()) {
          return { problem: "is a link", link: true };
       }
-      const real = fs.realpathSync(file);
-      if (stepsOutside(path.relative(realRoot, real))) {
+      const real = insidePackage(packageRoot, file);
+      if (real === undefined) {
          return {
             problem: "resolves outside the package through a link",
             link: true,
@@ -127,14 +146,16 @@ function readFileInside(
 
 /** The skill's reference files, or none when `reference/` is a link out of the package. */
 function referenceFilesInside(
-   realRoot: string,
+   packageRoot: string,
    skillDir: string,
    rel: string,
    warnings: string[],
 ): string[] {
    try {
-      const real = fs.realpathSync(path.join(skillDir, "reference"));
-      if (stepsOutside(path.relative(realRoot, real))) {
+      if (
+         insidePackage(packageRoot, path.join(skillDir, "reference")) ===
+         undefined
+      ) {
          warnings.push(
             `Package skill reference directory '${rel}/reference' resolves outside the package through a link, so it is not served. Fix: copy the files into the package.`,
          );
@@ -174,16 +195,24 @@ export function readSkillsDir(
       blocking.push(message);
    };
 
-   let realRoot: string;
+   let packageRoot: string;
    let entries: fs.Dirent[];
    let escapes: boolean;
    try {
-      realRoot = fs.realpathSync(packagePath);
-      if (!fs.statSync(root).isDirectory()) {
-         return { skills, files, warnings, blocking };
+      fs.realpathSync(packagePath);
+      packageRoot = path.resolve(packagePath);
+      // Settled before anything is looked at through it: a skills directory
+      // that leads out is refused whatever it leads to.
+      const inside = insidePackage(packageRoot, root);
+      escapes = inside === undefined;
+      if (inside !== undefined) {
+         if (!fs.statSync(inside).isDirectory()) {
+            return { skills, files, warnings, blocking };
+         }
+         entries = fs.readdirSync(root, { withFileTypes: true });
+      } else {
+         entries = [];
       }
-      escapes = stepsOutside(path.relative(realRoot, fs.realpathSync(root)));
-      entries = fs.readdirSync(root, { withFileTypes: true });
    } catch {
       // No skills directory is the common case, and one that vanishes mid-load is the same.
       return { skills, files, warnings, blocking };
@@ -200,14 +229,19 @@ export function readSkillsDir(
    )) {
       if (entry.name.startsWith(".")) continue;
       const skillDir = path.join(root, entry.name);
-      try {
-         if (!fs.statSync(skillDir).isDirectory()) continue;
-      } catch {
-         continue;
+      // A skill directory that leads out is not looked through: its SKILL.md
+      // read below refuses it, the same whatever it leads to.
+      const skillInside = insidePackage(packageRoot, skillDir);
+      if (skillInside !== undefined) {
+         try {
+            if (!fs.statSync(skillInside).isDirectory()) continue;
+         } catch {
+            continue;
+         }
       }
       const rel = `${dirRel}/${entry.name}`;
       const read = readFileInside(
-         realRoot,
+         packageRoot,
          path.join(skillDir, "SKILL.md"),
          PACKAGE_SKILL_FILE_MAX_BYTES,
       );
@@ -238,14 +272,14 @@ export function readSkillsDir(
       const refFiles: PackageSkills["files"] = [];
       const served: string[] = [];
       for (const file of referenceFilesInside(
-         realRoot,
+         packageRoot,
          skillDir,
          rel,
          warnings,
       )) {
          const relative = `${rel}/reference/${file}`;
          const ref = readFileInside(
-            realRoot,
+            packageRoot,
             path.join(skillDir, "reference", file),
             PACKAGE_SKILL_FILE_MAX_BYTES,
          );
@@ -402,13 +436,12 @@ function agentPath(value: unknown, what: string): string {
 }
 
 /** True when a publisher.json sits directly in `dir`, which must resolve inside the package. */
-function holdsManifest(realRoot: string, dir: string): boolean {
+function holdsManifest(packageRoot: string, dir: string): boolean {
    try {
-      if (stepsOutside(path.relative(realRoot, fs.realpathSync(dir)))) {
-         return false;
-      }
+      const inside = insidePackage(packageRoot, dir);
+      if (inside === undefined) return false;
       return fs
-         .readdirSync(dir)
+         .readdirSync(inside)
          .some((f) => f.toLowerCase() === "publisher.json");
    } catch {
       return false;
@@ -421,18 +454,20 @@ function holdsManifest(realRoot: string, dir: string): boolean {
  * deeper, and follows a link only to a directory inside the package, so a link
  * cannot make this scan the filesystem or report on files outside it.
  */
-function servedTreeHoldsManifest(realRoot: string, root: string): boolean {
-   if (holdsManifest(realRoot, root)) return true;
+function servedTreeHoldsManifest(packageRoot: string, root: string): boolean {
+   if (holdsManifest(packageRoot, root)) return true;
    try {
-      if (stepsOutside(path.relative(realRoot, fs.realpathSync(root)))) {
-         return false;
-      }
-      return fs.readdirSync(root, { withFileTypes: true }).some(
+      const inside = insidePackage(packageRoot, root);
+      if (inside === undefined) return false;
+      return fs.readdirSync(inside, { withFileTypes: true }).some(
          (e) =>
             // A link to a directory is a skill dir readSkillsDir follows.
             (e.isDirectory() || e.isSymbolicLink()) &&
-            (holdsManifest(realRoot, path.join(root, e.name)) ||
-               holdsManifest(realRoot, path.join(root, e.name, "reference"))),
+            (holdsManifest(packageRoot, path.join(root, e.name)) ||
+               holdsManifest(
+                  packageRoot,
+                  path.join(root, e.name, "reference"),
+               )),
       );
    } catch {
       return false;
@@ -442,7 +477,7 @@ function servedTreeHoldsManifest(realRoot: string, root: string): boolean {
 /** Read a Markdown file the agent serves as text, capped at 16 KB. */
 function readAgentText(
    packagePath: string,
-   realRoot: string,
+   packageRoot: string,
    value: unknown,
    what: string,
 ): { rel: string; text: string } {
@@ -457,14 +492,14 @@ function readAgentText(
       dir !== ".";
       dir = path.posix.dirname(dir)
    ) {
-      if (holdsManifest(realRoot, path.join(packagePath, dir))) {
+      if (holdsManifest(packageRoot, path.join(packagePath, dir))) {
          throw new AgentProblem(
             `${what} '${rel}' sits under a nested publisher.json at '${dir}'`,
          );
       }
    }
    const read = readFileInside(
-      realRoot,
+      packageRoot,
       path.join(packagePath, rel),
       PACKAGE_AGENT_TEXT_MAX_BYTES,
    );
@@ -497,7 +532,7 @@ export function summarizeAgentSkillFile(
 
 function readAgentSchedules(
    packagePath: string,
-   realRoot: string,
+   packageRoot: string,
    raw: unknown,
    paths: string[],
 ): PackageAgentSchedule[] {
@@ -524,7 +559,7 @@ function readAgentSchedules(
       }
       const task = readAgentText(
          packagePath,
-         realRoot,
+         packageRoot,
          entry.task,
          "schedule 'task'",
       );
@@ -580,21 +615,32 @@ interface AssetWalk {
    limitNote?: string;
 }
 
-/** The skill's real `assets/`, which must be a plain directory inside the skill's own real directory. */
-function realAssetsDir(skillDir: string, skillRel: string): string {
+/** The skill's `assets/` as spelled, which must be a plain directory inside the skill's own real directory. */
+function realAssetsDir(
+   packageRoot: string,
+   skillDir: string,
+   skillRel: string,
+): string {
    const assetsDir = path.join(skillDir, "assets");
+   // The skill directory is resolved by the package's own walk first, so a
+   // skill directory swapped for a link out is not looked through.
+   const realSkillDir = insidePackage(packageRoot, skillDir);
+   if (realSkillDir === undefined) {
+      throw new AgentProblem(`'${skillRel}' resolves outside the package`);
+   }
    if (fs.lstatSync(assetsDir).isSymbolicLink()) {
       throw new AgentProblem(
          `'${skillRel}/assets' is a link; replace it with a real directory`,
       );
    }
    const real = fs.realpathSync(assetsDir);
-   if (real !== path.join(fs.realpathSync(skillDir), "assets")) {
+   if (real !== path.join(realSkillDir, "assets")) {
       throw new AgentProblem(
          `'${skillRel}/assets' resolves outside the skill's own directory`,
       );
    }
-   return real;
+   // Spelled as the files read under it are; its realpath is checked above.
+   return assetsDir;
 }
 
 /**
@@ -604,6 +650,7 @@ function realAssetsDir(skillDir: string, skillRel: string): string {
  * note, so an agent that is served today stays served.
  */
 function assetFilesInside(
+   packageRoot: string,
    skillDir: string,
    skillRel: string,
    skill: string,
@@ -631,7 +678,7 @@ function assetFilesInside(
       walk.skipped.push(`'${skillRel}/assets' is not a directory`);
       return [];
    }
-   const realAssets = realAssetsDir(skillDir, skillRel);
+   const realAssets = realAssetsDir(packageRoot, skillDir, skillRel);
 
    const out: PackageAgentAsset[] = [];
    const skip = (shown: string, why: string) =>
@@ -813,7 +860,7 @@ export function readAgentAsset(
    try {
       const skillDir = path.join(packagePath, skillRel);
       const read = readFileInside(
-         realAssetsDir(skillDir, skillRel),
+         realAssetsDir(packagePath, skillDir, skillRel),
          path.join(skillDir, relativeFilepath.slice(skill.length)),
          PACKAGE_ASSET_FILE_MAX_BYTES - 1,
          true,
@@ -831,7 +878,7 @@ export function readAgentAsset(
 /** The agent's skill roots read into served files, sorted by relative path. */
 function readAgentSkills(
    packagePath: string,
-   realRoot: string,
+   packageRoot: string,
    raw: unknown,
    paths: string[],
    warnings: string[],
@@ -866,8 +913,19 @@ function readAgentSkills(
    };
    let bytes = 0;
    for (const root of roots) {
+      // Settled before it is looked at: one that leads out of the package
+      // is refused the same whether or not what it names exists.
+      const rootInside = insidePackage(
+         packageRoot,
+         path.join(packagePath, root),
+      );
+      if (rootInside === undefined) {
+         throw new AgentProblem(
+            `skills directory '${root}' resolves outside the package`,
+         );
+      }
       try {
-         if (!fs.statSync(path.join(packagePath, root)).isDirectory()) {
+         if (!fs.statSync(rootInside).isDirectory()) {
             throw new Error("not a directory");
          }
       } catch {
@@ -876,8 +934,11 @@ function readAgentSkills(
       for (let dir = root; dir !== "."; dir = path.posix.dirname(dir)) {
          const holds =
             dir === root
-               ? servedTreeHoldsManifest(realRoot, path.join(packagePath, dir))
-               : holdsManifest(realRoot, path.join(packagePath, dir));
+               ? servedTreeHoldsManifest(
+                    packageRoot,
+                    path.join(packagePath, dir),
+                 )
+               : holdsManifest(packageRoot, path.join(packagePath, dir));
          if (holds) {
             throw new AgentProblem(
                `skills directory '${root}' contains a nested publisher.json`,
@@ -931,6 +992,7 @@ function readAgentSkills(
       for (const skill of skillNames) {
          const skillRel = `${root}/${skill}`;
          const listed = assetFilesInside(
+            packageRoot,
             path.join(packagePath, skillRel),
             skillRel,
             skill,
@@ -980,7 +1042,7 @@ function readAgentSkills(
 
 function readAgent(
    packagePath: string,
-   realRoot: string,
+   packageRoot: string,
    name: string,
    raw: unknown,
    assetBudget: PackageAssetBudget,
@@ -1012,21 +1074,21 @@ function readAgent(
 
    const instructions = readAgentText(
       packagePath,
-      realRoot,
+      packageRoot,
       raw.instructions,
       "'instructions'",
    );
    paths.push(instructions.rel);
    const schedules = readAgentSchedules(
       packagePath,
-      realRoot,
+      packageRoot,
       raw.schedules,
       paths,
    );
    const budget = readAgentBudget(raw.budget);
    const skills = readAgentSkills(
       packagePath,
-      realRoot,
+      packageRoot,
       raw.skills,
       paths,
       warnings,
@@ -1102,9 +1164,10 @@ export function readPackageAgents(
       );
       return result;
    }
-   let realRoot: string;
+   let packageRoot: string;
    try {
-      realRoot = fs.realpathSync(packagePath);
+      fs.realpathSync(packagePath);
+      packageRoot = path.resolve(packagePath);
    } catch {
       return result;
    }
@@ -1112,7 +1175,7 @@ export function readPackageAgents(
       try {
          const { agent, paths, charges } = readAgent(
             packagePath,
-            realRoot,
+            packageRoot,
             name,
             entry,
             assetBudget,

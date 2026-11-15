@@ -82,6 +82,9 @@ export function packageRelativeText(
    const name = pathModule.basename(pathModule.resolve(packagePath));
    // A drive letter, and a Windows path's case, are not significant.
    const flags = windows ? "gi" : "g";
+   // A path's tail. On POSIX a backslash is not part of it, so an escaped
+   // quote after the path (`'\''`, as Malloy spells a string) stays outside.
+   const tail = windows ? "[^\\s'\"`<>|*?:]*" : "[^\\s'\"`<>|*?:\\\\]*";
    // Longest first, so a URL is taken whole before the path inside it.
    let out = text;
    for (const spelling of [...spellings].sort((a, b) => b.length - a.length)) {
@@ -89,7 +92,7 @@ export function packageRelativeText(
       const root = `(?<![\\w./\\\\-])${escapeRegExp(spelling)}`;
       // A file under the directory: its path from there, `/`-separated.
       out = out.replace(
-         new RegExp(`${root}[\\\\/]([^\\s'"\`<>|*?:]*)`, flags),
+         new RegExp(`${root}[\\\\/](${tail})`, flags),
          (_whole, rest: string) => rest.split("\\").join("/"),
       );
       // The directory itself, where nothing under it is named: by its name.

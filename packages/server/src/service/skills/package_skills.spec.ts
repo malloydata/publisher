@@ -50,6 +50,44 @@ describe("readSkillsDir", () => {
       });
    });
 
+   it("answers the same for skills/ and for a skill directory that go out and back, whether or not the outside directory exists", () => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pkg-skills-out-"));
+      try {
+         fs.mkdirSync(path.join(outside, "present"));
+         writeSkill("real", "---\nname: real\n---\n\nbody\n");
+         const results: string[] = [];
+         for (const which of ["present", "absent_"]) {
+            const through = path.join(outside, which);
+            // A skill directory that passes out and back into skills/real.
+            fs.rmSync(path.join(pkg, "skills", "via"), { force: true });
+            fs.symlinkSync(
+               `${through}/${path.relative(through, path.join(pkg, "skills", "real"))}`,
+               path.join(pkg, "skills", "via"),
+            );
+            results.push(JSON.stringify(readSkillsDir(pkg)));
+         }
+         expect(results[0]).toBe(results[1]);
+         expect(results[0]).toContain("resolves outside the package");
+
+         // skills/ itself, out and back into a directory of the package.
+         const skills: string[] = [];
+         fs.renameSync(path.join(pkg, "skills"), path.join(pkg, "kept"));
+         for (const which of ["present", "absent_"]) {
+            const through = path.join(outside, which);
+            fs.rmSync(path.join(pkg, "skills"), { force: true });
+            fs.symlinkSync(
+               `${through}/${path.relative(through, path.join(pkg, "kept"))}`,
+               path.join(pkg, "skills"),
+            );
+            skills.push(JSON.stringify(readSkillsDir(pkg)));
+         }
+         expect(skills[0]).toBe(skills[1]);
+         expect(skills[0]).toContain("resolves outside the package");
+      } finally {
+         fs.rmSync(outside, { recursive: true, force: true });
+      }
+   });
+
    it("returns nothing, and no warning, when skills/ is a dangling link", () => {
       fs.symlinkSync(path.join(pkg, "gone"), path.join(pkg, "skills"));
       expect(readSkillsDir(pkg)).toEqual({

@@ -759,6 +759,10 @@ describe("the data probe of a package's files", () => {
       expect(text).not.toContain("leak.csv");
       expect(text).not.toContain("dir.csv");
       expect(text).toContain("bad.parquet");
+      // Named by its package-relative path, with the connection's reason,
+      // never the SQL the probe compiled.
+      expect(text).toContain("Cannot read bad.parquet: ");
+      expect(text).not.toContain("duckdb.table");
       expect(text).not.toContain("publisher_data");
    });
 });
@@ -891,5 +895,113 @@ describe("a publish whose manifest update fails after the install committed", ()
          location?: string;
       };
       expect(pkg.location).toBe(dir);
+   });
+});
+
+describe("the remaining lookups through an author's link answer the same whatever it leads to", () => {
+   // <root>/rest/present exists, <root>/rest/absent does not.
+   let rest = "";
+   beforeAll(() => {
+      rest = path.join(root, "rest");
+      fs.mkdirSync(path.join(rest, "present"), { recursive: true });
+      fs.writeFileSync(
+         path.join(rest, "present", "page.html"),
+         "<p>SECRETPAGE</p>",
+      );
+      fs.writeFileSync(path.join(rest, "present", "prompt.md"), "SECRETPROMPT");
+   });
+
+   it("a public/ link out answers 403 whether or not its target exists", async () => {
+      const answers: string[] = [];
+      for (const [folder, which] of [
+         ["pubp", "present"],
+         ["puba", "absent_"],
+      ]) {
+         const dir = writePackage(folder, {
+            "ok.malloy": BASE,
+            "public/index.html": "<p>own</p>",
+         });
+         fs.symlinkSync(
+            path.join(rest, which, "page.html"),
+            path.join(dir, "public", "leak.html"),
+         );
+         expect(await publish(folder, dir)).toBe(200);
+         const res = await fetch(
+            `${baseUrl}/environments/${ENV_NAME}/packages/${folder}/leak.html`,
+         );
+         const body = await res.text();
+         expect(body).not.toContain("SECRETPAGE");
+         answers.push(`${res.status} ${body.replaceAll(folder, "<pkg>")}`);
+         const list = await (await fetch(api(`/${folder}/data-apps`))).text();
+         expect(list).not.toContain("leak.html");
+      }
+      expect(answers[0]).toBe(answers[1]);
+      expect(answers[0]).toStartWith("403");
+   });
+
+   it("a retrieval prompt that links out is refused the same whether or not its target exists", async () => {
+      const answers: string[] = [];
+      for (const [folder, which] of [
+         ["prmp", "present"],
+         ["prma", "absent_"],
+      ]) {
+         const dir = writePackage(
+            folder,
+            { "ok.malloy": BASE },
+            {
+               name: folder,
+               retrieval: { prompts: { judge: "prompts/judge.md" } },
+            },
+         );
+         fs.mkdirSync(path.join(dir, "prompts"));
+         fs.symlinkSync(
+            path.join(rest, which, "prompt.md"),
+            path.join(dir, "prompts", "judge.md"),
+         );
+         const res = await publishing(folder, dir);
+         expect(res.text).not.toContain("SECRETPROMPT");
+         answers.push(`${res.status} ${res.text.replaceAll(folder, "<pkg>")}`);
+      }
+      expect(answers[0]).toBe(answers[1]);
+      expect(answers[0]).not.toStartWith("200");
+   });
+
+   it("a directory link that goes out and back lists, hashes and loads the same", async () => {
+      const outcomes: string[] = [];
+      for (const [folder, which] of [
+         ["tlsp", "present"],
+         ["tlsa", "absent_"],
+      ]) {
+         const dir = writePackage(folder, {
+            "ok.malloy": BASE,
+            "sub/a.malloy": BASE,
+         });
+         // Through <root>/rest/<which>, then back up and down to the served
+         // copy's own sub/: absolute, as the copy keeps it verbatim.
+         const { bootMainServer } = await import("../../harness/main_server");
+         const { environmentStore } = await bootMainServer();
+         const servedSub = path.join(
+            (
+               await environmentStore.getEnvironment(
+                  parseEnvironmentName(ENV_NAME),
+               )
+            ).getEnvironmentPath(),
+            folder,
+            "sub",
+         );
+         const through = path.join(rest, which);
+         fs.symlinkSync(
+            `${through}/${path.relative(through, servedSub)}`,
+            path.join(dir, "d"),
+         );
+         const res = await publishing(folder, dir);
+         expect(res.status).toBe(200);
+         const models =
+            res.status === 200
+               ? await (await fetch(api(`/${folder}/models`))).text()
+               : "";
+         outcomes.push(`${res.status} ${models}`.replaceAll(folder, "<pkg>"));
+      }
+      expect(outcomes[0]).toBe(outcomes[1]);
    });
 });

@@ -4,7 +4,7 @@
 import { type LogMessage, MalloyError, URLReader } from "@malloydata/malloy";
 import * as fs from "fs";
 import * as path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { stepsOutside } from "./path_safety";
 
 /**
@@ -101,6 +101,18 @@ export function linkTextSteps(
  * fails there as the kernel would rather than landing on a file the spelling
  * reaches. A link loop or an unreadable link is refused.
  */
+/**
+ * Where a walk stopped at `at` (missing, or a file with more to walk) as a
+ * path whose open fails the same way: `at` and the last name still to walk,
+ * never the rest. The rest may climb out (`newdir/../../outside/secret`), and
+ * a directory that appears at `at` between the check and the open would
+ * carry the open there.
+ */
+function stopped(at: string, pending: readonly string[]): Resolution {
+   const last = [...pending].reverse().find((name) => name !== "..");
+   return { at, path: last === undefined ? at : path.join(at, last) };
+}
+
 function* resolveSteps(
    p: string,
    givenRoot: string,
@@ -128,9 +140,7 @@ function* resolveSteps(
       const next = path.join(cur, name);
       if (!mayLook(next)) throw new ImportOutsidePackageError();
       const stat = (yield { op: "lstat", path: next }) as fs.Stats | undefined;
-      if (stat === undefined) {
-         return { at: next, path: [next, ...pending].join(path.sep) };
-      }
+      if (stat === undefined) return stopped(next, pending);
       if (stat.isSymbolicLink()) {
          if (++hops > MAX_LINK_HOPS) throw new ImportOutsidePackageError();
          const text = (yield { op: "readlink", path: next }) as
@@ -144,7 +154,7 @@ function* resolveSteps(
       }
       if (!stat.isDirectory() && pending.length > 0) {
          // A file with more to walk: the kernel stops here (ENOTDIR).
-         return { at: next, path: [next, ...pending].join(path.sep) };
+         return stopped(next, pending);
       }
       cur = next;
    }
@@ -453,15 +463,19 @@ export async function listPackageTree(root: string): Promise<string[]> {
          if (entry.isDirectory()) {
             await visit(full);
          } else if (entry.isSymbolicLink()) {
-            const target = await fs.promises.stat(full).catch(() => undefined);
-            if (!target?.isDirectory()) {
+            // Resolved by the package's own walk, which never looks outside
+            // the package: a link out (or one that passes out and back) is
+            // listed as itself, the same whatever lies outside, and a model
+            // path among them is refused at compile.
+            let real: string;
+            try {
+               real = await confinedPackagePath(root, pathToFileURL(full));
+            } catch {
                files.push(full);
                continue;
             }
-            const real = await fs.promises.realpath(full);
-            if (!within(realRoot, real)) {
-               // Listed like any link out, so the load answers the same
-               // whatever it leads to: a model path is refused at compile.
+            const target = await fs.promises.stat(real).catch(() => undefined);
+            if (!target?.isDirectory()) {
                files.push(full);
                continue;
             }

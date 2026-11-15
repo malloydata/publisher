@@ -28,6 +28,15 @@ function packageDir(name = "pkg"): string {
 }
 
 describe("packageRelativeText", () => {
+   it("leaves an escaped quote after a POSIX path outside the path's tail", () => {
+      const dir = packageDir();
+      // As Malloy spells a path inside a string literal: '\''<path>\''.
+      const text = `duckdb.table('\\'${dir}/bad.parquet\\'')`;
+      expect(packageRelativeText(text, dir, path.posix)).toBe(
+         "duckdb.table('\\'bad.parquet\\'')",
+      );
+   });
+
    it("names a file under the package by its package-relative path, as a path or a URL", () => {
       const dir = packageDir();
       const file = path.join(dir, "sub", "m.malloy");
