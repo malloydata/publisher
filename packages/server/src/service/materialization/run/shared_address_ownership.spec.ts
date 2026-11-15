@@ -438,9 +438,12 @@ describe("the build loop: one ownership decision per shared table", () => {
             () => undefined,
             (err: unknown) => err as Error,
          );
+         // Whichever source probes first, the shared reason names the
+         // source whose name= was refused.
          expect(error?.message).toContain(
-            `(${TABLE_OWNED_ELSEWHERE}): its name= 'named_t' on connection 'duckdb' is held by a table package '${ENV}/pb' built`,
+            `'named' is not built (${TABLE_OWNED_ELSEWHERE}): its name= 'named_t' on connection 'duckdb' is held by a table package '${ENV}/pb' built`,
          );
+         expect(error?.message).not.toContain("'twin' is not built");
          expect(h.built).toEqual([]);
          expect(h.statements).toEqual([]);
          expect(h.probes).toHaveLength(1);

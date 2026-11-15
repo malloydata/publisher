@@ -405,7 +405,9 @@ export class InstructedBuild {
     */
    private async assertOwnable(
       run: InstructedRun,
-      persistSource: PersistSource,
+      // The source whose `name=` this is, which every message names: the
+      // refusal is shared with each source on the table (failedTargets).
+      sourceName: string,
       target: OwnedTableTarget,
       connection: MalloyConnection,
    ): Promise<string[] | undefined> {
@@ -422,7 +424,7 @@ export class InstructedBuild {
                site,
                target,
                owner,
-               persistSource.name,
+               sourceName,
                async () =>
                   !!packageRuns &&
                   !!pkg &&
@@ -444,7 +446,7 @@ export class InstructedBuild {
             if (!view) {
                throw new TableOwnershipError(
                   TABLE_OWNED_ELSEWHERE,
-                  `'${persistSource.name}' is not built (${TABLE_OWNED_ELSEWHERE}): ` +
+                  `'${sourceName}' is not built (${TABLE_OWNED_ELSEWHERE}): ` +
                      `its name= '${target.physicalTableName}' holds a name= view ` +
                      `this package made in an earlier release, which no longer ` +
                      `provably reads the table its mark names, so it is left as ` +
@@ -463,7 +465,7 @@ export class InstructedBuild {
                ))
             ) {
                throw new Error(
-                  `'${persistSource.name}' is not built: its name= ` +
+                  `'${sourceName}' is not built: its name= ` +
                      `'${target.physicalTableName}' changed while it was ` +
                      `checked. The next build checks it again.`,
                );
@@ -471,7 +473,7 @@ export class InstructedBuild {
             logger.info(
                "Dropped this package's leftover name= view to build its table there",
                {
-                  sourceName: persistSource.name,
+                  sourceName,
                   physicalTableName: target.physicalTableName,
                },
             );
@@ -483,7 +485,7 @@ export class InstructedBuild {
             undefined,
             target,
             owner,
-            persistSource.name,
+            sourceName,
             async () => false,
          );
       }
@@ -682,7 +684,8 @@ export class InstructedBuild {
             );
             replacesView = await this.assertOwnable(
                run,
-               persistSource,
+               authorNamedInstructions(run).get(instruction) ??
+                  persistSource.name,
                ownedTarget,
                connection,
             ).catch(async (err) => {
@@ -1016,16 +1019,22 @@ function authorNamedTarget(
 }
 
 /** Each run's {@link authorNamedInstructions}, computed once. */
-const authorNamedByRun = new WeakMap<InstructedRun, Set<BuildInstruction>>();
+const authorNamedByRun = new WeakMap<
+   InstructedRun,
+   Map<BuildInstruction, string>
+>();
 
 /**
- * The run's instructions written at an author's own `name=`: those a source
- * with that `name=` resolves to, at that name.
+ * The run's instructions written at an author's own `name=`, each with the
+ * name of the first source that declares it: those a source with that
+ * `name=` resolves to, at that name.
  */
-function authorNamedInstructions(run: InstructedRun): Set<BuildInstruction> {
+function authorNamedInstructions(
+   run: InstructedRun,
+): Map<BuildInstruction, string> {
    let named = authorNamedByRun.get(run);
    if (!named) {
-      named = new Set();
+      named = new Map();
       for (const source of Object.values(run.compiled.sources)) {
          if (!hasAuthorTableName(run.compiled, source)) continue;
          const instruction = resolveInstruction(
@@ -1033,8 +1042,11 @@ function authorNamedInstructions(run: InstructedRun): Set<BuildInstruction> {
             source,
             run.compiled.connectionDigests,
          )?.instruction;
-         if (instruction?.physicalTableName === selfAssignTableName(source)) {
-            named.add(instruction);
+         if (
+            instruction?.physicalTableName === selfAssignTableName(source) &&
+            !named.has(instruction)
+         ) {
+            named.set(instruction, source.name);
          }
       }
       authorNamedByRun.set(run, named);
