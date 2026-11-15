@@ -834,40 +834,16 @@ export class InstructedBuild {
       );
       run.entries[sourceEntityId] = entry;
       run.builtAddresses.add(sourceEntityId);
-      // A rollup a join_one reads through its key (known limitation 29):
-      // check the key's uniqueness over the rows its build read, once the
-      // table is written. Auto-run only; never fails the build.
-      if (!orchestrated && run.uniqueness && !entry.storageDestinationName) {
-         await checkRollupKey(
+      // A rollup's key checks (known limitation 29). Auto-run only;
+      // never fails the build.
+      if (!orchestrated && run.uniqueness) {
+         await checkRollupKeys(
             run.uniqueness,
-            rollupKeyCheckOf(run.compiled, persistSource.sourceID),
-            connection,
-            persistSource.name,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-         // The query sources that read it through a join_many keyed on
-         // their primary key: that key unique and never NULL.
-         await checkParentKeys(
-            run.uniqueness,
-            rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
+            run.compiled,
+            persistSource,
+            entry,
             connection,
             graphConnectionName,
-            persistSource.name,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-      }
-      // A rollup in a destination whose base a join reaches on a column
-      // other than its primary key: that key unique and never NULL, checked
-      // over the base's rows on its own connection.
-      if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
-         await checkParentKeys(
-            run.uniqueness,
-            rollupParentKeyChecksOf(run.compiled, persistSource.sourceID),
-            connection,
-            graphConnectionName,
-            persistSource.name,
             sourceEntityId,
             writtenTableIdentity(instruction, graphConnectionName),
          );
@@ -1381,6 +1357,65 @@ async function storedJoinOf(
    }
 }
 
+/**
+ * The key checks of a rollup just built, recorded against the table written:
+ * its own (a join_one keyed on its grain, known limitation 29) and its base's
+ * primary key, both over the base's rows on the source's own connection, the
+ * rows a build from the author's definition groups; and the primary key of
+ * each query source that reads a colocated rollup through a join_many on it.
+ *
+ * A build that stacked on a stored upstream (`upstreamReuse: "reused"`)
+ * grouped that table's rows instead, which a check over the base's own rows
+ * may not describe (a rebuild of the rollup alone, over a parent carried from
+ * an earlier run, whose stored rows predate a duplicate). The checks over the
+ * base are then not run: no verdict, so the join leg reads the key as unknown
+ * and declines (`COUNT_SEMANTICS`) rather than trust another set of rows.
+ */
+async function checkRollupKeys(
+   ledger: UniquenessLedger,
+   compiled: CompiledBuildPlan,
+   persistSource: PersistSource,
+   entry: ManifestEntry,
+   connection: MalloyConnection,
+   connectionName: string,
+   address: string,
+   table: string,
+): Promise<void> {
+   const { sourceID } = persistSource;
+   const groupsBaseRows = entry.upstreamReuse !== "reused";
+   const baseSourceID = (
+      compiled.preaggregatePlans?.[sourceID] as
+         | { baseSourceID?: string }
+         | undefined
+   )?.baseSourceID;
+   const own = rollupKeyCheckOf(compiled, sourceID);
+   if (own && !groupsBaseRows) {
+      logger.info(
+         "A #(preaggregate) rollup was built over a stored upstream, so its key check over the base's rows is not run; queries through its join_one that need the key unique are answered live",
+         { rollup: persistSource.name, keyColumn: own.keyColumn },
+      );
+   }
+   await checkRollupKey(
+      ledger,
+      groupsBaseRows ? own : undefined,
+      connection,
+      persistSource.name,
+      address,
+      table,
+   );
+   await checkParentKeys(
+      ledger,
+      rollupParentKeyChecksOf(compiled, sourceID).filter(
+         (check) => groupsBaseRows || check.sourceID !== baseSourceID,
+      ),
+      connection,
+      connectionName,
+      persistSource.name,
+      address,
+      table,
+   );
+}
+
 /** The key check a run builds for the rollup `sourceID`, if any (known limitation 29). */
 function rollupKeyCheckOf(
    compiled: CompiledBuildPlan,
@@ -1640,8 +1675,9 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
       if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
          continue;
       }
-      // A rollup in a destination carries only its base's own key check
-      // (`compileParentKeyChecks`), recorded against its table there.
+      // A rollup in a destination carries its own key check and its base's
+      // primary key check (`compileParentKeyChecks`), recorded against its
+      // table there.
       const stored = entry.storageDestinationName;
       const table = stored
          ? tableIdentityKey("destination", stored, entry.physicalTableName)
@@ -1650,7 +1686,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
               source.connectionName,
               entry.physicalTableName,
            );
-      if (check && !stored) {
+      if (check) {
          ledger.carryRollupKey(address, table, checkDigest(table, check.sql));
       }
       for (const parent of parentChecks) {

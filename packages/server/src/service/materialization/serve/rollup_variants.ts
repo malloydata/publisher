@@ -1296,12 +1296,15 @@ export class RollupVariantServe {
          return "unknown";
       }
       // The table's content address fixes its grain, so its check is of
-      // this key.
-      const id = this.tableOf(plan, pinned)?.sourceEntityId;
+      // this key. A stored rollup's rides on its binding.
+      const table = this.tableOf(plan, pinned);
+      const id = table?.sourceEntityId;
       return verdictOf(
-         id === undefined
-            ? undefined
-            : pinned.snapshot.entries[id]?.keyUniqueness?.unique,
+         table?.binding
+            ? table.binding.rollupKey?.unique
+            : id === undefined
+              ? undefined
+              : pinned.snapshot.entries[id]?.keyUniqueness?.unique,
       );
    }
 
