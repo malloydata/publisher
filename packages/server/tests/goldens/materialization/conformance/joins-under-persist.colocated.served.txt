@@ -1,0 +1,38 @@
+// conformance: joins under persist [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: with_lines__served is {
+   id::number,
+   region::string,
+   amount::number
+}
+type: segment_totals__served is {
+   segment::string,
+   t::number
+}
+type: line_totals__served is {
+   region::string,
+   lines::number,
+   avg_qty::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#@ persist name="line_totals"
+source: line_totals is duckdb.virtual('d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782')::line_totals__served
+
+#@ persist name="segment_totals"
+source: segment_totals is duckdb.virtual('a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd')::segment_totals__served
+
+#@ persist name="with_lines"
+source: with_lines is duckdb.virtual('056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3')::with_lines__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  join_many: l is lines_raw on l.order_id = id
+  measure: total is amount.sum()
+}

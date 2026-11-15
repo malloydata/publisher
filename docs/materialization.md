@@ -554,7 +554,7 @@ A `live` verdict's `reason`:
 | --- | --- | --- |
 | `refused` | The plan refused to build it (the build plan's `refusedSources` names why). | Remove what the refusal names. |
 | `storage_mode` | `storage=` while `PERSIST_STORAGE_MODE` is not `on`. | Turn the mode on, or drop `storage=`. |
-| `rollup_over_stored_base` | A rollup over a `storage=` base, left out of the plan. | Declare the rollup on a source the base is built from. |
+| `rollup_over_stored_base` | Retained, never reported by a released server: a rollup over a `storage=` base is planned, built and served like any other ([preaggregation.md](preaggregation.md#rollups-in-the-managed-store)). | None needed. |
 | `unreachable` | No source on the package's published surface reads it: `index.malloy` hides it, and nothing it publishes is built on it, extends it or joins it. | Publish it, or a source built on it, or drop the annotation. |
 | `row_level_gate` | Every query through it carries an `#(authorize)` or `#(access_filter)` gate, which the storage tier and rollups cannot keep yet. | Materialize without `storage=`, or move the gate onto an entry point over the table. |
 | `shadowed` | Its storage table is bound, but every model's source of that name is another source. | Rename it. |

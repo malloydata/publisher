@@ -1,0 +1,123 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "classified@<pkg>/m.malloy": []
+        },
+        "order": [
+          "classified@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "classified@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "classified@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "classification-coverage",
+      "message": "Source orders_raw publishes 9 fields with no #(classification): id, customer_id, region, status, amount, discount, order_date, created_at, order. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "orders_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source customers_raw publishes 5 fields with no #(classification): id, name, segment, home_region, signup_date. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "customers_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source lines_raw publishes 4 fields with no #(classification): line_id, order_id, sku, qty. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "lines_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source orders_raw publishes 9 fields with no #(classification): id, customer_id, region, status, amount, discount, order_date, created_at, order. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "raw.malloy",
+      "severity": "warn",
+      "subject": "orders_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source customers_raw publishes 5 fields with no #(classification): id, name, segment, home_region, signup_date. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "raw.malloy",
+      "severity": "warn",
+      "subject": "customers_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source lines_raw publishes 4 fields with no #(classification): line_id, order_id, sku, qty. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "raw.malloy",
+      "severity": "warn",
+      "subject": "lines_raw"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "classified@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "classified@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "classified"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "classified",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
+        "sourceID": "classified@<pkg>/m.malloy",
+        "sql": "sha256:4e1976ddba353e43"
+      }
+    }
+  }
+}
