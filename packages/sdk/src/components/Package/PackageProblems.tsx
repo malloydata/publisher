@@ -29,8 +29,20 @@ export function PackageProblems({
    warnings: PackageWarningsInner[] | undefined;
 }) {
    const [showNotes, setShowNotes] = useState(false);
-   const errors = (warnings ?? []).filter((w) => w.severity === "error");
-   const notes = (warnings ?? []).filter((w) => w.severity !== "error");
+   // `persist-source-refused` is a one-release alias that repeats a
+   // `persist-not-built` warning, same message, for API clients; show each
+   // problem once. An older server's `persist-source-refused`, with no
+   // `persist-not-built` beside it, is the only copy and still shows.
+   const notBuilt = new Set(
+      (warnings ?? [])
+         .filter((w) => w.code === "persist-not-built")
+         .map((w) => w.message),
+   );
+   const shown = (warnings ?? []).filter(
+      (w) => w.code !== "persist-source-refused" || !notBuilt.has(w.message),
+   );
+   const errors = shown.filter((w) => w.severity === "error");
+   const notes = shown.filter((w) => w.severity !== "error");
    if (errors.length === 0 && notes.length === 0) return null;
    return (
       <Stack sx={{ gap: 1, mb: 4 }}>

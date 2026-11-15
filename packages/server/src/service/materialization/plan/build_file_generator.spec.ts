@@ -11,6 +11,13 @@ import {
    deriveBuildPlanOutcome,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+
+/**
+ * These plan incremental machinery on DuckDB, which no load or run builds
+ * (the dialect cannot bound a delta: incremental_policy's rule 6), so keep
+ * those sources rather than refuse them alone.
+ */
+const KEEP_INCREMENTAL = { keepIncrementalUnbuildable: true };
 import { collectIncrementalDeclarations } from "./build_plan";
 import { incrementalLineage } from "../run/incremental_build";
 import { incrementalPolicyRejections } from "./incremental_policy";
@@ -79,7 +86,7 @@ async function contentsOf(
 
 async function compiled(files: string | Record<string, string>) {
    const pkg = await packages.create(files);
-   return compilePackageBuildPlan(pkg);
+   return compilePackageBuildPlan(pkg, undefined, KEEP_INCREMENTAL);
 }
 
 function generatedPlans(
@@ -540,7 +547,11 @@ source: orders is orders_raw extend {
 #(materialize) storage="lake"
 source: orders is orders_raw extend { dimension: big is amount > 10 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [sourceID, source] = Object.entries(c.sources).find(
             ([, s]) => s.name === "orders",
          )!;
@@ -602,7 +613,11 @@ source: orders_ext is orders extend {
 #(materialize) storage="lake"
 source: orders_ext2 is orders_ext extend { where: east_big }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          expect(
             generatedPlans(c)
                .map((p) => p.buildSourceName)
@@ -949,7 +964,11 @@ source: orders is orders_raw extend {
     doubled is amount * 2
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [plan] = generatedPlans(c);
          expect(plan.inline).toEqual(["lines"]);
          // A dimension through the join_many has a value per pair, so it is
@@ -1037,7 +1056,11 @@ source: orders_ext is orders extend {
   measure: twice is order_count * 2
 }
 `);
-            const c = await compilePackageBuildPlan(pkg);
+            const c = await compilePackageBuildPlan(
+               pkg,
+               undefined,
+               KEEP_INCREMENTAL,
+            );
             const plan = (name: string) =>
                generatedPlans(c).find((p) => p.sourceName === name)!;
             expect(plan("orders").pair?.join).toBe("lines");
@@ -1094,7 +1117,11 @@ source: by_qty is orders_raw extend {
   join_many: lq is lines_by_qty on lq.order_id = id
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const plans = new Map(
             generatedPlans(c).map((p) => [p.sourceName, p] as const),
          );
@@ -1123,7 +1150,11 @@ source: orders is orders_raw extend {
   join_many: lp is lines_picked on lp.order_id = id
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [plan] = generatedPlans(c);
          // `lp` is the start of `lp.picks`, which stores it: one table.
          expect(plan.pairBlocks).toBeUndefined();
@@ -1219,7 +1250,11 @@ source: orders is orders_raw extend {
   join_many: notes on notes.order_id = id
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [plan] = generatedPlans(c);
          expect(plan.pair?.join).toBe("lines");
          expect(plan.pairBlocks).toEqual({
@@ -1313,7 +1348,11 @@ source: orders_one is ${orders} extend {
 `;
          const plansOf = async (text: string) => {
             const pkg = await packages.create(text);
-            const c = await compilePackageBuildPlan(pkg);
+            const c = await compilePackageBuildPlan(
+               pkg,
+               undefined,
+               KEEP_INCREMENTAL,
+            );
             const byName = new Map(
                generatedPlans(c).map((p) => [p.sourceName, p]),
             );
@@ -1436,7 +1475,11 @@ source: orders is raw extend {
 `;
          const planOf = async (text: string) => {
             const pkg = await packages.create(text);
-            const c = await compilePackageBuildPlan(pkg);
+            const c = await compilePackageBuildPlan(
+               pkg,
+               undefined,
+               KEEP_INCREMENTAL,
+            );
             const plan = generatedPlans(c).find(
                (p) => p.sourceName === "orders",
             );
@@ -1499,7 +1542,11 @@ source: orders is orders_raw extend {
   join_many: notes on notes.region = region
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [sourceID, source] = Object.entries(c.sources).find(
             ([, s]) => s.name === "orders",
          )!;
@@ -1669,8 +1716,13 @@ source: lines_raw is duckdb.sql("""select 1 as order_id, 2.0 as qty""")
 ${declaration}
 `);
             expect(generatedPlans(c)).toEqual([]);
+            // A watermark list off a pair table is invalid (it fails the
+            // load); every other case is a valid layout Publisher refuses.
+            const code = /watermark list/.test(name)
+               ? "materialize-invalid"
+               : "materialize-not-built";
             const findings = (c.annotationFindings ?? []).filter(
-               (f) => f.code === "materialize-not-built",
+               (f) => f.code === code,
             );
             expect(findings.map((f) => f.subject)).toEqual(["orders"]);
             expect(findings[0].message).toMatch(why);
@@ -1970,7 +2022,11 @@ source: orders is orders_raw extend {
   join_many: pays on pays.order_id = id
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [plan] = generatedPlans(c);
          expect(plan.pairFullRefresh).toBeUndefined();
          expect(plan.pairBlocks?.watermark).toEqual({
@@ -2191,11 +2247,19 @@ source: orders is orders_raw extend {
   join_one: r5 is regions on r5.code = line_sku
 }
 `);
-            const c = await compilePackageBuildPlan(pkg);
+            const c = await compilePackageBuildPlan(
+               pkg,
+               undefined,
+               KEEP_INCREMENTAL,
+            );
             expect(generatedPlans(c)).toEqual([]);
-            // Reported as a package warning, not only logged.
+            // Reported as a finding, not only logged: naming no join, or not
+            // a list, is invalid (it fails the load); the rest are refused.
+            const code = /not a join|something else/.test(name)
+               ? "materialize-invalid"
+               : "materialize-not-built";
             const findings = (c.annotationFindings ?? []).filter(
-               (f) => f.code === "materialize-not-built",
+               (f) => f.code === code,
             );
             expect(findings.map((f) => f.subject)).toEqual(["orders"]);
             expect(findings[0].message).toMatch(why);
@@ -2356,7 +2420,7 @@ source: orders is orders_raw
       async () => {
          const notBuilt = (c: Awaited<ReturnType<typeof compiled>>) =>
             (c.annotationFindings ?? [])
-               .filter((f) => f.code === "materialize-not-built")
+               .filter((f) => f.code === "materialization-table-collision")
                .map((f) => f.subject)
                .sort();
          // A defaulted name takes the package's suffix, which an author's
@@ -2374,8 +2438,9 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
          expect(generatedPlans(apart).map((p) => p.sourceName)).toEqual([
             "orders",
          ]);
-         // In a storage destination (DuckDB, which folds case), Orders and
-         // orders are one table.
+         // Without name=, Orders and orders take readable names hashed over
+         // their own names, so even a destination that folds case holds two
+         // tables.
          const folded = await compiled(`${BASE}
 #(materialize) storage="lake"
 source: Orders is orders_raw extend { where: region = 'east' }
@@ -2383,8 +2448,8 @@ source: Orders is orders_raw extend { where: region = 'east' }
 #(materialize) storage="lake"
 source: orders is orders_raw extend { where: region = 'west' }
 `);
-         expect(notBuilt(folded)).toEqual(["Orders", "orders"]);
-         // Two author names that differ only by case, too.
+         expect(notBuilt(folded)).toEqual([]);
+         // Two author names that differ only by case are one table there.
          const named = await compiled(`${BASE}
 #(materialize) name="T_east" storage="lake"
 source: east is orders_raw extend { where: region = 'east' }
@@ -2505,9 +2570,8 @@ source: orders is orders_raw -> { select: * }
             "orders",
          ]);
          expect(
-            c.annotationFindings?.find(
-               (f) => f.code === "materialize-not-built",
-            )?.message,
+            c.annotationFindings?.find((f) => f.code === "materialize-invalid")
+               ?.message,
          ).toContain("its own #@ persist");
       },
       { timeout: 30000 },
@@ -2684,11 +2748,11 @@ source: orders is orders_raw -> { select: * }
          "`freshness` takes properties",
       );
       expect(reason('#(materialize) storage="a\n')).toContain("does not parse");
-      // A value of the wrong shape is unservable (the source serves live); a
-      // line that does not parse is malformed, refused at publish.
+      // Both are malformed, which fails the load: a value of the wrong shape
+      // (materialize-invalid) and a line that does not parse.
       expect(
          refusal('#(materialize) storage=["a", "b"]\n')?.malformedCode,
-      ).toBeUndefined();
+      ).toBe("materialize-invalid");
       const unparseable = refusal('#(materialize) storage="a\n');
       expect(unparseable?.malformedCode).toBe("materialize-unparseable");
       expect(materializeRefusalFinding(unparseable!, "m.malloy")).toMatchObject(

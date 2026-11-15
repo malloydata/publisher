@@ -14,9 +14,9 @@ source: daily_orders is orders -> { group_by: order_date; aggregate: total is am
 
 - `storage=` names a **storage destination**, never a connection. Destinations are declared on the environment (`storageDestinations: [{ "name": "lake", "type": "ducklake", "ducklakeConnection": { "catalog": {...}, "storage": {...} } }]`, by config or by environment PATCH); a build naming one the environment does not hold fails the run with a `DestinationNotFoundError`. Reads of the environment report a destination's name and type only, never its config.
 - The build is a native **query passthrough**: the source warehouse (Postgres, BigQuery or Snowflake) computes the query and only the result crosses into the store, through DuckDB. A source on a DuckDB connection is refused for `storage=` (there is nothing to push down). A `#(access_filter)`-gated source is always refused on this tier (`reference/access-filter.md`).
-- The tier is gated by `PERSIST_STORAGE_MODE` (`off` / `write-only` / `on`). Under `off` a `storage=` source is **skipped by the build and served live, with no error** - it is never built colocated instead. Under `write-only` it builds but is still served live, and the package warns. If a `storage=` source "did nothing", check the mode before the model.
+- The tier is gated by `PERSIST_STORAGE_MODE` (`off` / `write-only` / `on`). Under `off` a `storage=` source is **skipped by the build and served live, with no error** - it is never built colocated instead. Under `write-only` it builds but is still served live, and the package warns (`materialization-storage-mode`). If a `storage=` source "did nothing", check the mode before the model.
 - A package may name several destinations; each source routes to its own.
-- `partition=` is not supported: a stored table is written unpartitioned, and a publish whose `#@ persist` or `#(materialize)` carries `partition=` is refused (`persist-retired-key`, `materialize-retired-key`). Remove the key; it was a layout only, so the cost is scan time and no answer changes.
+- `partition=` is not supported: a stored table is written unpartitioned, and a package whose `#@ persist` or `#(materialize)` carries `partition=` fails the publish and the load (`persist-retired-key`, `materialize-retired-key`). Remove the key; it was a layout only, so the cost is scan time and no answer changes.
 
 ## Where a given may sit
 

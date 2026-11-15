@@ -17,7 +17,6 @@ import {
 } from "../test_helpers/temp_package";
 import {
    PackageMaterialization,
-   PERSIST_SOURCE_REFUSED_CODE,
    type PackageMaterializationOwner,
 } from "./materialization/package_materialization";
 import { MATERIALIZATION_UNREACHABLE_CODE } from "./materialization/serve/serve_verdict";
@@ -180,11 +179,15 @@ given: REGION :: string
 source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
 `,
       });
-      const refused = (loaded.pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === PERSIST_SOURCE_REFUSED_CODE,
-      );
+      const warnings = loaded.pkg.getPackageMetadata().warnings ?? [];
+      const refused = warnings.filter((w) => w.code === "persist-not-built");
       expect(refused).toHaveLength(1);
       expect(refused[0]).toMatchObject({ subject: "orders", severity: "warn" });
+      // Its former code, beside it with the same message, for one release.
+      const alias = warnings.filter((w) => w.code === "persist-source-refused");
+      expect(alias).toEqual([
+         { ...refused[0], code: "persist-source-refused" },
+      ]);
    });
 
    // GET …/status reads the verdicts on every poll: the entry-point walk is

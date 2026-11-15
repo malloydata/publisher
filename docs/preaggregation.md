@@ -30,8 +30,8 @@ source: orders is duckdb.table('data/orders.parquet') extend {
 
 The rest of this page describes `#@ preaggregate`, which keeps working (deprecated). Where `#(preaggregate)` differs:
 
-- **Keys.** `grain=[…]` (required), and `storage=` or `namespace=`, never both. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure is refused at publish.
-- **Which measures.** Read from the measure's own text: `count()`, `x.sum()`, `x.min()`, `x.max()` (and `sum(x)` and so on), each optionally filtered, references to other such measures, and arithmetic or scalar functions over them. Each aggregate is stored as its own partial and merged at read, so `revenue / order_count` stays a ratio of totals. `avg`, a distinct count (`count(x)`), `stddev` and the like, `all()` and `exclude()` are refused at publish. Text outside what is read (`pick`, a cast, a date literal, `|` in a filter, `x.count()` on a field, a joined source's measure) is a warning, and the measure serves live. The reading is checked against the compiled measure: a measure whose aggregates the compiler records differently is a warning too, never stored.
+- **Keys.** `grain=[…]` (required), and `storage=` or `namespace=`, never both. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure fails the publish and the load (`preaggregate-unknown-key`, `preaggregate-unknown-grain`, `preaggregate-not-a-measure`).
+- **Which measures.** Read from the measure's own text: `count()`, `x.sum()`, `x.min()`, `x.max()` (and `sum(x)` and so on), each optionally filtered, references to other such measures, and arithmetic or scalar functions over them. Each aggregate is stored as its own partial and merged at read, so `revenue / order_count` stays a ratio of totals. `avg`, a distinct count (`count(x)`), `stddev` and the like, `all()` and `exclude()` fail the publish and the load (`preaggregate-not-mergeable`). Text outside what is read (`pick`, a cast, a date literal, `|` in a filter, `x.count()` on a field, a joined source's measure) is a warning, and the measure serves live. The reading is checked against the compiled measure: a measure whose aggregates the compiler records differently is a warning too, never stored.
 - **Joins.** A source with a `join_many` or `join_cross` can be rolled up. An aggregate through a join (`carriers.fleet.sum()`) is stored only when the join's key (`carrier` in `join_one: carriers with carrier`) is in the grain; otherwise it is a warning and serves live. Its stored total is the joined rows' within each group, and groups that share the key hold the same joined rows, so a query reads a join-level sum or count from the rollup only when it groups by, or fixes, every other grain dimension at each level that aggregates it (a grain of the key alone has none). A join-level `min` or `max` (`carriers.fleet.max()`, key in the grain) is stored too, and merged with `min` or `max`: a repeated joined row cannot change either, so it is read from the rollup however the query groups, and a group with no joined row is `NULL`, as live. An aggregate through more than one join (`carriers.hubs.gates.sum()`) is a warning and serves live. A grain dimension read through a `join_many` is a fan-out dimension: a query reads the rollup only when it groups by it, or fixes it to one value with `where:`, at every level that aggregates.
 - **Where it is declared.** A declaration belongs to the source that writes it. An extension inherits its base's rollups' meaning but does not get its own; an include-list item's annotation is the including source's. Each rollup is planned once, under the model that declares its base, and its name carries that model, so two same-named sources in two models never share a table.
 - **Extensions.** A query on an extension or rename of a rolled-up source (`source: orders_plus is orders extend { … }`) is answered from that source's rollups when the extension adds no `where:` and no `timezone:` (and, past a gate, only gates the rollup can prove; see below), and the query reads only grain dimensions, stored measures, and dimensions the extension defines over grain dimensions alone (`dimension: cat_lower is lower(category)`). A dimension over anything else or written in raw SQL (`sql_string(…)`), a measure the extension adds, an extension that filters its rows, and an extension that binds a base field's name to another field (`rename: region_was is region; dimension: region is 'east'`, which changes what the base's stored measures read) are answered live (`GRAIN_TOO_COARSE`, `MISSING_FIELD`, `TIME_ZONE`).
@@ -42,7 +42,7 @@ The rest of this page describes `#@ preaggregate`, which keeps working (deprecat
 - **A stored base.** A rollup builds from the author's rows, never from its base's stored table, so a rollup over a `#@ persist storage=` base builds and serves (#6293).
 - **What routes.** The query's text is compiled where its source's name means the rollup. It routes when every field it groups or filters by is in the grain, every aggregate is a stored measure's merge (an aggregate written in the query or in a `having:`, or a `select:` stage, is not; this is read from the compiled query, not its text), and it sets no `timezone:`, in any stage or nest. A query on a source that sets its own `timezone:` is answered live (`TIME_ZONE`): the rollup's stored times are not read in that zone, so a truncation, a filter on one, or a gate on one would not match live. Since no query on it reads such a rollup, a `#(preaggregate)` on a source that sets (or inherits) its own `timezone:` is not built (`preaggregate-time-zone`, a warning), unless a source in the same zone joins it, the one read left (through a join, above). A `calculate:` over a measure (`lag(total)`) reads that measure at its level, so it is held to the same rules as an aggregate there. A fan-out dimension counts as fixed by `where: d = <one value>`, alone or as one conjunct of an `and`. A query that supplies a given routes. A named `view:` routes as its own query does: `run: orders -> by_category`, a refinement of it, a query starting from it, and a `nest:` of one are compiled with the view as you wrote it, and answered from the rollup when the view's query passes the same checks, its text, and the text of every view it builds on, still compiles to the view the served model holds (an edit not yet reloaded is answered live), and it reads no raw SQL (`sql_boolean(…)`, whose columns the rollup may not keep). A persisted view of that name (`#@ persist` on the view) answers its own call first. The path report names the reason for each skip, and an answer from a `storage=` rollup reports `servedFrom: storage`.
 - **Givens.** A rollup whose build reads a given is not built (a warning): its table would hold one value's rows.
-- **Other compile-time refusals.** A valid rollup that a compile-time gate refuses alone is not built, and its measures are answered live, while the rest of the package loads: one on a dialect whose connection creates no table (SQL Server), one whose table name another rollup's table holds, one over a base scoped by a given, a v1 `#@ preaggregate` rollup over a base with a row-level gate, or one the `storage=` gate refuses. The warning is `preaggregate-not-built`, with `subject` the base, and its message names the base, the grain and the reason. A refusal with a code of its own (`preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given` and the like) keeps it. `preaggregate-malformed` is a line Publisher cannot read, such as an empty `grain=[]`, and it refuses the publish, with one exception: an empty `storage=` on a `#@ preaggregate` line warns under it and refuses only that rollup.
+- **Other compile-time refusals.** A valid rollup that a compile-time gate refuses alone is not built, and its measures are answered live, while the rest of the package loads: one on a dialect whose connection creates no table (SQL Server), one whose table name another rollup's table holds, one over a base scoped by a given, a v1 `#@ preaggregate` rollup over a base with a row-level gate, or one the `storage=` gate refuses. The warning is `preaggregate-not-built`, with `subject` the base, and its message names the base, the grain and the reason. A refusal with a code of its own (`preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given` and the like) keeps it. A line Publisher cannot read fails the publish and the load, on `#@ preaggregate` as on `#(preaggregate)`: one that does not parse is `preaggregate-unparseable`, and a value that is wrong, such as an empty `grain=[]`, an empty or non-text `storage=` or an `@env.` reference, is `preaggregate-invalid`. The retired `preaggregate-malformed` is no longer produced ([fails the load, or refused alone](materialization.md#fails-the-load-or-refused-alone)).
 
 ## Declare a rollup
 
@@ -103,7 +103,7 @@ Rollups are grouped by grain rather than by measure, so ten measures sharing a g
 
 ## What can be pre-aggregated
 
-Publisher refuses a declaration it could not build, as a `400` from publish and `PATCH` and as a load failure on an already-published package (reported in `ServerStatus.loadErrors`). The rules are worth knowing before you write the annotation, because the alternative to refusing is worse: a rollup that silently does nothing returns correct numbers, so the only signal is the bill.
+A declaration that is wrong as written fails the publish and the load: a `400` from publish and `PATCH`, and a load failure on every other path, a reload, a restart or a package already published included (reported in `ServerStatus.loadErrors`). A v1 line fails under the same code as `#(preaggregate)` for the same mistake: `preaggregate-not-a-measure` when it is misplaced, `preaggregate-not-mergeable` when the measure is not additive, `preaggregate-unknown-grain` for a bad grain, `preaggregate-unknown-key` for a key it does not read, and `preaggregate-invalid` or `preaggregate-unparseable` otherwise. The rules are worth knowing before you write the annotation, because the alternative to refusing is worse: a rollup that silently does nothing returns correct numbers, so the only signal is the bill.
 
 ### Only measures
 
@@ -113,7 +113,7 @@ Publisher refuses a declaration it could not build, as a `400` from publish and 
 
 A rollup stores a partial aggregate per group, and answering a coarser query merges those partials. That works for `sum`, `count`, `min` and `max`, and not for anything else: an average of averages is not an average.
 
-A filter written directly on the aggregate is fine — `paid is amount.sum() { where: is_paying }` pre-aggregates, because the measure *means* the filtered value and filtering commutes with merging per-group partials. Several conditions belong in that one `where:`, comma-separated. The filter has to sit on the aggregate itself, applied once: a chained refinement (`amount.sum() { where: a } { where: b }` — the spelling most likely to happen by accident; write `{ where: a, b }` instead), a filter refining a derived measure, or an aggregate wrapped in a further expression (`coalesce(amount.sum() { where: … }, 0)`) is refused at publish like any other shape whose merge cannot be proven.
+A filter written directly on the aggregate is fine — `paid is amount.sum() { where: is_paying }` pre-aggregates, because the measure *means* the filtered value and filtering commutes with merging per-group partials. Several conditions belong in that one `where:`, comma-separated. The filter has to sit on the aggregate itself, applied once: a chained refinement (`amount.sum() { where: a } { where: b }` — the spelling most likely to happen by accident; write `{ where: a, b }` instead), a filter refining a derived measure, or an aggregate wrapped in a further expression (`coalesce(amount.sum() { where: … }, 0)`) fails the publish and the load like any other shape whose merge cannot be proven.
 
 For `avg`, pre-aggregate the parts and divide where you use them:
 
@@ -135,7 +135,7 @@ run: orders -> {
 
 ### Grains name dimensions
 
-A grain may name only dimensions the source itself declares. An inline expression is refused, including a time truncation — this is rejected at publish:
+A grain may name only dimensions the source itself declares. An inline expression is refused, including a time truncation — this fails the publish and the load:
 
 ```malloy
   #@ preaggregate grain="order_time.day"
@@ -161,7 +161,7 @@ For the same reason a grain cannot reach through a join (`grain="customer.region
 
 A source whose joins can multiply rows — `join_many`, `join_cross` — cannot be rolled up, because the stored partials would double-count. `join_one` is fine, and a measure that aggregates through one is pre-aggregated normally.
 
-This rule is wider than it sounds: it disqualifies the whole source, not just the measures that use the fan-out join. A source with one `join_many` cannot pre-aggregate any of its measures.
+This rule is wider than it sounds: it disqualifies the whole source, not just the measures that use the fan-out join. A source with one `join_many` cannot pre-aggregate any of its `#@ preaggregate` measures. The declaration is valid, so the package still loads: its v1 rollups are refused alone with warning code `preaggregate-join-level`, as `#(preaggregate)` refuses a join-level aggregate that fans out, and their measures are answered live. `#(preaggregate)` has the narrower rule [above](#preaggregate-materialization-v2-behind-publisher_materialize).
 
 ## What does not route
 
@@ -230,7 +230,7 @@ measure:
 ```
 
 Measures that share a grain share its one table, so they must agree on where it goes.
-Two naming different namespaces is refused at publish rather than resolved silently.
+Two naming different namespaces fail the publish and the load (`preaggregate-invalid`) rather than being resolved silently.
 
 **A persisted base lends its own.** If the base carries `#@ persist
 name="analytics.orders_tbl"`, its rollups are created in `analytics` without being told
@@ -256,8 +256,8 @@ off rather than replace it, negate with `#@ -preaggregate`.
 
 **It is a namespace, not a name.** Write it as plain identifiers — letters, digits,
 underscore, dollar or hyphen — dot-separated where the warehouse needs more than one
-part (`analytics`, `my-project.analytics` on BigQuery). A value needing quotes is
-refused rather than mangled, because the generated table name is appended to it and the
+part (`analytics`, `my-project.analytics` on BigQuery). A value needing quotes fails the
+load rather than being mangled, because the generated table name is appended to it and the
 two halves would then be quoted inconsistently.
 
 ## Rollups in the managed store
@@ -285,8 +285,8 @@ it. The planner therefore refuses to plan one: `#@ preaggregate` on a measure th
 does not publicly expose builds nothing, and neither does a grain naming a hidden
 dimension.
 
-That is reported as a **warning** rather than refusing your publish, unlike everything
-else in this section. Partly because such a package published before the rule existed and
+That is reported as a **warning** (`preaggregate-hidden-field`) that refuses the rollup
+alone, rather than failing your publish and load as the mistakes in this section do. Partly because such a package published before the rule existed and
 an upgrade must not break it, and partly because the refusal was unfollowable: an
 annotation inherited onto a source that then hides the measure would raise it, while that
 source produces no rollup at all and exposes nothing.
@@ -329,17 +329,19 @@ your source's name and there is no binding to collide with.
 
 **It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
 placed differently — one in the store, one alongside the base. Measures sharing a grain
-share its one table, so two of them naming different destinations is refused at publish.
+share its one table, so two of them naming different destinations fail the publish and the
+load (`preaggregate-invalid`).
 
 **`namespace=` and `storage=` cannot be combined.** Placement inside a destination is
 derived, not authored: a freshly provisioned catalog has no schema to create the table
-in. Writing both on one `#@ preaggregate` line is refused.
+in. Writing both on one `#@ preaggregate` line fails the publish and the load
+(`preaggregate-invalid`).
 
 **The tier's switch applies.** With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is
 not built — and not built anywhere else either. Falling back to a build alongside the
 base would put a table in your warehouse under a generated name you never wrote, so
 nothing is built, queries are answered from the base, and the package reports the
-degraded state as a warning. Under `write-only` the rollup builds but does not serve.
+degraded state as a warning (`materialization-storage-mode`). Under `write-only` the rollup builds but does not serve.
 
 **An uncovered query is answered from the base.** A query no rollup covers, in the store
 or alongside the base, is answered live, with the answer it always had; the path report
