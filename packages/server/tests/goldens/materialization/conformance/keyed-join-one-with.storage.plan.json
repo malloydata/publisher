@@ -30,6 +30,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "cust@<pkg>/m.malloy": "persist",
+      "order_facts@<pkg>/m.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

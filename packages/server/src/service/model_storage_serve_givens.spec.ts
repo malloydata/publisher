@@ -25,7 +25,9 @@ import { malloyGivenToApi } from "./given";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
-import { writeServedCopyFiles } from "../test_helpers/served_copy_files";
+import { materializationFixture } from "../test_helpers/materialization_fixture";
+
+const mz = materializationFixture();
 
 /** Puts back the settings the current test installed. */
 let restoreSettings: (() => void) | undefined;
@@ -86,7 +88,7 @@ async function buildModel(): Promise<Model> {
    const connMap = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
    // On disk, as a package's files are: the served copy re-roots the
    // author's own text.
-   const files = writeServedCopyFiles({ "m.malloy": MODEL });
+   const files = mz.servedCopy({ "m.malloy": MODEL });
    const urlReader = new InMemoryURLReader(files.byUrl);
    const runtime = new Runtime({
       urlReader,

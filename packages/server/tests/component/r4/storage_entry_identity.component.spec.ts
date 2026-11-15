@@ -23,7 +23,7 @@ import {
    LAKE,
    loadFixture,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
 const model = (status: string) => `import "raw.malloy"

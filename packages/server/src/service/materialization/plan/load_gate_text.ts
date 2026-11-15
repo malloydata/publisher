@@ -30,14 +30,14 @@ import type {
 } from "./preaggregation_validation";
 import type { components } from "../../../api";
 import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
-import type { MaterializePlan } from "./build_file_generator";
+import type { MaterializePlan } from "../domain/table_plans";
 import {
    authorNameOf,
    describeMembers,
    membersOnOneTable,
    persistTableTarget,
 } from "./eligibility_collect";
-import type { IncrementalDeclaration } from "./incremental_declaration";
+import type { IncrementalDeclaration } from "../domain/incremental";
 import {
    incrementalPolicyRejections,
    type IncrementalPolicySource,

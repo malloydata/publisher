@@ -1,6 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Giving back what materializations built ({@link Reclaimer}): the tables of a
+ * deleted run, of a failed run that committed no manifest, of an archived or
+ * deleted version, the tables a readable name replaced, and at startup a
+ * version reclaim a crash cut short. Each table is dropped through its own
+ * tier's adapter, with any `name=` view an earlier release left beside it.
+ * Reached as the materialization service's `reclaimer`, by the service and
+ * main_server.ts.
+ *
+ * Effects: drops in warehouses and destinations, writes the run store, logs
+ * and counts each drop. Best-effort, and never drops a table another committed
+ * run of the package still references, or one another package has since
+ * marked as its own.
+ */
+
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { recordDropTables } from "../../../materialization_metrics";
@@ -12,7 +27,6 @@ import { errMessage } from "../../../utils";
 import { parseEnvironmentName, parsePackageName } from "../../identity";
 import type { ApiConnection } from "../../model";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
-import { quoteTablePath } from "../../quoting";
 import { resolveEnvironmentId } from "../../resolve_environment";
 import {
    isVersionOwnedRun,
@@ -23,13 +37,12 @@ import {
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { ManifestEntry } from "../domain/types";
-import { dropStorageTable } from "./materialization_build_session";
+import { ColocatedTier } from "./colocated_build_strategy";
+import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
-   backupSuffix,
    BuildEnvironment,
    connectionMetadataLayers,
    redactConnectionSecrets,
-   stagingSuffix,
    tableKeyOf,
 } from "./materialization_run_support";
 import {
@@ -43,6 +56,12 @@ import { ownedElsewhere } from "./table_ownership";
 import { atTableSite } from "./table_site";
 import type { RunLifecycle } from "./run_lifecycle";
 import type { RenamedTable } from "./run_instructions";
+
+/** The tiers a drop reaches a table through. */
+const COLOCATED = new ColocatedTier();
+// Only its drop. A build goes through the service's adapter, which routes a
+// chained build through the run's collaborators; this one would not.
+const STORAGE: Pick<StorageBuildStrategy, "drop"> = new StorageBuildStrategy();
 
 /** A physical table's key for drop bookkeeping: where it lives, and its name. */
 function tableKey(destination: string, physicalTableName: string): string {
@@ -183,6 +202,72 @@ function dropRunSQLOptions(
    return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
 }
 
+/**
+ * How one drop of a run's entries reaches their tables: each connection
+ * resolved once, the sites a leftover `name=` view is reached at, the
+ * package's ownership mark, and what a failed table drop does.
+ */
+function dropReach(
+   environment: MaterializationEnvironment,
+   environmentName: string,
+   packageName: string,
+   materializationId: string,
+   connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
+) {
+   const connectionCache = new Map<string, MalloyConnection>();
+   const cachedConnection = async (name: string) => {
+      const cached = connectionCache.get(name);
+      if (cached) return cached;
+      const resolved = await connectionFor(name);
+      if (resolved) connectionCache.set(name, resolved);
+      return resolved;
+   };
+   const viewContext = {
+      connectionFor: cachedConnection,
+      destinationFor: (name: string) =>
+         destinationForCleanup(environment, name),
+      // Read only when a view's site is reached: a drop that never
+      // reaches one never asks.
+      get environmentPath() {
+         return environment.getEnvironmentPath();
+      },
+      runOptions: (name: string) =>
+         dropRunSQLOptions(
+            environment,
+            name,
+            environmentName,
+            packageName,
+            materializationId,
+         ),
+   };
+   // A table's DROP that fails because this package's own `name=` view
+   // holds its name: an earlier release replaced the table with the view,
+   // so the table is gone and its entry is retired, not owed. Probed only
+   // after a failed drop.
+   const owner = packageOwner(environmentName, packageName);
+   const replacedByOwnView = (entry: ManifestEntry) =>
+      heldByOwnNameView(
+         {
+            connectionName: entry.connectionName ?? "",
+            ...(entry.storageDestinationName
+               ? { storageDestinationName: entry.storageDestinationName }
+               : {}),
+         },
+         entry.physicalTableName,
+         owner,
+         viewContext,
+      );
+   // A failed drop of the table itself: retired when that view holds the
+   // name, else the failure stands.
+   const retireIfReplacedByView =
+      (entry: ManifestEntry) =>
+      async (err: unknown): Promise<void> => {
+         if (!(await replacedByOwnView(entry))) throw err;
+         logRetiredByView(materializationId, entry.physicalTableName);
+      };
+   return { cachedConnection, viewContext, owner, retireIfReplacedByView };
+}
+
 /** A drop of a run's manifest entries; see {@link Reclaimer.dropManifestEntries}. */
 type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
@@ -200,17 +285,10 @@ export class Reclaimer {
          host: MaterializationHost;
          lifecycle: RunLifecycle;
          /**
-          * How a sweep drops one run's entries. The facade routes this back
-          * through its own `dropManifestEntries` so its specs can substitute
-          * a failing drop.
+          * How a sweep drops one run's entries: the service passes its run
+          * collaborator, so a spec can hand it a failing drop.
           */
          dropManifestEntries: DropManifestEntries;
-         /**
-          * How a deleted version's cleanup and the startup sweep reclaim one
-          * version: back through the facade's public `reclaimVersionTables`,
-          * which its specs observe.
-          */
-         reclaimVersionTables: Reclaimer["reclaimVersionTables"];
       },
    ) {}
 
@@ -283,12 +361,14 @@ export class Reclaimer {
             );
             if (!destinationConnection) continue;
             try {
-               await dropStorageTable({
-                  destinationName: dest,
-                  destinationConnection,
-                  physicalTableName: table,
-                  environmentPath: environment.getEnvironmentPath(),
-               });
+               await STORAGE.drop(
+                  {
+                     destinationName: dest,
+                     destinationConnection,
+                     environmentPath: environment.getEnvironmentPath(),
+                  },
+                  { physicalTableName: table },
+               );
                recordDropTables("success", "storage");
                logger.info("Reclaimed a table stranded by a failed build", {
                   destinationName: dest,
@@ -462,49 +542,14 @@ export class Reclaimer {
       skipped?: ManifestEntry[],
    ): Promise<ManifestEntry[]> {
       const m = { id: materializationId };
-      const connectionCache = new Map<string, MalloyConnection>();
       const owed: ManifestEntry[] = [];
-      const cachedConnection = async (name: string) => {
-         const cached = connectionCache.get(name);
-         if (cached) return cached;
-         const resolved = await connectionFor(name);
-         if (resolved) connectionCache.set(name, resolved);
-         return resolved;
-      };
-      const viewContext = {
-         connectionFor: cachedConnection,
-         destinationFor: (name: string) =>
-            destinationForCleanup(environment, name),
-         // Read only when a view's site is reached: a drop that never
-         // reaches one never asks.
-         get environmentPath() {
-            return environment.getEnvironmentPath();
-         },
-         runOptions: (name: string) =>
-            dropRunSQLOptions(
-               environment,
-               name,
-               environmentName,
-               packageName,
-               m.id,
-            ),
-      };
-      // A table's DROP that fails because this package's own `name=` view
-      // holds its name: an earlier release replaced the table with the view,
-      // so the table is gone and its entry is retired, not owed. Probed only
-      // after a failed drop.
-      const owner = packageOwner(environmentName, packageName);
-      const replacedByOwnView = (entry: ManifestEntry) =>
-         heldByOwnNameView(
-            {
-               connectionName: entry.connectionName ?? "",
-               ...(entry.storageDestinationName
-                  ? { storageDestinationName: entry.storageDestinationName }
-                  : {}),
-            },
-            entry.physicalTableName,
-            owner,
-            viewContext,
+      const { cachedConnection, viewContext, owner, retireIfReplacedByView } =
+         dropReach(
+            environment,
+            environmentName,
+            packageName,
+            materializationId,
+            connectionFor,
          );
       for (const entry of entries) {
          const connectionName = entry.connectionName;
@@ -577,23 +622,22 @@ export class Reclaimer {
                continue;
             }
             try {
-               try {
-                  await dropStorageTable({
+               await STORAGE.drop(
+                  {
                      destinationName: entry.storageDestinationName,
                      destinationConnection,
-                     physicalTableName,
                      environmentPath: environment.getEnvironmentPath(),
-                     // Where an earlier release's `name=` view replacement
-                     // kept the table until its run committed, as a crash
-                     // or a failed restore may have left it.
-                     alsoDrop: [
-                        `${physicalTableName}${backupSuffix(entry.sourceEntityId)}`,
-                     ],
-                  });
-               } catch (err) {
-                  if (!(await replacedByOwnView(entry))) throw err;
-                  logRetiredByView(m.id, physicalTableName);
-               }
+                  },
+                  {
+                     physicalTableName,
+                     // Its backup name, where an earlier release's `name=`
+                     // view replacement kept the table until its run
+                     // committed, as a crash or a failed restore may have
+                     // left it.
+                     leftoversOf: entry.sourceEntityId,
+                     onDropFailed: retireIfReplacedByView(entry),
+                  },
+               );
                recordDropTables("success", "storage");
                logger.info("Dropped materialized storage table on delete", {
                   materializationId: m.id,
@@ -628,43 +672,25 @@ export class Reclaimer {
                skipped?.push(entry);
                continue;
             }
-            // Quoted as buildOneSource quoted it, so what built also drops.
-            const dialect = connection.dialectName;
-            // Tagged for attribution like a build, but as `ops`.
-            const dropOptions = dropRunSQLOptions(
-               environment,
-               connectionName,
-               environmentName,
-               packageName,
-               m.id,
-            );
-            try {
-               await connection.runSQL(
-                  `DROP TABLE IF EXISTS ${quoteTablePath(
-                     physicalTableName,
-                     dialect,
-                  )}`,
-                  dropOptions,
-               );
-            } catch (err) {
-               if (!(await replacedByOwnView(entry))) throw err;
-               logRetiredByView(m.id, physicalTableName);
-            }
-            // A crash between staging-create and rename can leave this behind.
-            await connection.runSQL(
-               `DROP TABLE IF EXISTS ${quoteTablePath(
-                  `${physicalTableName}${stagingSuffix(entry.sourceEntityId)}`,
-                  dialect,
-               )}`,
-               dropOptions,
-            );
-            // And a crash between the swap's two renames, the previous copy.
-            await connection.runSQL(
-               `DROP TABLE IF EXISTS ${quoteTablePath(
-                  `${physicalTableName}${backupSuffix(entry.sourceEntityId)}`,
-                  dialect,
-               )}`,
-               dropOptions,
+            await COLOCATED.drop(
+               {
+                  connection,
+                  // Tagged for attribution like a build, but as `ops`.
+                  runOptions: dropRunSQLOptions(
+                     environment,
+                     connectionName,
+                     environmentName,
+                     packageName,
+                     m.id,
+                  ),
+               },
+               {
+                  physicalTableName,
+                  // Its staging and backup names, which a crash part-way
+                  // through a build can leave.
+                  leftoversOf: entry.sourceEntityId,
+                  onDropFailed: retireIfReplacedByView(entry),
+               },
             );
             recordDropTables("success", "in_warehouse");
             logger.info("Dropped materialized table on delete", {
@@ -1073,11 +1099,7 @@ export class Reclaimer {
             error: errMessage(err),
          });
       }
-      await this.deps.reclaimVersionTables(
-         environmentName,
-         packageName,
-         versionId,
-      );
+      await this.reclaimVersionTables(environmentName, packageName, versionId);
    }
 
    /**
@@ -1244,7 +1266,7 @@ export class Reclaimer {
                }
             }
             for (const { packageName, versionId } of toFinish.values()) {
-               await this.deps.reclaimVersionTables(
+               await this.reclaimVersionTables(
                   environmentName,
                   packageName,
                   versionId,

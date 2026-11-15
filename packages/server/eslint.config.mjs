@@ -428,12 +428,13 @@ const importDirectionRule = {
 //
 //   H1  every non-spec module under materialization/ opens, after the
 //       license, with a block comment saying what it is responsible for.
-//   H2  no history in a comment there: no ticket number, `phase N`, `step 2x`
-//       or date. History belongs in the commit message.
+//   H2  no history in a comment there: no ticket number, `phase N`, `step N`
+//       or `pull request N` label, or date. History belongs in the commit
+//       message.
 //
-// Each is seeded with today's files (materialization_allowlists.mjs) and only
-// shrinks: src/service/materialization/layer_rules.spec.ts fails on a stale
-// entry as well as on a new violation.
+// Both allow no exceptions: their lists in materialization_allowlists.mjs are
+// empty, and src/service/materialization/layer_rules.spec.ts fails on any
+// violation.
 // ---------------------------------------------------------------------------
 const mzFileOf = (context) => {
    const filename = context.filename ?? context.getFilename();
@@ -473,9 +474,12 @@ const moduleHeaderRule = {
       };
    },
 };
-/** A ticket number, a `phase N` or `step 2x` label, or a date, in a comment. */
+/**
+ * A ticket number, a `phase N`, `step N` or `pull request N` label, or a
+ * date, in a comment.
+ */
 export const HISTORY_IN_COMMENT =
-   /#\d{3,}\b|\bphase \d|\bstep 2[a-l]\b|\b20\d\d-\d\d-\d\d\b/gi;
+   /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b/gi;
 const noHistoryCommentsRule = {
    meta: {
       type: "suggestion",

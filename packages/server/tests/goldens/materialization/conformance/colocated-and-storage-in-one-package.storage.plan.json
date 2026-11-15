@@ -28,6 +28,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "dim_c@<pkg>/m.malloy": "persist",
+      "fact_joined@<pkg>/joined.malloy": "persist",
+      "fact_s@<pkg>/m.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

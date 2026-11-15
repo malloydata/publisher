@@ -3,34 +3,21 @@
 
 // v1 `#@ preaggregate` lines read by the rollup leg (G4)
 // beside `#(preaggregate)` lines on the same measure, and inherited v1 lines.
-import { afterAll, describe, expect, it } from "bun:test";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
+import { describe, expect, it } from "bun:test";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 import { planModelRollups } from "./rollup_plan";
 import { SourceMap } from "../text/source_map";
 
-const connection = new DuckDBConnection("duckdb", ":memory:");
-afterAll(async () => {
-   await connection.close();
-});
+const mz = materializationFixture();
 
 const ROWS = `duckdb.sql("""
   SELECT * FROM (VALUES (1, 10, 'A'), (2, 20, 'B')) AS t(id, amount, category)
 """)`;
 
 async function plan(text: string) {
-   const runtime = new SingleConnectionRuntime({
-      urlReader: new InMemoryURLReader(
-         new Map([["file:///pkg/m.malloy", text]]),
-      ),
-      connection,
-   });
-   const model = await runtime
-      .loadModel(new URL("file:///pkg/m.malloy"))
-      .getModel();
-   return planModelRollups(SourceMap.of(model._modelDef), {
+   return planModelRollups(SourceMap.of(await mz.compile(text)), {
       packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
-      readsV1: true,
+      readsPreaggregateLines: true,
    });
 }
 

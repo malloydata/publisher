@@ -170,7 +170,7 @@ import {
    type SourceTypeMismatches,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
 } from "./materialization/serve/storage_bindings";
-import type { MaterializePlan } from "./materialization/plan/build_file_generator";
+import type { MaterializePlan } from "./materialization/domain/table_plans";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
    planSourceRollups,
@@ -338,9 +338,9 @@ export class Model {
    /** Sources already reported as served live for a name clash. */
    private readonly shadowedSourcesLogged = new Set<string>();
    /**
-    * The `#@ persist` view leg (materialization v2, phase 4, P14): a router
-    * candidate only when `materialize.enabled` is on and a source this model
-    * sees persists a view.
+    * The `#@ persist` view leg: a router candidate only when
+    * `materialize.enabled` is on and a source this model sees persists a
+    * view.
     */
    private persistedViews = new PersistedViewServe({
       modelPath: () => this.modelPath,
@@ -376,9 +376,9 @@ export class Model {
       | Parameters<ServedCopyServe["setContext"]>
       | undefined;
    /**
-    * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
-    * candidate only when `materialize.enabled` is on and a source this model
-    * sees declares a rollup.
+    * The rollup leg: a router candidate when this model sees a rollup; a
+    * `#(preaggregate)` one is read only with `materialize.enabled` on, a v1
+    * `#@ preaggregate` one either way.
     */
    private rollupVariants = new RollupVariantServe({
       modelPath: () => this.modelPath,
@@ -2735,7 +2735,7 @@ export class Model {
       return (
          this.modelType === "model" &&
          !this.isNotebook() &&
-         // v1 `#@ preaggregate` rollups are read here too (G4).
+         // v1 `#@ preaggregate` rollups are read here too.
          this.rollupVariants.hasRollups()
       );
    }

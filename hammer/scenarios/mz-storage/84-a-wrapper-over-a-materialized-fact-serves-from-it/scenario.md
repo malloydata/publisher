@@ -13,18 +13,16 @@ SPDX-License-Identifier: MIT
 The private-fact / public-wrapper idiom: `#@ persist` sits on `_orders_fact`, and
 queries name wrappers whose query reads it — `orders is _orders_fact -> { select:
 * }`. Malloy gives such a wrapper no identity of its own: it does not extend the
-fact, it is not persistent, and it has no binding. So the serve shape, which
-rebinds only materialized sources, used to have no source named `orders`, and
-every query naming it fell back live, however fresh the fact's table was.
-
-The shape now carries each such wrapper verbatim over the rebound fact, when
-everything the wrapper reads is itself on the shape. The fact's own `where:`
-still applies per caller underneath it. A wrapper that reaches past the fact —
-here, a join to a warehouse table nothing materializes — is left off and serves
-live, which is the only thing it can do. So does one that reads through a join
-of the fact's own that the shape does not carry (`fr`, to the same warehouse
-table) — and it costs only itself: the other wrappers, and the fact's view,
-keep the tier.
+fact, it is not persistent, and it has no binding. It is served all the same,
+because the served copy is the author's whole model text with only the fact
+re-rooted on its table: each wrapper is kept as written and reads the re-rooted
+fact by name. The fact's own `where:` still applies per caller underneath it. A
+wrapper that reaches past the fact — here, a join to a warehouse table nothing
+materializes — joins across connections from the lake table, so the served copy
+leaves that join out with what reads it, and a query through it is answered
+live, which is the only thing it can do. So is one that reads through a join of
+the fact's own to the same warehouse table (`fr`) — and it costs only itself: the
+other wrappers, and the fact's view, keep the tier.
 
 ## Publisher
 
@@ -134,8 +132,8 @@ Expect:
 
 ## Query org 1 through the fact's view
 
-The fact's view is still on the shape: the wrapper that cannot compile was
-dropped alone, not by thinning every binding's views.
+The fact's view is still in the served copy: only the join to the warehouse
+table and what reads it were left out, not every source's views.
 
 ```malloy
 run: _orders_fact -> by_org
@@ -205,7 +203,7 @@ Expect:
 ## Query org 1 by region (again)
 
 East moves to 200: this wrapper joins `regions`, which nothing materializes, so
-it is not on the shape and was answered live from the warehouse all along.
+a query through that join is answered live from the warehouse, and was all along.
 
 givens: ORG_ID=1
 
@@ -218,7 +216,7 @@ Expect:
 
 ## Query org 1 by the fact's region (again)
 
-Live too: it reads through `fr`, which the shape does not carry.
+Live too: it reads through `fr`, which the served copy leaves out.
 
 givens: ORG_ID=1
 

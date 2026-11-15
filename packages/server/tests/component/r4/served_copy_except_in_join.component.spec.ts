@@ -13,7 +13,10 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
-import { freshLoadPool, loadFixture } from "./conformance/package_harness";
+import {
+   freshLoadPool,
+   loadFixture,
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
 const SQL = `duckdb.sql("SELECT CAST(id AS BIGINT) AS id, region, CAST(amount AS DOUBLE) AS amount, CAST(customer_id AS BIGINT) AS customer_id FROM read_csv('data/orders.csv', header=true, all_varchar=true)")`;

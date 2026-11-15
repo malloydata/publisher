@@ -1,6 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * A run manifest, from commit to serving ({@link ManifestCommitter}): it
+ * records the manifest a build assembled on the run, auto-loads it into the
+ * package's models, rebinds the package's loaded versions from the store, and
+ * reads back the committed manifests a later run reuses tables from or
+ * resolves references against. Also {@link referenceManifestToEntries}, a
+ * host's reference manifest as entries. Called by the materialization service.
+ *
+ * Effects: writes the run store, reloads and rebinds package models, counts
+ * each auto-load's outcome once. A load that fails or times out does not fail
+ * the run; the run's record says what is served.
+ */
+
 import type { Mutex } from "async-mutex";
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
@@ -302,7 +315,7 @@ export class ManifestCommitter {
          }
       }
       // A stored table's own primary key check rides on its entry, from this
-      // run's records alone (the join-to-rollup leg in a destination).
+      // run's records alone (the join-to-rollup branch in a destination).
       const storageEntries = Object.fromEntries(
          Object.entries(builtEntries).map(([id, entry]) => {
             const keyUniqueness = entry.storageDestinationName

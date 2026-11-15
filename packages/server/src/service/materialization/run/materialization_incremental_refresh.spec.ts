@@ -153,7 +153,7 @@ describe("buildOneSource: incremental refresh", () => {
          ...(params.reseed === undefined ? {} : { reseed: params.reseed }),
       } as BuildInstruction;
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                sourceEntityId: string;
                physicalTableName: string;
@@ -427,7 +427,7 @@ describe("buildOneSource: incremental refresh", () => {
          dialectName: "duckdb",
       });
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<unknown>;
          }
       ).buildOneSource(

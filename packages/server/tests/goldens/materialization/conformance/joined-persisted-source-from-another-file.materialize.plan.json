@@ -22,6 +22,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "customer_dim@<pkg>/dims.malloy": "materialize",
+      "order_facts@<pkg>/facts.malloy": "materialize"
+    },
     "materializePlans": {
       "customer_dim@<pkg>/dims.malloy": {
         "buildSourceName": "customer_dim__mat",

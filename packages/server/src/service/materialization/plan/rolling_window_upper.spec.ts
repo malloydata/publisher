@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   materializePlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
@@ -11,11 +16,9 @@ import {
    warehouseDeltaTarget,
 } from "../run/incremental_apply";
 import { incrementalLineage } from "../run/incremental_build";
-import {
-   buildCopyText,
-   givenReadTerms,
-   type MaterializePlan,
-} from "./build_file_generator";
+import { buildCopyText } from "./materialize_build_copy";
+import { givenReadTerms } from "./build_file_generator";
+import { type MaterializePlan } from "../domain/table_plans";
 import {
    addressSQL,
    buildSQLOf,
@@ -86,7 +89,7 @@ async function compiled(files: string | Record<string, string>) {
 type Compiled = Awaited<ReturnType<typeof compilePackageBuildPlan>>;
 
 function planNamed(c: Compiled, name: string): MaterializePlan {
-   const plan = Object.values(c.materializePlans ?? {}).find(
+   const plan = Object.values(materializePlansIn(c) ?? {}).find(
       (p) => p.sourceName === name,
    );
    if (!plan) {
@@ -100,9 +103,9 @@ function planNamed(c: Compiled, name: string): MaterializePlan {
 function buildSQL(c: Compiled, name: string): string {
    const plan = planNamed(c, name);
    return buildSQLOf(
-      c.sources[plan.sourceID],
+      sourcesIn(c)[plan.sourceID],
       { entries: {} },
-      c.targets?.[plan.sourceID],
+      targetsIn(c)?.[plan.sourceID],
    );
 }
 
@@ -228,12 +231,12 @@ describe("an upper-bound window is left out of the build and kept for the read",
             const a = planNamed(first.c, name);
             const b = planNamed(second.c, name);
             const sqlA = addressSQL(
-               first.c.sources[a.sourceID],
-               first.c.targets?.[a.sourceID],
+               sourcesIn(first.c)[a.sourceID],
+               targetsIn(first.c)?.[a.sourceID],
             );
             const sqlB = addressSQL(
-               second.c.sources[b.sourceID],
-               second.c.targets?.[b.sourceID],
+               sourcesIn(second.c)[b.sourceID],
+               targetsIn(second.c)?.[b.sourceID],
             );
             expect(sqlA).not.toMatch(/TIMESTAMP '20\d\d-/);
             expect(sqlA).not.toMatch(/20\d\d-\d\d-\d\d \d\d:\d\d/);
@@ -306,7 +309,7 @@ source: older is older_base extend { where: amount > 1 }
 `,
          });
          expect(
-            Object.values(c.materializePlans ?? {}).map((p) => p.sourceName),
+            Object.values(materializePlansIn(c) ?? {}).map((p) => p.sourceName),
          ).not.toContain("older");
          const reason = (c.annotationFindings ?? []).find(
             (f) => f.code === "materialize-not-built" && f.subject === "older",
@@ -335,7 +338,7 @@ source: served_join is ev extend {
   join_one: nxt is ev with next_key
 }
 `);
-         const planned = Object.values(c.materializePlans ?? {}).map(
+         const planned = Object.values(materializePlansIn(c) ?? {}).map(
             (p) => p.sourceName,
          );
          // The build copy takes the term out of \`ev\`, which the inlined
@@ -367,7 +370,7 @@ source: via_dim is ev extend {
   where: is_old
 }
 `);
-         expect(Object.keys(c.materializePlans ?? {})).toEqual([]);
+         expect(Object.keys(materializePlansIn(c) ?? {})).toEqual([]);
          const refused = (c.annotationFindings ?? [])
             .filter((f) => f.code === "materialize-not-built")
             .map((f) => f.subject)
@@ -390,10 +393,7 @@ source: between is ev extend { where: ts >= now - 60 days and ts < now - 30 days
       "carries only a lower bound to the refresh's delete",
       async () => {
          const { c } = await compiled(INCREMENTAL);
-         const declarations = collectIncrementalDeclarations(
-            c.sources,
-            c.materializePlans,
-         );
+         const declarations = collectIncrementalDeclarations(c.tables);
          expect(
             declarations[planNamed(c, "older").sourceID]?.rollingWindow,
          ).toBeUndefined();
@@ -430,10 +430,9 @@ source: between is ev extend { where: ts >= now - 60 days and ts < now - 30 days
                FROM range(date_trunc('hour', LOCALTIMESTAMP) - INTERVAL 2 DAY,
                           date_trunc('hour', LOCALTIMESTAMP) - INTERVAL 1 DAY,
                           INTERVAL 1 HOUR) t(ts)`);
-            const declaration = collectIncrementalDeclarations(
-               c.sources,
-               c.materializePlans,
-            )[plan.sourceID];
+            const declaration = collectIncrementalDeclarations(c.tables)[
+               plan.sourceID
+            ];
             const lineage = incrementalLineage({
                declaration,
                // As stored from a Postgres origin: a DuckDB origin has no

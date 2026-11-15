@@ -15,7 +15,7 @@ import {
    type IncrementalRunContext,
 } from "./incremental_build";
 import type { DeltaTarget } from "./incremental_apply";
-import type { IncrementalDeclaration } from "../plan/incremental_declaration";
+import type { IncrementalDeclaration } from "../domain/incremental";
 
 const DIMENSION = { kind: "dimension" as const, malloyType: "date" };
 

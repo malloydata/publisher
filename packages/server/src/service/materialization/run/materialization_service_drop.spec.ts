@@ -621,7 +621,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
          physicalTableName: table,
          storageDestinationName: "lake",
       }) as unknown as Parameters<
-         MaterializationService["reclaimStorageTablesFromFailedRun"]
+         MaterializationService["collaborators"]["reclaimStorageTablesFromFailedRun"]
       >[0][number];
 
    /** A destination whose drop would fail loudly if one were ever attempted. */
@@ -629,7 +629,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
       destinations: { lake: { name: "lake", type: "duckdb" } },
       environmentPath: "/test",
    }) as unknown as Parameters<
-      MaterializationService["reclaimStorageTablesFromFailedRun"]
+      MaterializationService["collaborators"]["reclaimStorageTablesFromFailedRun"]
    >[1];
 
    const reclaim = (
@@ -638,7 +638,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
    ): Promise<void> => {
       (ctx.repository.listMaterializations as sinon.SinonStub).resolves(others);
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             reclaimStorageTablesFromFailedRun: (
                b: unknown,
                e: unknown,
@@ -701,12 +701,12 @@ describe("reclaimStorageTablesFromFailedRun", () => {
          destinations: {},
          environmentPath: "/test",
       }) as unknown as Parameters<
-         MaterializationService["reclaimStorageTablesFromFailedRun"]
+         MaterializationService["collaborators"]["reclaimStorageTablesFromFailedRun"]
       >[1];
       (ctx.repository.listMaterializations as sinon.SinonStub).resolves([]);
 
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             reclaimStorageTablesFromFailedRun: (
                b: unknown,
                e: unknown,

@@ -7,6 +7,10 @@
  * with the flag written by its author plans under `off` (main's path).
  */
 
+import {
+   gatesIn,
+   sourcesIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -89,7 +93,7 @@ async function addresses(
 ): Promise<Record<string, string>> {
    const digests = { duckdb: await duckdb.getDigest() };
    const out: Record<string, string> = {};
-   for (const [id, s] of Object.entries(parts.sources)) {
+   for (const [id, s] of Object.entries(sourcesIn(parts))) {
       // sourceIDs carry the temp dir; key by name@file.
       const key = dir ? id.replace(dir, "") : id.replace(/^.*\//, "");
       out[key] = computeSourceEntityId(s, digests);
@@ -130,8 +134,8 @@ describe("the v1 build copy on adversarial files", () => {
          expect(a).toEqual(await addresses(off));
          expect(on.droppedPersistSources).toEqual(off.droppedPersistSources);
          expect(on.annotationFindings).toEqual(off.annotationFindings);
-         expect(Object.values(on.sourceGateOutcomes)).toEqual(
-            Object.values(off.sourceGateOutcomes),
+         expect(Object.values(gatesIn(on))).toEqual(
+            Object.values(gatesIn(off)),
          );
          expect(on.builds.length).toBe(off.builds.length);
       });
@@ -157,10 +161,10 @@ describe("the v1 build copy on adversarial files", () => {
       const files = { "lib/p.malloy": PERSIST };
       const m = `import "lib/p.malloy"\nsource: q is p extend {}\n`;
       const on = await plan({ ...files, "m.malloy": m }, "m.malloy", "on");
-      expect(Object.keys(on.sources)).toEqual([]);
+      expect(Object.keys(sourcesIn(on))).toEqual([]);
       // the declaring file plans it
       const lib = await plan(files, "lib/p.malloy", "on");
-      expect(Object.keys(lib.sources).length).toBe(1);
+      expect(Object.keys(sourcesIn(lib)).length).toBe(1);
    });
 
    it("on: a broken #@ line's finding names the author's line, not the copy's", async () => {

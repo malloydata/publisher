@@ -19,6 +19,12 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "lines__rollup__order_id_sku__c5895963@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "orders__rollup__m_region__7877d8b1@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "orders__rollup__region__409e9efb@<pkg>/m.malloy.preaggregate.malloy": "rollup"
+    },
     "materializePlans": {},
     "rollupPlans": {
       "lines__rollup__order_id__906dde44@<pkg>/m.malloy.preaggregate.malloy": {

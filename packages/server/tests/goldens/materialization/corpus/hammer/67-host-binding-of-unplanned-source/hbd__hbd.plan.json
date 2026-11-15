@@ -33,6 +33,9 @@
         "name": "scoped"
       }
     ],
+    "kinds": {
+      "all_rows@<hammer>/hbd/hbd.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

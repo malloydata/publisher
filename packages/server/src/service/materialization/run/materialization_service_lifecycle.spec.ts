@@ -25,6 +25,11 @@ import {
    createMocks,
    setPackage,
 } from "../../../test_helpers/materialization_service_harness";
+import {
+   MaterializationService,
+   type RunBuildOptions,
+   type RunCollaborators,
+} from "./materialization_service";
 import { logger } from "../../../logger";
 import { reportSourceBuilt } from "./run_telemetry";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
@@ -214,13 +219,14 @@ describe("MaterializationService", () => {
             makeMaterialization({ status: "PENDING" }),
          );
          const runBuild = sinon.stub().resolves();
-         (ctx.service as unknown as { runBuild: sinon.SinonStub }).runBuild =
-            runBuild;
+         const service = new MaterializationService(ctx.environmentStore, {
+            runBuild,
+         });
 
          // An EMPTY ledger is meaningful — "I own the ledger and nothing is
          // recorded" — and must survive to the run rather than degrade to
          // "use the local store".
-         await ctx.service.createMaterialization("my-env", "pkg", {
+         await service.createMaterialization("my-env", "pkg", {
             buildInstructions: [makeInstruction()],
             ledger: [],
          });
@@ -229,7 +235,7 @@ describe("MaterializationService", () => {
          // An auto-run has no caller to take a ledger from, so it is clamped
          // rather than trusted: taking one would replace the local store the
          // auto-run depends on.
-         await ctx.service.createMaterialization("my-env", "pkg", {
+         await service.createMaterialization("my-env", "pkg", {
             ledger: [],
          });
          expect(runBuild.secondCall.args[3].ledger).toBeUndefined();
@@ -320,9 +326,9 @@ describe("MaterializationService", () => {
                makeMaterialization({ status: "PENDING" }),
             );
             const runBuild = sinon.stub().resolves();
-            (ctx.service as unknown as { runBuild: sinon.SinonStub }).runBuild =
-               runBuild;
-            return ctx.service.createMaterialization("my-env", "pkg", {
+            return new MaterializationService(ctx.environmentStore, {
+               runBuild,
+            }).createMaterialization("my-env", "pkg", {
                buildInstructions: [options.instruction ?? makeInstruction()],
                ledger: options.ledger,
                ...(options.reseed === undefined
@@ -515,7 +521,9 @@ describe("runBuild (branch behavior)", () => {
       ) => Promise<void>;
    };
 
-   function stubEngine(): RunBuildInternals {
+   function stubEngine(
+      extra: Partial<RunCollaborators> = {},
+   ): RunBuildInternals {
       const entries = {
          "build-orders": {
             sourceEntityId: "build-orders",
@@ -523,13 +531,28 @@ describe("runBuild (branch behavior)", () => {
             connectionName: "duckdb",
          },
       };
-      const svc = ctx.service as unknown as RunBuildInternals;
-      svc.executeInstructedBuild = sinon
-         .stub()
-         .resolves({ entries, failures: {}, sourcesRefused: 0 });
-      svc.commitManifest = sinon.stub().resolves();
-      svc.autoLoadManifest = sinon.stub().resolves();
-      return svc;
+      const stubs = {
+         executeInstructedBuild: sinon
+            .stub()
+            .resolves({ entries, failures: {}, sourcesRefused: 0 }),
+         commitManifest: sinon.stub().resolves(),
+         autoLoadManifest: sinon.stub().resolves(),
+      };
+      const service = new MaterializationService(ctx.environmentStore, {
+         ...stubs,
+         ...extra,
+      });
+      return {
+         ...stubs,
+         runBuild: (id, env, pkg, opts, signal) =>
+            service.collaborators.runBuild(
+               id,
+               env,
+               pkg,
+               opts as RunBuildOptions,
+               signal,
+            ),
+      };
    }
 
    it("orchestrated: builds caller instructions and does not auto-load", async () => {
@@ -674,14 +697,12 @@ describe("runBuild (branch behavior)", () => {
 
    it("auto-run: a stop that lands while the manifest loads does not cut it short, and the run says so", async () => {
       const svc = stubEngine();
-      svc.autoLoadManifest = sinon
-         .stub()
-         .callsFake(async (...args: unknown[]) => {
-            const finish = args[5] as (s: {
-               metadata: Record<string, unknown>;
-            }) => Promise<void>;
-            await finish({ metadata: { autoLoad: "loaded" } });
-         });
+      svc.autoLoadManifest.callsFake(async (...args: unknown[]) => {
+         const finish = args[5] as (s: {
+            metadata: Record<string, unknown>;
+         }) => Promise<void>;
+         await finish({ metadata: { autoLoad: "loaded" } });
+      });
       const controller = new AbortController();
       await svc.runBuild(
          "mat-1",
@@ -711,7 +732,6 @@ describe("runBuild (branch behavior)", () => {
    it("records auto-run's refused sources in the run metadata, not on the manifest", async () => {
       // A refused source binds no table, and the manifest is what a
       // strict-schema caller parses, so the list rides the free-form metadata.
-      const svc = stubEngine();
       const refused = {
          gated: {
             name: "gated",
@@ -721,12 +741,12 @@ describe("runBuild (branch behavior)", () => {
             message: "Source 'gated' cannot be materialized",
          },
       };
-      (
-         svc as unknown as { deriveSelfInstructions: sinon.SinonStub }
-      ).deriveSelfInstructions = sinon.stub().returns({
-         instructions: [makeInstruction()],
-         carried: {},
-         refused,
+      const svc = stubEngine({
+         deriveSelfInstructions: sinon.stub().returns({
+            instructions: [makeInstruction()],
+            carried: {},
+            refused,
+         }),
       });
 
       await svc.runBuild(
@@ -757,28 +777,27 @@ describe("runBuild (branch behavior)", () => {
       resetMaterializationTelemetryForTesting();
       const info = sinon.stub(logger, "info");
       try {
-         const svc = stubEngine();
-         (
-            svc as unknown as { deriveSelfInstructions: sinon.SinonStub }
-         ).deriveSelfInstructions = sinon.stub().returns({
-            instructions: [makeInstruction()],
-            carried: {
-               "carried-1": {
-                  sourceEntityId: "carried-1",
-                  physicalTableName: "carried_t",
-                  connectionName: "duckdb",
-                  storageDestinationName: "lake",
+         const svc = stubEngine({
+            deriveSelfInstructions: sinon.stub().returns({
+               instructions: [makeInstruction()],
+               carried: {
+                  "carried-1": {
+                     sourceEntityId: "carried-1",
+                     physicalTableName: "carried_t",
+                     connectionName: "duckdb",
+                     storageDestinationName: "lake",
+                  },
                },
-            },
-            refused: {
-               gated: {
-                  name: "gated",
-                  sourceID: "gated",
-                  tier: "storage",
-                  reason: "given",
-                  message: "Source 'gated' cannot be materialized",
+               refused: {
+                  gated: {
+                     name: "gated",
+                     sourceID: "gated",
+                     tier: "storage",
+                     reason: "given",
+                     message: "Source 'gated' cannot be materialized",
+                  },
                },
-            },
+            }),
          });
 
          await svc.runBuild(
@@ -1128,11 +1147,8 @@ describe("runBuild (branch behavior)", () => {
          ledger: unknown[];
       }>,
    ): Promise<{ forceRefresh: boolean; ledger?: unknown[] }> {
-      const svc = stubEngine();
       const contextSpy = sinon.stub().returns(undefined);
-      (
-         ctx.service as unknown as { incrementalRunContext: sinon.SinonStub }
-      ).incrementalRunContext = contextSpy;
+      const svc = stubEngine({ incrementalRunContext: contextSpy });
 
       await svc.runBuild(
          "mat-1",

@@ -17,11 +17,9 @@ import {
    destinationSchemaOf,
    storageTablePath,
 } from "../domain/storage_table_path";
-import {
-   STORAGE_TARGET_DIALECT,
-   withStorageDestinationSession,
-} from "./materialization_build_session";
+import { withStorageDestinationSession } from "./materialization_build_session";
 import { pathSegments } from "./table_mark_sql";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 /** A table's site, in its dialect. */
 export interface TableSite {
@@ -59,7 +57,7 @@ export function storageTableSite(
 ): TableSite {
    const schema = destinationSchemaOf(destinationConnection);
    return {
-      dialect: STORAGE_TARGET_DIALECT,
+      dialect: STORAGE_DIALECT,
       segments: (name) =>
          pathSegments(storageTablePath(destinationName, name, schema)),
       run: async (sql) => rowsOf(await session.runSQL(sql)),

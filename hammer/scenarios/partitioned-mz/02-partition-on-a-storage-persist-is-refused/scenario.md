@@ -8,12 +8,13 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# `partition=` on a `storage=` persist is refused at publish
+# `partition=` on a `storage=` persist fails the publish and the load
 
 `partition=` once laid a stored table out as one directory per value. It was a
 layout and carried no isolation, and it is no longer supported: a `#@ persist`
-that declares it is refused at publish, the same severity as any other retired
-key, with a message that says to remove it. Removing it costs scan time only;
+that declares it is an invalid annotation (`persist-retired-key`), so the
+publish and the load fail on every path, like any other retired key, with a
+message that says to remove it. Removing it costs scan time only;
 every stripped term is re-applied at read either way, so what each caller sees
 is unchanged.
 
@@ -51,15 +52,19 @@ source: orders is raw -> { select: * } extend {
 }
 ```
 
-## Warns pla
+## Rejected pla
 
-A package that is already loaded keeps loading, and says why its next publish
-will be refused.
-
-cites: partition= is not supported
+The configured package does not load, so it is not served.
 
 ## Republish refused pla
 
 The author-in-the-loop publish is refused, naming the key and the fix.
 
 cites: partition= is not supported
+
+## Build refused pla
+
+A build cannot start on a package that does not load; the failure carries the
+retired-key code.
+
+cites: [persist-retired-key]
