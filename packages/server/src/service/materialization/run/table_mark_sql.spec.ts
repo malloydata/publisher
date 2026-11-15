@@ -4,14 +4,16 @@
 import { describe, expect, it } from "bun:test";
 import {
    dropViewSql,
-   packageOwner,
-   parseNameViewComment,
-   parseOwnedTableComment,
    relationProbeSql,
    relationProbeSupported,
    sqlString,
-   viewDefinitionReadsOnly,
    viewReadsSql,
+} from "./warehouse_sql";
+import {
+   packageOwner,
+   parseNameViewComment,
+   parseOwnedTableComment,
+   viewDefinitionReadsOnly,
 } from "./table_mark_sql";
 
 /**

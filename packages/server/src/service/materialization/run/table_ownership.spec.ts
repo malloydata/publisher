@@ -20,6 +20,7 @@ import {
    storageTableSite,
    type TableSiteContext,
 } from "./table_site";
+import { ownedTableProbeSql } from "./warehouse_sql";
 import {
    assertTableOwnable,
    hasAuthorTableName,
@@ -28,7 +29,6 @@ import {
    ownedElsewhere,
    ownedTableComment,
    ownedTableMarkSql,
-   ownedTableProbeSql,
    packageRecordsName,
    parseOwnedTableComment,
    probeTableHolder,

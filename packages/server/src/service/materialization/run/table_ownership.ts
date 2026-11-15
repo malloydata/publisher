@@ -79,7 +79,7 @@ import {
 } from "./table_site";
 import type { BuildInstruction } from "../domain/types";
 
-export { ownedTableProbeSql, parseOwnedTableComment };
+export { parseOwnedTableComment };
 
 /** The code of a build refused because another holds its `name=`. */
 export const TABLE_OWNED_ELSEWHERE = "table-owned-elsewhere";

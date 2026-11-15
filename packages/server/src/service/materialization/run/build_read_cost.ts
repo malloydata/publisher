@@ -8,10 +8,6 @@
  * warehouse_sql.ts's.
  */
 
-import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./warehouse_sql";
-
-export { BIGQUERY_COST_COLUMNS, snowflakeCostSQL };
-
 /**
  * What a `storage=` build's warehouse read cost, as the warehouse accounts for it.
  *
@@ -54,7 +50,7 @@ export interface BuildReadCost {
    cacheHit: boolean | null;
 }
 
-/** Read {@link BIGQUERY_COST_COLUMNS} off a job row. */
+/** Read `BIGQUERY_COST_COLUMNS` (warehouse_sql.ts) off a job row. */
 export function bigQueryReadCost(
    row: Record<string, unknown>,
    jobId: string | null,
@@ -90,7 +86,7 @@ export function pickSnowflakeReadRow(
    return matches.length === 1 ? matches[0] : null;
 }
 
-/** Read {@link snowflakeCostSQL}'s row. */
+/** Read `snowflakeCostSQL`'s row (warehouse_sql.ts). */
 export function snowflakeReadCost(row: Record<string, unknown>): BuildReadCost {
    const scanned = num(col(row, "bytes_scanned"));
    const produced = num(col(row, "rows_produced"));

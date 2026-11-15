@@ -24,36 +24,38 @@ import {
    bigQueryQueryLabelValue,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
-import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./build_read_cost";
 import { ColocatedTier, swapIntoPlace } from "./colocated_build_strategy";
 import { capturedNativeSchema } from "./colocated_native_types";
+import { describeDialects } from "../domain/dialect";
 import {
    decodeTablePathSegments,
    deltaScript,
    deltaSelect,
    deltaStatements,
-   describeDialects,
    INCREMENTAL_SOURCE_RANGE_DIALECTS,
    INCREMENTAL_TARGET_DML_DIALECTS,
    MERGE_CAPABLE_DIALECTS,
    pairDeltaStatements,
    probeMaxWatermark,
    probePostgresVersion,
-   probeSelect,
    probeTargetColumns,
    renderSqlBound,
-   snowflakeScriptingBlock,
    type WatermarkBound,
 } from "./incremental_apply";
 import { replaceOwnViewStatements } from "./leftover_name_views";
 import {
+   BIGQUERY_COST_COLUMNS,
    dropViewSql,
+   ownedTableProbeSql,
+   probeSelect,
    relationProbeSql,
    relationProbeSupported,
+   snowflakeCostSQL,
+   snowflakeScriptingBlock,
    sqlString,
    viewReadsSql,
-} from "./table_mark_sql";
-import { ownedTableMarkSql, ownedTableProbeSql } from "./table_ownership";
+} from "./warehouse_sql";
+import { ownedTableMarkSql } from "./table_ownership";
 
 const GOLDEN = path.join(__dirname, "dialect_statements.golden.json");
 

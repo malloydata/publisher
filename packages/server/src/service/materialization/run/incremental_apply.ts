@@ -27,18 +27,13 @@ import { errorCodeOf } from "./error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
 import type { IncrementalStrategy } from "../domain/types";
-import {
-   capabilitiesOf,
-   describeDialects,
-   dialectsWith,
-} from "../domain/dialect";
+import { capabilitiesOf, dialectsWith } from "../domain/dialect";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
 import {
    escapeSqlString,
    inOneTransaction,
    probeSelect,
-   snowflakeScriptingBlock,
    targetColumnsProbeSql,
    transactionKeywords,
 } from "./warehouse_sql";
@@ -65,8 +60,6 @@ export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> =
    dialectsWith("incrementalTargetDml");
 export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> =
    dialectsWith("merge");
-
-export { describeDialects, probeSelect, snowflakeScriptingBlock };
 
 /**
  * A watermark boundary, held as CANONICAL SCALAR TEXT plus the watermark's Malloy

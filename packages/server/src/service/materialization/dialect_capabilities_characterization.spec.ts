@@ -39,7 +39,7 @@ import {
    type IncrementalRunContext,
 } from "./run/incremental_build";
 import { replaceOwnViewStatements } from "./run/leftover_name_views";
-import { relationProbeSupported } from "./run/table_mark_sql";
+import { relationProbeSupported } from "./run/warehouse_sql";
 import { ownedElsewhere } from "./run/table_ownership";
 import { v1StoredColumnsOf } from "./serve/bind";
 import { bigIntegerReadOf, liveKeepsBigIntegers } from "./stored_column_types";

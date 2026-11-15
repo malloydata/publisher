@@ -10,17 +10,8 @@
  * package's own and never touch anyone else's.
  *
  * Pure. The SQL that probes and writes the marks differs by dialect and is in
- * warehouse_sql.ts; the statements its callers here and in the specs name are
- * re-exported from there.
+ * warehouse_sql.ts.
  */
-
-export {
-   dropViewSql,
-   relationProbeSql,
-   relationProbeSupported,
-   sqlString,
-   viewReadsSql,
-} from "./warehouse_sql";
 
 /** The prefix of the comment on a `name=` view an earlier release made. */
 const NAME_VIEW_MARK = "malloy-publisher:name-view";
