@@ -903,7 +903,12 @@ export class PackageMaterialization {
                viewBuildSourceIDs: this.persistedViewBuildIDs(),
             }),
       });
-      for (const _binding of admitted.bindings) recordSourceBound();
+      // Once per stored table: a source's alias names share its binding's
+      // virtual handle.
+      for (const _table of new Set(
+         admitted.bindings.map((b) => b.virtualHandle),
+      ))
+         recordSourceBound();
       for (const sourceName of admitted.otherDefinition) {
          // Its own table is missing: the one there is another definition's.
          recordSourceDeclined("missing_table");

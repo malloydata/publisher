@@ -302,7 +302,13 @@ const servedCopyBindCounter = lazyCounter(
       "'bound'|'declined' for a source), reason ('none', or why a source was " +
       "declined: 'build_plan_unavailable' when the package's build plan failed " +
       "to compute, so every colocated source reverts to live; 'refused'; " +
-      "'missing_table'; or the served copy's reason, as its package warning).",
+      "'missing_table'; or the served copy's reason, as its package warning). " +
+      "'bound' and the bind's declines count once per source entry per bind; " +
+      "the served copy's count once per model per snapshot it compiles, so a " +
+      "source two models read is counted by each. Two of the served copy's " +
+      "reasons leave the source served with a join answered live " +
+      "('inline_join_kept', 'cross_connection_join'): counted 'declined', " +
+      "since the label has no outcome for a partial serve.",
 );
 const manifestBindDegradedCounter = lazyCounter(
    "publisher_materialization_manifest_bind_degraded_total",
