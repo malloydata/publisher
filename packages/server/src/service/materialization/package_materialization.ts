@@ -68,6 +68,7 @@ import type { PackageModelPolicy } from "../model_policy";
 import type {
    BuildPlanPackage,
    ColocatedSourceEligibility,
+   RefusedRollup,
    SourceEligibility,
 } from "./plan/build_plan";
 import { computePackageBuildPlan } from "./plan/build_plan_compile";
@@ -215,6 +216,14 @@ const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
 export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
 
 /**
+ * The code on the warning for a valid rollup Publisher refuses alone at
+ * compile time (a gate, a base scoped by a given, a read-only dialect, a
+ * shared table name, or the `storage=` gate): not built, its measures served
+ * live, and the rest of the package loads.
+ */
+const PREAGGREGATE_NOT_BUILT_CODE = "preaggregate-not-built";
+
+/**
  * The code on the warning for a rollup whose build found its join_one key
  * repeated ({@link PackageMaterialization.repeatedJoinOneKeyWarnings}).
  */
@@ -311,6 +320,8 @@ export class PackageMaterialization {
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
    /** Rollups over a gated base whose gates are grafted at read (row 1). */
    private rollupsKeepingGates = new Set<string>();
+   /** The base and grain of each refused rollup, by its sourceID. */
+   private refusedRollups: Record<string, RefusedRollup> = {};
    private rollupsOverStoredBase: { baseName: string; modelPath?: string }[] =
       [];
    private annotationFindings: PackageAnnotationFinding[] = [];
@@ -446,12 +457,15 @@ export class PackageMaterialization {
             buildConnectionNames,
             materializePlans,
             rollupsKeepingGates,
+            refusedRollups,
          } = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
          this.buildPlan = plan;
          this.materializePlans = materializePlans ?? {};
          this.rollupsKeepingGates = new Set(rollupsKeepingGates ?? []);
+         // `?? {}`: an outcome a worker built before this field existed.
+         this.refusedRollups = refusedRollups ?? {};
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
          this.droppedPersistSources = droppedPersistSources;
@@ -509,6 +523,7 @@ export class PackageMaterialization {
          this.incrementalPolicySources = [];
          this.rollupsOverStoredBase = [];
          this.rollupsKeepingGates = new Set();
+         this.refusedRollups = {};
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.owner.packageName()}`,
@@ -1392,28 +1407,48 @@ export class PackageMaterialization {
    }
 
    /**
-    * Warnings for the `#@ persist` sources the compile-time gates refused,
-    * coded {@link PERSIST_SOURCE_REFUSED_CODE}. Not an annotation finding: the
-    * annotation is well formed; the source it sits on cannot be materialized.
-    * Each carries the gate's message verbatim, so there is one wording to
-    * maintain.
-    * A rollup's `subject` is its BASE source (its own name is generated), and
-    * is omitted when the base is unavailable.
+    * Warnings for the sources the compile-time gates refused. Not an
+    * annotation finding: the annotation is well formed; the source it sits on
+    * cannot be materialized. A `#@ persist` source's is coded
+    * {@link PERSIST_SOURCE_REFUSED_CODE} and carries the gate's message
+    * verbatim, so there is one wording to maintain. A rollup's is coded
+    * {@link PREAGGREGATE_NOT_BUILT_CODE}, its message naming its base and
+    * grain before the gate's, and its `subject` is its BASE source (its own
+    * name is generated), omitted when the base is unavailable.
     */
    persistRefusalWarnings(): ApiPackageWarning[] {
       const refused = this.buildPlan?.refusedSources;
       if (!refused) return [];
       return Object.entries(refused).map(([sourceID, source]) => {
+         const rollup =
+            source.tier === "preaggregate"
+               ? (this.refusedRollups[sourceID] ??
+                 this.buildPlan?.sources?.[sourceID]?.preaggregate)
+               : undefined;
          const subject =
             source.tier === "preaggregate"
-               ? this.buildPlan?.sources?.[sourceID]?.preaggregate
-                    ?.baseSourceName
+               ? rollup?.baseSourceName
                : source.name;
-         const warning: ApiPackageWarning = {
-            message: source.message,
-            code: PERSIST_SOURCE_REFUSED_CODE,
-            severity: "warn",
-         };
+         const warning: ApiPackageWarning =
+            source.tier === "preaggregate"
+               ? {
+                    message:
+                       // Worded as preaggregate-reads-given's, which a v1
+                       // rollup carries under the same name.
+                       (rollup
+                          ? `#(preaggregate) rollup of source "${rollup.baseSourceName}" at ` +
+                            `(${rollup.grainDimensions.join(", ")})`
+                          : "A #(preaggregate) rollup") +
+                       ` is not built, so its measures are served live: ` +
+                       source.message,
+                    code: PREAGGREGATE_NOT_BUILT_CODE,
+                    severity: "warn",
+                 }
+               : {
+                    message: source.message,
+                    code: PERSIST_SOURCE_REFUSED_CODE,
+                    severity: "warn",
+                 };
          if (source.modelPath) warning.model = source.modelPath;
          if (subject) warning.subject = subject;
          return warning;

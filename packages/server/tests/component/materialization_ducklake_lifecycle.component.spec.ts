@@ -1794,11 +1794,8 @@ describe.skipIf(process.platform === "win32")(
    () => {
       // `owned` and `plain` compile to the same build SQL, so they share one
       // content address, and auto-run derives ONE instruction for it, at
-      // `owned`'s name=. Today the refusal is per source: `owned` is refused,
-      // and `plain` then builds that instruction at `shared_t` with no
-      // ownership check, replacing the other package's table and its mark.
-      // Pinned as found (a defect, reported with this commit), so the tier
-      // refactor neither fixes nor worsens it unnoticed.
+      // `owned`'s name=. The refusal holds for the address: both sources are
+      // refused, and the other package's table and its mark stay as they are.
       const lake = new LakeFixture("owned-twin", () => ({
          "m.malloy": `##! experimental.persistence
 source: raw is warehouse.sql("""
@@ -1815,7 +1812,7 @@ source: plain is raw extend { measure: total is amt.sum() }
       beforeAll(() => lake.setUp());
       afterAll(() => lake.tearDown());
 
-      it("refuses the name= source, then builds its same-address sibling at that name over the other package's table", async () => {
+      it("refuses the name= source and its same-address sibling, leaving the other package's table and mark", async () => {
          await lake.inspect(async (c) => {
             await c.runSQL(
                `CREATE TABLE ${LAKE}.main.shared_t AS SELECT 'x' AS cat, 9.0 AS amt`,
@@ -1825,30 +1822,19 @@ source: plain is raw extend { measure: total is amt.sum() }
             );
          }, false);
          const m = await lake.run();
-         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         expect(m.metadata).toMatchObject({ sourcesBuilt: 1 });
-         const manifest = m.manifest as {
-            entries: Record<string, Entry>;
-            failures: Record<string, { sourceName: string; reason: string }>;
-         };
-         const [address] = Object.keys(manifest.entries);
-         expect(Object.keys(manifest.failures)).toEqual([address]);
-         expect(manifest.failures[address].sourceName).toBe("owned");
-         expect(manifest.failures[address].reason).toContain(
-            "table-owned-elsewhere",
-         );
-         expect(manifest.entries[address]).toMatchObject({
-            sourceName: "plain",
-            physicalTableName: "shared_t",
-            storageDestinationName: LAKE,
-         });
+         expect(m.status).toBe("FAILED");
+         // Both sources on the address are refused, each naming the table.
+         for (const name of ["owned", "plain"]) {
+            expect(m.error).toContain(
+               `${name}: 'owned' is not built (table-owned-elsewhere)`,
+            );
+         }
+         expect(m.manifest).toBeFalsy();
          expect(await lake.catalogTables()).toEqual(["shared_t"]);
          expect(await lake.storedRows("shared_t", "cat, amt")).toEqual([
-            ["a", 1],
-            ["a", 2],
-            ["b", 4],
+            ["x", 9],
          ]);
-         expect(await lake.tableComments()).toEqual({ shared_t: null });
+         expect(await lake.tableComments()).toEqual({ shared_t: OTHER_MARK });
       });
    },
 );

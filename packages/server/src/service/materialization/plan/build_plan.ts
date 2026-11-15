@@ -1763,6 +1763,19 @@ export interface BuildPlanOutcome {
     * a worker that predates it sends none.
     */
    rollupsKeepingGates?: string[];
+   /**
+    * The base and grain of each rollup in `plan.refusedSources`, by its
+    * sourceID, so its package warning names what the author wrote rather
+    * than the generated name (a refusal may also leave `plan.sources`).
+    * Optional: a worker that predates it sends none.
+    */
+   refusedRollups?: Record<string, RefusedRollup>;
+}
+
+/** What a refused rollup's warning names: its base and its grain. */
+export interface RefusedRollup {
+   baseSourceName: string;
+   grainDimensions: string[];
 }
 
 /**
@@ -1826,6 +1839,7 @@ export function deriveBuildPlanOutcome(
          )
          .map(([sourceID]) => sourceID)
          .sort(),
+      refusedRollups: refusedRollupsOf(plan, compiled.tables),
    };
 }
 
@@ -1838,6 +1852,25 @@ export function materializePlansOf(
          table.materialize ? [[sourceID, table.materialize]] : [],
       ),
    );
+}
+
+/** {@link BuildPlanOutcome.refusedRollups}. */
+function refusedRollupsOf(
+   plan: BuildPlan | null,
+   tables: Readonly<Record<string, Pick<TablePlan, "rollup">>>,
+): Record<string, RefusedRollup> {
+   const out: Record<string, RefusedRollup> = {};
+   for (const [sourceID, refused] of Object.entries(
+      plan?.refusedSources ?? {},
+   )) {
+      const rollup = tables[sourceID]?.rollup;
+      if (refused.tier !== "preaggregate" || !rollup) continue;
+      out[sourceID] = {
+         baseSourceName: rollup.baseSourceName,
+         grainDimensions: rollup.grainDimensions,
+      };
+   }
+   return out;
 }
 
 /**
