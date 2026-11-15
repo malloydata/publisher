@@ -3,7 +3,7 @@
 
 /**
  * The Malloy text that stands an inlined join_one's stored columns in for the
- * join (materialization v2, P5 with #1665): the join's definition taken out of
+ * join: the join's definition taken out of
  * a run of `extend { … }` blocks, and in its place each stored
  * `<join>__<field>` column renamed internally and a dimension of the join's
  * name, a record of the joined source's fields over those columns. A hidden
@@ -14,11 +14,13 @@
  * and a `storage=` extension table's build over its parent's stored table
  * (`plan/build_file_generator.ts`, `storedChainText`), which reads the
  * parent's inlined join the same way. A leaf, so both import it.
+ *
+ * Pure.
  */
 
-import { doubleQuotedString, identifier } from "../malloy_text";
+import { doubleQuotedString, identifier } from "../../malloy_text";
 import { lexAll, isName } from "./malloy_lexer";
-import { definitionCutAt } from "./plan/cross_connection_joins";
+import { definitionCutAt } from "./definition_cut";
 
 /** The timeframes a stored truncation can carry, the only ones emitted. */
 export const TIMEFRAMES: ReadonlySet<string> = new Set([

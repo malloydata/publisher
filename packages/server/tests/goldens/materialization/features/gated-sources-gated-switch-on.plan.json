@@ -332,7 +332,8 @@
     "sourceGateOutcomes": {
       "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
         "attributed": true,
-        "classification": "rejected"
+        "classification": "rejected",
+        "inheritedRowFilter": true
       },
       "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
         "attributed": true,

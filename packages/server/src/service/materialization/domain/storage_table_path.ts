@@ -1,6 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Where a stored table lives in a storage destination: the destination's
+ * schema and the table's unquoted path in it.
+ *
+ * Read by the `storage=` build, the reclaimer and every serving leg that
+ * reads a stored table, so a table is named the same way when it is written,
+ * read and dropped. A physical name that already carries a schema is kept as
+ * the author wrote it.
+ *
+ * Pure.
+ */
+
 import { components } from "../../../api";
 
 type ApiConnection = components["schemas"]["Connection"];

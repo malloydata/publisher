@@ -7,7 +7,7 @@ import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
-import type { IncrementalStrategy } from "../types";
+import type { IncrementalStrategy } from "../domain/types";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
 import type { PairDelta } from "../plan/incremental_declaration";

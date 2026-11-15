@@ -15,7 +15,7 @@ import {
    WRITES_TARGETS_KEY,
    type WriteTarget,
 } from "../../versions/materialization_scope";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 
 /**
  * Which tables an active run of a package writes, so two runs never write one

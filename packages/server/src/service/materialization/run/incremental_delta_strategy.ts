@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { quoteTablePath } from "../../quoting";
-import { ManifestEntry } from "../types";
+import { ManifestEntry } from "../domain/types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import { warehouseDeltaTarget } from "./incremental_apply";
 import { refreshOneSourceIncrementally } from "./incremental_build";

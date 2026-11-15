@@ -13,6 +13,7 @@ import {
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import {
    getMaterializeGatedSources,
    getPersistCollisionEnforce,
@@ -54,7 +55,7 @@ import { CronEvaluator } from "./run/cron_evaluator";
 import {
    evaluateManifestFreshness,
    filterFreshManifest,
-} from "./run/freshness";
+} from "./domain/freshness";
 import {
    type BoundTable,
    type LiveTableVerdict,
@@ -62,12 +63,8 @@ import {
    type MaterializedTableCatalog,
    type PlannedTable,
 } from "./serve/query_path";
-import {
-   deriveServeBindings,
-   groupAliasesByName,
-   planSourceIds,
-   type ServeBinding,
-} from "./serve/materialization_serve_transform";
+import { deriveServeBindings, type ServeBinding } from "./domain/serve_binding";
+import { groupAliasesByName, planSourceIds } from "./domain/source_aliases";
 import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
@@ -84,18 +81,18 @@ import {
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
-import { storageTablePath } from "./run/storage_table_path";
+import { storageTablePath } from "./domain/storage_table_path";
 import { persistTableTarget } from "./plan/eligibility_collect";
 import { quoteManifestTablePath } from "../quoting";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
-import { reachableSourceIDs, SourceMap } from "./plan/source_map";
+import { reachableSourceIDs, SourceMap } from "./text/source_map";
 import type {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
-} from "./types";
+} from "./domain/types";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
@@ -583,6 +580,29 @@ export class PackageMaterialization {
          catalog,
       };
       return catalog;
+   }
+
+   /**
+    * The host port's `chainBuildText` for this package version: the text a
+    * chained `storage=` build of the request's downstream compiles from,
+    * written by the served copy of a model that declares it, the downstream's
+    * own file first. Declines when no model of the package declares it.
+    */
+   chainBuildText(request: ChainBuildRequest): ChainBuildText {
+      const declaringURL = request.downstream.sourceID
+         .split("@")
+         .slice(1)
+         .join("@");
+      const models = [...this.owner.models()].sort(
+         ([a], [b]) =>
+            Number(declaringURL.endsWith(`/${b}`)) -
+            Number(declaringURL.endsWith(`/${a}`)),
+      );
+      for (const [, model] of models) {
+         const text = model.chainBuildText(request);
+         if (text !== undefined) return text;
+      }
+      return { declined: "no model of this package declares the downstream" };
    }
 
    /**
@@ -1093,10 +1113,10 @@ export class PackageMaterialization {
       }
    }
 
-   /** Drop every model's memoized serve shape, when its destinations are replaced. */
-   invalidateServeShapes(): void {
+   /** Drop every model's compiled serving legs, when its destinations are replaced. */
+   invalidateCompiledLegs(): void {
       for (const model of this.owner.models().values()) {
-         model.invalidateServeShapeCache();
+         model.invalidateCompiledLegs();
       }
    }
 

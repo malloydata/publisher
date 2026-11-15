@@ -29,7 +29,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
 import { overlayKey } from "../../overlay_key";
-import { persistBlankedFiles } from "../persist_blanking";
+import { persistBlankedFiles } from "../text/persist_blanking";
 import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import {
    generateRollupBuildFile,
@@ -45,8 +45,8 @@ import {
    type RollupVariantPlan,
 } from "./rollup_plan";
 import { splitSourceID } from "./persisted_view";
-import { SourceMap } from "./source_map";
-import { omittedFromFile, type Omission } from "./omitted_sources";
+import { SourceMap } from "../text/source_map";
+import { omittedFromFile, type Omission } from "../domain/omitted_sources";
 
 export interface GeneratedRollups {
    /** The rollups the companion declares. Never empty. */

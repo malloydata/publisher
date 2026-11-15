@@ -179,7 +179,7 @@
  * (`strippedTerms`, the merge-key scope, the eligibility gate). The served
  * copy keeps each term because it is in the declaration's own trailing
  * `extend` run, which the re-root keeps as written; both sides read that run
- * with one reader (`../declaration_text.ts`). A term is only taken out when
+ * with one reader (`../text/declaration_text.ts`). A term is only taken out when
  * that holds, and the source is refused otherwise: a term written on a source
  * this one extends, or anywhere in its declaration but that run (the re-root
  * would drop it); one that reads a field the table does not store (it could
@@ -243,7 +243,7 @@ import {
    dropDimensions,
    inverseRenameBlocks,
    type TextEdit,
-} from "../declaration_text";
+} from "../text/declaration_text";
 import type { StoredColumn } from "../stored_column_types";
 import {
    dropJoinDefinition,
@@ -251,13 +251,13 @@ import {
    inlinedJoinStatements,
    intoFirstExtend,
    type InlinedJoinText,
-} from "../inlined_join_text";
-import { offsetOf } from "../malloy_lexer";
+} from "../text/inlined_join_text";
+import { offsetOf } from "../text/malloy_lexer";
 import {
    confirmedAncestors,
    keptAncestorChain,
    type KeptAncestor,
-} from "../kept_ancestors";
+} from "../text/kept_ancestors";
 import { callerIndependent, type FieldDependence } from "../../probe_compiler";
 import {
    classifyWhereTerms,
@@ -274,7 +274,11 @@ import {
    rollingWindowTerms,
    type CurrentTimeReadTerm,
 } from "./rolling_window";
-import { SourceMap, type FieldJoinReads, type SourceJoin } from "./source_map";
+import {
+   SourceMap,
+   type FieldJoinReads,
+   type SourceJoin,
+} from "../text/source_map";
 
 /** The route `#(materialize)` is on. */
 const MATERIALIZE_ROUTE = "materialize";

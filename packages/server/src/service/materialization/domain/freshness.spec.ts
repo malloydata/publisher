@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import type { FreshnessAwareManifestEntry, FreshnessManifest } from "../types";
+import type { FreshnessAwareManifestEntry, FreshnessManifest } from "./types";
 import { evaluateManifestFreshness, filterFreshManifest } from "./freshness";
 
 // A fixed "now" so age math is deterministic.

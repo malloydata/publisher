@@ -7,6 +7,8 @@
  * restatement, a rollup's merged measure), so the generated field's result
  * column carries what live's does. Neither plan nor serve owns it: both
  * generate fields from the author's.
+ *
+ * Pure.
  */
 
 /**

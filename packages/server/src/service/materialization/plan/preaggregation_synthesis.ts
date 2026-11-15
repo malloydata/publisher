@@ -31,7 +31,7 @@ import {
    type ReaggregateFunction,
 } from "./preaggregation_classifier";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
-import { fieldNotes } from "../field_notes";
+import { fieldNotes } from "../text/field_notes";
 import type { ValidatableSource } from "./preaggregation_validation";
 
 /** Suffix on the stored partial-aggregate column for a measure. */
@@ -232,7 +232,7 @@ export function basePersistNamespace(
 /**
  * A field the source does not publicly expose.
  *
- * Mirrors `isAccessRestricted` in materialization_serve_transform.ts and
+ * Mirrors `isAccessRestricted` in serve/bindings.ts and
  * preaggregation_validation.ts, and fails CLOSED: anything not exactly `public`
  * is hidden, so a future modifier kind is refused by default. No modifier at
  * all is public.

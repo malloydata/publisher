@@ -17,14 +17,16 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { logger } from "../../../logger";
 import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics";
-import { evaluateManifestFreshness } from "../run/freshness";
+import { evaluateManifestFreshness } from "../domain/freshness";
+import { narrowSchemaToPublic } from "./bindings";
+import {
+   bindingServesModelSource,
+   type ServeBinding,
+} from "../domain/serve_binding";
 import {
    authorModelLiftContext,
-   bindingServesModelSource,
-   narrowSchemaToPublic,
    type DerivedSourceDef,
-   type ServeBinding,
-} from "./materialization_serve_transform";
+} from "../text/author_model";
 import {
    declaredColumnsOf,
    queryTimezoneOf,

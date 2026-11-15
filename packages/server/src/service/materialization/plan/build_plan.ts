@@ -3,7 +3,6 @@
 
 import type {
    BuildTarget,
-   MalloyConfig,
    Connection as MalloyConnection,
    Model as MalloyModel,
    ModelDef,
@@ -45,6 +44,7 @@ import {
    assertRollupNameUnshared,
    assertTierEligible,
    isAuthorizeAttributedToEntryPoint,
+   type TierGateInputs,
 } from "./materialization_eligibility";
 
 import { type SynthesizedRuntimeFactory } from "./preaggregation_compile";
@@ -101,7 +101,7 @@ import {
    omittedByID,
    type Omission,
    type OmittedSourceReason,
-} from "./omitted_sources";
+} from "../domain/omitted_sources";
 
 // Addressing, plan layers and eligibility collection live in their own
 // modules; re-exported so every existing import of build_plan keeps working.
@@ -140,6 +140,7 @@ export {
    type PersistSourceGateOutcome,
 } from "./persist_source_fields";
 import type { WirePackageMaterialization } from "./plan_layers";
+import type { BuildPlanPackage } from "../domain/plan_input";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
@@ -149,22 +150,7 @@ type WireJoinedTerms = components["schemas"]["JoinedTerms"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 export type { WirePackageMaterialization };
 
-/**
- * Minimal surface a package must expose to compile its build plan; satisfied by
- * {@link Package} and the materialization service.
- */
-export interface BuildPlanPackage {
-   getModelPaths(): string[];
-   getPackagePath(): string;
-   getMalloyConfig(): MalloyConfig;
-   getMalloyConnection(name: string): Promise<MalloyConnection>;
-   /**
-    * The package-level `materialization` config (publisher.json), the
-    * least-specific layer for per-source resolution. Optional: callers without
-    * it resolve with no package default.
-    */
-   getMaterializationConfig?(): WirePackageMaterialization | null;
-}
+export type { BuildPlanPackage };
 
 /**
  * Result of compiling a package's persist sources. The wire {@link BuildPlan} is
@@ -280,7 +266,7 @@ function planDynamicFields(
  * not read as "nothing to narrow". Empty throws too — it means everything
  * the build SQL projects is hidden.
  */
-function publicColumnNames(persistSource: PersistSource): string[] {
+export function publicColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
    try {
       names = persistSource._explore.intrinsicFields
@@ -513,9 +499,15 @@ export async function classifyPersistSourceGate(
             break;
          }
       }
+      // A row filter read off another level (a derivation's base, or an
+      // ancestor the entry point extends), not the entry point's own note.
+      const inheritedRowFilter = groups.some(
+         (g) => g.route === "access_filter" && g.selfContained,
+      );
       return {
          classification,
          attributed: isAuthorizeAttributedToEntryPoint(persistSource),
+         ...(inheritedRowFilter ? { inheritedRowFilter } : {}),
       };
    } catch (err) {
       logger.warn("Failed to classify persist source gate; refusing", {
@@ -1418,12 +1410,98 @@ export function deriveBuildPlan(
       }
    }
 
+   refuseColocatedTablesSharedWithARefusal(
+      sources,
+      connectionDigests,
+      options,
+      wireSources,
+      refusedSources,
+      sourceModelPaths,
+   );
+
    return {
       graphs: wireGraphs,
       sources: wireSources,
       refusedSources,
       ...finalizeOmissions(omitted, new Set(Object.keys(wireSources))),
    };
+}
+
+/**
+ * Move to `refusedSources` each planned v1 colocated source whose table another
+ * source the colocated gate refuses shares (one content address: identical
+ * SQL, different gates). A colocated table is served by its address, and the
+ * bind refuses an address any source on it is refused for
+ * (collectColocatedSourceEligibility), as the build does
+ * (instructed_build.ts, colocatedRefusalOn): such a table would be built for
+ * nothing. The plan says so, with the sibling's reason, in sourceID order.
+ */
+function refuseColocatedTablesSharedWithARefusal(
+   sources: Record<string, PersistSource>,
+   connectionDigests: Record<string, string>,
+   options: TierGateInputs | undefined,
+   wireSources: Record<string, WirePersistSourcePlan>,
+   refusedSources: Record<string, WireRefusedSource>,
+   sourceModelPaths?: Record<string, string>,
+): void {
+   // v1 `#@ persist` sources only: a `#(materialize)` source's table is
+   // addressed by its generated build (the plan's `targets`), which this
+   // projection does not see, and the bind keys it the same way.
+   const v1 = (id: string) => !options?.materializePlans?.[id];
+   const colocated = Object.entries(wireSources).filter(
+      ([id, s]) =>
+         s.origin === "persist" && !s.annotationFields?.storage && v1(id),
+   );
+   if (colocated.length === 0) return;
+   const addresses = new Set(colocated.map(([, s]) => s.sourceEntityId));
+   const refusals = new Map<
+      string,
+      { sourceID: string; name: string; reason?: string; message: string }[]
+   >();
+   for (const id of Object.keys(sources).sort()) {
+      const source = sources[id];
+      if (options?.preaggregatePlans?.[id] || !v1(id)) continue;
+      let address: string;
+      try {
+         address = computeSourceEntityId(source, connectionDigests);
+      } catch {
+         continue;
+      }
+      if (!addresses.has(address)) continue;
+      try {
+         assertTierEligible(source, false, options);
+      } catch (err) {
+         const list = refusals.get(address) ?? [];
+         list.push({
+            sourceID: id,
+            name: source.name,
+            ...(err instanceof MaterializationEligibilityError && err.reason
+               ? { reason: err.reason }
+               : {}),
+            message: errMessage(err),
+         });
+         refusals.set(address, list);
+      }
+   }
+   for (const [sourceID, planned] of colocated) {
+      const sibling = refusals
+         .get(planned.sourceEntityId)
+         ?.find((r) => r.sourceID !== sourceID);
+      if (!sibling) continue;
+      delete wireSources[sourceID];
+      refusedSources[sourceID] = {
+         name: planned.name,
+         sourceID: planned.sourceID,
+         modelPath: sourceModelPaths?.[sourceID],
+         tier: "colocated",
+         reason: (sibling.reason ?? "authorize") as WireRefusedSource["reason"],
+         message:
+            `'${planned.name}' is not built: it shares its table with ` +
+            `'${sibling.name}', which the eligibility gate refuses for a ` +
+            `colocated build, and a colocated table is served to every ` +
+            `source on it. ${sibling.message}`,
+      };
+   }
 }
 
 /** What a package load keeps from its build plan. */

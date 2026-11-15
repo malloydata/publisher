@@ -827,6 +827,39 @@ describe("BuildPlan.refusedSources", () => {
    afterEach(() => packages.cleanup());
 
    it(
+      "refuses a colocated source whose table a refused source shares, with that source's reason",
+      async () => {
+         // `ok` and `leaky` compile to the same SQL, so one table. The build
+         // and the bind refuse an address any source on it is refused for,
+         // so the plan does not list `ok` as buildable.
+         const pkg = await packages.create(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount")
+
+#@ persist name="ok"
+source: ok is base -> { aggregate: c is count() }
+
+#@ persist name="leaky" storage="dest"
+#@ queryMetadata { owner=@env.PUBLISHER_SPEC_UNSET_VAR }
+source: leaky is base -> { aggregate: c is count() }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.sources ?? {})).toEqual([]);
+         const refused = Object.values(plan?.refusedSources ?? {});
+         const ok = refused.find((r) => r.name === "ok");
+         expect(ok).toMatchObject({
+            tier: "colocated",
+            reason: "env_reference",
+         });
+         expect(ok?.message).toStartWith(
+            "'ok' is not built: it shares its table with 'leaky'",
+         );
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "refuses a source whose #@ route reads the server's environment, instead of building it into the warehouse",
       async () => {
          // Publisher drops that source's whole `#@` route, so it reads no
@@ -836,7 +869,7 @@ describe("BuildPlan.refusedSources", () => {
 source: base is duckdb.sql("SELECT 1 AS amount")
 
 #@ persist name="ok"
-source: ok is base -> { aggregate: c is count() }
+source: ok is base -> { aggregate: n is count() }
 
 #@ persist name="leaky" storage="dest"
 #@ queryMetadata { owner=@env.PUBLISHER_SPEC_UNSET_VAR }

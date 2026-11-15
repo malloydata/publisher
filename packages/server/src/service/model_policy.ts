@@ -18,7 +18,7 @@
 
 import type { SiblingModelDefResolver } from "./filter_binding_guard";
 import type { MaterializedTableCatalog } from "./materialization/serve/query_path";
-import type { BuildManifest } from "./materialization/types";
+import type { BuildManifest } from "./materialization/domain/types";
 import type { ReportLayout } from "./report";
 
 /** The package's published surface, as an explained refusal describes it:

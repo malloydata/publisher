@@ -7,7 +7,7 @@ import { parseRouteTag } from "../../motly";
 import type { RollingWindow } from "./rolling_window";
 import type { Tag } from "@malloydata/malloy-tag";
 
-import type { IncrementalStrategy } from "../types";
+import type { IncrementalStrategy } from "../domain/types";
 import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 

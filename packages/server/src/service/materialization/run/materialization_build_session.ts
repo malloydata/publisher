@@ -7,7 +7,9 @@ import {
    InMemoryURLReader,
    Runtime,
    type PersistSource,
+   MalloyError,
 } from "@malloydata/malloy";
+import { leaveOutDefinitionAt } from "../text/declarations_kept";
 import {
    existsSync,
    mkdirSync,
@@ -43,6 +45,7 @@ import {
    buildSQLOf,
    plannedSources,
    projectToPublicColumns,
+   publicColumnNames,
 } from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
@@ -73,24 +76,14 @@ import {
 import type { WatermarkBound } from "./incremental_apply";
 import { storageDestinationRoot } from "../../connection_config";
 import {
-   assertServesInDuckDB,
-   type ServeBinding,
-} from "../serve/materialization_serve_transform";
-import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
    storageTablePath,
-} from "./storage_table_path";
+} from "../domain/storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
 
-/**
- * The process-wide session the build-time servability gate compiles against.
- * Created on first use and never disposed: it holds no attach and no
- * credentials, and a session per build was the largest per-build memory cost.
- */
-let sharedGateSession: DuckDBConnection | undefined;
 type WireColumn = components["schemas"]["Column"];
 
 /** Source warehouse types the native query-passthrough build supports. */
@@ -1089,40 +1082,130 @@ async function buildSameCatalogIntoStorage(params: {
 }
 
 /**
- * Compile a chained `storage=` build's transient model over `connections`
- * (the destination alone) and plan its downstream under `virtualMap`: the
- * SQL to CTAS, projected to its public columns, and the downstream it built.
+ * Compile a chained `storage=` build's model over `connections` (the
+ * destination alone) and plan its downstream under `virtualMap`: the SQL to
+ * CTAS, projected to its public columns, and the downstream it built. The
+ * model is `files` by URL, loaded from `entry`: a one-file model of the build's
+ * own, or the author's files with the upstreams re-rooted (the host port's
+ * `chainBuildText`).
  * The only SHAPE step of a chained build: every failure is a
  * {@link MaterializationEligibilityError}, so the caller may fall back.
  */
+/** A chained build's model: its files by URL, and the one it loads. */
+export interface ChainedBuildModel {
+   files: ReadonlyMap<string, string>;
+   entry: string;
+   /**
+    * Ranges of `files` whose definitions may be left out when they do not
+    * compile on the destination (see ChainBuildText.rerootedSpans). None: a
+    * failure is the build's.
+    */
+   leaveOutWithin?: readonly { url: string; start: number; end: number }[];
+}
+
+/** How many definitions a chained build's compile may leave out, at most. */
+const MAX_LEFT_OUT = 32;
+
+/**
+ * Leave out of `files` each definition a compile error points at, when every
+ * error points inside a range `build` allows; false (nothing changed) when
+ * one does not.
+ */
+function leaveOutFailing(
+   files: Map<string, string>,
+   err: unknown,
+   build: ChainedBuildModel,
+): boolean {
+   if (!(err instanceof MalloyError) || !build.leaveOutWithin?.length) {
+      return false;
+   }
+   const problems = (
+      err.problems as {
+         severity?: string;
+         at?: {
+            url?: string;
+            range?: { start: { line: number; character: number } };
+         };
+      }[]
+   ).filter((p) => (p.severity ?? "error") === "error");
+   const next = new Map(files);
+   for (const p of problems) {
+      const url = p.at?.url;
+      const start = p.at?.range?.start;
+      const text = url === undefined ? undefined : next.get(url);
+      if (url === undefined || !start || text === undefined) return false;
+      const within = build.leaveOutWithin.filter((w) => w.url === url);
+      const left = leaveOutDefinitionAt(text, start, within);
+      // A second error in a definition already left out needs nothing more.
+      if (left === undefined) {
+         const before = files.get(url);
+         if (before === text || before === undefined) return false;
+         continue;
+      }
+      next.set(url, left);
+   }
+   for (const [url, text] of next) files.set(url, text);
+   return true;
+}
+
+/** A one-file model of the build's own, as a {@link ChainedBuildModel}. */
+export function oneFileModel(text: string): ChainedBuildModel {
+   const entry = "file:///chained-build/m.malloy";
+   return { files: new Map([[entry, text]]), entry };
+}
+
 export async function planChainedDownstream(params: {
-   transientModel: string;
+   model: ChainedBuildModel;
    downstreamName: string;
-   virtualMap: Map<string, Map<string, string>>;
+   virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    connections: FixedConnectionMap;
+   /**
+    * The planned source a recompute of the downstream builds. A chained
+    * build whose downstream lacks one of its public columns (a column read
+    * through a definition left out of a stored upstream, as a `select: *`
+    * does) is a shape it could not carry: stored, the table would answer
+    * with fewer columns than live. Absent: not checked.
+    */
+   recomputes?: PersistSource;
 }): Promise<{ sql: string; downstream: PersistSource }> {
-   const { transientModel, downstreamName, virtualMap } = params;
+   const { model: build, downstreamName } = params;
+   const virtualMap = new Map(
+      [...params.virtualMap].map(([k, v]) => [k, new Map(v)] as const),
+   );
    // The upstream virtual sources declare their captured schema, so compiling
    // reads no tables; the CTAS below runs the real SQL.
-   const root = "file:///chained-build/";
-   const url = `${root}m.malloy`;
-   const runtime = new Runtime({
-      urlReader: new InMemoryURLReader(new Map([[url, transientModel]])),
-      connections: params.connections,
-   });
+   const files = new Map(build.files);
+   let runtime!: Runtime;
    // The only SHAPE step here: a compile failure means the downstream cannot
    // be expressed over its rebound parents, so the caller may fall back to
    // recomputing. Infrastructure failures (attach, CTAS, DESCRIBE) would fail
    // the same way on fallback, so only shape failures are marked eligible.
+   // A definition of a re-rooted upstream that does not compile here (a join
+   // to a source the build cannot read, and what reads it) is left out, as
+   // the served copy leaves out a join across connections; one the downstream
+   // reads then fails in the downstream's own text, which is never left out.
    let model;
-   try {
-      model = await runtime
-         .loadModel(new URL(url), { importBaseURL: new URL(root) })
-         .getModel();
-   } catch (err) {
-      throw new MaterializationEligibilityError({
-         message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
+   for (let pass = 0; ; pass++) {
+      runtime = new Runtime({
+         urlReader: new InMemoryURLReader(files),
+         connections: params.connections,
       });
+      try {
+         model = await runtime
+            .loadModel(new URL(build.entry), {
+               importBaseURL: new URL(".", build.entry),
+            })
+            .getModel();
+         break;
+      } catch (err) {
+         const left =
+            pass < MAX_LEFT_OUT ? leaveOutFailing(files, err, build) : false;
+         if (!left) {
+            throw new MaterializationEligibilityError({
+               message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
+            });
+         }
+      }
    }
    // Planning renders every source's SQL, and the rebound virtual parents
    // render only through the `virtualMap`.
@@ -1149,6 +1232,27 @@ export async function planChainedDownstream(params: {
             `'${downstreamName}' (the downstream references something the ` +
             `rebound parents don't provide).`,
       });
+   }
+   if (params.recomputes) {
+      let expected: string[] = [];
+      let built: string[] = [];
+      try {
+         expected = publicColumnNames(params.recomputes);
+         built = publicColumnNames(downstream);
+      } catch {
+         // An unknown surface is refused where the table is projected to it.
+      }
+      const has = new Set(built);
+      const lost = expected.filter((c) => !has.has(c));
+      if (lost.length > 0) {
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained build model of '${downstreamName}' over the rebound ` +
+               `parents lacks ${lost.length === 1 ? "a column" : "columns"} ` +
+               `a recompute writes (${lost.map((c) => `'${c}'`).join(", ")}), ` +
+               `read through a definition no stored upstream carries`,
+         });
+      }
    }
    // The CTAS runs on a read-write session on the destination, as a
    // same-catalog build does, so the same rule holds: only SQL Malloy
@@ -1178,9 +1282,9 @@ export async function planChainedDownstream(params: {
  * tables in the destination, instead of recomputing them from the warehouse.
  * The downstream is then a pure function of the parents' STORED rows.
  *
- * `transientModel` (see {@link buildChainedStorageBuildModel}) rebinds every
- * upstream to a virtual source on this destination and re-declares the
- * downstream as a persist source over them. It is compiled against the build
+ * `model` reads every upstream as a virtual source on this destination (the
+ * author's files with the upstreams re-rooted, or an extension's chain over
+ * its parent's table) and declares the downstream as a persist source. It is compiled against the build
  * session, and the downstream's `buildSQL` (planned under the `virtualMap`) is
  * CTAS'd into the destination; nothing is federated and nothing leaves DuckDB.
  * Session lifecycle mirrors {@link buildSourceIntoStorage}.
@@ -1190,12 +1294,16 @@ export async function planChainedDownstream(params: {
 export async function buildDownstreamIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
-   /** Transient rebind model: upstream virtuals + persist-annotated downstream. */
-   transientModel: string;
+   /** The model the downstream compiles from (see planChainedDownstream). */
+   model: ChainedBuildModel;
+   /** The connection the model reads the destination by; the destination's name when absent. */
+   connectionName?: string;
    /** The downstream source's Malloy name, to locate it in the transient plan. */
    downstreamName: string;
-   /** destinationName → handle → quoted physical path for the upstream virtuals. */
-   virtualMap: Map<string, Map<string, string>>;
+   /** See planChainedDownstream's `recomputes`. */
+   recomputes?: PersistSource;
+   /** connection → handle → quoted physical path for the upstream virtuals. */
+   virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
    /**
@@ -1211,7 +1319,7 @@ export async function buildDownstreamIntoStorage(params: {
    const {
       destinationName,
       destinationConnection,
-      transientModel,
+      model,
       downstreamName,
       virtualMap,
       physicalTableName,
@@ -1246,13 +1354,15 @@ export async function buildDownstreamIntoStorage(params: {
       // delta path); pinned so lifting that exclusion stays correct.
       await pinSessionToUTC(session);
 
+      const connectionName = params.connectionName ?? destinationName;
       const { sql, downstream } = await planChainedDownstream({
-         transientModel,
+         model,
          downstreamName,
          virtualMap,
+         ...(params.recomputes ? { recomputes: params.recomputes } : {}),
          connections: new FixedConnectionMap(
-            new Map([[destinationName, session]]),
-            destinationName,
+            new Map([[connectionName, session]]),
+            connectionName,
          ),
       });
 
@@ -1287,67 +1397,6 @@ export async function buildDownstreamIntoStorage(params: {
    } finally {
       await dispose();
    }
-}
-
-/**
- * Build-time servability gate: compile the source's serve shape in DuckDB
- * against the captured (post-build) schema and refuse the build if it does not
- * compile. The served table lives in DuckDB, so this turns a serve-time error
- * into a build-time 422. No SQL runs and no table is read, so an in-memory
- * session with no attach suffices.
- *
- * @throws {MaterializationEligibilityError} (HTTP 422) if the shape can't compile.
- */
-export async function assertStorageServeShapeCompiles(params: {
-   destinationName: string;
-   /** The destination's schema (see storageTablePath); absent is `main`. */
-   destinationSchema?: string;
-   sourceName: string;
-   virtualHandle: string;
-   physicalTableName: string;
-   schema: WireColumn[];
-}): Promise<void> {
-   const { destinationName, sourceName, virtualHandle, physicalTableName } =
-      params;
-   // No `origin`: the gate compiles from the captured schema alone, so it treats
-   // a rollup's table and an authored one alike.
-   const binding: ServeBinding = {
-      sourceName,
-      destinationName,
-      virtualHandle,
-      tablePath: storageTablePath(
-         destinationName,
-         physicalTableName,
-         params.destinationSchema,
-      ),
-      schema: params.schema
-         .filter((c) => c.name && c.type)
-         .map((c) => ({ name: c.name as string, type: c.type as string })),
-   };
-   // ONE session for the process: this gate neither attaches nor federates, so
-   // it has no cross-tenant collision surface, and an instance per build was
-   // the bulk of the build path's unreclaimed memory growth. The risk is a
-   // shared catalog (earlier declarations leaking into later compiles); the
-   // spec pins that refusals still refuse and recompiles see new schemas.
-   //
-   // Assigned synchronously: an `await` before the assignment would let two
-   // concurrent callers each create a session, orphaning one for the life of
-   // the process.
-   sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
-   // Bounded on every use (idempotent per connection) so the line above stays
-   // synchronous. It must be bounded here: it is the longest-lived instance and
-   // reaches no connection lookup or attach that would bound it otherwise. No
-   // session-owned spill directory: one would accumulate for the process's life,
-   // so it uses the configured one.
-   await applySessionResourceLimits(sharedGateSession);
-   await assertServesInDuckDB(
-      sourceName,
-      binding,
-      new FixedConnectionMap(
-         new Map([[destinationName, sharedGateSession]]),
-         destinationName,
-      ),
-   );
 }
 
 /** DDL to drop a storage table by its recorded name, catalog-qualified for DuckDB. */

@@ -23,6 +23,7 @@
  */
 
 import type { QueryMaterializer } from "@malloydata/malloy";
+import type { VariantSkipExplanation } from "./materialization/domain/leg_decline";
 import { recordQueryVariantRouting } from "../materialization_metrics";
 
 /** The kinds of candidate the router knows, in their usual catalog order. */
@@ -32,7 +33,7 @@ import { recordQueryVariantRouting } from "../materialization_metrics";
  * a persisted view's table (`#@ persist` on a view, phase 4), tried first: it
  * answers only an exact call of its view (R1).
  */
-export type VariantKind = "view" | "served" | "storage" | "rollup";
+export type VariantKind = "view" | "served" | "rollup";
 
 /**
  * Why a candidate did not answer. Internal for now; the path report maps
@@ -93,11 +94,7 @@ export interface Variant<Extra = unknown> {
    keepsContractsFor?(extra: Extra): boolean;
 }
 
-/** A candidate's own account of why it did not answer (see {@link Variant.explain}). */
-export interface VariantSkipExplanation {
-   code: string;
-   callerDetail?: string;
-}
+export type { VariantSkipExplanation };
 
 /** What the router decided about one candidate. */
 export interface ConsideredVariant {

@@ -35,8 +35,11 @@ import {
    type StoredColumn,
    storedColumnsOfOutput,
 } from "../stored_column_types";
-import type { FreshnessAwareManifestEntry, FreshnessManifest } from "../types";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type {
+   FreshnessAwareManifestEntry,
+   FreshnessManifest,
+} from "../domain/types";
+import type { ServeBinding } from "../domain/serve_binding";
 
 /** What a binding reads of a build-plan source. */
 interface ColocatedPlanSource {

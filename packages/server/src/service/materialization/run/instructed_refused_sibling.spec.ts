@@ -16,7 +16,7 @@ import {
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
 

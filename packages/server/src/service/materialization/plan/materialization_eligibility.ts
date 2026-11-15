@@ -381,6 +381,13 @@ export function assertColocatedPersistNotAuthorizeGated(
    if (!referencesAuthorize(persistSource)) return;
    if (origin === "preaggregate" && options.gateEnforcedAtRead) return;
 
+   if (origin === "persist" && gateOutcome?.inheritedRowFilter) {
+      recordEligibilityRefused("authorize");
+      throw new MaterializationEligibilityError({
+         reason: "authorize",
+         message: inheritedRowFilterRefusal(sourceName, "colocated"),
+      });
+   }
    if (
       origin === "persist" &&
       gateOutcome?.classification === "row_level" &&
@@ -692,7 +699,33 @@ export function gateEnforcedAtRead(
    if (!getMaterializeEnabled() || !getMaterializeGatedSources()) return false;
    if (!plan?.materializePlans?.[sourceID]) return false;
    const outcome = plan.sourceGateOutcomes?.[sourceID];
-   return outcome?.classification === "row_level" && outcome.attributed;
+   return (
+      outcome?.classification === "row_level" &&
+      outcome.attributed &&
+      // The served copy cannot graft a row filter the entry point inherits.
+      !outcome.inheritedRowFilter
+   );
+}
+
+/**
+ * The refusal of a source whose row-level gate it inherits (see
+ * PersistSourceGateOutcome.inheritedRowFilter): built, the table would hold
+ * every caller's rows and answer none of them.
+ */
+function inheritedRowFilterRefusal(
+   sourceName: string,
+   tier: "colocated" | "storage",
+): string {
+   return (
+      `Source '${sourceName}' cannot be materialized (${tier}): it reads an ` +
+      `#(access_filter) row-level gate from a source it derives from or ` +
+      `extends, not one it declares itself. A table of it would hold every ` +
+      `caller's rows, and the served copy, which reads the table in place of ` +
+      `the source that declares the gate, cannot apply that gate to it, so ` +
+      `every query would be answered live anyway. It is not built: no ` +
+      `answer changes. To serve it from a table, declare the row-level gate ` +
+      `on this source itself.`
+   );
 }
 
 /** What {@link assertTierEligible} reads from a compiled plan. */
@@ -766,6 +799,25 @@ export function assertTierEligible(
    }
    assertRollupNameUnshared(source, plan);
    if (storage) {
+      // Admitted at read but for a row filter it inherits: say so, rather
+      // than the generic gate refusal.
+      const outcome = plan?.sourceGateOutcomes?.[source.sourceID];
+      if (
+         outcome?.inheritedRowFilter &&
+         gateEnforcedAtRead(source.sourceID, {
+            ...plan,
+            sourceGateOutcomes: {
+               ...plan?.sourceGateOutcomes,
+               [source.sourceID]: { ...outcome, inheritedRowFilter: false },
+            },
+         })
+      ) {
+         recordEligibilityRefused("authorize");
+         throw new MaterializationEligibilityError({
+            reason: "authorize",
+            message: inheritedRowFilterRefusal(source.name, "storage"),
+         });
+      }
       assertMaterializationEligible(source, annotationFields, {
          gateEnforcedAtRead: gateEnforcedAtRead(source.sourceID, plan),
       });

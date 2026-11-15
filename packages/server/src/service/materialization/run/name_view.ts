@@ -22,7 +22,7 @@ import {
    isLegacyFailedEntry,
    type BuildInstruction,
    type ManifestEntry,
-} from "../types";
+} from "../domain/types";
 import {
    STORAGE_TARGET_DIALECT,
    withStorageDestinationSession,
@@ -44,7 +44,10 @@ import {
    type NameViewTableReplaceDdl,
 } from "./name_view_sql";
 import { backupSuffix } from "./materialization_run_support";
-import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
+import {
+   destinationSchemaOf,
+   storageTablePath,
+} from "../domain/storage_table_path";
 
 /**
  * The `name=` view (materialization v2, phase 3, table behaviours): for a

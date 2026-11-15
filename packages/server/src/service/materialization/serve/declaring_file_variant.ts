@@ -39,8 +39,8 @@ import {
 } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
 import { splitSourceID } from "../plan/persisted_view";
-import { SourceMap } from "../plan/source_map";
-import { persistBlankedFiles } from "../persist_blanking";
+import { SourceMap } from "../text/source_map";
+import { persistBlankedFiles } from "../text/persist_blanking";
 import { authorNameImports } from "./author_imports";
 
 /** A variant compiled over the author's declaring file. */

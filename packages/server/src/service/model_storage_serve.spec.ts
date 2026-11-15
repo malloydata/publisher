@@ -17,7 +17,7 @@ import {
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import { Model } from "./model";
-import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import type { ServeBinding } from "./materialization/domain/serve_binding";
 import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
 import {
