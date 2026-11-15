@@ -1,29 +1,25 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 /**
- * Joins across connections (materialization v2, phase 3: ms2data/service#6982
- * and the plan's question 11).
+ * Joins a served copy moves across connections (materialization v2, the
+ * plan's question 11).
  *
  * Malloy refuses a join whose source is on another connection than the source
  * it joins into (`join-connection-mismatch`, malloydata/malloy#3032), and it
- * refuses it for the whole file. Two cases reach that refusal:
+ * refuses it for the whole file. A served copy re-roots a source onto its
+ * storage destination, and a reference join it keeps may read a source that
+ * is not stored there. The served copy leaves that join out, so the queries
+ * that do not use it still read the table, and a query that does skips it
+ * with reason `cross_connection`. An author's own file that joins sources on
+ * two origin connections is not rescued: it fails to load with Malloy's own
+ * diagnostic.
  *
- * - The author's own file joins sources from two origin connections (#6982).
- *   It never compiles live. With both sides stored in one destination the
- *   served copy compiles, so builds are planned, and the model loads, from the
- *   author's file with those joins left out (the "build view").
- * - A served copy re-roots a source onto its storage destination, and a
- *   reference join it keeps reads a source that is not stored there (question
- *   11). The served copy leaves that join out, so the queries that do not use
- *   it still read the table, and a query that does skips it with reason
- *   `cross_connection`.
- *
- * Either way the same text operation applies: blank out the join's definition,
- * compile again, and blank out each definition that then fails because it read
- * what was left out (a dimension or measure through the join, a view over that
- * measure, a join keyed on it), until the text compiles. Blanking keeps every
- * other character's line and column, so the compiled locations of everything
- * kept still index the author's file.
+ * The text operation: blank out the join's definition, compile again, and
+ * blank out each definition that then fails because it read what was left out
+ * (a dimension or measure through the join, a view over that measure, a join
+ * keyed on it), until the text compiles. Blanking keeps every other
+ * character's line and column, so the compiled locations of everything kept
+ * still index the author's file.
  *
  * Only a refusal of exactly this kind starts it, and nothing else is ever left
  * out: the first compile may report, beside the refused joins, only problems
@@ -37,9 +33,8 @@
  * joins", and a file that does not compile has no IR to read ranges from, so
  * the edit is made on the text, with the rewriters' lexer (malloy_lexer.ts).
  *
- * Read by the served copy (`serve/`) and by the author model's load
- * (`plan/cross_connection_joins.ts`), which compiles through what this is
- * handed and never itself reads a file.
+ * Read by the served copy (`serve/`), which compiles through what this is
+ * handed; it never itself reads a file.
  */
 
 import { MalloyError } from "@malloydata/malloy";

@@ -109,15 +109,6 @@ const FLIGHTS_SEED = [
     ) AS t(note_id, carrier, topic)`,
 ];
 
-const CROSS_ORIGIN = {
-   crm: [
-      "CREATE TABLE accounts AS SELECT * FROM (VALUES (1, 'acme'), (2, 'globex'), (3, 'initech')) AS t(id, account_name)",
-   ],
-   product: [
-      "CREATE TABLE usage AS SELECT * FROM (VALUES (1, 5), (1, 7), (2, 1), (9, 4)) AS t(account_id, events)",
-   ],
-};
-
 const ORDERS_SEED = [
    `CREATE TABLE orders AS SELECT * FROM (VALUES
       (1, 10, 'east', 10.5, TIMESTAMP '2026-01-01 10:00:00'),
@@ -459,41 +450,6 @@ source: broken is events extend {
       tamper: (f) => retype(f, "broken", "amount", "VARCHAR"),
       query: "run: broken -> { group_by: org; aggregate: total }",
    },
-   {
-      reasons: ["classification_not_kept"],
-      name: "a carried class a join left out leaks once built",
-      scenario: {
-         files: {
-            "m.malloy": `##! experimental.access_modifiers
-#(materialize) storage="lake"
-source: accounts is crm.table('accounts') include {
-  #(classification) "none"
-  public: id, account_name
-} extend { primary_key: id }
-
-#(materialize) storage="lake"
-source: usage is product.table('usage') include {
-  #(classification) "none"
-  public: account_id
-  #(classification) "phi"
-  public: events
-}
-
-#(carries) ["none"]
-source: account_usage is accounts extend {
-  join_many: u is usage on u.account_id = id
-  #(classification) "none"
-  measure: n is count()
-  view: by_key is { aggregate: n }
-}
-`,
-         },
-         seedSql: [],
-         origins: CROSS_ORIGIN,
-         materialize: true,
-      },
-      query: "run: account_usage -> by_key",
-   },
 ];
 
 function goldenPath(c: ReasonCase): string {
@@ -516,8 +472,13 @@ afterAll(async () => {
 
 describe("served-copy reason goldens", () => {
    it("covers every reason", () => {
+      // Every reason but `classification_not_kept`, which no model reaches
+      // end to end now that the build view is gone (the copy never
+      // classifies past the compile of record); it is pinned on real
+      // compiles in served_copy_classification_ceiling.spec.ts.
       const covered = new Set(CASES.flatMap((c) => c.reasons));
-      expect(covered.size).toBe(14);
+      expect(covered.size).toBe(13);
+      expect(covered.has("classification_not_kept")).toBe(false);
    });
 
    for (const c of CASES) {
