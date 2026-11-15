@@ -259,6 +259,27 @@ describe("a table whose name changed", () => {
          { packageSuffix: PKG },
       );
       expect(again.carried.a2).toBeDefined();
+      // On a warehouse that keeps case (Postgres), a case-only rename is
+      // another table: rebuilt, and checked again under its new name.
+      const kept = deriveSelfInstructions(
+         compiledWith(
+            {
+               named: fakeSource({
+                  name: "named",
+                  sourceEntityId: "a2",
+                  annotationFields: { name: "named_t" },
+                  dialectName: "postgres",
+               }),
+            },
+            [["named"]],
+         ),
+         undefined,
+         { a2: prior("NAMED_T", "a2") },
+         undefined,
+         { packageSuffix: PKG },
+      );
+      expect(kept.carried).toEqual({});
+      expect(names(kept).a2).toBe("named_t");
       // A name= moved to another schema is another table.
       const moved = deriveSelfInstructions(
          compiled(),

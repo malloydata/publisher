@@ -289,14 +289,15 @@ function viewDefinitionSql(segments: string[], dialect: string): string {
    switch (dialect) {
       case "duckdb":
          return (
-            `SELECT sql AS definition FROM duckdb_views() ` +
+            `SELECT sql AS definition, schema_name AS view_schema FROM duckdb_views() ` +
             `WHERE NOT internal AND ${duckdbNameMatch(segments, "view_name")}`
          );
       case "postgres": {
          const path = lit(quotedPath(segments, dialect));
          return (
             `SELECT row_to_json(p) AS "row" FROM (` +
-            `SELECT pg_get_viewdef(c.oid) AS definition FROM pg_class c ` +
+            `SELECT pg_get_viewdef(c.oid) AS definition, ` +
+            `c.relnamespace::regnamespace::text AS view_schema FROM pg_class c ` +
             `WHERE c.oid = to_regclass(${path}) AND c.relkind = 'v') AS p`
          );
       }
@@ -308,7 +309,8 @@ function viewDefinitionSql(segments: string[], dialect: string): string {
          }
          const schema = `${quotedPath(segments.slice(0, -1), dialect)}.INFORMATION_SCHEMA`;
          return (
-            `SELECT view_definition AS definition FROM ${schema}.VIEWS ` +
+            `SELECT view_definition AS definition, table_schema AS view_schema ` +
+            `FROM ${schema}.VIEWS ` +
             `WHERE table_name = ${lit(name)}`
          );
       }
@@ -322,7 +324,8 @@ function viewDefinitionSql(segments: string[], dialect: string): string {
                ? "CURRENT_SCHEMA()"
                : lit(segments[segments.length - 2]);
          return (
-            `SELECT VIEW_DEFINITION AS "definition" FROM ${from} ` +
+            `SELECT VIEW_DEFINITION AS "definition", TABLE_SCHEMA AS "view_schema" ` +
+            `FROM ${from} ` +
             `WHERE TABLE_SCHEMA = ${schema} AND TABLE_NAME = ${lit(name)}`
          );
       }
@@ -337,14 +340,16 @@ function viewDefinitionSql(segments: string[], dialect: string): string {
                ? `lower(${lit(segments[segments.length - 2])})`
                : CURRENT_SCHEMA_SQL[dialect];
          return (
-            `SELECT view_definition AS definition FROM ${from} ` +
+            `SELECT view_definition AS definition, table_schema AS view_schema ` +
+            `FROM ${from} ` +
             `WHERE table_schema = ${schema} AND table_name = lower(${lit(name)})`
          );
       }
       case "sqlserver":
          assertSqlServerShape(segments);
          return (
-            `SELECT OBJECT_DEFINITION(o.object_id) AS definition FROM sys.objects o ` +
+            `SELECT OBJECT_DEFINITION(o.object_id) AS definition, ` +
+            `OBJECT_SCHEMA_NAME(o.object_id) AS view_schema FROM sys.objects o ` +
             `WHERE o.type = 'V' AND o.object_id = OBJECT_ID(${lit(quotedPath(segments, dialect))})`
          );
       default:
@@ -355,13 +360,16 @@ function viewDefinitionSql(segments: string[], dialect: string): string {
 /**
  * Whether a view's definition reads exactly `target` (`SELECT * FROM
  * <target>`, as the warehouse may spell it back: columns expanded,
- * identifiers unquoted or re-cased, the target more or less qualified): one
- * FROM, no join. A view reading anything else, or more than one relation, is
- * not.
+ * identifiers unquoted or re-cased): one FROM, no join. A name with no
+ * schema, on either side, is read in `viewSchema`, the schema the view lives
+ * in (where its own unqualified names resolve, and where earlier releases
+ * put a bare `name=` view beside its table), so `s2.g1` is not `g1`. A view
+ * reading anything else, or more than one relation, is not.
  */
 export function viewDefinitionReadsOnly(
    definition: unknown,
    target: string,
+   viewSchema?: unknown,
 ): boolean {
    if (typeof definition !== "string") return false;
    const text = definition
@@ -373,8 +381,19 @@ export function viewDefinitionReadsOnly(
    if (froms.length !== 1 || froms[0][2] || /\bjoin\b/.test(text)) {
       return false;
    }
-   const read = froms[0][1].split(".");
-   const want = target.toLowerCase().split(".");
+   const schema =
+      typeof viewSchema === "string" && viewSchema !== ""
+         ? viewSchema.toLowerCase().replace(/["`[\]]/g, "")
+         : undefined;
+   const qualify = (segments: string[]) =>
+      segments.length === 1 && schema ? [schema, ...segments] : segments;
+   const read = qualify(froms[0][1].split("."));
+   const want = qualify(
+      target
+         .toLowerCase()
+         .replace(/["`[\]]/g, "")
+         .split("."),
+   );
    const [shorter, longer] =
       read.length <= want.length ? [read, want] : [want, read];
    return shorter.every(
@@ -383,11 +402,36 @@ export function viewDefinitionReadsOnly(
 }
 
 /**
+ * Postgres: the view `viewOid` (an SQL expression for its oid) reads the
+ * relation `targetOid` and no other. Its `_RETURN` rule depends on
+ * `targetOid`, and on no other table, view, materialized view, partitioned or
+ * foreign table besides the view itself: a join or a subquery over another
+ * relation is not proven, nor is a view repointed off the target.
+ */
+export function postgresReadsOnlySql(
+   viewOid: string,
+   targetOid: string,
+): string {
+   const deps =
+      `FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid ` +
+      `WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass ` +
+      `AND d.refclassid = 'pg_catalog.pg_class'::regclass ` +
+      `AND r.ev_class = ${viewOid}`;
+   return (
+      `(EXISTS (SELECT 1 ${deps} AND d.refobjid = ${targetOid}) ` +
+      `AND NOT EXISTS (SELECT 1 ${deps} AND d.refobjid <> ${targetOid} ` +
+      `AND d.refobjid <> ${viewOid} AND EXISTS (SELECT 1 FROM pg_catalog.pg_class rc ` +
+      `WHERE rc.oid = d.refobjid AND rc.relkind IN ('r', 'v', 'm', 'p', 'f'))))`
+   );
+}
+
+/**
  * How to ask whether the view `view` reads the table `table`, which a view's
  * comment cannot say: Postgres's `CREATE OR REPLACE VIEW` and SQL Server's
  * `ALTER VIEW` keep the comment of a view repointed at another table.
  * Postgres and SQL Server answer from their dependency catalogs, one row with
- * a true `reads`; every other dialect hands back the view's definition, which
+ * a true `reads` when the view reads the table and nothing else; every other
+ * dialect hands back the view's definition and schema, which
  * {@link viewDefinitionReadsOnly} reads.
  */
 export function viewReadsSql(
@@ -400,25 +444,27 @@ export function viewReadsSql(
       case "postgres":
          return {
             answer: "reads",
-            sql:
-               `SELECT row_to_json(p) AS "row" FROM (SELECT EXISTS (` +
-               `SELECT 1 FROM pg_catalog.pg_depend d ` +
-               `JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid ` +
-               `WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass ` +
-               `AND d.refclassid = 'pg_catalog.pg_class'::regclass ` +
-               `AND r.ev_class = to_regclass(${lit(quotedPath(view, dialect))}) ` +
-               `AND d.refobjid = to_regclass(${lit(quotedPath(table, dialect))})` +
-               `) AS reads) AS p`,
+            sql: `SELECT row_to_json(p) AS "row" FROM (SELECT ${postgresReadsOnlySql(
+               `to_regclass(${lit(quotedPath(view, dialect))})`,
+               `to_regclass(${lit(quotedPath(table, dialect))})`,
+            )} AS reads) AS p`,
          };
       case "sqlserver":
          assertSqlServerShape(view);
          return {
             answer: "reads",
-            sql:
-               `SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.sql_expression_dependencies d ` +
-               `WHERE d.referencing_id = OBJECT_ID(${lit(quotedPath(view, dialect))}) ` +
-               `AND d.referenced_id = OBJECT_ID(${lit(quotedPath(table, dialect))})) ` +
-               `THEN 1 ELSE 0 END AS reads`,
+            sql: (() => {
+               const v = `OBJECT_ID(${lit(quotedPath(view, dialect))})`;
+               const t = `OBJECT_ID(${lit(quotedPath(table, dialect))})`;
+               const deps = `FROM sys.sql_expression_dependencies d WHERE d.referencing_id = ${v}`;
+               // Reads the target, and nothing it cannot resolve or that is
+               // not the target.
+               return (
+                  `SELECT CASE WHEN EXISTS (SELECT 1 ${deps} AND d.referenced_id = ${t}) ` +
+                  `AND NOT EXISTS (SELECT 1 ${deps} AND (d.referenced_id IS NULL ` +
+                  `OR d.referenced_id <> ${t})) THEN 1 ELSE 0 END AS reads`
+               );
+            })(),
          };
       default:
          return { answer: "definition", sql: viewDefinitionSql(view, dialect) };

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { getPersistStorageMode } from "../../../config";
 import {
    BadRequestError,
@@ -248,7 +249,11 @@ export function deriveSelfInstructions(
             prior &&
             prior.physicalTableName &&
             (prior.storageDestinationName ?? undefined) === destination &&
-            samePath(prior.physicalTableName, logicalName)
+            samePath(
+               prior.physicalTableName,
+               logicalName,
+               tableNamesFoldCase(persistSource.dialectName, !!destination),
+            )
          ) {
             carried[sourceEntityId] = prior;
             // A table at the author's `name=` may have been written by
@@ -460,15 +465,16 @@ export function writeTargetsFor(
 
 /**
  * Whether two physical names are one table: the same segments, container
- * included, unquoted, and compared in one case (a schema that folds case
- * holds one table under both spellings; carrying one forward across a case
- * change elsewhere only rebuilds less).
+ * included, unquoted, compared in one case only where the destination folds
+ * table names (tableNamesFoldCase). Elsewhere a case-only rename is another
+ * table, rebuilt and checked under its new name.
  */
-function samePath(a: string, b: string): boolean {
+function samePath(a: string, b: string, foldCase: boolean): boolean {
    const canon = (name: string) =>
       name
          .split(".")
-         .map((s) => s.replace(/["`[\]]/g, "").toLowerCase())
+         .map((s) => s.replace(/["`[\]]/g, ""))
+         .map((s) => (foldCase ? s.toLowerCase() : s))
          .join(".");
    return canon(a) === canon(b);
 }

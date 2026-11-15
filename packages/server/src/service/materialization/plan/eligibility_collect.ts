@@ -8,6 +8,7 @@
  * serve side requires. Split out of build_plan.ts; behaviour unchanged.
  */
 
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -42,6 +43,12 @@ interface EligibilityPlan {
    connectionDigests: Record<string, string>;
    preaggregatePlans?: Record<string, RollupPlan>;
    /** The `#(materialize)` plans, by the author's sourceID. */
+   /**
+    * The package is `scope: "version"`: every table name, `name=` included,
+    * takes the version's suffix, so a defaulted name and an author's name
+    * that are equal write one table.
+    */
+   versionScoped?: boolean;
    materializePlans?: Record<string, unknown>;
    sourceModelPaths?: Record<string, string>;
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
@@ -164,27 +171,35 @@ export function collidingRollups(compiled: {
  * serve refusal ({@link sharedTables}), the `#(materialize)` refusal and the
  * publish check (`persistenceCollisionWarnings`), so the three never disagree.
  *
- * The key is the name the run writes. A name the author did not choose
- * (`defaulted`: no `name=` on a `#@ persist`, or a `#(materialize)` with
- * none) takes the package's or version's suffix in Publisher's own builds,
- * which no author's name carries, so it never shares a table with one; two
- * such names share one exactly when their bases do. A destination that folds
- * identifiers to one case (DuckDB, a `storage=` destination included, Trino,
- * Presto, Databricks) folds the key too, so `Orders` and `orders` meet.
+ * The key is the name the run writes. In an unversioned or `scope:
+ * "package"` package, a name the author did not choose (`defaulted`: no
+ * `name=` on a `#@ persist`, or a `#(materialize)` with none) takes the
+ * package's suffix in Publisher's own builds, which no author's name
+ * carries, so it never shares a table with one; two such names share one
+ * exactly when their bases do. Under `scope: "version"` (`versionScoped`)
+ * every name takes the version's suffix, so equal names meet whichever chose
+ * them. A destination that folds table names to one case
+ * ({@link tableNamesFoldCase}) folds the key too, so `Orders` and `orders`
+ * meet.
  */
 export function persistTableTarget(
    fields: { name?: string; storage?: string },
    sourceName: string,
    connectionName: string,
-   written: { defaulted?: boolean; dialect?: string } = {},
+   written: {
+      defaulted?: boolean;
+      dialect?: string;
+      versionScoped?: boolean;
+   } = {},
 ): { key: string; name: string; destination: string } {
    const name = (fields.name || sourceName).trim();
    const storage = fields.storage?.trim();
    const destination = storage || connectionName;
-   const defaulted = written.defaulted ?? !fields.name?.trim();
-   const dialect = storage ? "duckdb" : written.dialect;
-   const folded =
-      dialect && CASE_FOLDING_DIALECTS.has(dialect) ? name.toLowerCase() : name;
+   const defaulted =
+      !written.versionScoped && (written.defaulted ?? !fields.name?.trim());
+   const folded = tableNamesFoldCase(written.dialect, !!storage)
+      ? name.toLowerCase()
+      : name;
    return {
       key: `${destination}\u0000${defaulted ? "default" : "named"}\u0000${folded}`,
       name,
@@ -192,17 +207,10 @@ export function persistTableTarget(
    };
 }
 
-/** The dialects whose unquoted and quoted identifiers resolve case-insensitively. */
-const CASE_FOLDING_DIALECTS: ReadonlySet<string> = new Set([
-   "duckdb",
-   "trino",
-   "presto",
-   "databricks",
-]);
-
 function physicalTarget(
    source: PersistSource,
    materialize: { nameDefaulted?: true } | undefined,
+   versionScoped: boolean | undefined,
 ) {
    return persistTableTarget(
       deriveAnnotationFields(source),
@@ -211,6 +219,7 @@ function physicalTarget(
       {
          ...(materialize ? { defaulted: !!materialize.nameDefaulted } : {}),
          dialect: source.dialectName,
+         ...(versionScoped ? { versionScoped } : {}),
       },
    );
 }
@@ -253,6 +262,7 @@ function sharedTableGroups(
             compiled.materializePlans?.[sourceID] as
                | { nameDefaulted?: true }
                | undefined,
+            compiled.versionScoped,
          );
       } catch {
          // No address: the other gates refuse it on their own.

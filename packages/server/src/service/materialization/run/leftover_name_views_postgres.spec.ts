@@ -83,6 +83,19 @@ describe.skipIf(!POSTGRES_URL)(
          await view("mine", "g1", markOf(q("g1")));
          await view("theirs", "g1", markOf(q("g1"), OTHER));
          await view("plain", "g1");
+         // Repointed to read another table beside ours, by a join or a
+         // subquery: it reads ours, but not only ours, so it is not proven.
+         await run(`CREATE TABLE ${q("other")} AS SELECT 1 AS x, 9 AS y`);
+         await run(
+            `CREATE VIEW ${q("joined")} AS SELECT g.x, o.y FROM ${q("g1")} g ` +
+               `JOIN ${q("other")} o ON o.x = g.x`,
+         );
+         await run(`COMMENT ON VIEW ${q("joined")} IS '${markOf(q("g1"))}'`);
+         await run(
+            `CREATE VIEW ${q("subquery")} AS SELECT * FROM ${q("other")} ` +
+               `WHERE x IN (SELECT x FROM ${q("g1")})`,
+         );
+         await run(`COMMENT ON VIEW ${q("subquery")} IS '${markOf(q("g1"))}'`);
          // Repointed in place: the comment survives CREATE OR REPLACE VIEW.
          await view("repointed", "g1", markOf(q("g1")));
          await run(
@@ -101,11 +114,19 @@ describe.skipIf(!POSTGRES_URL)(
          });
          await dropLeftoverNameViews(
             { physicalTableName: q("g1"), connectionName: "pg" },
-            ["mine", "theirs", "plain", "repointed"].map(record),
+            ["mine", "theirs", "plain", "repointed", "joined", "subquery"].map(
+               record,
+            ),
             OWNER,
             context,
          );
-         expect(await views()).toEqual(["plain", "repointed", "theirs"]);
+         expect(await views()).toEqual([
+            "joined",
+            "plain",
+            "repointed",
+            "subquery",
+            "theirs",
+         ]);
          // With the view gone, the table it read can be dropped.
          await run(`DROP TABLE ${q("g1")} CASCADE`);
          expect(await views()).toEqual(["repointed"]);

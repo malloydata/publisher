@@ -1450,6 +1450,7 @@ async function loadPackage(
       modelPaths,
       load,
       packageMetadata.materialization ?? null,
+      packageMetadata.scope,
    );
    const loadEnd = performance.now();
    return {
@@ -1486,6 +1487,7 @@ async function finishWorkerBuildPlan(
    modelPaths: string[],
    load: LoadContext,
    materializationConfig: WirePackageMaterialization | null,
+   scope?: string | null,
 ): Promise<WorkerBuildPlan | undefined> {
    if (!load.planParts || load.failed || load.planLeftToMainThread) {
       return undefined;
@@ -1519,6 +1521,7 @@ async function finishWorkerBuildPlan(
       const outcome = deriveBuildPlanOutcome(
          { ...parts, connectionDigests },
          materializationConfig,
+         scope,
       );
       return {
          ok: true,

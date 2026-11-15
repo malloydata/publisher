@@ -347,6 +347,44 @@ describe("annotation findings on a loaded package", () => {
    );
 
    it(
+      "under scope: version, a defaulted #(materialize) name and an equal name= write one table, and both are refused; unversioned they are two",
+      async () => {
+         const { restore } = installSettings({
+            env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
+         });
+         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+         try {
+            const model = `${RAW}#(materialize) storage="lake"
+source: daily is raw extend { where: amount > 0 }
+
+#(materialize) name="daily" storage="lake"
+source: other is raw extend { where: amount < 0 }
+`;
+            const refusedIn = async (manifest: Record<string, unknown>) => {
+               await fs.rm(path.join(envPath, "pkg"), {
+                  recursive: true,
+                  force: true,
+               });
+               const pkg = await loadPackage(model, manifest);
+               return coded(pkg, "materialize-not-built")
+                  .map((w) => w.subject)
+                  .sort();
+            };
+            // Both take the version's suffix: daily__v<...> twice.
+            expect(
+               await refusedIn({ materialization: { scope: "version" } }),
+            ).toEqual(["daily", "other"]);
+            // Unversioned, the defaulted one takes the package's suffix.
+            expect(await refusedIn({})).toEqual([]);
+         } finally {
+            await __setPackageLoadPoolForTests(null);
+            restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "refuses a #(materialize) line that does not parse at publish, with the switch on",
       async () => {
          const { restore } = installSettings({

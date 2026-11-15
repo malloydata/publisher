@@ -39,6 +39,7 @@ import {
    dropViewSql,
    duckdbNameMatch,
    parseNameViewComment,
+   postgresReadsOnlySql,
    relationProbeSql,
    relationProbeSupported,
    sqlString,
@@ -154,7 +155,7 @@ export async function provenOwnView(
    const definition =
       answer === undefined ? undefined : field(answer, "definition");
    return typeof definition === "string" &&
-      viewDefinitionReadsOnly(definition, target)
+      viewDefinitionReadsOnly(definition, target, field(answer!, "view_schema"))
       ? { name, target, comment, definition }
       : undefined;
 }
@@ -230,11 +231,7 @@ export function replaceOwnViewStatements(
             `IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c ` +
             `WHERE c.oid = to_regclass(${viewPath}) AND c.relkind = 'v' ` +
             `AND obj_description(c.oid, 'pg_class') = ${lit(view.comment)} ` +
-            `AND EXISTS (SELECT 1 FROM pg_catalog.pg_depend d ` +
-            `JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid ` +
-            `WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass ` +
-            `AND d.refclassid = 'pg_catalog.pg_class'::regclass ` +
-            `AND r.ev_class = c.oid AND d.refobjid = to_regclass(${targetPath}))) ` +
+            `AND ${postgresReadsOnlySql("c.oid", `to_regclass(${targetPath})`)}) ` +
             `THEN RAISE EXCEPTION 'the name= view % changed while the build checked it', ${viewPath}; ` +
             `END IF; END $guard$`,
          drop,

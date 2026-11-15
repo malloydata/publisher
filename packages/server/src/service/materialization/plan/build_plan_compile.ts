@@ -212,6 +212,9 @@ export async function compilePackageBuildPlan(
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name must not build here either.
    return refuseCollidingMaterialize({
+      ...(pkg.getPackageMetadata?.()?.scope === "version"
+         ? { versionScoped: true }
+         : {}),
       builds: parts.builds,
       sources: parts.sources,
       targets: parts.targets,
@@ -243,5 +246,6 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
+      pkg.getPackageMetadata?.()?.scope,
    );
 }

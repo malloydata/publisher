@@ -2288,6 +2288,9 @@ export class PackageMaterialization {
                   ? { defaulted: !!materialize.nameDefaulted }
                   : {}),
                ...(source.dialect ? { dialect: source.dialect } : {}),
+               ...(this.owner.metadata().scope === "version"
+                  ? { versionScoped: true }
+                  : {}),
             },
          );
          const bucket = targets.get(key) ?? {

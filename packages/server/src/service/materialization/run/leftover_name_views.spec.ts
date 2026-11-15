@@ -29,10 +29,18 @@ import {
    heldByOwnNameView,
    nameViewsIn,
    ownNameViewTarget,
+   provenOwnView,
+   replaceOwnViewStatements,
 } from "./leftover_name_views";
+import { swapIntoPlace } from "./colocated_build_strategy";
+import { createTableAndDescribe } from "./materialization_build_session";
 import { formatPublishRejections } from "../../publish_checks";
 import { packageOwner } from "./table_mark_sql";
-import { colocatedTableSite, type TableSiteContext } from "./table_site";
+import {
+   colocatedTableSite,
+   storageTableSite,
+   type TableSiteContext,
+} from "./table_site";
 
 /**
  * The `name=` views earlier releases left (leftover_name_views.ts). Publisher
@@ -599,6 +607,76 @@ describe("leftover name= views, at a site", () => {
       expect(await held("g1")).toBe(false);
    });
 
+   it("never proves a view that reads another relation beside its marked table, or the same name in another schema", async () => {
+      const site = colocatedTableSite(connection);
+      await run("CREATE TABLE other AS SELECT 1 AS x, 9 AS y");
+      await run("CREATE SCHEMA s2");
+      await run("CREATE TABLE s2.g1 AS SELECT 3 AS x");
+      const marked = async (name: string, select: string) => {
+         await run(`CREATE VIEW ${name} AS ${select}`);
+         await run(`COMMENT ON VIEW ${name} IS '${markOf("g1", OWNER)}'`);
+      };
+      await marked(
+         "joined",
+         "SELECT g.x, o.y FROM g1 g JOIN other o ON o.x = g.x",
+      );
+      await marked(
+         "subquery",
+         "SELECT * FROM other WHERE x IN (SELECT x FROM g1)",
+      );
+      await marked("elsewhere", "SELECT * FROM s2.g1");
+      await marked("exact", "SELECT * FROM main.g1");
+      for (const name of ["joined", "subquery", "elsewhere"]) {
+         expect([name, await provenOwnView(site, name, OWNER)]).toEqual([
+            name,
+            undefined,
+         ]);
+      }
+      expect((await provenOwnView(site, "exact", OWNER))?.target).toBe("g1");
+   });
+
+   it("drops its own view in the swap's transaction, and leaves it when it was repointed after the proof", async () => {
+      const site = colocatedTableSite(connection);
+      const swap = (statements: string[] | undefined) =>
+         swapIntoPlace({
+            connection,
+            runOptions: {},
+            dialect: "duckdb",
+            physicalTableName: "named_t",
+            stagingTableName: "named_t_stage",
+            backupTableName: "named_t_aside",
+            connectionName: "warehouse",
+            ...(statements ? { replacesView: statements } : {}),
+         });
+      await view("named_t", "g1", OWNER);
+      await run("CREATE TABLE named_t_stage AS SELECT 5 AS x");
+      const stale = replaceOwnViewStatements(
+         (await provenOwnView(site, "named_t", OWNER))!,
+         site,
+      );
+      // Repointed after the proof: the guard refuses, nothing is dropped.
+      await run("CREATE OR REPLACE VIEW named_t AS SELECT * FROM g2");
+      await run(`COMMENT ON VIEW named_t IS '${markOf("g1", OWNER)}'`);
+      const failed = await swap(stale).catch((e: Error) => e);
+      expect(String(failed?.message)).toContain(
+         "changed while the build checked it",
+      );
+      expect(await viewNames()).toEqual(["named_t"]);
+      expect((await run("SELECT x FROM named_t")).rows).toEqual([{ x: 2 }]);
+      // Proven as it is now (reading g1 again), it is replaced.
+      await run("CREATE OR REPLACE VIEW named_t AS SELECT * FROM g1");
+      await run(`COMMENT ON VIEW named_t IS '${markOf("g1", OWNER)}'`);
+      await run("CREATE TABLE named_t_stage AS SELECT 5 AS x");
+      await swap(
+         replaceOwnViewStatements(
+            (await provenOwnView(site, "named_t", OWNER))!,
+            site,
+         ),
+      );
+      expect(await viewNames()).toEqual([]);
+      expect((await run("SELECT x FROM named_t")).rows).toEqual([{ x: 5 }]);
+   });
+
    it("reads a run's recorded views, and nothing malformed", () => {
       expect(nameViewsIn(null)).toEqual([]);
       expect(nameViewsIn({ nameViews: "x" })).toEqual([]);
@@ -607,5 +685,79 @@ describe("leftover name= views, at a site", () => {
             nameViews: [record("mine", "g1"), { viewName: "x" }, null, 3],
          }),
       ).toEqual([record("mine", "g1")]);
+   });
+});
+
+describe("leftover name= views, in a storage destination", () => {
+   let dir: string;
+   let session: WarehouseConnection;
+   const lake = { name: "lake", type: "duckdb" } as never;
+   const run = (sql: string) => session.runSQL(sql);
+
+   beforeEach(async () => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "leftover-lake-"));
+      session = new WarehouseConnection("session", ":memory:", dir);
+      await run(`ATTACH '${path.join(dir, "lake.duckdb")}' AS lake`);
+      await run("CREATE TABLE lake.main.g1 AS SELECT 1 AS x");
+      await run("CREATE TABLE lake.main.g2 AS SELECT 2 AS x");
+      await run("CREATE VIEW lake.main.named_t AS SELECT * FROM main.g1");
+      await run(
+         `COMMENT ON VIEW lake.main.named_t IS '${markOf("g1", OWNER)}'`,
+      );
+   });
+   afterEach(async () => {
+      await session.close().catch(() => undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+   });
+
+   const views = async () =>
+      (
+         await run(
+            "SELECT view_name FROM duckdb_views() WHERE database_name = 'lake' AND NOT internal",
+         )
+      ).rows.map((r) => String(r.view_name));
+
+   it("replaces its own view with the table in the build's transaction, and leaves one repointed after the proof", async () => {
+      const site = storageTableSite("lake", lake, session);
+      const statements = () =>
+         provenOwnView(site, "named_t", OWNER).then((v) =>
+            replaceOwnViewStatements(v!, site),
+         );
+      const stale = await statements();
+      await run(
+         "CREATE OR REPLACE VIEW lake.main.named_t AS SELECT * FROM main.g2",
+      );
+      await run(
+         `COMMENT ON VIEW lake.main.named_t IS '${markOf("g1", OWNER)}'`,
+      );
+      const failed = await createTableAndDescribe(
+         session,
+         '"lake"."main"."named_t"',
+         "SELECT 5 AS x",
+         [],
+         { replacesView: stale! },
+      ).catch((e: Error) => e);
+      expect(String((failed as Error)?.message)).toContain(
+         "changed while the build checked it",
+      );
+      expect(await views()).toEqual(["named_t"]);
+      // Proven as it is now, it is replaced.
+      await run(
+         "CREATE OR REPLACE VIEW lake.main.named_t AS SELECT * FROM main.g1",
+      );
+      await run(
+         `COMMENT ON VIEW lake.main.named_t IS '${markOf("g1", OWNER)}'`,
+      );
+      await createTableAndDescribe(
+         session,
+         '"lake"."main"."named_t"',
+         "SELECT 5 AS x",
+         [],
+         { replacesView: (await statements())! },
+      );
+      expect(await views()).toEqual([]);
+      expect((await run("SELECT x FROM lake.main.named_t")).rows).toEqual([
+         { x: 5 },
+      ]);
    });
 });
