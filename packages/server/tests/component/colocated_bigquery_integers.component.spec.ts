@@ -10,6 +10,10 @@
  * and the source serves. On any other dialect nothing captured means no cast
  * is known exact, and the column is still left out.
  *
+ * Either way the package warns once for the source
+ * (`stored-native-schema-missing`), naming its columns; a table whose build
+ * captured the types gets no such warning.
+ *
  * BigQuery is a stand-in: its schema reads come from a fixture and its SQL
  * returns no rows, since what is checked is the served copy and the SQL it
  * writes, not the warehouse.
@@ -79,6 +83,7 @@ afterEach(() => {
 async function bindWithoutNativeSchema(
    model: string,
    connections: Map<string, Connection>,
+   nativeSchema?: { name: string; type: string }[],
 ) {
    restore = installSettings({
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_PACKAGE_VERSIONING: "off" },
@@ -102,6 +107,7 @@ async function bindWithoutNativeSchema(
          freshnessWindowSeconds: 86400,
          freshnessFallback: "live",
          dataAsOf: new Date().toISOString(),
+         ...(nativeSchema ? { nativeSchema } : {}),
       },
    } as never);
    const model_ = pkg.getModel("m.malloy");
@@ -112,6 +118,9 @@ async function bindWithoutNativeSchema(
       QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
    );
    return {
+      notices: (pkg.getPackageMetadata().warnings ?? []).filter(
+         (w) => w.code === "stored-native-schema-missing",
+      ),
       problems: model_?.servedCopyProblems() ?? [],
       servedBy: result.path?.servedBy,
       sql: String((result.result as unknown as { sql?: string }).sql ?? ""),
@@ -120,18 +129,25 @@ async function bindWithoutNativeSchema(
 
 describe("a colocated table bound with no captured warehouse types", () => {
    it("reads a BigQuery big-integer column through INT64, and serves", async () => {
-      const { problems, servedBy, sql } = await bindWithoutNativeSchema(
-         modelOn("bq", "SELECT k, n FROM t"),
-         new Map<string, Connection>([["bq", standInBigQuery("bq")]]),
-      );
+      const { notices, problems, servedBy, sql } =
+         await bindWithoutNativeSchema(
+            modelOn("bq", "SELECT k, n FROM t"),
+            new Map<string, Connection>([["bq", standInBigQuery("bq")]]),
+         );
       expect(problems).toEqual([]);
       expect(servedBy?.kind).toBe("materialized");
       expect(sql).toContain("by_k_table");
       expect(sql).toMatch(/AS INT64\)/);
+      expect(notices.map((w) => [w.model, w.subject, w.severity])).toEqual([
+         ["m.malloy", "by_k", "warn"],
+      ]);
+      expect(notices[0].message).toContain("`total` is read as `INT64`");
+      expect(notices[0].message).toContain("next full rebuild");
+      expect(notices[0].message).not.toMatch(/file:|\//);
    });
 
    it("still leaves the column out on another dialect", async () => {
-      const { problems, servedBy } = await bindWithoutNativeSchema(
+      const { notices, problems, servedBy } = await bindWithoutNativeSchema(
          modelOn("duckdb", "SELECT 'a' AS k, CAST(1 AS BIGINT) AS n"),
          new Map<string, Connection>(),
       );
@@ -139,5 +155,23 @@ describe("a colocated table bound with no captured warehouse types", () => {
          ["by_k", "column_types"],
       ]);
       expect(servedBy?.kind).toBe("live");
+      expect(notices.map((w) => w.subject)).toEqual(["by_k"]);
+      expect(notices[0].message).toContain(
+         "`total` cannot be read exactly without one",
+      );
+   });
+
+   it("warns of nothing for a table whose build captured the types", async () => {
+      const { notices, problems, sql } = await bindWithoutNativeSchema(
+         modelOn("bq", "SELECT k, n FROM t"),
+         new Map<string, Connection>([["bq", standInBigQuery("bq")]]),
+         [
+            { name: "k", type: "STRING" },
+            { name: "total", type: "INT64" },
+         ],
+      );
+      expect(problems).toEqual([]);
+      expect(sql).toMatch(/AS INT64\)/);
+      expect(notices).toEqual([]);
    });
 });

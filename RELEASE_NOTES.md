@@ -29,7 +29,9 @@ Three shapes of stored source had their tables built but were answered live, wit
 - **A colocated BigQuery table with no captured column types.** A colocated table whose manifest entry carries no `nativeSchema` (an entry written before the control plane recorded it) left every big-integer column out, and the source fell back to live with a `column_types` warning. On BigQuery such a column is now read through `INT64`, BigQuery's only integer type, so it is exact. On every other dialect nothing changes: without a captured type, the column is still left out.
 - **A connection's SQL curated by an `include`.** A v1 `#@ persist` source declared as `conn.sql("…") include { … } extend { … }` was silently left as written. Its re-root now keeps both blocks, as for a query-shaped source. A connection-rooted declaration the served copy still cannot re-root now carries a `served-copy-not-served` warning instead of none.
 
-No API change: no field, enum value or warning code is added.
+A colocated source bound with no recorded type for a big-integer column, on any dialect, now also gets a new package warning, `stored-native-schema-missing`, naming its big-integer columns and whether each is read as `INT64` or answered live. The next full rebuild records the types and clears it.
+
+API addition: the package warning code `stored-native-schema-missing`. No field or enum value is added.
 
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 

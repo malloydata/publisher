@@ -79,6 +79,11 @@ import {
 } from "./serve/bind";
 import { namesServedCopyAlias } from "./serve/served_copy_config";
 import {
+   NATIVE_SCHEMA_MISSING_CODE,
+   type NativeSchemaNotice,
+   nativeSchemaNotices,
+} from "./serve/native_schema_notices";
+import {
    previewNativeSchema,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
 } from "./stored_column_types";
@@ -1524,6 +1529,38 @@ export class PackageMaterialization {
    }
 
    /**
+    * Warnings for colocated tables bound with no captured warehouse type for
+    * a big-integer column, one per source: its columns read through a type
+    * the dialect fixes (BigQuery's INT64), and those left out. Keyed by the
+    * source's sourceID, so a source several models import reports once.
+    */
+   nativeSchemaWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      const seen = new Set<string>();
+      const { bindings } = this.snapshot();
+      for (const [modelPath, model] of this.owner.models()) {
+         const modelDef = model.getModelDef?.();
+         if (!modelDef) continue;
+         for (const n of nativeSchemaNotices(
+            bindings,
+            modelDef,
+            this.materializePlans,
+         )) {
+            if (seen.has(n.sourceID)) continue;
+            seen.add(n.sourceID);
+            warnings.push({
+               model: modelPath,
+               subject: n.sourceName,
+               code: NATIVE_SCHEMA_MISSING_CODE,
+               severity: "warn",
+               message: nativeSchemaMissingMessage(n),
+            });
+         }
+      }
+      return warnings;
+   }
+
+   /**
     * Each materialized source's serve verdict (materialization v2, D2;
     * ms2data/service#6277): whether queries are answered from its table, and
     * when not, why and what to change. Read from the plan and the binding as
@@ -2385,6 +2422,35 @@ function compilerReasons(detail: string | undefined): string {
       .map((m) => m[1].trim())
       .filter((reason) => !namesServedCopyAlias(reason));
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
+}
+
+/** The `stored-native-schema-missing` sentence for one source. */
+function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
+   // Names in prose, set in backticks as the other warnings set them.
+   const names = (columns: string[]) =>
+      columns.map((c) => "`" + c + "`").join(", ");
+   const parts: string[] = [];
+   const types = [...new Set(n.inferred.map((i) => i.as))];
+   if (n.inferred.length > 0) {
+      parts.push(
+         `${names(n.inferred.map((i) => i.column))} ` +
+            `${n.inferred.length === 1 ? "is" : "are"} read as ` +
+            `${names(types)}, the warehouse's only integer type, so ` +
+            `${n.inferred.length === 1 ? "it still serves" : "they still serve"} ` +
+            "from the table",
+      );
+   }
+   if (n.leftOut.length > 0) {
+      parts.push(
+         `${names(n.leftOut)} cannot be read exactly without one, so a query ` +
+            `that reads ${n.leftOut.length === 1 ? "it" : "one of them"} is answered live`,
+      );
+   }
+   return (
+      "This source's colocated table is bound with no captured warehouse " +
+      "type for its big-integer columns (its manifest entry records none): " +
+      `${parts.join("; ")}. The next full rebuild captures the types.`
+   );
 }
 
 function servedCopyProblemMessage(

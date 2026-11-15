@@ -1966,6 +1966,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          })),
          ...this.materialization.storageWarnings(),
          ...this.materialization.storedColumnTypeWarnings(),
+         ...this.materialization.nativeSchemaWarnings(),
          ...this.materialization.servedCopyWarnings(),
          ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.rollupsOverStoredBaseWarnings(),
