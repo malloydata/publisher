@@ -94,22 +94,14 @@ describe("P9: caller-dependent dimensions are left out of the build", () => {
          expect(
             p?.leftOut?.map(({ dimension, reads }) => ({ dimension, reads })),
          ).toEqual([
-            // Declared on a base whose block the served copy keeps, so it is
-            // left out too and computed at read in that block.
-            { dimension: "base_hour", reads: ["time_zone"] },
+            // `base_hour` is zone-dependent but declared on a base, whose
+            // text the served copy does not keep: it is stored as built.
             { dimension: "mine", reads: ["given"] },
             { dimension: "label", reads: ["given"] },
             { dimension: "imine", reads: ["given"] },
             { dimension: "hr", reads: ["time_zone"] },
             { dimension: "ts_month", reads: ["time_zone"] },
             { dimension: "age", reads: ["current_time"] },
-         ]);
-         // Only a base's dimension says where it is declared.
-         expect(
-            p?.leftOut?.filter((d) => d.at).map((d) => d.dimension),
-         ).toEqual(["base_hour"]);
-         expect(p?.keptBases?.map((b) => b.sourceID.split("@")[0])).toEqual([
-            "base",
          ]);
          expect(
             p?.columns.map((col) =>
@@ -122,6 +114,7 @@ describe("P9: caller-dependent dimensions are left out of the build", () => {
             "amount",
             "ts",
             "d",
+            "base_hour",
             "d_month*",
             "big*",
          ]);
@@ -143,28 +136,18 @@ describe("P9: caller-dependent dimensions are left out of the build", () => {
    );
 
    it(
-      "leaves out a given-reading dimension declared on a base, keeping that base's block",
+      "refuses a given-reading dimension declared on a base in the same file",
       async () => {
-         const { pkg, c } = await compiled(`${HEAD}
+         const { c } = await compiled(`${HEAD}
 source: base is raw extend { dimension: mine is org_id = $ORG_ID }
 source: mid is base extend { dimension: big is amount > 10 }
 #(materialize) storage="lake"
 source: orders is mid extend { measure: n is count() }
 `);
-         const p = planOf(c, "orders");
-         expect(
-            p?.leftOut?.map(({ dimension, reads }) => ({ dimension, reads })),
-         ).toEqual([{ dimension: "mine", reads: ["given"] }]);
-         expect(p?.leftOut?.[0].at?.url).toEndWith("/m.malloy");
-         // The farthest base it needs, and every one between.
-         expect(p?.keptBases?.map((b) => b.sourceID.split("@")[0])).toEqual([
-            "mid",
-            "base",
-         ]);
-         expect(p?.columns.map((col) => col.column)).not.toContain("mine");
-         const outcome = await computePackageBuildPlan(pkg);
-         expect(outcome.plan?.refusedSources?.[p!.sourceID]).toBeUndefined();
-         expect(outcome.sourceEligibility?.eligible).toContain(p!.sourceID);
+         expect(planOf(c, "orders")).toBeUndefined();
+         expect(notBuilt(c, "orders")).toContain(
+            "declare the given-reading dimension on the materialized source itself",
+         );
       },
       { timeout: 30000 },
    );
@@ -185,7 +168,7 @@ source: orders is base extend { measure: n is count() }
          const c = await compilePackageBuildPlan(pkg);
          expect(planOf(c, "orders")).toBeUndefined();
          expect(notBuilt(c, "orders")).toContain(
-            "the dimension `mine` reads a given and is declared where the served copy cannot keep its definition",
+            "the dimension `mine` reads a given and is not declared on this source",
          );
       },
       { timeout: 30000 },

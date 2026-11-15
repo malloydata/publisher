@@ -64,6 +64,7 @@ import {
    identifier,
    stringLiteral,
 } from "../../malloy_text";
+import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { extractRunViewCall, type RunViewCall } from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
@@ -78,7 +79,7 @@ import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import type { Binding, Pinned } from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
-import { fieldNotes } from "../text/field_notes";
+import { fieldNotes, noteSource } from "../text/field_notes";
 import {
    TIMEFRAMES,
    timeframeRestatements,
@@ -86,6 +87,11 @@ import {
 } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
+import {
+   bigIntegerReadOf,
+   serveTypePlan,
+   storedColumnTypeMismatches,
+} from "../stored_column_types";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -143,6 +149,8 @@ interface CompiledVariant {
    modelDef?: ModelDef;
    runtime?: GraftRuntime;
    error?: string;
+   /** Why the stored rows cannot answer the view with live's columns, by design. */
+   refusal?: string;
 }
 
 /** One model's persisted views. */
@@ -300,6 +308,12 @@ export class PersistedViewServe {
          throw new LegDecline("view_stale");
       }
       const variant = await this.compiledVariant(plan, localName, table);
+      if (variant.refusal) {
+         throw new LegDecline(
+            "view_missing_field",
+            `the stored result cannot answer \`${call.view}\` with live's columns: ${variant.refusal}`,
+         );
+      }
       if (!variant.materializer || !variant.modelDef) {
          logger.warn("A persisted-view variant did not compile", {
             modelPath: this.host.modelPath(),
@@ -476,7 +490,26 @@ export class PersistedViewServe {
                  new Set([table.binding.destinationName]),
               )
             : packageConfig;
-      const viewBody = viewDeclaration(plan.viewName, shape);
+      const view = viewDeclaration(plan.viewName, shape);
+      if ("refusal" in view) return { refusal: view.refusal };
+      // A stored column whose type or value does not serve as live's is read
+      // through the served copy's faithful cast (a date truncation a build
+      // stored as a TIMESTAMP, a big integer as HUGEINT), or refuses the
+      // variant.
+      const read = table.binding
+         ? storedColumnCasts(table.binding.schema, shape)
+         : { casts: new Map<string, ColumnCast>() };
+      if ("refusal" in read) return { refusal: read.refusal };
+      const { casts } = read;
+      // malloy-text: viewDeclaration's text, every value through identifier or noteSource
+      const viewBody = view.text;
+      // The source's own time zone, on the variant's source: a `storage=`
+      // read truncates each stored truncation again, and a later stage
+      // truncates a stored timestamp, each in the zone live computes it in,
+      // never UTC.
+      const sourceTimezone = shape.sourceTimezone
+         ? `\n  timezone: ${stringLiteral(shape.sourceTimezone)}`
+         : "";
       return compileDeclaringFileVariant({
          packagePath,
          modelPath,
@@ -503,11 +536,16 @@ export class PersistedViewServe {
                // (its field's, and the view's own on it): a `type:` field
                // keeps its annotations, so the result column reads them as
                // live's does. A timeframe column's go on its redefined field
-               // (timeframeRestatements) instead.
+               // (timeframeRestatements), and a measure's on the view's
+               // re-aggregation of it (viewDeclaration), instead.
+               // A cast column's go on its redefined field too
+               // (storedColumnCasts).
                const columnNotes = new Map(
                   shape.columns.map((c) => [
                      c.name,
-                     c.timeframe ? [] : c.notes,
+                     c.timeframe || casts.has(c.name) || c.kind === "measure"
+                        ? []
+                        : c.notes,
                   ]),
                );
                const columns = table.binding.schema.map((c) => {
@@ -518,12 +556,21 @@ export class PersistedViewServe {
                      ...(notes && notes.length > 0 ? { notes } : {}),
                   };
                });
-               // malloy-text: the served copy's timeframe emitter, the author's notes, names through identifier
-               const timeframes = timeframeRestatements(shape.columns);
+               // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
+               const timeframes = timeframeRestatements(
+                  shape.columns.map((c) => {
+                     const cast = casts.get(c.name);
+                     if (!cast) return c;
+                     // A measure's notes go on its re-aggregation.
+                     const notes = c.kind === "measure" ? [] : c.notes;
+                     return { ...c, notes, ...cast };
+                  }),
+                  table.binding.schema.map((c) => c.name),
+               );
                // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
                return `${typeDeclaration({ typeName, columns })}
 source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}
-${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${timeframes}
+${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${sourceTimezone}${timeframes}
 ${viewBody}
 }`;
             }
@@ -538,7 +585,7 @@ ${viewBody}
             addFile(new URL(companion), text);
             const built = `${plan.buildSourceName}__built`;
             return `import { ${identifier(built)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}
-${gates}source: ${identifier(source)} is ${identifier(built)} extend {
+${gates}source: ${identifier(source)} is ${identifier(built)} extend {${sourceTimezone}
 ${viewBody}
 }`;
          },
@@ -556,9 +603,118 @@ interface ViewShape {
     * Output columns, in order, with a timeframe where the field has one and
     * the annotation lines live's result column carries.
     */
-   columns: { name: string; timeframe?: string; notes: string[] }[];
+   columns: ViewColumn[];
    orderBy: { name: string; desc: boolean }[];
    notes: string[];
+   /** The last stage's kind (`reduce`, `project`, …), as compiled. */
+   stageType?: string;
+   /** The query time zone the view's rows were computed in (the source's or the view's own). */
+   queryTimezone?: string;
+   /** The source's own query time zone (`timezone:` on the source). */
+   sourceTimezone?: string;
+   /** The view's own query time zone (`timezone:` in one of its stages). */
+   viewTimezone?: string;
+   /** The source's dialect, the one live answers on (as compiled, unchecked). */
+   dialect?: unknown;
+}
+
+/** One output column of the view, as live reports it. */
+interface ViewColumn {
+   name: string;
+   /** The Malloy type of the stored value (`number`, `string`, `array`, …). */
+   type: string;
+   timeframe?: string;
+   notes: string[];
+   /**
+    * What live's result reports it as: a `measure` (its `#(malloy)` carries
+    * `calculation`), a `dimension`, or a `nest` (a nested result).
+    */
+   kind: "measure" | "dimension" | "nest";
+   /** The compiled output field, for what its type alone does not say (a `bigint` number). */
+   field: unknown;
+}
+
+/** A compiled query stage, as far as the shape reads it. */
+interface StageIR {
+   type?: unknown;
+   outputStruct?: { fields?: unknown[] };
+   orderBy?: { field?: unknown; dir?: unknown }[];
+}
+
+/** What live's result explore says of the columns: which are measures, which nest. */
+interface ResultKinds {
+   measures: Set<string>;
+   nests: Set<string>;
+}
+
+/** The kinds live's result reports, read from Malloy's public result explore. */
+function resultKinds(explore: { allFields: readonly unknown[] }): ResultKinds {
+   const out: ResultKinds = { measures: new Set(), nests: new Set() };
+   for (const raw of explore.allFields) {
+      const f = raw as {
+         name: string;
+         isAtomicField(): boolean;
+         isExploreField(): boolean;
+         sourceWasMeasure?(): boolean;
+      };
+      if (f.isAtomicField() && f.sourceWasMeasure?.()) {
+         out.measures.add(f.name);
+      } else if (f.isExploreField()) {
+         out.nests.add(f.name);
+      }
+   }
+   return out;
+}
+
+/** The last stage's output columns and ordering. */
+function stageShape(
+   stage: StageIR | undefined,
+   kinds: ResultKinds,
+): Pick<ViewShape, "columns" | "orderBy"> {
+   const columns = (stage?.outputStruct?.fields ?? []).flatMap(
+      (raw): ViewColumn[] => {
+         const f = raw as {
+            name?: unknown;
+            as?: unknown;
+            type?: unknown;
+            timeframe?: unknown;
+         };
+         const name =
+            typeof f.as === "string"
+               ? f.as
+               : typeof f.name === "string"
+                 ? f.name
+                 : undefined;
+         if (name === undefined) return [];
+         return [
+            {
+               name,
+               type: typeof f.type === "string" ? f.type : "",
+               ...(typeof f.timeframe === "string" &&
+               TIMEFRAMES.has(f.timeframe)
+                  ? { timeframe: f.timeframe }
+                  : {}),
+               notes: fieldNotes(raw),
+               kind: kinds.nests.has(name)
+                  ? "nest"
+                  : kinds.measures.has(name)
+                    ? "measure"
+                    : "dimension",
+               field: raw,
+            },
+         ];
+      },
+   );
+   const orderBy = (stage?.orderBy ?? []).flatMap((o) => {
+      const name =
+         typeof o.field === "number"
+            ? columns[o.field - 1]?.name
+            : typeof o.field === "string"
+              ? o.field
+              : undefined;
+      return name === undefined ? [] : [{ name, desc: o.dir === "desc" }];
+   });
+   return { columns, orderBy };
 }
 
 /** The view's output columns, ordering and notes, from a compile of the bare call. */
@@ -568,46 +724,20 @@ async function viewShape(
    plan: PersistedViewPlan,
    localName: string,
 ): Promise<ViewShape> {
-   const prepared = await readPreparedQuery(
-      author.loadQuery(
-         `run: ${identifier(localName)} -> ${identifier(plan.viewName)}`,
-      ),
+   const call = author.loadQuery(
+      `run: ${identifier(localName)} -> ${identifier(plan.viewName)}`,
    );
+   const prepared = await readPreparedQuery(call);
    const stages = (
       Array.isArray(prepared.pipeline) ? prepared.pipeline : []
-   ) as {
-      outputStruct?: { fields?: unknown[] };
-      orderBy?: { field?: unknown; dir?: unknown }[];
-   }[];
+   ) as StageIR[];
+   // Live's result explore says which columns are measures and which nest.
+   const result = await call.getPreparedResult();
    const last = stages[stages.length - 1];
-   const columns = (last?.outputStruct?.fields ?? []).flatMap((raw) => {
-      const f = raw as { name?: unknown; as?: unknown; timeframe?: unknown };
-      const name =
-         typeof f.as === "string"
-            ? f.as
-            : typeof f.name === "string"
-              ? f.name
-              : undefined;
-      if (name === undefined) return [];
-      return [
-         {
-            name,
-            ...(typeof f.timeframe === "string" && TIMEFRAMES.has(f.timeframe)
-               ? { timeframe: f.timeframe }
-               : {}),
-            notes: fieldNotes(raw),
-         },
-      ];
-   });
-   const orderBy = (last?.orderBy ?? []).flatMap((o) => {
-      const name =
-         typeof o.field === "number"
-            ? columns[o.field - 1]?.name
-            : typeof o.field === "string"
-              ? o.field
-              : undefined;
-      return name === undefined ? [] : [{ name, desc: o.dir === "desc" }];
-   });
+   const { columns, orderBy } = stageShape(
+      last,
+      resultKinds(result.resultExplore),
+   );
    const def = SourceMap.of(modelDef).node(plan.sourceID)?.def as
       | {
            fields?: {
@@ -621,21 +751,219 @@ async function viewShape(
    const view = def?.fields?.find(
       (f) => f.type === "turtle" && (f.as ?? f.name) === plan.viewName,
    );
-   return { columns, orderBy, notes: viewNoteTexts(view?.annotations) };
+   const { queryTimezone: ownZone, dialect } = (def ?? {}) as {
+      queryTimezone?: unknown;
+      dialect?: unknown;
+   };
+   const sourceTimezone = queryTimezoneOf({ queryTimezone: ownZone });
+   const viewTimezone = queryTimezoneOf({ query: { pipeline: stages } });
+   const queryTimezone = viewTimezone ?? sourceTimezone;
+   return {
+      columns,
+      orderBy,
+      notes: viewNoteTexts(view?.annotations),
+      ...(typeof last?.type === "string" ? { stageType: last.type } : {}),
+      ...(queryTimezone ? { queryTimezone } : {}),
+      ...(sourceTimezone ? { sourceTimezone } : {}),
+      ...(viewTimezone ? { viewTimezone } : {}),
+      ...(dialect !== undefined ? { dialect } : {}),
+   };
 }
 
-/** The view, redeclared over the stored result: its notes, columns and ordering. */
-function viewDeclaration(viewName: string, shape: ViewShape): string {
+/** How a stored column is read: through a faithful cast, or a big integer's native type. */
+type ColumnCast = { castTo: "DATE" | "BOOLEAN" } | { nativeCast: string };
+
+/**
+ * The stored columns of a `storage=` view's table read through a cast, by
+ * name, or why the stored table cannot give live's values:
+ *
+ * - `DATE` or `BOOLEAN`, the served copy's faithful casts
+ *   ({@link serveTypePlan}). A build stores each column as its declared type
+ *   where it can, but one whose cast it declined (a view or source with a
+ *   query time zone) or a build whose casts failed and stored what the
+ *   warehouse returned holds a date truncation as a TIMESTAMP, which the
+ *   `type:` would declare a timestamp where live types it a date.
+ * - `HUGEINT` for a column live types as a `bigint` number (a BIGINT, a max
+ *   over one), the served copy's big-integer read ({@link bigIntegerReadOf}):
+ *   a `type:` declares it only as a `number`, which Malloy reads through a
+ *   JavaScript number and rounds above 2^53.
+ *
+ * The refusal, so the query answers live, for a column no faithful cast reads
+ * as live's type, a big integer stored as a float (its digits already lost),
+ * and a column live answers as a warehouse-native value (`sql native`: a
+ * TIMESTAMP_NS, whose digits past the millisecond a `timestamp` drops) or
+ * JSON, which no `type:` reads back as live does.
+ */
+function storedColumnCasts(
+   schema: readonly { name: string; type: string }[],
+   shape: Pick<ViewShape, "columns" | "queryTimezone" | "dialect">,
+): { casts: Map<string, ColumnCast> } | { refusal: string } {
+   const native = shape.columns.find(
+      (c) => c.type === "sql native" || c.type === "json",
+   );
+   if (native) {
+      return {
+         refusal: `live answers \`${native.name}\` as a ${native.type === "json" ? "JSON" : "warehouse-native"} value, which no stored read gives exactly`,
+      };
+   }
+   const declared = shape.columns
+      .filter((c) => c.kind !== "nest" && c.type !== "")
+      .map((c) => ({ name: c.name, type: c.type }));
+   const mismatches = storedColumnTypeMismatches(schema, declared);
+   const plan = serveTypePlan(mismatches, {
+      queryTimezone: shape.queryTimezone,
+   });
+   const [unservable] = plan.unservable;
+   if (unservable) {
+      return {
+         refusal: `the stored \`${unservable.column}\` (${unservable.storedType}) cannot be read as live's ${unservable.declaredType}`,
+      };
+   }
+   const casts = new Map<string, ColumnCast>(
+      plan.casts.map((c) => [
+         c.column,
+         { castTo: c.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
+      ]),
+   );
+   for (const c of shape.columns) {
+      const stored = schema.find((s) => s.name === c.name);
+      if (!stored || casts.has(c.name)) continue;
+      const big = bigIntegerReadOf(c.field, stored, { dialect: shape.dialect });
+      if (!big) continue;
+      if (!big.castTo) {
+         return {
+            refusal: `the stored \`${c.name}\` (${stored.type}) cannot hold live's integer exactly`,
+         };
+      }
+      casts.set(c.name, { nativeCast: big.castTo });
+   }
+   return { casts };
+}
+
+/**
+ * Whether the stored result must be grouped again for its columns to keep
+ * live's kinds: a measure or a nest is a column a `select:` would read as a
+ * dimension.
+ */
+function regroups(columns: readonly ViewColumn[]): boolean {
+   return columns.some((c) => c.kind !== "dimension");
+}
+
+/** The types `max()` takes, which re-aggregates a measure's one stored value. */
+const MAX_TYPES = new Set([
+   "number",
+   "string",
+   "date",
+   "timestamp",
+   "timestamptz",
+]);
+
+/**
+ * Why the stored rows cannot be grouped again into exactly themselves, or
+ * undefined when they can. Regrouping is exact only when the view's last
+ * stage groups by at least one dimension: its stored rows are then keyed by
+ * those dimensions, one row per group.
+ *
+ * - A stage that is not a grouping (`select:`) has no key; grouping by its
+ *   columns would merge duplicate rows.
+ * - A stage with no dimension groups everything into one row, which a
+ *   `having:` may have filtered away; grouping an empty table again still
+ *   answers one row.
+ * - A nest's rows are an array per stored row; rebuilding it would merge a
+ *   `select:` nest's duplicates and turn an empty nest into one NULL row.
+ */
+function regroupRefusal(shape: ViewShape): string | undefined {
+   if (shape.stageType !== "reduce") {
+      return `its last stage is a ${shape.stageType ?? "stage"} that does not group, so its rows have no key`;
+   }
+   const nest = shape.columns.find((c) => c.kind === "nest");
+   if (nest) {
+      return `it nests \`${nest.name}\`, whose stored rows cannot be rebuilt exactly`;
+   }
+   if (!shape.columns.some((c) => c.kind === "dimension")) {
+      return "it groups by no dimension, so an empty result would come back as one row";
+   }
+   return undefined;
+}
+
+/**
+ * The view, redeclared over the stored result: its notes, columns and
+ * ordering.
+ *
+ * A view whose result holds only dimensions selects its stored columns. One
+ * with a measure groups its stored rows again, by its dimensions, which the
+ * stored result holds once per row, so each group is one stored row and each
+ * measure re-aggregates one value (`total is total.max()`): the rows are the
+ * stored rows, and each measure is a measure again, its `#(malloy)`
+ * annotation carrying `calculation` as live's does. A boolean measure
+ * re-aggregates through the number it picks, NULL kept NULL. Where that
+ * regrouping is not provably exact ({@link regroupRefusal}), or a measure's
+ * type is one `max()` does not take (a JSON value, an array), it returns the
+ * refusal instead, and the query answers live.
+ */
+function viewDeclaration(
+   viewName: string,
+   shape: ViewShape,
+): { text: string } | { refusal: string } {
+   // An index's result is not the view's rows as a query writes them: live
+   // annotates none of its columns, and a stored read annotates every one.
+   if (shape.stageType === "index") {
+      return {
+         refusal:
+            "it is an `index:`, whose columns live writes without the annotations a stored read gives them",
+      };
+   }
+   // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
+   const notes = shape.notes.map((n) => `  ${n}\n`).join("");
+   // The view's own time zone, so a timeframe a `storage=` read truncates
+   // again, and a later stage, compute in the zone live does.
+   const zone = shape.viewTimezone
+      ? `timezone: ${stringLiteral(shape.viewTimezone)}`
+      : "";
    const select = shape.columns.map((c) => identifier(c.name)).join(", ");
    const order =
       shape.orderBy.length > 0
-         ? `; order_by: ${shape.orderBy
+         ? `order_by: ${shape.orderBy
               .map((o) => `${identifier(o.name)} ${o.desc ? "desc" : "asc"}`)
               .join(", ")}`
          : "";
-   // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
-   const notes = shape.notes.map((n) => `  ${n}\n`).join("");
-   return `${notes}  view: ${identifier(viewName)} is { select: ${select}${order} }`;
+   if (!regroups(shape.columns)) {
+      return {
+         text: `${notes}  view: ${identifier(viewName)} is { ${zone ? `${zone}; ` : ""}select: ${select}${order ? `; ${order}` : ""} }`,
+      };
+   }
+   const refusal =
+      regroupRefusal(shape) ??
+      shape.columns
+         .filter(
+            (c) =>
+               c.kind === "measure" &&
+               c.type !== "boolean" &&
+               !MAX_TYPES.has(c.type),
+         )
+         .map(
+            (c) =>
+               `the measure \`${c.name}\` is a ${c.type || "value"} that max() cannot re-aggregate`,
+         )[0];
+   if (refusal) return { refusal };
+   const lines = shape.columns.map(groupedColumn).join("");
+   return {
+      text: `${notes}  view: ${identifier(viewName)} is {\n${zone ? `    ${zone}\n` : ""}${lines}${order ? `    ${order}\n` : ""}  }`,
+   };
+}
+
+/** One column of the regrouped view, as its statement. */
+function groupedColumn(c: ViewColumn): string {
+   const name = identifier(c.name);
+   if (c.kind === "dimension") return `    group_by: ${name}\n`;
+   // malloy-text: the author's own notes through noteSource
+   const notes = c.notes.map((n) => noteSource(n, "      ")).join("");
+   // A boolean through the number it picks; `not b` holds for a NULL `b`, so
+   // a NULL is picked as NULL first.
+   if (c.type === "boolean") {
+      return `    aggregate:\n${notes}      ${name} is max(pick null when ${name} is null pick 1 when ${name} else 0) = 1\n`;
+   }
+   return `    aggregate:\n${notes}      ${name} is ${name}.max()\n`;
 }
 
 /**

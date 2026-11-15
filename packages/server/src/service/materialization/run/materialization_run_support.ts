@@ -36,13 +36,10 @@ import { declaredStorage } from "../plan/persist_source_fields";
 import { type QueryContext, type QueryMetadata } from "../../query_metadata";
 import type { components } from "../../../api";
 import { getPersistStorageMode } from "../../../config";
-import { resolvePartitionColumns } from "../plan/persist_partition";
 import { escapeSQL } from "../../connection";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 
 import type { ApiConnection } from "../../model";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
 import { redactPgSecrets } from "../../../pg_helpers";
 import { packageRelativeText } from "../../../package_relative_text";
 
@@ -69,8 +66,9 @@ export interface ChainedPlanFacts {
    addressBySourceId: Record<string, string | undefined>;
    /**
     * Each source's key as the compiler computes it (`compilerBuildId`): the
-    * address without the publisher's `partition=` layout, so it differs only
-    * for a partitioned source, whose entry the compiler finds only under it.
+    * address without the publisher's folded `storage=` destination, so it
+    * differs only for a source that has one, whose entry the compiler finds
+    * only under it.
     */
    compilerKeyBySourceId: Record<string, string | undefined>;
    /**
@@ -134,8 +132,8 @@ export const NO_PLAN_FACTS: ChainedPlanFacts = {
 };
 
 /**
- * The run's manifest as the compiler must see it: a partitioned source's entry
- * also under the compiler's own key, since `persistedTableFor` looks it up by
+ * The run's manifest as the compiler must see it: the entry of a source whose
+ * address folds in its destination also under the compiler's own key, since `persistedTableFor` looks it up by
  * that key and would otherwise inline (or strictly miss) the upstream. Only for
  * the compare and strict renders; the ledger stays keyed by address.
  */
@@ -358,9 +356,10 @@ export function compilerMissingUpstream(
  *
  * Each source is addressed by `computeSourceEntityId`, which
  * `build_targets_address_equality.spec.ts` pins equal to `target.buildId` for
- * an unpartitioned source. A `partition=` layout moves the address but not the
- * key the compiler files the table under, so the compiler's key is kept beside
- * it (`compilerKeyBySourceId`, read by `manifestForCompiler`).
+ * a source whose address folds in no destination. A folded `storage=`
+ * destination moves the address but not the key the compiler files the table
+ * under, so the compiler's key is kept beside it (`compilerKeyBySourceId`, read
+ * by `manifestForCompiler`).
  */
 export function chainedPlanFacts(
    sources: Record<string, PersistSource>,
@@ -601,15 +600,6 @@ export function noteWrongTierRecompute(params: {
    );
 }
 
-/** An author model file's text by `file:` URL, or undefined when unreadable. */
-export function readAuthorFile(url: string): string | undefined {
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
-}
-
 /**
  * The narrow environment surface the build path needs, plus the environment
  * root (for a plain-DuckDB destination's file path).
@@ -631,6 +621,12 @@ export interface BuildEnvironment {
     * and recomputes, or under strict upstreams refuses.
     */
    chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The root of the package being built, which the build's reads of author
+    * files stay inside. Absent in test doubles: those reads are then confined
+    * to the files the model compiled from alone.
+    */
+   getPackagePath?(): string;
 }
 
 /**
@@ -639,7 +635,10 @@ export interface BuildEnvironment {
  */
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
-   pkg: { chainBuildText?(request: ChainBuildRequest): ChainBuildText },
+   pkg: {
+      chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+      getPackagePath?(): string;
+   },
    /**
     * Whether the package serves a model older than its files (a reload that
     * did not compile), asked at each build: its files are not what the plan's
@@ -647,8 +646,13 @@ export function withChainBuildText<E extends BuildEnvironment>(
     */
    isStale: () => boolean = () => false,
 ): E {
-   if (!pkg.chainBuildText) return environment;
+   if (!pkg.chainBuildText && !pkg.getPackagePath) return environment;
    const scoped = Object.create(environment) as E;
+   if (pkg.getPackagePath) {
+      const packagePath = pkg.getPackagePath();
+      scoped.getPackagePath = () => packagePath;
+   }
+   if (!pkg.chainBuildText) return scoped;
    scoped.chainBuildText = (request) =>
       isStale()
          ? {
@@ -783,32 +787,6 @@ export function manifestExcludingStorage(
  * tier is off.
  */
 export { declaredStorage };
-
-/**
- * The columns this source's table is laid out by, for a build about to run.
- * Re-resolved (pure over the source and its annotation) rather than threaded
- * from the eligibility gate, so the two agree by contract. A refusal here
- * THROWS: the gate should already have refused it, and building unpartitioned
- * would silently diverge from what the author declared.
- */
-export function partitionColumnsForBuild(
-   persistSource: PersistSource,
-): string[] {
-   const resolved = resolvePartitionColumns(
-      persistSource,
-      deriveAnnotationFields(persistSource),
-   );
-   if (!resolved.ok) {
-      throw new MaterializationEligibilityError({
-         reason: resolved.reason,
-         message:
-            `Source '${persistSource.name}' reached a build with an ` +
-            `unusable 'partition=': ${resolved.detail}. The eligibility gate ` +
-            `should have refused this before any warehouse work ran.`,
-      });
-   }
-   return resolved.columns;
-}
 
 /**
  * The EFFECTIVE `storage=` destination name for a build, or undefined for the

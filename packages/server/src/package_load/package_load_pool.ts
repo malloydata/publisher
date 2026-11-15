@@ -38,6 +38,7 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { logger } from "../logger";
+import { ImportOutsidePackageError } from "../utils";
 import { Settings, settings } from "../settings";
 import type {
    PackageMaterializationConfig,
@@ -964,13 +965,13 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
 export { deserializeError, serializeError } from "./error_wire";
 import { deserializeError, serializeError } from "./error_wire";
 
+// The worker reads `file:` URLs itself, confined to the package, and asks
+// here only for any other scheme. A package's model reads nothing but its own
+// files, so every such read is refused (reading the URL as a path would
+// resolve it against the server's working directory).
 const defaultUrlReader = {
-   readURL: async (url: URL): Promise<string> => {
-      const { promises: fs } = await import("fs");
-      const { fileURLToPath } = await import("url");
-      const filePath =
-         url.protocol === "file:" ? fileURLToPath(url) : url.toString();
-      return fs.readFile(filePath, "utf8");
+   readURL: async (_url: URL): Promise<string> => {
+      throw new ImportOutsidePackageError();
    },
 };
 

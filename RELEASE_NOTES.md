@@ -39,6 +39,26 @@ Step 2 of the configuration design. Every setting now has one name of each kind,
 - **A boolean flag takes no value.** `--allow-proxy-connections false` turns proxy connections on, as it did before; startup now warns that the `false` is ignored and names `--no-allow-proxy-connections`.
 - A secret has no flag, and is never logged or echoed in an error. `packageVersioning`, `packageInlineFields` and `modelPage` have no flag either: the design gives the two transition settings and the model page none.
 
+## [Unreleased] — error messages no longer include the server's filesystem paths
+
+A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.
+
+## [Unreleased] — BREAKING: a materialized source serves from its table only its own given-reading `where:`
+
+**BREAKING (speed, not correctness).** A source scoped by a caller's given (`where: org_id = $ORG_ID`) is still built with that term left out and served from its table with the term applied for each caller, but only when the term is written on the materialized source itself. A given-reading `where:` the source inherits from a base is now refused at plan: the source is not built and is answered live, under the term, exactly as it answers without materialization. Nothing answers differently; some queries that read a table now run live.
+
+- **`#(materialize)`** (materialization v2): a source that inherits its term from a base in the same file (one or several `extend` or rename hops up) used to be built and served by keeping that base's text in the served copy (#1688). It now gets a `materialize-not-built` warning that says to move the given-reading `where:` onto the materialized source itself. An extension that declares its own `#(materialize)` over a parent that writes such a term is refused the same way; the parent is still built, and the extension's queries are answered from the parent's table. A dimension declared on a base that reads a given or the current time now refuses the source too (a current-time one used to be built into a table no query read), and a time-zone-dependent one declared on a base is stored as built, so a query over that table that sets a time zone is answered live. That includes a query on a source that declares its own `timezone:` (or inherits one up its chain), which used to be answered from such a table in the build's zone, a wrong answer the older case of a zone-dependent dimension on a base in another file shared and which is fixed here too.
+- **v1 `#@ persist`**, on both tiers: a source whose given-reading `where:` is inherited from a base was built but always answered live. It is now refused at plan and no longer built, so its verdict reads live, with the new reason `inherited_where_with_given`.
+- **API addition:** `RefusedSource.reason` gains `inherited_where_with_given`, and the `publisher_materialization_eligibility_refused_total` metric can carry it as its `reason` label.
+
+To keep a shape on a table, write the term on the source you materialize (`#(materialize)` on `tenant_orders is orders extend { where: org_id = $ORG_ID }`). Extensions of it that declare no `#(materialize)` read its table.
+
+## [Unreleased] — a persisted view's answer reports its measures as measures
+
+A query answered from a persisted view's table (`#@ persist` on a `view:`) returned the view's rows exactly, but every column as a dimension: a measure's `#(malloy)` result annotation lost `calculation` (and gained a drill `code`), so a renderer or chart reading the result saw dimensions where live returns measures. The view is now redeclared over its stored rows by grouping them again by its dimensions, each group one stored row, with each measure re-aggregated from its one stored value (a boolean measure keeps a NULL as NULL). The rows are unchanged, and each column now carries live's kind and annotations; only a stored column's `drill_expression` still names the stored column, as before.
+
+That regrouping is exact only when the stored rows are keyed by the view's dimensions, so a persisted view that holds a measure or a nest is now answered from its table only when its last stage groups by at least one dimension and it has no nest. Any other such view is answered live, with the same rows and metadata as live: one with a measure and no dimension (`{ aggregate: … }`), one whose `select:` carries a `calculate:`, one with a `nest:` (with or without a measure beside it), and one with a measure of a type `max()` does not take (a JSON value, an array). These were served from the table before, with dimensions in place of measures. A view of dimensions alone, with no nest, is served as before. Its table is still built; to have it serve, give the view a dimension, or move the nest into a view of its own. No API change.
+
 ## [Unreleased] — (BREAKING) the `name=` view is removed; `name=` on `#(materialize)` still names and places the table
 
 Materialization v2 (`PUBLISHER_MATERIALIZE`, now on by default) no longer makes a view at a `#(materialize)` source's `name=`. That view gave a table named by its generation (a `scope: "version"` run's, or a host-orchestrated run's) a stable alias for readers outside Malloy; it is gone, and generation-named tables get no alias view. This removal is the breaking part. `name=` itself stays: on `#(materialize)` it names the table and places it in a schema or dataset, as on v1 `#@ persist`, which is unchanged.
@@ -52,6 +72,18 @@ Materialization v2 (`PUBLISHER_MATERIALIZE`, now on by default) no longer makes 
 
 No API change: no field or enum value is added or removed.
 
+## [Unreleased] — a package's Malloy imports stay inside the package
+
+A package's models can no longer read files outside the package. Every file the compiler reads for a model (an `import`, a `.malloynb`, a data-styles file) must resolve, through `realpath`, to the package root or inside it; for a versioned package that root is the version's own directory. Before, `import "../other/x.malloy"` read a sibling package's model (with versioning off) or a file beside the version directory (with versioning on), and `import "/etc/..."` told the author whether an arbitrary path existed. Both are now refused with one fixed message, `imports must stay inside the package`, which names no path and reads the same whether or not the target exists. The rule holds on every compile: the load and its worker, a reload, `/compile` and MCP `compile_model` at each scope, the build plan, and the generated build and served-copy models.
+
+A model or notebook file that is itself a symlink out of the package is refused with the same message, as a compile error (424), whether or not its target exists; before, a notebook link out was read and its text served, and a dangling link failed the load with a 500. The text Publisher reads back from a compiled model (served copy, chained `storage=` build, entity code) is read only from the files that model compiled from.
+
+A package's `publisher.json` is read only as a file inside the package, and never written through a link: a manifest that links out of the package (to anything or to nothing), a directory or an unreadable file answers that the manifest does not exist, and an invalid manifest's error no longer quotes its content. A PATCH of a package whose `publisher.json` leads outside the package answers 400; one that links inside the package is replaced by the file itself. A report write onto a planted link is refused the same way whatever it leads to.
+
+Copying a package (an install from a local location, an environment's packages at boot) now keeps symlinks as written, so a relative link inside the package keeps working in the copy. Before, the copy rewrote it to an absolute path into the source directory. A local install that relied on a relative link pointing *out* of the package (which the copy used to turn into an absolute path into the source tree) now gets a link that dangles in the copy, and the file it named is not served: copy that file into the package instead.
+
+What keeps working: imports between a package's own directories, `../` included (`import "../orders.malloy"` from a subfolder); a symlink inside the package that points inside it; a package mounted as a symlink under `--watch-env`; and virtual files such as a request's overlay and the generated companions. A model that imported a file from outside its package now fails to load with that message: copy the file into the package. SQL a model runs through DuckDB (`read_csv`, `read_parquet`, `read_text`) is not covered by this rule ([security-posture.md](docs/security-posture.md#known-gaps), gap 6).
+
 ## [Unreleased] — routing and bind metrics: one route counter, one bind counter
 
 The serving metrics are renamed and folded so each counts one thing, in the vocabulary the path report already uses. Every label is a closed set, and none names a package, source, table or connection. What changes for a dashboard or alert:
@@ -59,7 +91,7 @@ The serving metrics are renamed and folded so each counts one thing, in the voca
 - **`publisher_query_variant_routing_total{variant, outcome, reason}` is now `publisher_query_route_total{leg, outcome, reason}`.** `leg` is `view`, `rollup`, `served` or `live`. `outcome` is `used`, `skipped`, or `fallback`: a leg that answered and whose stored run then failed, so live answered (was `skipped` with `run_failed`). `reason` is `NONE` when used, `RUN_FAILED` with `fallback`, and otherwise the public `SkipReason` the query's path report gives: `row_level_gate` is now `CONTRACT`, and `does_not_answer` is the decline's own reason (`MISSING_FIELD` when it gives none). A leg that does not apply to the query (`not_applicable`) is no longer counted. `live` is counted `used` when it answered a query the router counted a leg for.
 - **`publisher_storage_serve_routing_total` is removed.** Its outcomes are on the route counter: `storage` is `leg="served", outcome="used"`; `runtime_live_fallback` is `outcome="fallback"`; `blocked_by_row_level_gate` is `outcome="skipped", reason="CONTRACT"`, now counted per leg rather than once per query; its `live_fallback` has no counterpart (the leg's skip says why). Its `origin` label has none either, since `leg` separates a rollup from a stored source.
 - **`publisher_storage_bindings_withheld_total` is removed,** into the route counter's `reason="STALE"`. A table past its freshness window is left out of the query's pin and the query is read live; the leg that would have read it (the served copy, a rollup or a persisted view) is counted `skipped` with `STALE`, which is what the path report says. It counts queries, where the old counter counted tables.
-- **`publisher_materialization_manifest_bind_total{outcome}` and `publisher_materialization_colocated_bind_dropped_total{reason}` are now `publisher_served_copy_bind_total{scope, outcome, reason}`.** A manifest bind is `scope="manifest"` with the same `success`, `failure` and `timeout` outcomes and `reason="none"`. Each source entry a bind decides is `scope="source"`, `bound` or `declined`; a decline's `reason` keeps `build_plan_unavailable` and `refused`, adds `missing_table` (the table bound under the source's name was built from another definition), and adds the served copy's reasons, which until now only its `served-copy-not-served` package warning reported (`compile_failed`, `column_types`, `fields_not_carried`, `read_terms_not_kept`, `classification_not_kept` and the rest). A bind's counts are per stored table per bind; the served copy's per model per snapshot it compiles, so a source two models read counts twice. Its `inline_join_kept` and `cross_connection_join` leave the source served with one join answered live, and count as `declined`. `reason="build_plan_unavailable"` is still the one to alert on.
+- **`publisher_materialization_manifest_bind_total{outcome}` and `publisher_materialization_colocated_bind_dropped_total{reason}` are now `publisher_served_copy_bind_total{scope, outcome, reason}`.** A manifest bind is `scope="manifest"` with the same `success`, `failure` and `timeout` outcomes and `reason="none"`. Each source entry a bind decides is `scope="source"`: `bound`, `partial` (it serves, with a join read as written or left out) or `declined`; a decline's `reason` keeps `build_plan_unavailable` and `refused`, adds `missing_table` (the table bound under the source's name was built from another definition), and adds the served copy's reasons, which until now only its `served-copy-not-served` package warning reported (`compile_failed`, `column_types`, `fields_not_carried`, `read_terms_not_kept`, `classification_not_kept` and the rest). The units differ by who counts: a bind counts once per stored table per bind, and the served copy once per source per model per snapshot it compiles, `declined` beating `partial` (a source two models read counts twice, so the outcomes are not a count of sources). The served copy's `inline_join_kept` (the join is kept as written and read through the join) and `cross_connection_join` (the join is left out, and a query that reads it is answered live) count as `partial` while the source is still served. An extension table that falls back to its own blocks (`compile_failed`, `reroot_not_compiled`) may still serve, and is counted `declined`. `reason="build_plan_unavailable"` is still the one to alert on.
 
 No API change: `servedFrom` keeps its values, and its description now names the route counter's `fallback` as the same event as its `live_fallback`.
 
@@ -75,11 +107,68 @@ What an operator sees on a server that did not set the switch before:
   - **Refused at load.** An invalid incremental refresh policy on a `#(materialize)` source or a persisted view, such as `refresh="incremental"` with no `watermark=`, or on a dialect incremental refresh does not support. This is the rule a v1 `#@ persist` source has always been held to, and as for one, the package fails to load: a package already published, or loaded from a control plane's storage, stops loading until it is fixed.
 
   Before upgrading, load each package that carries a v2 annotation or a persisted view on a server with `PUBLISHER_MATERIALIZE=true` and fix what it reports, or set `PUBLISHER_MATERIALIZE=false` (below) until you have. Packages with only v1 annotations on sources and measures are not refused by this change. The release policy counts a refused package as breaking; whether this ships in a minor or a patch release is the release cutter's call.
-- **Answers.** A query no table can answer is answered live, as before; the path report says which table a query read, and a `served-copy-not-served` warning says why a built source is not read. One known difference: an answer from a persisted view's table has live's rows, but Malloy's result metadata marks each measure column as a dimension (its `#(malloy)` annotation has no `calculation`), so a renderer treats those columns as dimensions.
+- **Answers.** A query no table can answer is answered live, as before; the path report says which table a query read, and a `served-copy-not-served` warning says why a built source is not read. A persisted view's answer carries live's measure kinds, or is answered live (see "a persisted view's answer reports its measures as measures" above).
 
 To opt out, set `PUBLISHER_MATERIALIZE=false`: `#(materialize)` and `#(preaggregate)` are ignored again and the build plan is what it was before. Set it the same on every worker, and treat it as one-way in an environment: once on, leave it on rather than switching it off and back on.
 
 The setting is removed one release after this one, together with its off position; from then on materialization v2 is always on. See docs/materialization.md and docs/materialization-migration.md.
+
+## [Unreleased] — a persisted view's date truncation reads back as a date
+
+A query answered from a `storage=` persisted view's table (`#@ persist storage=…` on a `view:`, with `PUBLISHER_MATERIALIZE` on) declared each column as the type the table stored. A build stores each column as its declared type where it can, but one that declines that cast (a view or source with a query time zone) or retries without casts after one fails stores a date truncation such as `order_date.month` as a TIMESTAMP, and the answer then typed it `timestamp` where live types it `date`. The view leg now reads such a column through the served copy's faithful cast (`::"DATE"`, truncated again to its timeframe; an integer flag as `boolean`), so the column's type matches live; a column no faithful cast reads as live's type answers live. No table is rebuilt or re-addressed, and no API change.
+
+## [Unreleased] — a stored table's zoned truncations and big integers read back with live's values
+
+Several answers read from a stored table returned values near live's rather than live's own. Each now returns live's value, or is answered live:
+
+- **A timestamp truncation under a time zone (persisted view).** A `storage=` persisted view whose view or source sets `timezone:` stored each truncation as the zone's midnight, as live computes it, but the read truncated the stored value again in UTC, so `created_at.day` under `timezone: 'America/New_York'` came back at 00:00Z where live answers 04:00Z. A later stage over such a view truncated in UTC on a colocated table too. The view leg now writes the view's and the source's zones where live has them, so the read truncates in the same zone the build did.
+- **A timestamp truncation through the served copy.** A `#@ persist` or `#(materialize)` table re-read each timestamp truncation by truncating its stored value again in the query's zone. That matches live only when the zone is the one the build used. It is now decided column by column, with the decline reason `TIME_ZONE` ("a timestamp truncation stored in another zone"):
+  - **A source that sets a zone, in its query or on itself.** A zoned daily rollup such as `orders -> { timezone: 'America/New_York'; group_by: created_at.day }` now answers live for any query that reads the truncated column. It stays served for one that does not, such as a total.
+  - **A table with no zone.** A query that reads a truncation in another zone answers live. That zone is either one its own `timezone:` sets, or one the source it runs on sets or inherits (`ny is daily extend { timezone: … }`, which was served wrong before). A query in another zone that reads no truncation stays served, and an explicit `timezone: 'UTC'` counts as the default it is. The same rule now decides a stored computed dimension and a rolling window's cut-off. There, a query's own `timezone:` declines only when it differs from the zone the table was built in, so an explicit `'UTC'` over a default-zone table, or a source's own zone over a table built in that zone, stays served.
+- **A BIGINT above 2^53 (persisted view).** A `storage=` persisted view declared a 64-bit integer column, dimension or measure, as a plain `number`, so 9007199254740993 came back as 9007199254740992. It is now read as `HUGEINT`, as the served copy reads one, and keeps every digit. A column stored as a float, which has lost digits already, is answered live.
+- **A TIMESTAMP_NS, or another value live answers as warehouse-native or JSON (persisted view).** A `storage=` read declared it a `timestamp` and dropped its digits past the millisecond. Such a view is now answered live.
+- **An `index:` view (persisted view).** Its stored read gave every column a `#(malloy)` annotation live does not write. It is now answered live, from either tier.
+
+The stored contents were already right in every case, so no table is rebuilt or re-addressed. No API change.
+
+## [Unreleased] — (BREAKING) `partition=` is no longer supported, and a publish that carries it is refused
+
+`partition=` laid a `storage=` table out as one directory per value of the named columns. It is
+removed from both `#@ persist` and `#(materialize)`, and a package that declares it is now
+**refused at publish**: a package with `partition=` that published yesterday does not publish today.
+
+**What to do:** remove `partition=` from the annotation and publish again. The table is then written
+unpartitioned. `partition=` was a layout and never isolation, since every term that scopes a caller is
+re-applied at read either way, so the only cost is scan cost: a read filtered to one value of the
+column reads the whole table. No answer changes.
+
+- **The refusal.** On `#@ persist` (written `partition="…"`, as a list, or inside the key as
+  `#@ persist { partition="…" }`) the package warning is `persist-retired-key`, severity `error`, and
+  the publish is refused with "`partition=` is no longer read …; remove it: partition= is not
+  supported". On `#(materialize)` it is the new code `materialize-retired-key` (severity `error`), the
+  source is not built and answers live, and the publish is refused. Either way it is refused at
+  publish only: a package that is already loaded (at startup or on reload) keeps loading with the
+  warning, keeps its schedule, and accepts a metadata PATCH.
+- **What a loaded package's next build does.** A `storage=` `#@ persist` source that declared
+  `partition=` has a new address, since the layout was part of it: its next build writes a new,
+  unpartitioned table, and the old one is reclaimed as any superseded generation is. A colocated
+  `#@ persist` source that declared `partition=` was refused (`partition_without_storage`) and never
+  built; it now builds, into its own warehouse. A `#@ persist` on a view that declares `partition=`
+  stays unbuilt (`persist-view-not-built`), now with a message that says to remove it.
+- **Control-plane operators: reseed partitioned incremental sources.** An incremental
+  `storage=` source that declared `partition=` is measured under its old address, so its first
+  instructed run after the upgrade fails with "measured under a different definition … set reseed".
+  Run it once with `reseed` (`--reseed`) to rebuild it in full under the new address.
+- **API.** `BuildPlan.sources[].partition` is deprecated and always absent. The three refusal
+  reasons `partition_without_storage`, `partition_column_unknown` and
+  `partition_column_not_public` stay in the `RefusedSource.reason` enum, so generated clients keep
+  compiling, and are no longer produced.
+- **Configuration.** `duckdb.partitionedWriteFlushThreshold`
+  (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`) is removed. A config file that still sets it
+  loads with the usual unknown-key warning; the variable is ignored.
+- **Unchanged.** The admin API's table copy still keeps a copied table's partition spec and writes
+  it in partition order, so a table an earlier `partition=` build laid out copies as before. No other
+  source's address, build SQL or stored table changes.
 
 ## [Unreleased] — (BREAKING) a model that joins sources across origin connections fails to load, as Malloy says
 

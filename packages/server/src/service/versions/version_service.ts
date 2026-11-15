@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { Mutex } from "async-mutex";
-import * as fs from "fs";
 import * as path from "path";
 import type { VersionPromotionMode } from "../../config";
 import {
@@ -21,6 +20,8 @@ import {
 import { compareSemver, isSemver, versionSpellingKey } from "./semver";
 import { VersionCache, VersionEvictedDuringLoadError } from "./version_cache";
 import { StagedVersion, VersionStore } from "./version_store";
+import { pathToFileURL } from "url";
+import { readPackageURL } from "../../utils";
 
 /** The registry calls the version rules use. */
 export type VersionRegistry = Pick<
@@ -897,15 +898,13 @@ export class VersionService<P = unknown> {
       version: Pick<Version, "packageName" | "dirName">,
    ): Promise<Record<string, unknown> | null> {
       try {
-         const text = await fs.promises.readFile(
-            path.join(
-               this.requireStore().versionPath(
-                  version.packageName,
-                  version.dirName,
-               ),
-               "publisher.json",
-            ),
-            "utf8",
+         const versionRoot = this.requireStore().versionPath(
+            version.packageName,
+            version.dirName,
+         );
+         const text = await readPackageURL(
+            versionRoot,
+            pathToFileURL(path.join(versionRoot, "publisher.json")),
          );
          const parsed: unknown = JSON.parse(text);
          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {

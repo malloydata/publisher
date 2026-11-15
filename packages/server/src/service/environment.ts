@@ -40,7 +40,10 @@ import {
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
-import { packageRelativeText } from "../package_relative_text";
+import {
+   withoutAbsolutePaths,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -57,7 +60,14 @@ import {
    FreshnessManifest,
    ManifestEntry,
 } from "./materialization/domain/types";
-import { errMessage } from "../utils";
+import {
+   confinedPackagePath,
+   errMessage,
+   ImportOutsidePackageError,
+   readPackageURL,
+} from "../utils";
+import { isDeepStrictEqual } from "util";
+import { pathToFileURL } from "url";
 import {
    buildEnvironmentMalloyConfig,
    deleteDuckLakeConnectionFile,
@@ -1595,6 +1605,19 @@ export class Environment {
       packageRoot: string,
       target: string,
    ): Promise<string[]> {
+      // A link planted at the file, or a dangling link on the way to it, is
+      // refused before anything about where it leads is looked at, with the
+      // answer a link out of the package gets, so a write cannot tell a
+      // target that exists from one that does not.
+      const outside = () =>
+         new InvalidModelPathError(
+            `Invalid model path: it resolves outside the package.`,
+         );
+      const isLink = async (p: string) =>
+         (
+            await fs.promises.lstat(p).catch(() => undefined)
+         )?.isSymbolicLink() === true;
+      if (await isLink(target)) throw outside();
       const missing: string[] = [];
       let dir = path.dirname(target);
       while (dir.startsWith(packageRoot)) {
@@ -1605,6 +1628,7 @@ export class Environment {
             throw error;
          });
          if (stat === undefined) {
+            if (await isLink(dir)) throw outside();
             missing.push(dir);
             dir = path.dirname(dir);
             continue;
@@ -2442,27 +2466,31 @@ export class Environment {
          sourceLocation: string | null;
       },
    ): Promise<Package> {
-      const loaded = await Package.create(
-         this.environmentName,
-         packageName,
-         versionPath,
-         () => this.malloyConfig.malloyConfig,
-      );
-      this.attachDestinationServeConfig(loaded);
-      // The version's serving state lives on its registry row, not in its
-      // immutable publisher.json: where it came from, which version it is,
-      // and the manifest it is bound to.
-      loaded.setPackageMetadata({
-         ...loaded.getPackageMetadata(),
-         versionId: version.versionId,
-         ...(version.sourceLocation
-            ? { location: version.sourceLocation }
-            : {}),
-         manifestLocation: version.manifestPath,
+      // A failed load names the version's files package-relative, as a
+      // failed reload does, never this server's version folder.
+      return withPackageRelativeErrors(versionPath, async () => {
+         const loaded = await Package.create(
+            this.environmentName,
+            packageName,
+            versionPath,
+            () => this.malloyConfig.malloyConfig,
+         );
+         this.attachDestinationServeConfig(loaded);
+         // The version's serving state lives on its registry row, not in its
+         // immutable publisher.json: where it came from, which version it is,
+         // and the manifest it is bound to.
+         loaded.setPackageMetadata({
+            ...loaded.getPackageMetadata(),
+            versionId: version.versionId,
+            ...(version.sourceLocation
+               ? { location: version.sourceLocation }
+               : {}),
+            manifestLocation: version.manifestPath,
+         });
+         await this.bindManifestIfConfigured(loaded);
+         await this.rebindServeBindingsFromLocalStore(loaded);
+         return loaded;
       });
-      await this.bindManifestIfConfigured(loaded);
-      await this.rebindServeBindingsFromLocalStore(loaded);
-      return loaded;
    }
 
    /**
@@ -2768,33 +2796,38 @@ export class Environment {
       return this.trackPackageLoad(packageName, async () => {
          this.transition(packageName, { type: "beginLoad" });
 
-         let packagePath: string | undefined;
          try {
             logger.debug(`Loading package ${packageName}...`);
-            packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
-            const _package = await Package.create(
-               this.environmentName,
+            const packagePath = safeJoinUnderRoot(
+               this.environmentPath,
                packageName,
-               packagePath,
-               () => this.malloyConfig.malloyConfig,
             );
-            this.attachDestinationServeConfig(_package);
-            await this.commitLoadedPackage(packageName, _package, {
-               bindServeState: true,
-               replaces: existingPackage,
-               reportSurfaceChange: true,
-            });
+            // The load failure is the caller's answer and the package's
+            // status: it names the package's files package-relative, never
+            // where this server keeps them, binding included.
+            const _package = await withPackageRelativeErrors(
+               packagePath,
+               async () => {
+                  const created = await Package.create(
+                     this.environmentName,
+                     packageName,
+                     packagePath,
+                     () => this.malloyConfig.malloyConfig,
+                  );
+                  this.attachDestinationServeConfig(created);
+                  await this.commitLoadedPackage(packageName, created, {
+                     bindServeState: true,
+                     replaces: existingPackage,
+                     reportSurfaceChange: true,
+                  });
+                  return created;
+               },
+            );
             logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
          } catch (error) {
             logger.error(`Failed to load package ${packageName}`, { error });
-            // The load failure is the caller's answer and the package's
-            // status: a compile error in it names the package's files
-            // package-relative, never where this server keeps them.
-            if (packagePath !== undefined && error instanceof Error) {
-               error.message = packageRelativeText(error.message, packagePath);
-            }
             if (existingPackage !== undefined) {
                // A failed reload keeps serving the last good model (replaced
                // only on success) rather than evicting the package. Recorded
@@ -3275,11 +3308,26 @@ export class Environment {
 
          // Same lock hold: as a separate step, a delete queued behind the
          // swap could run first and the update would 404 for completed work.
+         // The install has committed and is serving, so a metadata update
+         // that fails now (a read-only manifest, a full disk) is logged, not
+         // answered as a failure of the publish that already took effect.
          if (update !== undefined) {
-            await this._updatePackageLocked(packageName, update, {
-               recordLocation: true,
-               regated: true,
-            });
+            try {
+               await this._updatePackageLocked(packageName, update, {
+                  recordLocation: true,
+                  regated: true,
+               });
+            } catch (error) {
+               logger.error(
+                  "The package installed and is serving, but its metadata " +
+                     "update after the install failed",
+                  {
+                     environmentName: this.environmentName,
+                     packageName,
+                     error,
+                  },
+               );
+            }
          }
 
          return newPackage;
@@ -3663,12 +3711,28 @@ export class Environment {
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
+      // Where the write lands, settled before anything is written: inside
+      // the package. A manifest that is a link out of it is not written; one
+      // that is a link inside it is replaced by the file itself (the rename
+      // below replaces the link, never writes through it).
+      try {
+         await confinedPackagePath(packagePath, pathToFileURL(manifestPath));
+      } catch (error) {
+         if (!(error instanceof ImportOutsidePackageError)) throw error;
+         throw new BadRequestError(
+            `The package's publisher.json leads outside the package, so ` +
+               `Publisher does not write it. Replace it with the file itself.`,
+         );
+      }
 
       try {
          let existingManifest: Record<string, unknown> = {};
+         let existingRead = false;
          try {
-            const content = await fs.promises.readFile(manifestPath, "utf-8");
-            existingManifest = JSON.parse(content);
+            existingManifest = JSON.parse(
+               await readPackageURL(packagePath, pathToFileURL(manifestPath)),
+            );
+            existingRead = true;
          } catch (_err) {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
@@ -3678,14 +3742,10 @@ export class Environment {
             metadata,
          );
 
-         await fs.promises.writeFile(
-            manifestPath,
-            JSON.stringify(updatedManifest, null, 2),
-            "utf-8",
-         );
          // Recorded outside the package directory so nothing the package's
          // content carries is ever read as its install location. Never
-         // cleared from here.
+         // cleared from here. Written before the manifest, so a manifest that
+         // cannot be written does not lose it.
          if (metadata.location !== undefined && metadata.location !== "") {
             const recordPath = this.installRecordPath(packageName);
             await fs.promises.mkdir(path.dirname(recordPath), {
@@ -3698,6 +3758,39 @@ export class Environment {
             );
          }
 
+         // An update that changes nothing in the manifest (an install that
+         // only records its location) leaves the file alone, so it cannot
+         // fail after the install has committed.
+         if (
+            !existingRead ||
+            !isDeepStrictEqual(existingManifest, updatedManifest)
+         ) {
+            // The rename below would replace a file its mode says not to
+            // write; a read-only manifest is refused with its errno.
+            await fs.promises
+               .access(manifestPath, fs.constants.W_OK)
+               .catch((error: NodeJS.ErrnoException) => {
+                  if (error.code !== "ENOENT") throw error;
+               });
+            // A temporary file beside it, renamed over it: the rename
+            // replaces whatever is at the path, a link included, rather than
+            // writing through it.
+            const temporary = path.join(
+               packagePath,
+               `.publisher.json.${crypto.randomUUID()}.tmp`,
+            );
+            try {
+               await fs.promises.writeFile(
+                  temporary,
+                  JSON.stringify(updatedManifest, null, 2),
+                  { encoding: "utf-8", flag: "wx" },
+               );
+               await fs.promises.rename(temporary, manifestPath);
+            } catch (error) {
+               await fs.promises.rm(temporary, { force: true }).catch(() => {});
+               throw error;
+            }
+         }
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
          logger.error(`Failed to update publisher.json`, { error });
@@ -4111,7 +4204,7 @@ export class Environment {
 
    /** Every change to a package's phase or problems goes through here. */
    private transition(packageName: string, event: PackageLifecycleEvent): void {
-      this.lifecycle.apply(packageName, event);
+      this.lifecycle.apply(packageName, callerVisibleEvent(event));
    }
 
    public async deletePackage(
@@ -4549,5 +4642,32 @@ function servingVerdicts(pkg: Package | undefined): {
          error: error instanceof Error ? error.message : String(error),
       });
       return {};
+   }
+}
+
+/**
+ * `event` with the message it records (a load, mount or stale-reload error,
+ * read back by /status `loadErrors`, MCP `get_status` and `list_packages`)
+ * naming no server path. A load error is already package-relative; this is
+ * the backstop for every other record, such as a configured location that
+ * did not mount.
+ */
+function callerVisibleEvent(
+   event: PackageLifecycleEvent,
+): PackageLifecycleEvent {
+   switch (event.type) {
+      case "recordLoadError":
+      case "recordMountError":
+         return { ...event, message: withoutAbsolutePaths(event.message) };
+      case "reloadFailed":
+         return {
+            ...event,
+            stale: {
+               ...event.stale,
+               message: withoutAbsolutePaths(event.stale.message),
+            },
+         };
+      default:
+         return event;
    }
 }

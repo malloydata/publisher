@@ -14,10 +14,7 @@ import { applySessionResourceLimits } from "./connection";
 import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 import { applyExtensionSessionSettings } from "./connection";
 import { DuckDBConnection as MetadataStoreConnection } from "../storage/duckdb/DuckDBConnection";
-import {
-   assertDuckDBResourceConfig,
-   getPartitionedWriteFlushThreshold,
-} from "../config";
+import { assertDuckDBResourceConfig } from "../config";
 import { installSettings } from "../test_helpers/settings_env";
 
 let restoreSettings: (() => void) | undefined;
@@ -282,35 +279,5 @@ describe("applySessionResourceLimits", () => {
             rmSync(base, { recursive: true, force: true });
          }
       });
-   });
-});
-
-describe("PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD", () => {
-   it("defaults to 8192 rows, not to DuckDB's 524,288", () => {
-      installEnv({});
-      expect(getPartitionedWriteFlushThreshold()).toBe(8192);
-   });
-
-   it("takes a configured row count", () => {
-      installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "2048" });
-      expect(getPartitionedWriteFlushThreshold()).toBe(2048);
-      expect(() => assertDuckDBResourceConfig()).not.toThrow();
-   });
-
-   it("treats `off` as leave-it-to-DuckDB", () => {
-      installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "off" });
-      expect(getPartitionedWriteFlushThreshold()).toBeUndefined();
-      expect(() => assertDuckDBResourceConfig()).not.toThrow();
-   });
-
-   it("fails the boot on anything but a row count of up to nine digits", () => {
-      // The upper bound is operational: above a billion rows the bound is
-      // indistinguishable from `off`.
-      for (const bad of ["0", "-1", "8KB", "2048.5", "lots", "1000000000"]) {
-         installEnv({ PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: bad });
-         expect(() => assertDuckDBResourceConfig()).toThrow(
-            /PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD/,
-         );
-      }
    });
 });

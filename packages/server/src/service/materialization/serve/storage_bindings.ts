@@ -15,8 +15,7 @@
 
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import { type ModelDef } from "@malloydata/malloy";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
+import { compiledTextReader } from "../../../utils";
 import { narrowSchemaToPublic } from "./bindings";
 import { type Binding, bindingServesModelSource } from "../domain/binding";
 import {
@@ -74,6 +73,8 @@ interface ModelStorageTables {
 export function modelStorageTables(
    bindings: readonly Binding[],
    modelDef: ModelDef | undefined,
+   /** The package's root, which the model's files are read inside. */
+   packageRoot?: string,
 ): ModelStorageTables {
    const stored = bindings.filter(
       (b) => b.kind === "persist" && b.tier === "storage",
@@ -81,7 +82,7 @@ export function modelStorageTables(
    if (stored.length === 0) {
       return { kept: [], shadowed: [], mismatches: [], findings: [] };
    }
-   const { contents } = authorModelLift(modelDef);
+   const { contents } = authorModelLift(modelDef, packageRoot);
    const { kept, shadowed } = ownBindingsIn(stored, contents);
    const mismatches: SourceTypeMismatches[] = [];
    const findings: BindingTypeFinding[] = [];
@@ -124,11 +125,15 @@ export function modelStorageTables(
 export function ownBindings(
    bindings: readonly Binding[],
    modelDef: ModelDef | undefined,
+   packageRoot?: string,
 ): { kept: Binding[]; shadowed: string[] } {
    if (!bindings.some((b) => b.sourceIDs)) {
       return { kept: [...bindings], shadowed: [] };
    }
-   return ownBindingsIn(bindings, authorModelLift(modelDef).contents);
+   return ownBindingsIn(
+      bindings,
+      authorModelLift(modelDef, packageRoot).contents,
+   );
 }
 
 function ownBindingsIn(
@@ -149,16 +154,16 @@ function ownBindingsIn(
  * contents, not the model's: they also hold the hidden dependencies from
  * `sourceRegistry`, which `contents` leaves out.
  */
-function authorModelLift(modelDef: ModelDef | undefined): {
+function authorModelLift(
+   modelDef: ModelDef | undefined,
+   packageRoot?: string,
+): {
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
 } {
-   return authorModelLiftContext(modelDef, (url) => {
-      try {
-         return readFileSync(fileURLToPath(url), "utf8");
-      } catch {
-         return undefined;
-      }
-   });
+   return authorModelLiftContext(
+      modelDef,
+      compiledTextReader(modelDef, packageRoot),
+   );
 }
 
 /**

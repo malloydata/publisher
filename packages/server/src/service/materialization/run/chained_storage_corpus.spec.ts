@@ -21,6 +21,7 @@
  *    UPDATE_GOLDEN=1 bun test src/service/materialization/run/chained_storage_corpus.spec.ts
  */
 
+import { compiledTextReader } from "../../../utils";
 import { DuckDBInstance } from "@duckdb/node-api";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -54,10 +55,7 @@ import { declaredStorage } from "../plan/persist_source_fields";
 import { reachPersisted } from "../text/source_map";
 import { authorModelLiftContext } from "../text/author_model";
 import type { ManifestEntry } from "../domain/types";
-import {
-   chainedPlanFacts,
-   readAuthorFile,
-} from "./materialization_run_support";
+import { chainedPlanFacts } from "./materialization_run_support";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 
 const GOLDEN = path.join(__dirname, "chained_storage_corpus.golden.json");
@@ -246,7 +244,7 @@ async function chainedRows(model: CorpusModel): Promise<ChainedRow[]> {
       const address = facts.addressBySourceId[id];
       const lift = authorModelLiftContext(
          source._model?._modelDef,
-         readAuthorFile,
+         compiledTextReader(source._model?._modelDef),
       );
       const reached = reachPersisted(lift, source.name, (_n, sid) =>
          facts.persistSourceIds.has(sid),

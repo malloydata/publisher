@@ -16,7 +16,7 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
 import { withSpan } from "../telemetry";
 import {
-   recordSourceDeclined,
+   recordServedCopyOutcome,
    recordStoredColumnTypeMismatch,
 } from "../materialization_metrics";
 import type { QueryServingHost } from "./query_serving";
@@ -26,10 +26,9 @@ import {
    type ModelQueryResults,
    type ModelServingHost,
 } from "./model_serving";
-import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { components } from "../api";
 import { getQueryMetadataMode } from "../config";
 import {
@@ -49,6 +48,7 @@ import { getMaterializeEnabled, getPersistStorageMode } from "../config";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
+import { readPackageURL } from "../utils";
 import { type QueryAudit } from "./access_record";
 import {
    type Binding,
@@ -58,6 +58,7 @@ import {
    type Pinned,
    type Snapshot,
 } from "./materialization/domain/binding";
+import { servedCopyOutcomes } from "./materialization/domain/source_decline";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
@@ -956,7 +957,11 @@ export class Model {
          });
       }
 
-      const runtime = makeHydrationRuntime(malloyConfig, options.buildManifest);
+      const runtime = makeHydrationRuntime(
+         packagePath,
+         malloyConfig,
+         options.buildManifest,
+      );
       const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
       const runnableNotebookCells =
          data.modelType === "notebook"
@@ -2664,13 +2669,14 @@ export class Model {
       this.storageTables(pinned.snapshot);
       if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare(pinned);
-      // Once per model per snapshot it compiles (a load or a rebind): each
-      // source the copy leaves unserved, by the reason its package warning
-      // gives. `inline_join_kept` and `cross_connection_join` still serve
-      // the source, with that join live; the bind label has no outcome for
-      // a partial serve, so they count as declined.
-      for (const problem of this.servedCopy.problems()) {
-         recordSourceDeclined(problem.reason);
+      // Once per source per model per snapshot it compiles (a load or a
+      // rebind): each source the copy does not serve whole, `declined`
+      // beating `partial`, and `partial` only while it is still re-rooted.
+      for (const { outcome, reason } of servedCopyOutcomes(
+         this.servedCopy.problems(),
+         this.servedCopy.rerootedSourceIDs() ?? new Set(),
+      )) {
+         recordServedCopyOutcome(outcome, reason);
       }
    }
 
@@ -2725,7 +2731,11 @@ export class Model {
       ) {
          return memo.tables;
       }
-      const tables = modelStorageTables(snapshot.bindings, this.modelDef);
+      const tables = modelStorageTables(
+         snapshot.bindings,
+         this.modelDef,
+         this.servedCopyContext?.[0],
+      );
       this.storageTablesMemo = {
          bindings: snapshot.bindings,
          modelDef: this.modelDef,
@@ -2878,6 +2888,7 @@ export class Model {
       const stored = ownBindings(
          bindings.filter((b) => b.kind !== "rollup"),
          this.modelDef,
+         this.servedCopyContext[0],
       ).kept;
       if (stored.length === 0) return out;
       const pinned = pin(makeSnapshot(stored), new Date(0));
@@ -3660,7 +3671,7 @@ export class Model {
    public async getFileText(packagePath: string): Promise<string> {
       const fullPath = path.join(packagePath, this.modelPath);
       try {
-         return await fs.readFile(fullPath, "utf8");
+         return await readPackageURL(packagePath, pathToFileURL(fullPath));
       } catch {
          throw new ModelNotFoundError(
             `Model file not found: ${this.modelPath}`,

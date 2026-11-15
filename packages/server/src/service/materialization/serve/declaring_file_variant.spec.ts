@@ -8,19 +8,17 @@ import { declaringFileOf } from "./declaring_file_variant";
 
 describe("declaringFileOf", () => {
    it("redeclares in the source's declaring file, beside its copy", () => {
-      // An absolute path on this platform, so on Windows the URL carries a
-      // drive: file:///pkg/... names no local file there.
-      const declaringURL = pathToFileURL(
-         path.resolve("/pkg/models/orders.malloy"),
-      );
+      // An absolute path on this platform: `file:///pkg/…` has no drive, so
+      // Windows reads it as no local file at all.
+      const file = path.resolve("/pkg/models/orders.malloy");
       const at = declaringFileOf(
-         `orders@${declaringURL.href}`,
+         `orders@${pathToFileURL(file).href}`,
          ".view-author.malloy",
       );
       expect(at).toEqual({
          name: "orders",
-         declaringURL,
-         copyURL: new URL(`${declaringURL.href}.view-author.malloy`),
+         declaringURL: pathToFileURL(file),
+         copyURL: pathToFileURL(`${file}.view-author.malloy`),
          copyName: "orders.malloy.view-author.malloy",
       });
    });

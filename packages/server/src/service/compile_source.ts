@@ -34,7 +34,13 @@ import {
 } from "../path_safety";
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
-import { URL_READER } from "../utils";
+import {
+   callerVisibleText,
+   OUTSIDE_PACKAGE,
+   packageRelativeText,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
+import { packageURLReader, readPackageURL } from "../utils";
 import {
    ANNOTATION_GATE_NEAR_MISS_CODE,
    ANNOTATION_NEAR_MISS_CODE,
@@ -246,9 +252,19 @@ export async function compileSource(
    assertValidCompileRequest(request);
    const compileIn = async (versioned: Package | undefined) => {
       const ctx = await openCompileContext(host, request, versioned);
-      if (scope === "package") return compilePackageDryRun(ctx);
-      if (scope === "file") return compileFile(ctx);
-      return compileAppend(ctx);
+      // The diagnostics, and a refusal, name the package's files
+      // package-relative, never where this server keeps them.
+      const result = await withPackageRelativeErrors(ctx.packagePath, () => {
+         if (scope === "package") return compilePackageDryRun(ctx);
+         if (scope === "file") return compileFile(ctx);
+         return compileAppend(ctx);
+      });
+      return {
+         ...result,
+         problems: result.problems.map((problem) =>
+            packageRelativeProblem(problem, ctx.packagePath),
+         ),
+      };
    };
    // A published version compiles in its own folder with no lock: its files
    // never change.
@@ -262,6 +278,39 @@ export async function compileSource(
    return host.withPackageLock(packageName, async () =>
       compileIn(await host.versionedPackage(packageName, versionId, true)),
    );
+}
+
+/**
+ * `problem` as a caller may read it: its message naming the package's files
+ * package-relative, and its `at.url` a package file's path relative to the
+ * package root, decoded (`sub dir/a b.malloy`, not `sub%20dir/…`), or
+ * {@link OUTSIDE_PACKAGE} for a file outside the package.
+ */
+function packageRelativeProblem(
+   problem: TaggedLogMessage,
+   packagePath: string,
+): TaggedLogMessage {
+   const at = (problem as { at?: { url?: string } }).at;
+   return {
+      ...problem,
+      message: callerVisibleText(problem.message, packagePath),
+      ...(at?.url !== undefined && {
+         at: { ...at, url: callerVisibleUrl(at.url, packagePath) },
+      }),
+   } as TaggedLogMessage;
+}
+
+function callerVisibleUrl(url: string, packagePath: string): string {
+   if (!url.toLowerCase().startsWith("file:")) {
+      return callerVisibleText(url, packagePath);
+   }
+   const relative = packageRelativeText(url, packagePath);
+   if (relative.toLowerCase().startsWith("file:")) return OUTSIDE_PACKAGE;
+   try {
+      return decodeURIComponent(relative);
+   } catch {
+      return relative;
+   }
 }
 
 /** The argument checks every scope runs before taking the package lock. */
@@ -384,7 +433,7 @@ async function openCompileContext(
 
    const { fullSource, callerRegion } =
       scope === "append"
-         ? await appendToSavedModel(modelPath, source, virtualUri)
+         ? await appendToSavedModel(packagePath, modelPath, source, virtualUri)
          : { fullSource: source ?? "", callerRegion: undefined };
 
    // Serve the source for the virtual file, then the request's overlay, and
@@ -392,12 +441,13 @@ async function openCompileContext(
    // file is not substituted.
    const substitute = scope !== "package" || source !== undefined;
    const overlaid = overlayByUrl(packagePath, overlay);
+   const diskReader = packageURLReader(packagePath);
    const interceptingReader = {
       readURL: async (url: URL) => {
          if (substitute && url.toString() === virtualUri) {
             return fullSource;
          }
-         return overlaid.get(overlayKey(url)) ?? URL_READER.readURL(url);
+         return overlaid.get(overlayKey(url)) ?? diskReader.readURL(url);
       },
    };
 
@@ -512,13 +562,18 @@ async function openCompileContext(
  * after it, and where that text starts.
  */
 async function appendToSavedModel(
+   packagePath: string,
    modelPath: string,
    source: string | undefined,
    virtualUri: string,
 ): Promise<{ fullSource: string; callerRegion: CallerRegion }> {
    let modelContent = "";
    try {
-      modelContent = await fs.promises.readFile(modelPath, "utf8");
+      // Confined: a saved model that links out of the package is not read.
+      modelContent = await readPackageURL(
+         packagePath,
+         pathToFileURL(modelPath),
+      );
    } catch {
       // Empty content; a missing model is refused by `loadAppendBase`.
    }
@@ -1099,9 +1154,10 @@ async function compilePackageDryRun(
            (compiled.modelPath === modelName && source !== undefined
               ? source
               : (overlaidText(ctx.overlay, compiled.modelPath) ??
-                (await fs.promises
-                   .readFile(path.join(packagePath, compiled.modelPath), "utf8")
-                   .catch(() => undefined)))));
+                (await readPackageURL(
+                   packagePath,
+                   pathToFileURL(path.join(packagePath, compiled.modelPath)),
+                ).catch(() => undefined)))));
       if (lintText !== undefined) {
          collect(
             notebookLintProblems(

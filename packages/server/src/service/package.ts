@@ -34,7 +34,6 @@ import type { SourceAddress } from "./entities/internal_types";
 import { toApiEntities } from "./entities/to_api";
 import { isUnconditionalDenyAuthorize } from "./entities/access_gates";
 import { splitSourcePath } from "./entities/explore_walk";
-import recursive from "recursive-readdir";
 import { components } from "../api";
 import {
    getPackageLoadPool,
@@ -103,7 +102,12 @@ import type {
    ChainBuildRequest,
    ChainBuildText,
 } from "./materialization/domain/chain_build";
-import { errMessage, ignoreDotfiles } from "../utils";
+import {
+   confinedPackagePath,
+   errMessage,
+   listPackageTree,
+   readPackageURL,
+} from "../utils";
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
@@ -186,6 +190,11 @@ import {
 import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
+import {
+   callerVisibleText,
+   rewriteErrorMessage,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import {
    PackageModelPolicy,
    type OffSurfaceContext,
@@ -898,13 +907,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             "publisher.package.dry_run": options.dryRun === true,
          },
          () =>
-            Package.load(
-               environmentName,
-               packageName,
-               packagePath,
-               environmentMalloyConfig,
-               cleanupDirectoryOnFailure,
-               options.dryRun === true,
+            // A failed load's message names the package's files
+            // package-relative, whichever path loaded it.
+            withPackageRelativeErrors(packagePath, () =>
+               Package.load(
+                  environmentName,
+                  packageName,
+                  packagePath,
+                  environmentMalloyConfig,
+                  cleanupDirectoryOnFailure,
+                  options.dryRun === true,
+               ),
             ),
       );
    }
@@ -1088,6 +1101,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
       const timings = { hydrateMs: 0, renderValidationMs: 0 };
+      // A model's compile error is read by every caller of the package (a
+      // query's 424, get_context, the package's warnings): it names the
+      // package's files package-relative and no other server path, whether
+      // it is thrown or kept on a placeholder.
+      const callerVisible = (err: Error): Error => {
+         rewriteErrorMessage(err, (message) =>
+            callerVisibleText(message, packagePath),
+         );
+         return err;
+      };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -1096,7 +1119,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             packageName,
             sm.modelPath,
             sm.modelType,
-            err,
+            callerVisible(err),
             {
                policy: ctx.modelPolicy.forModel(sm.modelPath),
                sourceText:
@@ -1111,7 +1134,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       for (const sm of outcome.models) {
          await yielder.maybeYield();
          if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
+            const err = callerVisible(
+               Model.deserializeCompilationError(sm.compilationError),
+            );
             if (onCompileError === "throw") {
                logger.error("Model compilation failed", {
                   packageName,
@@ -1392,9 +1417,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                // because `#@ persist` cannot appear in a `.malloynb`; widen this
                // if that changes, to keep the identifier-injection check.
                if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-                  const modelSource = await fs.readFile(
-                     path.join(packagePath, sm.modelPath),
-                     "utf-8",
+                  const modelSource = await readPackageURL(
+                     packagePath,
+                     pathToFileURL(path.join(packagePath, sm.modelPath)),
                   );
                   assertPersistNamesQuoted(modelSource, sm.modelPath);
                }
@@ -1817,7 +1842,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             // from the revision its range describes.
             text:
                model.getCompiledSourceText() ??
-               (await fs.readFile(absolutePath, "utf-8")),
+               (await readPackageURL(
+                  this.packagePath,
+                  pathToFileURL(absolutePath),
+               )),
          });
       }
       return modelFiles;
@@ -2791,9 +2819,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       try {
          return (
             model.getCompiledSourceText() ??
-            (await fs.readFile(
-               safeJoinUnderRoot(this.packagePath, modelPath),
-               "utf8",
+            (await readPackageURL(
+               this.packagePath,
+               pathToFileURL(safeJoinUnderRoot(this.packagePath, modelPath)),
             ))
          );
       } catch {
@@ -3598,17 +3626,46 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          packagePath,
          PACKAGE_MANIFEST_NAME,
       );
+      // One answer for every manifest Publisher will not read: missing, a
+      // link out of the package (whatever it leads to, or nothing), or not a
+      // file. So the manifest cannot tell what lies outside the package.
+      const notThere = () => {
+         logger.error(`Can't find ${packageConfigPath}`);
+         return new PackageNotFoundError(
+            callerVisibleText(
+               `Package manifest for ${packagePath} does not exist.`,
+               packagePath,
+            ),
+         );
+      };
+      // A package directory Publisher may not open is reported as such (its
+      // errno), not as a missing manifest: that is the operator's own tree.
       try {
-         await fs.stat(packageConfigPath);
+         await fs.realpath(packagePath);
+      } catch (error) {
+         const code = (error as NodeJS.ErrnoException).code;
+         if (code === "ENOENT" || code === "ENOTDIR") throw notThere();
+         throw error;
+      }
+      let real: string;
+      try {
+         real = await confinedPackagePath(
+            packagePath,
+            pathToFileURL(packageConfigPath),
+         );
+      } catch {
+         throw notThere();
+      }
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+         stat = await fs.stat(real);
       } catch (error) {
          // Only ENOENT/ENOTDIR mean "does not exist"; an EACCES is rethrown as itself.
          const code = (error as NodeJS.ErrnoException).code;
          if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-         logger.error(`Can't find ${packageConfigPath}`);
-         throw new PackageNotFoundError(
-            `Package manifest for ${packagePath} does not exist.`,
-         );
+         throw notThere();
       }
+      if (!stat.isFile()) throw notThere();
    }
 
    private static async readDatabases(
@@ -3644,10 +3701,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   databasePath,
                   error: message,
                });
+               // The connection's message names the server's own paths; the
+               // caller sees the package's files package-relative and no other.
                return {
                   path: databasePath,
                   type: "embedded" as const,
-                  error: message,
+                  error: callerVisibleText(message, packagePath),
                };
             }
          }),
@@ -3657,8 +3716,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private static async getDatabasePaths(
       packagePath: string,
    ): Promise<string[]> {
-      const files = await recursive(packagePath, [ignoreDotfiles]);
-      return files
+      const files = await listPackageTree(packagePath);
+      const candidates = files
          .map((fullPath: string) => {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");
          })
@@ -3673,6 +3732,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                modelPath.endsWith(".xlsx")
             );
          });
+      // Only a regular file inside the package is probed: a link out of it,
+      // to a file or a directory, is not read through the connection.
+      const probed: string[] = [];
+      for (const relativePath of candidates) {
+         try {
+            const real = await confinedPackagePath(
+               packagePath,
+               pathToFileURL(path.join(packagePath, relativePath)),
+            );
+            if ((await fs.stat(real)).isFile()) probed.push(relativePath);
+         } catch {
+            // Outside the package, missing or unreadable: not probed.
+         }
+      }
+      return probed;
    }
 
    private static async getDatabaseInfo(

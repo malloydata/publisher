@@ -1637,7 +1637,6 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--duckdb-extension-fetch-policy",
    "--duckdb-memory-limit",
    "--duckdb-temp-directory",
-   "--duckdb-partitioned-write-flush-threshold",
    "--ducklake-row-group-size-bytes",
    "--ducklake-target-file-size-bytes",
    "--persist-storage-mode",

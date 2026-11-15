@@ -84,8 +84,6 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "duckdb.memoryLimit": "PUBLISHER_DUCKDB_MEMORY_LIMIT",
    "duckdb.threads": "PUBLISHER_DUCKDB_THREADS",
    "duckdb.tempDirectory": "PUBLISHER_DUCKDB_TEMP_DIRECTORY",
-   "duckdb.partitionedWriteFlushThreshold":
-      "PUBLISHER_DUCKDB_PARTITIONED_WRITE_FLUSH_THRESHOLD",
    "ducklake.rowGroupSizeBytes": "PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES",
    "ducklake.targetFileSizeBytes": "PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES",
    "persist.storageMode": "PUBLISHER_PERSIST_STORAGE_MODE",

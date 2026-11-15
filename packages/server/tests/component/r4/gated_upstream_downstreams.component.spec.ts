@@ -317,14 +317,25 @@ for (const gated of [false, true]) {
             .sort();
          expect(gateRefusals).toEqual(expectedGateRefusals(gated));
          // A downstream that bakes the upstream's given into its build is
-         // refused whatever the switch; an extension, which keeps it at read,
-         // is not.
+         // refused whatever the switch. An extension inherits the upstream's
+         // given-reading `where:`, which only the upstream's own declaration
+         // re-applies at read: a v1 one is refused as
+         // `inherited_where_with_given`, a `#(materialize)` one at plan
+         // (`materialize-not-built`, no refusedSources entry); none is built.
+         const built = fixture.built.map((b) => b.name);
          for (const v of Object.keys(STORED)) {
             for (const s of SHAPES) {
                const name = `gv_${v}_${s}`;
                const hit = refused.find((r) => r.startsWith(`${name}:`));
-               if (s === "ext") expect([name, hit]).toEqual([name, undefined]);
-               else expect(hit).toEndWith(":given_in_persisted_query");
+               if (s === "ext") {
+                  expect([name, hit]).toEqual([
+                     name,
+                     v.startsWith("p")
+                        ? `${name}:${v === "pc" ? "colocated" : "storage"}:inherited_where_with_given`
+                        : undefined,
+                  ]);
+                  expect([name, built.includes(name)]).toEqual([name, false]);
+               } else expect(hit).toEndWith(":given_in_persisted_query");
             }
          }
       });
@@ -406,9 +417,9 @@ for (const gated of [false, true]) {
          }
       });
 
-      it("still builds and serves the gated downstreams it can read: an annotated join, an authorize lock, an extend over a given", () => {
+      it("still builds and serves the gated downstreams it can read: an annotated join, an authorize lock", () => {
          const built = fixture.built.map((b) => b.name);
-         for (const name of ["af_ms_ajoin", "az_pc_sel", "gv_ms_ext"]) {
+         for (const name of ["af_ms_ajoin", "az_pc_sel"]) {
             expect([name, built.includes(name)]).toEqual([name, true]);
             const out = served.get(`${name}#0`)!;
             if ("error" in out) throw new Error(`${name}: ${out.error}`);

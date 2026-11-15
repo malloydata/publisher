@@ -27,8 +27,6 @@ import {
    modelDefOf,
    queryTimezoneOf,
 } from "../../governance/ir/compiled_model";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
 import {
    MalloyError,
    MalloyConfig,
@@ -75,8 +73,10 @@ import {
 import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
 import {
    joinGrainAggregatePaths,
+   queryFieldUsagePaths,
+   queryTimezones,
+   type PreparedQueryView,
    readPreparedQuery,
-   setsTimezone,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import { joinedDefinitionOf } from "../../governance/ir/source_graph";
@@ -124,6 +124,7 @@ import {
    type ServedColumn,
    type ServedCopyRange,
    storedMalloyType,
+   TIMEFRAMES,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
 import {
@@ -148,6 +149,7 @@ import {
 import type { LeftOutDefinition } from "../text/definition_cut";
 import { LegDecline, type ServedCopyDeclineCode } from "../domain/leg_decline";
 import type { ServedCopyProblemReason } from "../domain/source_decline";
+import { compiledImports, compiledTextReader } from "../../../utils";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -198,8 +200,23 @@ function readsLeftOutDefinition(
    queryString: string,
 ): boolean {
    if (!compiled.leftOut?.length) return false;
+   return readsMissingName(
+      new Set(compiled.leftOut.map((l) => l.name)),
+      error,
+      queryString,
+   );
+}
+
+/**
+ * Whether `error` is a compile that reads a field the model lacks, named by a
+ * path through one of `names` (or at a place the query text cannot show).
+ */
+function readsMissingName(
+   names: ReadonlySet<string>,
+   error: unknown,
+   queryString: string,
+): boolean {
    if (!(error instanceof MalloyError)) return false;
-   const names = new Set(compiled.leftOut.map((l) => l.name));
    return (
       error.problems as {
          code?: string;
@@ -219,6 +236,10 @@ function readsLeftOutDefinition(
          .some((part) => names.has(part.replace(/^`|`$/g, "")));
    });
 }
+
+/** Why a query reading a timestamp truncation in a zone it was not built in is declined. */
+const ZONED_TRUNCATION_REASON =
+   "the query reads a timestamp truncation stored in another zone than the one it reads it in";
 
 /** Malloy's codes for a compile that reads a field the model does not have. */
 const MISSING_FIELD_CODES: ReadonlySet<string> = new Set([
@@ -355,6 +376,19 @@ interface Compiled {
     */
    computedTables?: ReadonlySet<string>;
    /**
+    * Each re-root's restated timestamp truncations, by its `sourceID` (two
+    * sources can share one content-addressed table): built in the default
+    * zone and truncated again at read, in the zone the query reads them in
+    * (`checkTruncationZone`).
+    */
+   truncationColumns?: ReadonlyMap<string, ReadonlySet<string>>;
+   /**
+    * Each re-root's timestamp truncations left out because they were stored
+    * in another zone than any read's (`zonedTruncations`), by its
+    * `sourceID`, so a query that reads one is declined with that reason.
+    */
+   zonedLeftOut?: ReadonlyMap<string, ReadonlySet<string>>;
+   /**
     * The join_ones each table answers from stored columns (an inlined join,
     * {@link InlinedJoin}), by table path, each with the joined fields the
     * author annotated: a query that aggregates at one's grain is declined
@@ -371,6 +405,8 @@ interface Compiled {
     * these tables is checked against the author's compile of it.
     */
    leftOutTables?: ReadonlySet<string>;
+   /** The columns each re-root leaves out, by its `sourceID`. */
+   leftOutColumns?: ReadonlyMap<string, readonly string[]>;
    aliased: Binding[];
    problems: ServedCopyProblem[];
    /**
@@ -438,6 +474,14 @@ type AuthorReroot = Reroot & {
     */
    storesZonedDimension?: true;
    /**
+    * The timestamp truncations its `type:` restates over the stored value,
+    * which truncate it again in the reading query's zone
+    * ({@link zonedTruncations}).
+    */
+   restatedTruncations?: string[];
+   /** The timestamp truncations it leaves out, stored in another zone than any read's. */
+   zonedLeftOut?: string[];
+   /**
     * The stored columns left out of the `type:`, so only a query reading
     * one fails to compile here and answers live; their absence is not a lost
     * field. For a v1 re-root under the cutover's per-column types (G5), the
@@ -482,20 +526,8 @@ export interface ServedCopyJoinBasis {
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
 
-/** An `import` statement's target, which the chained build's text follows. */
-const IMPORT_TARGET = /^\s*import\b[^"'\n]*["']([^"']+)["']/gm;
-
 /** The flag a model's `#@ persist` sources are planned under. */
 const PERSISTENCE_FLAG = /^\s*##!\s*experimental[^\n]*persistence/m;
-
-/** An author file's text by URL, or undefined when it cannot be read. */
-function readAuthorText(url: string): string | undefined {
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
-}
 
 /** One model's served copy. */
 export class ServedCopyServe {
@@ -780,6 +812,14 @@ export class ServedCopyServe {
                   LEFT_OUT_JOIN_DETAIL,
                );
             }
+            const zoned = new Set(
+               [...(compiled.zonedLeftOut?.values() ?? [])].flatMap((n) => [
+                  ...n,
+               ]),
+            );
+            if (zoned.size > 0 && readsMissingName(zoned, error, queryString)) {
+               decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
+            }
             throw error;
          }
       };
@@ -866,6 +906,7 @@ export class ServedCopyServe {
       });
       await checkPairTables(attempt, pairsRead);
       await this.checkTimeZone(attempt, tablesRead);
+      await checkTruncationZone(attempt, tablesRead);
       return {
          runnable,
          virtualMap,
@@ -938,6 +979,18 @@ export class ServedCopyServe {
             ),
          );
          if (live === undefined || live !== served) {
+            // Only a zoned truncation left out of each table read: that is
+            // the column the result lacks.
+            const zonedOnly = tablesRead.every((b) => {
+               const id = b.sourceIDs?.[0] ?? "";
+               const zoned = compiled.zonedLeftOut?.get(id);
+               return (compiled.leftOutColumns?.get(id) ?? []).every(
+                  (n) => zoned?.has(n) === true,
+               );
+            });
+            if (zonedOnly) {
+               decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
+            }
             decline(
                "the query's result includes a column the served copy leaves out of a stored table's type",
                "served_copy_not_served",
@@ -947,8 +1000,11 @@ export class ServedCopyServe {
    }
 
    /**
-    * A query that sets a timezone is answered live when it reads either
-    * of two tables. A stored computed dimension (`order_ts.day`,
+    * A query that reads in another zone than a table was built in
+    * ({@link readsInAnotherZone}: its own `timezone:`, or one the source it
+    * runs on sets or inherits; a materialized source that declares its own
+    * `timezone:` is built in it) is answered live when it reads either of
+    * two tables. A stored computed dimension (`order_ts.day`,
     * `day_of_week(order_ts)`) was evaluated at build in the default
     * timezone; live evaluates it in the query's. And a rolling window's
     * cut-off moves: Malloy takes its offset in the zone's wall time, so
@@ -961,11 +1017,16 @@ export class ServedCopyServe {
       tablesRead: readonly Binding[],
    ): Promise<void> {
       const { compiled, decline, prepared } = attempt;
-      const computed = tablesRead.some((b) =>
+      const zoned = tablesRead.filter(
+         (b) =>
+            compiled.computedTables?.has(b.tablePath) ||
+            this.readsRollingWindow(b),
+      );
+      if (zoned.length === 0) return;
+      const computed = zoned.some((b) =>
          compiled.computedTables?.has(b.tablePath),
       );
-      const windowed = tablesRead.some((b) => this.readsRollingWindow(b));
-      if ((computed || windowed) && setsTimezone((await prepared()).query)) {
+      if (readsInAnotherZone(compiled, await prepared(), zoned)) {
          decline(
             computed
                ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
@@ -1280,6 +1341,21 @@ export class ServedCopyServe {
       });
       if (!declarable) return undefined;
       ({ columns, columnsLeftOut } = declarable);
+      const zoned = zonedTruncations(columns, def, fieldsByName);
+      if (zoned.leftOut.length > 0) {
+         // Left out like any column no read gives exactly, with its own
+         // reason when a query reads it (`readsZonedTruncation`).
+         columns = zoned.columns;
+         columnsLeftOut = [...columnsLeftOut, ...zoned.leftOut];
+         if (columns.length === 0) {
+            problems.push({
+               sourceName,
+               sourceID: node.sourceID,
+               reason: "column_types",
+            });
+            return undefined;
+         }
+      }
       let pair: PairReroot | undefined;
       if (plan?.pair) {
          pair = pairRerootOf(
@@ -1340,6 +1416,10 @@ export class ServedCopyServe {
             ))
             ? { storesZonedDimension: true }
             : {}),
+         ...(zoned.restated.length > 0
+            ? { restatedTruncations: zoned.restated }
+            : {}),
+         ...(zoned.leftOut.length > 0 ? { zonedLeftOut: zoned.leftOut } : {}),
          ...(plan?.readTimeTerms?.length
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
@@ -1486,13 +1566,12 @@ export class ServedCopyServe {
     * the file's text), which its re-root keeps ahead of its own blocks. Kept
     * for an extension table (P10), whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
-    * declares; and for a source whose plan needs its bases' blocks
-    * (`keptBases`): a given-reading `where:` or a caller-dependent dimension a
-    * base declares, which the build left out and only the base's block
-    * re-applies at read. Undefined when the source is neither, or no such
-    * ancestor is on the walk: a source with none keeps only its own blocks
-    * (decision 2); and for one whose bases declare a measure, view or join it
-    * inherits (G8), which the re-root would otherwise lose.
+    * declares; and for one whose bases declare a measure, view or join it
+    * inherits (G8), which the re-root would otherwise lose. Undefined when
+    * the source is neither, or no such ancestor is on the walk: a source with
+    * none keeps only its own blocks (decision 2). A base's given-reading
+    * `where:` or dimension is never left out of a build (it refuses the
+    * source at plan), so no block is kept to re-apply one.
     */
    private keptBlocksFor(
       reroot: Reroot & { sourceID: string },
@@ -1509,7 +1588,6 @@ export class ServedCopyServe {
          keptAncestorChain(map, reroot.sourceID, reroot.url),
       );
       const needed =
-         (plan.keptBases?.length ?? 0) > 0 ||
          confirmed.some(
             (a) => this.materializePlans[a.sourceID] !== undefined,
          ) ||
@@ -1543,7 +1621,10 @@ export class ServedCopyServe {
    ): ChainBuildText {
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
-      const lift = authorModelLiftContext(modelDef, readAuthorText);
+      const lift = authorModelLiftContext(
+         modelDef,
+         compiledTextReader(modelDef, this.packagePath),
+      );
       const problems: ServedCopyProblem[] = [];
       const { candidates } = this.rerootCandidates(
          bindings.filter((b) => b.kind !== "rollup"),
@@ -1609,7 +1690,9 @@ export class ServedCopyServe {
          keepAt(at?.url, at?.range);
       }
       for (const c of candidates) keepAt(c.reroot.url, c.reroot.range);
-      // Every file the downstream's file reaches by import, blanked.
+      // Every file the downstream's file reaches by import, blanked: the
+      // imports the compile resolved, never text that only looks like one.
+      const importsOf = compiledImports(modelDef);
       const blanked = new Map<string, string>();
       const pending = [location.url];
       while (pending.length > 0) {
@@ -1624,15 +1707,7 @@ export class ServedCopyServe {
             return why(`a file it reaches could not be read (${url})`);
          }
          blanked.set(url, kept);
-         for (const m of text.matchAll(IMPORT_TARGET)) {
-            try {
-               pending.push(new URL(m[1], url).href);
-            } catch {
-               return why(
-                  `an import it reaches could not be resolved (${m[1]})`,
-               );
-            }
-         }
+         pending.push(...importsOf(url));
       }
       const copy = buildServedCopy(
          candidates.map((c) => c.reroot),
@@ -1815,7 +1890,10 @@ export class ServedCopyServe {
       }
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
-      const lift = authorModelLiftContext(modelDef, readAuthorText);
+      const lift = authorModelLiftContext(
+         modelDef,
+         compiledTextReader(modelDef, this.packagePath),
+      );
       const prepared = this.rerootCandidates(
          bindings,
          map,
@@ -2183,10 +2261,30 @@ export class ServedCopyServe {
                )
                .map((c) => c.binding.tablePath),
          ),
+         // A restated timestamp truncation is truncated again at read, in
+         // the zone the query reads it in (`checkTruncationZone`).
+         truncationColumns: new Map(
+            candidates
+               .filter((c) => c.reroot.restatedTruncations?.length)
+               .map((c) => [
+                  c.reroot.sourceID,
+                  new Set(c.reroot.restatedTruncations),
+               ]),
+         ),
+         zonedLeftOut: new Map(
+            candidates
+               .filter((c) => c.reroot.zonedLeftOut?.length)
+               .map((c) => [c.reroot.sourceID, new Set(c.reroot.zonedLeftOut)]),
+         ),
          leftOutTables: new Set(
             candidates
                .filter((c) => (c.reroot.columnsLeftOut ?? []).length > 0)
                .map((c) => c.binding.tablePath),
+         ),
+         leftOutColumns: new Map(
+            candidates
+               .filter((c) => (c.reroot.columnsLeftOut ?? []).length > 0)
+               .map((c) => [c.reroot.sourceID, c.reroot.columnsLeftOut!]),
          ),
          inlinedJoins: new Map(
             candidates
@@ -2750,6 +2848,47 @@ function v1ColumnsOf(
       return undefined;
    }
    return { columns, columnsLeftOut };
+}
+
+/**
+ * Whether a query reads any of `tables` in another time zone than the one it
+ * was built in: a zone its own text sets (`timezone:` in any stage), or the
+ * zone the source it runs on sets or inherits from anything on its chain
+ * (`ny is orders extend { timezone: … }`), which its text never names. A
+ * table is built in its stored source's own zone, and an explicit `'UTC'` is
+ * the default zone ({@link sameZone}). One rule for every zone-dependent
+ * stored value: a computed dimension, a rolling window's cut-off, and a
+ * restated timestamp truncation. Fails closed: a source that cannot be
+ * resolved counts as another zone.
+ */
+function readsInAnotherZone(
+   compiled: Compiled,
+   view: Pick<PreparedQueryView, "query" | "structRef">,
+   tables: readonly Binding[],
+): boolean {
+   try {
+      const map = SourceMap.of(compiled.modelDef);
+      const built = tables.map((b) => {
+         const id = b.sourceIDs?.[0];
+         return id ? queryTimezoneOf(map.node(id)?.def) : undefined;
+      });
+      const another = (zone: string) => built.some((z) => !sameZone(z, zone));
+      if (queryTimezones(view.query).some(another)) return true;
+      const struct = resolveStructRefSource<unknown>(
+         view.structRef as never,
+         compiled.modelDef as never,
+      );
+      if (struct === undefined) return true;
+      const zone =
+         queryTimezoneOf(struct) ??
+         map
+            .chainOf(struct)
+            .map((id) => queryTimezoneOf(map.node(id)?.def))
+            .find((z) => z !== undefined);
+      return zone !== undefined && another(zone);
+   } catch {
+      return true;
+   }
 }
 
 /**
@@ -3902,7 +4041,10 @@ export function chainBuildText(
    request: ChainBuildRequest,
    model: ChainBuildModel,
 ): ChainBuildText | undefined {
-   const lift = authorModelLiftContext(model.modelDef, readAuthorText);
+   const lift = authorModelLiftContext(
+      model.modelDef,
+      compiledTextReader(model.modelDef, model.context[0]),
+   );
    if (!lift.sourceNameById.has(request.downstream.sourceID)) return undefined;
    const entries: Record<string, ManifestEntry> = {};
    const aliases: Record<string, string[]> = {};
@@ -3952,4 +4094,91 @@ export function staleOnChain(
 ): boolean {
    const ids = new Set(chain);
    return stale.some((b) => (b.sourceIDs ?? []).some((id) => ids.has(id)));
+}
+
+/**
+ * The re-root's timestamp truncations, which it restates over the stored
+ * value (`d is d__stored.day`) and so truncates again in the zone the reading
+ * query runs in: the identity only in the zone the build truncated it in. A
+ * source that sets a zone, in its query or on itself, reads in another zone
+ * than it was built in (its query's stage zone ends with the query, and its
+ * own applies only at read), so each such column is left out (`leftOut`) and
+ * a query reading it answers live. Otherwise the columns stay (`restated`),
+ * built in the default zone, and a query that reads one in another zone is
+ * declined (`checkTruncationZone`).
+ */
+function zonedTruncations(
+   columns: readonly ServedColumn[],
+   def: unknown,
+   fieldsByName: ReadonlyMap<string, unknown>,
+): { columns: ServedColumn[]; leftOut: string[]; restated: string[] } {
+   const truncation = (c: ServedColumn) => {
+      const type = (fieldsByName.get(c.name) as { type?: unknown } | undefined)
+         ?.type;
+      return (
+         c.timeframe !== undefined &&
+         TIMEFRAMES.has(c.timeframe) &&
+         !c.castTo &&
+         (type === "timestamp" || type === "timestamptz")
+      );
+   };
+   const truncated = columns.filter(truncation).map((c) => c.name);
+   if (!queryTimezoneOf(def)) {
+      return { columns: [...columns], leftOut: [], restated: truncated };
+   }
+   return {
+      columns: columns.filter((c) => !truncation(c)),
+      leftOut: truncated,
+      restated: [],
+   };
+}
+
+/**
+ * A query that reads a restated timestamp truncation in another zone than
+ * the default it was built in is answered live: in a zone its own text sets,
+ * or one the source it runs on sets or inherits ({@link readsInAnotherZone}).
+ * Decided per column: a query that reads none of the truncations stays on
+ * the table, whatever zone it reads in. Fails closed on a query whose field
+ * reads cannot be listed.
+ */
+async function checkTruncationZone(
+   attempt: AnswerAttempt,
+   tablesRead: readonly Binding[],
+): Promise<void> {
+   const { compiled, decline, prepared } = attempt;
+   const truncating = tablesRead.filter((b) =>
+      compiled.truncationColumns?.has(b.sourceIDs?.[0] ?? ""),
+   );
+   if (truncating.length === 0) return;
+   const view = await prepared();
+   if (!readsInAnotherZone(compiled, view, truncating)) return;
+   const names = new Set(
+      truncating.flatMap((b) => [
+         ...(compiled.truncationColumns?.get(b.sourceIDs?.[0] ?? "") ?? []),
+      ]),
+   );
+   // A wildcard reads the restated field's stored column, under the internal
+   // name the served copy renames it to (`<name>__stored`, `__stored_2`, …).
+   const reads = (field: string | undefined) =>
+      field !== undefined &&
+      [...names].some((n) => {
+         const internal = `${n}__stored`;
+         return (
+            field === n ||
+            field === internal ||
+            (field.startsWith(`${internal}_`) &&
+               /^\d+$/.test(field.slice(internal.length + 1)))
+         );
+      });
+   const usage = queryFieldUsagePaths(view);
+   if (usage === undefined || usage.some((p) => reads(p[p.length - 1]))) {
+      decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
+   }
+}
+
+/** Whether two query time zones are one: unset is UTC, Malloy's default. */
+function sameZone(a: string | undefined, b: string | undefined): boolean {
+   const utc = (z: string | undefined) =>
+      z === undefined || z === "UTC" || z === "Etc/UTC" ? undefined : z;
+   return utc(a) === utc(b);
 }

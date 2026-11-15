@@ -70,8 +70,6 @@ import {
    BuildEnvironment,
    ChainedPlanFacts,
    NO_PLAN_FACTS,
-   partitionColumnsForBuild,
-   readAuthorFile,
    redactConnectionSecrets,
    currentUpstreamEntries,
    noteWrongTierRecompute,
@@ -82,6 +80,7 @@ import {
    wrongTierDetail,
 } from "./materialization_run_support";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { compiledTextReader } from "../../../utils";
 import {
    destinationSchemaOf,
    storageTablePath,
@@ -168,7 +167,10 @@ export class StorageBuildStrategy
          baseReuse = {},
          lift = authorModelLiftContext(
             plannedModelDefOf(params.persistSource),
-            readAuthorFile,
+            compiledTextReader(
+               plannedModelDefOf(params.persistSource),
+               params.environment.getPackagePath?.(),
+            ),
          ),
       } = params;
       const sourceEntityId = instruction.sourceEntityId;
@@ -434,7 +436,6 @@ export class StorageBuildStrategy
                      sourceDefOf(persistSource),
                   ),
                   physicalTableName,
-                  partitionColumns: partitionColumnsForBuild(persistSource),
                   declaredColumns,
                   castOptions,
                   environmentPath: environment.getEnvironmentPath(),
@@ -776,7 +777,6 @@ export class StorageBuildStrategy
             recomputes: persistSource,
             virtualMap: text.virtualMap,
             physicalTableName,
-            partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
             ...(replacesView ? { replacesView } : {}),
          });
@@ -889,7 +889,6 @@ export class StorageBuildStrategy
                ],
             ]),
             physicalTableName,
-            partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
             ...(replacesView ? { replacesView } : {}),
          });

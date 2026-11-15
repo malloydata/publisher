@@ -119,7 +119,12 @@ type: views__v_sibling__view__type is {
 }
 source: views__v_sibling__view__stored is __served_copy_alias_of_lake.virtual('abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6')::views__v_sibling__view__type
 source: views is views__v_sibling__view__stored extend {
-  view: v_sibling is { select: region, n; order_by: n desc }
+  view: v_sibling is {
+    group_by: region
+    aggregate:
+      n is n.max()
+    order_by: n desc
+  }
 }
 export { views, m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, v1_rollups }
 
@@ -133,7 +138,12 @@ type: views__v_nested__view__type is {
 }
 source: views__v_nested__view__stored is __served_copy_alias_of_lake.virtual('5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4')::views__v_nested__view__type
 source: views is views__v_nested__view__stored extend {
-  view: v_nested is { select: status, n; order_by: n desc }
+  view: v_nested is {
+    group_by: status
+    aggregate:
+      n is n.max()
+    order_by: n desc
+  }
 }
 export { views, m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, v1_rollups }
 

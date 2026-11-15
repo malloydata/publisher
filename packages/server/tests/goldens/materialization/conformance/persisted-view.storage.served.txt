@@ -5,13 +5,18 @@
 
 type: ov__by_region__view__type is {
    region::string,
-   # currency
-   #(doc) "Revenue"
    total::number
 }
 source: ov__by_region__view__stored is __served_copy_alias_of_lake.virtual('35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533')::ov__by_region__view__type
 source: ov is ov__by_region__view__stored extend {
-  view: by_region is { select: region, total; order_by: total desc }
+  view: by_region is {
+    group_by: region
+    aggregate:
+      # currency
+      #(doc) "Revenue"
+      total is total.max()
+    order_by: total desc
+  }
 }
 
 // ==== <pkg>/m.malloy.view-author.malloy

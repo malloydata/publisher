@@ -37,8 +37,9 @@
  *
  * What is refused here, from the declaration alone (each a publish warning,
  * `persist-view-not-built`, and the view serves live): an `@env.` reference on
- * the line, an incremental key (`watermark`, `merge_key`, `partition`; a view's
- * result is rebuilt whole), and two views whose generated names collide. The
+ * the line, the unsupported `partition=`, an incremental key (`watermark`,
+ * `merge_key`; a view's result is rebuilt whole), and two views whose
+ * generated names collide. The
  * build plan refuses the rest once it has compiled them (`build_plan.ts`): a
  * view that reads a given or the current time (its result differs per caller
  * or per read), a nested result stored with `storage=` (a destination's
@@ -79,7 +80,7 @@ export { PERSISTED_VIEW_COMPANION_SUFFIX };
 export const PERSIST_VIEW_NOT_BUILT = "persist-view-not-built";
 
 /** `#@ persist` keys that make a build incremental: a view rebuilds whole. */
-const INCREMENTAL_KEYS = ["watermark", "merge_key", "partition"] as const;
+const INCREMENTAL_KEYS = ["watermark", "merge_key"] as const;
 
 /** A declaration the planner would not build. */
 export interface PersistedViewRefusal {
@@ -162,6 +163,10 @@ function planSourcePersistedViews(
       // Read as Malloy reads them: `persist`, not `-persist`.
       const tag = readNotesIfAny(notes, "@");
       if (!tag?.has("persist")) continue;
+      if (tag.has("persist", "partition") || tag.has("partition")) {
+         refuse("`partition=` is not supported; remove it");
+         continue;
+      }
       const incremental = INCREMENTAL_KEYS.filter(
          (k) => tag.has("persist", k) || tag.has(k),
       );

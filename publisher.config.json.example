@@ -61,8 +61,7 @@
     "extensionFetchPolicy": "on-demand",
     "memoryLimit": null,
     "threads": null,
-    "tempDirectory": null,
-    "partitionedWriteFlushThreshold": "8192"
+    "tempDirectory": null
   },
   "ducklake": {
     "rowGroupSizeBytes": null,
