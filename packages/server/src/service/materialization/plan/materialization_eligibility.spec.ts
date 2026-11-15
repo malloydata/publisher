@@ -970,6 +970,42 @@ source: by_category is orders -> {
          );
       });
 
+      it("refuses a colocated persisted view's build over a gated source with the gated-sources switch off, as storage= does, and builds it with the switch on", async () => {
+         const author = (await persistSources(gatedModel)).by_category;
+         // The same compiled source, as a persisted view's companion build.
+         const viewID =
+            "by_category__v__view@file:///elig/m.malloy.persist-view.malloy";
+         const view = new Proxy(author, {
+            get: (target, key) =>
+               key === "sourceID" ? viewID : Reflect.get(target, key, target),
+         });
+         const plan = inputs(view.sourceID, undefined, false);
+         const off = withEnv(
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            () => refusal(() => assertTierEligible(view, false, plan)),
+         );
+         expect(off.reason).toBe("authorize");
+         expect(off.message).toContain("PUBLISHER_MATERIALIZE_GATED_SOURCES");
+         withEnv(R3_ON, () => assertTierEligible(view, false, plan));
+         // A v1 source of the same shape is the colocated tier check's, as
+         // before: admitted with the switch off.
+         withEnv(
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            () =>
+               assertTierEligible(
+                  author,
+                  false,
+                  inputs(author.sourceID, undefined, false),
+               ),
+         );
+      });
+
       it("lifts only the gate refusal: every other storage check still runs", async () => {
          const source = (
             await persistSources(`##! experimental { persistence givens }

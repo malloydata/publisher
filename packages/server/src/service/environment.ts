@@ -88,6 +88,7 @@ import {
 } from "./materialization/run/manifest_loader";
 import type { RunManifestLoad } from "./materialization/domain/types";
 import { ApiConnection } from "./model";
+import { destinationOverlaps } from "./destination_overlap";
 import { Package } from "./package";
 import { applyLoadGates } from "./package_load_gates";
 import { resolvePatchedSettings } from "./package_patch";
@@ -827,6 +828,7 @@ export class Environment {
          ? processStorageDestinationsOrThrow(requested)
          : processStorageDestinations(requested);
       this.destinationsAuthoritative = true;
+      this.warnOnDestinationOverlap();
 
       // An orchestrator re-pushing its desired state on a loop must not
       // re-attach every destination each cycle, so an equal list (ignoring
@@ -844,6 +846,28 @@ export class Environment {
          logger.info(
             `Environment ${this.environmentName} has ${this.destinations.length} storage destination(s)`,
             { destinations: this.destinations.map((d) => d.name) },
+         );
+      }
+   }
+
+   /**
+    * Warns when a connection a model can name reaches a storage
+    * destination's tables (destination_overlap.ts): a destination holds
+    * gated sources' rows ungated, so such a connection lets any package read
+    * them by name. A warning only: the operator's configuration decides.
+    */
+   private warnOnDestinationOverlap(): void {
+      for (const overlap of destinationOverlaps(
+         this.apiConnections ?? [],
+         this.destinations ?? [],
+      )) {
+         logger.warn(
+            `Connection "${overlap.connection}" reaches storage destination "${overlap.destination}": ${overlap.reason}. A destination holds stored tables, gated sources' rows among them with no gate, and models can read them through the connection by name. Never configure a destination's catalog or data path as a connection models can name.`,
+            {
+               environmentName: this.environmentName,
+               connection: overlap.connection,
+               destination: overlap.destination,
+            },
          );
       }
    }
@@ -4846,6 +4870,7 @@ export class Environment {
       this.malloyConfig = malloyConfig;
       const previousConnections = this.apiConnections;
       this.apiConnections = malloyConfig.apiConnections;
+      this.warnOnDestinationOverlap();
       if (previousMalloyConfig !== malloyConfig) {
          this.refreshBuildPlans(
             changedConnectionNames(previousConnections, this.apiConnections),

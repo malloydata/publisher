@@ -959,6 +959,29 @@ export function assertTierEligible(
             `table keeps the gate through Malloy's build manifest.`,
       });
    }
+   // A persisted view's or query's table over a gated source is read past
+   // the gate only by its own leg, which passes a gate only with
+   // PUBLISHER_MATERIALIZE_GATED_SOURCES on (the view leg; the query leg
+   // never). Off, the table would be built and never read past the gate, so
+   // it is refused, on this tier as on `storage=`; on, it is built as before.
+   if (
+      isPersistedResultBuild(source.sourceID) &&
+      !gateSwitches().gatedSources &&
+      referencesAuthorize(source)
+   ) {
+      recordEligibilityRefused("authorize");
+      throw new MaterializationEligibilityError({
+         reason: "authorize",
+         message:
+            `'${source.name}' cannot be materialized (colocated): the ` +
+            `source it reads is protected by an #(authorize) or ` +
+            `#(access_filter) gate, and a persisted view's or query's table ` +
+            `is read past a gate only with ` +
+            `PUBLISHER_MATERIALIZE_GATED_SOURCES on, so it would be built and ` +
+            `never read. It is not built, and its queries are answered live, ` +
+            `as on 'storage='.`,
+      });
+   }
    assertBuildReadsNoCurrentTime(source, plan);
 }
 

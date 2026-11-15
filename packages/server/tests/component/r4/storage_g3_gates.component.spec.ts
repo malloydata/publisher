@@ -770,3 +770,106 @@ describe("the same package with the gated-sources switch on", () => {
       }
    }, 180_000);
 });
+
+describe("a persisted view or query over a gated source, the same on both tiers", () => {
+   // Its own leg reads it past the gate only with the gated-sources switch
+   // on (the view leg; the query leg never). Off, neither tier builds the
+   // view; on, the colocated view is built as before and the storage= view
+   // stays refused. A persisted query that reaches a gate is never planned,
+   // whatever the switch (persisted_query.component.spec.ts): answered live.
+   const VIEWS = `##! experimental { givens persistence }
+import "raw.malloy"
+
+given: REGIONS :: string[]
+
+#(access_filter) region in $REGIONS
+source: g_orders is orders_raw extend {
+  measure: n is count()
+  #@ persist name="g3v_col"
+  view: by_region_col is { group_by: region; aggregate: n }
+  #@ persist name="g3v_sto" storage="lake"
+  view: by_region_sto is { group_by: region, status; aggregate: n }
+}
+
+#@ persist name="g3q_col"
+query: q_col is g_orders -> { group_by: region; aggregate: c is count() }
+`;
+   const QUERIES = [
+      "run: g_orders -> by_region_col",
+      "run: g_orders -> by_region_sto",
+      "run: q_col",
+   ];
+   const CALLERS_V: Givens[] = [
+      { REGIONS: ["north"] },
+      { REGIONS: ["east", "west"] },
+   ];
+
+   for (const gated of [false, true]) {
+      it(`gated sources ${gated ? "on" : "off"}: ${gated ? "the colocated view is built, the storage= view refused" : "no view is built on either tier"}, and every caller gets live's rows`, async () => {
+         const restore = installSettings({
+            env: {
+               ...G3_ONLY,
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gated),
+            },
+         }).restore;
+         await freshLoadPool();
+         const loader = await loadFixture({
+            ...DATA_FILES,
+            "raw.malloy": RAW_MODEL,
+            "m.malloy": VIEWS,
+         });
+         try {
+            const live = new Map<string, Outcome>();
+            for (const q of QUERIES) {
+               for (const [i, g] of CALLERS_V.entries()) {
+                  live.set(`${q}#${i}`, await loader.run("m.malloy", q, g));
+               }
+            }
+            const fixture = await loader.bind();
+            const built = fixture.built.map((b) => b.name).sort();
+            expect(built).toEqual(
+               gated ? ["g_orders__by_region_col__view"] : [],
+            );
+            const refusals = (fixture.pkg.getBuildPlan()?.refusedSources ??
+               {}) as Record<
+               string,
+               { name: string; tier: string; reason?: string }
+            >;
+            expect(
+               Object.values(refusals)
+                  .map((r) => `${r.name}:${r.tier}:${r.reason}`)
+                  .sort(),
+            ).toEqual(
+               (gated
+                  ? ["g_orders__by_region_sto__view:storage:authorize"]
+                  : [
+                       "g_orders__by_region_col__view:colocated:authorize",
+                       "g_orders__by_region_sto__view:storage:authorize",
+                    ]
+               ).sort(),
+            );
+            for (const q of QUERIES) {
+               for (const [i, g] of CALLERS_V.entries()) {
+                  const l = live.get(`${q}#${i}`)!;
+                  const served = await fixture.run("m.malloy", q, g);
+                  if ("error" in l) throw new Error(l.error);
+                  if ("error" in served) throw new Error(served.error);
+                  expect(
+                     rowDifference(l.answer.rows, served.answer.rows),
+                  ).toBeUndefined();
+                  // Only the colocated view, with the switch on, is read past
+                  // the gate.
+                  expect([q, served.answer.servedBy]).toEqual([
+                     q,
+                     gated && q.endsWith("by_region_col") ? "view" : "live",
+                  ]);
+               }
+            }
+         } finally {
+            await loader.dispose();
+            restore();
+            await freshLoadPool();
+         }
+      }, 180_000);
+   }
+});
