@@ -738,6 +738,66 @@ run: mid_ungated -> { aggregate: c }`,
       }
    });
 
+   it("judges render tags once per prepared content: a hit on the same, a miss on changed text or schema", async () => {
+      writeManifest();
+      const { renderTagFindingsCache } = await import(
+         "../../src/service/render_tag_findings_cache"
+      );
+      const validator = await import("@malloydata/render-validator");
+      const validate = spyOn(validator, "validateRenderTags");
+      const model = (sparkline: string) =>
+         `source: cached is duckdb.table('cached.csv') extend {
+  measure: total is a.sum()
+  # big_value { sparkline=${sparkline} }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`;
+      fs.writeFileSync(path.join(tempDir, "cached.csv"), "a,b\n1,2\n");
+      fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("trend"));
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      const load = async () => {
+         validate.mockClear();
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         return {
+            calls: validate.mock.calls.length,
+            warnings: pkg.getPackageMetadata().warnings ?? [],
+         };
+      };
+      try {
+         renderTagFindingsCache.clear();
+         const first = await load();
+         expect(first.calls).toBe(1);
+         expect(
+            first.warnings.some(
+               (w) => w.subject === "cached -> card" && w.severity === "error",
+            ),
+         ).toBe(true);
+
+         // The same content: the findings come from the cache, unchanged.
+         const again = await load();
+         expect(again.calls).toBe(0);
+         expect(again.warnings).toEqual(first.warnings);
+
+         // Changed model text: judged afresh.
+         fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("other"));
+         expect((await load()).calls).toBe(1);
+
+         // The same text over a table whose schema changed: judged afresh,
+         // which a key on model text alone would miss.
+         fs.writeFileSync(path.join(tempDir, "cached.csv"), "a,b\n1.5,2\n");
+         fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("trend"));
+         expect((await load()).calls).toBe(1);
+         expect((await load()).calls).toBe(0);
+      } finally {
+         validate.mockRestore();
+         await duckdb.close();
+      }
+   });
+
    it("reads a model's report facts once while validating its render tags, not once per target", async () => {
       writeManifest();
       // Ten annotated views: ten render-tag targets in one model.

@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — less main-thread work per package load
+
+0.13.1 added a check to every package load that walked each model's whole compiled definition for joins inside array queries. That walk ran on the main thread, and it remembered every node it visited in a table that outlived the walk. The check now asks first whether a model governs access at all. A model that governs nothing is not walked for joins. A model that does is walked once, and the walk keeps nothing afterwards. A load that refused such a join still refuses it, with the same message.
+
+The memory governor reads only the process's resident memory on each tick, not the full `process.memoryUsage()` object with its heap statistics. In Bun those statistics cost more as the heap grows.
+
+The render-tag check now keeps its findings for each model, keyed on a digest of the results it reads and on the installed `@malloydata/render-validator` version. A model loaded again unchanged reuses its findings instead of being checked again on the main thread. A change to the model's text, to the schema of a table it reads, or to the validator is checked afresh. The cache holds the findings of at most 1,024 models. The warnings a package reports are unchanged.
+
+No API, enum or metric value changes.
+
 ## [Unreleased] — a `storage=` rollup returns exact big-integer sums and keeps `timestamptz` grains
 
 A rollup stored in a `storage=` destination (`#(preaggregate)` or v1 `#@ preaggregate`) read its stored table with the wrong types in two cases. A big-integer measure (a `sum` of a BIGINT) whose total passed 2^53 came back rounded, as `-9007199254740992` where live gives `-9007199254740993`; it is now read through its native type and returns every digit, as live does. A grain dimension live types as `timestamptz` came back typed `timestamp`, with equal rows; it now keeps its `timestamptz` type. A big-integer column the destination stored where no cast reads it exactly (a float, its digits already lost) is no longer served: the rollup is skipped with reason `MISSING_FIELD` and the query is answered live. Colocated rollups are unchanged; they were already exact.
