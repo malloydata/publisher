@@ -2617,6 +2617,12 @@ export class Model {
 
    /** Set the storage destinations, pushed by the owning package. */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
+      // The same provider again changes nothing: it is read live, and a
+      // destination list swap invalidates explicitly (invalidateCompiledLegs).
+      if (provider === this.serveDestinationConfig) return;
+      // Replaced, not first set (a reload's new model): what failed over the
+      // old destinations may compile over these.
+      if (this.serveDestinationConfig) this.servedCopy.forgetFailures();
       this.serveDestinationConfig = provider;
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
@@ -2634,13 +2640,24 @@ export class Model {
       materializePlans: Readonly<Record<string, MaterializePlan>> = {},
       declarationOf?: (sourceID: string) => unknown,
    ): void {
+      // The same context again (a rebind, a republish) keeps the served
+      // copy: its compile is keyed on its bindings, and this model's own text
+      // never changes. The other legs are reset as before, since their caches
+      // are not keyed on the colocated entries a bind can change alone.
+      const current = this.servedCopyContext;
+      const unchanged =
+         !!current &&
+         current[0] === packagePath &&
+         current[1] === malloyConfig &&
+         current[2] === materializePlans &&
+         current[3] === declarationOf;
       this.servedCopyContext = [
          packagePath,
          malloyConfig,
          materializePlans,
          declarationOf,
       ];
-      this.servedCopy.setContext(...this.servedCopyContext);
+      if (!unchanged) this.servedCopy.setContext(...this.servedCopyContext);
       this.persistedViews.setContext(packagePath, malloyConfig);
       this.persistedQueries.setContext(packagePath, malloyConfig);
       this.rollupVariants.setContext(packagePath, malloyConfig);
@@ -2762,6 +2779,7 @@ export class Model {
 
    /** Drop every compiled leg (the destinations or the model changed). */
    public invalidateCompiledLegs(): void {
+      this.servedCopy.forgetFailures();
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
