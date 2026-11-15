@@ -67,11 +67,10 @@ import {
    viewNoteTexts,
 } from "../text/read_text";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import { timeframeRestatements, typeDeclaration } from "./served_copy";
-import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
+import { servedCopyConfig } from "./served_copy_config";
+import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import {
    callerTextDecline,
-   type ColumnCast,
    type CompiledVariant,
    type PersistedViewServe,
    readStoredVariant,
@@ -410,39 +409,15 @@ export class PersistedQueryServe {
             const stored = `${plan.buildSourceName}__stored`;
             let storedSource: string;
             if (table.binding) {
-               const typeName = `${plan.buildSourceName}__type`;
-               // A stored column carries the notes live's output column does;
-               // a timeframe's, a cast's and a measure's go on its redefined
-               // field or its re-aggregation instead, as in the view leg.
-               const columnNotes = new Map(
-                  shape.columns.map((c) => [
-                     c.name,
-                     c.timeframe || casts.has(c.name) || c.kind === "measure"
-                        ? []
-                        : c.notes,
-                  ]),
-               );
-               const columns = table.binding.schema.map((c) => {
-                  const notes = columnNotes.get(c.name);
-                  return {
-                     name: c.name,
-                     type: c.type,
-                     ...(notes && notes.length > 0 ? { notes } : {}),
-                  };
+               const { typeText, timeframes } = storedTypedSource({
+                  columns: shape.columns,
+                  casts,
+                  binding: table.binding,
+                  typeName: `${plan.buildSourceName}__type`,
+                  stored,
                });
-               // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
-               const timeframes = timeframeRestatements(
-                  shape.columns.map((c) => {
-                     const cast = casts.get(c.name);
-                     if (!cast) return c;
-                     const notes = c.kind === "measure" ? [] : c.notes;
-                     return { ...c, notes, ...cast };
-                  }),
-                  table.binding.schema.map((c) => c.name),
-               );
-               // malloy-text: the type emitter and names through identifier
-               storedSource = `${typeDeclaration({ typeName, columns })}
-source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}${sourceTimezone || timeframes ? ` extend {${sourceTimezone}${timeframes}\n}` : ""}`;
+               // malloy-text: storedTypedSource's text, its restatements and the source's own zone
+               storedSource = `${typeText}${sourceTimezone || timeframes ? ` extend {${sourceTimezone}${timeframes}\n}` : ""}`;
             } else {
                // The companion over the copy, so its build SQL (and so its
                // address) is the one the build plan computed.

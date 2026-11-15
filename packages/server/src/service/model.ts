@@ -345,6 +345,7 @@ export class Model {
       serveDestinationConfig: () => this.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
       planModelPersistedViews,
+      planModelPersistedQueries,
    });
    /**
     * The `#@ persist` named-query leg: a router candidate only when

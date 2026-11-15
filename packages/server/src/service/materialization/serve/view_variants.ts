@@ -70,21 +70,22 @@ import { extractRunViewCall, type RunViewCall } from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
 import type { BuildManifest } from "../domain/types";
 import {
-   generatePersistedViewFile,
+   generatePersistedResultFile,
    persistedViewCompanionHref,
    viewNoteTexts,
 } from "../text/read_text";
-import { splitSourceID, type PersistedViewPlan } from "../domain/table_plans";
+import {
+   splitSourceID,
+   type PersistedQueryPlan,
+   type PersistedViewPlan,
+} from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import type { Binding, Pinned } from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes, noteSource } from "../text/field_notes";
-import {
-   TIMEFRAMES,
-   timeframeRestatements,
-   typeDeclaration,
-} from "./served_copy";
+import { TIMEFRAMES } from "./served_copy";
+import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
 import {
@@ -109,6 +110,10 @@ interface ViewVariantHost {
     * imports the planner.
     */
    planModelPersistedViews(modelDef: unknown): { plans: PersistedViewPlan[] };
+   /** The persisted named queries likewise, for the companion they share. */
+   planModelPersistedQueries(modelDef: unknown): {
+      plans: PersistedQueryPlan[];
+   };
 }
 
 /** A persisted view's answer, for the router. */
@@ -497,54 +502,32 @@ export class PersistedViewServe {
             if (table.binding) {
                const typeName = `${plan.buildSourceName}__type`;
                const stored = `${plan.buildSourceName}__stored`;
-               // A stored column carries the notes live's output column does
-               // (its field's, and the view's own on it): a `type:` field
-               // keeps its annotations, so the result column reads them as
-               // live's does. A timeframe column's go on its redefined field
-               // (timeframeRestatements), and a measure's on the view's
-               // re-aggregation of it (viewDeclaration), instead.
-               // A cast column's go on its redefined field too
-               // (storedColumnCasts).
-               const columnNotes = new Map(
-                  shape.columns.map((c) => [
-                     c.name,
-                     c.timeframe || casts.has(c.name) || c.kind === "measure"
-                        ? []
-                        : c.notes,
-                  ]),
-               );
-               const columns = table.binding.schema.map((c) => {
-                  const notes = columnNotes.get(c.name);
-                  return {
-                     name: c.name,
-                     type: c.type,
-                     ...(notes && notes.length > 0 ? { notes } : {}),
-                  };
+               const { typeText, timeframes } = storedTypedSource({
+                  columns: shape.columns,
+                  casts,
+                  binding: table.binding,
+                  typeName,
+                  stored,
                });
                // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
-               const timeframes = timeframeRestatements(
-                  shape.columns.map((c) => {
-                     const cast = casts.get(c.name);
-                     if (!cast) return c;
-                     // A measure's notes go on its re-aggregation.
-                     const notes = c.kind === "measure" ? [] : c.notes;
-                     return { ...c, notes, ...cast };
-                  }),
-                  table.binding.schema.map((c) => c.name),
-               );
-               // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
-               return `${typeDeclaration({ typeName, columns })}
-source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}
-${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${sourceTimezone}${timeframes}
+               const restated = timeframes;
+               // malloy-text: storedTypedSource's text, the author's gate and view notes (single lines), and names through identifier
+               return `${typeText}
+${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${sourceTimezone}${restated}
 ${viewBody}
 }`;
             }
             // The companion over the copy, so its build SQL (and so its
             // address) is the one the build plan computed.
-            const siblings = this.host
-               .planModelPersistedViews(modelDef)
-               .plans.filter((p) => p.declaringURL === declared.url);
-            const text = generatePersistedViewFile(siblings, copyName);
+            const text = generatePersistedResultFile(
+               this.host
+                  .planModelPersistedViews(modelDef)
+                  .plans.filter((p) => p.declaringURL === declared.url),
+               this.host
+                  .planModelPersistedQueries(modelDef)
+                  .plans.filter((p) => p.declaringURL === declared.url),
+               copyName,
+            );
             if (!text) return { error: "no companion" };
             const companion = persistedViewCompanionHref(declaringURL.href);
             addFile(new URL(companion), text);
@@ -803,11 +786,6 @@ async function viewShape(
       ...(dialect !== undefined ? { dialect } : {}),
    };
 }
-
-/** How a stored column is read: through a faithful cast, or a big integer's native type. */
-export type ColumnCast =
-   | { castTo: "DATE" | "BOOLEAN" }
-   | { nativeCast: string };
 
 /**
  * The stored columns of a `storage=` view's table read through a cast, by
