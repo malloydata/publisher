@@ -10,12 +10,13 @@
  *
  *  - Naming: two `#@ persist name=` values that differ only in case, on a
  *    destination that folds case (`storage=` and colocated DuckDB); two
- *    persisted views that resolve to one table.
+ *    persisted views that resolve to one table (under
+ *    `PERSIST_COLLISION_ENFORCE=false`; by default each fails the load).
  *  - Rollups: two models' same-named bases rolled up at one grain, whose
  *    hashed names never meet (`rollup_name_collision` does not fire); a
  *    `#(preaggregate)` whose partial column clashes with a field
- *    (`preaggregate-name-clash`); unmergeable measures, refused at publish
- *    (v2) and failing the load (v1); a v1 `storage=` rollup over a
+ *    (`preaggregate-name-clash`); unmergeable measures, failing the load (v1
+ *    and v2); a v1 `storage=` rollup over a
  *    `storage=` base, served by the rollup leg.
  *  - Warnings: `materialization-unreachable`, for a persisted source nothing
  *    published reads.
@@ -24,8 +25,8 @@
  *  - Governance: a `#(secure)` given read by a stored source's own `where:`,
  *    per caller; a `storage=` source joining a gated source, refused through
  *    a plain join and built through an annotated one, which the eligibility
- *    scan does not follow; a v1 rollup base with an array column, which
- *    fails the load as a fan-out join.
+ *    scan does not follow; a v1 rollup base with an array column, whose
+ *    rollups are refused alone as over a fan-out join.
  *  - Known limitation 36: a gate inherited through a query-shaped
  *    derivation answers live, filtered by the gate, while the rest of the
  *    model serves.
@@ -181,6 +182,9 @@ for (const tier of ["storage", "colocated"] as const) {
    scenario(
       `two #@ persist names that differ only in case, ${tier} on DuckDB (folds case)`,
       {
+         // By default the pair fails the load (`materialization-table-collision`,
+         // below); this holds the serve path to the operator's opt-out.
+         env: { PERSIST_COLLISION_ENFORCE: "false" },
          files: {
             "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -220,12 +224,17 @@ source: apart is orders_raw -> { select: id, region, amount } extend {
          },
       ],
       {
-         "publish refuses the pair as one table, naming both": (l) => {
-            expect(l.rejections).toBeDefined();
-            expect(l.rejections).toContain("east");
-            expect(l.rejections).toContain("west");
-            expect(l.rejections).not.toContain("apart");
-         },
+         "under the opt-out, the pair is refused alone, naming both, and the package publishes":
+            (l) => {
+               expect(l.rejections).toBeUndefined();
+               const refused = codes(l, "persist-not-built").map(
+                  (w) => w.message ?? "",
+               );
+               expect(
+                  refused.some((m) => /east/.test(m) && /west/.test(m)),
+               ).toBe(true);
+               expect(refused.some((m) => /apart/.test(m))).toBe(false);
+            },
          "both of the pair are refused, the source beside them serves": (l) => {
             expect([...l.fixture.verdicts].sort()).toEqual([
                "apart:serves",
@@ -240,6 +249,9 @@ source: apart is orders_raw -> { select: id, region, amount } extend {
 scenario(
    "two persisted views resolving to one table",
    {
+      // By default the two fail the load (below); this holds the serve path
+      // to the operator's opt-out.
+      env: { PERSIST_COLLISION_ENFORCE: "false" },
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -274,9 +286,8 @@ source: orders is orders_raw extend {
       },
    ],
    {
-      "publish refuses the two views as one table": (l) => {
-         expect(l.rejections).toBeDefined();
-         expect(l.rejections).toContain("by_key");
+      "under the opt-out, the package publishes": (l) => {
+         expect(l.rejections).toBeUndefined();
       },
       "neither colliding view is served from a table, the third is": (l) => {
          const views = l.fixture.pkg
@@ -294,6 +305,60 @@ source: orders is orders_raw extend {
       },
    },
 );
+
+describe("names an author put on one table, by default", () => {
+   let restore: () => void = () => {};
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      await freshLoadPool();
+   });
+   afterAll(async () => {
+      restore();
+      await freshLoadPool();
+   });
+
+   for (const [label, body, names] of [
+      [
+         "two #@ persist names that differ only in case",
+         `#@ persist name="T_east" storage="lake"
+source: east is orders_raw -> { where: region = 'east'; select: id, region, amount }
+#@ persist name="t_east" storage="lake"
+source: west is orders_raw -> { where: region = 'west'; select: id, region, amount }`,
+         ["east", "west"],
+      ],
+      [
+         "two persisted views at one name=",
+         `source: orders is orders_raw extend {
+  measure: total is amount.sum()
+  #@ persist name="by_key"
+  view: by_region is { group_by: region; aggregate: total }
+  #@ persist name="by_key"
+  view: by_status is { group_by: status; aggregate: total }
+}`,
+         ["by_key"],
+      ],
+   ] as const) {
+      it(`${label}: the load fails, materialization-table-collision`, async () => {
+         let error: unknown;
+         try {
+            const loader = await loadFixture({
+               ...DATA_FILES,
+               "raw.malloy": RAW_MODEL,
+               "m.malloy": `${HEADER}\nimport "raw.malloy"\n\n${body}\n`,
+            });
+            await loader.dispose();
+         } catch (e) {
+            error = e;
+         }
+         expect(error).toBeInstanceOf(Error);
+         const message = (error as Error).message;
+         expect(message).toContain("[materialization-table-collision]");
+         for (const name of names) expect(message).toContain(name);
+      }, 120_000);
+   }
+});
 
 // ---------------------------------------------------------------------------
 // Rollups
@@ -408,31 +473,27 @@ source: orders is orders_raw extend {
       await freshLoadPool();
    });
 
-   it("v2 #(preaggregate) on avg and count_distinct: warned preaggregate-not-mergeable, and publish refuses it", async () => {
-      const loader = await loadFixture({
-         ...DATA_FILES,
-         "raw.malloy": RAW_MODEL,
-         "m.malloy": model(`#(preaggregate) grain=["status"]
+   it("v2 #(preaggregate) on avg and count_distinct: the load fails, preaggregate-not-mergeable naming both", async () => {
+      let error: unknown;
+      try {
+         const loader = await loadFixture({
+            ...DATA_FILES,
+            "raw.malloy": RAW_MODEL,
+            "m.malloy": model(`#(preaggregate) grain=["status"]
   measure: avg_amount is amount.avg()
   #(preaggregate) grain=["status"]
   measure: customers is count(customer_id)`),
-      });
-      try {
-         const warned = (loader.pkg.getPackageMetadata().warnings ?? [])
-            .filter(
-               (w) =>
-                  (w as { code?: string }).code ===
-                  "preaggregate-not-mergeable",
-            )
-            .map((w) => (w as { subject?: string }).subject)
-            .sort();
-         expect(warned).toEqual(["orders.avg_amount", "orders.customers"]);
-         const rejections = formatPublishRejections(loader.pkg as never);
-         expect(rejections).toContain("avg_amount");
-         expect(rejections).toContain("customers");
-      } finally {
+         });
          await loader.dispose();
+      } catch (e) {
+         error = e;
       }
+      expect(error).toBeInstanceOf(Error);
+      const lines = (error as Error).message
+         .split("\n")
+         .filter((l) => l.includes("[preaggregate-not-mergeable]"));
+      expect(lines.some((l) => l.includes("avg_amount"))).toBe(true);
+      expect(lines.some((l) => l.includes("customers"))).toBe(true);
    }, 120_000);
 
    it("v1 #@ preaggregate on avg: the load fails, naming the measure (non_additive_measure)", async () => {
@@ -865,11 +926,10 @@ source: tagged_join is orders_raw extend {
 );
 
 describe("a v1 #@ preaggregate base with an array column", () => {
-   it("fails the load, naming the array as a fan-out join", async () => {
+   it("refuses its rollups alone, naming the array as a fan-out join, and the package loads", async () => {
       const restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
-      let error: unknown;
       try {
          await freshLoadPool();
          const loader = await loadFixture({
@@ -884,15 +944,25 @@ source: listed is duckdb.sql("""
 }
 `,
          });
-         await loader.dispose();
-      } catch (e) {
-         error = e;
+         try {
+            const refused = (
+               loader.pkg.getPackageMetadata().warnings ?? []
+            ).filter(
+               (w) =>
+                  (w as { code?: string }).code === "preaggregate-join-level",
+            );
+            expect(refused).toHaveLength(1);
+            expect(refused[0]?.message).toContain(
+               "joins `lst` with a fan-out join",
+            );
+            expect(
+               Object.values(loader.pkg.getBuildPlan()?.sources ?? {}),
+            ).toEqual([]);
+         } finally {
+            await loader.dispose();
+         }
       } finally {
          restore();
       }
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain(
-         "joins `lst` with a fan-out join",
-      );
    }, 120_000);
 });

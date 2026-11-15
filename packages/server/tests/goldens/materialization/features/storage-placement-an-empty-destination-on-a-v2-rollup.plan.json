@@ -1,30 +1,3 @@
 {
-  "internal": {
-    "annotationFindings": [
-      {
-        "code": "preaggregate-malformed",
-        "message": "#(preaggregate) on measure \"r_empty\" of source \"rollups\" has a storage= that is not a destination name",
-        "model": "m.malloy",
-        "route": "preaggregate",
-        "subject": "rollups.r_empty",
-        "tier": "malformed"
-      }
-    ],
-    "builds": [],
-    "droppedPersistSources": [],
-    "materializePlans": {},
-    "rollupPlans": {},
-    "sourceGateOutcomes": {},
-    "sourceModelPaths": {}
-  },
-  "loadWarnings": [
-    {
-      "code": "preaggregate-malformed",
-      "message": "#(preaggregate) on measure \"r_empty\" of source \"rollups\" has a storage= that is not a destination name",
-      "model": "m.malloy",
-      "severity": "error",
-      "subject": "rollups.r_empty"
-    }
-  ],
-  "wirePlan": null
+  "loadError": "m.malloy: #(preaggregate) on measure \"r_empty\" of source \"rollups\" has a storage= that is not a destination name [preaggregate-invalid]"
 }
