@@ -11,7 +11,14 @@ type: orders__by_region__view__type is {
 }
 source: orders__by_region__view__stored is __served_copy_alias_of_lake.virtual('2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a')::orders__by_region__view__type
 source: orders is orders__by_region__view__stored extend {
-  view: by_region is { select: region, n, total; order_by: n desc }
+  view: by_region is {
+    group_by: region
+    aggregate:
+      n is n.max()
+    aggregate:
+      total is total.max()
+    order_by: n desc
+  }
 }
 export { orders, north_orders }
 
@@ -21,7 +28,12 @@ import { north_orders } from "m.malloy.view-author.malloy"
 
 import { orders__by_status__view__built is orders__by_status__view } from "m.malloy.persist-view.malloy"
 source: orders is orders__by_status__view__built extend {
-  view: by_status is { select: status, n; order_by: n desc }
+  view: by_status is {
+    group_by: status
+    aggregate:
+      n is n.max()
+    order_by: n desc
+  }
 }
 export { orders, north_orders }
 

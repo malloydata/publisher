@@ -237,14 +237,15 @@ describe.each([
          });
       }
 
-      // A nested view is stored colocated only (a destination holds no nest).
+      // A nested view is stored colocated only (a destination holds no nest),
+      // and answered live: its nest's stored rows cannot be rebuilt exactly.
       it.if(colocated)(
-         "returns a nest's columns with their annotations",
+         "answers a nested view live, with a nest's columns and their annotations",
          async () => {
             const { live, served } = await both("run: orders -> nested");
             expect(live.error).toBeUndefined();
             expect(served.error).toBeUndefined();
-            expect(served.servedBy).toBe("view");
+            expect(served.servedBy).toBe("live");
             expect(rowDifference(live.rows, served.rows)).toBeUndefined();
             expect(live.nestedNotes["by_buyer.revenue"]).toContain(
                "# currency",

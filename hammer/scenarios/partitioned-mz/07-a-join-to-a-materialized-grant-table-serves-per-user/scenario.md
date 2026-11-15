@@ -76,18 +76,18 @@ source: raw_opps is orders_pg.sql('SELECT opp_id, org_id, restricted, amount FRO
 source: raw_grants is orders_pg.sql('SELECT org_id, user_id, opp_id FROM public.pvj_grants')
 source: raw_accounts is orders_pg.sql('SELECT account_id, org_id FROM public.pvj_accounts')
 
-#@ persist name="pvj_accounts" storage=lake partition="org_id"
+#@ persist name="pvj_accounts" storage=lake
 source: accounts is raw_accounts -> { select: * } extend {
   where: org_id = $ORG_ID
   measure: account_count is count()
 }
 
-#@ persist name="pvj_grants" storage=lake partition="org_id"
+#@ persist name="pvj_grants" storage=lake
 source: grants is raw_grants -> { select: * } extend {
   where: org_id = $ORG_ID and user_id = $USER_ID
 }
 
-#@ persist name="pvj_opps" storage=lake partition="org_id"
+#@ persist name="pvj_opps" storage=lake
 source: opps is raw_opps -> { select: * } extend {
   where: org_id = $ORG_ID
   join_one: g is grants on opp_id = g.opp_id

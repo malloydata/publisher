@@ -29,9 +29,9 @@ source: my_rollup is some_source -> { group_by: ...; aggregate: ... }
 
 ## Identity and reuse
 
-A persist source's identity is its **`sourceEntityId`**: a content address of its connection, its canonical SQL and its `partition=` layout. Not the name, not the file, not the package version. So:
+A persist source's identity is its **`sourceEntityId`**: a content address of its connection and its canonical SQL. Not the name, not the file, not the package version. So:
 
-- **A rebuild with unchanged persist logic reuses the existing table** (skip-if-unchanged); changing the SQL or the partition layout builds fresh under a new address. `--force-refresh` and every scheduler fire defeat the skip; an incremental source is exempt from it and advances by its boundary instead (`reference/refresh.md`).
+- **A rebuild with unchanged persist logic reuses the existing table** (skip-if-unchanged); changing the SQL builds fresh under a new address. `--force-refresh` and every scheduler fire defeat the skip; an incremental source is exempt from it and advances by its boundary instead (`reference/refresh.md`).
 - **Two sources whose bodies compile to the same SQL share one table**, however they are named, and share one freshness policy and one incremental boundary with it.
 - **A republish by itself builds nothing on a standalone server**; reuse is a property of the next *run*.
 
@@ -48,7 +48,6 @@ A persist source's identity is its **`sourceEntityId`**: a content address of it
 |---|---|---|
 | `name="..."` | the target table (required) | above |
 | `storage=<destination>` | build into a storage destination and serve from it | `reference/storage.md` |
-| `partition="a,b"` | lay the stored table out by those columns (`storage=` only) | `reference/storage.md` |
 | `refresh="incremental" watermark="col" [merge_key="a,b"]` | refresh by bounded delta instead of a full rebuild | `reference/refresh.md` |
 | `freshness.window="24h" freshness.fallback="live"` | per-source freshness objective (hosted deployments) | `reference/refresh.md` |
 | `#@ queryMetadata.<key>="v"` (sibling line) | per-source cost-attribution properties | `reference/policy.md` |

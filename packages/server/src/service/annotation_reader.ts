@@ -244,7 +244,6 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "merge_key",
    "freshness",
    "queryMetadata",
-   "partition",
 ]);
 
 /** The pre-aggregation directive's keys, on the same `#@` route. */
@@ -265,7 +264,6 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
    "refresh",
    "watermark",
    "merge_key",
-   "partition",
    "freshness",
    "queryMetadata",
    "inline",
@@ -281,6 +279,17 @@ export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
    "storage",
    "namespace",
 ]);
+
+/**
+ * The rewrite for a `partition=` on `#@ persist` or `#(materialize)`, both of
+ * which once laid a storage table out by the named columns. Partitioning was a
+ * layout choice only, never isolation, so dropping the key costs scan time and
+ * nothing else.
+ */
+const PARTITION_RETIRED =
+   "remove it: partition= is not supported, and the stored table is written " +
+   "unpartitioned. It was a layout choice only, so the cost is scan time; " +
+   "what each caller sees is unchanged";
 
 /**
  * The materialization v2 routes. Each is read only with the materialize switch
@@ -325,9 +334,14 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
             "set materialization.scope in publisher.json; a source no longer chooses its own sharing",
          schedule:
             "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
+         partition: PARTITION_RETIRED,
       },
    },
-   materialize: { payload: "tag", keys: MATERIALIZE_KEYS },
+   materialize: {
+      payload: "tag",
+      keys: MATERIALIZE_KEYS,
+      retiredKeys: { partition: PARTITION_RETIRED },
+   },
    preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
    "!": { payload: "tag" },
    "": { payload: "tag" },
@@ -360,10 +374,26 @@ export interface AnnotationFinding {
    message: string;
    /** The fix, when there is one. */
    rewrite?: string;
+   /** For a retired key: the key. */
+   key?: string;
+   /** The key was written inside the `persist` key (`#@ persist { … }`). */
+   nested?: true;
    /** The source or field the annotation is on. */
    subject?: string;
    at?: DocumentLocation;
 }
+
+/**
+ * The retired `#@ persist` keys the persistence policy already refuses at
+ * publish (`persistencePolicyWarnings`, which the scheduler and a metadata
+ * PATCH also read), when written at the top level. Every other
+ * `persist-retired-key` finding is refused at publish only, from the finding
+ * itself, so a package already loaded keeps its schedule.
+ */
+export const POLICY_REFUSED_RETIRED_KEYS: ReadonlySet<string> = new Set([
+   "sharing",
+   "schedule",
+]);
 
 /**
  * A route's tag, read without the server's environment (see `parseRouteTag`),
@@ -398,6 +428,7 @@ export function readRouteTag(
                code: `${route === "@" ? "persist" : route}-retired-key`,
                message: `\`${key}=\` is no longer read on \`${spelled}\``,
                rewrite: retired,
+               key,
             });
          } else if (!accepted.has(key)) {
             const near = nearestKey(key, accepted);
@@ -408,6 +439,24 @@ export function readRouteTag(
                   : "unservable",
                code: `${route === "@" ? "persist" : route}-unknown-key`,
                message: `\`${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+            });
+         }
+      }
+      // A key written inside `persist` (`#@ persist { partition="day" }`) is
+      // read as the top-level one is (the one placement rule, plan/
+      // declaration.ts), so a retired one there is retired too.
+      if (route === "@") {
+         for (const [key] of tag.tag("persist")?.entries() ?? []) {
+            const retired = spec?.retiredKeys?.[key];
+            if (retired === undefined) continue;
+            findings.push({
+               route,
+               tier: "malformed",
+               code: "persist-retired-key",
+               message: `\`${key}=\` is no longer read on \`#@ persist { … }\``,
+               rewrite: retired,
+               key,
+               nested: true,
             });
          }
       }

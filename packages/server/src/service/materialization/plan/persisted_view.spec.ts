@@ -175,6 +175,20 @@ source: ops is ${TABLE} extend {
       expect(findings.some((m) => m.includes("@env."))).toBe(true);
    });
 
+   it("refuses the retired partition=, saying to remove it", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="p" partition="carrier"
+  view: p is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c)).toEqual([
+         expect.stringContaining("`partition=` is not supported; remove it"),
+      ]);
+   });
+
    it("refuses a nested view stored with storage=, and builds it colocated", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {

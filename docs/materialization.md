@@ -228,12 +228,12 @@ source scoped to the caller's org joins a grant table scoped to the caller's org
 dimension decides what the caller may see by null-checking the join.
 
 ```malloy
-#@ persist name="grants" storage=lake partition="org_id"
+#@ persist name="grants" storage=lake
 source: grants is raw_grants -> { select: * } extend {
   where: org_id = $ORG_ID and user_id = $USER_ID
 }
 
-#@ persist name="opps" storage=lake partition="org_id"
+#@ persist name="opps" storage=lake
 source: opps is raw_opps -> { select: * } extend {
   where: org_id = $ORG_ID
   join_one: g is grants on opp_id = g.opp_id
@@ -342,56 +342,13 @@ declaration is the shape it cannot honour, so the safe outcome is that the given
 never resolved and the caller's own value is honoured — by a model that reads as though it
 were gated. Declare the attribute as a set and scope with `in`.
 
-### `partition=`: laying the artifact out
+### `partition=` is not supported
 
-`#@ persist partition="org_id"` writes the stored table as one directory per distinct value, so an
-equality term on that column reads only the files it names. `partition="org_id,day"` nests them in
-the order given.
-
-It is a **layout** and carries no isolation. Every stripped term is re-applied at read whether or not
-its column is partitioned, so a partition list that omits the column a caller is scoped by costs a
-full scan, never a leak — which is why the list is the author's free choice rather than something
-derived from the source's filters. Partitioning by a high-cardinality column, or by several columns
-at once, buys pruning at the cost of many small files.
-
-Partitioning by the column a caller is scoped by gives a useful asymmetry: **read cost tracks the
-caller's own partition, while build cost tracks the whole artifact.** A caller's queries do not get
-slower as tenants are added; the build does, since it is one pass over everyone's rows. Pruning
-depends on the scoping term being an equality (`=`, `in`) on a partitioned column, and
-nothing checks the column's cardinality for you — a partition per caller across very many
-callers is the many-small-files case, and it is your judgement to make.
-
-That asymmetry is the argument for one shared artifact over one per tenant. Both have the same read
-cost; the per-tenant arrangement also has one build, one schedule and one freshness story _per
-tenant_, all of which can drift apart.
-
-**Build memory follows the table's width times the partitions in flight, not its row count.** The
-build is DuckDB's partitioned COPY, which buffers rows per partition inside the buffer manager and
-charges the appender one vector per column for every partition it has met. So for a passthrough-sourced
-build (Postgres, BigQuery, Snowflake) the publisher orders the insert's SELECT by the partition columns —
-at the top of the INSERT statement, leaving the SELECT it was handed, and so what the warehouse runs,
-its query tag and what the source is addressed by, unchanged — runs that insert on one thread, since a
-DuckDB-side sort is read in parallel and several appenders each meet every partition again, and sets
-`partitioned_write_flush_threshold` on the build session (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`,
-default 8192 rows) so it flushes long before DuckDB's own half-million-row default. Without those, a
-308-partition, 120-column source fails against a 768MB `memory_limit` before or shortly after its first
-rows, from Postgres and from BigQuery alike; with them it builds in seconds. The sort is DuckDB's, out of
-core against the build's spill directory, and it reads the whole result before the first partition file is
-written — memory traded for local disk and wall-clock. That disk is the build's working directory under the
-process temp directory; in a container with no volume there, a large spill is an ephemeral-storage
-eviction rather than a caught error, so give the worker a volume or a limit before building at that scale. `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD=off`
-turns all three off. An incremental delta into a laid-out table gets the threshold and the single thread
-through its session, not the ordered read. A chained build is not changed.
-
-`partition=` is part of the source's content address, so changing it rebuilds the table. A source
-that declares none addresses exactly as it did before the key existed, so nothing already
-materialized is disturbed by this feature.
-
-Each name must be a column of the source's **public** projection: the stored table is narrowed to
-that surface, so a hidden or `except:`-ed column is not there to partition by
-(`partition_column_not_public`, `partition_column_unknown`). `partition=` requires `storage=` — a
-colocated build writes into the source's own warehouse, where the layout is that warehouse's DDL —
-and is refused rather than ignored without it (`partition_without_storage`).
+A stored table is written unpartitioned. `partition=` on `#@ persist` or `#(materialize)` is a
+retired key, and a publish that carries it is refused (`persist-retired-key`,
+`materialize-retired-key`) with a message that says to remove it. It once laid the table out as one
+directory per value; that was a layout and never isolation, since every stripped term is re-applied
+at read either way, so removing it costs scan time and changes no caller's answer.
 
 ### The freshness contract for a gated colocated persist source
 
@@ -889,7 +846,7 @@ source: flights is duckdb.table('flights') extend {
 
 - **What it answers.** `run: flights -> by_carrier`, and `run: flights -> by_carrier -> { … }`, whose later stages read the stored result. Not a refinement (`flights -> by_carrier + { limit: 3 }`, skipped `MISSING_FIELD`), a nest of the view, a hand-written query with the same SQL, or the view called on a source that extends `flights` (its own `where:` or gates could differ): those are answered as they would be without the annotation. The answer keeps the view's name, its columns in their order, its ordering and its render tags, and each column carries the annotations live's does (`#(classification)`, `#(doc)`, `# currency`, `# label`), colocated or `storage=`.
 - **Which source it belongs to.** The source whose own statement puts `#@ persist` on the view: its `view:`, a redefinition after `except:`, an alias (`view: by_carrier2 is by_carrier`) carrying its own line, or an `include:` that re-annotates the view (`include { #@ persist public: by_carrier }`). A source that only inherits the view (an extension, a rename, an import, or a `rename:` of the view) does not persist it, and calls on it are answered live; annotate it there to store it there too.
-- **Where it is stored.** Without `storage=`, in the source's own warehouse; with `storage=`, in that destination (needs `PERSIST_STORAGE_MODE=on`). The table is built from the source's own rows, never from a table the source itself is persisted to, and rebuilt whole: `watermark=`, `merge_key=` and `partition=` are refused on a view.
+- **Where it is stored.** Without `storage=`, in the source's own warehouse; with `storage=`, in that destination (needs `PERSIST_STORAGE_MODE=on`). The table is built from the source's own rows, never from a table the source itself is persisted to, and rebuilt whole: `watermark=` and `merge_key=` are refused on a view, as is the retired `partition=`.
 - **Not built, with a warning** (`persist-view-not-built`, and the view is answered live): a view whose result reads a given or the current time (it differs per caller or per read); a view whose result nests, stored with `storage=` (persist it without `storage=` instead); an `@env.` reference on its line; and, on a source with a row-level gate (`#(access_filter)`, or an `#(authorize)` that filters rows), a view that does not group by every field the gate reads, under its own name, in one grouping stage with no `limit:`, no `all()` or `exclude()` and no `calculate:`. That last one is a warning, not an error, because the gate may be added later by another author.
 - **Gates.** A query on a gated source is answered from a persisted view only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well: the source's gates are written on the view's stored result and grafted and proven there exactly as on live, so each caller gets the groups the gate keeps. With the switch off, such a query is answered live and the path report skips the view with `CONTRACT`. Which gated sources may be stored at all follows the rules above for `#@ persist` (a gated `storage=` source is refused). Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 - **The path report.** A query that calls a persisted view lists its table first, as `kind: "view"`: `used` when it answered (`servedBy.kind` is `view`), else skipped with `NOT_BUILT`, `STALE`, `CONTRACT` or `MISSING_FIELD`. A query that calls no persisted view does not list one. A `storage=` view's answer reports `servedFrom: "storage"`.

@@ -222,6 +222,7 @@ import { hiddenAccess } from "../../governance/ir/compiled_model";
 import {
    MATERIALIZE_KEYS,
    nearestKey,
+   PUBLISHER_ROUTES,
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -336,7 +337,6 @@ const CARRIED_KEYS = [
    "refresh",
    "watermark",
    "merge_key",
-   "partition",
 ] as const;
 
 /**
@@ -430,6 +430,9 @@ export const GENERATOR_KEYS: readonly string[] = [
 
 /** The code of a `#(materialize)` key outside the route's closed set. */
 const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
+
+/** The code of a `#(materialize)` key the route no longer reads. */
+const MATERIALIZE_RETIRED_KEY_CODE = "materialize-retired-key";
 
 /** The code of a `#(materialize)` line that does not parse. */
 const MATERIALIZE_UNPARSEABLE_CODE = "materialize-unparseable";
@@ -592,6 +595,19 @@ function inheritedPersist(
       if (declares) return { from: name };
    }
    return {};
+}
+
+/**
+ * The declaration's retired key (`PUBLISHER_ROUTES.materialize.retiredKeys`),
+ * with what to do instead, as a malformed refusal, or undefined.
+ */
+function retiredKeyRefusal(
+   declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
+): string | undefined {
+   const retired = PUBLISHER_ROUTES.materialize?.retiredKeys ?? {};
+   const key = declaration.keys.find((k) => k in retired);
+   if (key === undefined) return undefined;
+   return `#(materialize) no longer reads \`${key}=\`; ${retired[key]}`;
 }
 
 /**
@@ -1707,8 +1723,19 @@ export function planModelMaterialize(
          });
          continue;
       }
-      // Before any other refusal: a key outside the closed set is malformed,
-      // refused at publish, whatever else the source would be refused for.
+      // Before any other refusal: a retired key, or one outside the closed
+      // set, is malformed, refused at publish, whatever else the source would
+      // be refused for.
+      const retiredKey = retiredKeyRefusal(declaration);
+      if (retiredKey) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: retiredKey,
+            malformedCode: MATERIALIZE_RETIRED_KEY_CODE,
+         });
+         continue;
+      }
       const unknownKey = unknownKeyRefusal(declaration);
       if (unknownKey) {
          refused.push({
@@ -2078,9 +2105,7 @@ export function planModelMaterialize(
             persist.merge_key = pair.parentKey;
          } else if ("fullRefresh" in incremental) {
             pairFullRefresh = incremental.fullRefresh;
-            for (const key of INCREMENTAL_KEYS) {
-               if (key !== "partition") delete persist[key];
-            }
+            for (const key of INCREMENTAL_KEYS) delete persist[key];
          }
       }
       const build = buildSourceName(name);
@@ -2148,7 +2173,7 @@ export function planModelMaterialize(
  * reads its parent's table, whose rows an incremental refresh moves on its
  * own schedule, so neither side of a chain may carry one.
  */
-const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "partition"];
+const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key"];
 
 /**
  * Give each plan that can build over its nearest materialized ancestor's build
