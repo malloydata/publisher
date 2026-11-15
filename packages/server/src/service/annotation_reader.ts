@@ -474,7 +474,10 @@ export function persistAnnotationFindings(
    annotations: Annotations,
    subject: string,
    model?: string,
-   { incremental = false }: { incremental?: boolean } = {},
+   {
+      incremental = false,
+      subjectKind = "source",
+   }: { incremental?: boolean; subjectKind?: "source" | "query" } = {},
 ): PackageAnnotationFinding[] {
    return readRouteTag(annotations, "@", RECOGNIZED_PERSIST_KEYS).findings.map(
       (finding) => {
@@ -486,7 +489,7 @@ export function persistAnnotationFindings(
                : "";
          return {
             ...finding,
-            message: `#@ persist source "${subject}": ${finding.message}${consequence}`,
+            message: `#@ persist ${subjectKind} "${subject}": ${finding.message}${consequence}`,
             subject,
             ...(model ? { model } : {}),
          };

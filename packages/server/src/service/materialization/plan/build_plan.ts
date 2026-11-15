@@ -69,6 +69,12 @@ import {
 } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
 import { persistedViewRefusalFinding } from "./persisted_view";
+import {
+   declaredPersistQueries,
+   persistQueryKeyFindings,
+   persistQueryNotBuiltFinding,
+   type DeclaredPersistQuery,
+} from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { deletingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
@@ -385,6 +391,9 @@ function detectDroppedPersistSources(
       for (const [name, def] of Object.entries(contents)) {
          if (recognizedNames.has(name)) continue;
          if (!def || !def.annotations) continue;
+         // A named query is no source: `#@ persist` on one has its own
+         // warning (persisted_query.ts), and never refuses a build.
+         if (def.type === "query") continue;
          let isPersist = false;
          try {
             // Presence only, read over every line as Malloy reads it, so a
@@ -970,6 +979,49 @@ async function collectGeneratedPersistedViews(
 }
 
 /**
+ * The findings on the `#@ persist` named queries a model file DECLARES (an
+ * importing model repeats nothing): a misspelled or retired key, and, with
+ * `notBuilt`, the warning that the query is not built and is answered live.
+ */
+function collectPersistQueryFindings(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      malloyModel: MalloyModel;
+      notBuilt: boolean;
+   },
+): void {
+   const modelFile = path.resolve(args.packagePath, args.modelPath);
+   let queries: DeclaredPersistQuery[];
+   try {
+      queries = declaredPersistQueries(
+         modelDefIfAny(args.malloyModel),
+         (url) => {
+            try {
+               return path.resolve(fileURLToPath(url)) === modelFile;
+            } catch {
+               return false;
+            }
+         },
+      );
+   } catch {
+      return;
+   }
+   for (const query of queries) {
+      for (const finding of persistQueryKeyFindings(query, args.modelPath)) {
+         addAnnotationFinding(parts, finding);
+      }
+      if (args.notBuilt) {
+         addAnnotationFinding(
+            parts,
+            persistQueryNotBuiltFinding(query.name, args.modelPath),
+         );
+      }
+   }
+}
+
+/**
  * Add one compiled `.malloy` model's builds, persist sources, dropped
  * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
  * must be the one that compiled `malloyModel` (gate classification grafts
@@ -1006,6 +1058,15 @@ export async function collectModelBuildPlan(
       getRuntime,
       keyCheckCompilers,
    } = args;
+   // `#@ persist` on a named query: its key findings always, and, with
+   // PUBLISHER_MATERIALIZE off, the warning that it is not built. Before
+   // the early `return`s below, since a query needs no persistence flag.
+   collectPersistQueryFindings(parts, {
+      modelPath,
+      packagePath,
+      malloyModel,
+      notBuilt: !getMaterializeEnabled(),
+   });
    // `#(materialize)` (materialization v2, phase 3), behind
    // PUBLISHER_MATERIALIZE: off, nothing here runs and the plan is exactly what
    // it was. Like pre-aggregation, BEFORE the early `return`s below: the

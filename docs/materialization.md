@@ -854,6 +854,19 @@ source: flights is duckdb.table('flights') extend {
 
 Off (the default), `#@ persist` on a view is ignored, as before.
 
+### Persisted named queries
+
+`#@ persist` on a top-level `query:` is not built, and the query is answered live. The package carries a warning, code `persist-query-not-built`, that names the workaround: persist a source over the query and query that source.
+
+```malloy
+query: top_carriers is flights -> { group_by: carrier; aggregate: flight_count }
+
+#@ persist
+source: top_carriers_result is top_carriers
+```
+
+A misspelled key on the query's `#@` line is reported as on a source (`persist-unknown-key`). The query never refuses a build run.
+
 ## Standalone vs. hosted (control-plane) deployments
 
 The same package definition behaves differently depending on who drives materialization. Honest divergences to be aware of:

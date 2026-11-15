@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `#@ persist` on a named query says what it does
+
+`#@ persist` on a top-level `query:` builds nothing: Malloy's persistence planner walks sources only. The package used to warn with the source warning, `persist-not-materializable`, which told the author to "persist a query source" about something that already is a query, and a materialization run over the whole package was refused because of it.
+
+- **A dedicated warning.** The query now carries `persist-query-not-built` (`warn`, `subject` the query), which says it is answered live and names the workaround: persist a source over the query (`#@ persist` on `source: q_result is q`) and query that source. The code is an open string.
+- **A misspelled key is reported.** An unknown or retired key on the query's `#@` line is reported as on a source (`persist-unknown-key`, `persist-retired-key`).
+- **A build run is no longer refused.** A persisted query is not a dropped persist source, so it no longer fails a whole-package run.
+
+No API change beyond the new warning code.
+
+
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 
 A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.

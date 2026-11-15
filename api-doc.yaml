@@ -5909,7 +5909,12 @@ components:
                   key, `subject` the source; `warn`).
                   `persist-not-materializable`: a `#@ persist` source the build
                   walk did not recognize, served live (`subject` the source;
-                  `warn`). `persist-source-refused`: a `#@ persist` source a
+                  `warn`). `persist-query-not-built`: a `#@ persist` named
+                  query that is not built, so it is answered live: the feature
+                  is off (`PUBLISHER_MATERIALIZE`), or the message says why it
+                  was refused; it names the workaround, a persisted
+                  `source: x is q` (`subject` the query; `warn`).
+                  `persist-source-refused`: a `#@ persist` source a
                   compile-time gate refused (a row-level gate, a free
                   parameter, a given in the persisted query, or the `storage=`
                   gate), served live, with the gate's message (`subject` the
