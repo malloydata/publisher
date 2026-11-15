@@ -34,7 +34,7 @@ import { errorCodeOf } from "./error_code";
 import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
-   recordServeShapeTypeFallback,
+   recordStoredTypeFallback,
 } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import type { ApiConnection } from "../../model";
@@ -1188,7 +1188,7 @@ function reportLeftOutColumns(
    if (leftOut.length === 0) return;
    for (const c of leftOut) {
       const mapped = duckdbTypeToMalloyType(c.type);
-      recordServeShapeTypeFallback(
+      recordStoredTypeFallback(
          "unmapped" in mapped ? mapped.unmapped : "unrecognized",
       );
    }

@@ -101,7 +101,7 @@ export async function tryCompileRollupCompanion(args: {
             packageRelativeSourceID: (id) =>
                packageRelativeSourceID(args.packagePath, id),
             // v1 lines are always planned; `#(preaggregate)` only with its switch.
-            readsV2: getMaterializeEnabled(),
+            readsPreaggregateDeclarations: getMaterializeEnabled(),
          },
          (declaringURL) => {
             try {

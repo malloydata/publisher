@@ -148,10 +148,10 @@ import {
 import {
    checkJoinCoverage,
    joinedKeyProblem,
-   joinRollupLegs,
+   joinRollupBranches,
    parentKeyProblem,
    unmatchedRowProblem,
-   type JoinRollupLeg,
+   type JoinRollupBranch,
 } from "./join_rollup";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import {
@@ -201,7 +201,7 @@ interface RollupVariantHost {
       node: SourceNode,
       ctx: {
          packageRelativeSourceID(sourceID: string): string;
-         readsV2?: boolean;
+         readsPreaggregateDeclarations?: boolean;
       },
    ): { plans: RollupVariantPlan[] };
    /**
@@ -246,7 +246,7 @@ type VariantUse =
    | {
         kind: "join";
         localName: string;
-        leg: JoinRollupLeg;
+        leg: JoinRollupBranch;
         /**
          * Set when the query's source is read from the rollup's storage
          * destination through the served copy (known limitation 26): the
@@ -338,7 +338,7 @@ export class RollupVariantServe {
       switches: string;
       byBase: Map<string, RollupVariantPlan[]>;
       /** A7: each source's join branches, by its `sourceID`. */
-      joinLegs?: Map<string, ReturnType<typeof joinRollupLegs>>;
+      joinBranches?: Map<string, ReturnType<typeof joinRollupBranches>>;
    };
 
    constructor(private readonly host: RollupVariantHost) {}
@@ -380,7 +380,7 @@ export class RollupVariantServe {
                   packageRelativeSourceID(packagePath, id),
                // v1 `#@ preaggregate` rollups are always routed;
                // `#(preaggregate)` ones only with the materialize switch on.
-               readsV2: getMaterializeEnabled(),
+               readsPreaggregateDeclarations: getMaterializeEnabled(),
             });
             if (plans.length > 0) byBase.set(node.sourceID, plans);
          }
@@ -598,15 +598,15 @@ export class RollupVariantServe {
     * cannot be used, if it cannot. Read through the source map's join
     * readers; memoised with the plans.
     */
-   private joinLegsOf(sourceID: string): ReturnType<typeof joinRollupLegs> {
+   private joinLegsOf(sourceID: string): ReturnType<typeof joinRollupBranches> {
       const byBase = this.plansByBase();
       const memo = this.planMemo;
-      const cached = memo?.joinLegs?.get(sourceID);
+      const cached = memo?.joinBranches?.get(sourceID);
       if (cached) return cached;
       const map = SourceMap.of(this.host.modelDef());
       const filter = map.filterJoinsOf(sourceID);
       const joins = map.joinsOf(sourceID);
-      const legs = joinRollupLegs(
+      const legs = joinRollupBranches(
          joins,
          byBase,
          // Unknown reads count as reading every join.
@@ -616,8 +616,8 @@ export class RollupVariantServe {
          primaryKeyOf(map.node(sourceID)?.def),
       );
       if (memo) {
-         memo.joinLegs ??= new Map();
-         memo.joinLegs.set(sourceID, legs);
+         memo.joinBranches ??= new Map();
+         memo.joinBranches.set(sourceID, legs);
       }
       return legs;
    }
@@ -654,8 +654,8 @@ export class RollupVariantServe {
     * ({@link JoinNotRead} when the query reads nothing through the join).
     */
    private async attemptJoin(
-      leg: JoinRollupLeg,
-      refusal: ReturnType<typeof joinRollupLegs>[number]["refusal"],
+      leg: JoinRollupBranch,
+      refusal: ReturnType<typeof joinRollupBranches>[number]["refusal"],
       q: {
          localName: string;
          sourceID: string;
@@ -668,7 +668,7 @@ export class RollupVariantServe {
    ): Promise<RollupAnswer> {
       const { plan, join } = leg;
       const name = join.name;
-      const declined = joinLegDecline(name, q.usage, refusal);
+      const declined = joinBranchDecline(name, q.usage, refusal);
       if (declined) throw declined;
       // A rollup in a storage destination is joined there, so only to a
       // query source the served copy reads from that destination too; Malloy
@@ -762,7 +762,7 @@ export class RollupVariantServe {
     * source's fields the query reads through the join.
     */
    private checkJoinKeys(
-      leg: JoinRollupLeg,
+      leg: JoinRollupBranch,
       q: Parameters<RollupVariantServe["attemptJoin"]>[2],
       usage: readonly (readonly string[])[],
       childDef: JoinedSourceDef | undefined,
@@ -904,7 +904,7 @@ export class RollupVariantServe {
     * rollup's table; else a {@link LegDecline}.
     */
    private async answerJoinColocated(
-      leg: JoinRollupLeg,
+      leg: JoinRollupBranch,
       q: Parameters<RollupVariantServe["attemptJoin"]>[2],
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): Promise<RollupAnswer> {
@@ -1009,7 +1009,7 @@ export class RollupVariantServe {
     * the tables the variant reads, and that its SQL reads both tables.
     */
    private async answerJoinInDestination(
-      leg: JoinRollupLeg,
+      leg: JoinRollupBranch,
       q: Parameters<RollupVariantServe["attemptJoin"]>[2],
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
       at: { basis: ServedCopyJoinBasis; source: Binding },
@@ -2474,7 +2474,7 @@ function checkCoverage(
 
 /**
  * The switches {@link planSourceRollups} reads, as a memo key: `#(preaggregate)`
- * with `PUBLISHER_MATERIALIZE` (`readsV2`), and whether a gated base's rollup
+ * with `PUBLISHER_MATERIALIZE` (`readsPreaggregateDeclarations`), and whether a gated base's rollup
  * is read.
  */
 function planSwitches(): string {
@@ -2535,10 +2535,10 @@ interface JoinedSourceDef {
  * through the join, the branch's refusal as a {@link LegDecline}, or
  * undefined to try it.
  */
-export function joinLegDecline(
+export function joinBranchDecline(
    name: string,
    usage: readonly (readonly string[])[] | undefined,
-   refusal: ReturnType<typeof joinRollupLegs>[number]["refusal"],
+   refusal: ReturnType<typeof joinRollupBranches>[number]["refusal"],
 ): Error | undefined {
    if (usage && !usage.some((p) => p[0] === name)) {
       return new JoinNotRead(name);

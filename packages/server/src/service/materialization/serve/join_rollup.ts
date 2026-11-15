@@ -71,7 +71,7 @@ import type {
 } from "../../governance/ir/prepared_query";
 
 /** One join of the query's source that a rollup of its joined source can answer through. */
-export interface JoinRollupLeg {
+export interface JoinRollupBranch {
    join: SourceJoin & { keyColumn: string; baseKey: string; sourceID: string };
    plan: RollupVariantPlan;
    /** `one` when the rollup holds one row per key (its grain is the key alone). */
@@ -93,13 +93,13 @@ interface JoinRollupRefusal {
  * the joins the source's own `where:` reads; `parentPrimaryKey` is the query
  * source's declared primary key, if it has one.
  */
-export function joinRollupLegs(
+export function joinRollupBranches(
    joins: readonly SourceJoin[],
    plansByBase: ReadonlyMap<string, readonly RollupVariantPlan[]>,
    sourceFilterReads: ReadonlySet<string>,
    parentPrimaryKey: string | undefined,
-): { leg: JoinRollupLeg; refusal?: JoinRollupRefusal }[] {
-   const out: { leg: JoinRollupLeg; refusal?: JoinRollupRefusal }[] = [];
+): { leg: JoinRollupBranch; refusal?: JoinRollupRefusal }[] {
+   const out: { leg: JoinRollupBranch; refusal?: JoinRollupRefusal }[] = [];
    for (const join of joins) {
       if (join.relationship === "cross") continue;
       // A join defined in place (`segments extend { … }`) has no sourceID:
@@ -109,7 +109,7 @@ export function joinRollupLegs(
       if (!plans || plans.length === 0) continue;
       for (const plan of plans) {
          const leg = {
-            join: join as JoinRollupLeg["join"],
+            join: join as JoinRollupBranch["join"],
             plan,
             relationship:
                plan.grainDimensions.length === 1 &&
@@ -233,7 +233,7 @@ function refusalOf(
  * (`["lines", "qty"]`, a join-level operand).
  */
 export function unmatchedRowProblem(
-   leg: JoinRollupLeg,
+   leg: JoinRollupBranch,
    read: ReadonlySet<string>,
    isColumn: (path: readonly string[]) => boolean,
    joinMeetsNoRow: (name: string) => boolean,
@@ -271,7 +271,7 @@ export function unmatchedRowProblem(
  * build found of the key: `repeated` covers a NULL as well.
  */
 export function joinedKeyProblem(
-   leg: JoinRollupLeg,
+   leg: JoinRollupBranch,
    read: ReadonlySet<string>,
    joinedKey: string | undefined,
    joinedKeyVerdict: KeyVerdict,
@@ -307,7 +307,7 @@ export function joinedKeyProblem(
  * `COUNT(DISTINCT key)` skips.
  */
 export function parentKeyProblem(
-   leg: JoinRollupLeg,
+   leg: JoinRollupBranch,
    parentKey: KeyVerdict,
 ): string | undefined {
    if (leg.relationship === "one" && leg.join.relationship === "one") {
@@ -368,7 +368,7 @@ function bareOperand(expr: MeasureExpr): string[] | undefined {
  * (`sourceFieldJoinReads`). Returns why the branch cannot answer, or undefined.
  */
 export function checkJoinCoverage(
-   leg: JoinRollupLeg,
+   leg: JoinRollupBranch,
    levels: QueryLevelFacts,
    parentReads: (name: string) => "none" | "scalar" | "aggregate",
 ): JoinRollupRefusal | undefined {

@@ -466,7 +466,7 @@ source: orders is ${ROWS} extend {
 });
 
 describe("a source that sets its own time zone (#1686)", () => {
-   it("plans its rollup only where the join leg reads it: joined from a source in the same zone", async () => {
+   it("plans its rollup only where the join branch reads it: joined from a source in the same zone", async () => {
       const zoned = (
          name: string,
          storage = "",
@@ -747,11 +747,11 @@ source: orders is ${ROWS} extend {
   measure: n is count()
 }`;
 
-   async function planV1(readsV1: boolean) {
+   async function planV1(readsPreaggregateLines: boolean) {
       const modelDef = await mz.compile({ "orders.malloy": V1 });
       return planModelRollups(SourceMap.of(modelDef), {
          packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
-         readsV1,
+         readsPreaggregateLines,
       });
    }
 
@@ -802,7 +802,7 @@ source: orders is ${ROWS} -> {
       });
       const { plans, refused } = planModelRollups(SourceMap.of(modelDef), {
          packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
-         readsV1: true,
+         readsPreaggregateLines: true,
       });
       expect(refused).toEqual([]);
       expect(

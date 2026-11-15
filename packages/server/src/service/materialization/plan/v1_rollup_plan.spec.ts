@@ -17,7 +17,7 @@ const ROWS = `duckdb.sql("""
 async function plan(text: string) {
    return planModelRollups(SourceMap.of(await mz.compile(text)), {
       packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
-      readsV1: true,
+      readsPreaggregateLines: true,
    });
 }
 

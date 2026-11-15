@@ -23,7 +23,7 @@ import {
    recordDropTables,
    recordEligibilityRefused,
    recordMaterializationRun,
-   recordServeShapeTypeFallback,
+   recordStoredTypeFallback,
    recordManifestBind,
    recordSourceBound,
    recordServedCopyOutcome,
@@ -349,7 +349,7 @@ describe("materialization_metrics", () => {
    it("counts eligibility refusals and type fallbacks", async () => {
       recordEligibilityRefused("given");
       recordEligibilityRefused("free_parameter");
-      recordServeShapeTypeFallback("array");
+      recordStoredTypeFallback("array");
 
       expect(
          await harness.collectCounter(

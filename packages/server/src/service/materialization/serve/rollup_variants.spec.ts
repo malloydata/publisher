@@ -8,7 +8,7 @@ import {
    grainDecline,
    joinCoverageDecline,
    joinGrainDecline,
-   joinLegDecline,
+   joinBranchDecline,
 } from "./rollup_variants";
 
 const GRAIN = new Set(["region", "month"]);
@@ -69,19 +69,21 @@ describe("coverageDecline", () => {
    });
 });
 
-describe("joinLegDecline", () => {
+describe("joinBranchDecline", () => {
    it("tries a leg whose join the query reads", () => {
       expect(
-         joinLegDecline("segments", [["segments", "region"]], undefined),
+         joinBranchDecline("segments", [["segments", "region"]], undefined),
       ).toBeUndefined();
    });
 
    it("tries a leg when the query's reads are unreadable", () => {
-      expect(joinLegDecline("segments", undefined, undefined)).toBeUndefined();
+      expect(
+         joinBranchDecline("segments", undefined, undefined),
+      ).toBeUndefined();
    });
 
    it("skips a leg whose join the query does not read, without a decline", () => {
-      const skipped = joinLegDecline("segments", [["orders", "id"]], {
+      const skipped = joinBranchDecline("segments", [["orders", "id"]], {
          code: "rollup_contract",
          callerDetail: "never reported",
       });
@@ -90,7 +92,7 @@ describe("joinLegDecline", () => {
    });
 
    it("declines a read leg with its refusal, as a shape check", () => {
-      const decline = joinLegDecline("segments", [["segments", "region"]], {
+      const decline = joinBranchDecline("segments", [["segments", "region"]], {
          code: "rollup_count_semantics",
          callerDetail: "the join fans out",
       });
@@ -199,7 +201,7 @@ describe("the rollup leg's decisions at their edges", () => {
       ).toBeUndefined();
    });
 
-   it("reads a join leg's filter on a stored measure through the join as in the grain", () => {
+   it("reads a join branch's filter on a stored measure through the join as in the grain", () => {
       expect(
          joinGrainDecline(
             "segments",
@@ -211,14 +213,14 @@ describe("the rollup leg's decisions at their edges", () => {
    });
 
    it("skips a leg whose join a query that reads nothing does not read", () => {
-      const skipped = joinLegDecline("segments", [], undefined);
+      const skipped = joinBranchDecline("segments", [], undefined);
       expect(skipped).toBeInstanceOf(Error);
       expect(skipped).not.toBeInstanceOf(LegDecline);
    });
 
    it("tries a leg the query reads through on any path, not only the first", () => {
       expect(
-         joinLegDecline(
+         joinBranchDecline(
             "segments",
             [
                ["orders", "id"],
@@ -229,7 +231,7 @@ describe("the rollup leg's decisions at their edges", () => {
       ).toBeUndefined();
    });
 
-   it("names the join and the field it reads in a join leg's decline", () => {
+   it("names the join and the field it reads in a join branch's decline", () => {
       expect(
          joinCoverageDecline(
             "segments",

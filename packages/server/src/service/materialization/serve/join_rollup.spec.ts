@@ -8,7 +8,7 @@ import type { QueryLevelFacts } from "../../governance/ir/prepared_query";
 import {
    checkJoinCoverage,
    joinedKeyProblem,
-   joinRollupLegs,
+   joinRollupBranches,
    parentKeyProblem,
    unmatchedRowProblem,
 } from "./join_rollup";
@@ -103,9 +103,9 @@ function plan(over: Partial<RollupVariantPlan> = {}): RollupVariantPlan {
    } as RollupVariantPlan;
 }
 
-describe("joinRollupLegs", () => {
+describe("joinRollupBranches", () => {
    const legsOf = (j: SourceJoin, p = plan(), filters = new Set<string>()) =>
-      joinRollupLegs([j], new Map([[CHILD, [p]]]), filters, "id");
+      joinRollupBranches([j], new Map([[CHILD, [p]]]), filters, "id");
 
    it("offers a join keyed on one field each side, join_one at the key alone", () => {
       const [only] = legsOf(join());
@@ -121,7 +121,9 @@ describe("joinRollupLegs", () => {
    it("offers nothing for a join defined in place, a join_cross, or a source without rollups", () => {
       expect(legsOf(join({ sourceID: undefined }))).toEqual([]);
       expect(legsOf(join({ relationship: "cross" }))).toEqual([]);
-      expect(joinRollupLegs([join()], new Map(), new Set(), "id")).toEqual([]);
+      expect(joinRollupBranches([join()], new Map(), new Set(), "id")).toEqual(
+         [],
+      );
    });
 
    it("refuses, with reasons, what the rollup's rows cannot stand in for", () => {
@@ -168,7 +170,7 @@ describe("joinRollupLegs", () => {
    it("refuses a join read as a join_many keyed on a field the query source does not keep unique", () => {
       const fine = plan({ grainDimensions: ["flight_id", "kind"] });
       const keyed = (j: SourceJoin, p: RollupVariantPlan, pk?: string) =>
-         joinRollupLegs([j], new Map([[CHILD, [p]]]), new Set(), pk)[0]
+         joinRollupBranches([j], new Map([[CHILD, [p]]]), new Set(), pk)[0]
             ?.refusal;
       // A declared join_many keyed on the query source's primary key.
       expect(keyed(join(), plan(), "id")).toBeUndefined();
@@ -194,7 +196,7 @@ describe("joinRollupLegs", () => {
          sourceID: "legs@file:///p/m.malloy",
          condition: { joins: new Set(["legs", "segments"]), nested: false },
       });
-      const legs = joinRollupLegs(
+      const legs = joinRollupBranches(
          [join(), other],
          new Map([[CHILD, [plan()]]]),
          new Set(),
@@ -233,13 +235,13 @@ describe("parentKeyProblem", () => {
 describe("unmatchedRowProblem", () => {
    const isColumn = (p: readonly string[]) =>
       p.length === 1 && p[0] === "miles";
-   const many = joinRollupLegs(
+   const many = joinRollupBranches(
       [join()],
       new Map([[CHILD, [plan()]]]),
       new Set(),
       "id",
    )[0]!.leg;
-   const one = joinRollupLegs(
+   const one = joinRollupBranches(
       [join({ relationship: "one" })],
       new Map([[CHILD, [plan()]]]),
       new Set(),
@@ -264,7 +266,7 @@ describe("unmatchedRowProblem", () => {
       const p = plan();
       p.rollupMeasures[0]!.partials =
          partials as RollupVariantPlan["rollupMeasures"][number]["partials"];
-      return joinRollupLegs(
+      return joinRollupBranches(
          [join()],
          new Map([[CHILD, [p]]]),
          new Set(),
@@ -368,7 +370,7 @@ describe("checkJoinCoverage (row 27)", () => {
       fanOutDimensions: ["line_kind"],
    });
    const legOf = (p: RollupVariantPlan) =>
-      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
+      joinRollupBranches([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
          .leg;
    const none = () => "none" as const;
    const miles = { name: "seg_miles", ref: ["segments", "seg_miles"] };
@@ -528,7 +530,7 @@ describe("checkJoinCoverage (row 27)", () => {
 
 describe("joinedKeyProblem", () => {
    const legOf = (p: RollupVariantPlan = plan()) =>
-      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
+      joinRollupBranches([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
          .leg;
 
    it("declines a count or sum of the joined source's own rows unless its key was checked unique and never NULL", () => {

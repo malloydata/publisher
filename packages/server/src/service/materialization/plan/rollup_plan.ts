@@ -450,14 +450,14 @@ interface RollupPlanContext {
     * Whether v1 `#@ preaggregate` lines are read as `#(preaggregate)`
     * declarations. Absent: they are.
     */
-   readsV1?: boolean;
+   readsPreaggregateLines?: boolean;
    /**
     * Whether `#(preaggregate)` declarations are read. Absent: they are. A
     * caller that plans v1 rollups whatever the switch passes
     * `getMaterializeEnabled()`, so `#(preaggregate)` stays unread with its
     * switch off.
     */
-   readsV2?: boolean;
+   readsPreaggregateDeclarations?: boolean;
 }
 
 /**
@@ -551,9 +551,10 @@ function rollupDeclarationsOf(
    const sources = scopeOf(map);
    const declarations: Declaration[] = [];
    // `#(preaggregate)` is read unless the caller reads only v1's lines below
-   // (`readsV2: false`).
-   const readsV2 = ctx.readsV2 ?? true;
-   for (const field of readsV2 ? fields : []) {
+   // (`readsPreaggregateDeclarations: false`).
+   const readsPreaggregateDeclarations =
+      ctx.readsPreaggregateDeclarations ?? true;
+   for (const field of readsPreaggregateDeclarations ? fields : []) {
       const name = fieldNameOf(field);
       if (name === undefined) continue;
       const notes = declaredRollupNotes(def, field, sources);
@@ -580,7 +581,7 @@ function rollupDeclarationsOf(
    // so a v1 rollup is planned, built (under the `#(preaggregate)` rollup's
    // table name) and served here. A line v1 reports as unusable is left to
    // v1's own validation.
-   if (ctx.readsV1 ?? true) {
+   if (ctx.readsPreaggregateLines ?? true) {
       // As v1 places it: a grain naming no namespace (and no storage=) is
       // created beside its base's own `#@ persist name=`.
       const inheritedNamespace = basePersistNamespace({
@@ -618,7 +619,9 @@ function rollupDeclarationsOf(
       }
    }
    // A source-level declaration names no measure.
-   for (const note of readsV2 ? ownLevelNotes(def.annotations) : []) {
+   for (const note of readsPreaggregateDeclarations
+      ? ownLevelNotes(def.annotations)
+      : []) {
       if (routeOfNote(note.text) !== PREAGGREGATE_ROUTE) continue;
       refused.push({
          tier: "malformed",
@@ -1300,7 +1303,7 @@ export function joinedKeyNeedsOf(map: SourceMap): JoinedKeyNeed[] {
 /**
  * Whether the join-to-rollup branch reads rollup `plan` through `need`'s join
  * as a join_many: the join is declared one, or the rollup's grain is finer
- * than the join's key, so the branch re-points it as one (`joinRollupLegs`).
+ * than the join's key, so the branch re-points it as one (`joinRollupBranches`).
  */
 export function readsAsJoinMany(
    plan: RollupVariantPlan,
