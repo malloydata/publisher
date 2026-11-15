@@ -1405,10 +1405,12 @@ export class PackageMaterialization {
             source.tier === "preaggregate"
                ? {
                     message:
+                       // Worded as preaggregate-reads-given's, which a v1
+                       // rollup carries under the same name.
                        (rollup
-                          ? `The rollup of \`${rollup.baseSourceName}\` at ` +
+                          ? `#(preaggregate) rollup of source "${rollup.baseSourceName}" at ` +
                             `(${rollup.grainDimensions.join(", ")})`
-                          : "A rollup") +
+                          : "A #(preaggregate) rollup") +
                        ` is not built, so its measures are served live: ` +
                        source.message,
                     code: PREAGGREGATE_NOT_BUILT_CODE,

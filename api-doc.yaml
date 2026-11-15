@@ -5921,8 +5921,8 @@ components:
                   source; `warn`). `preaggregate-not-built`: a valid
                   `#(preaggregate)` or `#@ preaggregate` rollup a compile-time
                   gate refused alone (a read-only dialect, a base scoped by a
-                  given, a table name another rollup holds, or the `storage=`
-                  gate), so it is not built and its measures are served live
+                  given, a table name another rollup holds, a row-level gate on
+                  a v1 rollup's base, or the `storage=` gate), so it is not built and its measures are served live
                   while the rest of the package loads; the message names the
                   base, the grain and the gate's reason (`subject` the base;
                   `warn`).

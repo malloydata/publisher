@@ -94,18 +94,26 @@ describe("preaggregate-not-built", () => {
          const [rollupID] = Object.keys(compiled.preaggregatePlans ?? {});
          expect(rollupID).toBeDefined();
          // A rollup on a dialect whose connection creates no table: the
-         // colocated gate refuses it, and nothing else about it changes.
-         const source = compiled.sources[rollupID as string];
-         compiled.sources[rollupID as string] = new Proxy(source, {
-            get: (target, key, receiver) =>
-               key === "dialectName"
-                  ? "sqlserver"
-                  : Reflect.get(target, key, receiver),
-         });
+         // colocated gate refuses it, and nothing else about it changes. The
+         // dialect is shadowed on the compiled source itself, so the plan
+         // still projects that same object and keeps the rollup in
+         // `sources`, as a real read-only-dialect refusal does.
+         Object.defineProperty(
+            compiled.sources[rollupID as string],
+            "dialectName",
+            { get: () => "sqlserver" },
+         );
          const outcome = deriveBuildPlanOutcome(compiled, null);
          expect(
             outcome.plan?.refusedSources?.[rollupID as string],
          ).toMatchObject({ tier: "preaggregate", reason: "read_only_dialect" });
+         expect(
+            outcome.plan?.sources?.[rollupID as string]?.preaggregate,
+         ).toMatchObject({
+            baseSourceName: "orders",
+            grainDimensions: ["category"],
+         });
+         expect(outcome.plan?.omittedSources ?? []).toEqual([]);
          expect(outcome.refusedRollups).toEqual({
             [rollupID as string]: {
                baseSourceName: "orders",
@@ -125,7 +133,7 @@ describe("preaggregate-not-built", () => {
             model: "orders.malloy",
          });
          expect(warnings[0]?.message).toStartWith(
-            "The rollup of `orders` at (category) is not built, so its measures are served live: Pre-aggregation rollup",
+            '#(preaggregate) rollup of source "orders" at (category) is not built, so its measures are served live: Pre-aggregation rollup',
          );
          expect(warnings[0]?.message).not.toContain("file://");
       },
@@ -144,7 +152,7 @@ describe("preaggregate-not-built", () => {
          severity: "warn",
          model: "m.malloy",
          subject: "orders",
-         message: `The rollup of \`orders\` at (category, region) is not built, so its measures are served live: ${GATE_MESSAGE}`,
+         message: `#(preaggregate) rollup of source "orders" at (category, region) is not built, so its measures are served live: ${GATE_MESSAGE}`,
       });
    });
 
@@ -155,7 +163,7 @@ describe("preaggregate-not-built", () => {
       expect(warning?.code).toBe("preaggregate-not-built");
       expect(warning?.subject).toBeUndefined();
       expect(warning?.message).toBe(
-         `A rollup is not built, so its measures are served live: ${GATE_MESSAGE}`,
+         `A #(preaggregate) rollup is not built, so its measures are served live: ${GATE_MESSAGE}`,
       );
    });
 
