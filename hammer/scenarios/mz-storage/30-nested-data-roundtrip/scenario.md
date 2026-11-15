@@ -11,11 +11,11 @@ SPDX-License-Identifier: MIT
 # Nested (repeated-record) output builds, and its traversal falls back to live
 
 A persist source whose output carries a nested field (`nest:` → a repeated
-record / LIST-of-STRUCT). The build materializes the nested column into DuckLake,
-but the serve transform declares any array/struct column as `json` — an opaque
-carry, not a reconstructed repeated record — so a query that TRAVERSES the nested
-field (`by_region.region`) does not resolve against the serve shape and falls back
-to live.
+record / LIST-of-STRUCT). The build materializes the nested column into DuckLake.
+The served copy declares a stored list or struct in live's shape when it can read
+it back as live does, and otherwise leaves the column out of the stored table's
+`type:`, so a query that reads it is answered live. This scenario expects a query
+that TRAVERSES the nested field (`by_region.region`) to be answered live.
 
 That is safe (the answer is right, computed in the warehouse) and it is what this
 scenario pins: the source's flat columns serve from storage while any nested
@@ -115,11 +115,11 @@ Expect:
 
 ## Query unnested (again)
 
-FRESH (US = 1300, not the stored 300) ⇒ the nested traversal fell back to live.
+FRESH (US = 1300, not the stored 300) ⇒ the nested traversal was answered live.
 Contrast `## Query flat (again)` directly above, which is STALE — the same source
 serves its scalar columns from the snapshot in the same breath. This is the pair
-that shows the `json` carry is opaque: the column is in the table, but record-field
-traversal does not resolve through the serve shape.
+that shows the nested column is not read from the table: it is stored, but
+record-field traversal is answered live.
 
 ```malloy
 run: daily -> {

@@ -10,9 +10,10 @@ SPDX-License-Identifier: MIT
 
 # A source's dimensions, measures and views are all re-declared over the stored table
 
-A persist source extended with a dimension, a measure, and a view. The serve-shape
-transform must re-emit all three over the materialized table, so querying the view
-and the measure both route to storage.
+A persist source extended with a dimension, a measure, and a view. The served copy
+re-roots the source on its stored table and keeps its `extend` block as the author
+wrote it, so all three read the materialized table, and querying the view and the
+measure both route to storage.
 
 ## Publisher
 
