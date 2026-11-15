@@ -9,7 +9,7 @@
  * source).
  *
  * Flags only: whether a dialect can, not the SQL it is asked in. The text that
- * differs by dialect stays with the statements that run it.
+ * differs by dialect is the table's other half, `run/warehouse_sql.ts`.
  *
  * An allowlist, not a probe: a dialect this table does not name has no
  * capability, so whatever asks refuses it or rebuilds in full. Adding a dialect

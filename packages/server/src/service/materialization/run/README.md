@@ -54,6 +54,24 @@ the step that removes it, in `materialization_allowlists.mjs`.
 
 ## Where things are added
 
-A new dialect's SQL text goes beside the statement it changes; a new tier is
-an adapter beside the two strategies, implementing the tier port: its build,
-its drop and its key check.
+A new tier is an adapter beside the two strategies, implementing the tier
+port: its build, its drop and its key check.
+
+### Add a dialect
+
+A warehouse dialect is one table in two halves, keyed by Malloy's
+`dialectName`:
+
+1. A row in `domain/dialect.ts`: its `DialectName` and its capability flags.
+   The record is total, so a missing flag does not compile; a dialect with no
+   row has no capability, and whatever asks refuses it or rebuilds in full.
+2. Its SQL text in `run/warehouse_sql.ts`, in each statement family whose
+   default spelling it does not take: the string literal, the relation, view
+   and ownership probes, the ownership mark, the delta's transaction, the
+   swap, the native-type catalog read. Each family says what an unnamed
+   dialect gets. Add it to `dialect_statements.spec.ts`'s dialects and
+   regenerate the golden, so its statements are pinned.
+3. `quoting.ts`, if its identifier quote is not the double quote.
+
+A dialect is compared to a string literal nowhere else (the dialect-literal
+ratchet in `layer_rules.spec.ts`).
