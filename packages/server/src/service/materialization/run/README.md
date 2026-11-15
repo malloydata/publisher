@@ -62,16 +62,32 @@ port: its build, its drop and its key check.
 A warehouse dialect is one table in two halves, keyed by Malloy's
 `dialectName`:
 
-1. A row in `domain/dialect.ts`: its `DialectName` and its capability flags.
-   The record is total, so a missing flag does not compile; a dialect with no
-   row has no capability, and whatever asks refuses it or rebuilds in full.
-2. Its SQL text in `run/warehouse_sql.ts`, in each statement family whose
-   default spelling it does not take: the string literal, the relation, view
-   and ownership probes, the ownership mark, the delta's transaction, the
-   swap, the native-type catalog read. Each family says what an unnamed
-   dialect gets. Add it to `dialect_statements.spec.ts`'s dialects and
-   regenerate the golden, so its statements are pinned.
+1. A row in `domain/dialect.ts`: its `DialectName`, its capability flags and
+   its leaf budget. The record is total, so a missing capability does not
+   compile; a dialect with no row has no capability, and whatever asks
+   refuses it or rebuilds in full.
+2. Its SQL text in `run/warehouse_sql.ts`. Each function narrows the
+   connection's `dialectName` to a `DialectName` and switches over every
+   registered dialect, so a new row fails to compile until each switch names
+   it: the string literal, the relation, view and ownership probes, the
+   ownership mark, the delta's transaction, the swap, the native-type catalog
+   read. Each switch's `default` says what an unnamed dialect gets. Add it to
+   `dialect_statements.spec.ts`'s dialects and regenerate the golden, so its
+   statements are pinned, and give it a catalog row in
+   `colocated_native_types.spec.ts`.
 3. `quoting.ts`, if its identifier quote is not the double quote.
+4. If its connection cannot create a table: `READ_ONLY_DIALECTS`
+   (`plan/materialization_eligibility.ts`), which must agree with that
+   connection type's `canPersist` (`connection_config.ts`).
+5. If a `storage=` build reads it through a DuckDB passthrough: a case in
+   `wrapPassthrough` (`run/materialization_build_session.ts`). That switch is
+   over a connection type (`FederatedSourceType`), not a dialect, though
+   `postgres` and `snowflake` are spelled alike in both.
 
-A dialect is compared to a string literal nowhere else (the dialect-literal
-ratchet in `layer_rules.spec.ts`).
+The dialect-literal ratchet in `layer_rules.spec.ts` counts, in every module
+here, a dialect-named value compared to a string literal, and a registered
+dialect as a `case` label or opening a bracket (`case` labels are free in
+`run/warehouse_sql.ts` only). Each count is frozen in
+`materialization_allowlists.mjs`, so a new one is a reviewed change. It reads
+names and spellings, not types: a dialect compared under another name, or
+held in a record keyed by dialect, is not counted.

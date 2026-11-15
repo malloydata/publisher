@@ -58,8 +58,7 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2n",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
       "2n",
-   "package_load/protocol.ts -> service/materialization/plan/build_plan":
-      "2n",
+   "package_load/protocol.ts -> service/materialization/plan/build_plan": "2n",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
       "2n",
    "service/catalog_admin.ts -> service/materialization/run/storage_table_load":
@@ -75,13 +74,11 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model.ts -> service/materialization/plan/rollup_plan": "2n",
    "service/model.ts -> service/materialization/serve/rollup_variants": "2n",
    "service/model.ts -> service/materialization/serve/serve_verdict": "2n",
-   "service/model.ts -> service/materialization/serve/served_copy_serve":
-      "2n",
+   "service/model.ts -> service/materialization/serve/served_copy_serve": "2n",
    "service/model.ts -> service/materialization/serve/storage_bindings": "2n",
    "service/model.ts -> service/materialization/serve/view_variants": "2n",
    "service/model.ts -> service/materialization/text/source_map": "2n",
-   "service/model_policy.ts -> service/materialization/serve/query_path":
-      "2n",
+   "service/model_policy.ts -> service/materialization/serve/query_path": "2n",
    "service/package.ts -> service/materialization/package_materialization":
       "2n",
    "service/package.ts -> service/materialization/plan/build_plan": "2n",
@@ -92,22 +89,19 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/package.ts -> service/materialization/plan/persist_annotation_validation":
       "2n",
    "service/model_serving.ts -> service/materialization/serve/leg": "2n",
-   "service/model_serving.ts -> service/materialization/serve/query_path":
-      "2n",
+   "service/model_serving.ts -> service/materialization/serve/query_path": "2n",
    "service/model_serving.ts -> service/materialization/serve/served_copy_serve":
       "2n",
    "service/model.ts -> service/materialization/serve/leg": "2n",
    "service/query_serving.ts -> service/materialization/serve/leg": "2n",
-   "service/query_serving.ts -> service/materialization/serve/query_path":
-      "2n",
+   "service/query_serving.ts -> service/materialization/serve/query_path": "2n",
    "service/query_serving.ts -> service/materialization/serve/rollup_variants":
       "2n",
    "service/query_serving.ts -> service/materialization/serve/served_copy_serve":
       "2n",
    "service/query_serving.ts -> service/materialization/serve/view_variants":
       "2n",
-   "service/query_serving.ts -> service/materialization/text/source_map":
-      "2n",
+   "service/query_serving.ts -> service/materialization/text/source_map": "2n",
    "service/skills/package_skills.ts -> service/materialization/run/cron_evaluator":
       "2n",
    // H5: logger and metrics only in run/, the facade and the query pipeline.
@@ -143,7 +137,27 @@ export const RATCHET_ANNOTATION_READS = {};
 export const RATCHET_IR_READS = {};
 /** Clock reads in serve/ and domain/, per file. */
 export const RATCHET_CLOCK_READS = {};
-/** A dialect compared to a string literal outside the dialect table, per file. */
-export const RATCHET_DIALECT_LITERALS = {};
+/**
+ * Dialect literals, per file: a dialect compared to a string literal, and a
+ * registered dialect as a `case` label (free in run/warehouse_sql.ts) or in a
+ * bracket. Each entry is frozen (`table`): a count that grows is reviewed.
+ */
+export const RATCHET_DIALECT_LITERALS = {
+   // The deny-list of dialects that cannot hold a table; agrees with
+   // `canPersist` (connection_config.ts), so it is not a capability.
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 1,
+      step: "table",
+   },
+   // The passthrough's switch over a connection type (`FederatedSourceType`),
+   // whose `postgres` and `snowflake` share a dialect's spelling.
+   "service/materialization/run/materialization_build_session.ts": {
+      count: 2,
+      step: "table",
+   },
+   // The SQL half of the dialect table: its comparisons of a narrowed
+   // `DialectName`, beside its switches' free case labels.
+   "service/materialization/run/warehouse_sql.ts": { count: 18, step: "table" },
+};
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};

@@ -12,7 +12,8 @@
  *    seam.
  *  - The five ratchets: annotation payload reads outside the declaration
  *    reader, reads of the compiler's IR outside governance/ir, clock reads in
- *    serve/ and domain/, a dialect compared to a string literal, and a
+ *    serve/ and domain/, a dialect literal (compared, a case label, or in a
+ *    bracket) beyond what the dialect table allows, and a
  *    function over 200 lines.
  *
  * Every list lives in materialization_allowlists.mjs, each entry tagged with
@@ -25,14 +26,19 @@ import * as fs from "fs";
 import * as path from "path";
 import * as ts from "typescript";
 import * as lists from "../../../materialization_allowlists.mjs";
+import { CAPABILITIES } from "./domain/dialect";
 
 const SERVER_DIR = path.resolve(__dirname, "../../..");
 const SRC_DIR = path.join(SERVER_DIR, "src");
 const MZ_DIR = __dirname;
 const LAYERS = ["domain", "text", "plan", "run", "serve"] as const;
 
-/** A step of the plan, as an entry's tag names it. */
-const STEP = /^(L|R|2[a-p]|2g\.[1-4]|5)$/;
+/**
+ * A step of the plan, as an entry's tag names it, or `table`: a count frozen
+ * as part of the dialect table, which no step removes and only a reviewed
+ * change grows.
+ */
+const STEP = /^(L|R|2[a-p]|2g\.[1-4]|5|table)$/;
 
 function walk(dir: string): string[] {
    return fs
@@ -355,6 +361,15 @@ function codeLines(file: string): string[] {
    return chars.join("").split("\n");
 }
 
+/** How many times `pattern` matches in `lines`. */
+function matchesIn(lines: string[], pattern: RegExp): number {
+   let n = 0;
+   for (const line of lines) {
+      n += (line.match(new RegExp(pattern.source, "g")) ?? []).length;
+   }
+   return n;
+}
+
 /** file → how many code lines match `pattern`, over `files`. */
 function countMatches(
    files: string[],
@@ -362,13 +377,41 @@ function countMatches(
 ): Record<string, number> {
    const out: Record<string, number> = {};
    for (const file of files) {
-      let n = 0;
-      for (const line of codeLines(file)) {
-         n += (line.match(new RegExp(pattern.source, "g")) ?? []).length;
-      }
+      const n = matchesIn(codeLines(file), pattern);
       if (n > 0) out[srcRel(file)] = n;
    }
    return out;
+}
+
+/** Malloy's registered dialects, the dialect table's rows, as alternatives. */
+const REGISTERED = Object.keys(CAPABILITIES).join("|");
+
+/** A JavaScript type test (`typeof dialect !== "string"`), not a dialect. */
+const TYPE_TEST =
+   /typeof\s+[\w.]+\s*[!=]==?\s*["'`](string|undefined|object|number|boolean|function|symbol|bigint)["'`]/g;
+
+/** A dialect-named value compared to a string literal, either way round. */
+const DIALECT_COMPARISON =
+   /\b\w*[dD]ialect\w*\s*[!=]==?\s*["'`][a-z_]+["'`]|["'`][a-z_]+["'`]\s*[!=]==?\s*[\w.]*[dD]ialect\w*\b/;
+
+/** A registered dialect as a `case` label. */
+const DIALECT_CASE = new RegExp(`\\bcase\\s+["'\`](${REGISTERED})["'\`]`);
+
+/** A registered dialect opening a bracket: an array, a tuple, an index. */
+const DIALECT_BRACKET = new RegExp(`\\[\\s*["'\`](${REGISTERED})["'\`]`);
+
+/**
+ * How many dialect literals `lines` hold: comparisons, once type tests are
+ * taken out, and, unless `caseLabels` allows them, `case` labels and bracketed
+ * literals naming a registered dialect.
+ */
+function dialectLiterals(lines: string[], caseLabels = false): number {
+   const code = lines.map((l) => l.replace(TYPE_TEST, ""));
+   return (
+      matchesIn(code, DIALECT_COMPARISON) +
+      matchesIn(code, DIALECT_BRACKET) +
+      (caseLabels ? 0 : matchesIn(code, DIALECT_CASE))
+   );
 }
 
 function expectCounts(
@@ -435,21 +478,33 @@ describe("the ratchets", () => {
       );
    });
 
-   it("a dialect is compared to a literal only in the dialect table", () => {
-      // The dialect table's two halves: what a dialect can do, and its SQL.
-      const table = new Set([
-         "service/materialization/domain/dialect.ts",
-         "service/materialization/run/warehouse_sql.ts",
-      ]);
-      expectCounts(
-         "dialect literals",
-         countMatches(
-            mzFiles().filter((f) => !table.has(srcRel(f))),
-            // Not a type test (`typeof dialect !== "string"`).
-            /(?<!typeof\s+)\b\w*[dD]ialect\w*\s*[!=]==?\s*["'`][a-z_]+["'`]|["'`][a-z_]+["'`]\s*[!=]==?\s*[\w.]*[dD]ialect\w*\b/,
-         ),
-         lists.RATCHET_DIALECT_LITERALS,
-      );
+   it("a dialect literal is counted wherever it is", () => {
+      // run/warehouse_sql.ts, the SQL half of the dialect table, switches
+      // over a registered dialect, so its case labels are free; its
+      // comparisons are counted like any other file's.
+      const sqlHalf = "service/materialization/run/warehouse_sql.ts";
+      const actual: Record<string, number> = {};
+      for (const file of mzFiles()) {
+         const n = dialectLiterals(codeLines(file), srcRel(file) === sqlHalf);
+         if (n > 0) actual[srcRel(file)] = n;
+      }
+      expectCounts("dialect literals", actual, lists.RATCHET_DIALECT_LITERALS);
+   });
+
+   it("the dialect-literal count reads a type test as no dialect", () => {
+      // A type test goes; a dialect after `typeof` does not.
+      expect(dialectLiterals([`typeof dialect === "postgres"`])).toBe(1);
+      expect(dialectLiterals([`typeof dialect !== "string"`])).toBe(0);
+      expect(dialectLiterals([`typeof d.dialect !== "string"`])).toBe(0);
+      expect(dialectLiterals([`typeof args.dialect === "undefined"`])).toBe(0);
+      // A comparison either way round, a case label and a bracketed literal.
+      expect(dialectLiterals([`if (dialect === "mysql") {`])).toBe(1);
+      expect(dialectLiterals([`"mysql" !== args.dialectName`])).toBe(1);
+      expect(dialectLiterals([`case "snowflake":`])).toBe(1);
+      expect(dialectLiterals([`case "snowflake":`], true)).toBe(0);
+      expect(dialectLiterals([`new Set(["sqlserver"])`])).toBe(1);
+      // Only a registered dialect counts as a label or in a bracket.
+      expect(dialectLiterals([`case "bigquery":`, `["tsql", 1]`])).toBe(0);
    });
 
    it("no function is over 200 lines", () => {
