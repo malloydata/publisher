@@ -10,7 +10,11 @@
  * against the author's edits.
  */
 
-import { modelDefIfAny, modelDefOf } from "../../governance/ir/compiled_model";
+import {
+   hiddenAccess,
+   modelDefIfAny,
+   modelDefOf,
+} from "../../governance/ir/compiled_model";
 import {
    FixedConnectionMap,
    type Runtime,
@@ -35,7 +39,6 @@ import {
    generatedNamesOf,
    generateBuildFiles,
    givenReadTerms,
-   hiddenAccess,
    keptBasesInText,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,

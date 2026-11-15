@@ -222,6 +222,7 @@ import { keyCheckPipeline } from "../text/key_check_text";
 import { Annotations } from "@malloydata/malloy";
 import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
+import { hiddenAccess } from "../../governance/ir/compiled_model";
 import {
    MATERIALIZE_KEYS,
    nearestKey,
@@ -833,21 +834,6 @@ const ATOMIC_TYPES = new Set([
    "json",
    "sql native",
 ]);
-
-/**
- * A compiled field's access modifier when it is not public, or undefined. Fails
- * closed, as `isHidden` in preaggregation_synthesis.ts does: a modifier it does
- * not know reads as private. The one reader of `accessModifier` for P3: the
- * plan, the build copy's selectable set and the served copy's access check.
- */
-export function hiddenAccess(field: {
-   accessModifier?: unknown;
-}): "private" | "internal" | undefined {
-   if (field.accessModifier == null || field.accessModifier === "public") {
-      return undefined;
-   }
-   return field.accessModifier === "internal" ? "internal" : "private";
-}
 
 /** A Malloy `sourceID`'s declared name and declaring file, or undefined. */
 export function splitSourceID(

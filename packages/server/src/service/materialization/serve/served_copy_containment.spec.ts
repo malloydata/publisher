@@ -10,7 +10,6 @@ import {
    type Reroot,
 } from "./served_copy";
 import { failingReroots } from "./served_copy_containment";
-import { keepsTermsAsWritten } from "./served_copy_serve";
 import { JOIN_CONNECTION_MISMATCH } from "../plan/cross_connection_joins";
 
 const URL = "file:///m.malloy";
@@ -393,18 +392,5 @@ describe("a pair table beside a column kept hidden under its own name (known lim
       expect(missing.refused.map((r) => r.reason)).toEqual([
          "pair_join_not_found",
       ]);
-   });
-});
-
-describe("keepsTermsAsWritten", () => {
-   it("holds a term only when the served filters carry it as written, whitespace aside", () => {
-      const served = { filterList: [{ code: "t2  >= now -\n 60 days" }] };
-      expect(keepsTermsAsWritten(served, [])).toBe(true);
-      expect(keepsTermsAsWritten(served, ["t2 >= now - 60 days"])).toBe(true);
-      expect(keepsTermsAsWritten(served, ["t2 >= now - 30 days"])).toBe(false);
-      expect(keepsTermsAsWritten({}, ["t2 >= now - 60 days"])).toBe(false);
-      expect(keepsTermsAsWritten(undefined, ["t2 >= now - 60 days"])).toBe(
-         false,
-      );
    });
 });

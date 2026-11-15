@@ -23,6 +23,7 @@
 
 import { requireUnique, verdictOf } from "../domain/key_check";
 import {
+   hiddenAccess,
    modelDefOf,
    queryTimezoneOf,
 } from "../../governance/ir/compiled_model";
@@ -41,7 +42,11 @@ import {
    type GraftRuntime,
    type GraftScope,
 } from "../../gate_classification";
-import { gateDeclaringSourceResolves } from "../../filter_binding_guard";
+import {
+   classificationNotKept,
+   gateDeclaringSourceResolves,
+   proveReroot,
+} from "../../filter_binding_guard";
 import {
    buildRowLevelProbe,
    gateFilterText,
@@ -55,10 +60,9 @@ import { keepDeclarations } from "../text/declarations_kept";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { ManifestEntry } from "../domain/types";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
-import {
-   hiddenAccess,
-   type MaterializePair,
-   type MaterializePlan,
+import type {
+   MaterializePair,
+   MaterializePlan,
 } from "../plan/build_file_generator";
 import { rollingWindowsOf } from "../plan/rolling_window";
 import { evaluateManifestFreshness } from "../domain/freshness";
@@ -2398,18 +2402,26 @@ export class ServedCopyServe {
          inlinedKept = [];
          problems.push(...pairsDropped);
          pairsDropped = [];
-         // A re-rooted source must keep every field the author's has. One it
-         // inherited from a base the re-root replaced (a measure, a view, a
-         // join declared on the base) is not in its own text, so it is lost:
-         // that source is left as written and the copy compiled again.
+         // The bind guard (`proveReroot`): a re-rooted source keeps every
+         // field the author's has, each exactly as hidden (P3), and applies
+         // every filter the author's applies at read. One that does not is
+         // left as written, and the copy compiled again. A field it inherited
+         // from a base the re-root replaced (a measure, a view, a join
+         // declared on the base) is not in its own text, so it is lost; what
+         // a cross-connection join took with it is reported on its own, when
+         // it was left out of this source or one it is built from. A given-
+         // reading `where:` term the re-root dropped would answer every
+         // caller with every caller's rows. A source the served compile holds
+         // only as a join (#6643) is read from that join; one that applies a
+         // `where:` is left as written too, since the governor proves a
+         // joined source's filters against its declaring file's live compile,
+         // whose text the re-root changed.
          const servedMap = SourceMap.of(servedDef);
-         // What a cross-connection join took with it is reported on its own,
-         // when it was left out of this source or one it is built from.
-         const lost = candidates.filter((c) => {
-            const author = fieldNames(c.reroot.authorDef);
-            const served = fieldNames(
-               servedDefOf(servedMap, c.reroot.sourceID),
-            );
+         const keptAsWritten = (c: (typeof candidates)[number]) =>
+            (copy.spans.get(c.reroot.url) ?? []).find(
+               (s) => s.sourceName === c.reroot.sourceName,
+            )?.termsKeptAsWritten ?? [];
+         const lossOf = (c: (typeof candidates)[number]) => {
             const node = map.node(c.reroot.sourceID);
             const chain = new Set(
                (node ? map.chainOf(node.def) : [c.reroot.sourceID])
@@ -2417,73 +2429,33 @@ export class ServedCopyServe {
                   .filter((n): n is string => n !== undefined),
             );
             chain.add(c.reroot.sourceName);
-            const excused = new Set([
-               ...leftOut
-                  .filter((l) => chain.has(l.declaration ?? l.name))
-                  .map((l) => l.name),
-               ...(c.reroot.columnsLeftOut ?? []),
-            ]);
-            // A private field the table does not hold (one private on a
-            // source this one extends, which the build never selects, P3)
-            // cannot be read by the source, its extensions or a caller, so
-            // its absence changes no answer: a served text that read it
-            // would not compile.
-            const unreadable = privateFieldNames(c.reroot.authorDef);
-            return [...author].some(
-               (name) =>
-                  !served.has(name) &&
-                  !excused.has(name) &&
-                  !unreadable.has(name),
+            return proveReroot({
+               author: c.reroot.authorDef,
+               served: servedDefOf(servedMap, c.reroot.sourceID),
+               servedHasOwnNode: hasOwnNode(servedMap, c.reroot.sourceID),
+               excused: new Set([
+                  ...leftOut
+                     .filter((l) => chain.has(l.declaration ?? l.name))
+                     .map((l) => l.name),
+                  ...(c.reroot.columnsLeftOut ?? []),
+               ]),
+               termsKeptAsWritten: keptAsWritten(c),
+               givenTerms: givenReadingFilterTerms,
+            });
+         };
+         const losses = new Map(candidates.map((c) => [c, lossOf(c)]));
+         const lost = candidates.filter((c) => {
+            const loss = losses.get(c);
+            return loss === "fields" || loss === "access";
+         });
+         const unscoped = candidates.filter((c) => {
+            const loss = losses.get(c);
+            return (
+               loss === "given_terms" ||
+               loss === "terms_as_written" ||
+               loss === "filtered_join"
             );
          });
-         // Fail closed on access (P3): every field the re-rooted source has
-         // must be exactly as hidden as on the author's, so a stored private
-         // or internal column never becomes selectable. One that is not is
-         // not carried, and its source is left as written.
-         const exposed = candidates.filter(
-            (c) =>
-               !lost.includes(c) &&
-               !keepsAccess(
-                  c.reroot.authorDef,
-                  // A source the served compile holds only as a join
-                  // (#6643) is read from that join, as the given-term
-                  // check below reads it.
-                  servedDefOf(servedMap, c.reroot.sourceID),
-               ),
-         );
-         lost.push(...exposed);
-         // Fail closed on tenant isolation: every `where:` term that reads a
-         // given (re-applied per caller at read, never in the table) must be
-         // applied by the served source too. One written where the re-root
-         // replaced it (a parenthesised head, an inline extend in the base)
-         // is gone from the served source's compiled filters, and the copy
-         // would answer every caller with every caller's rows.
-         // A source the served compile holds only as a join (#6643) and that
-         // applies a `where:` is not re-rooted either: the governor proves a
-         // joined source's filters against its declaring file's live compile,
-         // whose text the re-root changed, so it would refuse every caller
-         // (403) where live answers. Left as written, what reads it is live.
-         // The same for a rolling window the re-root leaves to the kept text
-         // (one over a hidden dimension computed at read): it must be in the
-         // served source's compiled filters as the author wrote it.
-         const keptAsWritten = (c: (typeof candidates)[number]) =>
-            (copy.spans.get(c.reroot.url) ?? []).find(
-               (s) => s.sourceName === c.reroot.sourceName,
-            )?.termsKeptAsWritten ?? [];
-         const unscoped = candidates.filter(
-            (c) =>
-               !lost.includes(c) &&
-               (!keepsGivenTerms(
-                  c.reroot.authorDef,
-                  servedDefOf(servedMap, c.reroot.sourceID),
-               ) ||
-                  !keepsTermsAsWritten(
-                     servedDefOf(servedMap, c.reroot.sourceID),
-                     keptAsWritten(c),
-                  ) ||
-                  (!hasOwnNode(servedMap, c.reroot.sourceID) &&
-                     appliesFilters(c.reroot.authorDef))),
-         );
          for (const c of [...lost, ...unscoped]) withoutKept.delete(c);
          if (lost.length > 0 || unscoped.length > 0) {
             for (const c of lost) {
@@ -2520,7 +2492,7 @@ export class ServedCopyServe {
                join: l.name,
             });
          }
-         const unsafeIDs = classificationNotKept(
+         const unsafeIDs = classificationCeiling(
             this.host.modelPath(),
             modelDef,
             servedDef,
@@ -3053,10 +3025,11 @@ function pairRerootOf(
  * record never had (a join #6982 left out of it, answered once both sides are
  * built). A source whose served surface has a `#(carries)` leak, or an
  * unclassified field, that the compile of record does not is never served
- * from the copy, and a `classification_not_kept` problem names each finding.
- * Returns those sources' `sourceID`s.
+ * from the copy (the bind guard's `classificationNotKept`), and a
+ * `classification_not_kept` problem names each finding. Returns those
+ * sources' `sourceID`s.
  */
-function classificationNotKept(
+function classificationCeiling(
    modelPath: string,
    recordDef: unknown,
    servedDef: unknown,
@@ -3064,22 +3037,11 @@ function classificationNotKept(
    problems: ServedCopyProblem[],
 ): Set<string> {
    const unsafe = new Set<string>();
-   const before = classificationFindingsBySource(
-      modelPath,
-      recordDef as ModelDef,
+   const added = classificationNotKept(
+      classificationFindingsBySource(modelPath, recordDef as ModelDef),
+      classificationFindingsBySource(modelPath, servedDef as ModelDef),
    );
-   const after = classificationFindingsBySource(
-      modelPath,
-      servedDef as ModelDef,
-   );
-   for (const [source, found] of after) {
-      // A source the copy generates (a re-rooted base's) is reached only
-      // through the author's sources, which are checked.
-      const was = before.get(source);
-      if (!was) continue;
-      const leaks = found.leaks.filter((m) => !was?.leaks.includes(m));
-      const coverage = found.coverage.filter((m) => !was?.coverage.includes(m));
-      if (leaks.length === 0 && coverage.length === 0) continue;
+   for (const [source, { leaks, coverage }] of added) {
       const id = servedMap.sourceIDOf(source);
       if (id) unsafe.add(id);
       problems.push({
@@ -3138,100 +3100,6 @@ function joinedColumnNotes(
 }
 
 /**
- * Whether the served source applies every given-reading `where:` term the
- * author's applies: the same text, reading the same givens, in its own
- * compiled filters (so a term in a comment, a string or another source never
- * counts). Unreadable or unrecorded terms fail closed.
- */
-export function keepsGivenTerms(author: unknown, served: unknown): boolean {
-   if (!author || !served) return false;
-   try {
-      const key = (t: { code: string; givens: string[] }) =>
-         `${t.code.replace(/\s+/g, " ").trim()}\u0000${t.givens.join(",")}`;
-      const kept = new Set(givenReadingFilterTerms(served).map(key));
-      return givenReadingFilterTerms(author).every(
-         (t) => t.code.trim() !== "" && kept.has(key(t)),
-      );
-   } catch {
-      return false;
-   }
-}
-
-/**
- * Whether the served source's compiled filters hold each of `codes` (the
- * author's text of a `where:` term), whitespace aside. True for none;
- * unreadable filters fail closed.
- */
-export function keepsTermsAsWritten(
-   served: unknown,
-   codes: readonly string[],
-): boolean {
-   if (codes.length === 0) return true;
-   const filters = (served as { filterList?: unknown } | undefined)?.filterList;
-   if (!Array.isArray(filters)) return false;
-   const norm = (code: string) => code.replace(/\s+/g, " ").trim();
-   const held = new Set(
-      (filters as { code?: unknown }[])
-         .map((f) => (typeof f?.code === "string" ? norm(f.code) : ""))
-         .filter((c) => c !== ""),
-   );
-   return codes.every((c) => norm(c) !== "" && held.has(norm(c)));
-}
-
-/**
- * Whether every field of the served source has the access modifier the
- * author's field of that name has (P3): `public` and none read alike, and a
- * modifier it does not know reads as private, so it never matches a public
- * one. A field only the served copy has (a timeframe column's internal
- * rename, `order_month__stored`; an inlined join's stored column,
- * `carriers__name__stored`) is the re-root's own and must not be public, so a
- * stored column never surfaces under a name the author's source lacks. Nor
- * may it be less hidden than the author's field it is named after (`<field>__…`,
- * the field a timeframe column or an inlined join's column stores): a private
- * field's stored column renamed only `internal` would let a caller's own
- * `extend` read it. Unreadable sources fail closed.
- */
-export function keepsAccess(author: unknown, served: unknown): boolean {
-   const accessByName = (def: unknown) => {
-      const fields = (def as { fields?: unknown } | undefined)?.fields;
-      if (!Array.isArray(fields)) return undefined;
-      const out = new Map<string, string>();
-      for (const f of fields as {
-         name?: unknown;
-         as?: unknown;
-         accessModifier?: unknown;
-      }[]) {
-         const name = typeof f.as === "string" ? f.as : f.name;
-         if (typeof name !== "string") continue;
-         out.set(name, hiddenAccess(f) ?? "public");
-      }
-      return out;
-   };
-   const before = accessByName(author);
-   const after = accessByName(served);
-   if (!before || !after) return false;
-   const rank = (access: string) =>
-      access === "public" ? 0 : access === "internal" ? 1 : 2;
-   for (const [name, access] of after) {
-      const was = before.get(name);
-      if (was !== undefined) {
-         if (was !== access) return false;
-         continue;
-      }
-      // The re-root's own: hidden, and at least as hidden as every author
-      // field whose stored column it could be.
-      let floor = 1;
-      for (const [field, fieldAccess] of before) {
-         if (name.startsWith(`${field}__`)) {
-            floor = Math.max(floor, rank(fieldAccess));
-         }
-      }
-      if (rank(access) < floor) return false;
-   }
-   return true;
-}
-
-/**
  * A declaration's definition in the served copy's compile: its node, or, for
  * a source this model reaches only as a join (an index that imports the file
  * joining it, not the file declaring it, #6643), the joined definition a join
@@ -3253,12 +3121,6 @@ function hasOwnNode(map: SourceMap, sourceID: string): boolean {
    return Array.isArray(map.node(sourceID)?.def.fields);
 }
 
-/** Whether a source definition applies any `where:` term. */
-function appliesFilters(def: unknown): boolean {
-   const filters = (def as { filterList?: unknown[] } | undefined)?.filterList;
-   return Array.isArray(filters) && filters.length > 0;
-}
-
 /** Every field name any source in the model declares. */
 function modelFieldNames(map: SourceMap): string[] {
    const names = new Set<string>();
@@ -3266,21 +3128,6 @@ function modelFieldNames(map: SourceMap): string[] {
       for (const n of fieldNames(node.def)) names.add(n);
    }
    return [...names];
-}
-
-/** The names of a compiled source's private fields. */
-function privateFieldNames(def: unknown): Set<string> {
-   const fields = (
-      def as {
-         fields?: { name?: unknown; as?: unknown; accessModifier?: unknown }[];
-      }
-   )?.fields;
-   return new Set(
-      (fields ?? [])
-         .filter((f) => hiddenAccess(f) === "private")
-         .map((f) => (typeof f.as === "string" ? f.as : f.name))
-         .filter((n): n is string => typeof n === "string"),
-   );
 }
 
 /** The names of a compiled source's fields. */
