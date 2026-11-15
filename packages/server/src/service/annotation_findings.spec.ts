@@ -323,26 +323,35 @@ describe("annotation findings on a loaded package", () => {
    it(
       "with the switch off, reads neither v2 route: no finding, and publish is not refused",
       async () => {
-         for (const line of [
-            '#(materialize) nmae="t"',
-            '#(materialize) name="t',
-            '#(preaggregate) grian=["category"]',
-            '#(preaggregate) grain=["category"',
-         ]) {
-            const pkg = await loadPackage(
-               `${RAW}${line}\nsource: orders is raw\n`,
-            );
-            const codes = (pkg.getPackageMetadata().warnings ?? []).map(
-               (w) => w.code,
-            );
-            expect(
-               codes.filter(
-                  (c) =>
-                     c?.startsWith("materialize-") ||
-                     c?.startsWith("preaggregate-"),
-               ),
-            ).toEqual([]);
-            expect(formatPublishRejections(pkg)).toBeUndefined();
+         const { restore } = installSettings({
+            env: { PUBLISHER_MATERIALIZE: "false" },
+         });
+         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+         try {
+            for (const line of [
+               '#(materialize) nmae="t"',
+               '#(materialize) name="t',
+               '#(preaggregate) grian=["category"]',
+               '#(preaggregate) grain=["category"',
+            ]) {
+               const pkg = await loadPackage(
+                  `${RAW}${line}\nsource: orders is raw\n`,
+               );
+               const codes = (pkg.getPackageMetadata().warnings ?? []).map(
+                  (w) => w.code,
+               );
+               expect(
+                  codes.filter(
+                     (c) =>
+                        c?.startsWith("materialize-") ||
+                        c?.startsWith("preaggregate-"),
+                  ),
+               ).toEqual([]);
+               expect(formatPublishRejections(pkg)).toBeUndefined();
+            }
+         } finally {
+            await __setPackageLoadPoolForTests(null);
+            restore();
          }
       },
       { timeout: 60000 },

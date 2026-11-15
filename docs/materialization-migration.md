@@ -5,9 +5,10 @@ SPDX-License-Identifier: MIT
 
 # Moving from v1 materialization to `#(materialize)` and `#(preaggregate)`
 
-> **In development.** `#(materialize)` and `#(preaggregate)` are materialization v2's annotations.
-> Publisher reads them only with `PUBLISHER_MATERIALIZE` on (`materialize.enabled`, default off),
-> and they are still being built ([the plan](materialization-v2-plan.md)). With the switch off,
+> **On by default.** `#(materialize)` and `#(preaggregate)` are materialization v2's annotations.
+> Publisher reads them with `PUBLISHER_MATERIALIZE` on (`materialize.enabled`), which is the
+> default; the setting is removed one release after that default ships
+> ([the plan](materialization-v2-plan.md), decision 9). With the switch set `false`,
 > Publisher ignores both and answers the source live: a `#(materialize)` source gets no warning and
 > no serve verdict, and a `#(preaggregate)` line is an `annotation-near-miss` warning. A `#(materialize)`
 > source is served from its own warehouse (it then needs `name=`) or from a `storage=` destination,
@@ -57,12 +58,12 @@ still build and serve.
 ## The recipe
 
 1. **Run a server with the switch on**, somewhere other than production:
-   `PUBLISHER_MATERIALIZE=true`, and for a `storage=` source also `PERSIST_STORAGE_MODE=on` with the
+   `PUBLISHER_MATERIALIZE` on (the default; do not set it `false`), and for a `storage=` source also `PERSIST_STORAGE_MODE=on` with the
    storage destination it names configured
    ([storage destinations](connections.md#storage-destinations)). A colocated `#(materialize)`
    needs no storage tier. Both are read at startup. A server with the switch off ignores every v2 annotation, and says nothing
-   about a `#(materialize)` it ignores, so check this first: the server's startup log lists
-   `materialize.enabled=true from PUBLISHER_MATERIALIZE` among the settings it was given.
+   about a `#(materialize)` it ignores, so check this first: a server with it off lists
+   `materialize.enabled=false from PUBLISHER_MATERIALIZE` among the settings its startup log says it was given.
 2. **Find the v1 annotations.** `grep -rn -e '#@ *persist' -e '#@ *preaggregate' --include='*.malloy' .`
    lists them. Leave `#@ -persist` lines and `#@ persist` on views as they are.
 3. **Rewrite each one** by the sections below. Move a source at a time if the package is large: v1

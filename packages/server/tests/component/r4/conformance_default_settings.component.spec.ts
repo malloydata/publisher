@@ -3,13 +3,14 @@
 
 /**
  * Every conformance shape under the shipped default, which no
- * other spec runs. The conformance spec's `cutover` switch also sets
- * `PUBLISHER_MATERIALIZE`; the default leaves it off, and 6f found one defect
- * only that combination reaches (the cutover read `#(preaggregate)` with it
- * off). Here only `PERSIST_STORAGE_MODE=on` is set: each v1 query is answered
- * live before any table is
- * bound, then after the bind, and the two must agree on rows and on each
- * column's type (number subtype aside) and annotations.
+ * other spec runs. The default turns `PUBLISHER_MATERIALIZE` on, so the
+ * `#(materialize)` shapes run here too; 6f found one defect only the default
+ * reached when it was off (the cutover read `#(preaggregate)` with it off),
+ * which `preaggregate_variants.spec.ts` pins with the switch set `false`.
+ * Here only `PERSIST_STORAGE_MODE=on` is set: each query is answered live
+ * before any table is bound, then after the bind, and the two must agree on
+ * rows and on each column's type and annotations (a number's subtype and
+ * Malloy's own `#(malloy)` drill annotations aside, a nest's fields included).
  */
 
 import { afterAll, describe, expect, it } from "bun:test";
@@ -26,10 +27,27 @@ import { rowDifference } from "./harness";
 
 function metadataDifference(a: Answer, b: Answer): string | undefined {
    if (a.fields.length !== b.fields.length) return "field count";
-   const strip = (t: unknown) => {
-      if (t && typeof t === "object" && "subtype" in t) {
-         const { subtype: _s, ...rest } = t as Record<string, unknown>;
-         return rest;
+   // A number's subtype and Malloy's own `#(malloy)` drill annotations are set
+   // aside at every depth, a nest's fields included, as the conformance spec's
+   // `number-subtype` and `drill-metadata` tolerances do.
+   const strip = (t: unknown): unknown => {
+      if (Array.isArray(t)) {
+         return t
+            .filter(
+               (a) =>
+                  !(
+                     typeof (a as { value?: unknown })?.value === "string" &&
+                     (a as { value: string }).value.startsWith("#(malloy)")
+                  ),
+            )
+            .map(strip);
+      }
+      if (t && typeof t === "object") {
+         return Object.fromEntries(
+            Object.entries(t as Record<string, unknown>)
+               .filter(([k]) => k !== "subtype")
+               .map(([k, v]) => [k, strip(v)]),
+         );
       }
       return t;
    };
@@ -59,8 +77,6 @@ afterAll(async () => {
 describe("the conformance shapes under the default settings", () => {
    for (const shape of SHAPES) {
       for (const variant of shape.variants ?? ["storage", "colocated"]) {
-         // `#(materialize)` is ignored with PUBLISHER_MATERIALIZE off.
-         if (variant === "materialize") continue;
          it(`${shape.name} [${variant}]: every answer equals live`, async () => {
             const restore = installSettings({
                env: { PERSIST_STORAGE_MODE: "on" },

@@ -6,7 +6,7 @@
  * compiled once per binding set and answering queries the router sends it
  * (materialization v2, phase 3).
  *
- * Behind `materialize.enabled` (`PUBLISHER_MATERIALIZE`, default off), the one switch for `#(materialize)` build and serve. With it off nothing here
+ * Behind `materialize.enabled` (`PUBLISHER_MATERIALIZE`, default on), the one switch for `#(materialize)` build and serve. With it off nothing here
  * runs and serving goes through today's storage serve shape and the colocated
  * build manifest, unchanged.
  *
