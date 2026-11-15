@@ -360,20 +360,23 @@ describe("a path that goes out of the package and comes back", () => {
 
    it("refuses both, relative or absolute, without looking at what it passes through", async () => {
       // Where a link keeps its text (POSIX) the walk refuses at the outside
-      // directory; where the text was normalized when the link was made
-      // (Windows) it never spells a step outside, and reads the package's
-      // own file. Either way, present and absent answer alike.
+      // directory. Where the text was normalized when the link was made
+      // (Windows) the absolute form names the package's own file and reads
+      // it, but the relative one is still `../pkg/lib/real.malloy`: a step
+      // out of the package and back, which is refused as on POSIX. Either
+      // way, present and absent answer alike.
       const kept = linkTextKeptVerbatim();
       const lstat = spyOn(fs.promises, "lstat");
       try {
          for (const form of ["rel", "abs"]) {
+            const refused = kept || form === "rel";
             for (const which of ["present", "absent"]) {
                lstat.mockClear();
                const target = url(path.join(pkg3, `${form}-${which}`));
                expect(await outcome(pkg3, target)).toBe(
-                  kept ? IMPORT_OUTSIDE_PACKAGE_MESSAGE : "READ:real",
+                  refused ? IMPORT_OUTSIDE_PACKAGE_MESSAGE : "READ:real",
                );
-               if (kept) {
+               if (refused) {
                   expect(() => readPackageURLSync(pkg3, target)).toThrow(
                      IMPORT_OUTSIDE_PACKAGE_MESSAGE,
                   );
@@ -534,11 +537,27 @@ describe("a link whose text steps .. past a file, or through a missing name", ()
                "ENOENT",
             );
          } else {
-            // Normalized when made (Windows), both texts are `.`: the package
-            // directory itself, which is not read as a file.
-            for (const target of [afterFile, afterMissing]) {
-               expect(await outcome(pkg6, target)).toContain("EISDIR");
-               expect(() => readPackageURLSync(pkg6, target)).toThrow("EISDIR");
+            // Windows normalizes a link's text when it is made, and not every
+            // text alike (a target that does not resolve may be kept), so each
+            // expectation reads the text that link actually holds: a step
+            // past the file is ENOTDIR, a missing first name ENOENT, and a
+            // text collapsed to the package directory itself EISDIR.
+            for (const [name, target] of [
+               ["after-file", afterFile],
+               ["after-missing", afterMissing],
+            ] as const) {
+               const steps = fs
+                  .readlinkSync(path.join(pkg6, name))
+                  .split(/[\\/]/)
+                  .filter((s) => s !== "" && s !== ".");
+               const code =
+                  steps[0] === "f.md" && steps.length > 1
+                     ? "ENOTDIR"
+                     : steps[0] === "missing"
+                       ? "ENOENT"
+                       : "EISDIR";
+               expect(await outcome(pkg6, target)).toContain(code);
+               expect(() => readPackageURLSync(pkg6, target)).toThrow(code);
             }
          }
       } finally {
