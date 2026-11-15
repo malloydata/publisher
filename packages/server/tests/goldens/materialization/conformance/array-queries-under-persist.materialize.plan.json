@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "cart_rows@<pkg>/m.malloy": "materialize",
+      "cart_totals@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "cart_rows@<pkg>/m.malloy": {
         "buildSourceName": "cart_rows__mat",

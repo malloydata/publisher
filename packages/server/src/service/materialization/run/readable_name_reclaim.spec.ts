@@ -119,7 +119,6 @@ async function reclaim(
          }
          return entries.filter((e) => owe.includes(e.physicalTableName));
       },
-      reclaimVersionTables: async () => undefined,
    });
    await reclaimer.reclaimRenamedTables("e1", "pa", runId, {}, async () => {
       rebinds += 1;

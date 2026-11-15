@@ -22,7 +22,7 @@ import {
    loadFixture,
    type LoadedFixture,
    type Outcome,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 
 /** How far after the load the moving row's timestamp lies. */
 const LEAD_MS = 20_000;

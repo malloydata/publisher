@@ -18,7 +18,7 @@ import {
    freshLoadPool,
    loadFixture,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES, type Variant } from "./conformance/shapes";
 
 describe("dry-run cutover path vs what serves: every shape", () => {

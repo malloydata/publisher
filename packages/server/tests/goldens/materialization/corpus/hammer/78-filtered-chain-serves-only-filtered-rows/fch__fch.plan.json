@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "deals@<hammer>/fch/fch.malloy": "persist",
+      "pipeline_now@<hammer>/fch/fch.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

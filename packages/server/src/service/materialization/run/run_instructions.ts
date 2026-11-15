@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The build instructions a run takes: an auto-run's own, derived from the
+ * compiled plan with readable table names and carry-forward of unchanged
+ * sources ({@link deriveSelfInstructions}); a host's, checked against the plan
+ * ({@link validateInstructions}); and where each instructed table lives
+ * ({@link writeTargetsFor}). Called by the materialization service.
+ *
+ * Reads the plan and the gates and writes nothing; logs and counts what it
+ * refuses. A source the eligibility gate refuses is returned as refused and serves live.
+ */
+
 import type { PersistSource } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -28,13 +39,15 @@ import {
    type WriteTarget,
 } from "../../versions/materialization_scope";
 import {
-   CompiledBuildPlan,
    computeSourceEntityId,
    planTableFolds,
    sharedTables,
-   sourcesInBuildOrder,
    tierGateInputs,
 } from "../plan/build_plan";
+import {
+   type CompiledBuildPlan,
+   sourcesInBuildOrder,
+} from "../domain/compiled_build_plan";
 import {
    assertPlacementNamed,
    assertTierEligible,
@@ -131,10 +144,7 @@ function gateSources(
    // whether or not the other is rebuilt this run or carried.
    const shared = sharedTables({ ...compiled, tableFolds });
    for (const build of compiled.builds) {
-      for (const persistSource of sourcesInBuildOrder(
-         build,
-         compiled.sources,
-      )) {
+      for (const persistSource of sourcesInBuildOrder(build, compiled.tables)) {
          if (include && !include.has(persistSource.name)) continue;
 
          // A source that DECLARES `storage=` must never silently downgrade
@@ -151,8 +161,7 @@ function gateSources(
          }
 
          const destination = resolveStorageDestination(persistSource);
-         const isRollup =
-            !!compiled.preaggregatePlans?.[persistSource.sourceID];
+         const isRollup = !!compiled.tables[persistSource.sourceID]?.rollup;
          // Gate BEFORE computeSourceEntityId: an unbound parameter or a given
          // makes its getSQL() throw opaquely.
          //
@@ -193,7 +202,7 @@ function gateSources(
                      : destination
                        ? "storage"
                        : "colocated",
-                  compiled.sourceModelPaths?.[persistSource.sourceID],
+                  compiled.tables[persistSource.sourceID]?.modelPath,
                );
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.
@@ -256,7 +265,7 @@ function modelPathOf(
          // Not a file URL Node reads: the recorded path below.
       }
    }
-   const known = compiled.sourceModelPaths?.[persistSource.sourceID];
+   const known = compiled.tables[persistSource.sourceID]?.modelPath;
    if (known) return known;
    return url.slice(url.lastIndexOf("/") + 1);
 }
@@ -266,7 +275,7 @@ function labelOf(
    compiled: CompiledBuildPlan,
    persistSource: PersistSource,
 ): string {
-   const rollup = compiled.preaggregatePlans?.[persistSource.sourceID];
+   const rollup = compiled.tables[persistSource.sourceID]?.rollup;
    return sourceLabel(
       persistSource.name,
       rollup?.baseSourceName && rollup.grainDimensions ? rollup : undefined,
@@ -451,12 +460,12 @@ function tableNameCollision(
             `answered live.`,
          reason: "table_name_collision",
       }),
-      compiled.preaggregatePlans?.[persistSource.sourceID]
+      compiled.tables[persistSource.sourceID]?.rollup
          ? "preaggregate"
          : destination
            ? "storage"
            : "colocated",
-      compiled.sourceModelPaths?.[persistSource.sourceID],
+      compiled.tables[persistSource.sourceID]?.modelPath,
    );
 }
 

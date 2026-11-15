@@ -1,19 +1,31 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * One instructed run's build loop ({@link InstructedBuild}), shared by the
+ * auto-run and orchestrated runs: it walks the instructions in dependency
+ * order, gates each source, hands it to its tier through the source build,
+ * runs the key checks over each written table, and records each source's
+ * outcome on the {@link InstructedRun}. Called by the materialization service;
+ * {@link tableSiteContext} is also read by the service and the reclaimer.
+ *
+ * Effects: warehouse and destination SQL through the tier adapters, the key
+ * checks and the table marks; build telemetry and logs. A run that commits
+ * nothing gives back the storage tables it wrote. It never commits a run
+ * manifest; the committer does.
+ */
+
 import { keyCheckCompilerKey } from "../domain/key_check";
-import { storedKeyCheckSql } from "../text/key_check_text";
 import {
    assertInlinedJoinsUnique,
    pairLeafKeyChecksOf,
    checkDigest,
-   runRollupKeyCheck,
    tableIdentityKey,
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
-import type { ParentKeyCheck, RollupKeyCheck } from "../plan/rollup_plan";
-import type { InlineUniquenessCheck } from "../plan/build_file_generator";
+import type { ParentKeyCheck, RollupKeyCheck } from "../domain/table_plans";
+import type { InlineUniquenessCheck } from "../domain/table_plans";
 import { buildSQLOf } from "../plan/addressing";
 import type {
    Connection as MalloyConnection,
@@ -33,22 +45,19 @@ import {
 import { getPersistStorageMode } from "../../../config";
 import { withSpan } from "../../../telemetry";
 import { errMessage } from "../../../utils";
-import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
+import { quoteManifestTablePath } from "../../quoting";
+import { ColocatedTier } from "./colocated_build_strategy";
+import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
-   STORAGE_TARGET_DIALECT,
-   withStorageDestinationSession,
-} from "./materialization_build_session";
-import {
-   destinationSchemaOf,
-   storageTablePath,
-} from "../domain/storage_table_path";
-import {
-   CompiledBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
-   sourcesInBuildOrder,
    tierGateInputs,
 } from "../plan/build_plan";
+import {
+   type CompiledBuildPlan,
+   materializePlansOf,
+   sourcesInBuildOrder,
+} from "../domain/compiled_build_plan";
 import {
    assertMaterializationEligible,
    assertPlacementNamed,
@@ -115,6 +124,81 @@ import {
    reportSourceRefused,
 } from "./run_telemetry";
 
+/** The tiers a key check runs through, where its table lives. */
+const COLOCATED = new ColocatedTier();
+// Only its key checks. A build goes through the service's adapter, which
+// routes a chained build through the run's collaborators; this one would not.
+const STORAGE: Pick<StorageBuildStrategy, "checkKey" | "keyCheckSql"> =
+   new StorageBuildStrategy();
+
+/**
+ * The key checks an auto-run runs over a table once it is written: a
+ * rollup's key and its query sources' keys, a pair table's leaf key, and a
+ * stored source's own key. Each records what it found; none fails the build.
+ */
+async function checkBuiltKeys(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   graphConnectionName: string,
+   connection: MalloyConnection,
+   { instruction, orchestrated, sourceEntityId }: GatedSource,
+   entry: ManifestEntry,
+): Promise<void> {
+   const { compiled } = run;
+   // A rollup's key checks (known limitation 29). Auto-run only; never
+   // fails the build.
+   if (!orchestrated && run.uniqueness) {
+      await checkRollupKeys(
+         run.uniqueness,
+         compiled,
+         persistSource,
+         entry,
+         connection,
+         graphConnectionName,
+         sourceEntityId,
+         writtenTableIdentity(instruction, graphConnectionName),
+      );
+   }
+   // A pair table (an inlined join_many): its leaf's key unique and never
+   // NULL, checked over the leaf source's rows on the source's own
+   // connection, which the served copy needs before it serves a count
+   // through the path (known limitation 40). Never fails the build.
+   if (!orchestrated && run.uniqueness) {
+      await checkPairLeafKeys(
+         run.uniqueness,
+         pairLeafKeyChecksOf(
+            compiled.tables[persistSource.sourceID]?.materialize,
+         ),
+         connection,
+         persistSource.name,
+         sourceEntityId,
+         writtenTableIdentity(instruction, graphConnectionName),
+      );
+   }
+   // A source stored in a destination, read there beside a joined
+   // source's rollup through a join keyed on its primary key:
+   // check that key over the rows its table holds.
+   if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
+      await checkStoredKey(
+         run,
+         run.uniqueness,
+         persistSource,
+         entry,
+         sourceEntityId,
+      );
+   }
+}
+
+/** What an instructed source's gates hand its build. */
+interface GatedSource {
+   instruction: BuildInstruction;
+   orchestrated: boolean;
+   /** The source's CONTENT address, which keys the manifest. */
+   sourceEntityId: string;
+   /** The physical table it writes ({@link physicalTargetKey}). */
+   target: string;
+}
+
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
 function upstreamsBySourceID(
    builds: CompiledBuildPlan["builds"],
@@ -138,9 +222,8 @@ export class InstructedBuild {
    constructor(
       private readonly seams: {
          /**
-          * One source's build. The facade routes this, and the failed-run
-          * reclaim, back through its own methods of the same names so its
-          * specs can drive and substitute them.
+          * One source's build. The service passes this, and the failed-run
+          * reclaim, from its run collaborators, so a spec can hand it either.
           */
          buildOneSource: SourceBuilder["build"];
          reclaimStorageTablesFromFailedRun: (
@@ -234,7 +317,7 @@ export class InstructedBuild {
       // entry at the wrong tier is refused, not recomputed (see
       // ChainedPlanFacts.hostInstructed).
       hostInstructed = false,
-      // What a strict build does with the warehouse recompute (#6756).
+      // What a strict build does with the warehouse recompute.
       warehouseReach: WarehouseReach = "recompute",
       // Auto-run only: the inline uniqueness checks' passes, read from the
       // run before and recorded for the run after (inline_uniqueness.ts).
@@ -251,15 +334,15 @@ export class InstructedBuild {
       sourcesRefused: number;
       refusalsInFailures: number;
       /**
-       * Refused sources whose table an eligible sibling built
-       * (ms2data/service#7078), by sourceID: the table stands and serves its
-       * eligible sources, and only these answer live.
+       * Refused sources whose table an eligible sibling built, by sourceID:
+       * the table stands and serves its eligible sources, and only these
+       * answer live.
        */
       refusedBesideBuilt: Record<string, RefusedSource>;
       /** The run metadata value for the uniqueness checks, when any ran. */
       uniquenessChecks?: ReturnType<UniquenessLedger["toMetadata"]>;
    }> {
-      const { builds, sources, connectionDigests, connections } = compiled;
+      const { builds, tables, connectionDigests, connections } = compiled;
       const index = indexInstructions(instructions);
       const run: InstructedRun = {
          compiled,
@@ -272,18 +355,18 @@ export class InstructedBuild {
          // Once per run: it depends only on the plan.
          planFacts: {
             ...chainedPlanFacts(
-               sources,
+               tables,
                connectionDigests,
                compiled.tableFolds,
                // A host can imply a destination the annotation does not declare,
-               // so the instruction decides a source's current tier (#7087).
+               // so the instruction decides a source's current tier.
                (sourceID, sourceEntityId) =>
                   index.bySourceID.get(sourceID) ??
                   index.bySourceEntityId.get(sourceEntityId),
             ),
             hostInstructed,
             warehouseReach,
-            materializePlans: compiled.materializePlans,
+            materializePlans: materializePlansOf(tables),
          },
          ...this.seedInstructedRun(seedEntries, connections, strict),
          builtThisRun: [],
@@ -304,7 +387,7 @@ export class InstructedBuild {
       };
       assertNoTableCollisions(
          builds,
-         sources,
+         tables,
          connectionDigests,
          index,
          compiled.tableFolds,
@@ -322,7 +405,7 @@ export class InstructedBuild {
                   `Connection '${build.connectionName}' not found`,
                );
             }
-            for (const persistSource of sourcesInBuildOrder(build, sources)) {
+            for (const persistSource of sourcesInBuildOrder(build, tables)) {
                if (signal.aborted) throw new Error("Build cancelled");
                await withSpan(
                   "publisher.materialization.build_source",
@@ -364,7 +447,7 @@ export class InstructedBuild {
          // the answer. Not when a source its own gate admits was held back only
          // because a colocated sibling on its table is refused: the address
          // fails in `failures`, as an address with a refused source always
-         // has, and the run is not failed for it (ms2data/service#7078).
+         // has, and the run is not failed for it.
          if (
             run.builtSources.length === 0 &&
             run.refusals.length > 0 &&
@@ -544,6 +627,66 @@ export class InstructedBuild {
       graphConnectionName: string,
       connection: MalloyConnection,
    ): Promise<void> {
+      const gated = this.gateInstructedSource(
+         run,
+         persistSource,
+         graphConnectionName,
+      );
+      if (!gated) return;
+      const { instruction, sourceEntityId, target } = gated;
+      const { compiled } = run;
+      const entry = await this.buildGatedSource(
+         run,
+         persistSource,
+         graphConnectionName,
+         connection,
+         gated,
+      );
+      if (!entry) return;
+      run.builtSources.push(persistSource.name);
+      reportSourceBuilt(
+         {
+            kind: buildKindOf(compiled, persistSource.sourceID),
+            tier: entry.storageDestinationName ? "storage" : "colocated",
+            sourceEntityId,
+            sourceName: persistSource.name,
+            physicalTableName: instruction.physicalTableName,
+         },
+         entry,
+      );
+      run.entries[sourceEntityId] = entry;
+      run.builtAddresses.add(sourceEntityId);
+      await checkBuiltKeys(
+         run,
+         persistSource,
+         graphConnectionName,
+         connection,
+         gated,
+         entry,
+      );
+      run.writtenTargets.set(target, {
+         sourceEntityId,
+         sourceName: persistSource.name,
+      });
+      if (isReclaimableStorageTable(entry)) {
+         run.builtThisRun.push(entry);
+      } else if (entry.storageDestinationName) {
+         // Recorded, not logged: only a failed run leaves these behind.
+         run.retainedThisRun.push(entry);
+      }
+   }
+
+   /**
+    * The gates before one instructed source's build: its instruction, its
+    * eligibility, a colocated sibling's refusal, the storage re-assert, and
+    * another route to a table this run built or failed. What the build needs,
+    * or undefined when the source is not built (any refusal recorded).
+    */
+   private gateInstructedSource(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      graphConnectionName: string,
+   ): GatedSource | undefined {
       const { compiled } = run;
       const resolved = resolveInstruction(
          run.index,
@@ -551,11 +694,11 @@ export class InstructedBuild {
          compiled.connectionDigests,
          compiled.tableFolds,
       );
-      if (!resolved) return;
+      if (!resolved) return undefined;
       const { instruction, orchestrated } = resolved;
 
       if (this.refuseIneligibleInstructedSource(run, persistSource, resolved)) {
-         return;
+         return undefined;
       }
 
       // The manifest is keyed by the CONTENT sourceEntityId (what Malloy
@@ -566,7 +709,7 @@ export class InstructedBuild {
          computeSourceEntityId(
             persistSource,
             compiled.connectionDigests,
-            compiled.targets?.[persistSource.sourceID],
+            compiled.tables[persistSource.sourceID]?.target,
             compiled.tableFolds,
          );
 
@@ -599,7 +742,7 @@ export class InstructedBuild {
                false,
             );
             run.heldBackBySibling = true;
-            return;
+            return undefined;
          }
       }
 
@@ -633,7 +776,7 @@ export class InstructedBuild {
             builtAs: written.sourceName,
             physicalTableName: instruction.physicalTableName,
          });
-         return;
+         return undefined;
       }
       // Another route to a table whose build failed this run: the same
       // content fails the same way, so the source takes that failure (its
@@ -652,9 +795,24 @@ export class InstructedBuild {
                method: "full",
             },
          );
-         return;
+         return undefined;
       }
+      return { instruction, orchestrated, sourceEntityId, target };
+   }
 
+   /**
+    * One gated source's build, guarded: its `name=` ownership, its inlined
+    * join_one checks, the build itself and its ownership mark. The entry it
+    * built, or undefined when it failed (its failure recorded).
+    */
+   private async buildGatedSource(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      graphConnectionName: string,
+      connection: MalloyConnection,
+      { instruction, orchestrated, sourceEntityId, target }: GatedSource,
+   ): Promise<ManifestEntry | undefined> {
+      const { compiled } = run;
       // An auto-run's table at the author's own `name=`, which another
       // package on the same schema may hold (table_ownership.ts). Every other
       // auto-run name is the package's own by construction.
@@ -724,7 +882,7 @@ export class InstructedBuild {
          // Auto-run skips one whose joined table provably did not change
          // since it last passed (inline_uniqueness.ts).
          await assertInlinedJoinsUnique(
-            compiled.materializePlans?.[persistSource.sourceID],
+            compiled.tables[persistSource.sourceID]?.materialize,
             connection,
             orchestrated ? undefined : run.uniqueness,
             orchestrated || !run.uniqueness
@@ -767,7 +925,7 @@ export class InstructedBuild {
          // signal that a table belongs to a rollup in no model file; served as
          // an ordinary binding it would be silently dropped (see
          // preaggregation_serve_bindings).
-         if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
+         if (compiled.tables[persistSource.sourceID]?.rollup) {
             entry = { ...entry, origin: "preaggregate" as const };
          }
          if (ownedTarget) {
@@ -826,75 +984,11 @@ export class InstructedBuild {
                   : {}),
             },
          );
-         return;
+         return undefined;
       } finally {
          releaseOwnedName?.();
       }
-      run.builtSources.push(persistSource.name);
-      reportSourceBuilt(
-         {
-            kind: buildKindOf(compiled, persistSource.sourceID),
-            tier: entry.storageDestinationName ? "storage" : "colocated",
-            sourceEntityId,
-            sourceName: persistSource.name,
-            physicalTableName: instruction.physicalTableName,
-         },
-         entry,
-      );
-      run.entries[sourceEntityId] = entry;
-      run.builtAddresses.add(sourceEntityId);
-      // A rollup's key checks (known limitation 29). Auto-run only;
-      // never fails the build.
-      if (!orchestrated && run.uniqueness) {
-         await checkRollupKeys(
-            run.uniqueness,
-            run.compiled,
-            persistSource,
-            entry,
-            connection,
-            graphConnectionName,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-      }
-      // A pair table (an inlined join_many): its leaf's key unique and never
-      // NULL, checked over the leaf source's rows on the source's own
-      // connection, which the served copy needs before it serves a count
-      // through the path (known limitation 40). Never fails the build.
-      if (!orchestrated && run.uniqueness) {
-         await checkPairLeafKeys(
-            run.uniqueness,
-            pairLeafKeyChecksOf(
-               compiled.materializePlans?.[persistSource.sourceID],
-            ),
-            connection,
-            persistSource.name,
-            sourceEntityId,
-            writtenTableIdentity(instruction, graphConnectionName),
-         );
-      }
-      // A source stored in a destination, read there beside a joined
-      // source's rollup through a join keyed on its primary key (#1704):
-      // check that key over the rows its table holds.
-      if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
-         await checkStoredKey(
-            run,
-            run.uniqueness,
-            persistSource,
-            entry,
-            sourceEntityId,
-         );
-      }
-      run.writtenTargets.set(target, {
-         sourceEntityId,
-         sourceName: persistSource.name,
-      });
-      if (isReclaimableStorageTable(entry)) {
-         run.builtThisRun.push(entry);
-      } else if (entry.storageDestinationName) {
-         // Recorded, not logged: only a failed run leaves these behind.
-         run.retainedThisRun.push(entry);
-      }
+      return entry;
    }
 
    /**
@@ -1004,7 +1098,7 @@ function authorNamedInstructions(
    let named = authorNamedByRun.get(run);
    if (!named) {
       named = new Map();
-      for (const source of Object.values(run.compiled.sources)) {
+      for (const { source } of Object.values(run.compiled.tables)) {
          if (!hasAuthorTableName(run.compiled, source)) continue;
          const instruction = resolveInstruction(
             run.index,
@@ -1073,14 +1167,15 @@ export function tableSiteContext(
 
 /**
  * Record the run's gate refusals against their addresses, now that the loop
- * knows which addresses it built (ms2data/service#7078). A base and its
- * `extend` share one content address, and the gate decides per source. A
+ * knows which addresses it built (instructed_refused_sibling.spec.ts). A
+ * base and its `extend` share one content address, and the gate decides per
+ * source. A
  * refusal on an address an eligible sibling built fails only the refused
  * source: the table stands, its eligible sources serve it, and the refused
  * one answers live (routing skips a gated entry point). It stays out of
  * `failures` and `entries`, which the control plane reads by address, and is
  * reported per source instead. A refusal on an address nothing built is
- * recorded as before, once per address. Run order no longer decides either.
+ * recorded once per address. Neither depends on run order.
  */
 function settleRefusals(run: InstructedRun): {
    refusalsInFailures: number;
@@ -1108,7 +1203,7 @@ function settleRefusals(run: InstructedRun): {
       else unbuilt.set(pending.failedKey, [pending]);
    }
    for (const [address, pendings] of unbuilt) {
-      // Once per address, as before; a build failure already there stands.
+      // Once per address; a build failure already there stands.
       if (run.failures[address]) continue;
       // The same failure whatever the run order: a source its own gate refused
       // before one refused only for sharing the table, then by sourceID.
@@ -1184,12 +1279,12 @@ function recordPendingRefusal(
       refused: refusalRecord(
          persistSource,
          err,
-         run.compiled.preaggregatePlans?.[persistSource.sourceID]
+         run.compiled.tables[persistSource.sourceID]?.rollup
             ? "preaggregate"
             : instruction.destination
               ? "storage"
               : "colocated",
-         run.compiled.sourceModelPaths?.[persistSource.sourceID],
+         run.compiled.tables[persistSource.sourceID]?.modelPath,
       ),
       sourceID: persistSource.sourceID,
       own,
@@ -1212,13 +1307,13 @@ function colocatedRefusalOn(
    const { compiled } = run;
    if (!run.sourceIDsByAddress) {
       const byAddress = new Map<string, string[]>();
-      for (const [id, source] of Object.entries(compiled.sources)) {
+      for (const [id, { source, target }] of Object.entries(compiled.tables)) {
          let sourceAddress: string;
          try {
             sourceAddress = computeSourceEntityId(
                source,
                compiled.connectionDigests,
-               compiled.targets?.[id],
+               target,
                compiled.tableFolds,
             );
          } catch {
@@ -1237,7 +1332,7 @@ function colocatedRefusalOn(
       refusals = [];
       const ids = [...(run.sourceIDsByAddress.get(address) ?? [])].sort();
       for (const id of ids) {
-         const source = compiled.sources[id];
+         const source = compiled.tables[id]?.source;
          if (!source) continue;
          try {
             assertTierEligible(source, false, tierGateInputs(compiled));
@@ -1313,13 +1408,13 @@ async function storedJoinOf(
       const compile = compiled.keyCheckCompilers?.get(
          keyCheckCompilerKey(parent.sourceID, check.queryName),
       );
-      const joined = compiled.sources[check.joinedSourceID];
+      const joined = compiled.tables[check.joinedSourceID];
       if (!compile || !joined || !check.sql) return undefined;
       if (run.incremental?.declarations[check.joinedSourceID]) return undefined;
       const address = computeSourceEntityId(
-         joined,
+         joined.source,
          compiled.connectionDigests,
-         compiled.targets?.[check.joinedSourceID],
+         joined.target,
          compiled.tableFolds,
       );
       const entry = run.entries[address];
@@ -1343,7 +1438,7 @@ async function storedJoinOf(
             Object.entries(reduced.entries).filter(([id]) => id !== address),
          ),
       };
-      const target = compiled.targets?.[parent.sourceID];
+      const target = compiled.tables[parent.sourceID]?.target;
       if (
          buildSQLOf(parent, withTable, target) ===
          buildSQLOf(parent, withoutTable, target)
@@ -1381,7 +1476,7 @@ async function storedJoinOf(
  * grouped that table's rows instead, which a check over the base's own rows
  * may not describe (a rebuild of the rollup alone, over a parent carried from
  * an earlier run, whose stored rows predate a duplicate). The checks over the
- * base are then not run: no verdict, so the join leg reads the key as unknown
+ * base are then not run: no verdict, so the join branch reads the key as unknown
  * and declines (`COUNT_SEMANTICS`) rather than trust another set of rows.
  */
 async function checkRollupKeys(
@@ -1396,11 +1491,7 @@ async function checkRollupKeys(
 ): Promise<void> {
    const { sourceID } = persistSource;
    const groupsBaseRows = entry.upstreamReuse !== "reused";
-   const baseSourceID = (
-      compiled.preaggregatePlans?.[sourceID] as
-         | { baseSourceID?: string }
-         | undefined
-   )?.baseSourceID;
+   const baseSourceID = compiled.tables[sourceID]?.rollup?.baseSourceID;
    const own = rollupKeyCheckOf(compiled, sourceID);
    if (own && !groupsBaseRows) {
       logger.info(
@@ -1435,7 +1526,7 @@ function rollupKeyCheckOf(
    sourceID: string,
 ): RollupKeyCheck | undefined {
    return (
-      compiled.preaggregatePlans?.[sourceID] as
+      compiled.tables[sourceID]?.rollup as
          | { keyCheck?: RollupKeyCheck }
          | undefined
    )?.keyCheck;
@@ -1448,7 +1539,7 @@ function rollupParentKeyChecksOf(
 ): ParentKeyCheck[] {
    return (
       (
-         compiled.preaggregatePlans?.[sourceID] as
+         compiled.tables[sourceID]?.rollup as
             | { parentKeyChecks?: ParentKeyCheck[] }
             | undefined
       )?.parentKeyChecks ?? []
@@ -1459,7 +1550,7 @@ function rollupParentKeyChecksOf(
  * Run each query source's primary key check of a built rollup, on the
  * rollup's connection, and record what it found beside the rollup. A check
  * on another connection, or one that does not run, records nothing: the
- * join-to-rollup leg then reads that source's key as unknown and declines.
+ * join-to-rollup branch then reads that source's key as unknown and declines.
  */
 async function checkParentKeys(
    ledger: UniquenessLedger,
@@ -1472,7 +1563,7 @@ async function checkParentKeys(
 ): Promise<void> {
    for (const check of checks) {
       if (check.connectionName !== connectionName) continue;
-      const record = await runRollupKeyCheck(check, connection, table);
+      const record = await COLOCATED.checkKey({ connection }, check, table);
       if (!record) {
          logger.warn(
             "A query source's primary key check did not run; its queries through a #(preaggregate) rollup read as a join_many are answered live",
@@ -1510,7 +1601,7 @@ async function checkPairLeafKeys(
    table: string,
 ): Promise<void> {
    for (const check of checks) {
-      const record = await runRollupKeyCheck(check, connection, table);
+      const record = await COLOCATED.checkKey({ connection }, check, table);
       if (!record) {
          logger.warn(
             "A pair table's leaf key check did not run; counts through its inlined join_many are answered live",
@@ -1530,7 +1621,7 @@ async function checkPairLeafKeys(
 
 /**
  * The check of a stored table's declared primary key, when the plan asks for
- * one (`storedKeyChecks`) and the table holds that column: one row when a
+ * one (the table's `storedKeyCheck`) and the table holds that column: one row when a
  * value repeats or is NULL. Over every row the table holds: a term the
  * served copy applies at read only narrows them, so a key unique here is
  * unique in whatever a caller reads.
@@ -1550,7 +1641,7 @@ function storedKeyCheckOf(
         >;
      }
    | undefined {
-   const keyColumn = run.compiled.storedKeyChecks?.[sourceID];
+   const keyColumn = run.compiled.tables[sourceID]?.storedKeyCheck;
    const destinationName = entry.storageDestinationName;
    if (!keyColumn || !destinationName || !entry.physicalTableName) {
       return undefined;
@@ -1565,17 +1656,13 @@ function storedKeyCheckOf(
    } catch {
       return undefined;
    }
-   const path = quoteTablePath(
-      storageTablePath(
-         destinationName,
-         entry.physicalTableName,
-         destinationSchemaOf(destinationConnection),
-      ),
-      STORAGE_TARGET_DIALECT,
-   );
    return {
       keyColumn,
-      sql: storedKeyCheckSql(path, keyColumn),
+      sql: STORAGE.keyCheckSql(
+         { destinationName, destinationConnection },
+         entry.physicalTableName,
+         keyColumn,
+      ),
       table: tableIdentityKey(
          "destination",
          destinationName,
@@ -1600,24 +1687,15 @@ async function checkStoredKey(
 ): Promise<void> {
    const check = storedKeyCheckOf(run, persistSource.sourceID, entry);
    if (!check) return;
-   let record: Awaited<ReturnType<typeof runRollupKeyCheck>>;
-   try {
-      record = await withStorageDestinationSession(
-         {
-            destinationName: check.destinationName,
-            destinationConnection: check.destinationConnection,
-            environmentPath: run.environment.getEnvironmentPath(),
-         },
-         (session) =>
-            runRollupKeyCheck(
-               check,
-               session as unknown as MalloyConnection,
-               check.table,
-            ),
-      );
-   } catch {
-      record = undefined;
-   }
+   const record = await STORAGE.checkKey(
+      {
+         destinationName: check.destinationName,
+         destinationConnection: check.destinationConnection,
+         environmentPath: run.environment.getEnvironmentPath(),
+      },
+      check,
+      check.table,
+   );
    if (!record) {
       logger.warn(
          "A stored source's primary key check did not run; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
@@ -1650,7 +1728,7 @@ async function checkRollupKey(
    table: string,
 ): Promise<void> {
    if (!check) return;
-   const record = await runRollupKeyCheck(check, connection, table);
+   const record = await COLOCATED.checkKey({ connection }, check, table);
    if (!record) {
       logger.warn(
          "A #(preaggregate) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
@@ -1674,15 +1752,16 @@ async function checkRollupKey(
  */
 function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
    const { compiled } = run;
-   for (const sourceID of Object.keys(compiled.preaggregatePlans ?? {})) {
+   for (const [sourceID, table] of Object.entries(compiled.tables)) {
+      if (!table.rollup) continue;
       const check = rollupKeyCheckOf(compiled, sourceID);
       const parentChecks = rollupParentKeyChecksOf(compiled, sourceID);
-      const source = compiled.sources[sourceID];
-      if ((!check && parentChecks.length === 0) || !source) continue;
+      const { source } = table;
+      if (!check && parentChecks.length === 0) continue;
       const address = computeSourceEntityId(
          source,
          compiled.connectionDigests,
-         compiled.targets?.[sourceID],
+         table.target,
          compiled.tableFolds,
       );
       const entry = run.entries[address];
@@ -1693,7 +1772,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
       // primary key check (`compileParentKeyChecks`), recorded against its
       // table there.
       const stored = entry.storageDestinationName;
-      const table = stored
+      const tableKey = stored
          ? tableIdentityKey("destination", stored, entry.physicalTableName)
          : tableIdentityKey(
               "connection",
@@ -1701,28 +1780,31 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
               entry.physicalTableName,
            );
       if (check) {
-         ledger.carryRollupKey(address, table, checkDigest(table, check.sql));
+         ledger.carryRollupKey(
+            address,
+            tableKey,
+            checkDigest(tableKey, check.sql),
+         );
       }
       for (const parent of parentChecks) {
          ledger.carryRollupKey(
             address,
-            table,
-            checkDigest(table, parent.sql),
+            tableKey,
+            checkDigest(tableKey, parent.sql),
             parent.sourceID,
          );
       }
    }
    // A pair table's leaf key checks, while its table stands.
-   for (const [sourceID, plan] of Object.entries(
-      compiled.materializePlans ?? {},
+   for (const { source, target, materialize } of Object.values(
+      compiled.tables,
    )) {
-      const checks = pairLeafKeyChecksOf(plan);
-      const source = compiled.sources[sourceID];
-      if (checks.length === 0 || !source) continue;
+      const checks = pairLeafKeyChecksOf(materialize);
+      if (checks.length === 0) continue;
       const address = computeSourceEntityId(
          source,
          compiled.connectionDigests,
-         compiled.targets?.[sourceID],
+         target,
          compiled.tableFolds,
       );
       const entry = run.entries[address];
@@ -1750,13 +1832,12 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
       }
    }
    // A stored source's own key check, while its table stands.
-   for (const sourceID of Object.keys(compiled.storedKeyChecks ?? {})) {
-      const source = compiled.sources[sourceID];
-      if (!source) continue;
+   for (const [sourceID, table] of Object.entries(compiled.tables)) {
+      if (table.storedKeyCheck === undefined) continue;
       const address = computeSourceEntityId(
-         source,
+         table.source,
          compiled.connectionDigests,
-         compiled.targets?.[sourceID],
+         table.target,
          compiled.tableFolds,
       );
       const entry = run.entries[address];

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The join_one uniqueness check (materialization v2, P8): before a
+ * The join_one uniqueness check (P8): before a
  * `#(materialize)` source that inlines a join_one is built, its joined source
  * is grouped on the join's key, and any key held twice fails the build. A
  * duplicate would store the parent row once per match, so every count over
@@ -27,7 +27,7 @@ import type { KeyUniqueness, ManifestEntry } from "../domain/types";
 import type {
    InlineUniquenessCheck,
    MaterializePlan,
-} from "../plan/build_file_generator";
+} from "../domain/table_plans";
 
 /**
  * A `#(materialize)` source inlines a join_one (`inline=["j"]`) whose joined
@@ -547,7 +547,7 @@ export function pairLeafKeyChecksOf(
 /**
  * Run a rollup's key check (known limitation 29) on `connection` and say what
  * it found: unique when no non-NULL key value repeats. Undefined when the
- * check could not run, which the join-to-rollup leg reads as unknown and
+ * check could not run, which the join-to-rollup branch reads as unknown and
  * declines as it did before the check existed; the build itself never fails
  * for it.
  */

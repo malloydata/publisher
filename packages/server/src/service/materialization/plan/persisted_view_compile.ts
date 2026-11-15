@@ -72,7 +72,7 @@ import {
 import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
 
-export interface GeneratedPersistedViews {
+interface GeneratedPersistedViews {
    /** The views the companion declares. */
    plans: PersistedViewPlan[];
    /** The named queries the companion declares. Never both empty. */
@@ -132,7 +132,7 @@ function computesAcrossGroups(stage: StageLike): boolean {
  * when it can. Compiles `run: <source> -> <view>` and the gate probes on the
  * author's materializer; never runs them.
  */
-export async function persistedViewRefusalReason(
+async function persistedViewRefusalReason(
    plan: PersistedViewPlan,
    modelDef: unknown,
    materializer: ModelMaterializer,

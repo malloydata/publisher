@@ -187,9 +187,8 @@ export interface ModelQueryResults {
     */
    servedFrom: ServedFrom | null;
    /**
-    * The path report (materialization v2, D1): what answered the query and
-    * why. Undefined only when it could not be assembled; reporting never fails
-    * a query.
+    * The path report (D1): what answered the query and why. Undefined only
+    * when it could not be assembled; reporting never fails a query.
     */
    path?: ApiQueryPath;
    /**
@@ -870,11 +869,10 @@ export class ModelServing {
             ),
       };
       try {
-         // Passed whether or not the query routes. The serve shape declares
-         // this model's given surface (`serveShapeGivens`), and the givens
-         // MUST be passed: a materialized source's re-emitted `where:` may
-         // read one, and dropping it would read the artifact unfiltered
-         // (every caller's rows).
+         // Passed whether or not the query routes. A served answer reads this
+         // model's given surface, and the givens MUST be passed: a stored
+         // source's re-emitted `where:` may read one, and dropping it would
+         // read the table unfiltered (every caller's rows).
          run = await prepareAndRun(
             governed.runnable,
             {
@@ -1132,7 +1130,7 @@ export class ModelServing {
       // with no fields, and a thrown summary yields none.
       try {
          audit.summary = await summarizeQueryAccess({
-            // The storage serve shape carries no annotations; the live one does.
+            // The live runnable carries the author's annotations the summary reads.
             runnable: prepared.liveRunnable,
             modelDef: this.host.modelDef(),
             enforced: decision.enforced,

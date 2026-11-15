@@ -64,7 +64,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: null,
          message:
-            "This model's served copy does not compile, so its stored sources serve through the serve shape or live.",
+            "This model's served copy does not compile, so its stored sources answer live.",
       },
    ],
    cross_connection_unbuilt: [
@@ -80,7 +80,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.",
+            "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live.",
       },
    ],
    no_declaration: [
@@ -88,7 +88,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.",
+            "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.",
       },
    ],
    range_not_found: [
@@ -96,7 +96,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.",
+            "This source's declaration could not be re-rooted on its table, so the served copy leaves it as written and it answers live.",
       },
    ],
    definition_not_parsed: [
@@ -104,7 +104,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.",
+            "This source's declaration could not be re-rooted on its table, so the served copy leaves it as written and it answers live.",
       },
    ],
    pair_join_not_found: [
@@ -238,6 +238,31 @@ describe("the served copy's refusal codes", () => {
             expect(w.severity).toBe("warn");
          }
       }
+   });
+
+   it("words a compile failure that names a source as that source's kept blocks", () => {
+      // An extension table that does not compile over its kept blocks: the
+      // copy is compiled again with its own blocks only.
+      expect(
+         warningsFor([
+            {
+               reason: "compile_failed",
+               sourceName: "s",
+               detail: "line 1: boom",
+            },
+         ]).map((w) => ({
+            code: w.code,
+            subject: w.subject ?? null,
+            message: w.message,
+         })),
+      ).toEqual([
+         {
+            code: "served-copy-not-served",
+            subject: "s",
+            message:
+               "This source's table does not compile with its kept blocks, so the served copy re-roots it with its own blocks only, or leaves it as written.",
+         },
+      ]);
    });
 
    it("advises inlining a cross-connection join only when it is not inlined and kept", () => {

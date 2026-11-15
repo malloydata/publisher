@@ -17,6 +17,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "customers_blocks@<pkg>/m.malloy": "pair",
+      "customers_path@<pkg>/m.malloy": "pair",
+      "orders_pair@<pkg>/m.malloy": "pair"
+    },
     "materializePlans": {
       "customers_blocks@<pkg>/m.malloy": {
         "buildSourceName": "customers_blocks__mat",

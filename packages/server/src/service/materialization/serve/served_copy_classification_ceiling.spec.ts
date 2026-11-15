@@ -9,34 +9,16 @@
  * same text declines nothing.
  */
 
-import { afterAll, describe, expect, it } from "bun:test";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
-} from "@malloydata/malloy";
-import { modelDefOf } from "../../governance/ir/compiled_model";
+import { describe, expect, it } from "bun:test";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 import { SourceMap } from "../text/source_map";
 import {
    classificationCeiling,
    type ServedCopyProblem,
 } from "./served_copy_serve";
 
-const URL_ = "file:///p/m.malloy";
-const duckdb = new DuckDBConnection("duckdb", ":memory:");
-afterAll(() => duckdb.close());
-
-async function compile(text: string): Promise<unknown> {
-   const runtime = new Runtime({
-      urlReader: new InMemoryURLReader(new Map([[URL_, text]])),
-      connections: new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      ),
-   });
-   return modelDefOf(await runtime.loadModel(new URL(URL_)).getModel());
-}
+const mz = materializationFixture();
+const compile = (text: string) => mz.compile(text, { root: "file:///p/" });
 
 /** `name` classed `nameClass` (unclassified when empty); `s` carries `ceiling`. */
 const model = (nameClass: string, ceiling: string) => {

@@ -125,3 +125,50 @@ describe("callerTextDecline", () => {
       ).toContain("`alias`, declared in another file");
    });
 });
+
+describe("the view leg's decisions at their edges", () => {
+   it("declines a run target whose compiled source has no sourceID", () => {
+      expect(
+         callTargetDecline(
+            call(),
+            { sourceID: SOURCE_ID },
+            "flights",
+            undefined,
+         )?.code,
+      ).toBe("view_missing_field");
+   });
+
+   it("reads the plan's sourceID, never the run target's name", () => {
+      expect(
+         callTargetDecline(
+            call({ source: "renamed" }),
+            { sourceID: SOURCE_ID },
+            "renamed",
+            SOURCE_ID,
+         ),
+      ).toBeUndefined();
+   });
+
+   it("names the called view in an exact-call decline, not the plan's", () => {
+      const decline = exactCallDecline(
+         call({ view: "called" }),
+         { viewName: "by_carrier" },
+         "called",
+      );
+      expect(decline?.callerDetail).toBe("the query is not a call of `called`");
+   });
+
+   it("compares the result's name exactly, case and all", () => {
+      expect(
+         exactCallDecline(call(), { viewName: "by_carrier" }, "By_Carrier")
+            ?.code,
+      ).toBe("view_missing_field");
+   });
+
+   it("declines a refined call with later stages as refined", () => {
+      expect(
+         refinedCallDecline(call({ refined: true, laterStages: 2 }))?.code,
+      ).toBe("view_missing_field");
+      expect(refinedCallDecline(call({ laterStages: 2 }))).toBeUndefined();
+   });
+});

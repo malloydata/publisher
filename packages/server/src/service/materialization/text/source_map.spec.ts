@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -11,9 +10,6 @@ import {
    type SourceDef,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { structsReachedFrom } from "../../governance/ir/source_graph";
 import {
    closeCorpus,
@@ -22,35 +18,10 @@ import {
    releasingEach,
 } from "../../../test_helpers/persist_corpus";
 import { reachableSourceIDs, SourceMap, sourceChain } from "./source_map";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 
-// File-backed: db-duckdb's in-memory database is shared across spec files in
-// one run, so a fixed table name would collide.
-const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "source-map-spec-"));
-const duckdb = new DuckDBConnection("duckdb", path.join(dbDir, "db.duckdb"));
-
-async function compile(
-   files: Record<string, string>,
-   entry: string,
-): Promise<ModelDef> {
-   const runtime = new Runtime({
-      urlReader: new InMemoryURLReader(
-         new Map(
-            Object.entries(files).map(([name, text]) => [
-               `file:///pkg/${name}`,
-               text,
-            ]),
-         ),
-      ),
-      connections: new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      ),
-   });
-   const model = await runtime
-      .loadModel(new URL(`file:///pkg/${entry}`))
-      .getModel();
-   return model._modelDef;
-}
+const mz = materializationFixture();
+const duckdb = mz.duckdb;
 
 beforeAll(async () => {
    await duckdb.runSQL(
@@ -62,9 +33,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-   await duckdb.close();
    await closeCorpus();
-   fs.rmSync(dbDir, { recursive: true, force: true });
 });
 
 const MODEL = `##! experimental.persistence
@@ -85,7 +54,10 @@ source: renamed is daily_ext
 
 describe("SourceMap", () => {
    it("keys each declaration by sourceID, with the name only an index", async () => {
-      const modelDef = await compile({ "model.malloy": MODEL }, "model.malloy");
+      const modelDef = await mz.compile(
+         { "model.malloy": MODEL },
+         { entry: "model.malloy" },
+      );
       const map = SourceMap.of(modelDef);
       const dailyID = map.sourceIDOf("daily");
       expect(dailyID).toMatch(/^daily@file:\/\/\/pkg\/model\.malloy$/);
@@ -103,7 +75,10 @@ describe("SourceMap", () => {
    });
 
    it("walks a chain through an extend and a query-shaped base", async () => {
-      const modelDef = await compile({ "model.malloy": MODEL }, "model.malloy");
+      const modelDef = await mz.compile(
+         { "model.malloy": MODEL },
+         { entry: "model.malloy" },
+      );
       const map = SourceMap.of(modelDef);
       expect(sourceChain(modelDef.contents["daily_ext"], modelDef)).toEqual([
          map.sourceIDOf("daily_ext")!,
@@ -126,8 +101,10 @@ describe("SourceMap", () => {
          "model.malloy": MODEL,
          "index.malloy": `import { daily, daily_ext, orders } from "model.malloy"\n`,
       };
-      const declared = SourceMap.of(await compile(files, "model.malloy"));
-      const indexDef = await compile(files, "index.malloy");
+      const declared = SourceMap.of(
+         await mz.compile(files, { entry: "model.malloy" }),
+      );
+      const indexDef = await mz.compile(files, { entry: "index.malloy" });
       const reexported = SourceMap.of(indexDef);
       for (const name of ["daily", "daily_ext", "orders"]) {
          expect(reexported.sourceIDOf(name)).toBe(declared.sourceIDOf(name));
@@ -142,7 +119,10 @@ describe("SourceMap", () => {
 
 describe("reachableSourceIDs", () => {
    it("reaches a published source's base, query base and joined sources", async () => {
-      const modelDef = await compile({ "model.malloy": MODEL }, "model.malloy");
+      const modelDef = await mz.compile(
+         { "model.malloy": MODEL },
+         { entry: "model.malloy" },
+      );
       const map = SourceMap.of(modelDef);
       const root = modelDef.contents["daily_ext"] as SourceDef;
       const ids = reachableSourceIDs(
@@ -167,9 +147,9 @@ source: over_comp is comp -> { group_by: region }
 `;
 
    it("reaches every member of a published composite, as the scan before the map did", async () => {
-      const modelDef = await compile(
+      const modelDef = await mz.compile(
          { "model.malloy": COMPOSITE },
-         "model.malloy",
+         { entry: "model.malloy" },
       );
       const map = SourceMap.of(modelDef);
       for (const root of ["comp", "over_comp"]) {
@@ -187,9 +167,9 @@ source: over_comp is comp -> { group_by: region }
    });
 
    it("records a composite as a composite with its members, and a query over one as a query", async () => {
-      const modelDef = await compile(
+      const modelDef = await mz.compile(
          { "model.malloy": COMPOSITE },
-         "model.malloy",
+         { entry: "model.malloy" },
       );
       const map = SourceMap.of(modelDef);
       const comp = map.node(map.sourceIDOf("comp")!)!;

@@ -22,6 +22,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders@<hammer>/mzx/mzx.malloy": "materialize",
+      "us_big@<hammer>/mzx/mzx.malloy": "materialize",
+      "us_orders@<hammer>/mzx/mzx.malloy": "materialize"
+    },
     "materializePlans": {
       "orders@<hammer>/mzx/mzx.malloy": {
         "buildSourceName": "orders__mat",

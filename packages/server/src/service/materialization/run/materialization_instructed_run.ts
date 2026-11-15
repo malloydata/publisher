@@ -1,6 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * What one instructed run reads and records ({@link InstructedRun}): its fixed
+ * inputs and the per-source outcomes its build loop accumulates. Also the
+ * instruction lookup ({@link indexInstructions}, {@link resolveInstruction}),
+ * the refusals made before anything is written
+ * ({@link assertNoTableCollisions}, {@link assertInstructedDestinationWritable}),
+ * and {@link recordInstructedBuildFailure}. Read by the materialization
+ * service, the instructed build and run instructions.
+ *
+ * Writes nothing outside the run object; logs and counts instructions that
+ * give one content address two tables, and logs two definitions on one table.
+ * The checks throw before any table is touched.
+ */
+
 import type { Manifest, PersistSource } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -29,12 +43,11 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets } from "../../../pg_helpers";
+import { addressSQL, computeSourceEntityId } from "../plan/build_plan";
 import {
-   addressSQL,
-   computeSourceEntityId,
    sourcesInBuildOrder,
    type CompiledBuildPlan,
-} from "../plan/build_plan";
+} from "../domain/compiled_build_plan";
 import type { IncrementalRunContext } from "./incremental_build";
 import {
    classifySourceFailure,
@@ -90,7 +103,7 @@ export interface InstructedRun {
    failedReasons: string[];
    refusals: MaterializationEligibilityError[];
    /**
-    * Refusals not yet recorded against their address (ms2data/service#7078).
+    * Refusals not yet recorded against their address.
     * A refused source can share its content address with an eligible sibling
     * (a base and its `extend`); the refusal is decided after the loop, so it
     * fails the address only when no sibling built it, whatever the order.
@@ -281,7 +294,7 @@ export function resolveInstruction(
  */
 export function assertNoTableCollisions(
    builds: CompiledBuildPlan["builds"],
-   sources: CompiledBuildPlan["sources"],
+   tables: CompiledBuildPlan["tables"],
    connectionDigests: CompiledBuildPlan["connectionDigests"],
    index: InstructionIndex,
    tableFolds?: CompiledBuildPlan["tableFolds"],
@@ -313,7 +326,7 @@ export function assertNoTableCollisions(
       }
    };
    for (const build of builds) {
-      for (const persistSource of sourcesInBuildOrder(build, sources)) {
+      for (const persistSource of sourcesInBuildOrder(build, tables)) {
          let address: string;
          try {
             address = computeSourceEntityId(
@@ -435,7 +448,7 @@ export function assertInstructedDestinationWritable(
       // synthesized, so it is named by its base and grain, which the author
       // wrote. The grain renders as a set: the wire plan sorts and dedupes
       // dimensions, so quoting it would misrepresent the author's order.
-      const rollup = compiled.preaggregatePlans?.[persistSource.sourceID];
+      const rollup = compiled.tables[persistSource.sourceID]?.rollup;
       throw new BadRequestError(
          (rollup
             ? `Measures of \`${rollup.baseSourceName}\` ` +

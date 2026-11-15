@@ -3,7 +3,8 @@
 
 /**
  * The v1 cutover's conformance runner (materialization v2, phase 3 pull
- * request 6e; plan question 15): the measurement behind the cutover design,
+ * request 6e; plan question 15), the conformance-verdict reporter of the
+ * package-case runner (`package_runner.ts`): the measurement behind the cutover design,
  * made a supported library entry point, so Credible's private CI can run it
  * over real package snapshots as a configuration job.
  *
@@ -38,12 +39,7 @@ import {
    strictRowDifference,
 } from "./answer_difference";
 import { installSettings } from "../settings_env";
-import {
-   type Answer,
-   freshLoadPool,
-   loadFixture,
-   type Outcome,
-} from "./package_runner";
+import { type Answer, type Outcome, runPackageCase } from "./package_runner";
 
 /** One query to answer. */
 export interface CutoverQuery {
@@ -156,34 +152,17 @@ export async function runV1CutoverConformance(args: {
    package: { packageDir: string } | Record<string, string>;
    queries: readonly CutoverQuery[];
 }): Promise<CutoverRow[]> {
-   const run = async (mode: keyof typeof MODES) => {
-      const { restore } = installSettings({ env: { ...MODES[mode] } });
-      try {
-         await freshLoadPool();
-         const loader = await loadFixture(args.package);
-         try {
-            // By position: two queries may share a name.
-            const live: Outcome[] = [];
-            for (const q of args.queries) {
-               live.push(await loader.run(q.model, q.malloy, q.givens));
-            }
-            const fixture = await loader.bind({ includeRollups: true });
-            const served: Outcome[] = [];
-            for (const q of args.queries) {
-               served.push(await fixture.run(q.model, q.malloy, q.givens));
-            }
-            return { live, served };
-         } finally {
-            await loader.dispose();
-         }
-      } finally {
-         restore();
-         await freshLoadPool();
-      }
-   };
-   const cutover = await run("cutover");
+   const cutover = await runPackageCase({
+      package: args.package,
+      queries: args.queries,
+      settings: () => installSettings({ env: { ...MODES.cutover } }).restore,
+      freshPool: true,
+      bindOptions: { includeRollups: true },
+      serve: (fixture, q) => fixture.run(q.model, q.malloy, q.givens),
+   });
+   const served = cutover.served[0].results;
    return args.queries.map((q, i) => {
-      const c = classify(cutover.live[i], cutover.served[i]);
+      const c = classify(cutover.live[i], served[i]);
       return {
          query: q.name,
          cutover: c.c,

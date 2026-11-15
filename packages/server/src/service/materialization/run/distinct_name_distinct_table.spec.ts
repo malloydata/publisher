@@ -17,11 +17,8 @@ import {
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import {
-   deriveBuildPlanOutcome,
-   loadGateText,
-   sharedTables,
-} from "../plan/build_plan";
+import { deriveBuildPlanOutcome, sharedTables } from "../plan/build_plan";
+import { loadGateText } from "../plan/load_gate_text";
 import type { BuildInstruction } from "../domain/types";
 import { computeSourceEntityId } from "../plan/addressing";
 import { planTableFolds } from "../plan/build_plan";
@@ -262,7 +259,7 @@ describe("one table per stored projection", () => {
                CONNECTIONS,
             );
             const tableFolds = planTableFolds(compiled);
-            const addresses = Object.values(compiled.sources).map((s) =>
+            const addresses = Object.values(compiled.tables).map(({ source: s }) =>
                computeSourceEntityId(
                   s,
                   compiled.connectionDigests,
@@ -274,7 +271,7 @@ describe("one table per stored projection", () => {
             try {
                assertNoTableCollisions(
                   compiled.builds,
-                  compiled.sources,
+                  compiled.tables,
                   compiled.connectionDigests,
                   indexInstructions(
                      addresses.map((sourceEntityId, i) => ({
@@ -354,12 +351,12 @@ source: a_drops is raw -> { select: id, region, status } extend { except: status
             await packages.create(model),
          );
          return Object.fromEntries(
-            Object.values(compiled.sources).map((s) => [
+            Object.values(compiled.tables).map(({ source: s, target }) => [
                s.name,
                computeSourceEntityId(
                   s,
                   compiled.connectionDigests,
-                  compiled.targets?.[s.sourceID],
+                  target,
                   compiled.tableFolds,
                ),
             ]),
@@ -433,7 +430,7 @@ describe("a bare name between two schemas", () => {
                const compiled = trio(order, storage);
                const addressOf = (id: string) =>
                   computeSourceEntityId(
-                     compiled.sources[id],
+                     compiled.tables[id].source,
                      compiled.connectionDigests,
                      undefined,
                      compiled.tableFolds,
@@ -453,7 +450,7 @@ describe("a bare name between two schemas", () => {
                ["a", "b", "c"]
                   .map(
                      (id) =>
-                        trio(["a", "b", "c"], storage).sources[id].sourceID,
+                        trio(["a", "b", "c"], storage).tables[id].source.sourceID,
                   )
                   .sort(),
             );

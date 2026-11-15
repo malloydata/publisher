@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Rolling windows (materialization v2, phase 3): what a `#(materialize)`
+ * Rolling windows: what a `#(materialize)`
  * source may do with a `where:` term that compares a stored time field with
  * the current time, `ts >= now - 30 days`. The terms themselves are read by
  * the one `where:` classifier, `classifyWhereTerms` in
@@ -25,8 +25,7 @@
  *   not know. With no interval the widest set is every row that exists at
  *   build time, so the term is LEFT OUT of the build, as a given-reading term
  *   is (P2): the build copy replaces its text with `true` wherever the
- *   source's declaring file writes it, its own or inherited (decided
- *   2026-11-12, plan question 2, option A). The served copy re-applies it at
+ *   source's declaring file writes it, its own or inherited. The served copy re-applies it at
  *   every read. Stamping the interval to trim the table is a possible later
  *   optimisation, not built.
  * - A two-sided window, one `and` of comparisons
@@ -36,7 +35,7 @@
  *   be. Written as two `where:` terms, each is taken as it stands.
  *
  * Each refresh of an incremental table appends rows above the watermark and
- * then deletes the rows below the new lower bound ({@link windowDeleteBefore}),
+ * then deletes the rows below the new lower bound (`windowDeleteBefore`, in domain/read_time_terms.ts),
  * so the table stays one window plus one interval in size. An upper bound
  * deletes nothing.
  *
@@ -51,14 +50,12 @@
 
 import type { ClassifiedWhereTerm } from "./persist_dynamic_terms";
 import {
+   isLowerBound,
    rollingWindowsOf,
    type CurrentTimeReadTerm,
-   type NowOffsetUnit,
    type RollingWindow,
    type TermUse,
 } from "../domain/read_time_terms";
-
-export type { RollingWindow };
 
 /** Why a source's current-time terms cannot be materialized. */
 interface RollingWindowRefusal {
@@ -75,11 +72,6 @@ type RollingWindowClassification =
    | ({ ok: false } & RollingWindowRefusal);
 
 const TIME_TYPES: ReadonlySet<string> = new Set(["timestamp", "timestamptz"]);
-
-/** Whether the term keeps rows newer than its cut-off ("the last 30 days"). */
-function isLowerBound(window: Pick<RollingWindow, "op">): boolean {
-   return window.op === ">=" || window.op === ">";
-}
 
 /**
  * The current-time terms of a materialized source, from the classified
@@ -164,7 +156,7 @@ export function rollingWindowTerms(
 
 /**
  * The lower bounds among a plan's read-time terms: what a refresh deletes
- * below ({@link windowDeleteBefore}). An upper bound deletes nothing.
+ * below (`windowDeleteBefore`, in domain/read_time_terms.ts). An upper bound deletes nothing.
  */
 export function deletingWindowsOf(
    terms: readonly { kind: string; window?: RollingWindow }[] | undefined,
@@ -252,55 +244,4 @@ function placeKey(use: TermUse): string {
       end?.line,
       end?.character,
    ]);
-}
-
-const DAY_MS = 86_400_000;
-
-/**
- * Each unit's length at its longest and at its shortest, so a bound computed
- * from it is never later than the warehouse's own calendar arithmetic would
- * put it: a subtracted unit is taken at its longest, an added one at its
- * shortest.
- */
-const UNIT_MS: Record<NowOffsetUnit, { longest: number; shortest: number }> = {
-   second: { longest: 1000, shortest: 1000 },
-   minute: { longest: 60_000, shortest: 60_000 },
-   hour: { longest: 3_600_000, shortest: 3_600_000 },
-   day: { longest: DAY_MS, shortest: DAY_MS },
-   week: { longest: 7 * DAY_MS, shortest: 7 * DAY_MS },
-   month: { longest: 31 * DAY_MS, shortest: 28 * DAY_MS },
-   quarter: { longest: 92 * DAY_MS, shortest: 89 * DAY_MS },
-   year: { longest: 366 * DAY_MS, shortest: 365 * DAY_MS },
-};
-
-/**
- * The margin taken off a delete bound: a day covers a warehouse clock or
- * session that differs from Publisher's, a daylight-saving hour in a day-sized
- * unit, and the build's own delay after the run's start. A row kept by the
- * margin is still trimmed by every read.
- */
-const DELETE_MARGIN_MS = DAY_MS;
-
-/**
- * The instant below which a refresh at `runStart` may delete rows of a lower
- * bound term: every read from `runStart` on has a later cut-off, so no read
- * needs a row older than this. Never later than the term's own cut-off at
- * `runStart`; calendar units are taken at their longest when subtracted and
- * their shortest when added, and a day's margin is subtracted, so an error
- * only ever keeps a row.
- */
-export function windowDeleteBefore(
-   window: Pick<RollingWindow, "op" | "offset">,
-   runStart: Date,
-): Date {
-   if (!isLowerBound(window)) {
-      throw new Error("only a lower-bound term deletes rows");
-   }
-   const o = window.offset;
-   const offset = o
-      ? o.sign < 0
-         ? -o.amount * UNIT_MS[o.unit].longest
-         : o.amount * UNIT_MS[o.unit].shortest
-      : 0;
-   return new Date(runStart.getTime() + offset - DELETE_MARGIN_MS);
 }

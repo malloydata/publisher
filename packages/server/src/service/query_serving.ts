@@ -355,9 +355,9 @@ export async function queryPathFor(
          freshColocated: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
             : undefined,
-         // The serve shape's tables, and the `#(materialize)` tables only the
-         // served copy reads, so a table on the chain is named whichever
-         // candidate answered.
+         // The `storage=` tables, the `#(materialize)` tables the served copy
+         // reads and the rollup tables, so a table on the chain is named
+         // whichever candidate answered.
          storage: {
             all: [
                ...storageTables,

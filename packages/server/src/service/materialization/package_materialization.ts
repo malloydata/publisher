@@ -1,6 +1,33 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The package facade: one package version's materialization, composing
+ * plan/, run/ and serve/ for `Package` and `Environment`, and the module's
+ * one door for them. It holds the version's plan (from the load worker, or
+ * compiled again on a connection edit), its snapshot of bindings, its serve
+ * verdicts and its package warnings.
+ *
+ * Its contract is nine methods, each listed with the methods that implement
+ * it.
+ *
+ * | Method | What it does | Implemented by |
+ * | --- | --- | --- |
+ * | `load(plan)` | Take the load worker's plan, or its absence | `applyLoadBuildPlan` |
+ * | `replan(changedConnections)` | Derive the plan again after a connection edit | `markBuildPlanStale`, `refreshBuildPlan`, `whenBuildPlanCurrent` |
+ * | `bind(manifest)` | Bind a run's or a host's manifest and swap the snapshot | `bind`, `publishSnapshot`, `markManifestBound`, `markManifestBindFailed` |
+ * | `snapshot()` | The bindings the package serves, for one pin per query | `snapshot` |
+ * | `plan()` | The compiled plan, when there is one | `getBuildPlan`, `planConnectionNames` |
+ * | `buildPlan(waitMs?)` | The wire plan, or when to ask again | `getBuildPlan`, `isBuildPlanUnavailable`, `whenBuildPlanCurrent` |
+ * | `serveVerdicts(opts?)` | Whether each planned source is served, and why not | `serveVerdicts`, `previewServeVerdicts`, `previewServeBindings` |
+ * | `warnings()` | Every package warning materialization raises | the `*Warnings()` readers |
+ * | `publishRejections()` | What refuses a publish | the `format*()` readers, `persistenceCollisionWarnings` |
+ *
+ * Effects: logs, and the bind and plan-refusal metrics. Plans and binds
+ * through the layers' pure entry points; compiles the plan on the main
+ * thread only when the worker left none.
+ */
+
 import {
    isSourceDef,
    type MalloyConfig,
@@ -56,7 +83,7 @@ import {
    preaggregateGateLines,
    relaxedCollision,
 } from "./plan/load_gate_text";
-import type { MaterializePlan } from "./plan/build_file_generator";
+import type { MaterializePlan } from "./domain/table_plans";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
@@ -470,7 +497,8 @@ export class PackageMaterialization {
          // Nothing from the previous load describes this one: a failed
          // re-derivation after a connection edit must not leave the pre-edit
          // plan and eligibility in force, or a run would validate against
-         // addresses the build no longer computes (ms2data/service#6145).
+         // addresses the build does not compute
+         // (build_plan_connection_refresh.spec.ts).
          // Unknown eligibility refuses every new binding (fail closed).
          this.buildPlan = null;
          this.sourceEligibility = undefined;
@@ -827,7 +855,7 @@ export class PackageMaterialization {
     * Drop the rollup key checks (known limitation 29) bound for these content
     * addresses: a run is about to write their tables, so what a check found
     * over the rows before no longer describes them. The routing itself is
-    * kept; the join-to-rollup leg reads the table as unknown until a run
+    * kept; the join-to-rollup branch reads the table as unknown until a run
     * binds a new check.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
@@ -961,7 +989,7 @@ export class PackageMaterialization {
     * A declaration's compiled definition, from the package model that holds it
     * as a node of its own (the model that declares or imports it). A model
     * that reaches a source only through a join (an index importing the file
-    * that joins it, #6643) holds the join, not the declaration, so its served
+    * that joins it) holds the join, not the declaration, so its served
     * copy finds the declaration here.
     */
    private declarationOf(sourceID: string): unknown {
@@ -973,16 +1001,15 @@ export class PackageMaterialization {
    }
 
    /**
-    * The served copy's bindings for the colocated `#(materialize)` tables the
-    * bound manifest holds (colocated_bindings.ts), admitted by the colocated
-    * tier's positive eligibility, keyed by content address as that tier is.
+    * The served copy's bindings for the colocated `#(materialize)` and v1
+    * `#@ persist` tables the bound build manifest holds
+    * ({@link deriveColocatedServeBindings}), admitted by the colocated tier's
+    * positive eligibility, keyed by content address as that tier is.
     */
    private colocatedServeBindings(): Binding[] {
       const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const sources = plan?.sources ?? {};
       const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
-      // v1 colocated `#@ persist` tables too (the v1 cutover's G1).
-      const v1 = true;
       const viewBuilds = this.persistedViewBuildIDs();
       return deriveColocatedServeBindings({
          entries: this.colocatedEntries,
@@ -990,13 +1017,9 @@ export class PackageMaterialization {
          materializePlans: this.materializePlans,
          eligible: (sourceID) =>
             !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
-         ...(v1
-            ? {
-                 v1Schema: (sourceID: string) =>
-                    v1StoredColumnsOf(this.declarationOf(sourceID)),
-                 notV1: (sourceID: string) => !!viewBuilds?.has(sourceID),
-              }
-            : {}),
+         v1Schema: (sourceID) =>
+            v1StoredColumnsOf(this.declarationOf(sourceID)),
+         notV1: (sourceID) => !!viewBuilds?.has(sourceID),
       });
    }
 
@@ -1086,7 +1109,7 @@ export class PackageMaterialization {
    }
 
    /**
-    * Set the connections serve shapes compile against: the environment's
+    * Set the connections stored tables are read through: the environment's
     * storage destinations. Kept apart from the package's own MalloyConfig so no author
     * model can reach a destination. Absent ⇒ queries serve live.
     */
@@ -1119,7 +1142,7 @@ export class PackageMaterialization {
     * old addresses, a host would echo ledger entries recorded under them, they
     * would pass create-time validation against that same plan, and the run's
     * own compile would refuse them as "measured under a different definition"
-    * (ms2data/service#6145).
+    * (build_plan_connection_refresh.spec.ts).
     */
    markBuildPlanStale(changedConnections: Iterable<string> = []): void {
       for (const name of changedConnections) {
@@ -1501,11 +1524,10 @@ export class PackageMaterialization {
    }
 
    /**
-    * Warnings for a model whose served copy (materialization v2) leaves
-    * sources unserved: it did not compile, a join it moved across connections
-    * reads a source that is not stored, or a source could not be re-rooted. Those
-    * sources serve through today's serve shape, or live. Empty when the served
-    * copy is off.
+    * Warnings for a model whose served copy leaves sources unserved: it did
+    * not compile, a join it moved across connections reads a source that is
+    * not stored, or a source could not be re-rooted. Those sources answer
+    * live.
     */
    servedCopyWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
@@ -1546,7 +1568,7 @@ export class PackageMaterialization {
 
    /**
     * Warnings for stored columns whose type does not serve as the type Malloy
-    * declares for them (ms2data/service#6642), one per source and column. A
+    * declares for them, one per source and column. A
     * castable column is read through a cast to its declared type, and a
     * rebuild stores that type; any other is answered live. Read from the
     * bindings bound now, so it follows the manifest rather than the load. Keyed
@@ -1623,8 +1645,8 @@ export class PackageMaterialization {
    }
 
    /**
-    * Each materialized source's serve verdict (materialization v2, D2;
-    * ms2data/service#6277): whether queries are answered from its table, and
+    * Each materialized source's serve verdict (D2): whether queries are
+    * answered from its table, and
     * when not, why and what to change. Read from the plan and the binding as
     * they stand now, so it follows each bind. `views` adds per-view verdicts
     * (a preview, see {@link previewServeVerdicts}).
@@ -1813,10 +1835,11 @@ export class PackageMaterialization {
 
    /**
     * {@link serveVerdicts} with each stored source's named views compiled
-    * against a serve shape, before anything is built (ms2data/service#7090):
-    * the shape is declared from the plan's output columns, the types the build
-    * stores, so it needs no table. Costs one shape compile per model and one
-    * compile per view, so it runs only where a caller asks for a preview.
+    * against a compile-only served copy over bindings declared from the
+    * plan's output columns, the types the build stores, before anything is
+    * built, so it needs no table. Costs one served-copy compile per model and
+    * one compile per view, so it runs only where a caller asks for a
+    * preview.
     */
    async previewServeVerdicts(): Promise<ServeVerdict[]> {
       let bindings: Binding[];
@@ -1860,10 +1883,10 @@ export class PackageMaterialization {
    }
 
    /**
-    * The v1 cutover's serve path on each verdict (6e, plan question 15): the
+    * Each verdict's serve path for v1 and v2 declarations: the
     * served copy compiled over bindings declared from the plan's output
     * columns, `storage=` ones as {@link previewServeBindings} declares them
-    * and colocated ones as the cutover binds them, names the sources it
+    * and colocated ones as the served copy binds them, names the sources it
     * re-roots; a rollup is the rollup leg's. Nothing is built or read.
     */
    private async withCutoverPaths(
@@ -1990,8 +2013,8 @@ export class PackageMaterialization {
    /**
     * The publish warnings a serve verdict carries, from one verdict pass:
     * `unreachable` (`materialization-unreachable`: nothing on the published
-    * surface reads the source, so its table is built for no query;
-    * ms2data/service#6277), and the deployment facts (P13): a `storage=`
+    * surface reads the source, so its table is built for no query), and the
+    * deployment facts (P13): a `storage=`
     * destination the environment does not configure
     * (`materialization-destination-missing`), or a colocated source on a
     * connection that cannot create tables
@@ -2471,13 +2494,17 @@ function servedCopyProblemMessage(
    const { reason, join } = problem;
    switch (reason) {
       case "compile_failed":
-         return "This model's served copy does not compile, so its stored sources serve through the serve shape or live.";
+         // With a source: one extension table that does not compile over
+         // its kept blocks, so the copy is compiled again without them.
+         return problem.sourceName
+            ? "This source's table does not compile with its kept blocks, so the served copy re-roots it with its own blocks only, or leaves it as written."
+            : "This model's served copy does not compile, so its stored sources answer live.";
       case "cross_connection_unbuilt":
          return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
-         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.";
+         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live.";
       case "no_declaration":
-         return "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.";
+         return "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.";
       case "range_not_found":
       case "definition_not_parsed":
          if (problem.hiddenUnstored?.length) {
@@ -2489,7 +2516,7 @@ function servedCopyProblemMessage(
                "leaves the source as written, so it answers live."
             );
          }
-         return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
+         return "This source's declaration could not be re-rooted on its table, so the served copy leaves it as written and it answers live.";
       case "pair_join_not_found":
          return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
       case "pair_not_compiled":

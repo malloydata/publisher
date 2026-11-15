@@ -19,7 +19,7 @@ import {
    freshLoadPool,
    type LoadedFixture,
    loadFixture,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
 const MODEL = `##! experimental { persistence }
@@ -128,6 +128,11 @@ describe("colocated persisted views and queries of one build, each under its own
       fixture = await loader.bind();
    }, 120_000);
 
+   const planSources = () => {
+      const plan = fixture.pkg.getBuildPlan()?.sources ?? {};
+      return Object.values(plan);
+   };
+
    afterAll(async () => {
       restore();
       await loader?.dispose();
@@ -135,7 +140,7 @@ describe("colocated persisted views and queries of one build, each under its own
    });
 
    it("plans a table at its own address for each name=", () => {
-      const sources = Object.values(fixture.pkg.getBuildPlan()?.sources ?? {});
+      const sources = planSources();
       const addresses = CALLS.map(
          ([, , name]) => sources.find((s) => s.name === name)?.sourceEntityId,
       );
@@ -153,7 +158,7 @@ describe("colocated persisted views and queries of one build, each under its own
 
    for (const [malloy, leg, name] of CALLS) {
       it(`answers ${malloy} by the ${leg} leg from its own table, equal to live`, async () => {
-         const plan = Object.values(fixture.pkg.getBuildPlan()?.sources ?? {});
+         const plan = planSources();
          const own = plan.find((s) => s.name === name)?.sourceEntityId;
          const served = await ask(malloy);
          expect(served.servedBy?.kind).toBe(leg);
@@ -164,7 +169,7 @@ describe("colocated persisted views and queries of one build, each under its own
 
    for (const { label, calls, tables } of PAIRS) {
       it(`a persisted view and query of one build, ${label}: ${tables} table(s), each answered by its own leg, equal to live`, async () => {
-         const plan = Object.values(fixture.pkg.getBuildPlan()?.sources ?? {});
+         const plan = planSources();
          const planned = calls.map(([, , name]) =>
             plan.find((s) => s.name === name),
          );

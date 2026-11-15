@@ -19,7 +19,7 @@ import {
    freshLoadPool,
    type LoadedFixture,
    loadFixture,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES } from "./conformance/shapes";
 
 const SHAPE = "joined persisted source from another file";

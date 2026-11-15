@@ -1,21 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { sourceDefOf } from "../../governance/ir/compiled_model";
-import { Annotations, type PersistSource } from "@malloydata/malloy";
-import { destinationOf, readRouteIfAny } from "./declaration";
-import { collectGivenRefs } from "../../given";
-import { readsAGiven } from "../../probe_compiler";
-import { forEachFieldPath } from "../../governance/ir/array_query";
-import {
-   NOW_OFFSET_UNITS,
-   type MalloyRange,
-   type NowComparisonOp,
-   type NowOffsetUnit,
-   type RollingWindow,
-   type TermUse,
-} from "../domain/read_time_terms";
-
 /**
  * Where a persist source's givens sit, and whether that lets the source be
  * materialized into a storage destination and served per caller.
@@ -33,9 +18,37 @@ import {
  * Of the read-time positions only two are admitted: an extend-block `where:`,
  * and a join to a given-scoped source itself materialized into storage
  * ({@link JoinedDynamicTerms}). The others are not in the build either, but
- * the serve shape has nothing that re-binds the given there. Each gets its own
- * reason so the refusal names the position.
+ * they are refused (fail closed), each with its own reason so the refusal
+ * names the position.
+ *
+ * Surface: `admitGivenPositions`, `buildSubstitutesAGiven`,
+ * `inheritedGivenWhereRefusal` and `readTimeDynamicTerms` for the eligibility
+ * gates (and the build plan's stripped terms, and the incremental
+ * declaration's merge scope); `classifyWhereTerms`, the one `where:` term
+ * classifier, for the `#(materialize)`, rollup and rolling-window planners;
+ * `givenTerms` and `givenReadingFilterTerms` for the served copy and the
+ * filter-binding guard; and the field readers (`givenReadingFields`,
+ * `currentTimeFields`, `readsCurrentTime`, `withinDeclaration`) for the
+ * planners and the probe compiler. Reads compiled IR only; unreadable IR is
+ * a refusal.
  */
+
+import { sourceDefOf } from "../../governance/ir/compiled_model";
+import { Annotations, type PersistSource } from "@malloydata/malloy";
+import { destinationOf, readRouteIfAny } from "./declaration";
+import { collectGivenRefs } from "../../given";
+import { readsAGiven } from "../../probe_compiler";
+import { forEachFieldPath } from "../../governance/ir/array_query";
+import {
+   NOW_OFFSET_UNITS,
+   type MalloyRange,
+   type NowComparisonOp,
+   type NowOffsetUnit,
+   type RollingWindow,
+   type TermUse,
+} from "../domain/read_time_terms";
+
+/** Why a read-time position of a given is refused; each names the position. */
 type DynamicTermRefusal =
    | "given_in_persisted_query"
    | "dynamic_projection"
@@ -45,8 +58,8 @@ type DynamicTermRefusal =
 
 /**
  * One extend-block `where:` conjunct that references a given: absent from the
- * build, re-applied at read. `code` is the verbatim text the serve shape
- * re-emits; `givens` are the names the shape must declare for it to compile.
+ * build, re-applied at read. `code` is the term's verbatim text; `givens`
+ * are the names it reads.
  */
 export interface DynamicTerm {
    code: string;
@@ -62,11 +75,10 @@ export interface DynamicTerm {
 
 /**
  * A join on the persisted source to a source itself scoped by a given, admitted
- * because per-caller filtering rides the JOINED source's artifact. The serve
- * shape re-emits the join only when `source` is bound, and that binding
- * re-applies `terms` with the caller's values; when it is not bound the joining
- * source is withheld and serves live. `alias` is dotted for a nested admitted
- * join (`grant.team`).
+ * because per-caller filtering rides the JOINED source: the served copy keeps
+ * the join as written, and the joined source, read live or from its own
+ * table, re-applies `terms` with the caller's values. `alias` is dotted for a
+ * nested admitted join (`grant.team`).
  */
 interface JoinedDynamicTerms {
    alias: string;
@@ -295,8 +307,8 @@ function stagesReadPaths(stages: readonly unknown[]): string[] {
  *
  * The terms are the given-reading subset of {@link classifyWhereTerms}, the one
  * `where:` term classifier; this pass decides only where the givens may sit.
- * The baked check runs FIRST: a baked given is the one position no serve shape
- * can rescue, so reporting anything else would send the author to the wrong
+ * The baked check runs FIRST: a baked given is the one position nothing at
+ * read can rescue, so reporting anything else would send the author to the wrong
  * line. Fails closed: a given in a position this pass does not know is
  * refused, since the failure mode is serving one tenant's rows to another.
  */
@@ -561,11 +573,10 @@ function unreadable(err: unknown, cannotProve: string): FieldRefusal {
  * The first field position carrying a given that is not admitted, or undefined.
  * Admitted given-scoped joins are appended to `joinedTerms`.
  *
- * No field is in the build SQL, so admission is decided by the SERVE shape. A
- * join to a given-scoped source is admitted: the shape re-emits it only when
- * its target is bound (`extractJoins`), and the target's binding re-applies
- * its own `where:`; otherwise queries through it serve live. See
- * {@link joinedSourceRefusal}.
+ * No field is in the build SQL, so admission is decided by what is applied at
+ * read. A join to a given-scoped source is admitted: the served copy keeps it
+ * as written, and the joined source re-applies its own `where:` per caller.
+ * See {@link joinedSourceRefusal}.
  *
  * Refused: a given in a join's `on:` (`dynamic_join`), which nothing re-binds
  * per caller, and a dimension or measure reading a given itself
@@ -668,7 +679,7 @@ function joinedSourceRefusal(
    if (typeof sourceID !== "string" || sourceID.length === 0) {
       return refuse(
          `and is joined through a refinement (\`… extend { … }\`) rather than ` +
-            `by name, so the serve shape cannot bind the join to that source's ` +
+            `by name, so the served copy cannot bind the join to that source's ` +
             `stored table. Declare the refinement on a named source and join ` +
             `that`,
       );

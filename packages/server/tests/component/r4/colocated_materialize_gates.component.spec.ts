@@ -32,7 +32,7 @@ import {
    type LoadedFixture,
    loadFixture,
    type Outcome,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference, type Row } from "./harness";
 
 // Each materialized source selects its own columns, so no two share a

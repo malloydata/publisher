@@ -52,6 +52,18 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "m_storage@<pkg>/m.malloy": "materialize",
+      "p_named_nested@<pkg>/m.malloy": "persist",
+      "p_named_sibling@<pkg>/m.malloy": "persist",
+      "p_nested@<pkg>/m.malloy": "persist",
+      "p_sibling@<pkg>/m.malloy": "persist",
+      "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy": "view",
+      "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy": "view"
+    },
     "materializePlans": {
       "m_storage@<pkg>/m.malloy": {
         "buildSourceName": "m_storage__mat",

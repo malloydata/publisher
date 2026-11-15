@@ -8,7 +8,8 @@
  * resolves while it never shows up in `getModelPaths()`, the API or the
  * package's own compile.
  *
- * **Built over the author's rows, never over a stored base (#6293).** The
+ * **Built over the author's rows, never over a stored base** (pinned in
+ * preaggregate_variants.spec.ts). The
  * companion reads the author's files with every source-level `#@` line blanked
  * (positions kept), so Malloy's planner sees no persisted source under a
  * rollup: a rollup never chains onto its base's table. That is what lets a
@@ -51,7 +52,7 @@ import type { ParentKeyCheck, RollupVariantPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
 
-export interface GeneratedRollups {
+interface GeneratedRollups {
    /** The rollups the companion declares. Never empty. */
    plans: RollupVariantPlan[];
    model: MalloyModel;
@@ -61,10 +62,7 @@ export interface GeneratedRollups {
 }
 
 /** Where the rollup companion for `modelPath` lives, as an absolute URL. */
-export function rollupCompanionURL(
-   packagePath: string,
-   modelPath: string,
-): URL {
+function rollupCompanionURL(packagePath: string, modelPath: string): URL {
    return pathToFileURL(
       `${path.join(packagePath, modelPath)}${ROLLUP_COMPANION_SUFFIX}`,
    );
@@ -102,8 +100,8 @@ export async function tryCompileRollupCompanion(args: {
          {
             packageRelativeSourceID: (id) =>
                packageRelativeSourceID(args.packagePath, id),
-            // Planned under the v1 cutover too: v2's route only with its switch.
-            readsV2: getMaterializeEnabled(),
+            // v1 lines are always planned; `#(preaggregate)` only with its switch.
+            readsPreaggregateDeclarations: getMaterializeEnabled(),
          },
          (declaringURL) => {
             try {
@@ -127,7 +125,7 @@ export async function tryCompileRollupCompanion(args: {
       const overlay = await files.blanked(args.modelDef);
       if (!overlay) {
          // Building over the author's files as they are would chain a rollup
-         // onto its base's table (#6293); build nothing instead.
+         // onto its base's table; build nothing instead.
          logger.error(
             "A #(preaggregate) companion was not built: a `#@` line of the author's files could not be left out of it",
             { modelPath: args.modelPath },
@@ -180,8 +178,8 @@ export async function tryCompileRollupCompanion(args: {
  * Malloy records it, `givenUsage`: a `where:` that reads one, say). Compiled
  * once at plan time, such a check reads the rows of the given's default (or
  * does not compile without one), not the rows each caller's query reads, so a
- * key it finds unique may repeat for another caller; refused, the leg reads
- * that source's key as unknown and declines.
+ * key it finds unique may repeat for another caller; refused, the
+ * join-to-rollup branch reads that source's key as unknown and declines.
  */
 export function parentKeyCheckCompiler(materializer: {
    loadQuery(text: string): {
@@ -210,10 +208,10 @@ export function parentKeyCheckCompiler(materializer: {
  * model that names the source). To each rollup, colocated or in a storage
  * destination, also attach the check of its base's own primary key when a
  * join reaches the base on another column (`joinedKeys`, see
- * {@link JoinedKeyNeed}): the leg serves a count, sum or average of the base
- * through such a join only when that key is unique and never NULL. A check
- * that does not compile is left off, logged: the leg then reads that
- * source's key as unknown and declines.
+ * {@link JoinedKeyNeed}): the join-to-rollup branch serves a count, sum or
+ * average of the base through such a join only when that key is unique and
+ * never NULL. A check that does not compile is left off, logged: the branch
+ * then reads that source's key as unknown and declines.
  */
 export async function compileParentKeyChecks(
    plans: Iterable<RollupVariantPlan>,
@@ -303,8 +301,7 @@ export async function compileParentKeyChecks(
  * Compile each rollup's key check (known limitation 29, see
  * `rollupKeyCheckQuery`) against the companion, onto its plan. A check that
  * does not compile is left off, logged: its rollup's join_one is then never
- * known unique, and the join-to-rollup leg keeps declining what it declined
- * before.
+ * known unique, and the join-to-rollup branch declines it.
  */
 async function compileRollupKeyChecks(
    plans: RollupVariantPlan[],

@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "big_orders@<hammer>/ufw/ufw.malloy": "persist",
+      "north_orders@<hammer>/ufw/ufw.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

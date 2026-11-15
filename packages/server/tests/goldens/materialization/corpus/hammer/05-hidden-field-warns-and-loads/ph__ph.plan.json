@@ -4,6 +4,7 @@
     "annotationFindings": [],
     "builds": [],
     "droppedPersistSources": [],
+    "kinds": {},
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {},

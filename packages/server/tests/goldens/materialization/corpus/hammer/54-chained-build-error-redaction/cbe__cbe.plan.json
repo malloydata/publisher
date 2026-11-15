@@ -18,6 +18,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/cbe/cbe.malloy": "persist",
+      "rollup@<hammer>/cbe/cbe.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

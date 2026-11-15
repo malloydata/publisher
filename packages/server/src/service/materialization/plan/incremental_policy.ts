@@ -1,20 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { components } from "../../../api";
-import {
-   describeDialects,
-   INCREMENTAL_SOURCE_RANGE_DIALECTS,
-   MERGE_CAPABLE_DIALECTS,
-} from "../run/incremental_apply";
-import type {
-   IncrementalDeclaration,
-   ResolvedName,
-} from "./incremental_declaration";
-
-type ApiPackage = components["schemas"]["Package"];
-type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
-
 /**
  * The gate for a source's INCREMENTAL declaration, plus advisory findings.
  *
@@ -35,7 +21,28 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
  * Every rule reads the EFFECTIVE MERGED tag (see resolveIncrementalDeclaration),
  * which is why several messages offer `-watermark`: an inheriting child removes
  * a key by negating it.
+ *
+ * Surface: `incrementalPolicyRejections` (the gate) and
+ * `incrementalPolicyAdvisories` (the warnings), each over one
+ * {@link IncrementalPolicySource} per source, read by the facade; `package.ts`
+ * reads the advisory code `INCREMENTAL_NO_MERGE_KEY_CODE`. Pure: it reads
+ * resolved declarations (`incremental_declaration.ts`) and the dialect
+ * capability table, and runs nothing.
  */
+
+import { components } from "../../../api";
+import {
+   capabilitiesOf,
+   describeDialects,
+   dialectsWith,
+} from "../domain/dialect";
+import type {
+   IncrementalDeclaration,
+   ResolvedName,
+} from "../domain/incremental";
+
+type ApiPackage = components["schemas"]["Package"];
+type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
 /** One source's inputs to the gate. */
 export interface IncrementalPolicySource {
@@ -254,19 +261,19 @@ function judgeSource(source: IncrementalPolicySource): {
    // a capability probe: a delta writes into a serving table, so an unproven
    // engine must read as no. The source's dialect, not the table's — the
    // warehouse expresses the range; where the DML lands is checked separately
-   // (see INCREMENTAL_TARGET_DML_DIALECTS).
+   // (see the `incrementalTargetDml` capability).
    const dialect = source.dialect ?? "";
-   if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(dialect)) {
+   if (!capabilitiesOf(dialect).incrementalSourceRange) {
       unbuildable.push(
          `it declares ${MODE}, which is not supported on dialect ` +
             `"${dialect || "unknown"}". Incremental refresh reads a bounded ` +
             `watermark range out of the source and applies it transactionally, ` +
             `so it is enabled only where the publisher has proven both: ` +
-            `${describeDialects(INCREMENTAL_SOURCE_RANGE_DIALECTS)}. Use ` +
+            `${describeDialects(dialectsWith("incrementalSourceRange"))}. Use ` +
             `refresh="full" to build it; the supported set widens in a later ` +
             `release`,
       );
-   } else if (d.declaredMergeKey && !MERGE_CAPABLE_DIALECTS.has(dialect)) {
+   } else if (d.declaredMergeKey && !capabilitiesOf(dialect).merge) {
       // Rule 7: distinct from rule 6 though currently subsumed by it, so the
       // two can widen independently.
       unbuildable.push(

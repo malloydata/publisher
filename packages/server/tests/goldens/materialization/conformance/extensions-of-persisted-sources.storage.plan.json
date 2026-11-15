@@ -47,6 +47,13 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "base_daily@<pkg>/m.malloy": "persist",
+      "ext1@<pkg>/m.malloy": "persist",
+      "ext2@<pkg>/m.malloy": "persist",
+      "ext_joined@<pkg>/joined.malloy": "persist",
+      "ext_other@<pkg>/other.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
