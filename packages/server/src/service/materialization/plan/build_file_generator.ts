@@ -350,6 +350,12 @@ const CARRIED_KEYS = [
  */
 const CARRIED_GROUPS = ["freshness", "queryMetadata"] as const;
 
+/** The keys of a `freshness` group. */
+const FRESHNESS_PROPERTIES: ReadonlySet<string> = new Set([
+   "window",
+   "fallback",
+]);
+
 /** A property name inside a carried group that the persist line can hold bare. */
 const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -691,6 +697,12 @@ function carriedPersistKeys(
       }
       for (const [property, value] of properties) {
          const text = value.text();
+         // `freshness` is a closed group: `window` and `fallback`.
+         if (group === "freshness" && !FRESHNESS_PROPERTIES.has(property)) {
+            return {
+               reason: `#(materialize) \`freshness.${property}\` is not a key it reads; use freshness.window= or freshness.fallback=`,
+            };
+         }
          if (!PLAIN_PROPERTY.test(property) || text === undefined) {
             return {
                reason: `#(materialize) \`${group}.${property}\` must be a plain name with a string value`,

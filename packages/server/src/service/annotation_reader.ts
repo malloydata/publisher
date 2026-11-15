@@ -246,6 +246,9 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "queryMetadata",
 ]);
 
+/** The keys of a `freshness` group (`freshness.window=`, `freshness.fallback=`). */
+const FRESHNESS_KEYS: ReadonlySet<string> = new Set(["window", "fallback"]);
+
 /** The pre-aggregation directive's keys, on the same `#@` route. */
 const PREAGGREGATE_KEYS: ReadonlySet<string> = new Set([
    "preaggregate",
@@ -463,18 +466,54 @@ export function readRouteTag(
       }
       // A key written inside `persist` (`#@ persist { partition="day" }`) is
       // read as the top-level one is (the one placement rule, plan/
-      // declaration.ts), so a retired one there is retired too.
+      // declaration.ts), so a retired one there is retired too, and an
+      // unknown one (`#@ persist { nmae="t" }`) is unknown: the set is closed.
       if (route === "@") {
+         const nestedKeys = new Set(
+            [...accepted].filter((k) => PERSIST_KEYS.has(k) && k !== "persist"),
+         );
          for (const [key] of tag.tag("persist")?.entries() ?? []) {
             const retired = spec?.retiredKeys?.[key];
-            if (retired === undefined) continue;
+            if (retired !== undefined) {
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: "persist-retired-key",
+                  message: `\`${key}=\` is no longer read on \`#@ persist { … }\``,
+                  rewrite: retired,
+                  key,
+                  nested: true,
+               });
+            } else if (!nestedKeys.has(key)) {
+               const near = nearestKey(key, nestedKeys);
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: "persist-unknown-key",
+                  message: `\`${key}=\` is not a key \`#@ persist { … }\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+                  nested: true,
+               });
+            }
+         }
+      }
+      // `freshness` is a group of two keys on every route that carries it
+      // (`freshness.window=`, `freshness.fallback=`), written flat or inside
+      // `persist`; another key in it does nothing.
+      const groups =
+         route === "@"
+            ? [tag.tag("freshness"), tag.tag("persist", "freshness")]
+            : accepted.has("freshness")
+              ? [tag.tag("freshness")]
+              : [];
+      for (const group of groups) {
+         for (const [key] of group?.entries() ?? []) {
+            if (FRESHNESS_KEYS.has(key)) continue;
+            const near = nearestKey(key, FRESHNESS_KEYS);
             findings.push({
                route,
                tier: "malformed",
-               code: "persist-retired-key",
-               message: `\`${key}=\` is no longer read on \`#@ persist { … }\``,
-               rewrite: retired,
-               key,
+               code: `${route === "@" ? "persist" : route}-unknown-key`,
+               message: `\`freshness.${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`freshness.${near}=\`?)` : ""}`,
                nested: true,
             });
          }

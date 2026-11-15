@@ -125,6 +125,26 @@ const MISTAKES: Mistake[] = [
       },
    },
    {
+      name: "an unknown key written inside the directive or a group",
+      lines: {
+         persist: ['#@ persist { nmae="t" }', "persist-unknown-key"],
+         materialize: [
+            '#(materialize) freshness.windw="1h"',
+            "materialize-invalid",
+         ],
+         preaggregate: [
+            '#(preaggregate) grain=["category"] freshness.window="1h"',
+            "preaggregate-unknown-key",
+         ],
+         v1Preaggregate: [
+            '#@ preaggregate { grain="category" stroage="lake" }',
+            "preaggregate-unknown-key",
+         ],
+         view: ['#@ persist { nmae="t" }', "persist-unknown-key"],
+         query: ['#@ persist { nmae="t" }', "persist-unknown-key"],
+      },
+   },
+   {
       name: "a line that does not parse",
       lines: {
          persist: ['#@ persist name="t', "persist-unparseable"],

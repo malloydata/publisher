@@ -120,6 +120,28 @@ describe("the #@ route's keys", () => {
       }
    });
 
+   it("finds an unknown key written inside persist, or in a freshness group", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([
+            `#@ persist { nmae="t" storage="lake" } freshness.windw="1h"`,
+         ]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.tier, f.message])).toEqual([
+         [
+            "persist-unknown-key",
+            "malformed",
+            "`nmae=` is not a key `#@ persist { … }` reads, so it does nothing (did you mean `name=`?)",
+         ],
+         [
+            "persist-unknown-key",
+            "malformed",
+            "`freshness.windw=` is not a key `#@` reads, so it does nothing (did you mean `freshness.window=`?)",
+         ],
+      ]);
+   });
+
    it("finds an unknown key and a retired one, both malformed, and nothing else", () => {
       const { tag, findings } = readRouteTag(
          annotationsOf([
