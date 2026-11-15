@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import {
+   confinedPackagePath,
    linkTextSteps,
    compiledImports,
    compiledTextReader,
@@ -407,5 +408,112 @@ describe("linkTextSteps", () => {
          root: "/",
          parts: ["pkg", "lib"],
       });
+   });
+});
+
+describe("listPackageTree on a directory link that goes out and comes back", () => {
+   // pkg/d -> <base>/{present|absent}/../pkg/sub: only `present` exists.
+   let base = "";
+   let pkg4 = "";
+   beforeAll(() => {
+      base = fs.realpathSync(
+         fs.mkdtempSync(path.join(os.tmpdir(), "tree-out-")),
+      );
+      pkg4 = path.join(base, "pkg");
+      fs.mkdirSync(path.join(pkg4, "sub"), { recursive: true });
+      fs.writeFileSync(path.join(pkg4, "sub", "a.malloy"), "x");
+      fs.mkdirSync(path.join(base, "present"));
+   });
+   afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
+
+   it("lists the same files whether the outside directory exists, and never looks at it", async () => {
+      const stat = spyOn(fs.promises, "stat");
+      const realpath = spyOn(fs.promises, "realpath");
+      try {
+         const listings: string[] = [];
+         for (const form of ["abs", "rel"]) {
+            for (const which of ["present", "absent"]) {
+               fs.rmSync(path.join(pkg4, "d"), { force: true });
+               fs.symlinkSync(
+                  form === "abs"
+                     ? `${base}/${which}/../pkg/sub`
+                     : `../${which}/../pkg/sub`,
+                  path.join(pkg4, "d"),
+               );
+               stat.mockClear();
+               realpath.mockClear();
+               const listed = (await listPackageTree(pkg4))
+                  .map((p) => path.relative(pkg4, p))
+                  .sort();
+               listings.push(`${form}:${listed.join(",")}`.replace(which, ""));
+               const looked = [...stat.mock.calls, ...realpath.mock.calls].map(
+                  (c) => String(c[0]),
+               );
+               expect(
+                  looked.some(
+                     (p) =>
+                        p.startsWith(path.join(base, "present")) ||
+                        p.startsWith(path.join(base, "absent")),
+                  ),
+               ).toBe(false);
+            }
+         }
+         expect(listings[0]).toBe(listings[1]);
+         expect(listings[2]).toBe(listings[3]);
+         expect(listings[0]).toBe("abs:d,sub/a.malloy");
+      } finally {
+         stat.mockRestore();
+         realpath.mockRestore();
+      }
+   });
+});
+
+describe("a walk that stops at a missing directory", () => {
+   it("opens only that point and the last name, never the rest of the climb", async () => {
+      const base = fs.realpathSync(
+         fs.mkdtempSync(path.join(os.tmpdir(), "stop-race-")),
+      );
+      try {
+         const pkg5 = path.join(base, "pkg");
+         fs.mkdirSync(pkg5);
+         fs.mkdirSync(path.join(base, "outside"));
+         fs.writeFileSync(path.join(base, "outside", "secret"), "s");
+         // newdir does not exist yet, so the walk stops there. Spelled
+         // through a link: a URL would collapse the `..` itself.
+         fs.symlinkSync("newdir/../../outside/secret", path.join(pkg5, "l"));
+         const resolved = await confinedPackagePath(
+            pkg5,
+            url(path.join(pkg5, "l")),
+         );
+         expect(resolved).toBe(path.join(pkg5, "newdir", "secret"));
+         // Were newdir to appear now, the open would stay inside it.
+         fs.mkdirSync(path.join(pkg5, "newdir"));
+         expect(() => fs.readFileSync(resolved, "utf8")).toThrow("ENOENT");
+      } finally {
+         fs.rmSync(base, { recursive: true, force: true });
+      }
+   });
+});
+
+describe("a link whose text steps .. past a file, or through a missing name", () => {
+   it("fails as the kernel would: ENOTDIR after a file, ENOENT after a missing name", async () => {
+      const base = fs.realpathSync(
+         fs.mkdtempSync(path.join(os.tmpdir(), "stop-kinds-")),
+      );
+      try {
+         const pkg6 = path.join(base, "pkg");
+         fs.mkdirSync(pkg6);
+         fs.writeFileSync(path.join(pkg6, "f.md"), "file");
+         fs.symlinkSync("f.md/..", path.join(pkg6, "after-file"));
+         fs.symlinkSync("missing/..", path.join(pkg6, "after-missing"));
+         const afterFile = url(path.join(pkg6, "after-file"));
+         const afterMissing = url(path.join(pkg6, "after-missing"));
+         expect(await outcome(pkg6, afterFile)).toContain("ENOTDIR");
+         expect(() => readPackageURLSync(pkg6, afterFile)).toThrow("ENOTDIR");
+         expect(await outcome(pkg6, afterMissing)).toContain("ENOENT");
+         expect(() => readPackageURLSync(pkg6, afterMissing)).toThrow("ENOENT");
+      } finally {
+         fs.rmSync(base, { recursive: true, force: true });
+      }
    });
 });

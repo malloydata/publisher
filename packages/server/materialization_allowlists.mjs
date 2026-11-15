@@ -299,7 +299,6 @@ export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
       "2g.4",
    "service/materialization/run/incremental_apply.ts#pairDeltaStatements":
       "2g.4",
-   "service/materialization/run/incremental_build.ts#planSourceRefresh": "2g.4",
    "service/materialization/run/table_ownership.ts#OWNED_TABLE_MARK": "2g.4",
    "service/materialization/serve/declaring_file_variant.ts#gateLines": "2g.3",
    "service/materialization/serve/rollup_variants.ts#checkCoverage": "2g.3",

@@ -23,6 +23,7 @@ import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../config";
 import {
    answerKeepsGates,
+   GATE_LEGS,
    legMayPassGate,
 } from "./materialization/domain/gate_policy";
 import { logger } from "../logger";
@@ -49,6 +50,7 @@ import type {
    Answer,
    Leg,
    LegAnswer,
+   LegContext,
    LegKind,
    QueryFacts,
 } from "./materialization/serve/leg";
@@ -65,6 +67,8 @@ import type {
 /** The decline vocabulary's name for each leg's codes. */
 const DECLINING_LEG = {
    view: "view",
+   // The query leg declines in the view leg's codes (`view_*`).
+   query: "view",
    rollup: "rollup",
    served: "served_copy",
 } as const satisfies Record<LegKind, string>;
@@ -72,6 +76,7 @@ const DECLINING_LEG = {
 /** What each leg's skip is logged as, at debug. */
 const SKIP_MESSAGE: Record<LegKind, string> = {
    view: "the persisted view does not answer this query",
+   query: "the persisted named query does not answer this query",
    rollup: "no #(preaggregate) rollup answers this query",
    served: "served copy cannot answer this query",
 };
@@ -103,43 +108,53 @@ export function variantsOf(
    const gateContext = {
       colocatedReadsKeepGates: !!args.colocatedKeepsContracts,
    };
-   return legs.map((leg) => ({
-      kind: leg.kind,
-      applicable: leg.applies(facts, pinned),
-      keepsContracts: legMayPassGate(leg.kind, switches, gateContext),
-      keepsContractsFor: (answer: LegAnswer) =>
-         answerKeepsGates(
-            leg.kind,
-            answer.tablesRead ?? [],
-            switches,
-            gateContext,
-         ),
-      attempt: async () => {
-         const answer = await leg.attempt(facts, pinned);
-         if (leg.kind === "served") {
-            logger.debug("Serving query from the served copy (virtual)", {
+   return legs.map((leg) => {
+      // A leg with no row in the gate policy (the query leg) is never tried
+      // past an entry-point gate: the policy fails closed.
+      const gateLeg = (GATE_LEGS as readonly LegKind[]).includes(leg.kind)
+         ? (leg.kind as (typeof GATE_LEGS)[number])
+         : undefined;
+      return {
+         kind: leg.kind,
+         applicable: leg.applies(facts, pinned),
+         keepsContracts:
+            gateLeg !== undefined &&
+            legMayPassGate(gateLeg, switches, gateContext),
+         keepsContractsFor: (answer: LegAnswer) =>
+            gateLeg !== undefined &&
+            answerKeepsGates(
+               gateLeg,
+               answer.tablesRead ?? [],
+               switches,
+               gateContext,
+            ),
+         attempt: async () => {
+            const answer = await leg.attempt(facts, pinned);
+            if (leg.kind === "served") {
+               logger.debug("Serving query from the served copy (virtual)", {
+                  modelPath: args.modelPath,
+                  tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
+               });
+            }
+            return { runnable: answer.runnable, extra: answer };
+         },
+         explain: (err): VariantSkipExplanation | undefined =>
+            isDeclineOf(err, DECLINING_LEG[leg.kind])
+               ? {
+                    code: err.code,
+                    ...(err.callerDetail
+                       ? { callerDetail: err.callerDetail }
+                       : {}),
+                 }
+               : undefined,
+         onSkip: (err) => {
+            logger.debug(SKIP_MESSAGE[leg.kind], {
                modelPath: args.modelPath,
-               tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
+               error: err instanceof Error ? err.message : String(err),
             });
-         }
-         return { runnable: answer.runnable, extra: answer };
-      },
-      explain: (err): VariantSkipExplanation | undefined =>
-         isDeclineOf(err, DECLINING_LEG[leg.kind])
-            ? {
-                 code: err.code,
-                 ...(err.callerDetail
-                    ? { callerDetail: err.callerDetail }
-                    : {}),
-              }
-            : undefined,
-      onSkip: (err) => {
-         logger.debug(SKIP_MESSAGE[leg.kind], {
-            modelPath: args.modelPath,
-            error: err instanceof Error ? err.message : String(err),
-         });
-      },
-   }));
+         },
+      };
+   });
 }
 
 /** The answer the router's decision describes, before anything runs. */
@@ -245,6 +260,8 @@ export interface QueryServingHost {
    readonly rollupVariants: RollupVariantServe;
    /** The `#@ persist` view leg (materialization v2, phase 4, P14). */
    readonly persistedViews: PersistedViewServe;
+   /** The `#@ persist` named-query leg. */
+   readonly persistedQueries: NonNullable<LegContext["persistedQueries"]>;
 }
 
 /**
@@ -293,13 +310,14 @@ export async function queryPathFor(
       const variantRollups = host.rollupVariants.hasRollups()
          ? host.rollupVariants.rollups()
          : [];
-      // The persisted view the query calls, if any: its table is the first
-      // candidate (R1), whatever the router decided about it.
+      // The persisted view or named query the query calls, if any: its table
+      // is the first candidate (R1), whatever the router decided about it.
       const routed = answer.leg === "live" ? undefined : answer.answer;
       const viewTable =
          routed?.viewTable ??
          (args.queryString !== undefined
-            ? host.persistedViews.reportedTable(args.queryString, pinned)
+            ? (host.persistedViews.reportedTable(args.queryString, pinned) ??
+              host.persistedQueries.reportedTable(args.queryString, pinned))
             : undefined);
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.

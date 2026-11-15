@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { derivationTerminals } from "./caller_joins";
 import {
+   extractRunQueryCall,
    extractRunViewCall,
    buildDerivationBaseMap,
    buildIsEdgeMap,
@@ -931,7 +932,7 @@ function timedMs(run: () => void): number {
 
 describe("extractRunViewCall", () => {
    it("reads an exact call of a view", () => {
-      expect(extractRunViewCall("run: ops -> by_carrier")).toEqual({
+      expect(extractRunViewCall("run: ops -> by_carrier")).toMatchObject({
          source: "ops",
          view: "by_carrier",
          refined: false,
@@ -944,7 +945,7 @@ describe("extractRunViewCall", () => {
          extractRunViewCall(
             "run: ops -> by_carrier -> { select: * } -> top_one",
          ),
-      ).toEqual({
+      ).toMatchObject({
          source: "ops",
          view: "by_carrier",
          refined: false,
@@ -957,7 +958,7 @@ describe("extractRunViewCall", () => {
          extractRunViewCall(
             "run: ops -> by_carrier + { limit: 3 } -> { select: * }",
          ),
-      ).toEqual({
+      ).toMatchObject({
          source: "ops",
          view: "by_carrier",
          refined: true,
@@ -995,6 +996,92 @@ describe("extractRunViewCall", () => {
       ]) {
          expect(extractRunViewCall(text)).toBeUndefined();
       }
+   });
+});
+
+describe("extractRunQueryCall", () => {
+   it("reads an exact call of a named query, as queryName sends it too", () => {
+      expect(extractRunQueryCall("run: top_carriers")).toMatchObject({
+         query: "top_carriers",
+         refined: false,
+         laterStages: 0,
+      });
+      // REST and MCP `queryName` send a backticked name on a line of its own.
+      expect(extractRunQueryCall("\nrun: `top carriers`")).toMatchObject({
+         query: "top carriers",
+         refined: false,
+         laterStages: 0,
+      });
+   });
+
+   it("reads a query that goes on past the named query", () => {
+      expect(
+         extractRunQueryCall(
+            "run: q -> { select: * } -> { aggregate: n is count() }",
+         ),
+      ).toMatchObject({ query: "q", refined: false, laterStages: 2 });
+   });
+
+   it("reads a refinement, which the leg declines", () => {
+      expect(extractRunQueryCall("run: q + { limit: 3 }")).toMatchObject({
+         query: "q",
+         refined: true,
+         laterStages: 0,
+      });
+      expect(
+         extractRunQueryCall("run: q + { where: a = 1 } -> { select: * }"),
+      ).toMatchObject({ query: "q", refined: true, laterStages: 1 });
+   });
+
+   it("reads the last run statement, past other statements, comments and strings", () => {
+      expect(
+         extractRunQueryCall(
+            "// run: x\nquery: q2 is q -> { select: * }\nrun: q2 -> { where: s = 'run: q' }",
+         ),
+      ).toMatchObject({ query: "q2", refined: false, laterStages: 1 });
+      expect(extractRunQueryCall("run: a\nrun: b")).toMatchObject({
+         query: "b",
+      });
+   });
+
+   it("reads nothing from a shape it does not follow", () => {
+      for (const text of [
+         "run: (q)",
+         "run: q + other",
+         "run: q extend { dimension: x is 1 }",
+         "run: q -> { select: * } + { limit: 1 }",
+         "source: s is q",
+         "",
+      ]) {
+         expect(extractRunQueryCall(text)).toBeUndefined();
+      }
+   });
+
+   it("lists the names the text spells outside the call's head", () => {
+      const names = (text: string) => [
+         ...(extractRunQueryCall(text)?.otherNames ?? []),
+      ];
+      expect(names("run: q")).toEqual(["run"]);
+      expect(names("\nrun: `q`")).toEqual(["run"]);
+      expect(
+         names(
+            "source: `my src` is fl -> { select: a }\nrun: q -> { select: b }",
+         ),
+      ).toEqual(["source", "my src", "is", "fl", "select", "a", "run", "b"]);
+      // Strings and comments name nothing.
+      expect(names("run: q -> { where: s = 'fl' } // fl")).toEqual([
+         "run",
+         "where",
+         "s",
+      ]);
+      expect([
+         ...(extractRunViewCall(
+            "run: vs -> v -> { extend: { join_many: f is vs on t = f.t } }",
+         )?.otherNames ?? []),
+      ]).toContain("vs");
+      expect([
+         ...(extractRunViewCall("run: vs -> v")?.otherNames ?? []),
+      ]).toEqual(["run"]);
    });
 });
 

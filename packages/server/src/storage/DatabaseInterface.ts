@@ -334,7 +334,11 @@ export interface Materialization {
    environmentId: string;
    packageName: string;
    status: MaterializationStatus;
-   /** Build output. Null until status = MANIFEST_FILE_READY. */
+   /**
+    * Build output. Null until the tables are built (MANIFEST_ROWS_READY), and
+    * on a run that failed or was cancelled before then. A run interrupted at
+    * MANIFEST_ROWS_READY ends FAILED with it (`failInterrupted`).
+    */
    manifest: BuildManifestResult | null;
    startedAt: Date | null;
    completedAt: Date | null;

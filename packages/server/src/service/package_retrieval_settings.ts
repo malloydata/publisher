@@ -20,6 +20,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { PackageManifestError } from "../errors";
 import { stepsOutside } from "../path_safety";
+import { confinedPackagePath, ImportOutsidePackageError } from "../utils";
+import { pathToFileURL } from "url";
+import { callerVisibleText } from "../package_relative_text";
 
 /**
  * The variants of the prompt the fcj index build sends to write a node's
@@ -718,15 +721,15 @@ async function readPromptFile(
    const at = `retrieval.prompts.${key}`;
    let text: string;
    try {
-      // The real path must also be inside the real package directory: a
-      // symlink in the package can point anywhere.
-      const [realRoot, realFile] = await Promise.all([
-         fs.promises.realpath(packageRoot),
-         fs.promises.realpath(file),
-      ]);
-      const within = path.relative(realRoot, realFile);
-      if (stepsOutside(within)) {
-         fail(
+      // Resolved by the package's own walk, which never looks outside it: a
+      // symlink in the package can point anywhere, and one that leads out is
+      // refused the same whether or not what it names exists.
+      let realFile: string;
+      try {
+         realFile = await confinedPackagePath(packageRoot, pathToFileURL(file));
+      } catch (error) {
+         if (!(error instanceof ImportOutsidePackageError)) throw error;
+         return fail(
             `Invalid publisher.json ${at}: ${describe(rel)} resolves outside the package directory through a link. ` +
                `Fix: copy the file into the package.`,
          );
@@ -735,7 +738,7 @@ async function readPromptFile(
    } catch (error) {
       if (error instanceof PackageManifestError) throw error;
       return fail(
-         `Invalid publisher.json ${at}: cannot read ${describe(rel)} (${(error as Error).message}). ` +
+         `Invalid publisher.json ${at}: cannot read ${describe(rel)} (${callerVisibleText((error as Error).message, packageRoot)}). ` +
             `Fix: create the file inside the package or remove the key.`,
       );
    }

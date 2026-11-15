@@ -113,6 +113,15 @@ describe("newestServingEntries", () => {
       run(id, { version, metadata: { scope: "version" } });
    const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute));
 
+   it("serves no run that recorded its manifest but did not finish: loading, or interrupted and settled FAILED", () => {
+      const runs = [
+         run("loading", { status: "MANIFEST_ROWS_READY" }),
+         run("interrupted", { status: "FAILED" }),
+         run("done"),
+      ];
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual(["t_done"]);
+   });
+
    it("reads a version's own runs only", () => {
       const runs = [owned("b", "2.0.0"), owned("a", "1.0.0"), run("legacy")];
       expect(
