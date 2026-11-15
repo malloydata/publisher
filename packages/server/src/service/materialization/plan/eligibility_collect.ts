@@ -163,24 +163,55 @@ export function collidingRollups(compiled: {
  * one table. The one definition of a persist-target collision, read by the
  * serve refusal ({@link sharedTables}), the `#(materialize)` refusal and the
  * publish check (`persistenceCollisionWarnings`), so the three never disagree.
- * Verbatim: names differing only by case or quoting may still fold to one
- * table on some destinations, and normalizing is dialect-dependent.
+ *
+ * The key is the name the run writes. A name the author did not choose
+ * (`defaulted`: no `name=` on a `#@ persist`, or a `#(materialize)` with
+ * none) takes the package's or version's suffix in Publisher's own builds,
+ * which no author's name carries, so it never shares a table with one; two
+ * such names share one exactly when their bases do. A destination that folds
+ * identifiers to one case (DuckDB, a `storage=` destination included, Trino,
+ * Presto, Databricks) folds the key too, so `Orders` and `orders` meet.
  */
 export function persistTableTarget(
    fields: { name?: string; storage?: string },
    sourceName: string,
    connectionName: string,
+   written: { defaulted?: boolean; dialect?: string } = {},
 ): { key: string; name: string; destination: string } {
    const name = (fields.name || sourceName).trim();
-   const destination = fields.storage?.trim() || connectionName;
-   return { key: `${destination}\u0000${name}`, name, destination };
+   const storage = fields.storage?.trim();
+   const destination = storage || connectionName;
+   const defaulted = written.defaulted ?? !fields.name?.trim();
+   const dialect = storage ? "duckdb" : written.dialect;
+   const folded =
+      dialect && CASE_FOLDING_DIALECTS.has(dialect) ? name.toLowerCase() : name;
+   return {
+      key: `${destination}\u0000${defaulted ? "default" : "named"}\u0000${folded}`,
+      name,
+      destination,
+   };
 }
 
-function physicalTarget(source: PersistSource) {
+/** The dialects whose unquoted and quoted identifiers resolve case-insensitively. */
+const CASE_FOLDING_DIALECTS: ReadonlySet<string> = new Set([
+   "duckdb",
+   "trino",
+   "presto",
+   "databricks",
+]);
+
+function physicalTarget(
+   source: PersistSource,
+   materialize: { nameDefaulted?: true } | undefined,
+) {
    return persistTableTarget(
       deriveAnnotationFields(source),
       source.name,
       source.connectionName,
+      {
+         ...(materialize ? { defaulted: !!materialize.nameDefaulted } : {}),
+         dialect: source.dialectName,
+      },
    );
 }
 
@@ -217,7 +248,12 @@ function sharedTableGroups(
             compiled.connectionDigests,
             compiled.targets?.[sourceID],
          );
-         target = physicalTarget(source);
+         target = physicalTarget(
+            source,
+            compiled.materializePlans?.[sourceID] as
+               | { nameDefaulted?: true }
+               | undefined,
+         );
       } catch {
          // No address: the other gates refuse it on their own.
          continue;

@@ -1,19 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
    compiledWith,
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
-import { installSettings } from "../../../test_helpers/settings_env";
 import {
    packageTableSuffix,
    versionTableSuffix,
 } from "../../versions/materialization_scope";
 import type { CompiledBuildPlan } from "../plan/build_plan";
 import type { ManifestEntry } from "../domain/types";
-import { nameViewIntentFor, tableAtNameIntentFor } from "./name_view";
 import { deriveSelfInstructions } from "./run_instructions";
 
 /**
@@ -168,59 +166,108 @@ describe("auto-run's table names", () => {
    });
 });
 
-describe("the name= view", () => {
-   let restore: () => void;
-   beforeEach(() => {
-      restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
-   });
-   afterEach(() => restore());
-
-   const plans = {
-      declared: { persist: { name: "orders_all" } },
-      defaulted: { persist: { name: "orders" }, nameDefaulted: true },
-   } as unknown as CompiledBuildPlan["materializePlans"];
-   const source = (sourceID: string) => ({
-      sourceID,
-      name: sourceID,
-      connectionName: "wh",
+describe("a #(materialize) table's name", () => {
+   // The generator writes the declared `name=` on the build source's persist
+   // line, or the source's own name when there is none (`nameDefaulted`).
+   const withMaterialize = (
+      c: CompiledBuildPlan,
+      defaulted: boolean,
+   ): CompiledBuildPlan => ({
+      ...c,
+      materializePlans: {
+         [c.sources.named.sourceID]: {
+            persist: { name: "named_t" },
+            ...(defaulted ? { nameDefaulted: true } : {}),
+         } as never,
+      },
    });
 
-   it("is made only at a name= the author declared", () => {
-      const instruction = {
-         physicalTableName: `orders${PKG}`,
-         destination: "lake",
-      };
-      expect(
-         nameViewIntentFor(
-            { materializePlans: plans },
-            source("declared"),
-            instruction,
-            "addr",
-            "e1/pa",
-         )?.viewName,
-      ).toBe("orders_all");
-      // A table that only defaults to its source's name is named for its
-      // package; a view at the source's name would be one every package
-      // with a source of that name claims.
-      expect(
-         nameViewIntentFor(
-            { materializePlans: plans },
-            source("defaulted"),
-            instruction,
-            "addr",
-            "e1/pa",
-         ),
-      ).toBeUndefined();
-      expect(
-         tableAtNameIntentFor(
-            { materializePlans: plans },
-            source("defaulted"),
-            { physicalTableName: "orders", destination: "lake" },
-            "addr",
-            "e1/pa",
-         ),
-      ).toBeUndefined();
+   it("keeps a declared name= as written, and suffixes a defaulted one", () => {
+      const named = deriveSelfInstructions(
+         withMaterialize(compiled(), false),
+         undefined,
+         {},
+         undefined,
+         { packageSuffix: PKG },
+      );
+      expect(names(named).a2).toBe("named_t");
+      const defaulted = deriveSelfInstructions(
+         withMaterialize(compiled(), true),
+         undefined,
+         {},
+         undefined,
+         { packageSuffix: PKG },
+      );
+      expect(names(defaulted).a2).toBe(`named_t${PKG}`);
+      // A scope: version run keeps name='s container and suffixes its leaf,
+      // as for a v1 name=.
+      const suffix = versionTableSuffix({
+         environmentName: "e1",
+         packageName: "pa",
+         version: "1.2.0",
+      });
+      const versioned = deriveSelfInstructions(
+         withMaterialize(compiled(), false),
+         undefined,
+         {},
+         undefined,
+         { versionSuffix: suffix },
+      );
+      expect(names(versioned).a2).toBe(`named_t${suffix}`);
+      expect(names(versioned).a3).toBe(`analytics.q_t${suffix}`);
+   });
+});
+
+describe("a table whose name changed", () => {
+   const prior = (table: string, sourceEntityId: string): ManifestEntry =>
+      ({
+         sourceEntityId,
+         physicalTableName: table,
+         connectionName: "duckdb",
+      }) as ManifestEntry;
+
+   it("is rebuilt under its name now, never carried at the old one", () => {
+      // The content address does not encode the name: a name= added,
+      // removed or changed leaves the address as it was.
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         {
+            // name= removed: the table was at the author's name.
+            a1: prior("summary_old", "a1"),
+            // name= changed.
+            a2: prior("named_old", "a2"),
+            // name= added: the table was the package's default.
+            a3: prior(`qualified${PKG}`, "a3"),
+         },
+         undefined,
+         { packageSuffix: PKG },
+      );
+      expect(r.carried).toEqual({});
+      expect(names(r)).toMatchObject({
+         a1: `summary${PKG}`,
+         a2: "named_t",
+         a3: "analytics.q_t",
+      });
+      // The same name, spelled in another case on a case-folding schema, is
+      // the same table, and carried.
+      const again = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a2: prior("NAMED_T", "a2") },
+         undefined,
+         { packageSuffix: PKG },
+      );
+      expect(again.carried.a2).toBeDefined();
+      // A name= moved to another schema is another table.
+      const moved = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a3: prior("staging.q_t", "a3") },
+         undefined,
+         { packageSuffix: PKG },
+      );
+      expect(moved.carried).toEqual({});
+      expect(names(moved).a3).toBe("analytics.q_t");
    });
 });

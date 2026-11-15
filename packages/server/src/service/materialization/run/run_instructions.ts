@@ -9,7 +9,6 @@ import {
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
 import {
-   tableIdentity,
    versionedTableName,
    type WriteTarget,
 } from "../../versions/materialization_scope";
@@ -236,22 +235,20 @@ export function deriveSelfInstructions(
             ...(destination ? { destination } : {}),
          };
          const prior = priorEntries[sourceEntityId];
-         // Carry forward only within the SAME destination: sourceEntityId
-         // does not encode it, so a source that changes `storage=` must
-         // rebuild rather than reuse a table its serve cannot resolve.
-         // Never the unsuffixed table a run before package-owned names
-         // built: another package on the same schema may have written it
-         // since, so the source is rebuilt under its own name.
+         // Carry forward only within the SAME destination, and only a table
+         // at the name this run would write: sourceEntityId encodes neither.
+         // A source that changes `storage=`, or whose table name changes (a
+         // `name=` removed or changed, a v1 source moved to `#(materialize)`,
+         // or the unsuffixed table a run before package-owned names built,
+         // which another package on the same schema may have written since)
+         // is rebuilt under its name now; the old table stays with the runs
+         // that name it, and goes when they are deleted with their tables.
          if (
             !deltaEligible &&
             prior &&
             prior.physicalTableName &&
             (prior.storageDestinationName ?? undefined) === destination &&
-            !(
-               logicalName !== baseName &&
-               tableIdentity(prior.physicalTableName) ===
-                  tableIdentity(baseName)
-            )
+            samePath(prior.physicalTableName, logicalName)
          ) {
             carried[sourceEntityId] = prior;
             // A table at the author's `name=` may have been written by
@@ -459,4 +456,19 @@ export function writeTargetsFor(
       });
    }
    return targets;
+}
+
+/**
+ * Whether two physical names are one table: the same segments, container
+ * included, unquoted, and compared in one case (a schema that folds case
+ * holds one table under both spellings; carrying one forward across a case
+ * change elsewhere only rebuilds less).
+ */
+function samePath(a: string, b: string): boolean {
+   const canon = (name: string) =>
+      name
+         .split(".")
+         .map((s) => s.replace(/["`[\]]/g, "").toLowerCase())
+         .join(".");
+   return canon(a) === canon(b);
 }
