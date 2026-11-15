@@ -21,6 +21,7 @@
  * package warning.
  */
 
+import { createHash } from "crypto";
 import { requireUnique, verdictOf } from "../domain/key_check";
 import {
    hiddenAccess,
@@ -50,6 +51,7 @@ import {
    liftProbeFilterCondition,
 } from "../../authorize";
 import { keyedOverlay } from "../../overlay_key";
+import { createEventLoopYielder } from "../../event_loop_yield";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
 import { reachPersisted, SourceMap } from "../text/source_map";
@@ -552,6 +554,40 @@ const DECLINED_LIMIT = 1000;
 
 /** The flag a model's `#@ persist` sources are planned under. */
 const PERSISTENCE_FLAG = /^\s*##!\s*experimental[^\n]*persistence/m;
+
+/**
+ * Served copies whose compile failed on a re-root's own text, by the package
+ * connections they compiled with, then by model, bindings and copy text: a
+ * recompile of the same copy over the same tables (a reload, a rebind) takes
+ * the same step back without compiling it again or warning again. Held for
+ * a while only, since a failure can come from a table's schema at that
+ * moment.
+ */
+const knownRerootFailures = new WeakMap<
+   object,
+   Map<string, { error: unknown; until: number }>
+>();
+const REROOT_FAILURE_TTL_MS = 10 * 60_000;
+const REROOT_FAILURES_PER_CONFIG = 64;
+
+/** The key a copy's failure is remembered under. */
+function rerootFailureKey(
+   packagePath: string,
+   modelPath: string,
+   bindings: readonly Binding[],
+   overlay: ReadonlyMap<string, string>,
+): string {
+   const hash = createHash("sha256");
+   // The tables, by everything a binding says of one: the copy text names a
+   // storage table through its handle, not its path.
+   hash.update(JSON.stringify(bindings)).update("\0");
+   for (const [url, text] of [...overlay].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+   )) {
+      hash.update(url).update("\0").update(text).update("\0");
+   }
+   return `${packagePath}\0${modelPath}\0${hash.digest("hex")}`;
+}
 
 /** One model's served copy. */
 export class ServedCopyServe {
@@ -1263,7 +1299,14 @@ export class ServedCopyServe {
             key,
             over,
             generation,
-            promise: this.compile(key, generation, over, bindings, lane),
+            promise: this.compile(
+               key,
+               generation,
+               over,
+               bindings,
+               lane,
+               pinned.asOf.getTime(),
+            ),
          };
          this.inFlightLanes.set(lane, started);
          void started.promise.finally(() => {
@@ -1914,13 +1957,17 @@ export class ServedCopyServe {
       over: readonly Binding[],
       bindings: Binding[],
       lane = 0,
+      /** The pin's time, which a remembered failure is held against. */
+      asOf = 0,
    ): Promise<Compiled> {
       const problems: ServedCopyProblem[] = [];
       // Storage bindings reach here only with destinations (`usable`); a
       // copy of colocated tables alone needs none.
       const destinations =
          this.host.serveDestinationConfig() ?? NO_DESTINATIONS;
-      if (!this.packagePath || !this.packageConfig) {
+      // No table to re-root on: the copy is the author's model, so there is
+      // nothing to read or compile.
+      if (!this.packagePath || !this.packageConfig || bindings.length === 0) {
          return {
             key,
             generation,
@@ -1946,6 +1993,7 @@ export class ServedCopyServe {
       );
       const { throughBase, withoutKept } = prepared;
       const state: CopyPassState = {
+         asOf,
          candidates: prepared.candidates,
          withoutKept,
          inlinedKept: [],
@@ -1959,7 +2007,11 @@ export class ServedCopyServe {
       // fields on; and one more each that keeps every inlined join as written
       // and drops the pair tables.
       const maxPasses = 3 * state.candidates.length + 3;
+      // Each pass is a full compile on the main thread: hand the loop a turn
+      // between them, so a long ladder does not hold it throughout.
+      const yielder = createEventLoopYielder();
       for (let pass = 0; pass <= maxPasses; pass++) {
+         if (pass > 0) await yielder.maybeYield();
          const copy = buildServedCopy(
             state.candidates.map((c) => c.reroot),
             (u) => lift.fileText(u),
@@ -2094,6 +2146,45 @@ export class ServedCopyServe {
       };
    }
 
+   /** The failure remembered for a copy's key, while it is held. */
+   private knownFailure(
+      key: string | undefined,
+      asOf: number,
+   ): { error: unknown } | undefined {
+      const config = this.packageConfig;
+      if (key === undefined || typeof config !== "object" || !config) {
+         return undefined;
+      }
+      const byKey = knownRerootFailures.get(config);
+      const known = byKey?.get(key);
+      if (!known) return undefined;
+      if (known.until <= asOf) {
+         byKey!.delete(key);
+         return undefined;
+      }
+      return known;
+   }
+
+   /** Remember that a copy's compile failed on a re-root's own text. */
+   private rememberFailure(
+      key: string | undefined,
+      error: unknown,
+      asOf: number,
+   ): void {
+      const config = this.packageConfig;
+      if (key === undefined || typeof config !== "object" || !config) return;
+      let byKey = knownRerootFailures.get(config);
+      if (!byKey) {
+         byKey = new Map();
+         knownRerootFailures.set(config, byKey);
+      }
+      // Oldest first out, so a package with many failing copies stays bounded.
+      if (byKey.size >= REROOT_FAILURES_PER_CONFIG) {
+         byKey.delete(byKey.keys().next().value!);
+      }
+      byKey.set(key, { error, until: asOf + REROOT_FAILURE_TTL_MS });
+   }
+
    /**
     * Load one pass's copy. On a failure, take the step down the ladder it
     * calls for (a left-out column's source, containment, cross-connection
@@ -2114,7 +2205,17 @@ export class ServedCopyServe {
       let servedRuntime: GraftRuntime;
       let leftOut: LeftOutDefinition[] = [];
       let files: ReadonlyMap<string, string> = overlay;
+      const failureKey = this.packagePath
+         ? rerootFailureKey(
+              this.packagePath,
+              this.host.modelPath(),
+              state.candidates.map((c) => c.binding),
+              overlay,
+           )
+         : undefined;
+      const known = this.knownFailure(failureKey, state.asOf);
       try {
+         if (known) throw known.error;
          ({
             materializer,
             def: servedDef,
@@ -2122,8 +2223,10 @@ export class ServedCopyServe {
          } = await load(overlay));
       } catch (err) {
          if (withoutLeftOutColumn(state, copy, err)) return "retry";
-         if (this.contain(state, copy, err, copy.files, "precise"))
+         if (this.contain(state, copy, err, copy.files, "precise", !!known)) {
+            if (!known) this.rememberFailure(failureKey, err, state.asOf);
             return "retry";
+         }
          // A reference join the re-root moved across connections (question
          // 11): leave it out, with what reads it, so every other query
          // still reads the table.
@@ -2208,6 +2311,8 @@ export class ServedCopyServe {
       error: unknown,
       files: ReadonlyMap<string, string>,
       mode: TraceMode,
+      /** The failure was remembered, not compiled now: warned of already. */
+      remembered = false,
    ): boolean {
       const { withoutKept, problems } = state;
       const failing = new Map(
@@ -2223,7 +2328,7 @@ export class ServedCopyServe {
          const f = failing.get(rerootKey(c.reroot.url, c.reroot.sourceName));
          if (!f) return [c];
          changed = true;
-         logger[this.host.quiet ? "debug" : "warn"](
+         logger[this.host.quiet || remembered ? "debug" : "warn"](
             "A re-root does not compile in the served copy; that source alone steps back",
             {
                modelPath: this.host.modelPath(),
@@ -2448,6 +2553,8 @@ interface BuiltCopy extends LoadedCopy {
  * each step down their ladders has to report once the copy compiles.
  */
 interface CopyPassState {
+   /** The pin's time, in ms: what a remembered failure is held against. */
+   asOf: number;
    candidates: { binding: Binding; reroot: AuthorReroot }[];
    /** An extension table's re-root, to its fallback without kept blocks. */
    withoutKept: Map<

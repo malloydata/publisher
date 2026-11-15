@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — re-binding the same build manifest no longer recompiles the package
+
+Workers in Credible's dev fleet on 0.13.1 looped reloads: the control plane re-binds a version's build manifest whenever a heartbeat does not show it bound, and every such bind, even of the manifest the package was already serving, recompiled every model in the load pool and then every model's served copy on the main thread. With the main thread busy, `/status` heartbeats timed out, which made the control plane re-bind and reload again.
+
+Binding a version (or a package loaded with a `manifestLocation`) to the manifest its models were last compiled against now fetches it and recompiles nothing; the binding is reported `bound` as before. A manifest that changed, a reload since, or another bind in between still recompiles. A `PATCH` that names a `manifestLocation` always reloads, as before, since it also applies the `publisher.json` it writes. When a package does recompile against a manifest, each model's served copy compiles once instead of starting, being discarded and starting again; a served copy with no table to read compiles nothing; and a source whose re-root does not compile is not recompiled or warned about again for the same model and tables (for ten minutes) — it keeps answering live, as it did. The served copy hands the event loop a turn between its compile passes.
+
+Answers are unchanged: the same sources are served from the same tables. No API, enum or metric value changes.
+
 ## [Unreleased] — a `storage=` rollup returns exact big-integer sums and keeps `timestamptz` grains
 
 A rollup stored in a `storage=` destination (`#(preaggregate)` or v1 `#@ preaggregate`) read its stored table with the wrong types in two cases. A big-integer measure (a `sum` of a BIGINT) whose total passed 2^53 came back rounded, as `-9007199254740992` where live gives `-9007199254740993`; it is now read through its native type and returns every digit, as live does. A grain dimension live types as `timestamptz` came back typed `timestamp`, with equal rows; it now keeps its `timestamptz` type. A big-integer column the destination stored where no cast reads it exactly (a float, its digits already lost) is no longer served: the rollup is skipped with reason `MISSING_FIELD` and the query is answered live. Colocated rollups are unchanged; they were already exact.
