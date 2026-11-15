@@ -146,19 +146,21 @@ describe("reclaiming a table a readable name replaced", () => {
       const now = run("now", { a1: entry("other") }, { metadata: withRenamed });
       const r = await reclaim([old, now], "now");
       expect(r.dropped).toEqual([]);
-      // Decided: forgotten, not retried.
-      expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toBeUndefined();
+      // Kept recorded: a later run's replacement may commit.
+      expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toEqual([renamed]);
    });
 
    it("keeps it when no earlier run of this package built it there (guard 3)", async () => {
-      const now = run("now", { a1: entry(NEW) }, { metadata: withRenamed });
       // An earlier run names it for another source, or in another place.
       const other = run("other", {
          b2: entry(OLD, "b2"),
          a1: { ...entry(OLD), storageDestinationName: "lake" } as ManifestEntry,
       });
+      const now = run("now", { a1: entry(NEW) }, { metadata: withRenamed });
       const r = await reclaim([other, now], "now");
       expect(r.dropped).toEqual([]);
+      // That cannot change: forgotten.
+      expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toBeUndefined();
    });
 
    it("keeps it while a newer run, not this one, is what the package serves (guard 5)", async () => {
@@ -179,6 +181,8 @@ describe("reclaiming a table a readable name replaced", () => {
       const now = run("now", { a1: entry(NEW) }, { metadata: withRenamed });
       const r = await reclaim([old, theirs, now], "now");
       expect(r.dropped).toEqual([]);
+      // Kept recorded, for a run after the other one goes.
+      expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toEqual([renamed]);
    });
 
    it("finishes a table an earlier run recorded and never dropped, and keeps one whose drop failed", async () => {
@@ -267,5 +271,6 @@ describe("reclaiming a table a readable name replaced", () => {
       const r = await reclaim([old, now], "now", [], { skip: [OLD] });
       expect(r.dropped).toEqual([]);
       expect(r.forgotten).toEqual([]);
+      expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toEqual([renamed]);
    });
 });

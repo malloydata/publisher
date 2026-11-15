@@ -73,6 +73,17 @@ function renamedTablesIn(
    );
 }
 
+/**
+ * The guards of Reclaimer.reclaimRenamedTables a later run may find passing
+ * (its replacement commits, it becomes what is served, the other run naming
+ * the table goes): a table kept by one stays recorded, to be tried again.
+ */
+const TRANSIENT_GUARDS: ReadonlySet<string> = new Set([
+   "replacement-not-committed",
+   "not-serving-replacement",
+   "still-referenced",
+]);
+
 /** One old table, wherever it is recorded. */
 function renamedKey(
    t: Pick<
@@ -699,8 +710,10 @@ export class Reclaimer {
     *    and no run `reader` does not read (another version's own, an
     *    orchestrated run of another version) names it.
     *
-    * A table is forgotten once it is dropped or a guard keeps it; one whose
-    * drop failed stays recorded, for the next run to try. Best-effort
+    * A table is forgotten once it is dropped, or kept by a guard that cannot
+    * come to pass (guard 3); one whose drop failed or was left in place, or
+    * that a guard a later run may find passing kept, stays recorded, for the
+    * next run to try. Best-effort
     * throughout. Within one server: the guards read this server's records,
     * so servers that share a schema must move to readable names together.
     */
@@ -735,6 +748,7 @@ export class Reclaimer {
          );
          if (recordedOn.length === 0) return;
          const decided = new Set<string>();
+         const retried = new Set<string>();
          const reclaimable: ManifestEntry[] = [];
          for (const table of recordedOn.flatMap((m) =>
             renamedTablesIn(m.metadata ?? null),
@@ -743,6 +757,8 @@ export class Reclaimer {
             if (decided.has(key)) continue;
             const kept = this.renamedTableGuard(table, run, runs, reader);
             decided.add(key);
+            // A guard that a later run may find passing keeps the record.
+            if (kept && TRANSIENT_GUARDS.has(kept)) retried.add(key);
             if (kept) {
                logger.info("Keeping a table a readable name replaced", {
                   physicalTableName: table.previousName,
@@ -841,12 +857,16 @@ export class Reclaimer {
                   ),
                );
          }
-         // Forget what was decided; keep what a drop still owes.
+         // Forget what was decided; keep what a drop still owes, what it left
+         // in place, and what a passing guard may yet let a later run drop.
          for (const m of recordedOn) {
             const tables = renamedTablesIn(m.metadata ?? null);
             const left = tables.filter(
                (t) =>
-                  !decided.has(renamedKey(t)) || owedKeys.has(renamedKey(t)),
+                  !decided.has(renamedKey(t)) ||
+                  owedKeys.has(renamedKey(t)) ||
+                  skippedKeys.has(renamedKey(t)) ||
+                  retried.has(renamedKey(t)),
             );
             if (left.length === tables.length) continue;
             const metadata = { ...(m.metadata ?? {}) };
