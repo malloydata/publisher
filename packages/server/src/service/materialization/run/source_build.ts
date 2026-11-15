@@ -92,7 +92,7 @@ function renderBuildSQL(
       ? { ...reducedManifest, strict: false }
       : reducedManifest;
    // Entries left out of the warehouse render only because they are at the
-   // wrong tier for the upstream as declared now (#7087), by address.
+   // wrong tier for the upstream as declared now, by address.
    const wrongTier = Object.entries(builtEntries).filter(
       ([address, entry]) =>
          !entry.storageDestinationName &&
@@ -124,13 +124,13 @@ function renderBuildSQL(
       );
    };
    // A host-instructed colocated build refuses, strict or not, an upstream
-   // the host supplied at the wrong tier (#7087, decided 2026-11-12), when
-   // this source reads it. A source reads an upstream exactly when adding
-   // that upstream's entry back changes its permissive render (the table
-   // replaces the inlined SQL); permissive renders never throw, so a
-   // genuinely missing upstream cannot hide one, and the check does not
-   // depend on which miss a strict render happens to report first. The
-   // wrong-tier entry is rendered only to compare, never run.
+   // the host supplied at the wrong tier, when this source reads it. A
+   // source reads an upstream exactly when adding that upstream's entry back
+   // changes its permissive render (the table replaces the inlined SQL);
+   // permissive renders never throw, so a genuinely missing upstream cannot
+   // hide one, and the check does not depend on which miss a strict render
+   // happens to report first. The wrong-tier entry is rendered only to
+   // compare, never run.
    if (!isStorageBuild && planFacts.hostInstructed && wrongTier.length > 0) {
       const render = (entries: typeof buildManifest.entries) =>
          buildSQLOf(
@@ -333,7 +333,7 @@ function classifyStoredUpstreams(
       : { fields: {}, inManifestOnly: [], missing: [] };
    // A colocated build that recomputes an upstream because its entry is at
    // the wrong tier reads the warehouse for it: logged and counted once per
-   // run per upstream, since the entry fields alone hide the cost (#7087).
+   // run per upstream, since the entry fields alone hide the cost.
    // A host-instructed build refuses instead (HostSuppliedWrongTierError):
    // the host handed it another tier's table, which it must not.
    if (!isStorageBuild && wrongTier.length > 0) {

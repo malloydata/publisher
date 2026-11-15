@@ -422,7 +422,7 @@ export class StorageBuildStrategy
       );
 
       // Store each column as the type Malloy declares where one DuckDB type
-      // is faithful to it (ms2data/service#6642); checked again below.
+      // is faithful to it; checked again below.
       const { declaredColumns, castOptions } = storageBuildCasts(persistSource);
       const ctx: StorageBuildContext = {
          params,
@@ -707,8 +707,7 @@ export class StorageBuildStrategy
             );
          }
          // A host-instructed build refuses a host-supplied upstream entry
-         // at the wrong tier, strict or not, instead of recomputing it
-         // (#7087, decided 2026-11-12).
+         // at the wrong tier, strict or not, instead of recomputing it.
          // Only the upstreams whose own entry is at the wrong tier are named,
          // each with its own reason: one host-supplied wrong-tier entry is
          // enough to refuse, whatever else is missing.
@@ -750,7 +749,7 @@ export class StorageBuildStrategy
                : new ChainedShapeNotCarriedError(message);
          }
          // The orchestrator may refuse the one recompute strict permits
-         // (ms2data/service#6756): the source fails with the reason the
+         // (`warehouseReach: refuse`): the source fails with the reason the
          // entry would have carried, and nothing reads the warehouse.
          if (
             manifest.strict &&
@@ -781,7 +780,7 @@ export class StorageBuildStrategy
             },
          );
          // A recompute because a parent's entry is at the wrong tier reads
-         // the warehouse; counted once per run per parent (#7087).
+         // the warehouse; counted once per run per parent.
          if (
             err instanceof ChainedUpstreamMissingError &&
             safeDetail.includes(WRONG_TIER_MARKER)
@@ -839,7 +838,7 @@ export class StorageBuildStrategy
          );
       }
       // Only an entry at the destination its source is declared in NOW: a
-      // stored table left from before the source moved is stale (#7087).
+      // stored table left from before the source moved is stale.
       const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
       const upstreams: Binding[] = deriveServeBindings(
          currentEntries,

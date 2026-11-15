@@ -863,8 +863,9 @@ export function storageRefreshFor(params: {
             buildSQL: params.buildSQL,
             queryMetadata: params.queryMetadata,
          });
-         // A table an older build typed (ms2data/service#6642): a delta only
-         // INSERTs into the columns it has, so only a re-seed's CTAS casts them.
+         // A table an older build typed (incremental_recast.spec.ts): a delta
+         // only INSERTs into the columns it has, so only a re-seed's CTAS casts
+         // them.
          const recast = await columnsARebuildWouldRecast(
             session,
             quotedTablePath,

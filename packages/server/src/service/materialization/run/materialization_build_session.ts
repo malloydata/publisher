@@ -113,7 +113,7 @@ const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
  * Warehouse types the build can materialize INTO. Wider than
  * `DECLARABLE_STORAGE_DESTINATION_TYPES`, which is what a storage destination may
  * be declared as and admits `ducklake` only — so the `duckdb` branch here is not
- * reachable from configuration today.
+ * reachable from configuration.
  */
 const STORAGE_DESTINATION_TYPES = ["ducklake", "duckdb"] as const;
 
@@ -586,9 +586,9 @@ export function createIsolatedBuildSession(sessionName: string): {
       // with the destination ATTACH and federated source credentials — survives
       // (e.g. idle Postgres backends stranded until process exit).
       //
-      // db-duckdb cannot disconnect unconditionally (reverted upstream in
-      // PR #2793: malloy's translate layer holds weak_ptrs to the
-      // Connection). A build session is server-owned and single-use, so it can.
+      // db-duckdb cannot disconnect unconditionally (malloy's translate
+      // layer holds weak_ptrs to the Connection). A build session is
+      // server-owned and single-use, so it can.
       // Reached through a cast because the handle is library-internal; use an
       // explicit hard-close if db-duckdb adds one.
       const nodeConnection = (
@@ -1005,9 +1005,8 @@ export async function buildSourceIntoStorage(params: {
  *
  * The session is read-write on the catalog, so it runs only SQL Malloy
  * generated: a source whose compiled definition carries author SQL (an `.sql()`
- * source, a `sql_number()` and its kind) is refused, as every DuckLake source
- * was before, which keeps the invariant the build path has always held: no
- * user SQL runs on a read-write lake session.
+ * source, a `sql_number()` and its kind) is refused, which keeps the build
+ * path's invariant: no user SQL runs on a read-write lake session.
  *
  * The catalog is attached under the SOURCE connection's name, not the
  * destination's: the two may differ (sameness is decided by catalog identity),
@@ -1349,8 +1348,8 @@ export async function buildDownstreamIntoStorage(params: {
          // See buildSourceIntoStorage: keep rows out of the catalog database.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       }
-      // No predicate runs here today (chained sources are excluded from the
-      // delta path); pinned so lifting that exclusion stays correct.
+      // No predicate runs here (chained sources are excluded from the delta
+      // path); pinned so lifting that exclusion stays correct.
       await pinSessionToUTC(session);
 
       const connectionName = params.connectionName ?? destinationName;
@@ -1765,10 +1764,10 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
 
 /**
  * {@link createTableAndDescribe} over `selectSQL` with its columns cast to their
- * declared types (ms2data/service#6642). A value a cast cannot convert (a
- * boolean the warehouse returned as 'Y'/'N') retries the CTAS without the
- * casts, storing what the warehouse returned, rather than failing a build that
- * used to succeed; the serve side then decides that column. Never TRY_CAST,
+ * declared types (stored_types_ducklake.spec.ts). A value a cast cannot
+ * convert (a boolean the warehouse returned as 'Y'/'N') retries the CTAS
+ * without the casts, storing what the warehouse returned, rather than failing
+ * the build; the serve side then decides that column. Never TRY_CAST,
  * whose NULLs would be wrong answers. The retry re-reads the source, so it is
  * paid only by a source whose data the cast rejects.
  */
@@ -1838,7 +1837,7 @@ export async function createTableWithDeclaredTypes(
  * statement and runs nothing, and only Postgres's dialect declares such a
  * column `string`. No other passthrough is described: whether it runs (and
  * bills) the query is not known. A describe that fails changes nothing: every
- * column is cast, as before, and the build itself reports the error.
+ * column is cast, and the build itself reports the error.
  */
 async function columnsToCast(
    session: DuckDBConnection,

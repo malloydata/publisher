@@ -191,7 +191,7 @@ interface CreateMaterializationOptions {
    strictUpstreams?: boolean;
    /**
     * What a strict build does with a source whose only build recomputes
-    * a stored upstream from the warehouse (#6756). Orchestrated-only.
+    * a stored upstream from the warehouse. Orchestrated-only.
     */
    warehouseReach?: WarehouseReach;
    /**
@@ -433,7 +433,7 @@ export class MaterializationService {
     * A package's runs, newest first. For a versioned package, the runs of one
     * version (the one named, or `latest`) and the runs from before its first
     * versioned publish, which still drive what a `scope: package` version
-    * serves. An unversioned package lists every run, as before.
+    * serves. An unversioned package lists every run.
     */
    async listMaterializations(
       environmentName: string,
@@ -443,7 +443,7 @@ export class MaterializationService {
       const versionId = options?.versionId ?? VersionRef.LATEST;
       const environmentId = await this.resolveEnvironmentId(environmentName);
       // Naming no version of a package that has no `latest` yet (explicit
-      // promotion, before the first move) lists every run, as before.
+      // promotion, before the first move) lists every run.
       const versions = (
          await this.host.getEnvironment(
             parseEnvironmentName(environmentName),
@@ -714,7 +714,7 @@ export class MaterializationService {
       }
       if (orchestrated) {
          // Validate against the plan the run will build from: a connection
-         // edit re-derives it (ms2data/service#6145).
+         // edit re-derives it (build_plan_connection_refresh.spec.ts).
          await pkg.whenBuildPlanCurrent?.();
          // Never against a plan that failed to derive: after a failed
          // re-derivation the pre-edit plan is gone, and validating against
@@ -820,7 +820,7 @@ export class MaterializationService {
             "PENDING",
             metadata,
             // A version's run records its version and slot; a package with
-            // no versions passes neither, as before versions.
+            // no versions passes neither.
             ...(version !== null || lockVersion !== undefined
                ? [{ version, lockVersion }]
                : []),
@@ -1425,8 +1425,7 @@ export class MaterializationService {
             sourcesReused,
             ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
             // Auto-run's refusals, plus instructed sources refused beside a
-            // table an eligible sibling built (ms2data/service#7078), which
-            // are not in `failures`.
+            // table an eligible sibling built, which are not in `failures`.
             ...(Object.keys(derivedRefused).length +
                Object.keys(refusedBesideBuilt).length >
             0

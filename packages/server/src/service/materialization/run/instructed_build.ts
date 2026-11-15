@@ -200,7 +200,7 @@ async function checkBuiltKeys(
       );
    }
    // A source stored in a destination, read there beside a joined
-   // source's rollup through a join keyed on its primary key (#1704):
+   // source's rollup through a join keyed on its primary key:
    // check that key over the rows its table holds.
    if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
       await checkStoredKey(
@@ -341,7 +341,7 @@ export class InstructedBuild {
       // entry at the wrong tier is refused, not recomputed (see
       // ChainedPlanFacts.hostInstructed).
       hostInstructed = false,
-      // What a strict build does with the warehouse recompute (#6756).
+      // What a strict build does with the warehouse recompute.
       warehouseReach: WarehouseReach = "recompute",
       // Auto-run only: the inline uniqueness checks' passes, read from the
       // run before and recorded for the run after (inline_uniqueness.ts).
@@ -358,9 +358,9 @@ export class InstructedBuild {
       sourcesRefused: number;
       refusalsInFailures: number;
       /**
-       * Refused sources whose table an eligible sibling built
-       * (ms2data/service#7078), by sourceID: the table stands and serves its
-       * eligible sources, and only these answer live.
+       * Refused sources whose table an eligible sibling built, by sourceID:
+       * the table stands and serves its eligible sources, and only these
+       * answer live.
        */
       refusedBesideBuilt: Record<string, RefusedSource>;
       /** The run metadata value for the uniqueness checks, when any ran. */
@@ -382,7 +382,7 @@ export class InstructedBuild {
                tables,
                connectionDigests,
                // A host can imply a destination the annotation does not declare,
-               // so the instruction decides a source's current tier (#7087).
+               // so the instruction decides a source's current tier.
                (sourceID, sourceEntityId) =>
                   index.bySourceID.get(sourceID) ??
                   index.bySourceEntityId.get(sourceEntityId),
@@ -464,7 +464,7 @@ export class InstructedBuild {
          // the answer. Not when a source its own gate admits was held back only
          // because a colocated sibling on its table is refused: the address
          // fails in `failures`, as an address with a refused source always
-         // has, and the run is not failed for it (ms2data/service#7078).
+         // has, and the run is not failed for it.
          if (
             run.builtSources.length === 0 &&
             run.refusals.length > 0 &&
@@ -1180,14 +1180,15 @@ export function tableSiteContext(
 
 /**
  * Record the run's gate refusals against their addresses, now that the loop
- * knows which addresses it built (ms2data/service#7078). A base and its
- * `extend` share one content address, and the gate decides per source. A
+ * knows which addresses it built (instructed_refused_sibling.spec.ts). A
+ * base and its `extend` share one content address, and the gate decides per
+ * source. A
  * refusal on an address an eligible sibling built fails only the refused
  * source: the table stands, its eligible sources serve it, and the refused
  * one answers live (routing skips a gated entry point). It stays out of
  * `failures` and `entries`, which the control plane reads by address, and is
  * reported per source instead. A refusal on an address nothing built is
- * recorded as before, once per address. Run order no longer decides either.
+ * recorded once per address. Neither depends on run order.
  */
 function settleRefusals(run: InstructedRun): {
    refusalsInFailures: number;
@@ -1215,7 +1216,7 @@ function settleRefusals(run: InstructedRun): {
       else unbuilt.set(pending.failedKey, [pending]);
    }
    for (const [address, pendings] of unbuilt) {
-      // Once per address, as before; a build failure already there stands.
+      // Once per address; a build failure already there stands.
       if (run.failures[address]) continue;
       // The same failure whatever the run order: a source its own gate refused
       // before one refused only for sharing the table, then by sourceID.

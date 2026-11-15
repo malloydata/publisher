@@ -102,7 +102,7 @@ export interface InstructedRun {
    failedReasons: string[];
    refusals: MaterializationEligibilityError[];
    /**
-    * Refusals not yet recorded against their address (ms2data/service#7078).
+    * Refusals not yet recorded against their address.
     * A refused source can share its content address with an eligible sibling
     * (a base and its `extend`); the refusal is decided after the loop, so it
     * fails the address only when no sibling built it, whatever the order.
