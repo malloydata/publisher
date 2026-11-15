@@ -60,6 +60,18 @@ The setting is removed one release after this one, together with its off positio
 
 A query answered from a `storage=` persisted view's table (`#@ persist storage=…` on a `view:`, with `PUBLISHER_MATERIALIZE` on) declared each column as the type the table stored. A build stores each column as its declared type where it can, but one that declines that cast (a view or source with a query time zone) or retries without casts after one fails stores a date truncation such as `order_date.month` as a TIMESTAMP, and the answer then typed it `timestamp` where live types it `date`. The view leg now reads such a column through the served copy's faithful cast (`::"DATE"`, truncated again to its timeframe; an integer flag as `boolean`), so the column's type matches live; a column no faithful cast reads as live's type answers live. No table is rebuilt or re-addressed, and no API change.
 
+## [Unreleased] — a stored table's zoned truncations and big integers read back with live's values
+
+Several answers read from a stored table returned values near live's rather than live's own. Each now returns live's value, or is answered live:
+
+- **A timestamp truncation under a time zone (persisted view).** A `storage=` persisted view whose view or source sets `timezone:` stored each truncation as the zone's midnight, as live computes it, but the read truncated the stored value again in UTC, so `created_at.day` under `timezone: 'America/New_York'` came back at 00:00Z where live answers 04:00Z. A later stage over such a view truncated in UTC on a colocated table too. The view leg now writes the view's and the source's zones where live has them, so the read truncates in the same zone the build did.
+- **A timestamp truncation through the served copy.** A `#@ persist` or `#(materialize)` table re-read each timestamp truncation by truncating its stored value again in the query's zone, which matches live only when that zone is the one the build used. A source that sets a zone, in its query or on itself, now leaves such a column out, so a query that reads it is answered live. On a table with no zone, a query that sets its own `timezone:` is answered live.
+- **A BIGINT above 2^53 (persisted view).** A `storage=` persisted view declared a 64-bit integer column, dimension or measure, as a plain `number`, so 9007199254740993 came back as 9007199254740992. It is now read as `HUGEINT`, as the served copy reads one, and keeps every digit. A column stored as a float, which has lost digits already, is answered live.
+- **A TIMESTAMP_NS, or another value live answers as warehouse-native or JSON (persisted view).** A `storage=` read declared it a `timestamp` and dropped its digits past the millisecond. Such a view is now answered live.
+- **An `index:` view (persisted view).** Its stored read gave every column a `#(malloy)` annotation live does not write. It is now answered live, from either tier.
+
+The stored contents were already right in every case, so no table is rebuilt or re-addressed. No API change.
+
 ## [Unreleased] — the materialization rewriters read Malloy as Malloy reads it
 
 The served copy, a build's copy of the author's files and the build view that leaves joins across connections out all rewrite the author's text, and read it with their own small lexer. That lexer now shares one core with the reader of a caller's query text, which follows Malloy's own lexer exactly. What changes:

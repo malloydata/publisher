@@ -124,6 +124,7 @@ import {
    type ServedColumn,
    type ServedCopyRange,
    storedMalloyType,
+   TIMEFRAMES,
 } from "./served_copy";
 import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
 import {
@@ -437,6 +438,12 @@ type AuthorReroot = Reroot & {
     * `where:` term or base relation whose SQL moves with the zone).
     */
    storesZonedDimension?: true;
+   /**
+    * Its `type:` restates a timestamp truncation over the stored value, which
+    * truncates it again in the reading query's zone: a query that sets one
+    * would read another value than live's.
+    */
+   restatesTruncation?: true;
    /**
     * The stored columns left out of the `type:`, so only a query reading
     * one fails to compile here and answers live; their absence is not a lost
@@ -968,7 +975,7 @@ export class ServedCopyServe {
       if ((computed || windowed) && setsTimezone((await prepared()).query)) {
          decline(
             computed
-               ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
+               ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or truncation, or a row filter that depends on it)"
                : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
             "served_copy_time_zone",
          );
@@ -1280,6 +1287,19 @@ export class ServedCopyServe {
       });
       if (!declarable) return undefined;
       ({ columns, columnsLeftOut } = declarable);
+      const zoned = zonedTruncations(columns, def, fieldsByName);
+      if (zoned.leftOut.length > 0) {
+         columns = zoned.columns;
+         columnsLeftOut = [...columnsLeftOut, ...zoned.leftOut];
+         if (columns.length === 0) {
+            problems.push({
+               sourceName,
+               sourceID: node.sourceID,
+               reason: "column_types",
+            });
+            return undefined;
+         }
+      }
       let pair: PairReroot | undefined;
       if (plan?.pair) {
          pair = pairRerootOf(
@@ -1340,6 +1360,7 @@ export class ServedCopyServe {
             ))
             ? { storesZonedDimension: true }
             : {}),
+         ...(zoned.restates ? { restatesTruncation: true } : {}),
          ...(plan?.readTimeTerms?.length
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
@@ -2173,11 +2194,14 @@ export class ServedCopyServe {
          // found it the same in every zone (P9): one that is not was left
          // out of the build when the source declares it, and is computed
          // at read in the query's zone.
+         // A restated timestamp truncation is truncated again at read, in
+         // the query's zone.
          computedTables: new Set(
             candidates
                .filter(
                   (c) =>
                      c.reroot.storesZonedDimension === true ||
+                     c.reroot.restatesTruncation === true ||
                      (c.reroot.inlinedJoins ?? []).length > 0 ||
                      (c.reroot.pair?.childStoredDimensions ?? []).length > 0,
                )
@@ -3951,4 +3975,43 @@ export function staleOnChain(
 ): boolean {
    const ids = new Set(chain);
    return stale.some((b) => (b.sourceIDs ?? []).some((id) => ids.has(id)));
+}
+
+/**
+ * The re-root's timestamp truncations, which it restates over the stored
+ * value (`d is d__stored.day`) and so truncates again in the zone the reading
+ * query runs in: the identity only in the zone the build truncated it in. A
+ * source that sets a zone, in its query or on itself, reads in another zone
+ * than it was built in (its query's stage zone ends with the query, and its
+ * own applies only at read), so each such column is left out and a query
+ * reading it answers live. Otherwise the columns stay, and `restates` marks
+ * the table, so a query that sets its own zone is declined.
+ */
+function zonedTruncations(
+   columns: readonly ServedColumn[],
+   def: unknown,
+   fieldsByName: ReadonlyMap<string, unknown>,
+): { columns: ServedColumn[]; leftOut: string[]; restates: boolean } {
+   const truncation = (c: ServedColumn) => {
+      const type = (fieldsByName.get(c.name) as { type?: unknown } | undefined)
+         ?.type;
+      return (
+         c.timeframe !== undefined &&
+         TIMEFRAMES.has(c.timeframe) &&
+         !c.castTo &&
+         (type === "timestamp" || type === "timestamptz")
+      );
+   };
+   const truncated = columns.filter(truncation);
+   if (truncated.length === 0) {
+      return { columns: [...columns], leftOut: [], restates: false };
+   }
+   if (!queryTimezoneOf(def)) {
+      return { columns: [...columns], leftOut: [], restates: true };
+   }
+   return {
+      columns: columns.filter((c) => !truncation(c)),
+      leftOut: truncated.map((c) => c.name),
+      restates: false,
+   };
 }

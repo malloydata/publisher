@@ -305,8 +305,6 @@ interface Case {
    liveIn?: Tier[];
    /** What answers it when not live (default the view leg). */
    servedBy?: string;
-   /** A known difference this spec does not fix, by tier, with its reason. */
-   knownGap?: Partial<Record<Tier, string>>;
    /** Values a column must hold among the answer's rows, so the case covers each. */
    covers?: { column: string; values: unknown[] };
    /** Text the view leg's decline detail must carry, by tier. */
@@ -335,10 +333,6 @@ const CASES: Case[] = [
    {
       name: "a timestamp truncation under a view's time zone",
       malloy: "run: ov -> zoned_by_day",
-      knownGap: {
-         storage:
-            "the stored day reads back at UTC midnight where live answers New York midnight (rows differ, not only a type)",
-      },
    },
    {
       name: "an integer flag read as a boolean",
@@ -543,32 +537,26 @@ for (const { name: variantName, tier: variant, storeUncast } of VARIANTS) {
          const want = c.liveIn?.includes(variant)
             ? "live"
             : (c.servedBy ?? "view");
-         const gap = c.knownGap?.[variant];
-         (gap ? it.skip : it)(
-            `${c.name}${gap ? ` (known gap: ${gap})` : ""}: answered by ${want}, kinds and annotations equal to live`,
-            () => {
-               const l = live.get(c.name)!;
-               const s = served.get(c.name)!;
-               if ("error" in l) throw new Error(`live failed: ${l.error}`);
-               if ("error" in s) throw new Error(`served failed: ${s.error}`);
-               expect(s.answer.servedBy).toBe(want);
-               expect(
-                  rowDifference(l.answer.rows, s.answer.rows),
-               ).toBeUndefined();
-               expect(metadata(s.answer)).toEqual(metadata(l.answer));
-               // A declined shape is a refusal with its reason, never a
-               // variant that fails to compile.
-               expect(warnings.get(c.name)).not.toContain(DID_NOT_COMPILE);
-               const because = c.declinedBecause?.[variant];
-               if (because) {
-                  expect(s.answer.viewSkip?.detail).toContain(because);
-               }
-               if (c.covers) {
-                  const held = s.answer.rows.map((r) => r[c.covers!.column]);
-                  for (const v of c.covers.values) expect(held).toContain(v);
-               }
-            },
-         );
+         it(`${c.name}: answered by ${want}, kinds and annotations equal to live`, () => {
+            const l = live.get(c.name)!;
+            const s = served.get(c.name)!;
+            if ("error" in l) throw new Error(`live failed: ${l.error}`);
+            if ("error" in s) throw new Error(`served failed: ${s.error}`);
+            expect(s.answer.servedBy).toBe(want);
+            expect(rowDifference(l.answer.rows, s.answer.rows)).toBeUndefined();
+            expect(metadata(s.answer)).toEqual(metadata(l.answer));
+            // A declined shape is a refusal with its reason, never a
+            // variant that fails to compile.
+            expect(warnings.get(c.name)).not.toContain(DID_NOT_COMPILE);
+            const because = c.declinedBecause?.[variant];
+            if (because) {
+               expect(s.answer.viewSkip?.detail).toContain(because);
+            }
+            if (c.covers) {
+               const held = s.answer.rows.map((r) => r[c.covers!.column]);
+               for (const v of c.covers.values) expect(held).toContain(v);
+            }
+         });
       }
    });
 }

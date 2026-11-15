@@ -487,6 +487,11 @@ function timeframeKeyword(timeframe: string | undefined): string {
  *    internal rename: order_month__tf is order_month
  *    dimension: order_month is (order_month__tf::"DATE").month
  *
+ * A big-integer column (`nativeCast`, `bigIntegerReadOf`'s) is redefined as
+ * it read through its native type, which Malloy types as a `bigint` number
+ * and answers with every digit (`big__tf::"HUGEINT"`), as
+ * {@link ServedColumn.nativeCast} is.
+ *
  * A date is cast with the SQL type, a plain `CAST(… AS DATE)`, never Malloy's
  * `::date`, which would convert it to a query's time zone first (as
  * `timeframeExpression` does). Each internal name is `<column>__tf`, or
@@ -502,6 +507,8 @@ export function timeframeRestatements(
       notes?: readonly string[];
       /** The faithful cast the stored column is read through. */
       castTo?: "DATE" | "BOOLEAN";
+      /** The native SQL type a big-integer column is read through (`HUGEINT`). */
+      nativeCast?: string;
    }[],
    taken: readonly string[] = columns.map((c) => c.name),
 ): string {
@@ -510,7 +517,7 @@ export function timeframeRestatements(
          c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe)
             ? c.timeframe
             : undefined;
-      return timeframe || c.castTo ? [{ ...c, timeframe }] : [];
+      return timeframe || c.castTo || c.nativeCast ? [{ ...c, timeframe }] : [];
    });
    if (redefined.length === 0) return "";
    const used = new Set([...taken, ...columns.map((c) => c.name)]);
@@ -518,16 +525,17 @@ export function timeframeRestatements(
    const renames = redefined
       .map((c, i) => `    ${identifier(internal[i])} is ${identifier(c.name)}`)
       .join("\n");
-   // malloy-text: the author's own notes, then names through identifier, a cast to DATE or boolean and a timeframe from TIMEFRAMES
+   // malloy-text: the author's own notes, then names through identifier, a cast to DATE, boolean or a native type through doubleQuotedString, and a timeframe from TIMEFRAMES
    const dims = redefined
       .map((c, i) => {
          const stored = identifier(internal[i]);
-         const read =
-            c.castTo === "DATE"
-               ? `${stored}::"DATE"`
-               : c.castTo === "BOOLEAN"
-                 ? `${stored}::boolean`
-                 : stored;
+         const read = c.nativeCast
+            ? `${stored}::${doubleQuotedString(c.nativeCast)}`
+            : c.castTo === "DATE"
+              ? `${stored}::"DATE"`
+              : c.castTo === "BOOLEAN"
+                ? `${stored}::boolean`
+                : stored;
          const value = !c.timeframe
             ? read
             : c.castTo
