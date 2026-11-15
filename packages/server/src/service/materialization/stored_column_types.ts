@@ -32,7 +32,7 @@
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import { exploreOf } from "../governance/ir/compiled_model";
 import { getDialect } from "@malloydata/malloy";
-import { capabilitiesOf } from "./domain/dialect";
+import { capabilitiesOf, STORAGE_DIALECT } from "./domain/dialect";
 import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
@@ -224,7 +224,7 @@ export function castToDeclaredTypes(
    const casts = declared.flatMap((d) => {
       const target = buildCastTarget(d.type, options);
       if (!target) return [];
-      const column = quoteIdentifier(d.name, "duckdb");
+      const column = quoteIdentifier(d.name, STORAGE_DIALECT);
       return [`CAST(${column} AS ${target}) AS ${column}`];
    });
    if (casts.length === 0) return selectSQL;

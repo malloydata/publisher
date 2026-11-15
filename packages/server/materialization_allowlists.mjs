@@ -145,9 +145,9 @@ export const RATCHET_CLOCK_READS = {};
  * grows is reviewed.
  */
 export const RATCHET_DIALECT_LITERALS = {
-   // The dialect table itself: the DialectName union, its rows' keys, and
-   // standardsql's display name.
-   "service/materialization/domain/dialect.ts": { count: 19, step: "table" },
+   // The dialect table itself: the DialectName union, its rows' keys,
+   // standardsql's display name, and STORAGE_DIALECT.
+   "service/materialization/domain/dialect.ts": { count: 20, step: "table" },
    // The SQL half of the dialect table: its comparisons of a narrowed
    // DialectName, CURRENT_SCHEMA_SQL's two keys and type, DuckDB's own
    // literal in duckdbNameMatch, and Snowflake's in its query-tag and cost
@@ -160,10 +160,9 @@ export const RATCHET_DIALECT_LITERALS = {
       step: "table",
    },
    // Connection types (FederatedSourceType, the storage destination types),
-   // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling,
-   // and STORAGE_TARGET_DIALECT, the one dialect every destination speaks.
+   // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 10,
+      count: 9,
       step: "table",
    },
    // TABLE_PATH_OPTIONS, the incremental probe's per-dialect table-path
@@ -176,33 +175,6 @@ export const RATCHET_DIALECT_LITERALS = {
    "service/materialization/run/reclaimer.ts": { count: 1, step: "table" },
    // The read-cost record's engine label, not a dialect.
    "service/materialization/run/build_read_cost.ts": {
-      count: 2,
-      step: "table",
-   },
-   // A storage destination's DuckDB: identifiers and table paths quoted for
-   // it, and the compile stand-in's dialect.
-   "service/materialization/stored_column_types.ts": {
-      count: 1,
-      step: "table",
-   },
-   "service/materialization/plan/materialize_compile.ts": {
-      count: 1,
-      step: "table",
-   },
-   "service/materialization/run/storage_table_load.ts": {
-      count: 2,
-      step: "table",
-   },
-   "service/materialization/run/storage_build_strategy.ts": {
-      count: 1,
-      step: "table",
-   },
-   "service/materialization/serve/bindings.ts": { count: 1, step: "table" },
-   "service/materialization/serve/view_variants.ts": {
-      count: 1,
-      step: "table",
-   },
-   "service/materialization/serve/rollup_variants.ts": {
       count: 2,
       step: "table",
    },

@@ -89,7 +89,6 @@ import {
    buildSourceIntoStorage,
    dropStorageTable,
    oneFileModel,
-   STORAGE_TARGET_DIALECT,
    withStorageDestinationSession,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
@@ -114,6 +113,7 @@ import {
    destinationSchemaOf,
    storageTablePath,
 } from "../domain/storage_table_path";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 /** What a `storage=` build of one source starts from. */
 export interface StorageBuildRequest {
@@ -376,7 +376,7 @@ export class StorageBuildStrategy
             physicalTableName,
             destinationSchemaOf(site.destinationConnection),
          ),
-         STORAGE_TARGET_DIALECT,
+         STORAGE_DIALECT,
       );
       return storedKeyCheckSql(path, keyColumn);
    }
@@ -1093,7 +1093,10 @@ export class StorageBuildStrategy
                   new Map([
                      [
                         binding.virtualHandle,
-                        quoteManifestTablePath(binding.tablePath, "duckdb"),
+                        quoteManifestTablePath(
+                           binding.tablePath,
+                           STORAGE_DIALECT,
+                        ),
                      ],
                   ]),
                ],

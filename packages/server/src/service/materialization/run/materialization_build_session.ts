@@ -97,6 +97,7 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -116,13 +117,6 @@ const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
  * reachable from configuration.
  */
 const STORAGE_DESTINATION_TYPES = ["ducklake", "duckdb"] as const;
-
-/**
- * The Malloy dialect every storage destination speaks (both types are
- * DuckDB-family): the dialect of a stored table's DDL, DML and identifier
- * quoting, which is NOT the source's.
- */
-export const STORAGE_TARGET_DIALECT = "duckdb";
 
 /**
  * Wrap a source-dialect SELECT as a native per-engine query-passthrough call, so
@@ -917,7 +911,7 @@ export async function buildSourceIntoStorage(params: {
             physicalTableName,
             destinationSchemaOf(destinationConnection),
          ),
-         STORAGE_TARGET_DIALECT,
+         STORAGE_DIALECT,
       );
 
       // After the attach and federation, because the plan probes this
@@ -1067,7 +1061,7 @@ async function buildSameCatalogIntoStorage(params: {
             physicalTableName,
             destinationSchemaOf(destinationConnection),
          ),
-         STORAGE_TARGET_DIALECT,
+         STORAGE_DIALECT,
       );
       const schema = await createTableWithDeclaredTypes(
          session,
@@ -1371,7 +1365,7 @@ export async function buildDownstreamIntoStorage(params: {
             physicalTableName,
             destinationSchemaOf(destinationConnection),
          ),
-         STORAGE_TARGET_DIALECT,
+         STORAGE_DIALECT,
       );
       // The downstream's own declared types, as for a recompute.
       const casts = storageBuildCasts(downstream);
@@ -1405,7 +1399,7 @@ export function dropStorageTableSql(
    // Must name the table the way the build CREATEd it (see the CTAS sites).
    return `DROP TABLE IF EXISTS ${quoteManifestTablePath(
       storageTablePath(destinationName, physicalTableName, schema),
-      STORAGE_TARGET_DIALECT,
+      STORAGE_DIALECT,
    )}`;
 }
 
@@ -1564,7 +1558,7 @@ export async function listStorageTables(params: {
          }
          const dbPath = path.join(destinationRoot, fileName);
          await session.runSQL(
-            `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT)} (READ_ONLY)`,
+            `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)} (READ_ONLY)`,
          );
       }
       const rows = resultRows(
@@ -1693,7 +1687,7 @@ async function attachDestinationReadWrite(
    mkdirSync(storageDestinationRoot(environmentPath), { recursive: true });
    const dbPath = destinationDatabasePath(environmentPath, destinationName);
    await session.runSQL(
-      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT)}`,
+      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)}`,
    );
 }
 
@@ -1916,7 +1910,7 @@ const BUCKET_TRANSFORM = /^bucket\((\d+)\)$/;
  * defines is refused rather than written as some other layout.
  */
 export function partitionKeySql(key: PartitionKey): string {
-   const column = quoteIdentifier(key.column, STORAGE_TARGET_DIALECT);
+   const column = quoteIdentifier(key.column, STORAGE_DIALECT);
    if (key.transform === "identity") return column;
    if (TIME_TRANSFORMS.has(key.transform)) return `${key.transform}(${column})`;
    const bucket = BUCKET_TRANSFORM.exec(key.transform);
@@ -1950,7 +1944,7 @@ export function partitionOrderSql(keys: readonly PartitionKey[]): string[] {
    }
    for (const key of keys) {
       if (key.transform !== "identity") {
-         add(quoteIdentifier(key.column, STORAGE_TARGET_DIALECT));
+         add(quoteIdentifier(key.column, STORAGE_DIALECT));
       }
    }
    return terms;

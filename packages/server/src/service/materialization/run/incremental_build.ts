@@ -48,12 +48,9 @@ import {
    deriveColumns,
 } from "../plan/build_plan";
 import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
-import { capabilitiesOf } from "../domain/dialect";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import { storageDeltaTarget } from "./incremental_storage";
-import {
-   STORAGE_TARGET_DIALECT,
-   type StorageIncrementalRefresh,
-} from "./materialization_build_session";
+import { type StorageIncrementalRefresh } from "./materialization_build_session";
 import type { QueryMetadata } from "../../query_metadata";
 import { errMessage } from "../../../utils";
 import {
@@ -193,7 +190,7 @@ export function sourceIncrementalRefresh(
       dialect: persistSource.dialectName,
       targetDialect:
          table.storageDestinationName !== undefined
-            ? STORAGE_TARGET_DIALECT
+            ? STORAGE_DIALECT
             : persistSource.dialectName,
       physicalTableName: table.physicalTableName,
       connectionName: persistSource.connectionName,
@@ -927,7 +924,7 @@ export function storageRefreshFor(params: {
             context,
             lineage,
             quotedTablePath,
-            dialect: STORAGE_TARGET_DIALECT,
+            dialect: STORAGE_DIALECT,
             runner: (sql) => session.runSQL(sql),
          }),
    };

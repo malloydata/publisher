@@ -36,6 +36,7 @@ import {
    writePartitionedTable,
 } from "./materialization_build_session";
 import { quoteIdentifier } from "../../quoting";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -335,7 +336,7 @@ export async function copyStorageTable(params: {
          );
       }
       const from = [sourceAlias, source.schemaName, source.tableName]
-         .map((part) => quoteIdentifier(part, "duckdb"))
+         .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
          .join(".");
       // The copy keeps the source's layout: DuckLake applies a partition spec
       // only to files written after it is set, so a copy written without it
@@ -418,7 +419,7 @@ export async function writeTableAs(
    // session, and the flush below for a catalog that records its own limit.
    await session.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
    const target = [destinationName, schemaName, tableName]
-      .map((part) => quoteIdentifier(part, "duckdb"))
+      .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
       .join(".");
    const create =
       params.mode === "replace" ? "CREATE OR REPLACE TABLE" : "CREATE TABLE";
