@@ -78,6 +78,12 @@
  * `materialize.enabled`.
  */
 
+import { requireUnique, verdictOf, type KeyVerdict } from "../domain/key_check";
+import {
+   primaryKeyOf,
+   recordedTimezoneOf,
+   timezoneOf,
+} from "../../governance/ir/compiled_model";
 import type {
    MalloyConfig,
    ModelDef,
@@ -88,16 +94,13 @@ import type {
 import * as path from "path";
 import { logger } from "../../../logger";
 import { fileURLToPath, pathToFileURL } from "url";
-import { Annotations, EMPTY_BUILD_MANIFEST } from "@malloydata/malloy";
-import {
-   createModelRuntime,
-   type ModelConnectionInput,
-} from "../../model_runtime";
+import { EMPTY_BUILD_MANIFEST } from "@malloydata/malloy";
+import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
 import { quoteManifestTablePath } from "../../quoting";
 import { ownModelNoteObjects } from "../../annotations";
 import { routeOfNote } from "../../annotation_reader";
-import { parseRouteTag } from "../../motly";
+import { experimentalFlagKeys } from "../../motly";
 import {
    doubleQuotedString,
    identifier,
@@ -130,7 +133,7 @@ import {
 } from "../../governance/ir/prepared_query";
 import type { BuildManifest } from "../domain/types";
 import { evaluateManifestFreshness } from "../domain/freshness";
-import { persistBlankedFiles } from "../text/persist_blanking";
+import { packageFiles } from "../text/package_files";
 import {
    packageRelativeSourceID,
    rollupCompanionURLOf,
@@ -706,9 +709,8 @@ export class RollupVariantServe {
               }[];
            }
          | undefined;
-      const parentZone = (q.struct as { queryTimezone?: unknown } | undefined)
-         ?.queryTimezone;
-      if ((childDef?.queryTimezone ?? "") !== (parentZone ?? "")) {
+      const parentZone = recordedTimezoneOf(q.struct);
+      if ((recordedTimezoneOf(childDef) ?? "") !== (parentZone ?? "")) {
          throw new LegDecline(
             "rollup_time_zone",
             `\`${name}\` is read in the query source's time zone, and its rollup was built in its own`,
@@ -791,14 +793,14 @@ export class RollupVariantServe {
       // are the same rows.
       if (join.relationship === "one") {
          const outside = aggregateOutsideJoin(q.prepared, q.struct, name);
-         const unique =
+         const verdict: KeyVerdict =
             outside === undefined
-               ? undefined
+               ? "unknown"
                : this.keyUniqueness(plan, join.keyColumn);
-         if (outside !== undefined && unique !== true) {
+         if (outside !== undefined && !requireUnique(verdict)) {
             throw new LegDecline(
                "rollup_count_semantics",
-               unique === false
+               verdict === "repeated"
                   ? `${outside} aggregates rows outside the join_one \`${name}\`, whose key the data holds more than once, so live repeats those rows; its rollup holds one row per key`
                   : `${outside} aggregates rows outside the join_one \`${name}\`, which live repeats for each of its rows, and its key was not checked unique when its rollup was built; its rollup holds one row per key`,
             );
@@ -882,14 +884,14 @@ export class RollupVariantServe {
       }
       // The joined source's own key, when the join is keyed on another
       // column: live counts and sums its rows once per non-NULL key.
-      const joinedKey = (childDef as { primaryKey?: unknown } | undefined)
-         ?.primaryKey;
       const joinedProblem = joinedKeyProblem(
          leg,
          read,
-         typeof joinedKey === "string" ? joinedKey : undefined,
+         primaryKeyOf(childDef),
          plan.storage !== undefined
-            ? this.tableOf(plan)?.binding?.primaryKeys?.[plan.baseSourceID]
+            ? verdictOf(
+                 this.tableOf(plan)?.binding?.primaryKeys?.[plan.baseSourceID],
+              )
             : this.parentKeyUniqueness(plan, { sourceID: plan.baseSourceID }),
       );
       if (joinedProblem !== undefined) {
@@ -1145,8 +1147,7 @@ export class RollupVariantServe {
       // a grafted gate or a caller's filter on it compared, in another zone:
       // live's answer would differ, and a truncation gate would admit groups
       // live refuses.
-      const zone = (query.struct as { queryTimezone?: unknown }).queryTimezone;
-      if (typeof zone === "string" && zone !== "") {
+      if (timezoneOf(query.struct) !== undefined) {
          throw new LegDecline(
             "rollup_time_zone",
             "the query's source sets its own time zone, which the rollup's stored times are not read in",
@@ -1291,70 +1292,70 @@ export class RollupVariantServe {
 
    /**
     * What the build of `plan`'s table found of its one grain dimension, when
-    * that is `keyColumn` (known limitation 29): true when unique, false when
-    * a value repeats, undefined when unknown (not checked, not built by a run
-    * that checked it, or a table bound from a host's manifest).
+    * that is `keyColumn` (known limitation 29): `unknown` when not checked,
+    * not built by a run that checked it, or a table bound from a host's
+    * manifest.
     */
    private keyUniqueness(
       plan: RollupVariantPlan,
       keyColumn: string | undefined,
-   ): boolean | undefined {
+   ): KeyVerdict {
       if (
          keyColumn === undefined ||
          plan.grainDimensions.length !== 1 ||
          plan.grainDimensions[0] !== keyColumn
       ) {
-         return undefined;
+         return "unknown";
       }
       // The table's content address fixes its grain, so its check is of
       // this key.
       const id = this.tableOf(plan)?.sourceEntityId;
-      return id === undefined
-         ? undefined
-         : this.host.catalog()?.bound[id]?.keyUniqueness?.unique;
+      return verdictOf(
+         id === undefined
+            ? undefined
+            : this.host.catalog()?.bound[id]?.keyUniqueness?.unique,
+      );
    }
 
    /**
     * What the build of `plan`'s table found of the query source's primary key
-    * (its parent key check): true when unique and never NULL, false when not,
-    * undefined when unknown (not checked, or a table a host's manifest binds).
+    * (its parent key check): `unique` when unique and never NULL, `unknown`
+    * when not checked, or a table a host's manifest binds.
     */
    private parentKeyUniqueness(
       plan: RollupVariantPlan,
       struct: unknown,
-   ): boolean | undefined {
+   ): KeyVerdict {
       const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
       const id = this.tableOf(plan)?.sourceEntityId;
-      if (typeof sourceID !== "string" || id === undefined) return undefined;
-      return this.host.catalog()?.bound[id]?.keyUniqueness?.parentKeys?.[
-         sourceID
-      ];
+      if (typeof sourceID !== "string" || id === undefined) return "unknown";
+      return verdictOf(
+         this.host.catalog()?.bound[id]?.keyUniqueness?.parentKeys?.[sourceID],
+      );
    }
 
    /**
     * What the build of a stored table the served copy reads for the query's
-    * source found of `key`: true when a source it stores declares `key` its
-    * primary key and the check found it unique and never NULL; false when one
-    * found it repeated or NULL; undefined when unknown (not checked, or a
-    * binding a host's manifest made).
+    * source found of `key`: `unique` when a source it stores declares `key`
+    * its primary key and the check found it unique and never NULL;
+    * `repeated` when one found it repeated or NULL; `unknown` when not
+    * checked, or a binding a host's manifest made.
     */
    private storedKeyUniqueness(
       binding: ServeBinding,
       key: string | undefined,
-   ): boolean | undefined {
-      if (key === undefined || !binding.primaryKeys) return undefined;
+   ): KeyVerdict {
+      if (key === undefined || !binding.primaryKeys) return "unknown";
       const map = SourceMap.of(this.host.modelDef());
       let found: boolean | undefined;
       for (const id of binding.sourceIDs ?? []) {
          const unique = binding.primaryKeys[id];
          if (unique === undefined) continue;
-         const declared = (map.node(id)?.def as { primaryKey?: unknown })
-            ?.primaryKey;
-         if (declared !== key) continue;
-         if (!unique) return false;
+         if (primaryKeyOf(map.node(id)?.def) !== key) continue;
+         if (!unique) return "repeated";
          found = true;
       }
-      return found;
+      return verdictOf(found);
    }
 
    /**
@@ -1381,7 +1382,9 @@ export class RollupVariantServe {
             continue;
          }
          for (const plan of byBase.get(j.sourceID) ?? []) {
-            if (this.keyUniqueness(plan, j.keyColumn) === false) return j.name;
+            if (this.keyUniqueness(plan, j.keyColumn) === "repeated") {
+               return j.name;
+            }
          }
       }
       return undefined;
@@ -1515,22 +1518,8 @@ export class RollupVariantServe {
          });
       }
       const { localName } = use;
-      // The package's own reader, made once and only when a file is read.
-      let reader: ReturnType<typeof createModelRuntime> | undefined;
-      const readText = async (url: string) => {
-         try {
-            reader ??= createModelRuntime(
-               packagePath,
-               modelPath,
-               packageConfig,
-            );
-            const { runtime } = await reader;
-            const read = await runtime.urlReader.readURL(new URL(url));
-            return typeof read === "string" ? read : read.contents;
-         } catch {
-            return undefined;
-         }
-      };
+      // The package's own files, read only when a file is read.
+      const authorFiles = packageFiles(packagePath, modelPath, packageConfig);
       const overlay = new Map<string, string>();
       // The rollup with its merged measures, then the author's source with
       // the join re-pointed at it (A7).
@@ -1552,10 +1541,10 @@ export class RollupVariantServe {
             ? generateRollupBuildFile([plan], path.basename(declaringFile))
             : undefined;
       if (!companion || !text) return { error: "no companion" };
-      overlay.set(overlayKey(companion.href), text);
+      overlay.set(companion.href, text);
       // The shared, checked blanking (persist_blanking.ts), read through
       // the package's own reader, as the build companion reads them.
-      const blanked = await persistBlankedFiles(this.host.modelDef(), readText);
+      const blanked = await authorFiles.blanked(this.host.modelDef());
       if (!blanked) return { error: "a `#@` line could not be left out" };
       for (const [url, file] of blanked) overlay.set(url, file);
       const built = `${plan.rollupSourceName}__built`;
@@ -1570,15 +1559,12 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
          { alias: new Map([[localName, parentAlias(plan)]]) },
          declaration,
       );
-      overlay.set(overlayKey(queryModelURL.href), modelText);
-      const { runtime, importBaseURL } = await createModelRuntime(
+      overlay.set(queryModelURL.href, modelText);
+      const { materializer } = await packageFiles(
          packagePath,
          modelPath,
          config,
-         { overlay },
-      );
-      const materializer = runtime.loadModel(queryModelURL, { importBaseURL });
-      await materializer.getModel();
+      ).compile(queryModelURL, overlay);
       return { materializer };
    }
 
@@ -1620,23 +1606,18 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
       );
       const overlay = new Map(basis.files);
       overlay.set(
-         overlayKey(ctx.queryModelURL.href),
+         ctx.queryModelURL.href,
          `${flagLine(modelDef)}
 ${imports}
 
 ${declaration}
 `,
       );
-      const { runtime, importBaseURL } = await createModelRuntime(
+      const { materializer } = await packageFiles(
          ctx.packagePath,
          ctx.modelPath,
          basis.config,
-         { overlay },
-      );
-      const materializer = runtime.loadModel(ctx.queryModelURL, {
-         importBaseURL,
-      });
-      await materializer.getModel();
+      ).compile(ctx.queryModelURL, overlay);
       return { materializer };
    }
 
@@ -1771,13 +1752,11 @@ ${gates}${over}`;
       url: string,
    ): Promise<string | undefined> {
       try {
-         const { runtime } = await createModelRuntime(
+         return await packageFiles(
             ctx.packagePath,
             ctx.modelPath,
             ctx.packageConfig,
-         );
-         const read = await runtime.urlReader.readURL(new URL(url));
-         return typeof read === "string" ? read : read.contents;
+         ).read(url);
       } catch {
          return undefined;
       }
@@ -1835,9 +1814,7 @@ function checkExtension(struct: object, baseDef: unknown): SourceDelta {
          { shapeCheck: true },
       );
    }
-   const zone = (d: unknown) =>
-      (d as { queryTimezone?: unknown } | undefined)?.queryTimezone;
-   if (zone(struct) !== zone(baseDef)) {
+   if (recordedTimezoneOf(struct) !== recordedTimezoneOf(baseDef)) {
       throw new LegDecline(
          "rollup_time_zone",
          "the query's source sets its own time zone, and the rollup was built in its base's",
@@ -2103,12 +2080,6 @@ function servedCopySkip(error: LegDecline, join: string): LegDecline {
    }
 }
 
-/** A source's declared primary key, if it has one. */
-function primaryKeyOf(def: unknown): string | undefined {
-   const key = (def as { primaryKey?: unknown } | undefined)?.primaryKey;
-   return typeof key === "string" ? key : undefined;
-}
-
 /** The author's source, imported for a join leg under this name. */
 function parentAlias(plan: RollupVariantPlan): string {
    return `${plan.rollupSourceName}__parent`;
@@ -2274,13 +2245,7 @@ function flagLine(modelDef: unknown): string {
          (n) => routeOfNote(n.text) === "!",
       );
       if (notes.length > 0) {
-         const { tag } = parseRouteTag(
-            new Annotations({ notes } as ConstructorParameters<
-               typeof Annotations
-            >[0]),
-            "!",
-         );
-         for (const [key] of tag.tag("experimental")?.entries() ?? []) {
+         for (const key of experimentalFlagKeys(notes)) {
             if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) flags.add(key);
          }
       }

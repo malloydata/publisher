@@ -19,3 +19,4 @@ export { MaterializationService } from "./run/materialization_service";
 export { Reclaimer } from "./run/reclaimer";
 export { MaterializationScheduler } from "./run/materialization_scheduler";
 export type * from "./host";
+export type { SynthesizedRuntimeFactory } from "./text/generated_files";

@@ -21,6 +21,11 @@
  * package warning.
  */
 
+import { requireUnique, verdictOf } from "../domain/key_check";
+import {
+   modelDefOf,
+   queryTimezoneOf,
+} from "../../governance/ir/compiled_model";
 import { readFileSync } from "fs";
 import { lazyCounter } from "../../../telemetry";
 import { fileURLToPath } from "url";
@@ -42,11 +47,9 @@ import {
    gateFilterText,
    liftProbeFilterCondition,
 } from "../../authorize";
-import { keyedOverlay, overlayKey } from "../../overlay_key";
-import {
-   createModelRuntime,
-   type ModelConnectionInput,
-} from "../../model_runtime";
+import { keyedOverlay } from "../../overlay_key";
+import type { ModelConnectionInput } from "../../model_runtime";
+import { packageFiles } from "../text/package_files";
 import { reachPersisted, SourceMap } from "../text/source_map";
 import { keepDeclarations } from "../text/declarations_kept";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
@@ -67,7 +70,6 @@ import {
    nativeTypeLookup,
    declaredColumnsOf,
    liveKeepsBigIntegers,
-   queryTimezoneOf,
    serveTypePlan,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
@@ -1628,7 +1630,8 @@ export class ServedCopyServe {
                ),
             // The leaf's key check, as the run that wrote the table recorded
             // it beside the table (`pairLeafKeyChecks`).
-            (sourceID) => binding.primaryKeys?.[sourceID] === true,
+            (sourceID) =>
+               requireUnique(verdictOf(binding.primaryKeys?.[sourceID])),
          );
          if (!pair) {
             problems.push({
@@ -2094,10 +2097,7 @@ export class ServedCopyServe {
             ...b,
             destinationName: servedConnectionOf(b),
          }));
-         const overlay = new Map<string, string>();
-         for (const [url, text] of copy.files) {
-            overlay.set(overlayKey(url), text);
-         }
+         const overlay = new Map(copy.files);
          const packagePath = this.packagePath;
          const config = servedCopyConfig(
             this.packageConfig,
@@ -2108,20 +2108,19 @@ export class ServedCopyServe {
                   .map((b) => b.destinationName),
             ),
          );
+         const compiler = packageFiles(
+            packagePath,
+            this.host.modelPath(),
+            config,
+         );
          const load = async (files: ReadonlyMap<string, string>) => {
-            const { runtime, modelURL, importBaseURL } =
-               await createModelRuntime(
-                  packagePath,
-                  this.host.modelPath(),
-                  config,
-                  { overlay: files },
-               );
-            const m = runtime.loadModel(modelURL, { importBaseURL });
+            const { runtime, materializer: m } =
+               await compiler.loadModel(files);
             const model = await m.getModel();
             return {
                materializer: m,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               def: (model as any)._modelDef,
+               def: modelDefOf(model as any),
                runtime: runtime as unknown as GraftRuntime,
             };
          };

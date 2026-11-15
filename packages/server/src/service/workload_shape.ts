@@ -17,6 +17,7 @@
  * or a name, so SQL text and literals never reach the record.
  */
 
+import { timezoneOf } from "./governance/ir/compiled_model";
 import { createHash } from "crypto";
 import type { ModelDef } from "@malloydata/malloy";
 import { forEachFieldPath } from "./governance/ir/array_query";
@@ -278,10 +279,7 @@ export function workloadShapeOf(args: {
          )
          .flatMap((f) => fieldPaths((f as { e?: unknown }).e)),
    );
-   const timezone =
-      typeof stage.queryTimezone === "string" && stage.queryTimezone
-         ? stage.queryTimezone
-         : undefined;
+   const timezone = timezoneOf(stage);
 
    // `view` stays out of the key (see WorkloadShape.view).
    const keyed = {

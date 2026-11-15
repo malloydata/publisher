@@ -34,6 +34,7 @@
  * fail-closed deny.
  */
 
+import type { SerializedNotebookCell } from "./notebook_cell_wire";
 import type { EligibilityRefusalReason } from "../materialization_metrics";
 import type { BuildPlanOutcome } from "../service/materialization/plan/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
@@ -213,20 +214,7 @@ export interface SerializedModel {
    entities?: ModelEntitiesPlan;
 }
 
-export interface SerializedNotebookCell {
-   type: "code" | "markdown";
-   /** Raw cell text. */
-   text: string;
-   /**
-    * The cell's ModelDef at its point in the `extendModel` chain, hydrated by
-    * the main thread so cell-level queries compile in the right scope.
-    */
-   cellModelDef?: unknown;
-   /** The cell's final QueryDef, hydrated by the main thread without recompiling. */
-   cellQueryDef?: unknown;
-   newSources?: unknown[];
-   queryInfo?: unknown;
-}
+export type { SerializedNotebookCell } from "./notebook_cell_wire";
 
 export interface LoadPackageResult {
    type: "load-package-result";

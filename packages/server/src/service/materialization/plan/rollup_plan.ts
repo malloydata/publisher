@@ -65,7 +65,13 @@
  * readers are `governance/ir/source_graph.ts`'s single walk).
  */
 
-import { Annotations, type ModelDef, type SourceDef } from "@malloydata/malloy";
+import { keyCheckPipeline } from "../text/key_check_text";
+import {
+   primaryKeyOf,
+   recordedTimezoneOf,
+   timezoneOf,
+} from "../../governance/ir/compiled_model";
+import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { getMaterializeGatedSources } from "../../../config";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
@@ -87,7 +93,7 @@ import {
    doubleQuotedString,
    identifier,
 } from "../../malloy_text";
-import { parseRouteTag } from "../../motly";
+import { placementOf, readNotes } from "./declaration";
 import { malloyIdentifiers } from "../../query_text";
 import {
    classifyWhereTerms,
@@ -422,12 +428,7 @@ function readDeclaration(
          "reads the environment (`@env.`); write the value itself",
       );
    }
-   const { tag, log } = parseRouteTag(
-      new Annotations({ notes: [note] } as ConstructorParameters<
-         typeof Annotations
-      >[0]),
-      PREAGGREGATE_ROUTE,
-   );
+   const { tag, log } = readNotes([note], PREAGGREGATE_ROUTE);
    const errors = log.filter((m) => m.severity === "error");
    if (errors.length > 0) {
       return refuse(
@@ -460,11 +461,11 @@ function readDeclaration(
          "has a grain=[…] that names nothing, or holds something other than quoted dimension names",
       );
    }
-   const storage = keys.includes("storage") ? tag.text("storage") : undefined;
+   const placed = placementOf(tag);
    const namespace = keys.includes("namespace")
       ? tag.text("namespace")
       : undefined;
-   if (keys.includes("storage") && !storage?.trim()) {
+   if ("refused" in placed) {
       return refuse(
          "preaggregate-malformed",
          "has a storage= that is not a destination name",
@@ -476,6 +477,10 @@ function readDeclaration(
          "has a namespace= that is not a name",
       );
    }
+   const storage =
+      "placement" in placed && placed.placement.tier === "storage"
+         ? placed.placement.destination
+         : undefined;
    if (storage !== undefined && namespace !== undefined) {
       return refuse(
          "preaggregate-malformed",
@@ -493,7 +498,7 @@ function readDeclaration(
       grain: [...new Set((grain as string[]).map((g) => g.trim()))].sort(
          byCodepoint,
       ),
-      ...(storage !== undefined ? { storage: storage.trim() } : {}),
+      ...(storage !== undefined ? { storage } : {}),
       ...(namespace !== undefined ? { namespace } : {}),
    };
 }
@@ -687,10 +692,7 @@ export function planSourceRollups(
    // the same zone, colocated or, since #1704, in a `storage=` destination
    // the joining source is stored in too (the leg declines at read when it
    // is not). Anything else is never read.
-   const zone =
-      typeof def.queryTimezone === "string" && def.queryTimezone !== ""
-         ? def.queryTimezone
-         : undefined;
+   const zone = timezoneOf(def);
    const joinedInZone =
       zone !== undefined &&
       map
@@ -698,7 +700,7 @@ export function planSourceRollups(
          .some(
             (n) =>
                n.sourceID !== node.sourceID &&
-               (n.def as SourceLike).queryTimezone === zone &&
+               recordedTimezoneOf(n.def) === zone &&
                map
                   .joinsOf(n.sourceID)
                   .some((j) => j.sourceID === node.sourceID),
@@ -1276,14 +1278,8 @@ export function rollupKeyCheckQuery(
    if (key === undefined || rest.length > 0 || plan.storage !== undefined) {
       return undefined;
    }
-   const k = identifier(key);
-   return `run: ${identifier(rollupBaseAlias(plan.baseDeclaredName))} -> {
-  where: ${k} != null
-  group_by: ${k}
-  aggregate: key_rows__check is count()
-  having: key_rows__check > 1
-  limit: 1
-}`;
+   // malloy-text: keyCheckPipeline writes its names through identifier
+   return `run: ${keyCheckPipeline("rollup_key", rollupBaseAlias(plan.baseDeclaredName), key)}`;
 }
 
 /**
@@ -1295,9 +1291,8 @@ export function rollupKeyCheckQuery(
 export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
    const out: ParentKeyNeed[] = [];
    for (const node of map.nodes()) {
-      const def = node.def as { primaryKey?: unknown; connection?: unknown };
-      const keyColumn =
-         typeof def.primaryKey === "string" ? def.primaryKey : undefined;
+      const def = node.def as { connection?: unknown };
+      const keyColumn = primaryKeyOf(def);
       if (node.name === undefined || keyColumn === undefined) continue;
       for (const join of map.joinsOf(node.sourceID)) {
          if (
@@ -1361,11 +1356,8 @@ export function joinedKeyNeedsOf(map: SourceMap): JoinedKeyNeed[] {
             continue;
          }
          const joined = map.node(join.sourceID);
-         const def = joined?.def as
-            | { primaryKey?: unknown; connection?: unknown }
-            | undefined;
-         const keyColumn =
-            typeof def?.primaryKey === "string" ? def.primaryKey : undefined;
+         const def = joined?.def as { connection?: unknown } | undefined;
+         const keyColumn = primaryKeyOf(def);
          if (
             joined?.name === undefined ||
             keyColumn === undefined ||
@@ -1442,14 +1434,8 @@ export function storedKeyChecksOf(
  * is held by more than one row, or is NULL.
  */
 export function parentKeyCheckQuery(name: string, keyColumn: string): string {
-   return `run: ${identifier(name)} -> {
-  group_by: key__check is ${identifier(keyColumn)}
-  aggregate: key_rows__check is count()
-} -> {
-  where: key_rows__check > 1 or key__check = null
-  select: key__check
-  limit: 1
-}`;
+   // malloy-text: keyCheckPipeline writes its names through identifier
+   return `run: ${keyCheckPipeline("parent_key", name, keyColumn)}`;
 }
 
 /** The key {@link joinOneKeysOf} holds for a join_one on `keyColumn` of `sourceID`. */

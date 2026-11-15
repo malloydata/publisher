@@ -1,8 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import { destinationOf, readRouteIfAny } from "./declaration";
 import { collectGivenRefs } from "../../given";
 import { readsAGiven } from "../../probe_compiler";
 import { forEachFieldPath } from "../../governance/ir/array_query";
@@ -98,7 +99,7 @@ function givenNames(node: unknown): string[] {
 export function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
    let def: unknown;
    try {
-      def = persistSource._sourceDef as unknown;
+      def = sourceDefOf(persistSource) as unknown;
    } catch {
       return true;
    }
@@ -185,7 +186,7 @@ export function admitGivenPositions(
 ): DynamicTermClassification {
    let def: unknown;
    try {
-      def = persistSource._sourceDef as unknown;
+      def = sourceDefOf(persistSource) as unknown;
    } catch (err) {
       return unreadable(err, "which givens the build would bake in");
    }
@@ -425,15 +426,14 @@ const MAX_JOIN_DEPTH = 4;
 function declaresStorage(annotations: unknown): boolean {
    if (annotations === undefined || annotations === null) return false;
    try {
-      const tag = parseRouteTag(
+      const tag = readRouteIfAny(
          new Annotations(
             annotations as ConstructorParameters<typeof Annotations>[0],
          ),
          "@",
-      ).tag;
-      if (!tag.has("persist")) return false;
-      const storage = tag.text("storage");
-      return typeof storage === "string" && storage.trim().length > 0;
+      );
+      if (!tag?.has("persist")) return false;
+      return destinationOf(tag, "persist") !== undefined;
    } catch {
       return false;
    }
@@ -480,7 +480,7 @@ export function readTimeDynamicTerms(
    persistSource: PersistSource,
 ): DynamicTerm[] {
    try {
-      const def = persistSource._sourceDef as unknown as {
+      const def = sourceDefOf(persistSource) as unknown as {
          filterList?: unknown;
          fields?: unknown;
       };

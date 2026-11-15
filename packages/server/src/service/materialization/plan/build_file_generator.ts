@@ -218,6 +218,7 @@
  * Every name and value in the generated text goes through `malloy_text`.
  */
 
+import { keyCheckPipeline } from "../text/key_check_text";
 import { Annotations } from "@malloydata/malloy";
 import { ownLevelNotes, sameNotePosition } from "../../annotations";
 import { declaredNotes } from "../../governance/ir/declared_notes";
@@ -233,7 +234,13 @@ import {
    nowComparison,
    stringLiteral,
 } from "../../malloy_text";
-import { parseRouteTag, routeHasKey } from "../../motly";
+import {
+   declares,
+   EMPTY_STORAGE_REASON,
+   placementOf,
+   readNotes,
+   type RouteTag,
+} from "./declaration";
 import {
    accessLiftEdits,
    afterModelHeader,
@@ -862,7 +869,7 @@ function readMaterializeDeclaration(
    contents: Readonly<Record<string, unknown>> = {},
 ):
    | {
-        tag: ReturnType<typeof parseRouteTag>["tag"];
+        tag: RouteTag;
         keys: string[];
         /** Parse errors: a declaration with any is not read at all. */
         errors: string[];
@@ -872,12 +879,7 @@ function readMaterializeDeclaration(
       (note) => routeOfNote(note.text) === MATERIALIZE_ROUTE,
    );
    if (notes.length === 0) return undefined;
-   const { tag, log } = parseRouteTag(
-      new Annotations({ notes } as ConstructorParameters<
-         typeof Annotations
-      >[0]),
-      MATERIALIZE_ROUTE,
-   );
+   const { tag, log } = readNotes(notes, MATERIALIZE_ROUTE);
    return {
       tag,
       keys: [...tag.entries()].map(([key]) => key),
@@ -896,7 +898,7 @@ function declaresOwnPersist(
       (note) => routeOfNote(note.text) === "@",
    );
    if (notes.length === 0) return false;
-   return routeHasKey(
+   return declares(
       new Annotations({ notes } as ConstructorParameters<
          typeof Annotations
       >[0]),
@@ -921,7 +923,7 @@ function inheritedPersist(
    const chain = new Annotations(
       (def.annotations ?? {}) as ConstructorParameters<typeof Annotations>[0],
    );
-   if (!routeHasKey(chain, "@", "persist")) return undefined;
+   if (!declares(chain, "@", "persist")) return undefined;
    const own = declaredNotes(def, contents);
    const inherited = chain
       .forRoute("@")
@@ -2446,6 +2448,19 @@ export function planModelMaterialize(
          continue;
       }
       const { persist } = carried;
+      // Its place, by the one placement rule (declaration.ts).
+      const placed = placementOf(declaration.tag);
+      if ("refused" in placed) {
+         refused.push({
+            sourceName: name,
+            sourceID: def.sourceID,
+            reason: EMPTY_STORAGE_REASON,
+         });
+         continue;
+      }
+      if (placed.placement.tier === "storage") {
+         persist.storage = placed.placement.destination;
+      }
       // A source is planned in the model that declares it (see `declaredHere`),
       // so its name here is the name its author gave it.
       const tableName = name;
@@ -3047,24 +3062,10 @@ function pairKeyChecks(
  * table's key check ({@link pairKeyChecks}) also returns a null key.
  */
 function emitUniquenessCheck(check: InlineUniquenessCheck): string {
-   const key = identifier(check.keyColumn);
-   if (check.pairLevel !== undefined) {
-      return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
-  group_by: ${key}
-  aggregate: matches is count()
-} -> {
-  where: matches > 1 or ${key} is null
-  select: ${key}
-  limit: 1
-}`;
-   }
-   return `query: ${identifier(check.queryName)} is ${identifier(checkAlias(check))} -> {
-  where: ${key} is not null
-  group_by: ${key}
-  aggregate: matches is count()
-  having: matches > 1
-  limit: 1
-}`;
+   const kind =
+      check.pairLevel !== undefined ? "pair_level" : "inline_join_one";
+   // malloy-text: keyCheckPipeline writes its names through identifier
+   return `query: ${identifier(check.queryName)} is ${keyCheckPipeline(kind, checkAlias(check), check.keyColumn)}`;
 }
 
 /**

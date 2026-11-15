@@ -1,0 +1,15 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [],
+    "verdicts": [],
+    "warnings": [
+      {
+        "code": "materialize-not-built",
+        "message": "#(materialize) on source \"m_empty\" is not built, so the source is served live: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse.",
+        "subject": "m_empty"
+      }
+    ]
+  },
+  "queries": []
+}

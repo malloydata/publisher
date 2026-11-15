@@ -9,8 +9,14 @@
  * source without importing build_plan back.
  */
 
+import { exploreOf } from "../../governance/ir/compiled_model";
 import type { AtomicField, PersistSource } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import {
+   destinationOf,
+   persistAnnotationFields,
+   placementOf,
+   readRouteIfAny,
+} from "./declaration";
 import { components } from "../../../api";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -20,8 +26,8 @@ type WireColumn = components["schemas"]["Column"];
 /** Output columns of a persist source, degrading to [] if unavailable. */
 export function deriveColumns(persistSource: PersistSource): WireColumn[] {
    try {
-      return persistSource._explore.intrinsicFields
-         .filter((f) => f.isAtomicField())
+      return exploreOf(persistSource)
+         .intrinsicFields.filter((f) => f.isAtomicField())
          .map((f) => ({
             name: f.name,
             type: String((f as AtomicField).type),
@@ -36,25 +42,16 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
 }
 
 /**
- * All scalar key=value fields of a source's `#@ persist` annotation, or {} if
- * absent or unparseable. The control plane uses `name` as the table name (it may
- * carry a container path like `dataset.table`). The full set is returned so new
+ * All scalar key=value fields of a source's `#@ persist` annotation, with
+ * `storage=` and `name=` read by the placement rule; {} if absent or
+ * unparseable. The control plane uses `name` as the table name (it may carry
+ * a container path like `dataset.table`). The full set is returned so new
  * directives flow through without a publisher change.
  */
 export function deriveAnnotationFields(
    persistSource: PersistSource,
 ): Record<string, string> {
-   const out: Record<string, string> = {};
-   try {
-      const tag = parseRouteTag(persistSource.annotations, "@").tag;
-      for (const [key, value] of tag.entries()) {
-         const text = value.text();
-         if (text !== undefined) out[key] = text;
-      }
-   } catch {
-      // Degrade to {}.
-   }
-   return out;
+   return persistAnnotationFields(persistSource.annotations);
 }
 
 /**
@@ -85,9 +82,19 @@ export interface PersistSourceGateOutcome {
    inheritedRowFilter?: boolean;
 }
 
-/** The `storage=` destination a persist source declares, trimmed; undefined for none. */
+/**
+ * The `storage=` destination a persist source declares, trimmed; undefined
+ * for none, and for one that names nothing (refused at eligibility).
+ */
 export function declaredStorage(
    persistSource: PersistSource,
 ): string | undefined {
-   return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
+   const tag = readRouteIfAny(persistSource.annotations, "@");
+   return tag ? destinationOf(tag, "persist") : undefined;
+}
+
+/** Whether a persist source's `storage=` names nothing, which refuses it. */
+export function declaresEmptyStorage(persistSource: PersistSource): boolean {
+   const tag = readRouteIfAny(persistSource.annotations, "@");
+   return tag !== undefined && "refused" in placementOf(tag, "persist");
 }

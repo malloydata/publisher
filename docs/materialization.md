@@ -54,6 +54,15 @@ Host-orchestrated builds are not checked or renamed: the host chooses their name
 
 **Upgrading from a release before package-owned names.** The first auto-run of each package rebuilds its default-named tables under their new names, once. The old tables are not dropped: the old runs still name them, and deleting those runs with `dropTables=true` drops them. Until that first build a package serves its old tables as it did before, so build every package once after upgrading. A `name=` table two packages both wrote (both their records name it) is claimed by the first of them to build again, and marked; the other is refused it from then on and answers that source live.
 
+### Where a table is built: `storage=`
+
+Every annotation that asks for a table reads its place the same way: `#@ persist`, `#@ persist` on a view, `#@ preaggregate`, `#(materialize)` and `#(preaggregate)`.
+
+- `storage="lake"` builds the table in that storage destination. On a `#@` line it may be written beside the route's key (`#@ persist storage="lake"`) or inside it (`#@ persist { storage="lake" }`); both mean the same, and `name=` is read the same two ways. When both are written, the one inside the key wins, even when it names nothing: `#@ persist { storage=["x"] } storage="lake"` is refused, not built in `lake`.
+- No `storage=` builds the table in the source's own warehouse.
+- A `storage=` that names nothing refuses that source, or that rollup, alone: one that is empty or only whitespace (`storage=""`), or that is not text at all (a list, `storage=["lake"]`, or a block, `storage { … }`). It is not built, it is answered live, and the package carries a warning saying why. A `#@ persist` source refused this way is listed in the build plan's `refusedSources` with reason `empty_storage`. The rest of the package loads and serves as usual, and so does a source that shares its SQL, and so its table, with the refused one: a blank `storage=` is that source's own mistake, so it never holds back a colocated sibling the way a gated source does.
+- Any other value is a destination name, trimmed and looked up exactly as written. A name no storage destination is configured under is not built; the package warns that the source is answered live (`destination_missing`), and the rest of the package is unaffected.
+
 ### Opting a reader out: `#@ -persist`
 
 `#@ -persist` is Malloy core's own opt-out, and it is not deprecated: Publisher honours it for `#@ persist` and `#(materialize)` sources alike ([materialization-migration.md](materialization-migration.md#persist-opt-out)).

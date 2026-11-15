@@ -124,6 +124,9 @@ function fakeTagFromTree(tree: FakeTagTree) {
          const node = walk(at);
          return typeof node === "string" ? node : undefined;
       },
+      has(...at: string[]): boolean {
+         return walk(at) !== undefined;
+      },
       tag(...at: string[]) {
          const node = walk(at);
          return node !== undefined && typeof node === "object"

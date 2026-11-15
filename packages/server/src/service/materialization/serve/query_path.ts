@@ -30,6 +30,7 @@
  * on real compiled queries.
  */
 
+import { recordedTimezoneOf } from "../../governance/ir/compiled_model";
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
 import type { KeyUniqueness } from "../domain/types";
@@ -1075,7 +1076,7 @@ export function queryShapeOf(
       }
    };
    visitStage(stage, source, []);
-   const tz = stage?.queryTimezone;
+   const tz = recordedTimezoneOf(stage);
    return {
       sourceName: names.sourceName,
       ...(names.viewName ? { viewName: names.viewName } : {}),

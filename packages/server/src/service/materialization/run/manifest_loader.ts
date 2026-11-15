@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import * as fs from "fs/promises";
@@ -8,8 +9,6 @@ import { fileURLToPath } from "url";
 import { components } from "../../../api";
 import { logger } from "../../../logger";
 import {
-   boundNativeSchemaOf,
-   boundSchemaOf,
    FreshnessManifest,
    isLegacyFailedEntry,
    type KeyUniqueness,

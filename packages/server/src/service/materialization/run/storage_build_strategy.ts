@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   plannedModelDefOf,
+   sourceDefOf,
+} from "../../governance/ir/compiled_model";
 import type { Manifest, PersistSource } from "@malloydata/malloy";
 import {
    ChainedShapeNotCarriedError,
@@ -162,7 +166,7 @@ export class StorageBuildStrategy
          planFacts = NO_PLAN_FACTS,
          baseReuse = {},
          lift = authorModelLiftContext(
-            params.persistSource._model?._modelDef,
+            plannedModelDefOf(params.persistSource),
             readAuthorFile,
          ),
       } = params;
@@ -422,7 +426,7 @@ export class StorageBuildStrategy
                   sourceConnection,
                   buildSQL: params.publicBuildSQL,
                   sourceCarriesAuthorSql: carriesAuthorSql(
-                     persistSource._sourceDef,
+                     sourceDefOf(persistSource),
                   ),
                   physicalTableName,
                   partitionColumns: partitionColumnsForBuild(persistSource),

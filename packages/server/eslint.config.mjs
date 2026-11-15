@@ -243,7 +243,11 @@ const TEXT_MAY_IMPORT = (m) =>
    /^service\/governance\/ir(\/|$)/.test(m) ||
    m === "service/malloy_text" ||
    m === "service/overlay_key" ||
-   m === "service/annotation_reader";
+   m === "service/annotation_reader" ||
+   // The Compiler port's factory: text/generated_files.ts compiles through it.
+   m === "service/model_runtime" ||
+   // The one Malloy lexer core, shared with the caller-text reader.
+   m === "service/malloy_lexer_core";
 const IMPORT_DIRECTION_RULES = [
    {
       id: "R1",
@@ -294,7 +298,7 @@ const IMPORT_DIRECTION_RULES = [
       to: (m) => !MZ_TEXT.test(m) && !TEXT_MAY_IMPORT(m),
       allowTypeImports: false,
       message:
-         "materialization/text/ imports only domain/, governance/ir, malloy_text.ts, overlay_key.ts and annotation_reader.ts",
+         "materialization/text/ imports only domain/, governance/ir, malloy_text.ts, overlay_key.ts, annotation_reader.ts, model_runtime.ts (the Compiler port's factory) and malloy_lexer_core.ts",
    },
    {
       id: "R7",
