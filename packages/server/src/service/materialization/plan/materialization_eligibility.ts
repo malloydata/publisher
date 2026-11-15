@@ -691,8 +691,9 @@ export function gateEnforcedAtRead(
         >
       | undefined,
 ): boolean {
-   // A rollup asks its own question: a `#(preaggregate)` rollup's base gates
-   // are grafted and proven on its variant (R3 for rollups), a v1 one's never.
+   // A rollup asks its own question: its base gates are grafted and proven on
+   // its variant (R3 for rollups), for a `#(preaggregate)` rollup and a v1
+   // `#@ preaggregate` line read as one (the cutover's G4) alike.
    const rollup = plan?.preaggregatePlans?.[sourceID];
    if (rollup !== undefined) return rollupGateEnforcedAtRead(rollup);
    // A `#(materialize)` source is v2's: its gate is admitted only with v2's

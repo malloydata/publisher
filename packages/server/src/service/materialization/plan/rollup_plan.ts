@@ -158,7 +158,10 @@ export interface RollupMeasure {
  * entry, eligibility and run instructions), with what the variant needs.
  */
 export interface RollupVariantPlan extends RollupPlan {
-   /** Marks a `#(preaggregate)` rollup apart from a v1 `#@ preaggregate` one. */
+   /**
+    * Marks a rollup the variant leg plans and serves: a `#(preaggregate)`
+    * one, or a v1 `#@ preaggregate` line read as one (the cutover's G4).
+    */
    variant: true;
    baseSourceID: string;
    /** The base's declared name (its name in its declaring file). */
@@ -266,7 +269,10 @@ function rollupsServeGatedBases(placement: { storage?: string }): boolean {
    );
 }
 
-/** A `#(preaggregate)` rollup's plan, never a v1 `#@ preaggregate` one. */
+/**
+ * A rollup the variant leg planned: a `#(preaggregate)` one, or a v1
+ * `#@ preaggregate` line read as one (the cutover's G4).
+ */
 function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
    return (
       typeof plan === "object" &&
@@ -279,10 +285,11 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
  * Whether a planned rollup's base gate is enforced when it is read (R3 for
  * rollups): `govern()` grafts and proves the base's gates on the rollup
  * variant, so the tier checks that refuse a gated build (the colocated and
- * storage `authorize` refusals) do not apply to it. True only for a
- * `#(preaggregate)` rollup (a v1 `#@ preaggregate` rollup's serve shape keeps
- * no gates) over a gated base, whose every gate the planner proved exact on
- * the rollup (table 1: each field a grain dimension, no gated join), at a
+ * storage `authorize` refusals) do not apply to it. True only for a rollup
+ * the variant leg planned (a `#(preaggregate)` one, or a v1 `#@ preaggregate`
+ * line read as one, the cutover's G4) over a gated base, whose every gate the
+ * planner proved exact on the rollup (table 1: each field a grain dimension,
+ * no gated join), at a
  * placement the gate policy allows (`domain/gate_policy.ts`). The build plan, the
  * host-instructed build and the serve bind all ask this one question, through
  * `gateEnforcedAtRead`, so a rollup is never built that cannot be read, nor

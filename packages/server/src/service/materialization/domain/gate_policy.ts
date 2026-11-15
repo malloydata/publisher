@@ -51,7 +51,11 @@ type GateTier = "colocated" | "storage";
 export interface GatedTable {
    readonly kind: GateKind;
    readonly tier: GateTier;
-   /** A v1 declaration (`#@ persist`, `#@ preaggregate`), not a v2 one. */
+   /**
+    * A v1 declaration (`#@ persist`), not a v2 one; for a rollup, one the
+    * variant leg did not plan (a v1 `#@ preaggregate` line is planned as a
+    * variant since the cutover's G4, so it is not `v1` here).
+    */
    readonly v1: boolean;
    /**
     * For a `materialize` or `pair` table: its entry point's gate, as plan
@@ -89,7 +93,9 @@ const ROWS: Record<GateKind, Row> = {
    pair: (t, s) => materializedKeepsGates(t, s),
    // A `#(preaggregate)` rollup's variant redeclares its base with its gates,
    // proven on the rollup; colocated under the gated-sources switch, in a
-   // storage destination only once that is reviewed. A v1 rollup keeps none.
+   // storage destination only once that is reviewed, a v1 `#@ preaggregate`
+   // line read as one (G4) alike. A rollup no variant was planned for keeps
+   // none.
    rollup: (t, s) =>
       !t.v1 &&
       t.baseGateProven === true &&
