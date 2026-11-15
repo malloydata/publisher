@@ -147,7 +147,6 @@ export {
    buildTargetOf,
    compilerBuildId,
    computeSourceEntityId,
-   foldDistinctTableNames,
    plannedSources,
    resolveConnectionDigests,
    setTestAddressForTarget,
@@ -349,6 +348,16 @@ export function storedColumnNames(persistSource: PersistSource): string[] {
       throw new Error("the compiled source declares no atomic columns");
    }
    return names;
+}
+
+/**
+ * The plan's {@link TableFolds} (foldDistinctTableNames), with each
+ * `storage=` source's stored columns read as its build writes them.
+ */
+export function planTableFolds(
+   plan: Parameters<typeof foldDistinctTableNames>[0],
+): TableFolds {
+   return foldDistinctTableNames(plan, storedColumnNames);
 }
 
 /**
@@ -1835,7 +1844,7 @@ export function deriveBuildPlanOutcome(
 ): BuildPlanOutcome {
    // Before anything addresses a source: each author `name=` its own table,
    // decided over the whole package unless the compile already decided it.
-   const tableFolds = collected.tableFolds ?? foldDistinctTableNames(collected);
+   const tableFolds = collected.tableFolds ?? planTableFolds(collected);
    // Before anything reads the plan: a refused source is neither built nor
    // served, and its warning replaces it (#6644). A valid incremental
    // declaration this deployment cannot honour was refused alone where the
@@ -1937,7 +1946,7 @@ export function refuseAloneInPlan<
    const folded =
       compiled.tableFolds !== undefined
          ? compiled
-         : { ...compiled, tableFolds: foldDistinctTableNames(compiled) };
+         : { ...compiled, tableFolds: planTableFolds(compiled) };
    return refuseIncrementalUnbuildable(refuseCollidingMaterialize(folded));
 }
 

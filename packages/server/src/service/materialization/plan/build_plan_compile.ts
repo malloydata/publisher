@@ -19,7 +19,7 @@ import {
    deriveBuildPlanOutcome,
    refuseAloneInPlan,
    emptyBuildPlanParts,
-   foldDistinctTableNames,
+   planTableFolds,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanOutcome,
@@ -191,7 +191,7 @@ export async function compilePackageBuildPlan(
    const versionScoped = versionOwnsTables(pkg);
    // Before anything addresses a source: each author `name=` its own table,
    // decided over every source before any is refused.
-   const tableFolds = foldDistinctTableNames({ ...parts, connectionDigests });
+   const tableFolds = planTableFolds({ ...parts, connectionDigests });
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name, or a source whose incremental declaration
    // this deployment cannot honour, must not build here either.

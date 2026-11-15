@@ -27,7 +27,6 @@ import { tableNamesMeet } from "../domain/table_name";
 import {
    declaredStorage,
    deriveAnnotationFields,
-   deriveColumns,
 } from "./persist_source_fields";
 
 /**
@@ -441,21 +440,21 @@ function declaresOwnPersist(source: PersistSource): boolean {
 }
 
 /**
- * The columns a `storage=` build of `source` stores (its public columns,
- * as projectToPublicColumns writes them), sorted; "" for a colocated source,
+ * The columns a `storage=` build of `source` stores (as
+ * projectToStoredColumns writes them), sorted; "" for a colocated source,
  * whose build writes its whole query, or one whose columns cannot be read
  * (its storage build refuses on its own).
  */
-function storedProjection(source: PersistSource): string {
+function storedProjection(
+   source: PersistSource,
+   storedColumns: (source: PersistSource) => string[],
+): string {
    try {
       if (!declaredStorage(source)) return "";
+      return [...storedColumns(source)].sort().join(",");
    } catch {
       return "";
    }
-   return deriveColumns(source)
-      .map((c) => c.name)
-      .sort()
-      .join(",");
 }
 
 /**
@@ -498,13 +497,20 @@ export type TableFolds = Readonly<Record<string, string>>;
  * carried on the plan, so a plan less its refused sources keeps the
  * addresses.
  */
-export function foldDistinctTableNames(plan: {
-   sources: Record<string, PersistSource>;
-   targets?: Record<string, BuildTarget>;
-   connectionDigests: Record<string, string>;
-   preaggregatePlans?: Record<string, unknown>;
-   materializePlans?: Record<string, { nameDefaulted?: true }>;
-}): TableFolds {
+export function foldDistinctTableNames(
+   plan: {
+      sources: Record<string, PersistSource>;
+      targets?: Record<string, BuildTarget>;
+      connectionDigests: Record<string, string>;
+      preaggregatePlans?: Record<string, unknown>;
+      materializePlans?: Record<string, { nameDefaulted?: true }>;
+   },
+   /**
+    * The columns a `storage=` build of a source writes
+    * (build_plan's storedColumnNames); a throw reads as none.
+    */
+   storedColumns: (source: PersistSource) => string[],
+): TableFolds {
    const groups = new Map<
       string,
       {
@@ -544,7 +550,7 @@ export function foldDistinctTableNames(plan: {
             ? (declared ?? "").toLowerCase()
             : (declared ?? ""),
          defaulted,
-         stores: rollup ? "" : storedProjection(source),
+         stores: rollup ? "" : storedProjection(source, storedColumns),
          declaration: declarationOf(source),
          declares: declaresOwnPersist(source),
       });

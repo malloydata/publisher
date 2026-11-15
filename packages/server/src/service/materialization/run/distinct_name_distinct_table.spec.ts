@@ -18,10 +18,8 @@ import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_ha
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { BuildInstruction } from "../domain/types";
-import {
-   computeSourceEntityId,
-   foldDistinctTableNames,
-} from "../plan/addressing";
+import { computeSourceEntityId } from "../plan/addressing";
+import { planTableFolds } from "../plan/build_plan";
 import {
    assertNoTableCollisions,
    indexInstructions,
@@ -258,7 +256,7 @@ describe("one table per stored projection", () => {
                order,
                CONNECTIONS,
             );
-            const tableFolds = foldDistinctTableNames(compiled);
+            const tableFolds = planTableFolds(compiled);
             const addresses = Object.values(compiled.sources).map((s) =>
                computeSourceEntityId(
                   s,

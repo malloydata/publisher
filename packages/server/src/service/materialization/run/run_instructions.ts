@@ -30,7 +30,7 @@ import {
 import {
    CompiledBuildPlan,
    computeSourceEntityId,
-   foldDistinctTableNames,
+   planTableFolds,
    sharedTables,
    sourcesInBuildOrder,
    tierGateInputs,
@@ -126,7 +126,7 @@ function gateSources(
    const cleared = new Map<string, EligibilityTier>();
    // A compiled package's plan carries its folds; a hand-made one is decided
    // here, over every source.
-   const tableFolds = compiled.tableFolds ?? foldDistinctTableNames(compiled);
+   const tableFolds = compiled.tableFolds ?? planTableFolds(compiled);
    // Two definitions writing one table (sharedTables): neither is built,
    // whether or not the other is rebuilt this run or carried.
    const shared = sharedTables({ ...compiled, tableFolds });
