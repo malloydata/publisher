@@ -947,8 +947,9 @@ export class ServedCopyServe {
    }
 
    /**
-    * A query that sets a timezone is answered live when it reads either
-    * of two tables. A stored computed dimension (`order_ts.day`,
+    * A query that sets a timezone, in its own text or through the source it
+    * runs on (a `timezone:` on that source or anything on its chain), is
+    * answered live when it reads either of two tables. A stored computed dimension (`order_ts.day`,
     * `day_of_week(order_ts)`) was evaluated at build in the default
     * timezone; live evaluates it in the query's. And a rolling window's
     * cut-off moves: Malloy takes its offset in the zone's wall time, so
@@ -965,7 +966,9 @@ export class ServedCopyServe {
          compiled.computedTables?.has(b.tablePath),
       );
       const windowed = tablesRead.some((b) => this.readsRollingWindow(b));
-      if ((computed || windowed) && setsTimezone((await prepared()).query)) {
+      if (!computed && !windowed) return;
+      const { query, structRef } = await prepared();
+      if (setsTimezone(query) || sourceSetsTimezone(compiled, structRef)) {
          decline(
             computed
                ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
@@ -2754,6 +2757,29 @@ function v1ColumnsOf(
  * One query's answer in progress in one compiled copy, as each of
  * {@link ServedCopyServe}'s answer checks reads it.
  */
+/**
+ * Whether the source a query runs on sets a time zone itself, or inherits one
+ * from anything on its chain (`ny is orders extend { timezone: … }`): the
+ * query is then computed in that zone, though its own text names none.
+ * Fails closed: a source that cannot be resolved counts as zoned.
+ */
+function sourceSetsTimezone(compiled: Compiled, structRef: unknown): boolean {
+   try {
+      const struct = resolveStructRefSource<unknown>(
+         structRef as never,
+         compiled.modelDef as never,
+      );
+      if (struct === undefined) return true;
+      if (queryTimezoneOf(struct) !== undefined) return true;
+      const map = SourceMap.of(compiled.modelDef);
+      return map
+         .chainOf(struct)
+         .some((id) => queryTimezoneOf(map.node(id)?.def) !== undefined);
+   } catch {
+      return true;
+   }
+}
+
 interface AnswerAttempt {
    compiled: Compiled;
    queryString: string;

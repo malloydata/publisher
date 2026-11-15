@@ -311,11 +311,16 @@ function inheritedWhereDetail(code: string): string {
  * Anchored on the `#@ persist` that applies, not the source's own statement:
  * an extension that declares no `#@ persist` inherits its parent's, shares
  * the parent's table and is read through it, so the parent's own term is its
- * too. A term is the declaring source's when every use of it lies after that
- * annotation in its file and, when the source itself is declared there,
- * before the end of the source's statement (a base is declared before the
- * annotation, so its term lies ahead of it). Fails closed: a term with no
- * location, or a source with no readable annotation or location, counts as
+ * too. A term is accepted when it lies in the source's own statement, or when
+ * every use of it lies after that annotation in its file and, when the source
+ * itself is declared there, before the end of the source's statement: that is,
+ * in any declaration after the annotation that the served copy keeps as text
+ * (a base is declared before the annotation, so its term lies ahead of it).
+ * What a term in an unannotated declaration between the annotation and the
+ * source leaves to the read is guarded there: the served copy re-roots no
+ * source whose base chain filters, and refuses any re-root that lost a
+ * given-reading term. Fails closed: a term with no location, a source with
+ * no readable location, or one with no readable annotation counts as
  * inherited.
  */
 function inheritedGivenTerm(
@@ -323,22 +328,23 @@ function inheritedGivenTerm(
 ): string | undefined {
    const list = Array.isArray(record.filterList) ? record.filterList : [];
    const own = declarationLocation(record.location);
-   const anchor = persistAnnotationAt(record.annotations, own);
+   const anchor = own && persistAnnotationAt(record.annotations, own);
    for (const entry of list) {
       if (entry === null || typeof entry !== "object") continue;
       if (!readsAGiven(entry, new WeakSet())) continue;
       const uses = termLocations(entry).at;
       const written =
-         withinDeclaration(uses, own) ||
-         (anchor !== undefined &&
-            uses.length > 0 &&
-            uses.every(
-               (use) =>
-                  use.url === anchor.url &&
-                  notBefore(use.range.start, anchor.range.end) &&
-                  (own?.url !== anchor.url ||
-                     notBefore(own.range.end, use.range.end)),
-            ));
+         own !== undefined &&
+         (withinDeclaration(uses, own) ||
+            (anchor !== undefined &&
+               uses.length > 0 &&
+               uses.every(
+                  (use) =>
+                     use.url === anchor.url &&
+                     notBefore(use.range.start, anchor.range.end) &&
+                     (own.url !== anchor.url ||
+                        notBefore(own.range.end, use.range.end)),
+               )));
       if (!written) {
          const code = (entry as { code?: unknown }).code;
          return typeof code === "string" ? code : "";
@@ -350,11 +356,13 @@ function inheritedGivenTerm(
 /**
  * Where the `#@ persist` that applies to a source was written: the last one
  * in its own file ahead of its statement (its own, or the nearest it
- * inherits there), else the last one it inherits from another file.
+ * inherits there), else the last one it inherits from another file (the
+ * annotation chain lists what a source inherits before its own notes, so the
+ * last is the nearest).
  */
 function persistAnnotationAt(
    annotations: unknown,
-   own: TermUse | undefined,
+   own: TermUse,
 ): TermUse | undefined {
    let notes: { text?: unknown; at?: TermUse }[];
    try {
@@ -373,20 +381,15 @@ function persistAnnotationAt(
             /^#@\s*persist\b/.test(notes[i].text as string),
       );
    const here = persists.filter(
-      (at) =>
-         own !== undefined &&
-         at.url === own.url &&
-         notBefore(own.range.start, at.range.end),
+      (at) => at.url === own.url && notBefore(own.range.start, at.range.end),
    );
-   const pool = here.length > 0 ? here : persists;
-   return pool.reduce<TermUse | undefined>(
-      (last, at) =>
-         last === undefined ||
-         (at.url === last.url && notBefore(at.range.start, last.range.start))
-            ? at
-            : last,
-      undefined,
-   );
+   if (here.length > 0) {
+      // In the source's own file: the one written last ahead of it.
+      return here.reduce((last, at) =>
+         notBefore(at.range.start, last.range.start) ? at : last,
+      );
+   }
+   return persists[persists.length - 1];
 }
 
 /** Whether position `a` is at or after position `b`. */

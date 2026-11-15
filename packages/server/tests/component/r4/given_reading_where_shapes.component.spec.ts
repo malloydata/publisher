@@ -582,3 +582,234 @@ describe("given-reading where: by where it is written, through a real package", 
       ).toBeDefined();
    }, 120_000);
 });
+
+/**
+ * Shapes a security review of the narrowing probed. A `timezone:` declared on
+ * the source a query runs on (not in the query) must still decline a table
+ * that stores a zone-dependent dimension, which the served copy computed in
+ * the build's zone. A current-time dimension a base declares refuses the
+ * source. A v1 table read through a chain of unannotated extensions (one
+ * adding the given-reading `where:`), in its file or another, and a
+ * multi-source `#@ persist` statement, answer as live for each caller.
+ */
+const reviewFiles: Record<string, string> = {
+   "data/ev.csv":
+      "id,org,amt\n1,acme,10\n2,acme,20\n3,globex,5\n4,globex,7\n5,globex,9\n6,initech,3\n",
+   "v1a.malloy": `${HEAD}
+given: ORG :: string
+${root("pa")}
+#@ persist name="pa" storage="lake"
+source: pa is ev_pa extend { measure: total is amt.sum() }
+source: pmid is pa extend { where: org = $ORG }
+source: pchild2 is pmid extend { dimension: a2 is amt * 2 }
+
+${root("pb")}
+#@ persist name="pb"
+source: pb is ev_pb extend { measure: total is amt.sum() }
+source: pbmid is pb extend { where: org = $ORG }
+source: pbchild is pbmid extend { dimension: a2 is amt * 2 }
+
+${root("ms")}
+#@ persist storage="lake"
+source:
+  ms1 is ev_ms extend { where: org = $ORG }
+  ms2 is ms1 extend { dimension: a3 is amt * 3 }
+`,
+   "v1b.malloy": `${HEAD}
+import "v1a.malloy"
+source: pchild is pmid extend { dimension: a4 is amt * 4 }
+source: pbchildx is pbmid extend { dimension: a4 is amt * 4 }
+`,
+   "zbase.malloy": `${HEAD}
+source: ev_z2 is duckdb.sql("""
+  SELECT id, org, amt, TIMESTAMP '2026-01-01 20:30:00' + INTERVAL (id) HOUR AS ts
+  FROM read_csv_auto('data/ev.csv')
+""")
+source: zb2 is ev_z2 extend { dimension: ts_day is ts.day }
+`,
+   "zone.malloy": `${HEAD}
+import "zbase.malloy"
+source: ev_z is duckdb.sql("""
+  SELECT id, org, amt, 'z' AS tag, TIMESTAMP '2026-01-01 20:30:00' + INTERVAL (id) HOUR AS ts
+  FROM read_csv_auto('data/ev.csv')
+""")
+source: zb is ev_z extend { dimension: ts_day is ts.day }
+#(materialize) storage="lake"
+source: mz is zb extend { measure: total is amt.sum() }
+source: mz_ny is mz extend { timezone: 'America/New_York' }
+source: mz_ny_ext is mz_ny extend { dimension: k is 1 }
+
+#(materialize) storage="lake"
+source: mz2 is zb2 extend { measure: total is amt.sum() }
+source: mz2_ny is mz2 extend { timezone: 'America/New_York' }
+
+source: ev_z3 is duckdb.sql("""
+  SELECT id, org, amt, 'z3' AS tag, TIMESTAMP '2026-01-01 20:30:00' + INTERVAL (id) HOUR AS ts
+  FROM read_csv_auto('data/ev.csv')
+""")
+#(materialize) storage="lake"
+source: mz3 is ev_z3 extend {
+  dimension: ts_day is ts.day
+  measure: total is amt.sum()
+}
+source: mz3_ny is mz3 extend { timezone: 'America/New_York' }
+`,
+   "now.malloy": `${HEAD}
+source: ev_n is duckdb.sql("""
+  SELECT id, org, amt, TIMESTAMP '2020-01-01 00:00:00' + INTERVAL (id * 3000) DAY AS ts
+  FROM read_csv_auto('data/ev.csv')
+""")
+source: nb is ev_n extend { dimension: past is ts < now }
+#(materialize) storage="lake"
+source: mn is nb extend { measure: total is amt.sum() }
+`,
+};
+
+const DAYS = (s: string) =>
+   `run: ${s} -> { group_by: ts_day; aggregate: n is count() }`;
+
+const REVIEW: {
+   name: string;
+   model: string;
+   query: string;
+   /** Answered from a stored table through the served copy. */
+   fromTable: boolean;
+   /** Queried per caller (ORG), each answer its own rows only. */
+   perCaller: boolean;
+}[] = [
+   ...(
+      [
+         ["v1a.malloy", "pmid"],
+         ["v1a.malloy", "pchild2"],
+         ["v1b.malloy", "pchild"],
+         ["v1a.malloy", "pbmid"],
+         ["v1a.malloy", "pbchild"],
+         ["v1b.malloy", "pbchildx"],
+         ["v1a.malloy", "ms1"],
+         ["v1a.malloy", "ms2"],
+      ] as const
+   ).map(([model, source]) => ({
+      name: `v1, read through unannotated extensions: ${source}`,
+      model,
+      query: `run: ${source} -> ${AGG}`,
+      fromTable: true,
+      perCaller: true,
+   })),
+   {
+      name: "#(materialize), a zone-dependent dimension on a base, no zone: from the table",
+      model: "zone.malloy",
+      query: DAYS("mz"),
+      fromTable: true,
+      perCaller: false,
+   },
+   {
+      name: "#(materialize), the same, timezone: on the queried source (same file): live",
+      model: "zone.malloy",
+      query: DAYS("mz_ny"),
+      fromTable: false,
+      perCaller: false,
+   },
+   {
+      name: "#(materialize), the same, timezone: on a source up the chain: live",
+      model: "zone.malloy",
+      query: DAYS("mz_ny_ext"),
+      fromTable: false,
+      perCaller: false,
+   },
+   {
+      name: "#(materialize), the same over a base in another file, timezone: on the queried source: live",
+      model: "zone.malloy",
+      query: DAYS("mz2_ny"),
+      fromTable: false,
+      perCaller: false,
+   },
+   {
+      name: "#(materialize), its own zone-dependent dimension, timezone: on the queried source: from the table, computed at read",
+      model: "zone.malloy",
+      query: DAYS("mz3_ny"),
+      fromTable: true,
+      perCaller: false,
+   },
+   {
+      name: "#(materialize), a current-time dimension on a base: not built, live",
+      model: "now.malloy",
+      query: "run: mn -> { group_by: past; aggregate: n is count() }",
+      fromTable: false,
+      perCaller: false,
+   },
+];
+
+describe("given-reading where: and caller-dependent dimensions: shapes a security review probed", () => {
+   let restore: () => void;
+   let fixture: LoadedFixture;
+   const live: Record<string, Outcome> = {};
+   const callersOf = (perCaller: boolean) =>
+      perCaller ? CALLERS.map((ORG) => ({ ORG })) : [undefined];
+
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      await freshLoadPool();
+      const loaded = await loadFixture(reviewFiles);
+      for (const c of REVIEW) {
+         for (const givens of callersOf(c.perCaller)) {
+            live[`${c.query}/${givens?.ORG}`] = await loaded.run(
+               c.model,
+               c.query,
+               givens,
+            );
+         }
+      }
+      fixture = await loaded.bind();
+   }, 300_000);
+
+   afterAll(async () => {
+      await fixture?.dispose();
+      restore();
+      await freshLoadPool();
+   });
+
+   it("refuses the current-time dimension a base declares, at plan", () => {
+      expect(fixture.built.some((b) => b.name === "mn")).toBe(false);
+      expect(
+         fixture.warnings.find((w) => w.subject === "mn")?.message,
+      ).toContain(
+         "declare the current-time dimension on the materialized source itself",
+      );
+   });
+
+   it("the zone moves the answer, so a table read in the build's zone could not match", () => {
+      const utc = answered(live[`${DAYS("mz")}/undefined`]).rows;
+      const ny = answered(live[`${DAYS("mz_ny")}/undefined`]).rows;
+      expect(rowDifference(utc, ny)).toBeDefined();
+   });
+
+   for (const c of REVIEW) {
+      it(
+         c.name,
+         async () => {
+            const answers: Record<string, unknown>[][] = [];
+            for (const givens of callersOf(c.perCaller)) {
+               const before = answered(live[`${c.query}/${givens?.ORG}`]);
+               const now = answered(
+                  await fixture.run(c.model, c.query, givens),
+               );
+               expect(rowDifference(before.rows, now.rows)).toBeUndefined();
+               expect(now.servedBy).toBe(c.fromTable ? "materialized" : "live");
+               if (c.fromTable) expect(now.via).toBe("served_copy");
+               if (givens) {
+                  for (const row of now.rows) expect(row.org).toBe(givens.ORG);
+               }
+               answers.push(now.rows);
+            }
+            if (c.perCaller) {
+               expect(rowDifference(answers[0], answers[1])).toBeDefined();
+               expect(rowDifference(answers[0], answers[2])).toBeUndefined();
+               expect(rowDifference(answers[1], answers[3])).toBeUndefined();
+            }
+         },
+         120_000,
+      );
+   }
+});

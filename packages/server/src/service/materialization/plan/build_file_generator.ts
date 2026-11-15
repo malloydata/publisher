@@ -123,10 +123,11 @@
  * current time or the query time zone. The probe compiler (probe_compiler.ts)
  * answers which, by compiling a probe of each computed dimension, never
  * running it; the IR walks ({@link givenReadingFields}, `currentTimeFields`)
- * answer too, and either marking a dimension leaves it out. A given or the
- * current time leaves it out wherever it is declared (a given-reading one
- * declared where the served copy cannot keep its definition refuses the
- * source, and an author should hear why); the time zone leaves out only a
+ * answer too, and either marking a dimension leaves it out. One that reads a
+ * given or the current time and is declared anywhere but the source's own
+ * declaration refuses the source: the served copy keeps no other text, so it
+ * could not compute the dimension at read, and an author should hear why
+ * rather than get a table no query reads. The time zone leaves out only a
  * dimension whose definition the served copy keeps (the source's own): any
  * other is stored as the build computes it, in the default
  * zone, and a query that sets a `timezone:` over its table is answered live.
@@ -841,7 +842,12 @@ function callerDependentDimensions(
       if (probe?.timeZone === true) reads.push("time_zone");
       const own = reads.length > 0 && kept(field);
       if (reads.includes("given") && !own) {
-         return { reason: givenDimensionNotOwnReason(dimension) };
+         return { reason: dimensionNotOwnReason(dimension, "a given") };
+      }
+      if (reads.includes("current_time") && !own) {
+         return {
+            reason: dimensionNotOwnReason(dimension, "the current time"),
+         };
       }
       const perRead =
          reads.includes("given") ||
@@ -871,14 +877,17 @@ function givenWhereNotOwnReason(shown: string): string {
    );
 }
 
-/** {@link givenWhereNotOwnReason}, for a given-reading dimension. */
-function givenDimensionNotOwnReason(dimension: string): string {
+/** {@link givenWhereNotOwnReason}, for a dimension that reads a given or the current time. */
+function dimensionNotOwnReason(
+   dimension: string,
+   reads: "a given" | "the current time",
+): string {
    return (
-      `the dimension ${quotedName(dimension)} reads a given and is not ` +
+      `the dimension ${quotedName(dimension)} reads ${reads} and is not ` +
       "declared on this source, so it could not be computed over the " +
       "stored table at read; the source is answered live. To serve it " +
-      "from a table, declare the given-reading dimension on the " +
-      "materialized source itself"
+      `from a table, declare the ${reads === "a given" ? "given-reading" : "current-time"} ` +
+      "dimension on the materialized source itself"
    );
 }
 
