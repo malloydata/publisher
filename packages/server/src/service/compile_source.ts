@@ -34,7 +34,7 @@ import {
 } from "../path_safety";
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
-import { URL_READER } from "../utils";
+import { packageURLReader } from "../utils";
 import {
    ANNOTATION_GATE_NEAR_MISS_CODE,
    ANNOTATION_NEAR_MISS_CODE,
@@ -392,12 +392,13 @@ async function openCompileContext(
    // file is not substituted.
    const substitute = scope !== "package" || source !== undefined;
    const overlaid = overlayByUrl(packagePath, overlay);
+   const diskReader = packageURLReader(packagePath);
    const interceptingReader = {
       readURL: async (url: URL) => {
          if (substitute && url.toString() === virtualUri) {
             return fullSource;
          }
-         return overlaid.get(overlayKey(url)) ?? URL_READER.readURL(url);
+         return overlaid.get(overlayKey(url)) ?? diskReader.readURL(url);
       },
    };
 

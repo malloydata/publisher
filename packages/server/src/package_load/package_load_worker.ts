@@ -83,7 +83,7 @@ import {
    ignoredRetrievalWarnings,
    readPackageRetrieval,
 } from "../service/package_retrieval_settings";
-import { errMessage, ignoreDotfiles } from "../utils";
+import { errMessage, ignoreDotfiles, readPackageURL } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
 import {
@@ -504,7 +504,8 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// URLReader: file:// → fs; everything else proxies to main thread
+// URLReader: file:// → fs, inside the package only; everything else proxies
+// to the main thread
 // ──────────────────────────────────────────────────────────────────────
 
 function makeWorkerUrlReader(job: LoadPackageRequest): {
@@ -527,7 +528,7 @@ function makeWorkerUrlReader(job: LoadPackageRequest): {
             const filePath = fileURLToPath(url);
             const held = inMemory.get(path.resolve(filePath));
             if (held !== undefined) return held;
-            return fs.promises.readFile(filePath, "utf8");
+            return readPackageURL(job.packagePath, url);
          }
          const response = await callMain<ReadUrlResponse>((requestId) => {
             const req: ReadUrlRequest = {

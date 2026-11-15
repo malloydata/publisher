@@ -21,7 +21,7 @@ import { logger } from "../logger";
 import type { SerializedNotebookCell } from "../package_load/notebook_cell_wire";
 import { safeJoinUnderRoot } from "../path_safety";
 import { BuildManifest } from "./materialization/domain/types";
-import { URL_READER } from "../utils";
+import { packageURLReader } from "../utils";
 import { parseMalloynb } from "./deprecated/malloynb";
 import { overlayKey, overlayKeyOfPath } from "./overlay_key";
 import {
@@ -98,14 +98,17 @@ export async function createModelRuntime(
    const baseUrl = new URL(".", modelURL);
    const importBaseURL = baseUrl;
    const overlay = options?.overlay;
+   // Disk reads stay inside the package; the overlay's virtual files are
+   // served before the disk is asked.
+   const diskReader = packageURLReader(packagePath);
    const inner =
       overlay && overlay.size > 0
          ? {
               readURL: async (url: URL) =>
                  overlay.get(overlayKey(url)) ??
-                 (await URL_READER.readURL(url)),
+                 (await diskReader.readURL(url)),
            }
-         : URL_READER;
+         : diskReader;
    // Only the model's own text: the Runtime lives as long as the Model, and imports' text is never asked for.
    let modelText: string | undefined;
    const urlReader = new HackyDataStylesAccumulator({
@@ -269,10 +272,13 @@ export type HydrationMaterializer = ModelMaterializer & {
 };
 
 export function makeHydrationRuntime(
+   packagePath: string,
    malloyConfig: ModelConnectionInput,
    buildManifest?: BuildManifest["entries"],
 ): HydrationRuntime {
-   const urlReader = new HackyDataStylesAccumulator(URL_READER);
+   const urlReader = new HackyDataStylesAccumulator(
+      packageURLReader(packagePath),
+   );
    const config = toMalloyConfig(malloyConfig);
    // Malloy substitutes a persisted source for its materialized table at
    // getSQL time only when the runtime carries the manifest; without it the

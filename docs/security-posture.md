@@ -84,6 +84,22 @@ Concretely:
   deployed on your own origin. Publisher does not scan, sandbox, or vet them.
   Package-authored skill and agent text is served unauthenticated over MCP and REST too, bounded
   by the realpath rule (nothing that resolves outside the package) and the per-file size caps.
+- **A package's Malloy reads only its own package's files.** The same realpath rule bounds every
+  file the compiler reads for a package's models (an `import`, a `.malloynb`, a data-styles
+  file) on every compile: the load and its worker, a reload, `/compile` and MCP `compile_model`
+  at every scope, the build plan, and the generated build and served-copy models. A `file:` URL
+  is read only when its realpath is the package root or inside it. For a versioned package the
+  root is the version's own directory, so a version cannot read its siblings or the directory
+  that holds them. Both sides are resolved, so a package mounted as a symlink (watch mode) reads
+  its own files and a `../` between the package's own directories still works. A `../` that
+  climbs past the root, an absolute path, a symlink inside the package that leads out of it, and
+  any scheme but `file:` are refused. The refusal is one fixed message, "imports must stay inside
+  the package", with no path in it and the same whether or not the target exists, so an import
+  cannot probe the server's disk. Virtual files (a request's overlay, `/compile`'s
+  `__compile_check.malloy`, the generated companions) are served from memory before the disk is
+  asked. This bounds the compiler, not the query: SQL a model runs through DuckDB (`read_text`,
+  `read_csv`, `read_parquet`) reaches the filesystem through the connection and is not confined
+  by this rule (see gap 6).
 - **Registering a package is an operator action.** Packages come from `publisher.config.json` or a
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker
