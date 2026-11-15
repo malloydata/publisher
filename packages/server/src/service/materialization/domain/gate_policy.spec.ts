@@ -130,3 +130,48 @@ describe("the gate policy at the router", () => {
       expect(answerKeepsGates(leg, colocated, ON, G3)).toBe(false);
    });
 });
+
+describe("the gate policy's rows at their edges", () => {
+   it("fails closed on a rollup whose base gate was never proven", () => {
+      expect(
+         tableKeepsGates(
+            table({ kind: "rollup", tier: "colocated", gate: undefined }),
+            ON,
+         ),
+      ).toBe(false);
+   });
+
+   it("keeps a materialized table's gate in storage without the rollup review", () => {
+      for (const reviewed of [true, false]) {
+         expect(
+            tableKeepsGates(table({ kind: "materialize", tier: "storage" }), {
+               ...ON,
+               gatedStorageRollupsReviewed: reviewed,
+            }),
+         ).toBe(true);
+      }
+   });
+
+   it("keeps no persist table's gate, v1 or not, under every switch", () => {
+      const all: GateSwitches = {
+         materialize: true,
+         gatedSources: true,
+         gatedStorageRollupsReviewed: true,
+      };
+      for (const v1 of [true, false]) {
+         expect(tableKeepsGates(table({ kind: "persist", v1 }), all)).toBe(
+            false,
+         );
+      }
+      expect(tableKeepsGates(table({ kind: "view" }), all)).toBe(false);
+   });
+
+   it("keeps no gate for a served answer that read only storage tables under G3 alone", () => {
+      const OFF = { ...ON, gatedSources: false };
+      expect(
+         answerKeepsGates("served", [{ tier: "storage" }], OFF, {
+            colocatedReadsKeepGates: true,
+         }),
+      ).toBe(false);
+   });
+});
