@@ -10746,7 +10746,11 @@ components:
             another source's table already takes in that run: two sources of
             one model that share a name, such as a `#@ persist` source named
             like a persisted view's generated build source beside it, or a
-            hash collision; it is not built and is answered live).
+            hash collision; it is not built and is answered live), or a
+            source whose `name=` puts it on one table with another source,
+            under `PERSIST_COLLISION_ENFORCE=false` (by default such a
+            package does not load); neither is built, so neither overwrites
+            the other, and both are answered live).
 
 
             `given_in_persisted_query` is raised by BOTH gates, for one

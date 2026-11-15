@@ -170,4 +170,56 @@ describe("a run beside a source refused alone", () => {
       expect(run.error).toContain("its files carry");
       expect(await tables()).toEqual([]);
    });
+
+   it("under PERSIST_COLLISION_ENFORCE=false, builds neither source an author's name= puts on one table, and the rest", async () => {
+      const { restore } = installSettings({
+         env: {
+            PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+            PERSIST_COLLISION_ENFORCE: "false",
+         },
+      });
+      try {
+         fs.writeFileSync(
+            path.join(envPath, "pa", "model.malloy"),
+            [
+               "##! experimental.persistence",
+               `source: base is warehouse.sql("SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(k, who)")`,
+               '#@ persist name="dup"',
+               "source: one is base -> { group_by: who }",
+               '#@ persist name="dup"',
+               "source: two is base -> { group_by: k }",
+               "#@ persist",
+               "source: summary is base -> { group_by: who; aggregate: n is count() }",
+               "",
+            ].join("\n"),
+         );
+         await env.getPackage(parsePackageName("pa"), true);
+         const run = await build();
+         expect(run.status).toBe("MANIFEST_FILE_READY");
+         // Nothing at dup: neither overwrote the other.
+         expect(await tables()).toEqual([
+            autoRunTableName(ENV, "pa", "summary", {
+               modelPath: "model.malloy",
+            }),
+         ]);
+         const refused = Object.values(
+            (
+               run.metadata as {
+                  refusedSources?: Record<
+                     string,
+                     { name: string; reason: string }
+                  >;
+               }
+            )?.refusedSources ?? {},
+         )
+            .map((r) => [r.name, r.reason])
+            .sort();
+         expect(refused).toEqual([
+            ["one", "table_name_collision"],
+            ["two", "table_name_collision"],
+         ]);
+      } finally {
+         restore();
+      }
+   });
 });

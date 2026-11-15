@@ -45,6 +45,8 @@ import type { Package } from "../../service/package";
 import { installSettings } from "../settings_env";
 import { readableTableName } from "../../service/materialization/domain/table_name";
 import { writePackageFiles } from "../temp_package";
+import { sharedTables } from "../../service/materialization/plan/eligibility_collect";
+import { compilePackageBuildPlan } from "../../service/materialization/plan/build_plan_compile";
 import {
    type BuildCastOptions,
    castToDeclaredTypes,
@@ -443,9 +445,21 @@ async function buildAll(
          : {};
    };
    try {
+      // Sources an author's name= puts on one table are refused by a
+      // self-instructed run (only reachable under the collision opt-out), so
+      // neither is built: read off the plan the run compiles.
+      const shared =
+         pkg.persistenceCollisionWarnings().length > 0
+            ? sharedTables(
+                 await compilePackageBuildPlan(pkg, undefined, {
+                    keepIncrementalUnbuildable: true,
+                 }),
+              )
+            : new Map<string, string>();
       for (const entry of entries) {
          if (seen.has(entry.sourceEntityId)) continue;
          seen.add(entry.sourceEntityId);
+         if (shared.has(entry.sourceID)) continue;
          // The name a self-instructed build writes: an author's `name=` as
          // written, else Publisher's readable name, hashed over the source's
          // identity (its declaring model and name), so two sources of one

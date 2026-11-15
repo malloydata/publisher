@@ -33,6 +33,7 @@ import {
    sourcesInBuildOrder,
    tierGateInputs,
 } from "../plan/build_plan";
+import { sharedTables } from "../plan/eligibility_collect";
 import {
    assertPlacementNamed,
    assertTierEligible,
@@ -162,6 +163,17 @@ function gateSources(
                !!destination,
                tierGateInputs(compiled),
             );
+            // Two sources an author's name= puts on one table: refused
+            // alone, never built, so neither overwrites the other (only
+            // reachable under PERSIST_COLLISION_ENFORCE=false; otherwise the
+            // package does not load).
+            const sharing = sharedTables(compiled).get(persistSource.sourceID);
+            if (sharing !== undefined) {
+               throw new MaterializationEligibilityError({
+                  reason: "table_name_collision",
+                  message: sharing,
+               });
+            }
          } catch (err) {
             if (!(err instanceof MaterializationEligibilityError)) throw err;
             if (include) throw err;
