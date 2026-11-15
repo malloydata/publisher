@@ -3,26 +3,34 @@
 
 /**
  * R4 for the zone a served-copy table is read in against the zone it was
- * built in. A table holds the zone-dependent values (a computed dimension, a
- * truncation) its build evaluated in its stored source's own zone, so a query
- * that reads it in another zone is answered live, and one that reads it in
- * the same zone stays served:
+ * built in. A table holds its zone-dependent values (a computed dimension, a
+ * truncation) as its build evaluated them in its stored source's zone, its own
+ * or one it inherits. A query reads them in the zone its first stage computes
+ * in: its own `timezone:`, else its source's (own or inherited), else the
+ * default. Through a join the joined source's own zone is not applied, so a
+ * joined table is read in the query's zone too. A query that reads one of
+ * those values in another zone is answered live; any other query stays served:
  *
- * - through a join, a source's own `timezone:` is not applied (Malloy reads a
- *   joined source in the query's zone), so a table built in New York and read
- *   through a join with no zone set is read in UTC: declined;
+ * - a table built in New York, read through a join with no zone set (or with a
+ *   Los Angeles root, or two joins deep): declined; read through a join under
+ *   the query's own New York zone: served;
+ * - a query that reads none of the zone-dependent values (a measure of `amt`)
+ *   stays served whatever zone it reads in;
+ * - a root built in New York joining a table built in UTC: its own hour is
+ *   served, the joined table's hour declined;
+ * - an extension that inherits its zone from its base is built in that zone;
  * - an explicit `'UTC'` over a table built in the default zone is the same
  *   zone: served; `'Etc/UTC'` is not treated as one (a dialect may not know
- *   the alias): declined;
- * - a query's own zone equal to the zone the table was built in: served.
+ *   the alias): declined.
  *
- * Every answer, served or declined, equals live. Each runs on colocated
- * tables, where the join reads them on its own connection, and on `storage=`
- * tables in one destination with the joining source materialized too, the
- * shape that served the wrong rows.
+ * Every answer, served or declined, equals live, and every decline is the
+ * served copy's time-zone decline. Each runs on colocated tables, where the
+ * join reads them on its own connection, and the core cases on `storage=`
+ * tables in one destination with the joining source materialized too.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { logger } from "../../../src/logger";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -43,23 +51,30 @@ const seedSql = [
 ];
 
 // In a file of its own, so each table stores the dimensions as its build
-// computed them, in its source's own zone (the served copy keeps only the
-// blocks of bases declared in the source's own file).
+// computed them, in its source's zone (the served copy keeps only the blocks
+// of bases declared in the source's own file).
 const baseModel = `source: ev_base is duckdb.table('ev') extend {
   primary_key: id
   dimension: ts_hr is hour(ts), ts_day is ts.day
 }
+source: ev_ny is duckdb.table('ev') extend {
+  primary_key: id
+  timezone: 'America/New_York'
+  dimension: ts_hr is hour(ts), ts_day is ts.day
+}
 `;
+
+type Tier = "colocated" | "storage";
 
 /**
  * The model for one tier: colocated tables (`name=`), or `storage=` tables in
  * one destination, where `jb` is materialized too, so its join to `mzny` is
- * read from storage.
+ * read from storage. The colocated model adds the join shapes.
  */
-function modelFor(tier: "colocated" | "storage"): string {
+function modelFor(tier: Tier): string {
    const at = (name: string) =>
       tier === "colocated" ? `name="${name}"` : `storage="lake"`;
-   return `import "base.malloy"
+   const core = `import "base.malloy"
 
 #(materialize) ${at("mzny_t")}
 source: mzny is ev_base extend {
@@ -71,14 +86,193 @@ source: mzny is ev_base extend {
 source: mz is ev_base extend {
   measure: total is amt.sum()
 }
-
-${tier === "storage" ? `#(materialize) storage="lake"\n` : ""}source: jb is duckdb.table('ev') extend {
+`;
+   if (tier === "storage") {
+      return `${core}
+#(materialize) storage="lake"
+source: jb is duckdb.table('ev') extend {
   primary_key: id
   join_one: mzny on id = mzny.id
   measure: c is count()
 }
 `;
+   }
+   return `${core}
+#(materialize) name="inh_t"
+source: inh is ev_ny extend {
+  measure: total is amt.sum()
 }
+
+source: jb is duckdb.table('ev') extend {
+  primary_key: id
+  join_one: mzny on id = mzny.id
+  join_one: mz on id = mz.id
+  join_one: inh on id = inh.id
+  measure: c is count()
+}
+
+source: jla is duckdb.table('ev') extend {
+  primary_key: id
+  timezone: 'America/Los_Angeles'
+  join_one: mzny on id = mzny.id
+}
+
+source: jj is duckdb.table('ev') extend {
+  primary_key: id
+  join_one: jb on id = jb.id
+}
+
+source: mzj is mzny extend {
+  join_one: mz on id = mz.id
+}
+`;
+}
+
+interface Case {
+   name: string;
+   malloy: string;
+   /** Answered live with the served copy's time-zone decline (else served). */
+   declines?: true;
+   /** The tiers it runs in (default both). */
+   tiers?: Tier[];
+}
+
+const COLOCATED: Tier[] = ["colocated"];
+
+const CASES: Case[] = [
+   // A table built in New York, read through a join.
+   {
+      name: "a New York hour through a join, no zone set",
+      malloy:
+         "run: jb -> { group_by: mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      declines: true,
+   },
+   {
+      name: "a New York day through a join, no zone set",
+      malloy:
+         "run: jb -> { group_by: mzny.ts_day; aggregate: n is count(); order_by: ts_day }",
+      declines: true,
+   },
+   {
+      name: "a New York hour through a join, under the query's own New York zone",
+      malloy:
+         "run: jb -> { timezone: 'America/New_York'; group_by: mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      tiers: COLOCATED,
+   },
+   {
+      name: "a New York day through a join, under the query's own New York zone",
+      malloy:
+         "run: jb -> { timezone: 'America/New_York'; group_by: mzny.ts_day; aggregate: n is count(); order_by: ts_day }",
+      tiers: COLOCATED,
+   },
+   {
+      name: "a zone-free measure through a join",
+      malloy: "run: jb -> { aggregate: t is mzny.total }",
+      tiers: COLOCATED,
+   },
+   {
+      name: "a materialized joining source that reads no zoned value",
+      malloy: "run: jb -> { aggregate: c }",
+      tiers: ["storage"],
+   },
+   {
+      name: "a New York hour through a join under a Los Angeles root",
+      malloy:
+         "run: jla -> { group_by: mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      declines: true,
+      tiers: COLOCATED,
+   },
+   {
+      name: "a New York hour two joins deep",
+      malloy:
+         "run: jj -> { group_by: jb.mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      declines: true,
+      tiers: COLOCATED,
+   },
+   {
+      name: "a New York hour through a join from an inline extension",
+      malloy:
+         "run: jb extend { dimension: z is 1 } -> { group_by: mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      declines: true,
+      tiers: COLOCATED,
+   },
+   {
+      name: "a UTC hour through a join, under the query's New York zone",
+      malloy:
+         "run: jb -> { timezone: 'America/New_York'; group_by: mz.ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      declines: true,
+      tiers: COLOCATED,
+   },
+   // Two stored tables in different zones.
+   {
+      name: "a New York root's own hour, joining a UTC table",
+      malloy:
+         "run: mzj -> { group_by: ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      tiers: COLOCATED,
+   },
+   {
+      name: "a New York root's own hour, with a zone-free measure of the joined UTC table",
+      malloy:
+         "run: mzj -> { group_by: ts_hr; aggregate: t is mz.total; order_by: ts_hr }",
+      tiers: COLOCATED,
+   },
+   {
+      name: "a UTC table's hour, joined from a New York root",
+      malloy:
+         "run: mzj -> { group_by: ts_hr2 is mz.ts_hr; aggregate: n is count(); order_by: ts_hr2 }",
+      declines: true,
+      tiers: COLOCATED,
+   },
+   // An extension that inherits its zone from its base.
+   {
+      name: "an inherited New York hour, read directly",
+      malloy:
+         "run: inh -> { group_by: ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      tiers: COLOCATED,
+   },
+   {
+      name: "an inherited New York hour through a join, no zone set",
+      malloy:
+         "run: jb -> { group_by: inh.ts_hr; aggregate: n is count(); order_by: ts_hr }",
+      declines: true,
+      tiers: COLOCATED,
+   },
+   // Direct reads.
+   {
+      name: "a New York day, read directly",
+      malloy:
+         "run: mzny -> { group_by: ts_day; aggregate: n is count(); order_by: ts_day }",
+   },
+   {
+      name: "the query's own zone, the one the table was built in",
+      malloy:
+         "run: mzny -> { timezone: 'America/New_York'; group_by: ts_hr; aggregate: n is count(); order_by: ts_hr }",
+   },
+   {
+      name: "the table's source with its own zone, no zone in the query",
+      malloy:
+         "run: mzny -> { group_by: ts_hr; aggregate: n is count(); order_by: ts_hr }",
+   },
+   {
+      name: "'UTC' over a table built in the default zone",
+      malloy:
+         "run: mz -> { timezone: 'UTC'; group_by: ts_day; aggregate: n is count(); order_by: ts_day }",
+   },
+   {
+      name: "'Etc/UTC' over a table built in the default zone",
+      malloy:
+         "run: mz -> { timezone: 'Etc/UTC'; group_by: ts_day; aggregate: n is count(); order_by: ts_day }",
+      declines: true,
+   },
+   {
+      name: "a default-zone table with no zone anywhere",
+      malloy:
+         "run: mz -> { group_by: ts_day; aggregate: n is count(); order_by: ts_day }",
+   },
+];
+
+/** The served copy's time-zone declines, whose messages each name a zone. */
+const ZONE_DECLINE = /another (time )?zone than/;
 
 for (const tier of ["colocated", "storage"] as const) {
    describe(`R4: a served-copy table is read in the zone it was built in, or answered live [${tier}]`, () => {
@@ -99,74 +293,43 @@ for (const tier of ["colocated", "storage"] as const) {
          await disposeScenarios();
       });
 
-      /** The served copy's reason for skipping `malloy`, when it did. */
-      async function skipReason(malloy: string): Promise<string | undefined> {
-         const run = await fixture.runAsIs(malloy);
-         return (run.path?.considered ?? []).find(
-            (c) => c.kind === "materialized" && c.outcome === "skipped",
-         )?.reason;
+      /**
+       * The served copy's decline of `malloy`, from its debug log: the path
+       * report does not place a joined table, which is on no chain of the
+       * queried source, so the log is the one place every decline shows.
+       */
+      async function servedCopyDecline(
+         malloy: string,
+      ): Promise<string | undefined> {
+         const debug = spyOn(logger, "debug");
+         try {
+            await fixture.runAsIs(malloy);
+            return debug.mock.calls
+               .filter(
+                  (c) =>
+                     String(c[0]) === "served copy cannot answer this query",
+               )
+               .map((c) =>
+                  String(
+                     ((c as unknown[])[1] as { error?: string } | undefined)
+                        ?.error,
+                  ),
+               )[0];
+         } finally {
+            debug.mockRestore();
+         }
       }
 
-      // A colocated joined table is on no chain of the queried source, so the
-      // path report does not place it and its decline shows as a live answer;
-      // a `storage=` one is read through `jb`'s own table, which it places.
-      const declined = [
-         [
-            "an hour built in New York, read through a join with no zone set",
-            "run: jb -> { group_by: mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
-            tier === "storage",
-         ],
-         [
-            "a day built in New York, read through a join with no zone set",
-            "run: jb -> { group_by: mzny.ts_day; aggregate: n is count(); order_by: ts_day }",
-            tier === "storage",
-         ],
-         [
-            "'Etc/UTC' over a table built in the default zone",
-            "run: mz -> { timezone: 'Etc/UTC'; group_by: ts_day; aggregate: n is count(); order_by: ts_day }",
-            true,
-         ],
-      ] as const;
-      for (const [name, malloy, placed] of declined) {
-         it(`declines ${name} (TIME_ZONE), equal to live`, async () => {
-            const run = await fixture.run({ name, malloy });
-            expect(run.servedVia).toBeUndefined();
+      for (const c of CASES.filter((c) => !c.tiers || c.tiers.includes(tier))) {
+         it(`${c.declines ? "declines" : "serves"} ${c.name}, equal to live`, async () => {
+            const run = await fixture.run({ name: c.name, malloy: c.malloy });
             expect(rowDifference(run.live, run.served)).toBeUndefined();
-            if (placed) expect(await skipReason(malloy)).toBe("TIME_ZONE");
-         });
-      }
-
-      const served = [
-         [
-            "'UTC' over a table built in the default zone",
-            "run: mz -> { timezone: 'UTC'; group_by: ts_day; aggregate: n is count(); order_by: ts_day }",
-         ],
-         [
-            "the query's own zone, the one the table was built in",
-            "run: mzny -> { timezone: 'America/New_York'; group_by: ts_hr; aggregate: n is count(); order_by: ts_hr }",
-         ],
-         [
-            "the table's source with its own zone, no zone in the query",
-            "run: mzny -> { group_by: ts_hr; aggregate: n is count(); order_by: ts_hr }",
-         ],
-         [
-            "a default-zone table with no zone anywhere",
-            "run: mz -> { group_by: ts_day; aggregate: n is count(); order_by: ts_day }",
-         ],
-         ...(tier === "storage"
-            ? ([
-                 [
-                    "a materialized joining source that reads no zoned value",
-                    "run: jb -> { aggregate: c }",
-                 ],
-              ] as const)
-            : []),
-      ] as const;
-      for (const [name, malloy] of served) {
-         it(`serves ${name}, equal to live`, async () => {
-            const run = await fixture.run({ name, malloy });
-            expect(run.servedVia).toBe("served_copy");
-            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            if (c.declines) {
+               expect(run.servedVia).toBeUndefined();
+               expect(await servedCopyDecline(c.malloy)).toMatch(ZONE_DECLINE);
+            } else {
+               expect(run.servedVia).toBe("served_copy");
+            }
          });
       }
    });

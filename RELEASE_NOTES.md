@@ -23,13 +23,19 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — a stored table built in another zone, read through a join, answers live
 
-A `#(materialize)` table holds its zone-dependent values (a computed dimension such as `hour(ts)`, a truncation) as its build computed them, in its source's own zone. Read through a join, Malloy does not apply that source's `timezone:`, so a query that set no zone read the table in UTC while the table held, say, New York's values. The served copy answered it from the table and returned wrong rows: hours 16 to 21 where live gives 21 to 23 and 0 to 2. Such a query now answers live, with the `TIME_ZONE` reason. A query reads a table in the zone it sets, or the one its source sets or inherits, or the default; if that differs from the zone the table was built in, it answers live.
+A `#(materialize)` table holds its zone-dependent values (a computed dimension such as `hour(ts)`, a truncation) as its build computed them, in its source's zone, its own or one it inherits. Read through a join, Malloy does not apply the joined source's `timezone:`, so a query that set no zone read the table in UTC while the table held, say, New York's values. The served copy answered it from the table and returned wrong rows: hours 16 to 21 where live gives 21 to 23 and 0 to 2. Such a query now answers live, with the `TIME_ZONE` reason.
 
-Two related changes:
-- Only the spelling `'UTC'` counts as the default zone. An alias such as `'Etc/UTC'` is treated as another zone, and answers live, because a dialect may not know it (MySQL without its time zone tables converts it to NULL).
-- A stored table whose source the served copy cannot identify is treated as built in an unknown zone, so a query that reads its zone-dependent values answers live.
+The rule, for every value a table stores that depends on the zone:
+- **The read zone.** A query reads its tables in the zone its first stage computes in: its own `timezone:`, else the zone its source sets or inherits, else the default. Every other zone it sets, in a later stage or a nest, is compared too. A table reached through a join is read in that same zone.
+- **The build zone.** Each table was built in its stored source's zone, read from the author's model, where a zone the source inherits is kept.
+- **Decided per column.** A query is answered live only when it reads one of the table's zone-dependent columns (a computed dimension the probe compiler did not clear, or a restated truncation) in another zone. A query that reads none, such as a measure of `amt` through the join, stays on the table.
+- **Decided per table.** Only when the rows themselves depend on the zone does any read in another zone answer live: a zone-dependent `where:`, a rolling window, or a joined source stored as a record.
+- **Same-zone reads stay served.** For example, a join read under the query's own `timezone:` that matches the zone the table was built in.
+- **`'UTC'` and its aliases.** Only the spelling `'UTC'` counts as the default zone. An alias such as `'Etc/UTC'` is another zone, and answers live, because a dialect may not know it (MySQL without its time zone tables converts it to NULL).
+- **An unknown stored source** is treated as built in an unknown zone, so a query that reads its zone-dependent values answers live.
+- **A `#(materialize)` source with its own zone now keeps its timestamp truncations.** They are judged by the same rule, so `mzny -> { group_by: ts_day }` stays served. A query-shaped source that sets a zone still leaves them out, because its query's zone does not reach a query over it.
 
-The decline message now says "the query reads a table in another time zone than it was built in". No table is rebuilt or re-addressed, and no API change.
+The decline messages now say the query reads a table, or a value, "in another time zone than it was built in". No table is rebuilt or re-addressed, and no API change.
 
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 
