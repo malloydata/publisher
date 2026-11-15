@@ -45,6 +45,10 @@ import {
    OffSurfaceError,
 } from "../errors";
 import { getMaterializeEnabled, getPersistStorageMode } from "../config";
+import {
+   renderTagFindingsCache,
+   renderTagFindingsKey,
+} from "./render_tag_findings_cache";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
@@ -1019,6 +1023,7 @@ export class Model {
       model.preparedRenderTagResults = data.renderTagResults as
          | { label: string; result?: Malloy.Result }[]
          | undefined;
+      model.preparedRenderTagResultsDigest = data.renderTagResultsDigest;
       return model;
    }
 
@@ -2231,18 +2236,28 @@ export class Model {
       if (!mm) {
          return [];
       }
+      // The worker prepares targets in order up to its soft deadline; the rest
+      // are prepared here. Taken once.
+      const fromWorker = this.preparedRenderTagResults ?? [];
+      this.preparedRenderTagResults = undefined;
+      const digest = this.preparedRenderTagResultsDigest;
+      this.preparedRenderTagResultsDigest = undefined;
+      const targets = renderTagTargets(this.queries, this.sources);
+      // Only a digest of every target's result says what the findings are.
+      const cacheKey =
+         digest !== undefined && fromWorker.length === targets.length
+            ? renderTagFindingsKey(digest)
+            : undefined;
+      if (cacheKey !== undefined) {
+         const cached = renderTagFindingsCache.get(cacheKey);
+         if (cached !== undefined) return cached;
+      }
       // Dynamic import: the validator is heavy, so load it only when needed.
       const { validateRenderTags } = await import(
          "@malloydata/render-validator"
       );
 
-      // The worker prepares targets in order up to its soft deadline; the rest
-      // are prepared here. Taken once.
-      const fromWorker = this.preparedRenderTagResults ?? [];
-      this.preparedRenderTagResults = undefined;
-      const remaining = renderTagTargets(this.queries, this.sources).slice(
-         fromWorker.length,
-      );
+      const remaining = targets.slice(fromWorker.length);
       const prepared = [
          ...fromWorker.filter(
             (entry): entry is { label: string; result: Malloy.Result } =>
@@ -2281,6 +2296,9 @@ export class Model {
             });
          }
       }
+      if (cacheKey !== undefined) {
+         renderTagFindingsCache.set(cacheKey, findings);
+      }
       return findings;
    }
 
@@ -2291,6 +2309,9 @@ export class Model {
    private preparedRenderTagResults:
       | { label: string; result?: Malloy.Result }[]
       | undefined;
+
+   /** SerializedModel.renderTagResultsDigest, taken with the results. */
+   private preparedRenderTagResultsDigest: string | undefined;
 
    /**
     * Prepare render-tag targets compile-only: the ones the worker did not
