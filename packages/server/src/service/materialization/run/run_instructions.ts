@@ -444,6 +444,63 @@ function tableNameCollision(
 }
 
 /**
+ * Each address's fresh name (selfTableName), and whether a name is one
+ * another address takes fresh: a table keeps a recorded name only while no
+ * other address takes it fresh, so a source renamed beside a new source of
+ * its old name never locks the new one out of its table.
+ */
+function freshTableNames(
+   compiled: CompiledBuildPlan,
+   sources: ClearedSource[],
+   namers: Map<string, PersistSource>,
+   naming: SelfTableNaming | undefined,
+): {
+   freshNames: Map<string, string>;
+   takenByAnother: (
+      persistSource: PersistSource,
+      destination: string | undefined,
+      name: string,
+      sourceEntityId: string,
+   ) => boolean;
+} {
+   const freshNames = new Map<string, string>();
+   const takenFresh = new Map<string, Set<string>>();
+   for (const { persistSource, sourceEntityId, destination } of sources) {
+      if (freshNames.has(sourceEntityId)) continue;
+      const fresh = selfTableName(
+         compiled,
+         persistSource,
+         namers.get(sourceEntityId) ?? persistSource,
+         destination,
+         naming,
+      );
+      freshNames.set(sourceEntityId, fresh);
+      const key = tableKeyOf(
+         persistSource.connectionName,
+         destination,
+         tableIdentity(fresh),
+      );
+      takenFresh.set(
+         key,
+         (takenFresh.get(key) ?? new Set()).add(sourceEntityId),
+      );
+   }
+   return {
+      freshNames,
+      takenByAnother: (persistSource, destination, name, sourceEntityId) =>
+         [
+            ...(takenFresh.get(
+               tableKeyOf(
+                  persistSource.connectionName,
+                  destination,
+                  tableIdentity(name),
+               ),
+            ) ?? []),
+         ].some((address) => address !== sourceEntityId),
+   };
+}
+
+/**
  * Derive auto-run's own build instructions. Each persist source (respecting
  * `sourceNames`) gets a self-assigned physical name and COPY realization,
  * unless its sourceEntityId is unchanged since `priorEntries`, in which case
@@ -501,47 +558,12 @@ export function deriveSelfInstructions(
       include,
    );
    const namers = namingSources(compiled, sources, naming?.packagePath);
-   // Each address's fresh name, and which addresses take each one fresh: a
-   // table keeps a recorded name only while no other address takes it fresh,
-   // so a source renamed beside a new source of its old name never locks the
-   // new one out of its table.
-   const freshNames = new Map<string, string>();
-   const takenFresh = new Map<string, Set<string>>();
-   for (const { persistSource, sourceEntityId, destination } of sources) {
-      if (freshNames.has(sourceEntityId)) continue;
-      const fresh = selfTableName(
-         compiled,
-         persistSource,
-         namers.get(sourceEntityId) ?? persistSource,
-         destination,
-         naming,
-      );
-      freshNames.set(sourceEntityId, fresh);
-      const key = tableKeyOf(
-         persistSource.connectionName,
-         destination,
-         tableIdentity(fresh),
-      );
-      takenFresh.set(
-         key,
-         (takenFresh.get(key) ?? new Set()).add(sourceEntityId),
-      );
-   }
-   const takenByAnother = (
-      persistSource: PersistSource,
-      destination: string | undefined,
-      name: string,
-      sourceEntityId: string,
-   ) =>
-      [
-         ...(takenFresh.get(
-            tableKeyOf(
-               persistSource.connectionName,
-               destination,
-               tableIdentity(name),
-            ),
-         ) ?? []),
-      ].some((address) => address !== sourceEntityId);
+   const { freshNames, takenByAnother } = freshTableNames(
+      compiled,
+      sources,
+      namers,
+      naming,
+   );
    const seen = new Set<string>();
    // Readable names this run writes, by where they live, and whose.
    const derived = new Map<string, string>();
