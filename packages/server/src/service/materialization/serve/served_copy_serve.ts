@@ -4,21 +4,21 @@
 /**
  * The served model on `virtual`: one model's served copy (served_copy.ts),
  * compiled once per binding set and answering queries the router sends it
- * (materialization v2, phase 3).
+ * (the router's served leg).
  *
- * Behind `materialize.enabled` (`PUBLISHER_MATERIALIZE`, default on), the one switch for `#(materialize)` build and serve. With it off nothing here
- * runs and serving goes through today's storage serve shape and the colocated
- * build manifest, unchanged.
+ * It reads a source's own table, `#(materialize)` or v1 `#@ persist`
+ * (never a rollup's or a persisted view's): a `storage=` table only while
+ * the host has storage destinations to serve from
+ * (`PERSIST_STORAGE_MODE=on`), a colocated one always.
  *
  * The served copy compiles in a runtime whose connections are the package's
  * own plus each storage destination under a per-process alias
  * (served_copy_config.ts), so the author's text never names a destination. A
- * colocated `#(materialize)` table (colocated_bindings.ts) is read through the
- * source's own connection, which the package's connections already hold, so a
- * copy of colocated tables alone needs no storage tier.
- * A compile failure leaves the model's sources serving through the next
- * candidate (today's serve shape, then live) and is reported as a coded
- * package warning.
+ * colocated table (`deriveColocatedServeBindings`, bind.ts) is read through
+ * the source's own connection, which the package's connections already hold,
+ * so a copy of colocated tables alone needs no storage tier.
+ * A compile failure leaves the model's sources answering live and is
+ * reported as a coded package warning.
  */
 
 import { requireUnique, verdictOf } from "../domain/key_check";
@@ -508,11 +508,10 @@ type AuthorReroot = Reroot & {
    /**
     * The stored columns left out of the `type:`, so only a query reading
     * one fails to compile here and answers live; their absence is not a lost
-    * field. For a v1 re-root under the cutover's per-column types (G5), the
-    * columns no cast reads as their declared type; on any re-root, the
-    * big-integer columns no native cast reads exactly (known limitation 12:
-    * one stored as a float, a warehouse whose bigint type Malloy does not
-    * read back as one).
+    * field. For a v1 re-root, the columns no cast reads as their declared
+    * type; on any re-root, the big-integer columns no native cast reads
+    * exactly (known limitation 12: one stored as a float, a warehouse whose
+    * bigint type Malloy does not read back as one).
     */
    columnsLeftOut?: readonly string[];
 };
@@ -1034,8 +1033,7 @@ export class ServedCopyServe {
     * takes its offset in the zone's wall time, so across a daylight-saving
     * change a read at the build's own clock needs up to an hour older than
     * the build stored. A table's zone-dependent columns alone are decided
-    * per column (`checkZonedColumns`). The serve shape never carries a
-    * `#(materialize)` table.
+    * per column (`checkZonedColumns`).
     */
    private async checkTimeZone(
       attempt: AnswerAttempt,
@@ -1103,7 +1101,7 @@ export class ServedCopyServe {
     * through it (its rows fan out per child, and the join would read the
     * rollup once per pair row); a join the copy answers from stored columns
     * keeps its grain and annotation rules. The copy's time-zone rule needs
-    * no check here: the join leg declines every query that sets a
+    * no check here: the join branch declines every query that sets a
     * `timezone:` (`TIME_ZONE`) before it compiles one. Throws a
     * {@link LegDecline}.
     */
@@ -1581,7 +1579,7 @@ export class ServedCopyServe {
    }
 
    /**
-    * A source this model reaches only as a join (#6643): its declaration, as
+    * A source this model reaches only as a join: its declaration, as
     * the package model holding it compiled it, when one of this model's
     * sources joins it. Re-rooting it in its declaring file is what lets the
     * joining source's re-root keep its join on the destination.
@@ -1853,8 +1851,7 @@ export class ServedCopyServe {
       const throughBase: NonNullable<Compiled["throughBase"]>[number][] = [];
       // Only through refinements (`extend`, rename): a query-shaped source
       // (`child is base -> { … }`) starts rows of its own, which its own table
-      // holds, so it is re-rooted on that table even when its base is too, as
-      // the serve shape read a chained child's own table.
+      // holds, so it is re-rooted on that table even when its base is too.
       const refinesRerootedSource = (sourceID: string): boolean => {
          let node = map.node(sourceID);
          for (let hops = 0; node && hops < 64; hops++) {
@@ -2508,13 +2505,11 @@ function keepInlinedJoins(state: CopyPassState, error: unknown): boolean {
 
 /**
  * A column left out of its source's `type:` (a v1 column no cast
- * makes faithful, G5; a big-integer column no native cast reads
+ * makes faithful; a big-integer column no native cast reads
  * exactly, known limitation 12). When the model's own text names it
  * (a dimension or measure over it, an extension's dimension), the
  * copy cannot compile with it gone: that source is left as written
- * and answers live, as the serve shape withholds a binding whose
- * unservable column a refinement names, and every other source
- * keeps its table.
+ * and answers live, and every other source keeps its table.
  */
 function withoutLeftOutColumn(
    state: CopyPassState,
@@ -2590,7 +2585,7 @@ function withoutPairs(state: CopyPassState, detail: string): boolean {
  * it was left out of this source or one it is built from. A given-
  * reading `where:` term the re-root dropped would answer every
  * caller with every caller's rows. A source the served compile holds
- * only as a join (#6643) is read from that join; one that applies a
+ * only as a join is read from that join; one that applies a
  * `where:` is left as written too, since the governor proves a
  * joined source's filters against its declaring file's live compile,
  * whose text the re-root changed.
@@ -2823,11 +2818,10 @@ function v1ColumnsOf(
    const { problems } = subject;
    let columnsLeftOut: string[] = [];
    // A v1 `storage=` table holds public columns only. A v1 colocated
-   // one holds what Malloy built, hidden columns too (G2): each is
+   // one holds what Malloy built, hidden columns too: each is
    // kept with its access modifier, written again on the stored table
    // (P3), so a measure over it compiles and the column stays hidden.
-   // The cutover's per-column handling (G5, review F3): a colocated
-   // table's columns are every column it holds, with no access
+   // A colocated table's columns are every column it holds, with no access
    // modifier: the author's own text after the query (kept whole,
    // `keepsIncludes`) renames, drops and re-hides them.
    const named = isColocated(binding)
@@ -2838,7 +2832,7 @@ function v1ColumnsOf(
    // A stored column no field of the source names is one its own
    // `extend` block drops (`except:`, `accept:`) or an `include`
    // re-hides under another name: it stays on the stored table so the
-   // author's text compiles and removes it again (review F3). Should
+   // author's text compiles and removes it again. Should
    // the text not remove it, the access check below finds a public
    // field the author's source lacks and leaves the source as written.
    const narrowed = [
@@ -2851,8 +2845,7 @@ function v1ColumnsOf(
    );
    // A column the served copy cannot read as its declared type: cast
    // on read when a cast is faithful, else left out so only a query
-   // reading it answers live (G5, the serve shape's handling, which
-   // retired plan call 4).
+   // reading it answers live.
    const typePlan =
       mismatches.length > 0
          ? serveTypePlan(mismatches, {
@@ -3494,7 +3487,7 @@ function pairRerootOf(
    }
    // Each level of the path has a row where its primary key, read through
    // the record, is not null: the test Malloy makes of a joined source's own
-   // rows (malloydata/malloy#3208). Declared only where the build checked
+   // rows (Malloy 0.0.438 on). Declared only where the build checked
    // that key unique and never null, so the test fails on a childless row's
    // null-extended row alone: a level above the leaf on every build (its
    // check fails the build), the leaf only where its recorded check passed.
@@ -3837,7 +3830,7 @@ function joinedColumnNotes(
 /**
  * A declaration's definition in the served copy's compile: its node, or, for
  * a source this model reaches only as a join (an index that imports the file
- * joining it, not the file declaring it, #6643), the joined definition a join
+ * joining it, not the file declaring it), the joined definition a join
  * holds, which carries the declaration's fields and filters. Undefined when
  * neither has it, which the guards read as everything lost.
  */
@@ -4056,7 +4049,7 @@ function readsJoinStar(
 }
 
 /**
- * A v1 colocated table's columns as its source's fields (G2): every stored
+ * A v1 colocated table's columns as its source's fields: every stored
  * column matched to the author's field of its name (exactly, else one field
  * whose name folds to it, as {@link narrowSchemaToPublic} matches), with the
  * field's access modifier when it is `internal` or `private`. Malloy built

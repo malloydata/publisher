@@ -5,21 +5,26 @@
  * The variant router: which compiled form of a caller's query answers it.
  *
  * A query has one live form and any number of candidate VARIANTS, each a
- * compiled form over stored data (today: the `storage=` serve shape, then the
- * pre-aggregation companion). The router tries the candidates in catalog
- * order, takes the first that compiles and covers the query, and otherwise
- * answers live. It records every candidate it considered and why each was
- * skipped, which is what the path report reads (materialization v2, D1).
+ * compiled form over stored data: one per serving leg (`serve/leg.ts`), made
+ * into candidates by `variantsOf` (`query_serving.ts`). The router tries the
+ * candidates in the order given, takes the first that compiles and covers the
+ * query, and otherwise answers live. It records every candidate it considered
+ * and why each was skipped, which is what the path report reads (D1).
  *
  * It never rewrites the caller's text and never bends a variant to fit: a
  * candidate either answers the query as written or is skipped (R2). It takes
  * its candidates as input, so the same loop answers what-if over a proposed
- * catalog (T3) and gains legs in later phases without changing.
+ * catalog (T3) and gains legs without changing.
  *
  * Route, then govern: the router runs before `QueryGovernor.govern()`, which
- * grafts and proves the gates on whatever it chose. Until a variant can carry
- * the gates (phase 3), an entry point with a row-level gate skips every
- * candidate, with reason `row_level_gate`.
+ * grafts and proves the gates on whatever it chose. A row-level gate vetoes
+ * candidates first ({@link RowLevelVeto}): a gate the query reaches beyond
+ * its entry point skips every candidate, and a gate on the entry point alone
+ * skips every candidate but one that {@link Variant.keepsContracts}. A
+ * vetoed candidate is skipped with reason `row_level_gate`. Which legs keep
+ * the contracts is the gate policy's call
+ * (`materialization/domain/gate_policy.ts`), made where the candidates are
+ * built.
  */
 
 import type { QueryMaterializer } from "@malloydata/malloy";
@@ -29,18 +34,21 @@ import {
 } from "./materialization/domain/leg_decline";
 import { recordQueryRoute, type RouteReason } from "../materialization_metrics";
 
-/** The kinds of candidate the router knows, in their usual catalog order. */
 /**
- * `served` is the served copy on `virtual` (materialization v2), tried before
- * `storage` (today's serve shape) when `materialize.enabled` is on. `view` is
- * a persisted view's table (`#@ persist` on a view, phase 4), tried first: it
- * answers only an exact call of its view (R1).
+ * The kinds of candidate, one per serving leg (`LegKind` in `serve/leg.ts`,
+ * whose `makeLegs` sets their order): `view`, a persisted view's table
+ * (`#@ persist` on a view), which answers only an exact call of its view
+ * (R1); `query`, a persisted named query's table, also by exact call;
+ * `rollup`, the coarsest `#(preaggregate)` rollup that reproduces the query;
+ * and `served`, the served copy on `virtual`.
  */
 export type VariantKind = "view" | "query" | "served" | "rollup";
 
 /**
- * Why a candidate did not answer. Internal for now; the path report maps
- * these onto its public `SkipReason` values.
+ * Why a candidate did not answer, in the router's own terms. It is kept on
+ * {@link ConsideredVariant} and never sent as is: the path report
+ * (`serve/query_path.ts`) maps it onto its public `SkipReason`, and the route
+ * metric onto its `RouteReason` ({@link routeReasonOf}).
  */
 type RouterSkipReason =
    /** The entry point carries a row-level gate the variant cannot keep. */
@@ -81,9 +89,9 @@ export interface Variant<Extra = unknown> {
    /**
     * The candidate keeps the domain's contracts (R3): it compiles the author's
     * own text, gates included, so `govern()` grafts and proves a row-level gate
-    * on it exactly as on live. An `entry_point` veto skips every other
-    * candidate (`row_level_gate`), whose shape carries no annotations; this
-    * one is tried. Any other veto skips it too.
+    * on it exactly as on live. An `entry_point` veto skips every candidate
+    * without it (`row_level_gate`); this one is tried. Any other veto skips
+    * it too.
     */
    keepsContracts?: boolean;
    /**
@@ -91,8 +99,8 @@ export interface Variant<Extra = unknown> {
     * answer the attempt produced past an `entry_point` veto, and `false`
     * skips that answer (`row_level_gate`) as if the candidate did not keep
     * the contracts. For a candidate that keeps them only for some of the
-    * tables it may read (the served copy's colocated tables under the v1
-    * cutover). Absent: every answer keeps them.
+    * tables it may read (the served copy, judged by the tables its answer
+    * read). Absent: every answer keeps them.
     */
    keepsContractsFor?(extra: Extra): boolean;
 }

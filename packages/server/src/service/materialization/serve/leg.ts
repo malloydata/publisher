@@ -11,9 +11,9 @@
  * `{ kind, applies, attempt }` and nothing more: `applies` is pure and
  * compiles nothing; `attempt` resolves with a {@link LegAnswer} or throws a
  * `LegDecline` (domain/leg_decline.ts). A leg does not know the gate policy or
- * the router: the query pipeline (`service/model_serving.ts`) asks the policy
- * before an attempt, by leg kind, and after it, over the bindings the answer
- * read, and it reads the decline's code itself.
+ * the router: the query pipeline (`variantsOf` in `service/query_serving.ts`)
+ * asks the policy before an attempt, by leg kind, and after it, over the
+ * bindings the answer read, and it reads the decline's code itself.
  *
  * {@link makeLegs} makes the legs for one pinned snapshot, in the router's
  * order (R1: the view or named query by exact call, then the coarsest
@@ -238,9 +238,9 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
             runnable: answer.runnable,
             tablesRead: undefined,
             // Every stored table the answer reads, when that is more than the
-            // rollup's (a join leg answered in a storage destination reads the
-            // query source's table there too): together they decide whether a
-            // failed run may be retried live.
+            // rollup's (a join branch answered in a storage destination reads
+            // the query source's table there too): together they decide
+            // whether a failed run may be retried live.
             shapeBindings: answer.virtualMap
                ? (answer.bindings ?? (answer.binding ? [answer.binding] : []))
                : [],

@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Rollup variants (materialization v2, phase 4): the router's rollup leg for
- * `#(preaggregate)`.
+ * Rollup variants: the router's rollup leg for `#(preaggregate)`.
  *
  * A rollup answers a query on its base by compiling the caller's own text,
  * unchanged, in a model where the base's name means the rollup. That model is
@@ -72,10 +71,11 @@
  * field they read is a grain dimension. Else it is skipped `CONTRACT`, with a
  * detail that never names the gate. `govern()` then grafts the gates on the
  * variant's own scope; a denial there is a defect, not a routing outcome. A
- * join leg (A7) carries no gate, so it declines past one.
+ * join branch (A7) carries no gate, so it declines past one.
  *
- * Rollups are offered coarsest first; the first that answers is used. Behind
- * `materialize.enabled`.
+ * Rollups are offered coarsest first; the first that answers is used. A
+ * `#(preaggregate)` rollup is read only with `materialize.enabled` on; a v1
+ * `#@ preaggregate` one is read either way.
  */
 
 import { requireUnique, verdictOf, type KeyVerdict } from "../domain/key_check";
@@ -186,7 +186,7 @@ interface RollupVariantHost {
    catalog(): MaterializedTableCatalog | undefined;
    /**
     * The served copy's compiled basis, while the served copy serves this
-    * model: the join leg answers a query on a source stored in a storage
+    * model: the join branch answers a query on a source stored in a storage
     * destination there, through a joined source's rollup in the same one
     * (known limitation 26).
     */
@@ -223,7 +223,7 @@ interface RollupAnswer {
    binding?: Binding;
    /**
     * Every stored table the answer reads, when that is more than the
-    * rollup's: a join leg answered in a storage destination reads the query
+    * rollup's: a join branch answered in a storage destination reads the query
     * source's table there too, whose binding decides whether a failed run
     * may be retried live.
     */
@@ -257,7 +257,7 @@ type VariantUse =
         destination?: { basis: ServedCopyJoinBasis; keepsJoin: boolean };
      };
 
-/** A join leg that does not apply to this query: it reads nothing through the join. */
+/** A join branch that does not apply to this query: it reads nothing through the join. */
 class JoinNotRead extends Error {}
 
 interface CompiledVariant {
@@ -337,7 +337,7 @@ export class RollupVariantServe {
        */
       switches: string;
       byBase: Map<string, RollupVariantPlan[]>;
-      /** A7: each source's join legs, by its `sourceID`. */
+      /** A7: each source's join branches, by its `sourceID`. */
       joinLegs?: Map<string, ReturnType<typeof joinRollupLegs>>;
    };
 
@@ -378,8 +378,8 @@ export class RollupVariantServe {
             const { plans } = this.host.planSourceRollups(map, node, {
                packageRelativeSourceID: (id) =>
                   packageRelativeSourceID(packagePath, id),
-               // Routed under the v1 cutover too: v2's route only with its
-               // switch.
+               // v1 `#@ preaggregate` rollups are always routed;
+               // `#(preaggregate)` ones only with the materialize switch on.
                readsV2: getMaterializeEnabled(),
             });
             if (plans.length > 0) byBase.set(node.sourceID, plans);
@@ -526,10 +526,10 @@ export class RollupVariantServe {
          }
       }
       // Then a joined source's rollup, read through the join (A7): R1's
-      // join legs, inside the rollup step.
+      // join branches, inside the rollup step.
       const usage = legs.length > 0 ? queryFieldUsagePaths(prepared) : [];
       for (const { leg, refusal } of legs) {
-         // A join leg redeclares the author's source around the join, not
+         // A join branch redeclares the author's source around the join, not
          // over its declaring file, so it carries no gate to prove: past an
          // entry-point gate it declines (CONTRACT).
          if (gates) {
@@ -672,7 +672,7 @@ export class RollupVariantServe {
       if (declined) throw declined;
       // A rollup in a storage destination is joined there, so only to a
       // query source the served copy reads from that destination too; Malloy
-      // joins within one connection (malloy#3032).
+      // joins only within one connection.
       // The destination is the rollup's table's, when it has a fresh one.
       const inDestination =
          plan.storage !== undefined
@@ -756,7 +756,7 @@ export class RollupVariantServe {
    }
 
    /**
-    * The join leg's key checks (known limitation 29): that live's rows and
+    * The join branch's key checks (known limitation 29): that live's rows and
     * the variant's are the same rows through the re-pointed join, else a
     * {@link LegDecline} (`rollup_count_semantics`). `read` are the joined
     * source's fields the query reads through the join.
@@ -899,7 +899,7 @@ export class RollupVariantServe {
    }
 
    /**
-    * Answer a join leg over a colocated rollup: the query compiled against
+    * Answer a join branch over a colocated rollup: the query compiled against
     * the variant, read through the build manifest, whose SQL must read the
     * rollup's table; else a {@link LegDecline}.
     */
@@ -1001,11 +1001,11 @@ export class RollupVariantServe {
    }
 
    /**
-    * Answer a join leg in a storage destination (known limitation 26): the
+    * Answer a join branch in a storage destination (known limitation 26): the
     * query's source as the served copy declares it, over its table there,
     * with the join re-pointed at the joined source's rollup in the same
     * destination, so the whole query runs on that one connection. Every
-    * check of the leg ran before; this adds the served copy's own checks for
+    * check of the branch ran before; this adds the served copy's own checks for
     * the tables the variant reads, and that its SQL reads both tables.
     */
    private async answerJoinInDestination(
@@ -1491,7 +1491,7 @@ export class RollupVariantServe {
       use: VariantUse,
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): Promise<CompiledVariant> {
-      // A join leg reads a storage rollup only over the served copy
+      // A join branch reads a storage rollup only over the served copy
       // (answerJoinInDestination).
       if (use.kind === "join" && table.binding && !use.destination) {
          return {
@@ -1587,7 +1587,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
    }
 
    /**
-    * Compile a join leg in a storage destination (known limitation 26): the
+    * Compile a join branch in a storage destination (known limitation 26): the
     * query model imports every name from the served copy's files (so the
     * query's source is the copy's, over its stored table), declares the
     * rollup over its table in the same destination, and declares the query's
@@ -2059,7 +2059,7 @@ source: ${identifier(servedName)} is ${identifier(servedCopyAlias(binding.destin
 }
 
 /**
- * The served copy's decline of a join leg's query in a storage destination,
+ * The served copy's decline of a join branch's query in a storage destination,
  * as the rollup skip the path report reads: a query its rules send live
  * keeps their reason (`COUNT_SEMANTICS`, `MISSING_FIELD`); a
  * source it does not answer from the destination (opted out, or flagged by
@@ -2086,7 +2086,7 @@ function servedCopySkip(error: LegDecline, join: string): LegDecline {
    }
 }
 
-/** The author's source, imported for a join leg under this name. */
+/** The author's source, imported for a join branch under this name. */
 function parentAlias(plan: RollupVariantPlan): string {
    return `${plan.rollupSourceName}__parent`;
 }
@@ -2233,7 +2233,7 @@ function queryModelText(
    declaration: string,
 ): string {
    // Every name but the one the variant declares (or that name under an
-   // alias, for a join leg), givens included, so a query that supplies or
+   // alias, for a join branch), givens included, so a query that supplies or
    // reads a given compiles against the rollup.
    const imports = authorNameImports(modelDef, queryModelURL, modelURL, names);
    return `${flagLine(modelDef)}
@@ -2487,10 +2487,11 @@ function planSwitches(): string {
 /**
  * The name a model gives the source `structRef` holds inline, when it is that
  * named source unchanged: Malloy inlines a source a model imports without
- * exporting it (#6646), so the query's struct is an object, not a name. It is
- * the named source only when the model's entry of the struct's `as` has the
- * same `sourceID`, fields and filters; an inline extension (`orders extend {
- * … } -> …`) changes one of them and stays unnamed.
+ * exporting it (preaggregation_seams.spec.ts), so the query's struct is an
+ * object, not a name. It is the named source only when the model's entry of
+ * the struct's `as` has the same `sourceID`, fields and filters; an inline
+ * extension (`orders extend { … } -> …`) changes one of them and stays
+ * unnamed.
  */
 function importedSourceName(
    structRef: unknown,
@@ -2516,7 +2517,7 @@ function importedSourceName(
       : undefined;
 }
 
-/** The joined source's compiled declaration, as the join leg reads it. */
+/** The joined source's compiled declaration, as the join branch reads it. */
 interface JoinedSourceDef {
    queryTimezone?: unknown;
    fields?: {
@@ -2528,10 +2529,11 @@ interface JoinedSourceDef {
 }
 
 /**
- * The join-leg choice: a leg is tried only for a query that reads through
- * its join (an unreadable one might), and only when the join offers a rollup
- * it can use. A {@link JoinNotRead} when the query reads nothing through the
- * join, the leg's refusal as a {@link LegDecline}, or undefined to try it.
+ * The join-branch choice: a branch is tried only for a query that reads
+ * through its join (an unreadable one might), and only when the join offers
+ * a rollup it can use. A {@link JoinNotRead} when the query reads nothing
+ * through the join, the branch's refusal as a {@link LegDecline}, or
+ * undefined to try it.
  */
 export function joinLegDecline(
    name: string,
@@ -2557,7 +2559,7 @@ function readThroughJoin(name: string, paths: readonly string[]): string[] {
 }
 
 /**
- * The grain check of a join leg: a field the query groups or filters by
+ * The grain check of a join branch: a field the query groups or filters by
  * through the join `name` must be one of the rollup's grain dimensions or
  * stored measures, else the rollup is too coarse.
  */
@@ -2582,7 +2584,7 @@ export function joinGrainDecline(
 }
 
 /**
- * The coverage check of a join leg: a measure the query aggregates through
+ * The coverage check of a join branch: a measure the query aggregates through
  * the join `name` must be one the rollup stores (or a grain dimension).
  */
 export function joinCoverageDecline(
@@ -2605,7 +2607,7 @@ export function joinCoverageDecline(
 }
 
 /**
- * The grain check of a base leg, cheap, from the caller's own compile: what
+ * The grain check of a base branch, cheap, from the caller's own compile: what
  * the query groups and filters by must be in the grain (or a stored
  * measure), else the rollup is too coarse.
  */
@@ -2628,7 +2630,7 @@ export function grainDecline(
 }
 
 /**
- * The coverage check of a base leg: every measure the query aggregates must
+ * The coverage check of a base branch: every measure the query aggregates must
  * be one the rollup stores.
  */
 export function coverageDecline(

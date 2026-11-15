@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The re-root rewriter: the served copy of an author's model file
- * (materialization v2, phase 3).
+ * The re-root rewriter: the served copy of an author's model file.
  *
  * The served copy IS the author's file, served in memory in place of the file
  * on disk, with each persisted source that has a stored table re-rooted on it:
@@ -154,7 +153,7 @@ export interface Reroot {
     */
    keptBlocks?: string;
    /**
-    * A v1 query-shaped source's re-root under the cutover (review F3): the
+    * A v1 query-shaped source's re-root: the
     * run it keeps is everything after its query, `include { … }` blocks
     * included, so the author's own `rename:`, `except:` and access
     * modifiers apply to the stored columns as they applied to the query's
@@ -206,7 +205,7 @@ export interface Reroot {
  * is replaced by that record. Each measure over the source's own fields is
  * re-declared to aggregate only the rows the parent-row flag marks (one per
  * parent), and an aggregate through the join reads every row. Live reads
- * every row for a `min` or `max`, but since malloydata/malloy#3208 skips a
+ * every row for a `min` or `max`, but (Malloy 0.0.438 on) skips a
  * childless parent's null-extended row for a `count()`, `sum` or `avg`, so a
  * measure through the join that would read that row is re-declared under the
  * level's presence field ({@link PairReroot.levelPresent}).
@@ -267,7 +266,7 @@ export interface PairReroot {
     * null. Undefined at a level whose key the build did not check unique and
     * never null (the leaf, unless its recorded check passed): there the
     * test cannot tell a row of the level from a childless row's
-    * null-extended row. Since malloydata/malloy#3208 live takes a `count()`,
+    * null-extended row. Live takes a `count()`,
     * `sum` or `avg` at a join over the rows whose key is not null; a measure
     * re-declared under the field ({@link PairMeasure.present}) skips the
     * null-extended row as live does. Declared in the record's own block,
@@ -436,7 +435,7 @@ export interface ServedColumn {
     * The Malloy type the column is read as when its stored type does not
     * serve as its declared one but a cast makes it faithful
     * (`faithfulCastTarget`: an integer flag as `boolean`, a timestamp as
-    * `date`; the v1 cutover's G5, for a table an older build typed). The
+    * `date`, for a table an older build typed). The
     * `type:` declares the stored type, and the column is renamed internally
     * and the field redefined as its cast, as for a timeframe (both at once
     * for a truncation stored as a timestamp):
@@ -450,7 +449,7 @@ export interface ServedColumn {
    /**
     * Declared `timestamptz` rather than the stored type's `timestamp`: a
     * TIMESTAMP WITH TIME ZONE column whose author field is a `timestamptz`,
-    * so the field reads back as one (the v1 cutover).
+    * so the field reads back as one.
     */
    timestamptz?: true;
    /**
@@ -1449,8 +1448,8 @@ function timeframedColumns(
  *
  * A date is cast with the SQL type (`::"DATE"`), which Malloy writes as a
  * plain `CAST(… AS DATE)`: Malloy's own `::date` of a timestamp converts it
- * to a query's `timezone:` first, which would move the stored date by a day
- * (the serve shape cast in a query-shaped source, in the session's zone).
+ * to a query's `timezone:` first, which would move the stored date by a
+ * day.
  * A big-integer column is read as its native type instead
  * (`<internal>::"HUGEINT"`, {@link ServedColumn.nativeCast}).
  */

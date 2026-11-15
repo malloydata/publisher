@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Join-to-rollup (materialization v2, phase 4, A7): the rollup leg's second
- * form. A query on a source that reads a joined source's measures
+ * Join-to-rollup (A7): the rollup leg's second form, its join branch. A
+ * query on a source that reads a joined source's measures
  * (`flights -> { group_by: carrier; aggregate: segments.seg_miles }`) can be
  * answered from the JOINED source's rollup, read at its grain: the variant
  * declares the query's source as the author's, with its join re-pointed at
@@ -19,7 +19,7 @@
  * (`include { *; except: … }` keeps each field's access modifier, probed on
  * Malloy 0.0.436; `public: *` would publish internal fields.)
  *
- * The rollup's rows are the joined rows grouped at the key, so the leg reads
+ * The rollup's rows are the joined rows grouped at the key, so the branch reads
  * them only through the joined source's own stored measures (sum, min, max
  * and their expressions; counts below). A query that computes an aggregate
  * of its own over the join (`segments.count()`, `sum(segments.x)`, or a
@@ -27,29 +27,29 @@
  * (`COUNT_SEMANTICS`), and one that reads a joined field the grain does not
  * keep does not compile against it (`GRAIN_TOO_COARSE` / `MISSING_FIELD`).
  *
- * **Unmatched parents (malloydata/malloy#1762).** Live, a parent with no
- * joined row meets one row of NULLs. Since malloydata/malloy#3208 (Malloy
- * 0.0.438), a `count()`, `sum` or `avg` taken at a joined source skips the
- * rows where that source's key is NULL, so the joined source's own counts
+ * **Unmatched parents.** Live, a parent with no joined row meets one row of
+ * NULLs. Since Malloy 0.0.438, a `count()`, `sum` or `avg` taken at a
+ * joined source skips the rows where that source's key is NULL, so the
+ * joined source's own counts
  * and sums agree with its rollup, which holds no such row, whatever their
  * operand. Two aggregates still read that row ({@link unmatchedRowProblem}):
  * a `min` or `max`, which Malloy does not guard, whose operand is not NULL
  * there (a constant, `??`, a computed value); and a sum or count taken at a
  * join of the joined source that can match the row of NULLs (keyed on a
  * computed dimension such as `coalesce(kind, 'p')`), whose own key is then
- * not NULL. The leg declines both (`COUNT_SEMANTICS`).
+ * not NULL. The branch declines both (`COUNT_SEMANTICS`).
  *
  * A rollup in a `storage=` destination is joined there, so only for a query
  * source the served copy reads from the same destination: the variant is
  * then compiled over the served copy's files (known limitation 26,
  * `RollupVariantServe.answerJoinInDestination`); any other query source
- * reads its own connection, and Malloy joins within one (`CROSS_CONNECTION`,
- * malloydata/malloy#3032).
+ * reads its own connection, and Malloy joins only within one
+ * (`CROSS_CONNECTION`).
  *
  * Fan-out grains and join-level measures (A6, A2, row 27): a rollup row is
  * one group of the joined rows, so a partial re-summed across groups that
  * share a joined row counts it twice. {@link checkJoinCoverage} holds each
- * query to the base leg's rule, level by level, over `<join>.<field>`: a
+ * query to the base branch's rule, level by level, over `<join>.<field>`: a
  * fan-out grain dimension, and the other grain dimensions of a join-level
  * sum or count, grouped or fixed wherever the query aggregates through the
  * join. A join-level operand (`kinds.weight` in `kinds.weight.sum()`) is
@@ -57,7 +57,7 @@
  * the joined source, so it is read like the joined source's own column.
  *
  * Gates: a gated entry point skips every rollup (`CONTRACT`) as for the base
- * leg; a joined source that declares a gate of its own is declined
+ * branch; a joined source that declares a gate of its own is declined
  * (`CONTRACT`), since the rollup carries none.
  */
 
@@ -78,7 +78,7 @@ export interface JoinRollupLeg {
    relationship: "one" | "many";
 }
 
-/** Why a join cannot take the leg at all, whatever the query: a skip code and a caller-safe detail. */
+/** Why a join cannot take the branch at all, whatever the query: a skip code and a caller-safe detail. */
 interface JoinRollupRefusal {
    code:
       | "rollup_count_semantics"
@@ -88,10 +88,10 @@ interface JoinRollupRefusal {
 }
 
 /**
- * The legs a join of the query's source offers: the join's rollups, each with
- * why it cannot be used, if it cannot. `sourceFilterReads` holds the joins
- * the source's own `where:` reads; `parentPrimaryKey` is the query source's
- * declared primary key, if it has one.
+ * The branches a join of the query's source offers: the join's rollups,
+ * each with why it cannot be used, if it cannot. `sourceFilterReads` holds
+ * the joins the source's own `where:` reads; `parentPrimaryKey` is the query
+ * source's declared primary key, if it has one.
  */
 export function joinRollupLegs(
    joins: readonly SourceJoin[],
@@ -132,7 +132,7 @@ export function joinRollupLegs(
 
 /**
  * Why a join read as a join_many (declared one, or re-pointed as one at a
- * grain finer than its key) cannot take the leg: its key on the query's side
+ * grain finer than its key) cannot take the branch: its key on the query's side
  * is not that source's primary key. A join_many is read as if each joined row
  * met one parent row, so live sums a joined row once per parent row that
  * meets it, and a declared join_one deduplicates at its joined row; a rollup
@@ -220,10 +220,10 @@ function refusalOf(
 }
 
 /**
- * Why the stored measures `read` (by name) cannot be read through the leg's
- * join, because Malloy still aggregates the row of NULLs a LEFT JOIN writes
- * for an unmatched parent, or undefined. Since malloydata/malloy#3208 a
- * `count()` or `sum` at the joined source skips that row, so only two leaves
+ * Why the stored measures `read` (by name) cannot be read through the
+ * branch's join, because Malloy still aggregates the row of NULLs a LEFT JOIN
+ * writes for an unmatched parent, or undefined. A `count()` or `sum` at the
+ * joined source skips that row (Malloy 0.0.438 on), so only two leaves
  * can read it: a sum or count at a join of the joined source, which skips the
  * row only when that join meets no row there (`joinMeetsNoRow`: keyed on a
  * column of the joined source, NULL on the row); and a `min` or `max`, which
@@ -258,13 +258,13 @@ export function unmatchedRowProblem(
 }
 
 /**
- * Why the stored measures `read` (by name) cannot be read through the leg's
- * join while the joined source's own primary key is not known unique and
- * never NULL, or undefined. Since malloydata/malloy#3208 live takes a
+ * Why the stored measures `read` (by name) cannot be read through the
+ * branch's join while the joined source's own primary key is not known unique
+ * and never NULL, or undefined. Live takes a
  * `count()`, `sum` or `avg` at the joined source over the rows whose key is
  * not NULL, and where the rows fan out, once per distinct key; its rollup,
  * built at the joined source's own grain, counts and sums every row. A
- * join keyed on that primary key (`joinedKey` the leg's key column) meets no
+ * join keyed on that primary key (`joinedKey` the branch's key column) meets no
  * row whose key is NULL; a `min` or `max` reads every row live too; and a
  * partial taken at a join of the joined source tests that join's key, which
  * the rollup's build tests the same way. `joinedKey` is what the rollup's
@@ -297,7 +297,7 @@ export function joinedKeyProblem(
 }
 
 /**
- * Why the leg cannot read a join read as a join_many while the query
+ * Why the branch cannot read a join read as a join_many while the query
  * source's primary key is not known unique and never NULL, or undefined.
  * `parentKey` is what the rollup's build found of that key: `repeated`
  * covers a NULL as well. A rollup row is met
@@ -347,7 +347,7 @@ function bareOperand(expr: MeasureExpr): string[] | undefined {
 }
 
 /**
- * A6 and A2 through the join, level by level: the base leg's
+ * A6 and A2 through the join, level by level: the base branch's
  * `checkCoverage` rule, read on the caller's compiled query, where the
  * rollup's fields are `<join>.<field>`. A rollup row is one group of the
  * joined rows, matched to each parent row with its key, so a measure partial
@@ -365,7 +365,7 @@ function bareOperand(expr: MeasureExpr): string[] | undefined {
  * an ungrouped aggregate (`all`, `exclude`) declines.
  *
  * `parentReads` says how a parent field reads the join
- * (`sourceFieldJoinReads`). Returns why the leg cannot answer, or undefined.
+ * (`sourceFieldJoinReads`). Returns why the branch cannot answer, or undefined.
  */
 export function checkJoinCoverage(
    leg: JoinRollupLeg,

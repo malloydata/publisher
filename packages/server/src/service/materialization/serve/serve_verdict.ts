@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The serve verdict (materialization v2, D2): for each source the package
- * materializes, whether queries will be answered from its table, and when not,
- * why and what to change. ms2data/service#6277 asks for it as package state at
- * publish, #7090 for the same answer before anything is published, and #6446
- * for a reason in place of a silent live fallback.
+ * The serve verdict (D2): for each source the package materializes, whether
+ * queries will be answered from its table, and when not, why and what to
+ * change: as package state at publish, as the same answer before anything is
+ * published (a preview), and as a reason in place of a silent live fallback.
  *
  * A pure function of facts the package already holds (the build plan, the
  * published surface, the entry-point gates, the storage mode, what is bound),
@@ -14,7 +13,7 @@
  * path report says which table answered one query; this says, per table,
  * whether any query can be answered from it at all.
  *
- * Reasons are open strings, not an enum, so a later phase can add one without
+ * Reasons are open strings, not an enum, so a new one can be added without
  * breaking a strict client (the control plane rejects unknown enum values).
  */
 
@@ -62,7 +61,7 @@ type ServeVerdictReason =
    | "refused"
    /** `storage=` while PERSIST_STORAGE_MODE is not `on`. */
    | "storage_mode"
-   /** Nothing on the package's published surface reaches it (#6277). */
+   /** Nothing on the package's published surface reaches it. */
    | "unreachable"
    /** Every entry point over it carries a row-level gate the tier cannot keep. */
    | "row_level_gate"
@@ -92,7 +91,7 @@ export type PersistedResultOf =
      }
    | { queryName: string; sourceID?: string; sourceName?: string };
 
-/** Whether one named view of a stored source compiles against its serve shape (#7090). */
+/** Whether one named view of a stored source compiles against its serve shape, on a preview. */
 export interface ViewServeVerdict {
    view: string;
    verdict: "serves" | "live";
@@ -119,7 +118,7 @@ export interface ServeVerdict {
    message: string;
    /** For a `live` verdict, the changes that would let it serve. */
    fixes?: string[];
-   /** Per named view, for a stored source on a preview (#7090). */
+   /** Per named view, for a stored source on a preview. */
    views?: ViewServeVerdict[];
 }
 
@@ -146,7 +145,7 @@ export interface ServeVerdictFacts {
    /**
     * Storage: the served copy keeps the author's gates and answers a gated
     * entry point over a stored table, the gate grafted on it (R3,
-    * `materialize.gatedSources`), so {@link gated} no longer means live.
+    * `materialize.gatedSources`), so {@link gated} alone does not mean live.
     * Rollups are never served past a gate.
     */
    servedCopyKeepsGates?: boolean;
@@ -299,9 +298,8 @@ function verdictFor(
    }
 
    // `#(materialize)` is served by the served copy alone, on either tier
-   // (never the serve shape, which drops its bindings, nor the colocated
-   // manifest, which Malloy never substitutes for it), so the served copy
-   // decides its verdict.
+   // (never through the colocated build manifest, which Malloy never
+   // substitutes for it), so the served copy decides its verdict.
    const materialized = facts.materialize?.(sourceID);
 
    // Colocated persist is substituted inside Malloy, gates and all; storage,

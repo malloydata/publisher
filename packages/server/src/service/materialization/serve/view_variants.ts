@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Persisted-view variants (materialization v2, phase 4, P14): the router's
- * view leg for `#@ persist` on a view.
+ * Persisted-view variants (P14): the router's view leg for `#@ persist` on a
+ * view.
  *
  * A persisted view's table holds the view's result, so it answers a query
  * only when the query calls that view exactly, or starts from it and goes on:

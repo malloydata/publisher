@@ -248,7 +248,7 @@ export function deriveColocatedServeBindings(args: {
    /** Whether the bind admits a planned source (positive eligibility). */
    eligible: (sourceID: string) => boolean;
    /**
-    * The v1 cutover (G1): a v1 `#@ persist` source's stored columns derived
+    * A v1 `#@ persist` source's stored columns derived
     * from its compiled output, for a table whose build captured no schema;
     * undefined when it cannot be derived. Absent, no v1 source is bound.
     */
@@ -333,8 +333,8 @@ function v1ColumnsOf(
 
 /**
  * The columns a v1 colocated `#@ persist` build wrote, derived from the
- * source's compiled definition (the v1 cutover's G1, for a table built before
- * its build captured a schema). A v1 build source is query-shaped, so its
+ * source's compiled definition (for a table built before its build captured
+ * a schema). A v1 build source is query-shaped, so its
  * stored columns are the query's output fields. They are read from the
  * persisted query's output struct when the compiled source records it (what
  * the `extend` block drops with `except:` or `accept:` is still a column);
@@ -361,7 +361,7 @@ export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
       | undefined;
    // The persisted query's own output, when the compiled source records it:
    // exactly the build's columns, before the `extend` block renames, drops
-   // (`except:`, `accept:`) or re-hides any (review F3).
+   // (`except:`, `accept:`) or re-hides any.
    const output = d?.query?.pipeline?.at(-1)?.outputStruct?.fields;
    const fields = Array.isArray(output) ? output : d?.fields;
    if (!Array.isArray(fields)) return undefined;
