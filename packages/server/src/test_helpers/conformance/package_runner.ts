@@ -87,6 +87,8 @@ export interface Answer {
    via?: string;
    /** The view leg's skip, when it considered the query and declined it. */
    viewSkip?: { reason?: string; detail?: string };
+   /** The served copy's skip, when it considered the query and declined it. */
+   servedSkip?: { reason?: string; detail?: string };
 }
 
 /** What querying a package produced: an answer, or the error it threw. */
@@ -297,7 +299,8 @@ export async function loadFixture(
                ...(result.path?.servedBy?.via
                   ? { via: result.path.servedBy.via }
                   : {}),
-               ...viewSkipOf(result.path?.considered),
+               ...skipOf("view", result.path?.considered),
+               ...skipOf("materialized", result.path?.considered),
             },
          };
       } catch (error) {
@@ -609,18 +612,19 @@ function declaredColumnsFor(
    );
 }
 
-/** The view leg's entry in a path report's `considered`, when it skipped. */
-function viewSkipOf(considered: readonly unknown[] | undefined): {
-   viewSkip?: { reason?: string; detail?: string };
-} {
+/** A leg's entry in a path report's `considered`, when it skipped. */
+function skipOf(
+   kind: "view" | "materialized",
+   considered: readonly unknown[] | undefined,
+): Pick<Answer, "viewSkip" | "servedSkip"> {
    const skip = (considered ?? []).find(
       (c) =>
-         (c as { kind?: unknown }).kind === "view" &&
+         (c as { kind?: unknown }).kind === kind &&
          (c as { outcome?: unknown }).outcome === "skipped",
    ) as { reason?: unknown; detail?: unknown } | undefined;
    if (!skip) return {};
    return {
-      viewSkip: {
+      [kind === "view" ? "viewSkip" : "servedSkip"]: {
          ...(typeof skip.reason === "string" ? { reason: skip.reason } : {}),
          ...(typeof skip.detail === "string" ? { detail: skip.detail } : {}),
       },

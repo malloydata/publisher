@@ -24,6 +24,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 
 A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.
+
 ## [Unreleased] — BREAKING: a materialized source serves from its table only its own given-reading `where:`
 
 **BREAKING (speed, not correctness).** A source scoped by a caller's given (`where: org_id = $ORG_ID`) is still built with that term left out and served from its table with the term applied for each caller, but only when the term is written on the materialized source itself. A given-reading `where:` the source inherits from a base is now refused at plan: the source is not built and is answered live, under the term, exactly as it answers without materialization. Nothing answers differently; some queries that read a table now run live.
@@ -85,6 +86,20 @@ The setting is removed one release after this one, together with its off positio
 ## [Unreleased] — a persisted view's date truncation reads back as a date
 
 A query answered from a `storage=` persisted view's table (`#@ persist storage=…` on a `view:`, with `PUBLISHER_MATERIALIZE` on) declared each column as the type the table stored. A build stores each column as its declared type where it can, but one that declines that cast (a view or source with a query time zone) or retries without casts after one fails stores a date truncation such as `order_date.month` as a TIMESTAMP, and the answer then typed it `timestamp` where live types it `date`. The view leg now reads such a column through the served copy's faithful cast (`::"DATE"`, truncated again to its timeframe; an integer flag as `boolean`), so the column's type matches live; a column no faithful cast reads as live's type answers live. No table is rebuilt or re-addressed, and no API change.
+
+## [Unreleased] — a stored table's zoned truncations and big integers read back with live's values
+
+Several answers read from a stored table returned values near live's rather than live's own. Each now returns live's value, or is answered live:
+
+- **A timestamp truncation under a time zone (persisted view).** A `storage=` persisted view whose view or source sets `timezone:` stored each truncation as the zone's midnight, as live computes it, but the read truncated the stored value again in UTC, so `created_at.day` under `timezone: 'America/New_York'` came back at 00:00Z where live answers 04:00Z. A later stage over such a view truncated in UTC on a colocated table too. The view leg now writes the view's and the source's zones where live has them, so the read truncates in the same zone the build did.
+- **A timestamp truncation through the served copy.** A `#@ persist` or `#(materialize)` table re-read each timestamp truncation by truncating its stored value again in the query's zone. That matches live only when the zone is the one the build used. It is now decided column by column, with the decline reason `TIME_ZONE` ("a timestamp truncation stored in another zone"):
+  - **A source that sets a zone, in its query or on itself.** A zoned daily rollup such as `orders -> { timezone: 'America/New_York'; group_by: created_at.day }` now answers live for any query that reads the truncated column. It stays served for one that does not, such as a total.
+  - **A table with no zone.** A query that reads a truncation in another zone answers live. That zone is either one its own `timezone:` sets, or one the source it runs on sets or inherits (`ny is daily extend { timezone: … }`, which was served wrong before). A query in another zone that reads no truncation stays served, and an explicit `timezone: 'UTC'` counts as the default it is. The same rule now decides a stored computed dimension and a rolling window's cut-off. There, a query's own `timezone:` declines only when it differs from the zone the table was built in, so an explicit `'UTC'` over a default-zone table, or a source's own zone over a table built in that zone, stays served.
+- **A BIGINT above 2^53 (persisted view).** A `storage=` persisted view declared a 64-bit integer column, dimension or measure, as a plain `number`, so 9007199254740993 came back as 9007199254740992. It is now read as `HUGEINT`, as the served copy reads one, and keeps every digit. A column stored as a float, which has lost digits already, is answered live.
+- **A TIMESTAMP_NS, or another value live answers as warehouse-native or JSON (persisted view).** A `storage=` read declared it a `timestamp` and dropped its digits past the millisecond. Such a view is now answered live.
+- **An `index:` view (persisted view).** Its stored read gave every column a `#(malloy)` annotation live does not write. It is now answered live, from either tier.
+
+The stored contents were already right in every case, so no table is rebuilt or re-addressed. No API change.
 
 ## [Unreleased] — (BREAKING) `partition=` is no longer supported, and a publish that carries it is refused
 

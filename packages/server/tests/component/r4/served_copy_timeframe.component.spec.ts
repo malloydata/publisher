@@ -207,7 +207,7 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
       expect(declined.path?.servedBy.kind).toBe("live");
       expect(tables(answered.path)).toEqual([["materialized", "used"]]);
       const ext = await fixture.runAsIs(
-         "run: stored_ext -> { timezone: 'UTC'; group_by: is_march }",
+         "run: stored_ext -> { timezone: 'America/New_York'; group_by: is_march }",
       );
       // The extension declares no #(materialize), so it has no table of its
       // own: `stored`'s table answers it. Malloy records no `extends` on an

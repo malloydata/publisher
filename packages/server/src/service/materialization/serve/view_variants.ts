@@ -88,6 +88,7 @@ import {
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
 import {
+   bigIntegerReadOf,
    serveTypePlan,
    storedColumnTypeMismatches,
 } from "../stored_column_types";
@@ -491,20 +492,24 @@ export class PersistedViewServe {
             : packageConfig;
       const view = viewDeclaration(plan.viewName, shape);
       if ("refusal" in view) return { refusal: view.refusal };
-      // A stored column whose type does not serve as live's is read through
-      // the served copy's faithful cast (a date truncation a build stored as
-      // a TIMESTAMP), or refuses the variant.
+      // A stored column whose type or value does not serve as live's is read
+      // through the served copy's faithful cast (a date truncation a build
+      // stored as a TIMESTAMP, a big integer as HUGEINT), or refuses the
+      // variant.
       const read = table.binding
-         ? storedColumnCasts(
-              table.binding.schema,
-              shape.columns,
-              shape.queryTimezone,
-           )
-         : { casts: new Map<string, "DATE" | "BOOLEAN">() };
+         ? storedColumnCasts(table.binding.schema, shape)
+         : { casts: new Map<string, ColumnCast>() };
       if ("refusal" in read) return { refusal: read.refusal };
       const { casts } = read;
       // malloy-text: viewDeclaration's text, every value through identifier or noteSource
       const viewBody = view.text;
+      // The source's own time zone, on the variant's source: a `storage=`
+      // read truncates each stored truncation again, and a later stage
+      // truncates a stored timestamp, each in the zone live computes it in,
+      // never UTC.
+      const sourceTimezone = shape.sourceTimezone
+         ? `\n  timezone: ${stringLiteral(shape.sourceTimezone)}`
+         : "";
       return compileDeclaringFileVariant({
          packagePath,
          modelPath,
@@ -554,18 +559,18 @@ export class PersistedViewServe {
                // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
                const timeframes = timeframeRestatements(
                   shape.columns.map((c) => {
-                     const castTo = casts.get(c.name);
-                     if (!castTo) return c;
+                     const cast = casts.get(c.name);
+                     if (!cast) return c;
                      // A measure's notes go on its re-aggregation.
                      const notes = c.kind === "measure" ? [] : c.notes;
-                     return { ...c, notes, castTo };
+                     return { ...c, notes, ...cast };
                   }),
                   table.binding.schema.map((c) => c.name),
                );
                // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
                return `${typeDeclaration({ typeName, columns })}
 source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}
-${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${timeframes}
+${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${sourceTimezone}${timeframes}
 ${viewBody}
 }`;
             }
@@ -580,7 +585,7 @@ ${viewBody}
             addFile(new URL(companion), text);
             const built = `${plan.buildSourceName}__built`;
             return `import { ${identifier(built)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}
-${gates}source: ${identifier(source)} is ${identifier(built)} extend {
+${gates}source: ${identifier(source)} is ${identifier(built)} extend {${sourceTimezone}
 ${viewBody}
 }`;
          },
@@ -605,6 +610,12 @@ interface ViewShape {
    stageType?: string;
    /** The query time zone the view's rows were computed in (the source's or the view's own). */
    queryTimezone?: string;
+   /** The source's own query time zone (`timezone:` on the source). */
+   sourceTimezone?: string;
+   /** The view's own query time zone (`timezone:` in one of its stages). */
+   viewTimezone?: string;
+   /** The source's dialect, the one live answers on (as compiled, unchecked). */
+   dialect?: unknown;
 }
 
 /** One output column of the view, as live reports it. */
@@ -619,6 +630,8 @@ interface ViewColumn {
     * `calculation`), a `dimension`, or a `nest` (a nested result).
     */
    kind: "measure" | "dimension" | "nest";
+   /** The compiled output field, for what its type alone does not say (a `bigint` number). */
+   field: unknown;
 }
 
 /** A compiled query stage, as far as the shape reads it. */
@@ -687,6 +700,7 @@ function stageShape(
                   : kinds.measures.has(name)
                     ? "measure"
                     : "dimension",
+               field: raw,
             },
          ];
       },
@@ -737,54 +751,93 @@ async function viewShape(
    const view = def?.fields?.find(
       (f) => f.type === "turtle" && (f.as ?? f.name) === plan.viewName,
    );
-   const queryTimezone = queryTimezoneOf({
-      queryTimezone: (def as { queryTimezone?: unknown } | undefined)
-         ?.queryTimezone,
-      query: { pipeline: stages },
-   });
+   const { queryTimezone: ownZone, dialect } = (def ?? {}) as {
+      queryTimezone?: unknown;
+      dialect?: unknown;
+   };
+   const sourceTimezone = queryTimezoneOf({ queryTimezone: ownZone });
+   const viewTimezone = queryTimezoneOf({ query: { pipeline: stages } });
+   const queryTimezone = viewTimezone ?? sourceTimezone;
    return {
       columns,
       orderBy,
       notes: viewNoteTexts(view?.annotations),
       ...(typeof last?.type === "string" ? { stageType: last.type } : {}),
       ...(queryTimezone ? { queryTimezone } : {}),
+      ...(sourceTimezone ? { sourceTimezone } : {}),
+      ...(viewTimezone ? { viewTimezone } : {}),
+      ...(dialect !== undefined ? { dialect } : {}),
    };
 }
 
+/** How a stored column is read: through a faithful cast, or a big integer's native type. */
+type ColumnCast = { castTo: "DATE" | "BOOLEAN" } | { nativeCast: string };
+
 /**
  * The stored columns of a `storage=` view's table read through a cast, by
- * name: `DATE` or `BOOLEAN`, the served copy's faithful casts
- * ({@link serveTypePlan}). A build stores each column as its declared type
- * where it can, but one whose cast it declined (a view or source with a query
- * time zone) or a build whose casts failed and stored what the warehouse
- * returned holds a date truncation as a TIMESTAMP, which the `type:` would
- * declare a timestamp where live types it a date. A column no faithful cast
- * reads as live's type is the refusal instead, and the query answers live.
+ * name, or why the stored table cannot give live's values:
+ *
+ * - `DATE` or `BOOLEAN`, the served copy's faithful casts
+ *   ({@link serveTypePlan}). A build stores each column as its declared type
+ *   where it can, but one whose cast it declined (a view or source with a
+ *   query time zone) or a build whose casts failed and stored what the
+ *   warehouse returned holds a date truncation as a TIMESTAMP, which the
+ *   `type:` would declare a timestamp where live types it a date.
+ * - `HUGEINT` for a column live types as a `bigint` number (a BIGINT, a max
+ *   over one), the served copy's big-integer read ({@link bigIntegerReadOf}):
+ *   a `type:` declares it only as a `number`, which Malloy reads through a
+ *   JavaScript number and rounds above 2^53.
+ *
+ * The refusal, so the query answers live, for a column no faithful cast reads
+ * as live's type, a big integer stored as a float (its digits already lost),
+ * and a column live answers as a warehouse-native value (`sql native`: a
+ * TIMESTAMP_NS, whose digits past the millisecond a `timestamp` drops) or
+ * JSON, which no `type:` reads back as live does.
  */
 function storedColumnCasts(
    schema: readonly { name: string; type: string }[],
-   columns: readonly ViewColumn[],
-   queryTimezone: string | undefined,
-): { casts: Map<string, "DATE" | "BOOLEAN"> } | { refusal: string } {
-   const declared = columns
+   shape: Pick<ViewShape, "columns" | "queryTimezone" | "dialect">,
+): { casts: Map<string, ColumnCast> } | { refusal: string } {
+   const native = shape.columns.find(
+      (c) => c.type === "sql native" || c.type === "json",
+   );
+   if (native) {
+      return {
+         refusal: `live answers \`${native.name}\` as a ${native.type === "json" ? "JSON" : "warehouse-native"} value, which no stored read gives exactly`,
+      };
+   }
+   const declared = shape.columns
       .filter((c) => c.kind !== "nest" && c.type !== "")
       .map((c) => ({ name: c.name, type: c.type }));
    const mismatches = storedColumnTypeMismatches(schema, declared);
-   const plan = serveTypePlan(mismatches, { queryTimezone });
+   const plan = serveTypePlan(mismatches, {
+      queryTimezone: shape.queryTimezone,
+   });
    const [unservable] = plan.unservable;
    if (unservable) {
       return {
          refusal: `the stored \`${unservable.column}\` (${unservable.storedType}) cannot be read as live's ${unservable.declaredType}`,
       };
    }
-   return {
-      casts: new Map(
-         plan.casts.map((c) => [
-            c.column,
-            c.castTo === "BOOLEAN" ? ("BOOLEAN" as const) : ("DATE" as const),
-         ]),
-      ),
-   };
+   const casts = new Map<string, ColumnCast>(
+      plan.casts.map((c) => [
+         c.column,
+         { castTo: c.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
+      ]),
+   );
+   for (const c of shape.columns) {
+      const stored = schema.find((s) => s.name === c.name);
+      if (!stored || casts.has(c.name)) continue;
+      const big = bigIntegerReadOf(c.field, stored, { dialect: shape.dialect });
+      if (!big) continue;
+      if (!big.castTo) {
+         return {
+            refusal: `the stored \`${c.name}\` (${stored.type}) cannot hold live's integer exactly`,
+         };
+      }
+      casts.set(c.name, { nativeCast: big.castTo });
+   }
+   return { casts };
 }
 
 /**
@@ -852,8 +905,21 @@ function viewDeclaration(
    viewName: string,
    shape: ViewShape,
 ): { text: string } | { refusal: string } {
+   // An index's result is not the view's rows as a query writes them: live
+   // annotates none of its columns, and a stored read annotates every one.
+   if (shape.stageType === "index") {
+      return {
+         refusal:
+            "it is an `index:`, whose columns live writes without the annotations a stored read gives them",
+      };
+   }
    // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
    const notes = shape.notes.map((n) => `  ${n}\n`).join("");
+   // The view's own time zone, so a timeframe a `storage=` read truncates
+   // again, and a later stage, compute in the zone live does.
+   const zone = shape.viewTimezone
+      ? `timezone: ${stringLiteral(shape.viewTimezone)}`
+      : "";
    const select = shape.columns.map((c) => identifier(c.name)).join(", ");
    const order =
       shape.orderBy.length > 0
@@ -863,7 +929,7 @@ function viewDeclaration(
          : "";
    if (!regroups(shape.columns)) {
       return {
-         text: `${notes}  view: ${identifier(viewName)} is { select: ${select}${order ? `; ${order}` : ""} }`,
+         text: `${notes}  view: ${identifier(viewName)} is { ${zone ? `${zone}; ` : ""}select: ${select}${order ? `; ${order}` : ""} }`,
       };
    }
    const refusal =
@@ -882,7 +948,7 @@ function viewDeclaration(
    if (refusal) return { refusal };
    const lines = shape.columns.map(groupedColumn).join("");
    return {
-      text: `${notes}  view: ${identifier(viewName)} is {\n${lines}${order ? `    ${order}\n` : ""}  }`,
+      text: `${notes}  view: ${identifier(viewName)} is {\n${zone ? `    ${zone}\n` : ""}${lines}${order ? `    ${order}\n` : ""}  }`,
    };
 }
 
