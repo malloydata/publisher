@@ -199,13 +199,12 @@ export function deriveSelfInstructions(
 
          // Self-assign the name from `name=` (or the source name) for both
          // destinations. No generational decoration is needed: a storage
-         // build replaces the table atomically (`CREATE OR REPLACE`, or the
-         // partition create/alter/insert trio in ONE transaction, so a
-         // rebuild never empties the table it serves). Orchestrated builds
-         // use the host-supplied `physicalTableName`. A `scope: version`
-         // run's name gains its version's suffix; any other name the author
-         // did not choose gains the package's, so two packages on one schema
-         // never build one table (packageTableSuffix).
+         // build replaces the table atomically (`CREATE OR REPLACE` in ONE
+         // transaction, so a rebuild never empties the table it serves).
+         // Orchestrated builds use the host-supplied `physicalTableName`. A
+         // `scope: version` run's name gains its version's suffix; any other
+         // name the author did not choose gains the package's, so two
+         // packages on one schema never build one table (packageTableSuffix).
          const baseName = selfAssignTableName(persistSource);
          const logicalName = naming.versionSuffix
             ? versionedTableName(baseName, naming.versionSuffix)

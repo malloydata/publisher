@@ -229,3 +229,59 @@ describe("a Postgres build keeps a binary or interval column's warehouse type", 
       },
    );
 });
+
+// `partition=` is retired, and with it the bounds (one thread, a low
+// partitioned_write_flush_threshold) a delta into a laid-out table ran under.
+// They are not needed: a table an earlier `partition=` build laid out is never
+// the target of a delta. The layout was part of the source's address, so the
+// first run after the upgrade has no boundary at the new address and builds in
+// full, and a full build replaces the table. This pins that the replacement
+// drops the layout, so the delta that follows writes unpartitioned files.
+describe("a table an earlier partition= build laid out", () => {
+   async function laidOutFiles(conn: DuckDBConnection): Promise<string[]> {
+      const files = await conn.runSQL(
+         "SELECT data_file FROM ducklake_list_files('lake', 't')",
+      );
+      return (files.rows as { data_file: string }[])
+         .map((r) => r.data_file.replaceAll("\\", "/"))
+         .filter((f) => /\/d=[^/]+\//.test(f));
+   }
+
+   it("is rebuilt unpartitioned, and a delta after it writes no partition files", async () => {
+      const conn = await lake();
+      // What a `partition="d"` build wrote before the upgrade.
+      await conn.runSQL(`CREATE TABLE lake.t AS (${SEED}) WITH NO DATA`);
+      await conn.runSQL("ALTER TABLE lake.t SET PARTITIONED BY (d)");
+      await conn.runSQL(`INSERT INTO lake.t (${SEED})`);
+      expect((await laidOutFiles(conn)).length).toBeGreaterThan(0);
+
+      // The full build the new address forces.
+      await createTableWithDeclaredTypes(conn, "lake.t", SEED, {
+         columns: DECLARED,
+      });
+      expect(await laidOutFiles(conn)).toEqual([]);
+
+      // The next refresh, a delta into the rebuilt table.
+      for (const sql of deltaStatements({
+         dialect: "duckdb",
+         quotedTablePath: "lake.t",
+         deltaSQL: `SELECT * FROM (VALUES
+            (4, TIMESTAMP '2026-02-25 00:00:00', 0)
+         ) AS w(id, d, flag)`,
+         columns: ["id", "d", "flag"],
+         mergeKeys: [],
+         watermarkName: "d",
+         start: { malloyType: "date", value: "2026-02-21" },
+         end: { malloyType: "date", value: "2026-03-01" },
+      })) {
+         await conn.runSQL(sql);
+      }
+      expect(await laidOutFiles(conn)).toEqual([]);
+      expect(await rows(conn)).toEqual([
+         { id: 1, d: "2026-01-15", flag: true },
+         { id: 2, d: "2026-02-03", flag: false },
+         { id: 3, d: "2026-02-20", flag: true },
+         { id: 4, d: "2026-02-25", flag: false },
+      ]);
+   }, 120000);
+});
