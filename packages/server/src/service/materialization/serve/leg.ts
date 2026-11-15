@@ -81,6 +81,13 @@ export interface LegAnswer {
     */
    readonly tablesRead: readonly Binding[] | undefined;
    /**
+    * For the served copy: the tables the answer is judged to read when the
+    * router decides whether it keeps an entry point's gate, which fails
+    * closed (every re-rooted `storage=` table not proven unread). Undefined
+    * means {@link tablesRead}.
+    */
+   readonly gateTablesRead?: readonly Binding[];
+   /**
     * The bindings the runnable's shape was built from: a store failure is
     * retried live only when every one allows it. Empty when the answer reads
     * nothing through a virtual map.
@@ -271,6 +278,7 @@ function servedLeg(servedCopy: ServedCopyServe): Leg {
          return {
             runnable: served.runnable,
             tablesRead: served.tablesRead,
+            gateTablesRead: served.gateTablesRead,
             shapeBindings: served.bindings,
             virtualMap: served.virtualMap,
             graftScope: served.graftScope,

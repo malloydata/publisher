@@ -496,7 +496,7 @@ source: orders is ${ROWS} extend {
 });
 
 describe("a source that sets its own time zone (#1686)", () => {
-   it("plans its rollup only where the join leg reads it: joined from a source in the same zone", async () => {
+   it("plans its rollup only where the join leg reads it: joined from a source in the same zone, stored beside a storage= rollup", async () => {
       const zoned = (
          name: string,
          storage = "",
@@ -511,6 +511,10 @@ describe("a source that sets its own time zone (#1686)", () => {
          "m.malloy": `${zoned("lonely")}
 ${zoned("joined")}
 ${zoned("joined_stored", ' storage="lake"')}
+${zoned("joined_lake", ' storage="lake"')}
+${zoned("joined_persisted", ' storage="lake"')}
+${zoned("joined_other_lake", ' storage="lake"')}
+${zoned("joined_from_pond", ' storage="lake"')}
 ${zoned("joined_elsewhere")}
 source: inherits is lonely extend {
   #(preaggregate) grain=["category"]
@@ -527,14 +531,38 @@ source: parent is ${ROWS} extend {
 }
 source: parent_utc is ${ROWS} extend {
   join_one: je is joined_elsewhere on je.id = id
+}
+#(materialize) storage="lake"
+source: parent_lake is ${ROWS} extend {
+  timezone: 'America/New_York'
+  join_one: jl is joined_lake on jl.id = id
+}
+#@ persist storage="lake"
+source: parent_persisted is ${ROWS} -> { select: * } extend {
+  timezone: 'America/New_York'
+  join_one: jp is joined_persisted on jp.id = id
+}
+source: parent_lake_extended is parent_lake extend {
+  join_one: jo is joined_other_lake on jo.id = id
+}
+#(materialize) storage="pond"
+source: parent_pond is ${ROWS} extend {
+  timezone: 'America/New_York'
+  join_one: jf is joined_from_pond on jf.id = id
 }`,
       });
-      // A storage= rollup joined from the same zone is planned too: the join
-      // leg reads it when the joining source is stored in that destination
-      // (#1704), and declines at read when it is not.
+      // A storage= rollup is planned only when a source in the same zone
+      // that joins it is stored in its destination, or is built on one that
+      // is (#1704): the join leg reads it from no other source, so
+      // `joined_stored`, joined from a source on its own connection, and
+      // `joined_from_pond`, joined from one stored in another destination,
+      // do not make one; `parent_lake_extended`, built on a stored source,
+      // does.
       expect(plans.map((p) => p.baseSourceID.split("@")[0]).sort()).toEqual([
          "joined",
-         "joined_stored",
+         "joined_lake",
+         "joined_other_lake",
+         "joined_persisted",
          "plain",
       ]);
       expect(
@@ -545,8 +573,13 @@ source: parent_utc is ${ROWS} extend {
       ).toEqual([
          ["inherits", "total2"],
          ["joined_elsewhere", "total"],
+         ["joined_from_pond", "total"],
+         ["joined_stored", "total"],
          ["lonely", "total"],
       ]);
+      expect(
+         refused.find((r) => r.sourceName === "joined_stored")?.message,
+      ).toContain("is stored in `lake`");
       const message = refused.find((r) => r.sourceName === "lonely")?.message;
       expect(message).toContain("timezone: 'America/New_York'");
       expect(refused.find((r) => r.sourceName === "lonely")?.tier).toBe(

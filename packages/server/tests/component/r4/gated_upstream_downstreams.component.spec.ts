@@ -248,10 +248,10 @@ function expectedGateRefusals(gated: boolean): string[] {
             continue;
          }
          if (!gated) {
+            // Off, a `storage=` `#(materialize)` table is read by nothing
+            // that keeps the gate. A colocated one keeps it under G3, as the
+            // v1 colocated table beside it does.
             out.push(`${g}_ms_${s}:storage:authorize`);
-            // Off, a `#(materialize)` table is read by nothing that keeps the
-            // gate, so any gate refuses it, colocated or not.
-            out.push(`${g}_mc_${s}:colocated:authorize`);
          }
       }
    }
