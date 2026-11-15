@@ -63,9 +63,11 @@ function withoutReferenceIds(value: unknown): unknown {
 /** The storage destination every `storage=` source in the fixture names. */
 export const LAKE = "lake";
 
-/** A served field as the wire carries it: name, type (timeframe included) and annotations. */
+/** A served field as the wire carries it: name, kind, type (timeframe included) and annotations. */
 export interface WireField {
    name: string;
+   /** `dimension` or `measure`, as Malloy's result schema reports it. */
+   kind?: string;
    type: unknown;
    annotations: string[];
 }
@@ -265,6 +267,7 @@ export async function loadFixture(
                rows: result.compactResult as unknown as Row[],
                fields: (result.result?.schema?.fields ?? []).map((f) => ({
                   name: f.name,
+                  kind: (f as { kind?: string }).kind,
                   // A nest's fields carry annotations too, with the same
                   // per-compile reference id.
                   type: withoutReferenceIds((f as { type?: unknown }).type),

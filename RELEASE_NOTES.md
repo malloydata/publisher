@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a persisted view's answer reports its measures as measures
+
+A query answered from a persisted view's table (`#@ persist` on a `view:`, with `PUBLISHER_MATERIALIZE` on) returned the view's rows exactly, but every column as a dimension: a measure's `#(malloy)` result annotation lost `calculation` (and gained a drill `code`), and a nest lost `drillable`, its `limit` and `ordered_by`, and its own fields' annotations. A renderer or chart reading the result saw dimensions where live returns measures. The view is now redeclared over its stored rows by grouping them again by its dimensions, each group one stored row, with each measure re-aggregated from its one stored value (a boolean measure through the number it picks) and each nest rebuilt from its stored rows with its ordering and limit. The rows are unchanged, and every column now carries live's kind and annotations. Two differences remain: a stored column's `drill_expression` names the stored column, as before, and a nest with its own `where:` does not carry that filter as `drill_filters`. A measure whose type cannot be re-aggregated (a JSON value or an array) is answered live. Within a nest that has no `order_by:`, rows that tie under its default ordering may come back in another order than before, as they may live. No API change.
+
 ## [Unreleased] — the materialization rewriters read Malloy as Malloy reads it
 
 The served copy, a build's copy of the author's files and the build view that leaves joins across connections out all rewrite the author's text, and read it with their own small lexer. That lexer now shares one core with the reader of a caller's query text, which follows Malloy's own lexer exactly. What changes:
