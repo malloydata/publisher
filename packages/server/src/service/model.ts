@@ -2792,6 +2792,13 @@ export class Model {
          modelDef: this.modelDef,
          tables,
       };
+      if (tables.checkFailed !== undefined) {
+         // Reporting only: the served copy decides each column on its own.
+         logger.debug("Could not check stored column types", {
+            modelPath: this.modelPath,
+            error: tables.checkFailed,
+         });
+      }
       for (const source of tables.shadowed) {
          if (this.shadowedSourcesLogged.has(source)) continue;
          this.shadowedSourcesLogged.add(source);

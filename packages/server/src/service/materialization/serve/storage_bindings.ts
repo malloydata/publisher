@@ -59,6 +59,8 @@ interface ModelStorageTables {
    shadowed: readonly string[];
    mismatches: readonly SourceTypeMismatches[];
    findings: readonly BindingTypeFinding[];
+   /** Why the type check could not run, for the model's debug log. */
+   checkFailed?: string;
 }
 
 /**
@@ -66,8 +68,8 @@ interface ModelStorageTables {
  * and their stored columns' types against the model's declared ones. A
  * binding whose sourceIDs do not include this model's own source of that
  * name is for another model's source (malloydata/publisher#1001), so that
- * source serves live here. A type check that cannot run reports nothing:
- * the served copy decides each column on its own.
+ * source serves live here. A type check that cannot run reports nothing but
+ * why (`checkFailed`): the served copy decides each column on its own.
  */
 export function modelStorageTables(
    bindings: readonly Binding[],
@@ -103,8 +105,14 @@ export function modelStorageTables(
             })),
          });
       }
-   } catch {
-      return { kept, shadowed, mismatches: [], findings: [] };
+   } catch (err) {
+      return {
+         kept,
+         shadowed,
+         mismatches: [],
+         findings: [],
+         checkFailed: err instanceof Error ? err.message : String(err),
+      };
    }
    return { kept, shadowed, mismatches, findings };
 }
