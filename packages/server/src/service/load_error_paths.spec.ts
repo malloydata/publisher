@@ -317,6 +317,41 @@ describe("load error paths: recompiles, outside paths and every load", () => {
       expectNoServerPaths(message);
    });
 
+   it("judges a dry run as the version it would publish: two equal name=s are two tables only under scope: version", async () => {
+      boot("on", GOOD);
+      const env = await environment();
+      const twoNamed = `##! experimental.persistence
+source: raw is duckdb.sql("SELECT 1 AS x")
+#@ persist name="t"
+source: a is raw -> { group_by: x }
+#@ persist name="t"
+source: b is raw -> { select: x }
+`;
+      const dryRun = (scope: string) => {
+         const dir = path.join(root, "sources", `twonamed-${scope}`);
+         writePackageFiles(
+            dir,
+            { "model.malloy": twoNamed },
+            {
+               manifest: {
+                  name: "twonamed",
+                  version: "1.0.0",
+                  materialization: { scope },
+               },
+            },
+         );
+         return env.dryRunInstall(
+            "twonamed",
+            (staging) => fs.promises.cp(dir, staging, { recursive: true }),
+            { readVersion: true, describe: () => "admitted" },
+         );
+      };
+      expect(await dryRun("version")).toBe("admitted");
+      expect(await messageOf(() => dryRun("package"))).toContain(
+         "[materialization-table-collision]",
+      );
+   });
+
    it("names the file package-relative in an add from the environment's folder", async () => {
       const { server } = boot("off", GOOD);
       const env = await environment();
