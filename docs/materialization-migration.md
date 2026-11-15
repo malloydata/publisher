@@ -254,8 +254,8 @@ measures, views and joins, and has a table of its own
 source's own connection, with everything it does for `storage=` (stored computed dimensions,
 `inline=`, private and internal fields, terms re-applied at read, extension tables, gates). A column
 whose type the served copy cannot declare as stored (a `timestamptz`, a `json` or driver-specific
-type, or a nest outside DuckDB) leaves that source answered live. A v1 colocated `#@ persist` keeps
-being served through Malloy's build manifest, as before.
+type, or a nest outside DuckDB) leaves that source answered live. A v1 colocated `#@ persist` is
+read by the served copy too, since the v1 cutover.
 
 ```malloy
 // v1
@@ -448,9 +448,10 @@ the [known limitations](#known-limitations-you-may-hit) below.
 compiles to a row filter is built and served from the served copy with the gate grafted on. Off, it
 is not built and serves live: a `storage=` one is refused as a gated `#@ persist storage=` source is,
 and a colocated one too, because its table is read only through the served copy. A colocated gated
-source that must have a table with the switch off stays on `#@ persist`, whose colocated table keeps
-the gate through Malloy's build manifest. The switch stays off until a security review of storing
-gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
+source that must have a table with the switch off stays on `#@ persist`: since the v1 cutover the
+served copy reads a v1 colocated table past its entry point's own proven gate, grafted as on live,
+even with the switch off, when every table the answer reads is colocated. The switch stays off
+until a security review of storing gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
 the givens from a verified identity
 ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 
