@@ -178,7 +178,9 @@ describe.skipIf(!hasPublicDataBigQueryCredentials())(
          // `tsc` is the only thing standing between a signature change and a red
          // CI job nobody can reproduce locally — and a variadic cast tells it
          // nothing. Keep it shaped like the method.
-         const service = Object.create(MaterializationService.prototype) as {
+         const service = new MaterializationService({
+            storageManager: { getRepository: () => ({}) },
+         } as never).collaborators as unknown as {
             buildOneSourceIntoStorage: (p: {
                persistSource: unknown;
                instruction: unknown;

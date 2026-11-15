@@ -57,7 +57,7 @@ const COLOCATED = new ColocatedTier();
  */
 export class SourceBuilder {
    constructor(
-      /** The storage tier (StorageBuildStrategy, through the facade's seam). */
+      /** The storage tier (StorageBuildStrategy, through the service's collaborators). */
       private readonly storage: (
          request: StorageBuildRequest,
       ) => Promise<ManifestEntry>,

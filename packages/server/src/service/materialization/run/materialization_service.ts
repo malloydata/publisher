@@ -64,7 +64,6 @@ import {
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
 import {
-   BuildEnvironment,
    outcomeFor,
    packageRelativeRun,
    tallySources,
@@ -92,12 +91,77 @@ import {
 } from "./run_instructions";
 import { packageRelativeText } from "../../../package_relative_text";
 import { SourceBuilder } from "./source_build";
-import {
-   StorageBuildStrategy,
-   type StorageBuildRequest,
-} from "./storage_build_strategy";
+import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryUnownedTables } from "./table_ownership";
+
+/** What a run is asked to do: createMaterialization's options, resolved. */
+export interface RunBuildOptions {
+   sourceNames: string[] | undefined;
+   forceRefresh: boolean;
+   reseed: boolean;
+   buildInstructions: BuildInstruction[] | undefined;
+   ledger: LedgerEntry[] | undefined;
+   referenceManifest: ManifestReference[] | undefined;
+   strictUpstreams: boolean | undefined;
+   warehouseReach?: WarehouseReach;
+   trigger: "ON_DEMAND" | "SCHEDULER";
+   runContext?: components["schemas"]["RunContext"];
+   /** The version createMaterialization resolved; null when unversioned. */
+   version: string | null;
+}
+
+/**
+ * The steps a run takes through the service's collaborators, each one
+ * replaceable from the constructor. The real ones reach each other through
+ * this set, so replacing one step (one source's build, the storage tier's
+ * chained build, a commit) changes it wherever a run takes it.
+ */
+export interface RunCollaborators {
+   /** The background run a create starts: the build, inside its telemetry. */
+   runBuild(
+      id: string,
+      environmentName: string,
+      packageName: string,
+      opts: RunBuildOptions,
+      signal: AbortSignal,
+   ): Promise<void>;
+   /** An auto-run's instructions (run_instructions.ts). */
+   deriveSelfInstructions: typeof deriveSelfInstructions;
+   /** The run's incremental context, over the service's ledger store. */
+   incrementalRunContext(
+      compiled: CompiledBuildPlan,
+      run: Parameters<typeof incrementalRunContext>[1],
+   ): IncrementalRunContext | undefined;
+   /** The instructed build loop ({@link InstructedBuild.run}). */
+   executeInstructedBuild: InstructedBuild["run"];
+   /** One source's build ({@link SourceBuilder.build}). */
+   buildOneSource: SourceBuilder["build"];
+   /** The storage tier's build ({@link StorageBuildStrategy.build}). */
+   buildOneSourceIntoStorage: StorageBuildStrategy["build"];
+   /** A chained storage build on its stored parents. */
+   buildDownstreamViaParents: StorageBuildStrategy["buildDownstreamViaParents"];
+   /** See {@link Reclaimer.reclaimStorageTablesFromFailedRun}. */
+   reclaimStorageTablesFromFailedRun: Reclaimer["reclaimStorageTablesFromFailedRun"];
+   /** See {@link Reclaimer.dropMaterializedTables}. */
+   dropMaterializedTables: Reclaimer["dropMaterializedTables"];
+   /** How a reclaim drops one run's entries ({@link Reclaimer.dropManifestEntries}). */
+   dropManifestEntries: Reclaimer["dropManifestEntries"];
+   /** See {@link ManifestCommitter.commit}. */
+   commitManifest: ManifestCommitter["commit"];
+   /** See {@link ManifestCommitter.autoLoad}. */
+   autoLoadManifest: ManifestCommitter["autoLoad"];
+   /** See {@link ManifestCommitter.mostRecentEntries}. */
+   getMostRecentManifestEntries: ManifestCommitter["mostRecentEntries"];
+}
+
+/**
+ * The collaborators a service is constructed with: some of them, or a
+ * function of the real ones that returns some (to wrap a real step).
+ */
+export type RunCollaboratorOverrides =
+   | Partial<RunCollaborators>
+   | ((real: RunCollaborators) => Partial<RunCollaborators>);
 
 /**
  * Orchestrates single-call materialization builds: the facade the controller,
@@ -116,11 +180,13 @@ import { uncarryUnownedTables } from "./table_ownership";
  *
  * The work is its collaborators': {@link RunLifecycle} (the run state machine
  * and background runs), {@link TableClaims} (which tables an active run
- * writes), {@link InstructedBuild} and the tier strategies it reaches through
+ * writes), {@link InstructedBuild} and the tier adapters it reaches through
  * {@link SourceBuilder} (the build itself), {@link ManifestCommitter} (commit,
- * bind, read back) and {@link Reclaimer} (giving tables back). The private
- * methods below that only delegate are the seams this class's specs drive and
- * substitute; a collaborator that calls one goes back through this class.
+ * bind, read back) and {@link Reclaimer} (giving tables back, reached
+ * directly as {@link MaterializationService.reclaimer}). The steps a run
+ * takes through them are its {@link RunCollaborators}: the constructor takes
+ * any of them in place of the real one, so a spec hands the service a build,
+ * a tier or a commit of its own rather than replacing a method.
  */
 export class MaterializationService {
    private readonly lifecycle: RunLifecycle;
@@ -131,8 +197,16 @@ export class MaterializationService {
     * the startup sweep call it directly.
     */
    readonly reclaimer: Reclaimer;
+   /**
+    * The steps a run takes: the constructor's, else the real ones. Specs
+    * also drive a step through it.
+    */
+   readonly collaborators: RunCollaborators;
 
-   constructor(private readonly host: MaterializationHost) {
+   constructor(
+      private readonly host: MaterializationHost,
+      overrides: RunCollaboratorOverrides = {},
+   ) {
       const repository = () => this.repository;
       this.lifecycle = new RunLifecycle(repository);
       this.claims = new TableClaims(repository);
@@ -147,8 +221,73 @@ export class MaterializationService {
          repository,
          host,
          lifecycle: this.lifecycle,
-         dropManifestEntries: (...args) => this.dropManifestEntries(...args),
+         dropManifestEntries: (...args) =>
+            this.collaborators.dropManifestEntries(...args),
       });
+      const real = this.realCollaborators();
+      this.collaborators = {
+         ...real,
+         ...(typeof overrides === "function" ? overrides(real) : overrides),
+      };
+   }
+
+   /**
+    * The real steps. Each reaches the others through
+    * {@link collaborators}, so a replaced step is the one every run takes.
+    */
+   private realCollaborators(): RunCollaborators {
+      // Stateless, so one serves every build.
+      const storage = new StorageBuildStrategy({
+         buildDownstreamViaParents: (...a) =>
+            this.collaborators.buildDownstreamViaParents(...a),
+      });
+      return {
+         runBuild: (...args) => this.runBuild(...args),
+         deriveSelfInstructions,
+         incrementalRunContext: (compiled, run) =>
+            incrementalRunContext(compiled, run, this.repository),
+         executeInstructedBuild: (...args) =>
+            new InstructedBuild({
+               buildOneSource: (...a) =>
+                  this.collaborators.buildOneSource(...a),
+               reclaimStorageTablesFromFailedRun: (...a) =>
+                  this.collaborators.reclaimStorageTablesFromFailedRun(...a),
+               packageRuns: async (environmentName, packageName) =>
+                  (await this.repository.listMaterializations(
+                     await this.resolveEnvironmentId(environmentName),
+                     packageName,
+                  )) ?? [],
+               tableNotOwned: async (environmentName, packageName, target) => {
+                  await this.claims.markHeldElsewhere(
+                     await this.resolveEnvironmentId(environmentName),
+                     packageName,
+                     "",
+                     target,
+                  );
+                  await this.committer.rebindLoadedVersions(
+                     environmentName,
+                     packageName,
+                  );
+               },
+            }).run(...args),
+         buildOneSource: (...args) =>
+            new SourceBuilder((request) =>
+               this.collaborators.buildOneSourceIntoStorage(request),
+            ).build(...args),
+         buildOneSourceIntoStorage: (request) => storage.build(request),
+         buildDownstreamViaParents: (...args) =>
+            storage.buildDownstreamViaParents(...args),
+         reclaimStorageTablesFromFailedRun: (...args) =>
+            this.reclaimer.reclaimStorageTablesFromFailedRun(...args),
+         dropMaterializedTables: (...args) =>
+            this.reclaimer.dropMaterializedTables(...args),
+         dropManifestEntries: (...args) =>
+            this.reclaimer.dropManifestEntries(...args),
+         commitManifest: (...args) => this.committer.commit(...args),
+         autoLoadManifest: (...args) => this.committer.autoLoad(...args),
+         getMostRecentManifestEntries: (...args) =>
+            this.committer.mostRecentEntries(...args),
+      };
    }
 
    private get repository(): ResourceRepository {
@@ -557,7 +696,7 @@ export class MaterializationService {
                         : "auto",
                   },
                   () =>
-                     this.runBuild(
+                     this.collaborators.runBuild(
                         created.id,
                         environmentName,
                         packageName,
@@ -611,12 +750,7 @@ export class MaterializationService {
     * distribution to the caller.
     */
    private runBuild(
-      ...args: Parameters<MaterializationService["buildRun"]> extends [
-         RunTelemetry,
-         ...infer Rest,
-      ]
-         ? Rest
-         : never
+      ...args: Parameters<RunCollaborators["runBuild"]>
    ): Promise<void> {
       const [id, , packageName, opts] = args;
       const telemetry = new RunTelemetry(
@@ -636,20 +770,7 @@ export class MaterializationService {
       id: string,
       environmentName: string,
       packageName: string,
-      opts: {
-         sourceNames: string[] | undefined;
-         forceRefresh: boolean;
-         reseed: boolean;
-         buildInstructions: BuildInstruction[] | undefined;
-         ledger: LedgerEntry[] | undefined;
-         referenceManifest: ManifestReference[] | undefined;
-         strictUpstreams: boolean | undefined;
-         warehouseReach?: WarehouseReach;
-         trigger: "ON_DEMAND" | "SCHEDULER";
-         runContext?: components["schemas"]["RunContext"];
-         /** The version createMaterialization resolved; null when unversioned. */
-         version: string | null;
-      },
+      opts: RunBuildOptions,
       signal: AbortSignal,
    ): Promise<void> {
       const orchestrated = opts.buildInstructions !== undefined;
@@ -722,16 +843,19 @@ export class MaterializationService {
 
          // Assembled BEFORE the instructions because skip-if-unchanged consults
          // it: an incremental source is exempt from the carry-forward below.
-         const incremental = this.incrementalRunContext(compiled, {
-            environmentId,
-            packageName,
-            materializationId: id,
-            // `reseed`, never `forceRefresh`: every scheduled fire sets
-            // forceRefresh, which would make a schedule all full rebuilds.
-            forceRefresh: opts.reseed ?? false,
-            now: new Date(startedAt),
-            ledger: opts.ledger,
-         });
+         const incremental = this.collaborators.incrementalRunContext(
+            compiled,
+            {
+               environmentId,
+               packageName,
+               materializationId: id,
+               // `reseed`, never `forceRefresh`: every scheduled fire sets
+               // forceRefresh, which would make a schedule all full rebuilds.
+               forceRefresh: opts.reseed ?? false,
+               now: new Date(startedAt),
+               ledger: opts.ledger,
+            },
+         );
 
          let instructions: BuildInstruction[];
          // Tables built under readable names in place of an earlier run's,
@@ -775,12 +899,13 @@ export class MaterializationService {
             // `forceRefresh` too, where nothing is carried: the entries still
             // decide each table's name (an incremental source keeps the name
             // its ledger is keyed by, a readable name stays put).
-            const priorEntries = await this.getMostRecentManifestEntries(
-               environmentId,
-               packageName,
-               id,
-               reader,
-            );
+            const priorEntries =
+               await this.collaborators.getMostRecentManifestEntries(
+                  environmentId,
+                  packageName,
+                  id,
+                  reader,
+               );
             let recheck: Record<string, BuildInstruction>;
             ({
                instructions,
@@ -789,7 +914,7 @@ export class MaterializationService {
                cleared: clearedTiers,
                recheck = {},
                renamed = [],
-            } = this.deriveSelfInstructions(
+            } = this.collaborators.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
                priorEntries,
@@ -908,7 +1033,7 @@ export class MaterializationService {
             sourcesRefused: instructedRefused,
             refusedBesideBuilt: builtRefusedBeside = {},
             uniquenessChecks,
-         } = await this.executeInstructedBuild(
+         } = await this.collaborators.executeInstructedBuild(
             compiled,
             withChainBuildText(
                environment,
@@ -999,7 +1124,7 @@ export class MaterializationService {
          const sourcesRefused =
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
-         const served = await this.commitManifest(
+         const served = await this.collaborators.commitManifest(
             id,
             entries,
             failures,
@@ -1050,7 +1175,7 @@ export class MaterializationService {
             orchestrated
                ? undefined
                : (finish) =>
-                    this.autoLoadManifest(
+                    this.collaborators.autoLoadManifest(
                        environment,
                        packageName,
                        entries,
@@ -1175,116 +1300,7 @@ export class MaterializationService {
       }
    }
 
-   // ==================== BUILD SEAMS ====================
-
-   /** See {@link deriveSelfInstructions} (run_instructions.ts). */
-   private deriveSelfInstructions(
-      ...args: Parameters<typeof deriveSelfInstructions>
-   ): ReturnType<typeof deriveSelfInstructions> {
-      return deriveSelfInstructions(...args);
-   }
-
-   /**
-    * The run's incremental context over this service's ledger store. A method
-    * rather than a direct call so a test can substitute the context a run gets.
-    */
-   private incrementalRunContext(
-      compiled: CompiledBuildPlan,
-      run: Parameters<typeof incrementalRunContext>[1],
-   ): IncrementalRunContext | undefined {
-      return incrementalRunContext(compiled, run, this.repository);
-   }
-
-   /** See {@link InstructedBuild.run}. */
-   private executeInstructedBuild(
-      ...args: Parameters<InstructedBuild["run"]>
-   ): ReturnType<InstructedBuild["run"]> {
-      return new InstructedBuild({
-         buildOneSource: (...a) => this.buildOneSource(...a),
-         reclaimStorageTablesFromFailedRun: (...a) =>
-            this.reclaimStorageTablesFromFailedRun(...a),
-         packageRuns: async (environmentName, packageName) =>
-            (await this.repository.listMaterializations(
-               await this.resolveEnvironmentId(environmentName),
-               packageName,
-            )) ?? [],
-         tableNotOwned: async (environmentName, packageName, target) => {
-            await this.claims.markHeldElsewhere(
-               await this.resolveEnvironmentId(environmentName),
-               packageName,
-               "",
-               target,
-            );
-            await this.committer.rebindLoadedVersions(
-               environmentName,
-               packageName,
-            );
-         },
-      }).run(...args);
-   }
-
-   /** See {@link SourceBuilder.build}. */
-   private buildOneSource(
-      ...args: Parameters<SourceBuilder["build"]>
-   ): ReturnType<SourceBuilder["build"]> {
-      return new SourceBuilder((request) =>
-         this.buildOneSourceIntoStorage(request),
-      ).build(...args);
-   }
-
-   /** See {@link StorageBuildStrategy.build}. */
-   private buildOneSourceIntoStorage(
-      params: StorageBuildRequest,
-   ): Promise<ManifestEntry> {
-      return this.storageStrategy().build(params);
-   }
-
-   /** See {@link StorageBuildStrategy.buildDownstreamViaParents}. */
-   private buildDownstreamViaParents(
-      ...args: Parameters<StorageBuildStrategy["buildDownstreamViaParents"]>
-   ): ReturnType<StorageBuildStrategy["buildDownstreamViaParents"]> {
-      return this.storageStrategy().buildDownstreamViaParents(...args);
-   }
-
-   /**
-    * Stateless, so made per call: a build reached through the prototype alone
-    * (a spec that never constructs the service) still finds it.
-    */
-   private storageStrategy(): StorageBuildStrategy {
-      return new StorageBuildStrategy({
-         buildDownstreamViaParents: (...a) =>
-            this.buildDownstreamViaParents(...a),
-      });
-   }
-
-   /** See {@link Reclaimer.reclaimStorageTablesFromFailedRun}. */
-   private reclaimStorageTablesFromFailedRun(
-      builtThisRun: ManifestEntry[],
-      environment: BuildEnvironment,
-      owner: { environmentId: string; packageName: string },
-   ): Promise<void> {
-      return this.reclaimer.reclaimStorageTablesFromFailedRun(
-         builtThisRun,
-         environment,
-         owner,
-      );
-   }
-
-   // ==================== MANIFEST SEAMS ====================
-
-   /** See {@link ManifestCommitter.commit}. */
-   private commitManifest(
-      ...args: Parameters<ManifestCommitter["commit"]>
-   ): ReturnType<ManifestCommitter["commit"]> {
-      return this.committer.commit(...args);
-   }
-
-   /** See {@link ManifestCommitter.autoLoad}. */
-   private autoLoadManifest(
-      ...args: Parameters<ManifestCommitter["autoLoad"]>
-   ): ReturnType<ManifestCommitter["autoLoad"]> {
-      return this.committer.autoLoad(...args);
-   }
+   // ==================== UNIQUENESS PASSES ====================
 
    /**
     * The inline uniqueness passes an auto-run may rely on: those the run
@@ -1340,13 +1356,6 @@ export class MaterializationService {
             await this.repository.updateMaterialization(run.id, { metadata });
          }
       }
-   }
-
-   /** See {@link ManifestCommitter.mostRecentEntries}. */
-   private getMostRecentManifestEntries(
-      ...args: Parameters<ManifestCommitter["mostRecentEntries"]>
-   ): Promise<Record<string, ManifestEntry>> {
-      return this.committer.mostRecentEntries(...args);
    }
 
    // ==================== CANCELLATION ====================
@@ -1416,7 +1425,11 @@ export class MaterializationService {
       }
 
       if (options.dropTables) {
-         await this.dropMaterializedTables(environmentName, packageName, m);
+         await this.collaborators.dropMaterializedTables(
+            environmentName,
+            packageName,
+            m,
+         );
       }
 
       // The record is part of what proves a recorded uniqueness pass still
@@ -1432,28 +1445,6 @@ export class MaterializationService {
       // (Mirrors the load-time Environment.rebindServeBindingsFromLocalStore;
       // best-effort: a failure leaves the bindings for a later reload or build.)
       await this.committer.rebindLoadedVersions(environmentName, packageName);
-   }
-
-   // ==================== RECLAIM ====================
-
-   /** See {@link Reclaimer.dropMaterializedTables}. */
-   private dropMaterializedTables(
-      environmentName: string,
-      packageName: string,
-      m: Materialization,
-   ): Promise<void> {
-      return this.reclaimer.dropMaterializedTables(
-         environmentName,
-         packageName,
-         m,
-      );
-   }
-
-   /** See {@link Reclaimer.dropManifestEntries}. */
-   private dropManifestEntries(
-      ...args: Parameters<Reclaimer["dropManifestEntries"]>
-   ): Promise<ManifestEntry[]> {
-      return this.reclaimer.dropManifestEntries(...args);
    }
 
    private resolveEnvironmentId(environmentName: string): Promise<string> {

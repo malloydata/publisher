@@ -8,6 +8,7 @@ import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
+import { MaterializationService } from "./materialization_service";
 import {
    compiledWith,
    fakeSource,
@@ -218,8 +219,9 @@ describe("run telemetry through the build loop", () => {
          [["s1"], ["s2"]],
          new Map([["duckdb", connection]]),
       );
-      (ctx.service as unknown as { buildOneSource: unknown }).buildOneSource =
-         buildOneSource;
+      const service = new MaterializationService(ctx.environmentStore, {
+         buildOneSource: buildOneSource as never,
+      });
       const telemetry = new RunTelemetry(
          "run-1",
          opts.mode ?? "orchestrated",
@@ -227,7 +229,7 @@ describe("run telemetry through the build loop", () => {
       );
       const result = await withRunTelemetry(telemetry, () =>
          (
-            ctx.service as unknown as {
+            service.collaborators as unknown as {
                executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
             }
          )
@@ -662,12 +664,13 @@ describe("run telemetry review findings", () => {
             buildDurationMs: 10,
          };
       });
-      (ctx.service as unknown as { buildOneSource: unknown }).buildOneSource =
-         build;
+      const service = new MaterializationService(ctx.environmentStore, {
+         buildOneSource: build as never,
+      });
       const telemetry = new RunTelemetry("run-1", "auto", "pkg");
       const result = (await withRunTelemetry(telemetry, () =>
          (
-            ctx.service as unknown as {
+            service.collaborators as unknown as {
                executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
             }
          ).executeInstructedBuild(

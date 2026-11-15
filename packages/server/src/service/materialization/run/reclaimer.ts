@@ -200,9 +200,8 @@ export class Reclaimer {
          host: MaterializationHost;
          lifecycle: RunLifecycle;
          /**
-          * How a sweep drops one run's entries. The facade routes this back
-          * through its own `dropManifestEntries` so its specs can substitute
-          * a failing drop.
+          * How a sweep drops one run's entries: the service passes its run
+          * collaborator, so a spec can hand it a failing drop.
           */
          dropManifestEntries: DropManifestEntries;
       },

@@ -56,29 +56,23 @@ describe("buildOneSourceIntoStorage (failure redaction)", () => {
          };
 
          // A failed RW ATTACH echoes the statement, connstring included.
-         sandbox
-            .stub(
-               MaterializationService.prototype as unknown as Record<
-                  string,
-                  unknown
-               >,
-               "buildDownstreamViaParents" as never,
-            )
-            .rejects(
-               new Error(
-                  "IO Error: failed to ATTACH 'ducklake:postgres:host=catalog.internal " +
-                     "user=lake_rw password=c4talog-pw' (db lake)",
+         const { service } = createMocks({
+            buildDownstreamViaParents: sandbox
+               .stub()
+               .rejects(
+                  new Error(
+                     "IO Error: failed to ATTACH 'ducklake:postgres:host=catalog.internal " +
+                        "user=lake_rw password=c4talog-pw' (db lake)",
+                  ),
                ),
-            );
-
-         const { service } = createMocks();
+         });
          const environment = buildEnvironmentStub({
             connections: { orders_pg: sourceConnection },
             destinations: { lake: destinationConnection },
          });
 
          const call = (
-            service as unknown as {
+            service.collaborators as unknown as {
                buildOneSourceIntoStorage: (...a: unknown[]) => Promise<unknown>;
             }
          ).buildOneSourceIntoStorage({
@@ -176,25 +170,6 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          connections: { duckdb: { name: "duckdb", type: "duckdb" } },
          destinations: { lake: { name: "lake", type: "duckdb" } },
       });
-      const svc = ctx.service as unknown as {
-         buildDownstreamViaParents: unknown;
-         buildOneSourceIntoStorage: (p: {
-            persistSource: unknown;
-            instruction: BuildInstruction;
-            manifest: Manifest;
-            environment: unknown;
-            publicBuildSQL: string;
-            buildSQL: string;
-            builtEntries: Record<string, unknown>;
-            dependsOnStorageUpstream: boolean;
-            planFacts?: unknown;
-         }) => Promise<{
-            physicalTableName: string;
-            storageDestinationName?: string;
-            upstreamReuse?: string;
-            upstreamRecomputeReason?: string;
-         }>;
-      };
       // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
       const seam: Record<typeof opts.stackOnParent, sinon.SinonStub> = {
          ok: sinon.stub().resolves({
@@ -277,7 +252,26 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                ),
             ),
       };
-      svc.buildDownstreamViaParents = seam[opts.stackOnParent];
+      const svc = new MaterializationService(ctx.environmentStore, {
+         buildDownstreamViaParents: seam[opts.stackOnParent],
+      }).collaborators as unknown as {
+         buildOneSourceIntoStorage: (p: {
+            persistSource: unknown;
+            instruction: BuildInstruction;
+            manifest: Manifest;
+            environment: unknown;
+            publicBuildSQL: string;
+            buildSQL: string;
+            builtEntries: Record<string, unknown>;
+            dependsOnStorageUpstream: boolean;
+            planFacts?: unknown;
+         }) => Promise<{
+            physicalTableName: string;
+            storageDestinationName?: string;
+            upstreamReuse?: string;
+            upstreamRecomputeReason?: string;
+         }>;
+      };
       return svc.buildOneSourceIntoStorage({
          persistSource: source,
          instruction,
@@ -589,13 +583,13 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
          storageDestinationName: "shared",
          schema: [{ name: "order_month", type: "DATE" }],
       });
-      (
-         ctx.service as unknown as { buildDownstreamViaParents: unknown }
-      ).buildDownstreamViaParents = write;
+      const service = new MaterializationService(ctx.environmentStore, {
+         buildDownstreamViaParents: write,
+      });
 
       const run = () =>
          (
-            ctx.service as unknown as {
+            service.collaborators as unknown as {
                buildOneSourceIntoStorage: (p: {
                   persistSource: unknown;
                   instruction: BuildInstruction;

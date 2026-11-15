@@ -71,7 +71,7 @@ describe("executeInstructedBuild", () => {
          getEnvironmentPath: () => "/tmp/env",
       };
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             executeInstructedBuild: (
                c: unknown,
                env: unknown,
@@ -2073,7 +2073,7 @@ describe("executeInstructedBuild", () => {
             },
             getEnvironmentPath: () => "/tmp/env",
          };
-         const service = ctx.service as unknown as {
+         const service = ctx.service.collaborators as unknown as {
             executeInstructedBuild: (
                ...args: unknown[]
             ) => Promise<ExecuteResult & { refusalsInFailures: number }>;

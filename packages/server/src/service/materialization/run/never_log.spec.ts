@@ -183,7 +183,7 @@ describe("incremental refresh logs never carry a watermark value", () => {
          ...(params.reseed === undefined ? {} : { reseed: params.reseed }),
       } as BuildInstruction;
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                sourceEntityId: string;
                physicalTableName: string;
@@ -287,7 +287,6 @@ describe("build failure logs never carry the driver's message", () => {
    }
 
    it("logs a source's failure by its code; the message stays on the record", async () => {
-      const ctx = createMocks();
       const connection = {
          runSQL: sinon.stub().resolves(),
       } as unknown as MalloyConnection;
@@ -299,21 +298,24 @@ describe("build failure logs never carry the driver's message", () => {
          [["s1"], ["s2"]],
          new Map([["duckdb", connection]]),
       );
-      (ctx.service as unknown as { buildOneSource: unknown }).buildOneSource =
-         sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-            if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
-               throw Object.assign(new Error(DRIVER_MESSAGE), {
-                  code: "22018",
-               });
-            }
-            return {
-               sourceEntityId: i.sourceEntityId,
-               physicalTableName: "t2",
-               connectionName: "duckdb",
-            };
-         });
+      const ctx = createMocks({
+         buildOneSource: sinon
+            .stub()
+            .callsFake(async (_s, i: BuildInstruction) => {
+               if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
+                  throw Object.assign(new Error(DRIVER_MESSAGE), {
+                     code: "22018",
+                  });
+               }
+               return {
+                  sourceEntityId: i.sourceEntityId,
+                  physicalTableName: "t2",
+                  connectionName: "duckdb",
+               };
+            }) as never,
+      });
       const result = (await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
          }
       ).executeInstructedBuild(

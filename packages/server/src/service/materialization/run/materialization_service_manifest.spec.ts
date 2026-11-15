@@ -15,7 +15,7 @@ import { rebindsOwnVersionAfter } from "./manifest_committer";
  * back as the previous run's entries.
  */
 
-/** The private manifest methods these tests drive. */
+/** The manifest steps these tests drive, typed loosely for their fakes. */
 function manifestMethods(service: MaterializationService): {
    autoLoadManifest: (
       env: unknown,
@@ -39,7 +39,9 @@ function manifestMethods(service: MaterializationService): {
       excludeId: string,
    ) => Promise<Record<string, unknown>>;
 } {
-   return service as unknown as ReturnType<typeof manifestMethods>;
+   return service.collaborators as unknown as ReturnType<
+      typeof manifestMethods
+   >;
 }
 
 interface Served {

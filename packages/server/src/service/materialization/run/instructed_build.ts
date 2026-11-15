@@ -140,9 +140,8 @@ export class InstructedBuild {
    constructor(
       private readonly seams: {
          /**
-          * One source's build. The facade routes this, and the failed-run
-          * reclaim, back through its own methods of the same names so its
-          * specs can drive and substitute them.
+          * One source's build. The service passes this, and the failed-run
+          * reclaim, from its run collaborators, so a spec can hand it either.
           */
          buildOneSource: SourceBuilder["build"];
          reclaimStorageTablesFromFailedRun: (
