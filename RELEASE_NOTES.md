@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a `storage=` rollup returns exact big-integer sums and keeps `timestamptz` grains
+
+A rollup stored in a `storage=` destination (`#(preaggregate)` or v1 `#@ preaggregate`) read its stored table with the wrong types in two cases. A big-integer measure (a `sum` of a BIGINT) whose total passed 2^53 came back rounded, as `-9007199254740992` where live gives `-9007199254740993`; it is now read through its native type and returns every digit, as live does. A grain dimension live types as `timestamptz` came back typed `timestamp`, with equal rows; it now keeps its `timestamptz` type. A big-integer column the destination stored where no cast reads it exactly (a float, its digits already lost) is no longer served: the rollup is skipped with reason `MISSING_FIELD` and the query is answered live. Colocated rollups are unchanged; they were already exact.
+
+No API, enum or metric value changes.
+
 ## [Unreleased] — a source sharing a table with a refused sibling no longer builds over another package's table
 
 Two stored sources that compile to the same build share one table, named after the first of them. When that first source has a `name=` and the table at that name is not provably this package's (another package marked it as its own, or no run of this package wrote it, as with a user's own table), the auto-run refused that source and left the table alone, but then built the same table for the sibling sharing it, replacing that table's rows and removing its mark. The refusal now belongs to the table. Every source sharing it is refused with the same `table-owned-elsewhere` (or `table-ownership-unverified`) reason, nothing is written, the table and its mark stay as they were, and each of those sources is answered live. This holds for colocated tables and `storage=` destinations, and for `scope: "package"` versions. When the name is free, the shared table is built once and marked as this package's, whichever source builds it.
