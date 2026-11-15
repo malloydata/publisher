@@ -2155,13 +2155,31 @@ export class ServedCopyServe {
       };
    }
 
+   /**
+    * Forget the failures remembered for this package's connections: the
+    * destinations or the warehouse changed, so a copy that failed may not.
+    */
+   forgetFailures(): void {
+      const config = this.packageConfig;
+      if (typeof config === "object" && config) {
+         knownRerootFailures.delete(config);
+      }
+   }
+
    /** The failure remembered for a copy's key, while it is held. */
    private knownFailure(
       key: string | undefined,
       asOf: number,
    ): { error: unknown } | undefined {
       const config = this.packageConfig;
-      if (key === undefined || typeof config !== "object" || !config) {
+      // A copy pinned at no time (a preview or dry run) neither reads nor
+      // writes the memo: it has no clock to expire one against.
+      if (
+         key === undefined ||
+         asOf <= 0 ||
+         typeof config !== "object" ||
+         !config
+      ) {
          return undefined;
       }
       const byKey = knownRerootFailures.get(config);
@@ -2181,7 +2199,14 @@ export class ServedCopyServe {
       asOf: number,
    ): void {
       const config = this.packageConfig;
-      if (key === undefined || typeof config !== "object" || !config) return;
+      if (
+         key === undefined ||
+         asOf <= 0 ||
+         typeof config !== "object" ||
+         !config
+      ) {
+         return;
+      }
       let byKey = knownRerootFailures.get(config);
       if (!byKey) {
          byKey = new Map();

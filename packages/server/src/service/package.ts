@@ -441,8 +441,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
            models: Map<string, Model>;
            colocated: unknown;
            buildPlan: unknown;
+           connectionEdits: number;
         }
       | undefined;
+   /** Bumped by each connection edit {@link markBuildPlanStale} records. */
+   private connectionEdits = 0;
    /** The annotations the entities extraction left out, as warnings. */
    private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
@@ -2123,6 +2126,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /** See {@link PackageMaterialization.markBuildPlanStale}. */
    public markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      this.connectionEdits++;
       this.materialization.markBuildPlanStale(changedConnections);
    }
 
@@ -2769,6 +2773,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          models: this.models,
          colocated: this.materialization.boundColocatedEntries(),
          buildPlan: this.materialization.buildPlan,
+         connectionEdits: this.connectionEdits,
       };
    }
 
@@ -2776,12 +2781,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private isReloadedFor(entries: string): boolean {
       const last = this.reloadedFor;
       if (!last) return false;
+      // A plan a connection edit made stale may not hold the tables its
+      // re-derivation will; recompile, as before, rather than keep them.
+      if (this.materialization.isBuildPlanStale()) return false;
+      // A model a reload left as a placeholder may compile now.
+      for (const model of this.models.values()) {
+         if (model.getCompilationError()) return false;
+      }
       const now = this.reloadKey(entries);
       return (
          last.entries === now.entries &&
          last.models === now.models &&
          last.colocated === now.colocated &&
-         last.buildPlan === now.buildPlan
+         last.buildPlan === now.buildPlan &&
+         last.connectionEdits === now.connectionEdits
       );
    }
 

@@ -208,4 +208,68 @@ describe("a rebind of the same manifest", () => {
       pkg.bindColocatedServeManifest(manifest("summary_a"));
       expect(await recompiled(manifest("summary_b"))).toBe(true);
    });
+
+   it("recompiles while a connection edit has the plan stale, and after it", async () => {
+      const again = () =>
+         pkg.reloadAllModels(manifest("summary_a"), { ifChanged: true });
+      expect(await again()).toBe(true);
+      expect(await again()).toBe(false);
+      // A connection edit marks the plan stale and queues its re-derivation:
+      // a rebind meanwhile recompiles, as it did before.
+      pkg.markBuildPlanStale(["duckdb"]);
+      expect(pkg.isBuildPlanStale()).toBe(true);
+      expect(await again()).toBe(true);
+      // Still stale: the reload just made read the stale plan too.
+      expect(await again()).toBe(true);
+      // Re-derived: the plan that reload read is replaced, so recompile.
+      expect(await pkg.refreshBuildPlan()).toBe(true);
+      expect(pkg.isBuildPlanStale()).toBe(false);
+      expect(await again()).toBe(true);
+      expect(await again()).toBe(false);
+   });
+
+   it("recompiles after a connection edit even when the plan re-derives to the same object", async () => {
+      const again = () =>
+         pkg.reloadAllModels(manifest("summary_a"), { ifChanged: true });
+      expect(await again()).toBe(true);
+      // The edit is recorded; with the plan reported current and the same
+      // object, only the edit itself tells the rebind to recompile.
+      pkg.markBuildPlanStale(["duckdb"]);
+      const materialization = (
+         pkg as unknown as {
+            materialization: { isBuildPlanStale(): boolean };
+         }
+      ).materialization;
+      const stale = spyOn(materialization, "isBuildPlanStale").mockReturnValue(
+         false,
+      );
+      try {
+         expect(await again()).toBe(true);
+         expect(await again()).toBe(false);
+      } finally {
+         stale.mockRestore();
+      }
+   });
+
+   it("recompiles when the models moved without a reload, or one is a placeholder", async () => {
+      const again = () =>
+         pkg.reloadAllModels(manifest("summary_a"), { ifChanged: true });
+      expect(await again()).toBe(true);
+      // The models map replaced by anything but this reload.
+      const holder = pkg as unknown as { models: Map<string, unknown> };
+      holder.models = new Map(holder.models);
+      expect(await again()).toBe(true);
+      expect(await again()).toBe(false);
+      // A model the last reload left as a placeholder may compile now.
+      const model = pkg.getModel("m.malloy")!;
+      const failed = spyOn(model, "getCompilationError").mockReturnValue(
+         new Error("transient"),
+      );
+      try {
+         expect(await again()).toBe(true);
+      } finally {
+         failed.mockRestore();
+      }
+      expect(await again()).toBe(false);
+   });
 });

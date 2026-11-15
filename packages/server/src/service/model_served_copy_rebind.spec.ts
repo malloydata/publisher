@@ -172,28 +172,38 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       expect(model.servedCopyProblems()).toEqual([]);
    });
 
-   it("compiles a re-root that fails once per model text and binding, and warns once", async () => {
-      // The vector model_storage_serve.spec.ts pins: the stored column's
-      // captured spelling makes the author's `except:` fail in the copy.
-      const { model, connMap } = await buildModel(
+   /**
+    * The vector model_storage_serve.spec.ts pins: the stored column's
+    * captured spelling makes the author's `except:` fail in the copy.
+    */
+   const FAILING: Binding = {
+      ...BINDING,
+      schema: [
+         { name: "TOTAL", type: "BIGINT" },
+         { name: "SECRET", type: "VARCHAR" },
+      ],
+   };
+   const failingModel = () =>
+      buildModel(
          `source: X is duckdb.sql("SELECT 0 AS total, 'live' AS secret") ` +
             `extend { except: secret }`,
          "CREATE OR REPLACE TABLE mz_rebind AS " +
             `SELECT 60 AS "TOTAL", 'from_storage' AS "SECRET"`,
       );
-      const failing: Binding = {
-         ...BINDING,
-         schema: [
-            { name: "TOTAL", type: "BIGINT" },
-            { name: "SECRET", type: "VARCHAR" },
-         ],
-      };
-      const warn = spyOn(logger, "warn");
-      const steppedBack = () =>
-         warn.mock.calls.filter((c) =>
-            String(c[0]).startsWith("A re-root does not compile"),
-         ).length;
-      try {
+   let warn: ReturnType<typeof spyOn<typeof logger, "warn">>;
+   beforeEach(() => {
+      warn = spyOn(logger, "warn");
+   });
+   afterEach(() => warn.mockRestore());
+   const steppedBack = () =>
+      warn.mock.calls.filter((c) =>
+         String(c[0]).startsWith("A re-root does not compile"),
+      ).length;
+
+   it("compiles a re-root that fails once per model text and binding, and warns once", async () => {
+      const { model, connMap, dir } = await failingModel();
+      const failing = FAILING;
+      {
          model.setServeBindings([failing]);
          await model.prepareServedCopy();
          const first = compiles.mock.calls.length;
@@ -207,9 +217,9 @@ describe("a served copy compiles once per thing it is compiled from", () => {
             }),
          ]);
 
-         // The same text and table again (a reload's recompile): the same
-         // step back, with no compile and no second warning.
-         model.invalidateCompiledLegs();
+         // The same text and table again (a recompile with a new build
+         // plan): the same step back, with no compile and no second warning.
+         model.setServedCopyContext(dir, connMap, {});
          await model.prepareServedCopy();
          expect(compiles.mock.calls.length).toBe(first);
          expect(steppedBack()).toBe(1);
@@ -227,8 +237,60 @@ describe("a served copy compiles once per thing it is compiled from", () => {
          await model.prepareServedCopy();
          expect(compiles.mock.calls.length).toBeGreaterThan(first);
          expect(steppedBack()).toBe(2);
-      } finally {
-         warn.mockRestore();
       }
+   });
+
+   it("forgets a failed re-root when the destinations or the warehouse change", async () => {
+      const { model, connMap } = await failingModel();
+      model.setServeBindings([FAILING]);
+      await model.prepareServedCopy();
+      let seen = compiles.mock.calls.length;
+      const recompiled = async () => {
+         await model.prepareServedCopy();
+         const more = compiles.mock.calls.length > seen;
+         seen = compiles.mock.calls.length;
+         return more;
+      };
+      // A destination list swap (Environment.invalidateCompiledLegs).
+      model.invalidateCompiledLegs();
+      expect(await recompiled()).toBe(true);
+      expect(steppedBack()).toBe(2);
+      // Another destinations provider.
+      const other = new MalloyConfig({ connections: {} });
+      other.wrapConnections(
+         () => new FixedConnectionMap(connMap as never, "duckdb"),
+      );
+      model.setServeDestinationConfig(() => other);
+      expect(await recompiled()).toBe(true);
+      expect(steppedBack()).toBe(3);
+      expect(model.servedCopyProblems()).toEqual([
+         expect.objectContaining({ reason: "reroot_not_compiled" }),
+      ]);
+   });
+
+   it("neither reads nor seeds the memo from a preview, which pins no time", async () => {
+      const { model, connMap, dir } = await failingModel();
+      // The live copy fails and remembers it.
+      model.setServeBindings([FAILING]);
+      await model.prepareServedCopy();
+      let seen = compiles.mock.calls.length;
+      const compiled = () => {
+         const more = compiles.mock.calls.length > seen;
+         seen = compiles.mock.calls.length;
+         return more;
+      };
+      // Each preview compiles for itself, though the live copy's failure is
+      // held for the same text and tables.
+      await model.previewServedCopy([FAILING]);
+      expect(compiled()).toBe(true);
+      await model.previewServedCopy([FAILING]);
+      expect(compiled()).toBe(true);
+      // And the live copy still holds its own: a recompile replays it.
+      model.setServedCopyContext(dir, connMap, {});
+      await model.prepareServedCopy();
+      expect(compiled()).toBe(false);
+      expect(model.servedCopyProblems()).toEqual([
+         expect.objectContaining({ reason: "reroot_not_compiled" }),
+      ]);
    });
 });

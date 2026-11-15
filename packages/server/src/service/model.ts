@@ -2599,6 +2599,9 @@ export class Model {
       // The same provider again changes nothing: it is read live, and a
       // destination list swap invalidates explicitly (invalidateCompiledLegs).
       if (provider === this.serveDestinationConfig) return;
+      // Replaced, not first set (a reload's new model): what failed over the
+      // old destinations may compile over these.
+      if (this.serveDestinationConfig) this.servedCopy.forgetFailures();
       this.serveDestinationConfig = provider;
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
@@ -2755,6 +2758,7 @@ export class Model {
 
    /** Drop every compiled leg (the destinations or the model changed). */
    public invalidateCompiledLegs(): void {
+      this.servedCopy.forgetFailures();
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
