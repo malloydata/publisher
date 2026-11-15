@@ -1,6 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Giving back what materializations built ({@link Reclaimer}): the tables of a
+ * deleted run, of a failed run that committed no manifest, of an archived or
+ * deleted version, the tables a readable name replaced, and at startup a
+ * version reclaim a crash cut short. Each table is dropped through its own
+ * tier's adapter, with any `name=` view an earlier release left beside it.
+ * Reached as the materialization service's `reclaimer`, by the service and
+ * main_server.ts.
+ *
+ * Effects: drops in warehouses and destinations, writes the run store, logs
+ * and counts each drop. Best-effort, and never drops a table another committed
+ * run of the package still references, or one another package has since
+ * marked as its own.
+ */
+
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { recordDropTables } from "../../../materialization_metrics";

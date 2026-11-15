@@ -1,6 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * One instructed run's build loop ({@link InstructedBuild}), shared by the
+ * auto-run and orchestrated runs: it walks the instructions in dependency
+ * order, gates each source, hands it to its tier through the source build,
+ * runs the key checks over each written table, and records each source's
+ * outcome on the {@link InstructedRun}. Called by the materialization service;
+ * {@link tableSiteContext} is also read by the service and the reclaimer.
+ *
+ * Effects: warehouse and destination SQL through the tier adapters, the key
+ * checks and the table marks; build telemetry and logs. A run that commits
+ * nothing gives back the storage tables it wrote. It never commits a run
+ * manifest; the committer does.
+ */
+
 import { keyCheckCompilerKey } from "../domain/key_check";
 import {
    assertInlinedJoinsUnique,

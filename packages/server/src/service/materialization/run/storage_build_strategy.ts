@@ -1,6 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The `storage=` tier's adapter ({@link StorageBuildStrategy}): a source read
+ * from its warehouse and loaded into a DuckDB or DuckLake destination, or
+ * stacked on its stored parents' tables there, or advanced by a delta inside
+ * the destination session; a stored table's drop and key check in its
+ * destination. Also {@link missingPersistedTables}. Read by the source build,
+ * the service, the instructed build's key checks and the reclaimer.
+ *
+ * Effects: SQL in the source warehouse and the destination, through the build
+ * session; logs and counts each chained build and each stored type it could
+ * not keep. Never writes the source or serve connection.
+ */
+
 import {
    plannedModelDefOf,
    sourceDefOf,

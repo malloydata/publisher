@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The delta target of a `storage=` table ({@link storageDeltaTarget}): the
+ * probes, range read and DML an incremental refresh runs when the source's
+ * warehouse computes the rows and a DuckDB or DuckLake destination holds the
+ * table. Read by incremental_build.ts's storage refresh.
+ *
+ * Runs SQL on two engines through one build session: source-dialect reads
+ * inside the passthrough, DuckDB DML and catalog probes on the destination.
+ * Reports what the warehouse charged for the delta's read.
+ */
+
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { PersistSource } from "@malloydata/malloy";
 

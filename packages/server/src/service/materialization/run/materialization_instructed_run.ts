@@ -1,6 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * What one instructed run reads and records ({@link InstructedRun}): its fixed
+ * inputs and the per-source outcomes its build loop accumulates. Also the
+ * instruction lookup ({@link indexInstructions}, {@link resolveInstruction}),
+ * the refusals made before anything is written
+ * ({@link assertNoTableCollisions}, {@link assertInstructedDestinationWritable}),
+ * and {@link recordInstructedBuildFailure}. Read by the materialization
+ * service, the instructed build and run instructions.
+ *
+ * Writes nothing outside the run object; logs and counts instructions that
+ * give one content address two tables, and logs two definitions on one table.
+ * The checks throw before any table is touched.
+ */
+
 import type { Manifest, PersistSource } from "@malloydata/malloy";
 import {
    BadRequestError,

@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * One source's build, whatever its tier ({@link SourceBuilder}): render its
+ * build SQL over the run's manifest, decide once how its stored upstreams are
+ * read, resolve the query metadata every statement carries, then hand it to
+ * the colocated or `storage=` tier's adapter (tier.ts). Called by the
+ * instructed build, and replaceable as one of the service's run collaborators.
+ *
+ * Refuses an upstream a host supplied at the wrong tier and names a strict
+ * miss by the author's source. Counts each chained storage build.
+ */
+
 import { plannedModelDefOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,

@@ -1,6 +1,23 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Build-scoped DuckDB sessions on a `storage=` destination: the isolated
+ * session a build runs in, the native passthrough read that lets the source
+ * warehouse compute the rows ({@link wrapPassthrough},
+ * {@link issuePassthroughRead}), the CTAS that writes a stored table with its
+ * declared types ({@link buildSourceIntoStorage},
+ * {@link createTableWithDeclaredTypes}), the chained build that stacks a
+ * downstream on stored parents ({@link planChainedDownstream},
+ * {@link buildDownstreamIntoStorage}), and the destination's drops, listing and
+ * file cleanup. Read by the `storage=` tier, incremental storage, table sites,
+ * catalog_admin.ts and the destination controller.
+ *
+ * Effects: SQL in the source warehouse (through the passthrough) and in the
+ * destination; the warehouse's billed read cost, from its session history;
+ * logs and counts.
+ */
+
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {

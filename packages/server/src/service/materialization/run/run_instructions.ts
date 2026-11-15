@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The build instructions a run takes: an auto-run's own, derived from the
+ * compiled plan with readable table names and carry-forward of unchanged
+ * sources ({@link deriveSelfInstructions}); a host's, checked against the plan
+ * ({@link validateInstructions}); and where each instructed table lives
+ * ({@link writeTargetsFor}). Called by the materialization service.
+ *
+ * Reads the plan and the gates and writes nothing; logs and counts what it
+ * refuses. A source the eligibility gate refuses is returned as refused and serves live.
+ */
+
 import type { PersistSource } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath } from "url";

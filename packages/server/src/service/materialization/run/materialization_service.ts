@@ -1,6 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The run's front door ({@link MaterializationService}): creates, lists,
+ * reads, stops and deletes materialization runs, and starts each build in the
+ * background. Its {@link RunCollaborators} are the steps a run takes (the
+ * build, a source's build, the storage tier's chained build, the commit), each
+ * replaceable from the constructor. Called by the materialization controller,
+ * main_server.ts, the scheduler and index.ts; main_server.ts reaches the
+ * reclaimer through it.
+ *
+ * Effects: writes the run store; one active run per package, held by the
+ * store's unique index; every table write goes through its collaborators.
+ */
+
 import {
    BadRequestError,
    BuildPlanUnavailableError,

@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The colocated tier's incremental path ({@link buildColocatedDelta}): a
+ * bounded delta applied by the source's own warehouse to the table it serves,
+ * or `undefined` when the table must be rebuilt in full. Called by the
+ * colocated tier (colocated_build_strategy.ts) before its staging CTAS.
+ *
+ * The decision (seed, delta or skip) is the shared planner's in
+ * incremental_build.ts; the delta's SQL is incremental_apply.ts's. This module
+ * only joins them for one warehouse table.
+ */
+
 import { quoteTablePath } from "../../quoting";
 import { ManifestEntry } from "../domain/types";
 import type { ColocatedBuildRequest } from "./tier";

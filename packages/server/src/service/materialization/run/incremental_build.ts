@@ -1,6 +1,27 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The run-level half of incremental materialization: per source, decide whether
+ * this refresh is a bounded DELTA or a full SEED, and record the boundary reached.
+ *
+ * The mechanics (probes, range arithmetic, DML text) live in incremental_apply.ts,
+ * which knows nothing about a run. This module reads the ledger, calls the
+ * planner, issues the DML and writes the boundary back, keeping the planner
+ * testable against fakes and the build loop free of ledger bookkeeping.
+ *
+ * Surface: the run's context ({@link incrementalRunContext}), a source's
+ * refresh and lineage ({@link sourceIncrementalRefresh},
+ * {@link incrementalLineage}), the plan and its step
+ * ({@link planSourceRefresh}, {@link applyIncrementalStep},
+ * {@link refreshOneSourceIncrementally}, {@link storageRefreshFor}), and the
+ * ledger writes ({@link resetLedger}, {@link advanceLedgerAfterSeed}). Read by
+ * the two tier strategies, the instructed build and the service.
+ *
+ * Effects: the delta's SQL in the warehouse or destination, the incremental
+ * ledger in the run store; logs and counts each step.
+ */
+
 import { logger } from "../../../logger";
 import {
    persistSourceDeclaredColumns,
@@ -51,16 +72,6 @@ import {
 } from "./incremental_apply";
 import { capturedNativeSchema } from "./colocated_native_types";
 import type { IncrementalDeclaration } from "../domain/incremental";
-
-/**
- * The run-level half of incremental materialization: per source, decide whether
- * this refresh is a bounded DELTA or a full SEED, and record the boundary reached.
- *
- * The mechanics (probes, range arithmetic, DML text) live in incremental_apply.ts,
- * which knows nothing about a run. This module reads the ledger, calls the
- * planner, issues the DML and writes the boundary back, keeping the planner
- * testable against fakes and the build loop free of ledger bookkeeping.
- */
 
 /**
  * The ledger surface a build needs; a narrowing of ResourceRepository. Addressed

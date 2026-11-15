@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Loading a file into a DuckLake destination as a table
+ * ({@link loadStorageTable}), and copying a table between catalogs for a
+ * migration ({@link copyStorageTable}), with the reader SQL and the refusals
+ * around them. Read by catalog_admin.ts.
+ *
+ * Effects: one DuckLake transaction per table on a transient read-write
+ * session. A load reads only under the destination's data path, and renders
+ * a caller's reader options as typed literals, never spliced text.
+ */
+
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../../../api";

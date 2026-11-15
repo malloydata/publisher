@@ -1,6 +1,22 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * What a build needs from the plan about stored tables, and the run's shared
+ * helpers. The plan's facts ({@link ChainedPlanFacts}, {@link chainedPlanFacts})
+ * and the manifest the compiler renders over ({@link manifestForCompiler},
+ * {@link upstreamReuseFromManifest}); which upstream entries are current for
+ * their declared tier, and the refusal of one a host supplied at the wrong
+ * tier ({@link HostSuppliedWrongTierError}); the environment surface a build
+ * reads ({@link BuildEnvironment}); staging and backup names, the run's status
+ * transitions, its tallies and its table keys. Read by most of `run/` and the
+ * materialization controller.
+ *
+ * Mostly pure. The exceptions log and count: a wrong-tier recompute
+ * ({@link noteWrongTierRecompute}) and the storage tables a failed run keeps
+ * ({@link reportRetainedStorageTables}).
+ */
+
 import { generatedNameOwner } from "../plan/build_file_generator";
 import { type MaterializePlan } from "../domain/table_plans";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
