@@ -263,18 +263,10 @@ export interface QueryPathInput {
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
    // One decision per kind; where two candidates share a kind (the v1 and
-   // `#(preaggregate)` rollup legs, the view and named-query legs), the one
-   // that answered, else one that applied.
+   // `#(preaggregate)` rollup legs), the one that answered.
    const decided = new Map<ConsideredVariant["kind"], ConsideredVariant>();
    for (const c of input.considered) {
-      const prior = decided.get(c.kind);
-      if (
-         !prior ||
-         c.outcome === "used" ||
-         (prior.reason === "not_applicable" && c.reason !== "not_applicable")
-      ) {
-         decided.set(c.kind, c);
-      }
+      if (!decided.has(c.kind) || c.outcome === "used") decided.set(c.kind, c);
    }
    // The served copy's decision is the stored tables' decision.
    const servedCopyAnswered = input.via === "served_copy";
@@ -440,7 +432,9 @@ function viewTableDecision(
    onChain: ReadonlySet<string>,
 ): ApiQueryPath | undefined {
    const { considered, markUsed, skip } = tally;
-   const viewDecision = decided.get("view");
+   const viewDecision = decided.get(
+      input.view?.kind === "query" ? "query" : "view",
+   );
    if (input.view) {
       const t: TableState = {
          key: `persisted-view/${input.view.tableId ?? ""}`,

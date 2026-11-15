@@ -11,7 +11,7 @@
  * definition are answered live, equal to live. A persisted query over a gated
  * source is never built, and the leg is never tried past its gate (CONTRACT),
  * whatever PUBLISHER_MATERIALIZE_GATED_SOURCES says. The route counter counts
- * the leg as `view`. With PUBLISHER_MATERIALIZE off, a persisted query is
+ * the leg as `query`, and a persisted view's as `view`. With PUBLISHER_MATERIALIZE off, a persisted query is
  * warned and answered live.
  */
 
@@ -143,6 +143,12 @@ query: elsewhere_gated is ops -> { group_by: tenant; aggregate: n }
  */
 const INLINE = `#@ persist
 query: inline_target is ${TABLE} -> { group_by: tenant; aggregate: c is count(); order_by: tenant }
+
+source: vs is ${TABLE} extend {
+  measure: c is count()
+  #@ persist
+  view: by_tenant is { group_by: tenant; aggregate: c }
+}
 `;
 
 const FILES = {
@@ -330,6 +336,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
             "null_flag__query:colocated",
             "top__query:colocated",
             "two_stage__query:colocated",
+            "vs__by_tenant__view:colocated",
          ].sort(),
       );
       const notBuilt = fixture.warnings
@@ -519,11 +526,12 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
       const counted = async (
          malloy: string,
          givens?: Record<string, string>,
+         model = "m.malloy",
       ) => {
          const harness = await startMetricsHarness();
          resetMaterializationTelemetryForTesting();
          try {
-            await fixture.run("m.malloy", malloy, givens);
+            await fixture.run(model, malloy, givens);
             const count = (leg: string, outcome: string, reason: string) =>
                harness.collectCounter("publisher_query_route_total", {
                   leg,
@@ -531,13 +539,14 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
                   reason,
                });
             return {
-               viewUsed: await count("view", "used", "NONE"),
-               viewMissingField: await count(
-                  "view",
+               queryUsed: await count("query", "used", "NONE"),
+               queryMissingField: await count(
+                  "query",
                   "skipped",
                   "MISSING_FIELD",
                ),
-               viewContract: await count("view", "skipped", "CONTRACT"),
+               queryContract: await count("query", "skipped", "CONTRACT"),
+               viewUsed: await count("view", "used", "NONE"),
                liveUsed: await count("live", "used", "NONE"),
             };
          } finally {
@@ -546,31 +555,41 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          }
       };
 
-      it("counts a served exact call as the view leg, used", async () => {
+      const none = {
+         queryUsed: 0,
+         queryMissingField: 0,
+         queryContract: 0,
+         viewUsed: 0,
+         liveUsed: 0,
+      };
+
+      it("counts a served exact call as the query leg, used", async () => {
          expect(await counted("run: by_carrier")).toEqual({
-            viewUsed: 1,
-            viewMissingField: 0,
-            viewContract: 0,
-            liveUsed: 0,
+            ...none,
+            queryUsed: 1,
          });
       });
 
-      it("counts a refinement as the view leg skipped MISSING_FIELD, then live", async () => {
+      it("counts a refinement as the query leg skipped MISSING_FIELD, then live", async () => {
          expect(await counted("run: by_carrier + { limit: 1 }")).toEqual({
-            viewUsed: 0,
-            viewMissingField: 1,
-            viewContract: 0,
+            ...none,
+            queryMissingField: 1,
             liveUsed: 1,
          });
       });
 
-      it("counts a gated query as the view leg skipped CONTRACT, then live", async () => {
+      it("counts a gated query as the query leg skipped CONTRACT, then live", async () => {
          expect(await counted("run: ops_by_tenant", { TENANT: "t1" })).toEqual({
-            viewUsed: 0,
-            viewMissingField: 0,
-            viewContract: 1,
+            ...none,
+            queryContract: 1,
             liveUsed: 1,
          });
+      });
+
+      it("still counts a persisted view's exact call as the view leg", async () => {
+         expect(
+            await counted("run: vs -> by_tenant", undefined, "inline.malloy"),
+         ).toEqual({ ...none, viewUsed: 1 });
       });
    });
 

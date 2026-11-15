@@ -8,8 +8,7 @@
  * (a persisted view called exactly), the query leg (a persisted named query
  * called exactly), the rollup leg, and the served copy (the author's source
  * re-rooted on its stored table, gates and all). Each is
- * `{ kind, applies, attempt }`, plus `passesNoGate` on a leg never tried past
- * an entry-point gate whatever its kind's row allows: `applies` is pure and
+ * `{ kind, applies, attempt }` and nothing more: `applies` is pure and
  * compiles nothing; `attempt` resolves with a {@link LegAnswer} or throws a
  * `LegDecline` (domain/leg_decline.ts). A leg does not know the gate policy or
  * the router: the query pipeline (`service/model_serving.ts`) asks the policy
@@ -18,9 +17,7 @@
  *
  * {@link makeLegs} makes the legs for one pinned snapshot, in the router's
  * order (R1: the view or named query by exact call, then the coarsest
- * rollup, then the served copy). The query leg counts and reports as a
- * `view` leg: it reads the same kind of table, by the same exact-call rule.
- * A leg is listed only when it exists for the model and the snapshot, so the
+ * rollup, then the served copy). A leg is listed only when it exists for the model and the snapshot, so the
  * gate check runs exactly when one could route.
  *
  * {@link Answer} is the one record of how a query was served: built once from
@@ -52,7 +49,7 @@ import type { PersistedQueryServe } from "./query_variants";
 export { PersistedQueryServe } from "./query_variants";
 
 /** The legs, in their usual order. */
-export type LegKind = "view" | "rollup" | "served";
+export type LegKind = "view" | "query" | "rollup" | "served";
 
 /** What a leg reads of one query. */
 export interface QueryFacts {
@@ -71,12 +68,6 @@ export interface Leg {
    applies(q: QueryFacts, p: Pinned): boolean;
    /** Answer the query as written, or throw a `LegDecline`. */
    attempt(q: QueryFacts, p: Pinned): Promise<LegAnswer>;
-   /**
-    * Never tried past an entry-point gate, whatever the gate policy allows
-    * its kind: fails closed for a leg whose tables are never built over a
-    * gated source.
-    */
-   readonly passesNoGate?: true;
 }
 
 /** What a leg answered with: its runnable, and what running it reads. */
@@ -100,7 +91,7 @@ export interface LegAnswer {
    readonly graftScope: GraftScope | undefined;
    /** For a rollup answer: the rollup that answered. */
    readonly rollupMember?: string;
-   /** For a view answer: the persisted view's (or named query's) table. */
+   /** For a view or query answer: the persisted view's or named query's table. */
    readonly viewTable?: ViewTable & { readonly kind?: "query" };
 }
 
@@ -197,14 +188,13 @@ function viewLeg(views: PersistedViewServe): Leg {
 }
 
 /**
- * A persisted named query by exact call (`run: q`, `run: q -> { … }`), beside
- * the view leg and counted as one. Never past an entry-point gate: a
- * persisted query is never built over a gated source.
+ * A persisted named query by exact call (`run: q`, `run: q -> { … }`), after
+ * the view leg. The gate policy has no row for it, so it is never tried past
+ * an entry-point gate: a persisted query is never built over a gated source.
  */
 function queryLeg(queries: PersistedQueryServe): Leg {
    return {
-      kind: "view",
-      passesNoGate: true,
+      kind: "query",
       applies: (q) => !!queries.calledQuery(q.queryString),
       attempt: async (q, p) => {
          const answer = await queries.attempt({
@@ -397,6 +387,8 @@ export function runManifestOf<M>(
    if (answer.runFailed) return manifests.live;
    if (answer.answer.virtualMap) return undefined;
    if (answer.leg === "rollup") return manifests.pinned;
-   if (answer.leg === "view") return manifests.withoutRollups;
+   if (answer.leg === "view" || answer.leg === "query") {
+      return manifests.withoutRollups;
+   }
    return manifests.live;
 }

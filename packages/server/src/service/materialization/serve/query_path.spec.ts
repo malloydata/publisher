@@ -109,7 +109,7 @@ describe("buildQueryPath", () => {
       ]);
    });
 
-   it("reads the view kind's decision from the leg that applied, when the view and query legs both ran", () => {
+   it("reads a persisted query's table off the query leg's decision", () => {
       const report = buildQueryPath(
          input({
             view: {
@@ -120,9 +120,8 @@ describe("buildQueryPath", () => {
                stale: false,
             },
             considered: [
-               { kind: "view", outcome: "skipped", reason: "not_applicable" },
                {
-                  kind: "view",
+                  kind: "query",
                   outcome: "skipped",
                   reason: "does_not_answer",
                   code: "view_missing_field",
