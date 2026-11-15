@@ -46,6 +46,7 @@ import type {
 import {
    collectIncrementalDeclarations,
    deriveColumns,
+   storedColumnOf,
 } from "../plan/build_plan";
 import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
@@ -474,6 +475,8 @@ export async function advanceLedgerAfterSeed(params: {
    quotedTablePath: string;
    runner: SqlRunner;
    dialect: string;
+   /** The column the table holds the watermark under, when renamed. */
+   storedColumn?: (field: string) => string;
 }): Promise<WatermarkBound | undefined> {
    const boundary = await seedCoveredThrough(
       params.runner,
@@ -481,6 +484,7 @@ export async function advanceLedgerAfterSeed(params: {
       params.lineage,
       params.quotedTablePath,
       params.context.now,
+      params.storedColumn,
    );
    if (!boundary.bound) {
       if (boundary.error) {
@@ -870,11 +874,17 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             persistSource,
          );
+         // The stored table's columns, under the names the delta's SQL
+         // emits them (a renamed field's column under its own name), so a
+         // delta of a source with a `rename:` matches the table.
+         const toStored = storedColumnOf(persistSource);
          let step = await planSourceRefresh({
             context,
             lineage,
             target,
-            columns: deriveColumns(persistSource).map((c) => String(c.name)),
+            columns: deriveColumns(persistSource).map((c) =>
+               toStored(String(c.name)),
+            ),
             reseed: instruction.reseed || recast.length > 0,
          });
          if (
@@ -928,6 +938,7 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             dialect: STORAGE_DIALECT,
             runner: (sql) => session.runSQL(sql),
+            storedColumn: storedColumnOf(persistSource),
          }),
    };
 }

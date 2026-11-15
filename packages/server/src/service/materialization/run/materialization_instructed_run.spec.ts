@@ -1013,7 +1013,10 @@ describe("executeInstructedBuild", () => {
     * than the model declares, which is the case `persistenceCollisionWarnings`
     * cannot see at load.
     */
-   function collidingBuild(runSQL: sinon.SinonStub) {
+   function collidingBuild(
+      runSQL: sinon.SinonStub,
+      names: [string, string] = ["rollup", "rollup"],
+   ) {
       const connection = { runSQL } as unknown as MalloyConnection;
       const a = fakeSource({
          name: "a",
@@ -1035,13 +1038,13 @@ describe("executeInstructedBuild", () => {
             {
                sourceEntityId: "baaaaaaaaaaaaaa",
                materializedTableId: "mt-a",
-               physicalTableName: "rollup",
+               physicalTableName: names[0],
                realization: "COPY",
             },
             {
                sourceEntityId: "bbbbbbbbbbbbbbb",
                materializedTableId: "mt-b",
-               physicalTableName: "rollup",
+               physicalTableName: names[1],
                realization: "COPY",
             },
          ],
@@ -1076,6 +1079,30 @@ describe("executeInstructedBuild", () => {
          restore();
          warn.restore();
       }
+   });
+
+   it.each([[["main.rollup", "rollup"]], [["rollup", "main.rollup"]]] as [
+      [string, string],
+   ][])(
+      "refuses two definitions on %p: a name with the default schema and one without it are one table",
+      async (names) => {
+         const runSQL = sinon.stub().resolves();
+         const err = await collidingBuild(runSQL, names).catch(
+            (e: unknown) => e,
+         );
+         expect(String((err as Error)?.message)).toContain(
+            "both materialize into table",
+         );
+         expect(createsFrom(runSQL)).toEqual([]);
+      },
+   );
+
+   it("builds two definitions in two named schemas, which are two tables", async () => {
+      const runSQL = sinon.stub().resolves();
+      await collidingBuild(runSQL, ["s1.rollup", "s2.rollup"]);
+      expect(
+         createsFrom(runSQL).filter((s) => s.includes("rollup")),
+      ).toHaveLength(2);
    });
 
    it("builds only the last of several same-address instructions with no sourceID", async () => {

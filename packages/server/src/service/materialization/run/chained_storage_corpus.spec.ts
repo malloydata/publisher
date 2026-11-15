@@ -50,7 +50,7 @@ import { chainBuildText } from "../serve/served_copy_serve";
 import {
    collectModelBuildPlan,
    emptyBuildPlanParts,
-   projectToPublicColumns,
+   projectToStoredColumns,
 } from "../plan/build_plan";
 import { declaredStorage } from "../plan/persist_source_fields";
 import { reachPersisted } from "../text/source_map";
@@ -134,7 +134,7 @@ async function writeFromWarehouse(
       | DuckDBConnection
       | undefined;
    if (!warehouse) throw new Error(`no stand-in for ${source.connectionName}`);
-   const sql = projectToPublicColumns(
+   const sql = projectToStoredColumns(
       source,
       buildSQLOf(source, { entries: {}, strict: false }),
    );

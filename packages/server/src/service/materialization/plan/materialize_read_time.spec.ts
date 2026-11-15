@@ -56,7 +56,7 @@ source: raw is duckdb.sql("""
 """)
 `;
 
-   const packages = planPackages();
+   const packages = planPackages({}, { keepIncrementalUnbuildable: true });
    const settings = packages.settings;
 
    /** The generated build source, presented under the author's sourceID. */
@@ -575,7 +575,7 @@ source: raw is duckdb.sql("""
    const MOVE_DIMENSION =
       "declare the given-reading dimension on the materialized source itself";
 
-   const packages = planPackages();
+   const packages = planPackages({}, { keepIncrementalUnbuildable: true });
 
    const SCOPED = `${HEAD}
 source: scoped is raw extend { where: org_id = $ORG_ID }
@@ -836,7 +836,7 @@ source: raw is duckdb.sql("""
 """)
 `;
 
-   const packages = planPackages();
+   const packages = planPackages({}, { keepIncrementalUnbuildable: true });
 
    const ORDERS = `${HEAD}
 source: base is raw extend { dimension: base_hour is hour(ts) }

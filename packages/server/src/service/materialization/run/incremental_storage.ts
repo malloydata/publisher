@@ -15,7 +15,7 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { PersistSource } from "@malloydata/malloy";
 
-import { projectToPublicColumns } from "../plan/build_plan";
+import { projectToStoredColumns, storedColumnOf } from "../plan/build_plan";
 import {
    canonicalBoundValue,
    deltaSelect,
@@ -104,10 +104,16 @@ export function storageDeltaTarget(params: {
    );
    let readCost: BuildReadCost | null = null;
 
+   // The build SQL and the stored table name a renamed field's column by its
+   // own name, so the watermark (and, in the DML, the merge keys) are named
+   // that way too.
+   const storedColumn = storedColumnOf(persistSource);
+   const watermarkColumn = storedColumn(lineage.watermarkName);
    return {
       readCost: () => readCost,
       target: {
          dialect: STORAGE_DIALECT,
+         storedColumn,
          runner: (sql) => session.runSQL(sql),
          quotedTablePath,
          logicalTablePath,
@@ -115,13 +121,13 @@ export function storageDeltaTarget(params: {
          deltaRows: async (start, end) => {
             // Filter INSIDE, project OUTSIDE — the seed's nesting order, so both
             // write the same columns. The watermark is always public (the
-            // publish gate checks it), so the projection cannot hide it.
-            const bounded = projectToPublicColumns(
+            // publish gate checks it), so the projection cannot drop it.
+            const bounded = projectToStoredColumns(
                persistSource,
                deltaSelect({
                   dialect: sourceDialect,
                   sourceSQL: buildSQL,
-                  watermarkName: lineage.watermarkName,
+                  watermarkName: watermarkColumn,
                   start,
                   end,
                }),
@@ -144,10 +150,7 @@ export function storageDeltaTarget(params: {
          probeSourceFrontier: async () => {
             // Source-dialect through the passthrough, so the warehouse aggregates
             // and one row crosses instead of streaming every row.
-            const column = quoteIdentifier(
-               lineage.watermarkName,
-               sourceDialect,
-            );
+            const column = quoteIdentifier(watermarkColumn, sourceDialect);
             const alias = quoteIdentifier("watermark_max", sourceDialect);
             const inner =
                `SELECT MAX(${column}) AS ${alias} ` +

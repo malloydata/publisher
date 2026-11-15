@@ -88,7 +88,7 @@ describe("buildOneSourceIntoStorage (failure redaction)", () => {
             // strict: throw instead of falling through to recompute-from-raw.
             manifest: { strict: true, update: () => {} },
             environment,
-            publicBuildSQL: "SELECT 1",
+            storedBuildSQL: "SELECT 1",
             buildSQL: "SELECT 1",
             builtEntries: {},
             dependsOnStorageUpstream: true, // take the chained path
@@ -260,7 +260,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             instruction: BuildInstruction;
             manifest: Manifest;
             environment: unknown;
-            publicBuildSQL: string;
+            storedBuildSQL: string;
             buildSQL: string;
             builtEntries: Record<string, unknown>;
             dependsOnStorageUpstream: boolean;
@@ -277,7 +277,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          instruction,
          manifest,
          environment,
-         publicBuildSQL: "SELECT should_not_run",
+         storedBuildSQL: "SELECT should_not_run",
          buildSQL: "SELECT should_not_run",
          builtEntries: {
             up: {
@@ -595,7 +595,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
                   instruction: BuildInstruction;
                   manifest: unknown;
                   environment: unknown;
-                  publicBuildSQL: string;
+                  storedBuildSQL: string;
                   buildSQL: string;
                   builtEntries: Record<string, unknown>;
                   dependsOnStorageUpstream: boolean;
@@ -616,7 +616,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
             },
             manifest: new Manifest(),
             environment,
-            publicBuildSQL: "SELECT should_not_run",
+            storedBuildSQL: "SELECT should_not_run",
             buildSQL: "SELECT should_not_run",
             builtEntries: {
                up: {

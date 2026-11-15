@@ -15,33 +15,7 @@
       "customer_dim:serves",
       "order_facts:serves"
     ],
-    "warnings": [
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's `include` hides `home_region` (private or internal), which its v1 `storage=` table does not store: such a table stores public columns only. The served copy leaves the source as written, so it answers live. To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`.",
-        "subject": "customer_dim"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's `include` hides `home_region` (private or internal), which its v1 `storage=` table does not store: such a table stores public columns only. The served copy leaves the source as written, so it answers live. To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`.",
-        "subject": "customer_dim"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
-        "subject": "order_facts"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's `include` hides `home_region` (private or internal), which its v1 `storage=` table does not store: such a table stores public columns only. The served copy leaves the source as written, so it answers live. To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`.",
-        "subject": "customer_dim"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
-        "subject": "order_facts"
-      }
-    ]
+    "warnings": []
   },
   "queries": [
     {
@@ -91,10 +65,8 @@
       "path": {
         "considered": [
           {
-            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "CROSS_CONNECTION",
+            "outcome": "used",
             "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
           }
         ],
@@ -111,13 +83,15 @@
           "sourceName": "order_facts"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure over the joined source's internal column, from the index",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -162,10 +136,8 @@
       "path": {
         "considered": [
           {
-            "code": "served-copy-not-served",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
           }
         ],
@@ -181,13 +153,15 @@
           "sourceName": "customer_dim"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the joined source's measure, in its own file",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -237,10 +211,8 @@
       "path": {
         "considered": [
           {
-            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "CROSS_CONNECTION",
+            "outcome": "used",
             "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
           }
         ],
@@ -257,13 +229,15 @@
           "sourceName": "order_facts"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure over the joined source's internal column, from the index",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -308,10 +282,8 @@
       "path": {
         "considered": [
           {
-            "code": "served-copy-not-served",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
           }
         ],
@@ -327,13 +299,15 @@
           "sourceName": "customer_dim"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the joined source's measure, in its own file",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     }
   ]

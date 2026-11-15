@@ -76,6 +76,9 @@
 import { type AnnotationNote, type AnnotationsDef } from "../../annotations";
 import {
    byCodepoint,
+   PERSIST_VIEW_INVALID_CODE,
+   RECOGNIZED_PERSIST_KEYS,
+   readRouteTag,
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -84,12 +87,9 @@ import {
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
-import { hasEnvReference } from "../../motly";
-import {
-   EMPTY_STORAGE_REASON,
-   placementOf,
-   readNotesIfAny,
-} from "./declaration";
+import { Annotations } from "@malloydata/malloy";
+import { placementOf, readNotesIfAny } from "./declaration";
+import { persistDeclarationProblems } from "./persist_annotation_validation";
 import { SourceMap, type SourceNode } from "../text/source_map";
 import { persistedViewCompanionHref } from "../text/read_text";
 import {
@@ -99,14 +99,15 @@ import {
 } from "../domain/table_plans";
 import {
    declaredPersistQueries,
+   INCREMENTAL_KEYS,
    persistQueryNotBuiltFinding,
+   persistQueryProblems,
+   unparseableNotes,
+   writesPersistLine,
 } from "./persisted_query";
 
 /** The package warning for a persisted view that is not built, or not served. */
 export const PERSIST_VIEW_NOT_BUILT = "persist-view-not-built";
-
-/** `#@ persist` keys that make a build incremental: a view rebuilds whole. */
-const INCREMENTAL_KEYS = ["watermark", "merge_key"] as const;
 
 /** A declaration the planner would not build. */
 export interface PersistedViewRefusal {
@@ -114,6 +115,13 @@ export interface PersistedViewRefusal {
    sourceName: string;
    viewName: string;
    reason: string;
+   /**
+    * Set when the declaration is invalid (it cannot be read as written, or
+    * says something no view can mean): the finding is `malformed` under this
+    * code and fails the load, rather than the `persist-view-not-built`
+    * refusal of a valid one.
+    */
+   code?: string;
 }
 
 /** The generated build source's name for `source -> view`. */
@@ -175,22 +183,52 @@ function planSourcePersistedViews(
       // that inherits it.
       const notes = persistNotesOf(node.def, f, scope);
       if (notes.length === 0) continue;
-      const refuse = (reason: string) =>
+      const refuse = (reason: string, code?: string) =>
          refused.push({
             sourceID: node.sourceID,
             sourceName: declared.name,
             viewName,
             reason,
+            ...(code !== undefined ? { code } : {}),
          });
-      if (notes.some((n) => hasEnvReference(n.text))) {
-         refuse("its `#@` line reads `@env.`, which a persist line may not");
+      // A `#@ persist` line that does not parse is invalid, never dropped.
+      const unparseable = writesPersistLine(notes)
+         ? unparseableNotes(notes)
+         : undefined;
+      if (unparseable !== undefined) {
+         refuse(
+            `its \`#@\` line does not parse (${unparseable})`,
+            PERSIST_VIEW_INVALID_CODE,
+         );
+         continue;
+      }
+      const annotations = new Annotations({ notes } as ConstructorParameters<
+         typeof Annotations
+      >[0]);
+      // A line reading `@env.`, a `storage=` naming nothing, a bad `name=`.
+      const problems = persistDeclarationProblems(annotations);
+      if (problems.length > 0) {
+         refuse(problems.join("; "), PERSIST_VIEW_INVALID_CODE);
          continue;
       }
       // Read as Malloy reads them: `persist`, not `-persist`.
       const tag = readNotesIfAny(notes, "@");
       if (!tag?.has("persist")) continue;
-      if (tag.has("persist", "partition") || tag.has("partition")) {
-         refuse("`partition=` is not supported; remove it");
+      // The key set is closed, as on a source: an unknown or retired key
+      // (`partition=`) is invalid.
+      const keyFindings = readRouteTag(
+         annotations,
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      ).findings;
+      if (keyFindings.length > 0) {
+         for (const finding of keyFindings) {
+            refuse(
+               finding.message +
+                  (finding.rewrite ? `; ${finding.rewrite}` : ""),
+               finding.code,
+            );
+         }
          continue;
       }
       const incremental = INCREMENTAL_KEYS.filter(
@@ -199,18 +237,17 @@ function planSourcePersistedViews(
       if (incremental.length > 0) {
          refuse(
             `a view's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
+            PERSIST_VIEW_INVALID_CODE,
          );
          continue;
       }
+      // Valid, but a copy limit of Publisher's: refused alone.
       if (notes.some((n) => n.text.trim().includes("\n"))) {
          refuse("its `#@` line spans more than one line");
          continue;
       }
       const placed = placementOf(tag, "persist");
-      if ("refused" in placed) {
-         refuse(EMPTY_STORAGE_REASON);
-         continue;
-      }
+      if ("refused" in placed) continue;
       const storage =
          placed.placement.tier === "storage"
             ? placed.placement.destination
@@ -275,19 +312,35 @@ export function planModelPersistedViews(
    return { plans: kept, refused };
 }
 
-/** A refusal as a package finding (unservable: the view serves live). */
+/**
+ * A refusal as a package finding: `unservable` for a valid view Publisher
+ * refuses alone (it serves live), `malformed` for an invalid declaration,
+ * which fails the load.
+ */
 export function persistedViewRefusalFinding(
-   refusal: Pick<PersistedViewRefusal, "sourceName" | "viewName" | "reason">,
+   refusal: Pick<
+      PersistedViewRefusal,
+      "sourceName" | "viewName" | "reason" | "code"
+   >,
    model: string,
 ): PackageAnnotationFinding {
+   // malloy-text: names quoted in a finding's message, not generated Malloy
+   const on = `#@ persist on view "${refusal.viewName}" of source "${refusal.sourceName}"`;
+   if (refusal.code !== undefined) {
+      return {
+         route: "@",
+         tier: "malformed",
+         code: refusal.code,
+         message: `${on} is invalid: ${refusal.reason}.`,
+         subject: `${refusal.sourceName} -> ${refusal.viewName}`,
+         model,
+      };
+   }
    return {
       route: "@",
       tier: "unservable",
       code: PERSIST_VIEW_NOT_BUILT,
-      message:
-         `#@ persist on view "${refusal.viewName}" of source ` +
-         `"${refusal.sourceName}" is not built, so the view is served live: ` +
-         `${refusal.reason}.`,
+      message: `${on} is not built, so the view is served live: ${refusal.reason}.`,
       subject: `${refusal.sourceName} -> ${refusal.viewName}`,
       model,
    };
@@ -320,31 +373,19 @@ export function planModelPersistedQueries(
    for (const query of declaredPersistQueries(modelDef, declaredHere)) {
       const refuse = (reason: string) =>
          refused.push({ queryName: query.name, reason });
+      // An invalid declaration is reported as one (persistQueryInvalidFindings,
+      // which fails the load), never planned.
+      if (persistQueryProblems(query).length > 0) continue;
       const notes = query.notes;
-      if (notes.some((n) => hasEnvReference(n.text))) {
-         refuse("its `#@` line reads `@env.`, which a persist line may not");
-         continue;
-      }
       const tag = readNotesIfAny(notes, "@");
       if (!tag?.has("persist")) continue;
-      const incremental = INCREMENTAL_KEYS.filter(
-         (k) => tag.has("persist", k) || tag.has(k),
-      );
-      if (incremental.length > 0) {
-         refuse(
-            `a query's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
-         );
-         continue;
-      }
+      // Valid, but a copy limit of Publisher's: refused alone.
       if (notes.some((n) => n.text.trim().includes("\n"))) {
          refuse("its `#@` line spans more than one line");
          continue;
       }
       const placed = placementOf(tag, "persist");
-      if ("refused" in placed) {
-         refuse(EMPTY_STORAGE_REASON);
-         continue;
-      }
+      if ("refused" in placed) continue;
       const storage =
          placed.placement.tier === "storage"
             ? placed.placement.destination

@@ -24,7 +24,7 @@ import {
  * raw chain it falls back to when that text does not compile.
  */
 
-const packages = planPackages();
+const packages = planPackages({}, { keepIncrementalUnbuildable: true });
 
 const compiled = async (files: ModelFiles) => (await packages.plan(files)).c;
 

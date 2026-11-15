@@ -61,8 +61,8 @@ import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics
 import {
    buildSQLOf,
    plannedSources,
-   projectToPublicColumns,
-   publicColumnNames,
+   projectToStoredColumns,
+   storedColumnNames,
 } from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
@@ -821,7 +821,7 @@ export async function buildSourceIntoStorage(params: {
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    /**
-    * The source's public columns as Malloy declares them; the CTAS casts the
+    * The source's columns as Malloy declares them; the CTAS casts the
     * ones with a single faithful DuckDB type to it ({@link castToDeclaredTypes}).
     * Absent or empty stores whatever the warehouse returned.
     */
@@ -1085,7 +1085,7 @@ async function buildSameCatalogIntoStorage(params: {
 /**
  * Compile a chained `storage=` build's model over `connections` (the
  * destination alone) and plan its downstream under `virtualMap`: the SQL to
- * CTAS, projected to its public columns, and the downstream it built. The
+ * CTAS, projected to the columns it declares, and the downstream it built. The
  * model is `files` by URL, loaded from `entry`: a one-file model of the build's
  * own, or the author's files with the upstreams re-rooted (the host port's
  * `chainBuildText`).
@@ -1162,7 +1162,7 @@ export async function planChainedDownstream(params: {
    connections: FixedConnectionMap;
    /**
     * The planned source a recompute of the downstream builds. A chained
-    * build whose downstream lacks one of its public columns (a column read
+    * build whose downstream lacks one of its stored columns (a column read
     * through a definition left out of a stored upstream, as a `select: *`
     * does) is a shape it could not carry: stored, the table would answer
     * with fewer columns than live. Absent: not checked.
@@ -1235,8 +1235,8 @@ export async function planChainedDownstream(params: {
       let expected: string[] = [];
       let built: string[] = [];
       try {
-         expected = publicColumnNames(params.recomputes);
-         built = publicColumnNames(downstream);
+         expected = storedColumnNames(params.recomputes);
+         built = storedColumnNames(downstream);
       } catch {
          // An unknown surface is refused where the table is projected to it.
       }
@@ -1266,9 +1266,9 @@ export async function planChainedDownstream(params: {
             `which does not run on the destination's read-write session.`,
       });
    }
-   // Projected to public columns so hidden (`except:` / access-restricted)
-   // values are not stored at rest.
-   const sql = projectToPublicColumns(
+   // Projected to the columns the source declares, hidden ones included, as
+   // a recompute writes them; a column `except:` drops is left out.
+   const sql = projectToStoredColumns(
       downstream,
       buildSQLOf(downstream, { entries: {} }),
    );

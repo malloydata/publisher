@@ -18,7 +18,10 @@
 
 import { describe, expect, it } from "bun:test";
 import { tableNamesFoldCase } from "./domain/storage_table_path";
-import { incrementalPolicyRejections } from "./plan/incremental_policy";
+import {
+   incrementalPolicyRejections,
+   incrementalUnbuildableReason,
+} from "./plan/incremental_policy";
 import type { IncrementalDeclaration } from "./domain/incremental";
 import { planModelMaterialize } from "./plan/materialize_plan";
 import {
@@ -182,9 +185,15 @@ async function mergeRefusedBelowFloor(dialect: string): Promise<boolean> {
 }
 
 function policy(dialect: string, d: IncrementalDeclaration): string {
-   const [rejection] = incrementalPolicyRejections([
-      { sourceName: "orders", dialect, declaration: d },
-   ]);
+   // A dialect that cannot bound or merge a delta leaves a valid declaration
+   // unbuildable (refused alone); the policy's other rules make it invalid.
+   const source = { sourceName: "orders", dialect, declaration: d };
+   const [rejection] = [
+      ...incrementalPolicyRejections([source]),
+      ...[incrementalUnbuildableReason(source)].filter(
+         (r): r is string => r !== undefined,
+      ),
+   ];
    if (rejection === undefined) return "accepted";
    if (rejection.includes("not supported on dialect")) return "no range";
    if (rejection.includes("needs a MERGE statement")) return "no merge";

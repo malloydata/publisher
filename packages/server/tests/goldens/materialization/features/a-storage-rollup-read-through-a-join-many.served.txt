@@ -23,7 +23,7 @@ source: lines is lines_raw extend {
 
 #(materialize) storage="lake"
 source: orders is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::orders__served extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -58,7 +58,7 @@ source: lines is lines_raw extend {
 
 #(materialize) storage="lake"
 source: orders is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::orders__served extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order

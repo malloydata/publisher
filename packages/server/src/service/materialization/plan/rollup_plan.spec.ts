@@ -118,7 +118,7 @@ source: ops is orders include {
       ).toEqual(["orders"]);
    });
 
-   it("refuses a malformed declaration at publish", async () => {
+   it("reports a malformed declaration, which fails the load", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `source: orders is ${ROWS} extend {
   #(preaggregate) grain=["category"]
@@ -138,9 +138,9 @@ source: ops is orders include {
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.measure, r.tier, r.code])).toEqual([
          ["big", "malformed", "preaggregate-not-a-measure"],
-         ["a", "malformed", "preaggregate-malformed"],
+         ["a", "malformed", "preaggregate-invalid"],
          ["b", "malformed", "preaggregate-unknown-key"],
-         ["e", "malformed", "preaggregate-malformed"],
+         ["e", "malformed", "preaggregate-invalid"],
          ["c", "malformed", "preaggregate-unknown-grain"],
          ["d", "malformed", "preaggregate-not-mergeable"],
       ]);

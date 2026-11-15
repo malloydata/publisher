@@ -1031,6 +1031,13 @@ export interface DeltaTarget {
     * resolveDeltaEnd).
     */
    probeSourceFrontier(): Promise<{ bound?: WatermarkBound; error?: string }>;
+   /**
+    * The column the table and the source's SQL hold a field under, where it
+    * is not the field's name (a renamed field's column keeps its own name in
+    * a `storage=` table). The DML names the watermark, merge keys, scope and
+    * rolling-window columns through it. Absent: every field is its column.
+    */
+   storedColumn?(field: string): string;
 }
 
 /**
@@ -1212,6 +1219,7 @@ export async function planIncrementalStep(inputs: {
 
    // Built LAST: producing it can issue the source read (DeltaTarget.deltaRows),
    // which no failed check should pay for.
+   const column = (field: string) => target.storedColumn?.(field) ?? field;
    const statements = deltaStatements({
       dialect,
       quotedTablePath: target.quotedTablePath,
@@ -1225,13 +1233,13 @@ export async function planIncrementalStep(inputs: {
          lineage.pair ? undefined : end.bound,
       ),
       columns: inputs.columns,
-      mergeKeys: lineage.mergeKeys,
-      scopeColumns: lineage.scopeColumns,
-      watermarkName: lineage.watermarkName,
+      mergeKeys: (lineage.mergeKeys ?? []).map(column),
+      scopeColumns: lineage.scopeColumns?.map(column),
+      watermarkName: column(lineage.watermarkName),
       start,
       end: end.bound,
       windowDeletes: (lineage.rollingWindow ?? []).map((window) => ({
-         column: window.field,
+         column: column(window.field),
          before: canonicalBoundValue(
             "timestamp",
             windowDeleteBefore(window, inputs.now),
@@ -1279,12 +1287,16 @@ export async function seedCoveredThrough(
    lineage: IncrementalLineage,
    quotedTablePath: string,
    now: Date,
+   /** The column the table holds the watermark under (DeltaTarget.storedColumn). */
+   storedColumn?: (field: string) => string,
 ): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
+   const watermark =
+      storedColumn?.(lineage.watermarkName) ?? lineage.watermarkName;
    const frontier = await probeMaxWatermark(
       runner,
       dialect,
-      `SELECT ${quoteIdentifier(lineage.watermarkName, dialect)} FROM ${quotedTablePath}`,
-      lineage.watermarkName,
+      `SELECT ${quoteIdentifier(watermark, dialect)} FROM ${quotedTablePath}`,
+      watermark,
       lineage.watermarkType,
    );
    if (frontier.error || !frontier.bound) return frontier;

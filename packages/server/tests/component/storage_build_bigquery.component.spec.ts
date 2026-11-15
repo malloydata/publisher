@@ -186,7 +186,7 @@ describe.skipIf(!hasPublicDataBigQueryCredentials())(
                instruction: unknown;
                manifest: unknown;
                environment: unknown;
-               publicBuildSQL: string;
+               storedBuildSQL: string;
                buildSQL: string;
                builtEntries: Record<string, unknown>;
                dependsOnStorageUpstream: boolean;
@@ -206,7 +206,7 @@ describe.skipIf(!hasPublicDataBigQueryCredentials())(
                getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
                getEnvironmentPath: () => environmentPath,
             },
-            publicBuildSQL: buildSQLFor(nonce),
+            storedBuildSQL: buildSQLFor(nonce),
             buildSQL: buildSQLFor(nonce),
             builtEntries: {},
             dependsOnStorageUpstream: false,

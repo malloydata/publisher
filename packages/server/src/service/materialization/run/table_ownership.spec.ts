@@ -21,10 +21,10 @@ import {
    type TableSiteContext,
 } from "./table_site";
 import { ownedTableProbeSql } from "./warehouse_sql";
+import { hasReservedTableSuffix } from "../domain/table_name";
 import {
    assertTableOwnable,
    hasAuthorTableName,
-   hasReservedTableSuffix,
    markOwnedTable,
    ownedElsewhere,
    ownedTableComment,

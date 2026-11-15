@@ -1,29 +1,3 @@
 {
-  "internal": {
-    "annotationFindings": [],
-    "builds": [],
-    "droppedPersistSources": [],
-    "kinds": {},
-    "materializePlans": {},
-    "rollupPlans": {},
-    "sourceGateOutcomes": {},
-    "sourceModelPaths": {}
-  },
-  "loadWarnings": [
-    {
-      "code": "deprecated-preaggregate-annotation",
-      "message": "Measure v1_empty on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "v1_rollups"
-    },
-    {
-      "code": "preaggregate-malformed",
-      "message": "Measure `v1_empty` declares `#@ preaggregate storage=\"\"` with no destination. Name the storage destination the rollup should be built into, or remove the key to build it alongside its base.",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "v1_empty"
-    }
-  ],
-  "wirePlan": null
+  "loadError": "m.malloy: Measure `v1_empty` declares `#@ preaggregate storage=\"\"` with no destination. Name the storage destination the rollup should be built into, or remove the key to build it alongside its base. [preaggregate-invalid]"
 }

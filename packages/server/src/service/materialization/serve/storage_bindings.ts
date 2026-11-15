@@ -16,7 +16,7 @@
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import { type ModelDef } from "@malloydata/malloy";
 import { compiledTextReader } from "../../../utils";
-import { narrowSchemaToPublic } from "./bindings";
+import { storedColumnsWithAccess } from "./served_copy_serve";
 import { type Binding, bindingServesModelSource } from "../domain/binding";
 import {
    authorModelLiftContext,
@@ -167,8 +167,9 @@ function authorModelLift(
 }
 
 /**
- * A binding's public schema against the source's declared types: which
- * columns read through a cast, and which no cast makes faithful.
+ * A binding's stored columns against the source's declared types, hidden
+ * ones included, as the served copy binds them: which columns read through a
+ * cast, and which no cast makes faithful.
  */
 function typePlanFor(
    binding: Binding,
@@ -176,9 +177,11 @@ function typePlanFor(
 ): Omit<BindingTypeFinding, "binding"> {
    const def = contents?.[binding.sourceName];
    const fields = def?.fields;
-   const publicSchema = narrowSchemaToPublic(binding.schema, fields);
+   const stored = storedColumnsWithAccess(binding.schema, fields).map(
+      ({ name, type }) => ({ name, type }),
+   );
    const mismatches = storedColumnTypeMismatches(
-      publicSchema,
+      stored,
       declaredColumnsOf(fields),
    );
    const { casts, unservable } = serveTypePlan(mismatches, {

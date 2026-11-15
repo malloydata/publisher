@@ -14,6 +14,20 @@
  */
 
 import { ModelCompilationError } from "../../../errors";
+import type { Annotations } from "@malloydata/malloy";
+import { hasEnvReference, routeReadsEnv } from "../../motly";
+import { hasReservedTableSuffix } from "../domain/table_name";
+import {
+   EMPTY_STORAGE_REASON,
+   placementOf,
+   readRouteIfAny,
+} from "./declaration";
+
+/** What a materialization line that reads `@env.` is told, on every route. */
+export const ENV_REFERENCE_REASON =
+   "one of its lines reads the server's environment (`@env.`), which a " +
+   "materialization annotation may not: Publisher never reads it, so the " +
+   "line's directives are lost. Write the value into the model";
 
 /** A line whose first non-whitespace content is a `#@ persist` directive. */
 const PERSIST_LINE_PATTERN = /^\s*#@\s+persist\b/;
@@ -43,6 +57,30 @@ const QUOTED_NAME_VALUE_PATTERN = /(?<![.\w])name\s*=\s*(["'])(.*?)\1/g;
 const SAFE_NAME_PATH = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 
 /**
+ * Why an author's table `name=` is invalid, on any route, or undefined: it is
+ * not a {@link SAFE_NAME_PATH} (it is inlined into DDL), or its table segment
+ * ends the way Publisher names its own tables (`__p<hash>`,
+ * `__v<version>_<hash>`), so it could be another package's table.
+ */
+export function tableNameProblem(name: string): string | undefined {
+   if (!SAFE_NAME_PATH.test(name)) {
+      return (
+         `its name= "${name}" is not a plain identifier path: dot-separated ` +
+         "segments of letters, digits, underscores and hyphens, since the " +
+         "name is inlined into the table's DDL"
+      );
+   }
+   if (hasReservedTableSuffix(name)) {
+      return (
+         `its name= "${name}" ends the way Publisher names a package's or a ` +
+         "version's own tables (__p<hash>, __v<version>_<hash>), so it could " +
+         "be another package's table; give it another name="
+      );
+   }
+   return undefined;
+}
+
+/**
  * Reject `#@ persist name=<value>` annotations whose name is unusable or unsafe.
  *
  * Both failures are fatal at publish/load (HTTP 424):
@@ -64,6 +102,9 @@ export function assertPersistNamesQuoted(
    const unsafe: string[] = [];
    for (const rawLine of modelSource.split("\n")) {
       if (!PERSIST_LINE_PATTERN.test(rawLine)) continue;
+      // A line that reads the environment is invalid whatever its name says
+      // (persist-invalid, a 400 with its code, persistDeclarationProblems).
+      if (hasEnvReference(rawLine)) continue;
       if (UNQUOTED_NAME_PATTERN.test(rawLine)) {
          unquoted.push(rawLine.trim());
          continue;
@@ -98,4 +139,23 @@ export function assertPersistNamesQuoted(
             `Offending annotation(s): ${unsafe.join("; ")}.`,
       });
    }
+}
+
+/**
+ * Why a `#@ persist` declaration (on a source, a view or a named query) is
+ * invalid, beyond its keys (annotation_reader reports those): a line that
+ * reads `@env.`, a `storage=` that names nothing, or an unusable `name=`.
+ * Empty when it is valid. Each fails the publish and the load.
+ */
+export function persistDeclarationProblems(annotations: Annotations): string[] {
+   // The reader drops the whole `#@` route for such a line, so nothing else
+   // can be read off it.
+   if (routeReadsEnv(annotations, "@")) return [ENV_REFERENCE_REASON];
+   const tag = readRouteIfAny(annotations, "@");
+   if (!tag?.has("persist")) return [];
+   const placed = placementOf(tag, "persist");
+   if ("refused" in placed) return [EMPTY_STORAGE_REASON];
+   const name = placed.placement.name?.trim();
+   const problem = name ? tableNameProblem(name) : undefined;
+   return problem ? [problem] : [];
 }

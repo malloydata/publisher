@@ -135,7 +135,7 @@ async function scenario(model: string) {
    const builder = new SourceBuilder(async (request) => {
       const table = request.instruction.physicalTableName;
       await duckdb.runSQL(
-         `CREATE OR REPLACE TABLE ${table} AS ${request.publicBuildSQL}`,
+         `CREATE OR REPLACE TABLE ${table} AS ${request.storedBuildSQL}`,
       );
       return {
          sourceEntityId: request.contentSourceEntityId ?? "",

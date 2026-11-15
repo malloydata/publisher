@@ -17,6 +17,7 @@ import { recordConnectionDigestSkipped } from "../../../materialization_metrics"
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
+   refuseAloneInPlan,
    emptyBuildPlanParts,
    resolveConnectionDigests,
    resolvePackageConnections,
@@ -24,6 +25,7 @@ import {
    type BuildPlanPackage,
    type CompiledBuildPlan,
 } from "./build_plan";
+import { loadGateText } from "./load_gate_text";
 import { refuseCollidingMaterialize } from "./eligibility_collect";
 import {
    joinOneKey,
@@ -46,6 +48,17 @@ import { packageFiles } from "../text/package_files";
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
+   {
+      keepIncrementalUnbuildable = false,
+   }: {
+      /**
+       * Keep a source whose valid incremental declaration this deployment
+       * cannot honour (incremental_policy's rules 6, 7 and 12), rather than
+       * refuse it alone. For a spec that plans incremental machinery on
+       * DuckDB, which no load or run does.
+       */
+      keepIncrementalUnbuildable?: boolean;
+   } = {},
 ): Promise<CompiledBuildPlan> {
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
@@ -178,20 +191,21 @@ export async function compilePackageBuildPlan(
    );
 
    // The build path reads this plan directly: a `#(materialize)` source
-   // refused for its table name must not build here either.
-   return refuseCollidingMaterialize({
-      ...(pkg.getPackageMetadata?.()?.scope === "version"
-         ? { versionScoped: true }
-         : {}),
+   // refused for its table name, or a source whose incremental declaration
+   // this deployment cannot honour, must not build here either.
+   const compiled = refuseCollidingMaterialize({
+      ...(versionOwnsTables(pkg) ? { versionScoped: true } : {}),
       builds: parts.builds,
       tables: parts.tables,
       connectionDigests,
       connections,
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
+      modelGateLines: parts.modelGateLines,
       ...(keyCheckCompilers.size > 0 ? { keyCheckCompilers } : {}),
       omittedSources: parts.omittedSources,
    });
+   return keepIncrementalUnbuildable ? compiled : refuseAloneInPlan(compiled);
 }
 
 /**
@@ -208,6 +222,49 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
-      pkg.getPackageMetadata?.()?.scope,
+      versionOwnsTables(pkg) ? "version" : undefined,
+   );
+}
+
+/**
+ * The load gate's text for a plan a run compiled (plan/load_gate_text.ts),
+ * read off the plan the run derives so the run and the load agree: empty
+ * when the files carry no invalid materialization annotation.
+ */
+export function runLoadGateText(
+   compiled: CompiledBuildPlan,
+   pkg: BuildPlanPackage,
+   judgement: { versionScoped: boolean; enforceCollisions: boolean },
+): string {
+   const derived = deriveBuildPlanOutcome(
+      compiled,
+      pkg.getMaterializationConfig?.() ?? null,
+      judgement.versionScoped ? "version" : undefined,
+   );
+   return loadGateText(
+      {
+         plan: derived.plan,
+         annotationFindings: derived.annotationFindings,
+         incrementalDeclarations: derived.incrementalDeclarations,
+         ...(derived.materializePlans
+            ? { materializePlans: derived.materializePlans }
+            : {}),
+         ...(derived.modelGateLines
+            ? { modelGateLines: derived.modelGateLines }
+            : {}),
+      },
+      judgement,
+   );
+}
+
+/**
+ * Whether the package's tables are named per version: a published version
+ * of a `scope: "version"` package (the run's `ownedVersionOf`). An
+ * unversioned package writes an author's `name=` as given whatever its scope.
+ */
+function versionOwnsTables(pkg: BuildPlanPackage): boolean {
+   return (
+      pkg.getPackageMetadata?.()?.scope === "version" &&
+      pkg.getVersionId?.() !== undefined
    );
 }

@@ -121,9 +121,13 @@ export interface StorageBuildRequest {
    instruction: BuildInstruction;
    manifest: Manifest;
    environment: BuildEnvironment;
-   /** The public-column projection of the build SQL, which the CTAS reads. */
-   publicBuildSQL: string;
-   /** The same SQL unprojected, which a delta wraps in its range predicate. */
+   /**
+    * The build SQL projected to the columns the table stores, which the CTAS
+    * reads: every column the source declares, hidden ones included
+    * (`projectToStoredColumns`).
+    */
+   storedBuildSQL: string;
+   /** The build SQL unprojected, which a delta wraps in its range predicate. */
    buildSQL: string;
    builtEntries: Record<string, ManifestEntry>;
    dependsOnStorageUpstream: boolean;
@@ -189,7 +193,7 @@ async function recomputeIntoStorage(
             destinationName,
             destinationConnection,
             sourceConnection,
-            buildSQL: params.publicBuildSQL,
+            buildSQL: params.storedBuildSQL,
             sourceCarriesAuthorSql: carriesAuthorSql(
                sourceDefOf(persistSource),
             ),
@@ -982,8 +986,8 @@ export class StorageBuildStrategy
             },
             connectionName: text.connection,
             downstreamName: text.downstreamName,
-            // A recompute writes the planned source's public columns; a
-            // stacked table must hold each of them.
+            // A recompute writes the planned source's stored columns, hidden
+            // ones included; a stacked table must hold each of them.
             recomputes: persistSource,
             virtualMap: text.virtualMap,
             physicalTableName,

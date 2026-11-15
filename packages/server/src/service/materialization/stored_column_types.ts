@@ -126,7 +126,7 @@ export function storedTypeServesAs(
 /**
  * Find a declared column by a stored name: exactly first, then by a unique
  * case-insensitive match (a warehouse may fold the case DESCRIBE reports, as
- * {@link narrowSchemaToPublic} allows). An ambiguous fold matches nothing.
+ * `storedColumnsWithAccess` allows). An ambiguous fold matches nothing.
  */
 function declaredFor(
    name: string,

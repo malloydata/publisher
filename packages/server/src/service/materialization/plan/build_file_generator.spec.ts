@@ -19,6 +19,13 @@ import {
    deriveBuildPlanOutcome,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+
+/**
+ * These plan incremental machinery on DuckDB, which no load or run builds
+ * (the dialect cannot bound a delta: incremental_policy's rule 6), so keep
+ * those sources rather than refuse them alone.
+ */
+const KEEP_INCREMENTAL = { keepIncrementalUnbuildable: true };
 import { collectIncrementalDeclarations } from "./build_plan";
 import { incrementalLineage } from "../run/incremental_build";
 import { incrementalPolicyRejections } from "./incremental_policy";
@@ -55,7 +62,7 @@ import {
  * a chained `storage=` extension's text is `materialize_stored_chain.spec.ts`'s.
  */
 
-const packages = planPackages();
+const packages = planPackages({}, { keepIncrementalUnbuildable: true });
 
 const compiled = async (files: ModelFiles) => (await packages.plan(files)).c;
 
@@ -342,7 +349,11 @@ source: recent is events_raw extend {
 #(materialize) storage="lake"
 source: orders is orders_raw extend { dimension: big is amount > 10 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
@@ -408,7 +419,11 @@ source: orders_ext is orders extend {
 #(materialize) storage="lake"
 source: orders_ext2 is orders_ext extend { where: east_big }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          expect(
             generatedPlans(c)
                .map((p) => p.buildSourceName)
@@ -558,7 +573,11 @@ source: orders is orders_raw extend {
     doubled is amount * 2
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [plan] = generatedPlans(c);
          expect(plan.inline).toEqual(["lines"]);
          // A dimension through the join_many has a value per pair, so it is
@@ -650,7 +669,11 @@ source: orders_ext is orders extend {
   measure: twice is order_count * 2
 }
 `);
-            const c = await compilePackageBuildPlan(pkg);
+            const c = await compilePackageBuildPlan(
+               pkg,
+               undefined,
+               KEEP_INCREMENTAL,
+            );
             const plan = (name: string) =>
                generatedPlans(c).find((p) => p.sourceName === name)!;
             expect(plan("orders").pair?.join).toBe("lines");
@@ -707,7 +730,11 @@ source: by_qty is orders_raw extend {
   join_many: lq is lines_by_qty on lq.order_id = id
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const plans = new Map(
             generatedPlans(c).map((p) => [p.sourceName, p] as const),
          );
@@ -736,7 +763,11 @@ source: orders is orders_raw extend {
   join_many: lp is lines_picked on lp.order_id = id
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [plan] = generatedPlans(c);
          // `lp` is the start of `lp.picks`, which stores it: one table.
          expect(plan.pairBlocks).toBeUndefined();
@@ -836,7 +867,11 @@ source: orders is orders_raw extend {
   join_many: notes on notes.order_id = id
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [plan] = generatedPlans(c);
          expect(plan.pair?.join).toBe("lines");
          expect(plan.pairBlocks).toEqual({
@@ -934,7 +969,11 @@ source: orders_one is ${orders} extend {
 `;
          const plansOf = async (text: string) => {
             const pkg = await packages.create(text);
-            const c = await compilePackageBuildPlan(pkg);
+            const c = await compilePackageBuildPlan(
+               pkg,
+               undefined,
+               KEEP_INCREMENTAL,
+            );
             const byName = new Map(
                generatedPlans(c).map((p) => [p.sourceName, p]),
             );
@@ -1057,7 +1096,11 @@ source: orders is raw extend {
 `;
          const planOf = async (text: string) => {
             const pkg = await packages.create(text);
-            const c = await compilePackageBuildPlan(pkg);
+            const c = await compilePackageBuildPlan(
+               pkg,
+               undefined,
+               KEEP_INCREMENTAL,
+            );
             const plan = generatedPlans(c).find(
                (p) => p.sourceName === "orders",
             );
@@ -1120,7 +1163,11 @@ source: orders is orders_raw extend {
   join_many: notes on notes.region = region
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
@@ -1328,7 +1375,11 @@ source: orders is orders_raw extend {
   join_many: pays on pays.order_id = id
 }
 `);
-         const c = await compilePackageBuildPlan(pkg);
+         const c = await compilePackageBuildPlan(
+            pkg,
+            undefined,
+            KEEP_INCREMENTAL,
+         );
          const [plan] = generatedPlans(c);
          expect(plan.pairFullRefresh).toBeUndefined();
          expect(plan.pairBlocks?.watermark).toEqual({

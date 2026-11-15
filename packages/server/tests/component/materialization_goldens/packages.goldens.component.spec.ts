@@ -98,6 +98,7 @@ function conformanceCases(): GoldenCase[] {
                model: q.model,
                givens: q.givens,
             })),
+            ...(shape.env ? { env: shape.env } : {}),
          });
       }
    }

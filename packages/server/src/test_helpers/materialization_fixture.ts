@@ -204,7 +204,11 @@ export interface PlanPackages {
  * `PUBLISHER_MATERIALIZE=true` (and `env`) installed before each test and
  * restored, and the packages removed, after it.
  */
-export function planPackages(env: Record<string, string> = {}): PlanPackages {
+export function planPackages(
+   env: Record<string, string> = {},
+   /** Passed to every `plan`'s compile (see compilePackageBuildPlan). */
+   compileOptions: Parameters<typeof compilePackageBuildPlan>[2] = {},
+): PlanPackages {
    const packages = tempBuildPlanPackages();
    let restore: (() => void) | undefined;
    const settings = (more: Record<string, string> = env) => {
@@ -224,7 +228,10 @@ export function planPackages(env: Record<string, string> = {}): PlanPackages {
       settings,
       async plan(files) {
          const pkg = await packages.create(files);
-         return { pkg, c: await compilePackageBuildPlan(pkg) };
+         return {
+            pkg,
+            c: await compilePackageBuildPlan(pkg, undefined, compileOptions),
+         };
       },
    };
 }

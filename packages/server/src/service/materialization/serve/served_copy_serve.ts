@@ -97,7 +97,6 @@ import {
    sqlTableReads,
    tablesReadForGates,
    buildVirtualMap,
-   narrowSchemaToPublic,
    optsOutOfPersist,
 } from "./bindings";
 import {
@@ -2977,18 +2976,17 @@ function v1ColumnsOf(
       subject;
    const { problems } = subject;
    let columnsLeftOut: string[] = [];
-   // A v1 `storage=` table holds public columns only. A v1 colocated
-   // one holds what Malloy built, hidden columns too: each is
-   // kept with its access modifier, written again on the stored table
-   // (P3), so a measure over it compiles and the column stays hidden.
-   // A colocated table's columns are every column it holds, with no access
-   // modifier: the author's own text after the query (kept whole,
-   // `keepsIncludes`) renames, drops and re-hides them.
-   const named = isColocated(binding)
-      ? storedColumnsWithAccess(binding.schema, def.fields).map(
-           ({ name, type }) => ({ name, type }),
-        )
-      : narrowSchemaToPublic(binding.schema, def.fields);
+   // A v1 table, colocated or `storage=`, holds the columns its build query
+   // emits, hidden ones too: its columns are every column it holds, with no
+   // access modifier, and the author's own text after the query (kept
+   // whole, `keepsIncludes`) renames, drops and re-hides them, so a measure
+   // over a hidden column compiles and the column stays exactly as hidden as
+   // live. A `storage=` table leaves out a column `except:` drops; a kept
+   // `include` that hides one the table lacks is refused (`hiddenUnstored`)
+   // and the source answers live.
+   const named = storedColumnsWithAccess(binding.schema, def.fields).map(
+      ({ name, type }) => ({ name, type }),
+   );
    // A stored column no field of the source names is one its own
    // `extend` block drops (`except:`, `accept:`) or an `include`
    // re-hides under another name: it stays on the stored table so the
@@ -4249,9 +4247,9 @@ function readsJoinStar(
 }
 
 /**
- * A v1 colocated table's columns as its source's fields: every stored
+ * A v1 table's columns as its source's fields: every stored
  * column matched to the author's field of its name (exactly, else one field
- * whose name folds to it, as {@link narrowSchemaToPublic} matches), with the
+ * whose name folds to it, a warehouse folding the case DESCRIBE reports), with the
  * field's access modifier when it is `internal` or `private`. Malloy built
  * the table from the source's own query, hidden columns included, so a column
  * no field names is left out (the served copy finds it missing).

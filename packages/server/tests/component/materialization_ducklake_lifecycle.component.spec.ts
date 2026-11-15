@@ -1356,7 +1356,7 @@ source: events is warehouse.sql("""
       // DuckDB reads as having an incremental source range for this suite so
       // the package loads and the run plans a delta. Every other check runs.
       let widened: ReturnType<typeof spyOn> | undefined;
-      beforeAll(() => {
+      beforeAll(async () => {
          const original = dialects.capabilitiesOf;
          widened = spyOn(dialects, "capabilitiesOf").mockImplementation(
             (dialect) =>
@@ -1364,7 +1364,18 @@ source: events is warehouse.sql("""
                   ? { ...original("duckdb"), incrementalSourceRange: true }
                   : original(dialect),
          );
-         return lake.setUp();
+         await lake.setUp();
+         // The load plans on its worker thread, which the widened capability
+         // does not reach, so it refuses the source alone (incremental rule
+         // 6). Plan the package again on this thread, as a load the worker
+         // left no plan for does.
+         await (
+            lake.pkg as unknown as {
+               materialization: {
+                  applyLoadBuildPlan(plan: undefined): Promise<unknown>;
+               };
+            }
+         ).materialization.applyLoadBuildPlan(undefined);
       });
       afterAll(async () => {
          await lake.tearDown();

@@ -101,10 +101,11 @@ describe("R4: a connection-rooted source with an include before its extend", () 
    });
 });
 
-// A v1 `storage=` table stores public columns only, so an `include` that
-// hides a column cannot be kept on it. The source is left as written and
-// answers live, with a warning that says why and what to change (never a
-// "Publisher bug"), whether its base is a connection's SQL or a query.
+// A v1 `storage=` table stores the columns an `include` hides too, so the
+// include is kept on it and hides them again, whether its base is a
+// connection's SQL or a query: a caller can no more read the hidden column
+// than live. Every one of these sources is answered from the table, equal to
+// live, exactly as on a colocated table.
 const ORDERS_SQL = `duckdb.sql("""
   SELECT region, CAST(amount AS DOUBLE) AS amount, CAST(id AS BIGINT) AS id
   FROM read_csv('data/orders.csv', header=true, all_varchar=true)
@@ -157,13 +158,13 @@ source: query_hidden is ${ORDERS_SQL} -> { select: * } include {
 `,
 };
 
-describe("an include that hides a column a v1 storage= table does not store", () => {
+describe("an include that hides a column a v1 storage= table stores", () => {
    let restore: () => void = () => {};
    let fixture: LoadedFixture | undefined;
    const live = new Map<string, Outcome>();
    const served = new Map<string, Outcome>();
    // A hidden column the extend reads (a dimension over it, a where:) is
-   // still one the table must store.
+   // one the table stores. Whether each is answered from the table.
    const sources = [
       "raw_hidden",
       "query_hidden",
@@ -171,19 +172,29 @@ describe("an include that hides a column a v1 storage= table does not store", ()
       "query_hidden_used",
       "raw_hidden_filtered",
    ];
+   const fromTable = new Set([
+      "raw_hidden",
+      "query_hidden",
+      "raw_hidden_used",
+      "query_hidden_used",
+      "raw_hidden_filtered",
+   ]);
    const queryOf = (source: string) =>
       `run: ${source} -> { group_by: region; aggregate: total }`;
+   const hiddenOf = (source: string) => `run: ${source} -> { group_by: id }`;
 
    beforeAll(async () => {
       await freshLoadPool();
       restore = withSwitch("on");
       const loader = await loadFixture({ ...DATA_FILES, ...hiddenFiles });
       for (const s of sources) {
-         live.set(s, await loader.run("m.malloy", queryOf(s)));
+         live.set(queryOf(s), await loader.run("m.malloy", queryOf(s)));
+         live.set(hiddenOf(s), await loader.run("m.malloy", hiddenOf(s)));
       }
       fixture = await loader.bind();
       for (const s of sources) {
-         served.set(s, await fixture.run("m.malloy", queryOf(s)));
+         served.set(queryOf(s), await fixture.run("m.malloy", queryOf(s)));
+         served.set(hiddenOf(s), await fixture.run("m.malloy", hiddenOf(s)));
       }
    });
    afterAll(async () => {
@@ -193,24 +204,38 @@ describe("an include that hides a column a v1 storage= table does not store", ()
    });
 
    for (const source of sources) {
-      it(`${source}: warns why it is left as written, naming the column`, () => {
+      const stored = fromTable.has(source);
+      it(`${source}: ${stored ? "is served, with no warning" : "is left as written, warned as on a colocated table"}`, () => {
          const warnings = (fixture?.warnings ?? []).filter(
             (w) => w.subject === source && w.code === "served-copy-not-served",
          );
-         expect(warnings.map((w) => w.message)).toEqual([
-            expect.stringContaining("hides `id` (private or internal)"),
-         ]);
-         expect(warnings[0].message).toContain("make the column public");
-         expect(warnings[0].message).not.toContain("Publisher bug");
+         if (stored) {
+            expect(warnings).toEqual([]);
+         } else {
+            expect(warnings.map((w) => w.message)).toEqual([
+               expect.stringContaining("inherits fields"),
+            ]);
+            // Never the old public-columns-only refusal.
+            expect(warnings[0].message).not.toContain("does not store");
+         }
       });
 
-      it(`${source}: answers live, equal to live`, () => {
-         const l = live.get(source);
-         const s = served.get(source);
+      it(`${source}: answers ${stored ? "from the table" : "live"}, equal to live`, () => {
+         const l = live.get(queryOf(source));
+         const s = served.get(queryOf(source));
          if (!l || "error" in l) throw new Error(JSON.stringify(l));
          if (!s || "error" in s) throw new Error(JSON.stringify(s));
-         expect(s.answer.servedBy).toBe("live");
+         expect(s.answer.servedBy).toBe(stored ? "materialized" : "live");
          expect(rowDifference(l.answer.rows, s.answer.rows)).toBeUndefined();
+      });
+
+      it(`${source}: refuses the hidden column, in live's words`, () => {
+         const l = live.get(hiddenOf(source));
+         const s = served.get(hiddenOf(source));
+         if (!l || !("error" in l)) throw new Error(JSON.stringify(l));
+         if (!s || !("error" in s)) throw new Error(JSON.stringify(s));
+         expect(s.error.split("\n")[0]).toBe(l.error.split("\n")[0]);
+         expect(l.error.split("\n")[0]).toMatch(/is (private|internal)$/);
       });
    }
 });

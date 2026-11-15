@@ -1,31 +1,3 @@
 {
-  "internal": {
-    "annotationFindings": [
-      {
-        "code": "materialize-not-built",
-        "message": "#(materialize) on source \"m_empty\" is not built, so the source is served live: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse.",
-        "model": "m.malloy",
-        "route": "materialize",
-        "subject": "m_empty",
-        "tier": "unservable"
-      }
-    ],
-    "builds": [],
-    "droppedPersistSources": [],
-    "kinds": {},
-    "materializePlans": {},
-    "rollupPlans": {},
-    "sourceGateOutcomes": {},
-    "sourceModelPaths": {}
-  },
-  "loadWarnings": [
-    {
-      "code": "materialize-not-built",
-      "message": "#(materialize) on source \"m_empty\" is not built, so the source is served live: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse.",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "m_empty"
-    }
-  ],
-  "wirePlan": null
+  "loadError": "m.malloy: #(materialize) on source \"m_empty\" is invalid: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse. [materialize-invalid]"
 }

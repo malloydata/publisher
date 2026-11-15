@@ -66,6 +66,7 @@ import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
 import { deriveAnnotationFields } from "../plan/persist_source_fields";
 import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
 import { capabilitiesOf } from "../domain/dialect";
+import { hasReservedTableSuffix } from "../domain/table_name";
 import {
    OWNED_TABLE_MARK,
    parseNameViewComment,
@@ -99,25 +100,6 @@ export class TableOwnershipError extends BadRequestError {
    ) {
       super(message);
    }
-}
-
-/**
- * The table-segment endings Publisher gives the names it chooses: every
- * readable name (`__p<8 hex>`, domain/table_name.ts, a `scope: version`
- * one's included), and the names from before readable names, a package's
- * own (`__p<8 hex>`) and a version's own (`__v<version>_<8 hex>`), which
- * tables built then still carry until their next build. Those tables carry no mark
- * and are built without a probe, since no other package's name ends that
- * way. An author's `name=` spelled with one could be another package's
- * default name, which that package would then build over (and the other way
- * round), so it is refused. Case-insensitive, as DuckDB, MySQL and SQL
- * Server resolve names.
- */
-const RESERVED_TABLE_SUFFIX = /__(?:p[0-9a-f]{8}|v[a-z0-9_]*_[0-9a-f]{8})$/i;
-
-/** Whether `name`'s table segment ends the way Publisher's own names do. */
-export function hasReservedTableSuffix(name: string): boolean {
-   return RESERVED_TABLE_SUFFIX.test(name.slice(name.lastIndexOf(".") + 1));
 }
 
 /**

@@ -38,10 +38,15 @@ import {
    EMPTY_STORAGE_REASON,
    type RouteTag,
 } from "./declaration";
+import {
+   ENV_REFERENCE_REASON,
+   tableNameProblem,
+} from "./persist_annotation_validation";
 import { declaredNotes } from "../../governance/ir/declared_notes";
 import {
    routeOfNote,
    PUBLISHER_ROUTES,
+   MATERIALIZE_INVALID_CODE,
    MATERIALIZE_KEYS,
    nearestKey,
    type PackageAnnotationFinding,
@@ -89,6 +94,12 @@ import {
  */
 const CARRIED_GROUPS = ["freshness", "queryMetadata"] as const;
 
+/** The keys of a `freshness` group. */
+const FRESHNESS_PROPERTIES: ReadonlySet<string> = new Set([
+   "window",
+   "fallback",
+]);
+
 /** A property name inside a carried group that the persist line can hold bare. */
 const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -133,6 +144,11 @@ export const GENERATOR_KEYS: readonly string[] = [
 /** The code of a `#(materialize)` key outside the route's closed set. */
 const MATERIALIZE_UNKNOWN_KEY_CODE = "materialize-unknown-key";
 
+/** What a `watermark=[…]` list anywhere but an incremental pair table is told. */
+const WATERMARK_LIST_REASON =
+   "#(materialize) `watermark=` takes a list only on an incremental pair " +
+   "table (an inlined join_many); name one dimension";
+
 /** The code of a `#(materialize)` key the route no longer reads. */
 const MATERIALIZE_RETIRED_KEY_CODE = "materialize-retired-key";
 
@@ -145,10 +161,11 @@ export interface MaterializeRefusal {
    sourceID?: string;
    reason: string;
    /**
-    * Set when the declaration cannot be read as written (it does not parse,
-    * or has an unknown key):
-    * the finding is `malformed` under this code, refused at publish, rather
-    * than the `unservable` `materialize-not-built`.
+    * Set when the declaration is invalid (it does not parse, has an unknown
+    * or retired key, a bad value or a contradictory combination): the
+    * finding is `malformed` under this code and fails the publish and the
+    * load, rather than the `unservable` `materialize-not-built` of a valid
+    * declaration Publisher cannot build.
     */
    malformedCode?: string;
 }
@@ -181,6 +198,8 @@ function readMaterializeDeclaration(
         keys: string[];
         /** Parse errors: a declaration with any is not read at all. */
         errors: string[];
+        /** A line read `@env.`, which the reader dropped. */
+        readsEnv: boolean;
      }
    | undefined {
    const notes = declaredNotes(def, contents).filter(
@@ -194,6 +213,7 @@ function readMaterializeDeclaration(
       errors: log
          .filter((entry) => entry.severity === "error")
          .map((entry) => entry.message),
+      readsEnv: log.some((entry) => entry.code === "env-reference-dropped"),
    };
 }
 
@@ -336,6 +356,12 @@ function carriedPersistKeys(
       }
       for (const [property, value] of properties) {
          const text = value.text();
+         // `freshness` is a closed group: `window` and `fallback`.
+         if (group === "freshness" && !FRESHNESS_PROPERTIES.has(property)) {
+            return {
+               reason: `#(materialize) \`freshness.${property}\` is not a key it reads; use freshness.window= or freshness.fallback=`,
+            };
+         }
          if (!PLAIN_PROPERTY.test(property) || text === undefined) {
             return {
                reason: `#(materialize) \`${group}.${property}\` must be a plain name with a string value`,
@@ -651,12 +677,14 @@ function inlinedPathOf(
    joins: readonly SourceJoin[],
    map: SourceMap,
    connection: unknown,
-): { path: SourceJoin[] } | { reason: string } {
+): { path: SourceJoin[] } | { reason: string; invalid?: true } {
    const names = entry.split(".");
    const quoted = quotedName(entry);
-   if (names.some((n) => n === "")) {
+   // Names no join: invalid, whatever the model is.
+   if (names.some((n) => n === "") || !joins.some((j) => j.name === names[0])) {
       return {
-         reason: `inline= names ${quoted}, which is not a join or a path of joins`,
+         reason: `inline= names ${quoted}, which is not a join or a path of joins of this source`,
+         invalid: true,
       };
    }
    const first = inlineRefusal(names[0], joins, connection);
@@ -677,6 +705,7 @@ function inlinedPathOf(
       if (!next) {
          return {
             reason: `inline= names ${quoted}, and ${quotedName(names[k])} is not a join of the source ${quotedName(prev.name)} joins`,
+            invalid: true,
          };
       }
       if (next.relationship !== "many") return { reason: throughOne };
@@ -1253,6 +1282,8 @@ function planSource(
    if (declaration === undefined || declaration instanceof Declined) {
       return declaration;
    }
+   const invalid = invalidValuesOf(declaration);
+   if (invalid) return invalid;
    const inlined = inlinedJoinsOf(def, declaration, ctx.map);
    if (inlined instanceof Declined) return inlined;
    const stored = storedColumnsOf(def, inlined, ctx);
@@ -1359,7 +1390,7 @@ function materializeDeclarationOf(
       );
    }
    // Before any other refusal: a retired key, or one outside the closed
-   // set, is malformed, refused at publish, whatever else the source would
+   // set, is malformed (it fails the load), whatever else the source would
    // be refused for.
    const retiredKey = retiredKeyRefusal(declaration);
    if (retiredKey)
@@ -1367,9 +1398,15 @@ function materializeDeclarationOf(
    const unknownKey = unknownKeyRefusal(declaration);
    if (unknownKey)
       return new Declined(unknownKey, MATERIALIZE_UNKNOWN_KEY_CODE);
+   // Before anything else is read: the line's directives were dropped, so
+   // building it would put a table where its author did not say.
+   if (declaration.readsEnv) {
+      return new Declined(ENV_REFERENCE_REASON, MATERIALIZE_INVALID_CODE);
+   }
    if (declaresOwnPersist(def, contents)) {
       return new Declined(
          "the source also carries its own #@ persist; declare one or the other",
+         MATERIALIZE_INVALID_CODE,
       );
    }
    // A source that inherits `#@ persist` is already its base's table under
@@ -1386,6 +1423,47 @@ function materializeDeclarationOf(
       );
    }
    return declaration;
+}
+
+/**
+ * Why the values a declaration carries make it invalid, read before any
+ * refusal of a valid declaration so an invalid one always fails the load: an
+ * `inline=` that is not a list of names, a carried key of the wrong shape, a
+ * `storage=` that names nothing, a `name=` no table can take, and a list of
+ * watermarks off an incremental pair table.
+ */
+function invalidValuesOf(declaration: ReadDeclaration): Declined | undefined {
+   if (declaration.keys.includes("inline")) {
+      const items = declaration.tag.array("inline")?.map((i) => i.text());
+      if (!items || items.some((i) => typeof i !== "string" || i === "")) {
+         return new Declined(
+            'inline= must be a list of join names, such as inline=["carriers"]',
+            MATERIALIZE_INVALID_CODE,
+         );
+      }
+   }
+   const carried = carriedPersistKeys(declaration);
+   if ("reason" in carried) {
+      return new Declined(carried.reason, MATERIALIZE_INVALID_CODE);
+   }
+   if ("refused" in placementOf(declaration.tag)) {
+      return new Declined(EMPTY_STORAGE_REASON, MATERIALIZE_INVALID_CODE);
+   }
+   const namedTable = carried.persist.name?.trim();
+   const nameProblem = namedTable ? tableNameProblem(namedTable) : undefined;
+   if (nameProblem) return new Declined(nameProblem, MATERIALIZE_INVALID_CODE);
+   // A list of watermarks is a pair table's: it needs an incremental refresh
+   // and an inlined join (the pair, checked once laid out).
+   const inlines =
+      (declaration.tag.array("inline")?.length ?? 0) > 0 &&
+      declaration.keys.includes("inline");
+   if (
+      carried.watermarks &&
+      !(carried.persist.refresh === "incremental" && inlines)
+   ) {
+      return new Declined(WATERMARK_LIST_REASON, MATERIALIZE_INVALID_CODE);
+   }
+   return undefined;
 }
 
 /** The joins a declaration's `inline=` names, resolved against the source. */
@@ -1414,6 +1492,7 @@ function inlinedJoinsOf(
       if (!items || items.some((i) => typeof i !== "string" || i === "")) {
          return new Declined(
             'inline= must be a list of join names, such as inline=["carriers"]',
+            MATERIALIZE_INVALID_CODE,
          );
       }
       inline = [...new Set(items as string[])];
@@ -1425,9 +1504,14 @@ function inlinedJoinsOf(
       inlinedPathOf(entry, joins, map, def.connection),
    );
    const inlineProblem = resolved.find(
-      (r): r is { reason: string } => "reason" in r,
+      (r): r is { reason: string; invalid?: true } => "reason" in r,
    );
-   if (inlineProblem) return new Declined(inlineProblem.reason);
+   if (inlineProblem) {
+      return new Declined(
+         inlineProblem.reason,
+         inlineProblem.invalid ? MATERIALIZE_INVALID_CODE : undefined,
+      );
+   }
    // A private or internal join's access, by name. Its build reads the
    // join through the build copy's lift (P3), and its joined columns carry
    // the modifier: the served copy declares an inlined join_one's record,
@@ -1683,10 +1767,7 @@ function pairLayoutOf(
       }
    }
    if (args.watermarks && !(pair && persist.refresh === "incremental")) {
-      return new Declined(
-         "#(materialize) `watermark=` takes a list only on an incremental " +
-            "pair table (an inlined join_many); name one dimension",
-      );
+      return new Declined(WATERMARK_LIST_REASON, MATERIALIZE_INVALID_CODE);
    }
    let pairFullRefresh: string | undefined;
    if (pair && persist.refresh === "incremental") {
@@ -1824,8 +1905,8 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
 
 /**
  * A refused declaration as a package warning: the source is not materialized
- * and serves live, which is the `unservable` tier, or `malformed` (refused at
- * publish) when the declaration cannot be read as written.
+ * and serves live, which is the `unservable` tier, or `malformed` (it fails
+ * the publish and the load) when the declaration is invalid.
  */
 export function materializeRefusalFinding(
    refusal: MaterializeRefusal,
@@ -1835,9 +1916,11 @@ export function materializeRefusalFinding(
       route: MATERIALIZE_ROUTE,
       tier: refusal.malformedCode ? "malformed" : "unservable",
       code: refusal.malformedCode ?? "materialize-not-built",
-      message:
-         `#(materialize) on source "${refusal.sourceName}" is not built, ` +
-         `so the source is served live: ${refusal.reason}.`,
+      message: refusal.malformedCode
+         ? `#(materialize) on source "${refusal.sourceName}" is invalid: ` +
+           `${refusal.reason}.`
+         : `#(materialize) on source "${refusal.sourceName}" is not built, ` +
+           `so the source is served live: ${refusal.reason}.`,
       subject: refusal.sourceName,
       model,
    };

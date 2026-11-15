@@ -45,6 +45,9 @@ export type PreaggregateViolationCode =
    | "invalid_namespace"
    | "empty_storage"
    | "invalid_storage"
+   | "unknown_key"
+   | "unparseable"
+   | "env_reference"
    | "conflicting_namespace"
    | "conflicting_storage"
    | "namespace_with_storage"
@@ -59,7 +62,7 @@ export type PreaggregateViolationCode =
    | "grain_path_through_join"
    | "grain_truncation_expression"
    | "truncation_on_non_temporal"
-   // Scope restrictions.
+   // Scope restrictions: a valid declaration Publisher refuses alone.
    | "base_source_has_fanout_join";
 
 export interface PreaggregateViolation {
@@ -136,6 +139,15 @@ function isView(f: FieldLike): boolean {
  */
 function isFanoutJoin(f: FieldLike): boolean {
    return isJoined(f as never) && f.join !== "one";
+}
+
+/**
+ * Whether a source joins anything with a fan-out join, the case in which its
+ * `#@ preaggregate` rollups are refused alone (`base_source_has_fanout_join`):
+ * the planners skip them, so nothing is built and the measures answer live.
+ */
+export function hasFanoutJoin(source: { fields?: unknown[] }): boolean {
+   return (source.fields ?? []).some((f) => isFanoutJoin(f as FieldLike));
 }
 
 /**
@@ -333,7 +345,7 @@ export function validateSourcePreaggregation(
       violations.push({
          code: "base_source_has_fanout_join",
          sourceName,
-         message: `Source \`${sourceName}\` declares \`#@ preaggregate\` but joins ${joins} with a fan-out join. A rollup over a fan-out join can return a wrong total, because every measure was computed against duplicated rows, so pre-aggregating such a source is not supported in this version. Pre-aggregate a source whose joins are all \`join_one\`, or remove the annotations.`,
+         message: `Source \`${sourceName}\` declares \`#@ preaggregate\` but joins ${joins} with a fan-out join. A rollup over a fan-out join can return a wrong total, because every measure was computed against duplicated rows, so its rollups are not built and its measures are answered live. Pre-aggregate a source whose joins are all \`join_one\`, or remove the annotations.`,
       });
    }
 

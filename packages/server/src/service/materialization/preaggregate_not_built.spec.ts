@@ -17,10 +17,9 @@ import {
    loadTempPackage,
    usePackageLoadPool,
 } from "../../test_helpers/temp_package";
-import { formatPublishRejections } from "../publish_checks";
+import { BadRequestError } from "../../errors";
 import {
    PackageMaterialization,
-   PERSIST_SOURCE_REFUSED_CODE,
    type PackageMaterializationOwner,
 } from "./package_materialization";
 import { deriveBuildPlanOutcome } from "./plan/build_plan";
@@ -168,50 +167,51 @@ describe("preaggregate-not-built", () => {
       );
    });
 
-   it("leaves a refused #@ persist source on persist-source-refused", () => {
-      const [warning] = holding(
+   it("warns persist-not-built for a refused #@ persist source, and its former code beside it for one release", () => {
+      const warnings = holding(
          refusedPlan("colocated"),
       ).persistRefusalWarnings();
-      expect(warning).toEqual({
-         code: PERSIST_SOURCE_REFUSED_CODE,
-         severity: "warn",
+      const expected = {
+         severity: "warn" as const,
          model: "m.malloy",
          subject: "orders__category__0a1b2c3d",
          message: GATE_MESSAGE,
-      });
+      };
+      expect(warnings).toEqual([
+         { ...expected, code: "persist-not-built" },
+         { ...expected, code: "persist-source-refused" },
+      ]);
    });
 });
 
-describe("preaggregate-malformed", () => {
+describe("preaggregate-invalid", () => {
    // After the file's settings: a load worker keeps the settings it started with.
    usePackageLoadPool();
 
    it(
-      "still fails the publish for a malformed #(preaggregate) line",
+      "fails the load for a malformed #(preaggregate) line",
       async () => {
-         const loaded = await loadTempPackage({
-            "orders.malloy": `source: orders is duckdb.sql("""
+         let error: unknown;
+         try {
+            const loaded = await loadTempPackage({
+               "orders.malloy": `source: orders is duckdb.sql("""
   SELECT * FROM (VALUES (10, 'A')) AS t(amount, category)
 """) extend {
   #(preaggregate) grain=[]
   measure: total is amount.sum()
 }
 `,
-         });
-         try {
-            const warning = (
-               loaded.pkg.getPackageMetadata().warnings ?? []
-            ).find((w) => w.subject === "orders.total");
-            expect(warning).toMatchObject({
-               code: "preaggregate-malformed",
-               severity: "error",
             });
-            expect(formatPublishRejections(loaded.pkg)).toContain(
-               '#(preaggregate) on measure "total" of source "orders"',
-            );
-         } finally {
             await loaded.cleanup();
+         } catch (e) {
+            error = e;
          }
+         expect(error).toBeInstanceOf(BadRequestError);
+         const message = (error as Error).message;
+         expect(message).toContain(
+            '#(preaggregate) on measure "total" of source "orders"',
+         );
+         expect(message).toContain("[preaggregate-invalid]");
       },
       { timeout: 60000 },
    );

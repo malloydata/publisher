@@ -25,6 +25,13 @@ import {
    collectIncrementalDeclarations,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+
+/**
+ * These plan incremental machinery on DuckDB, which no load or run builds
+ * (the dialect cannot bound a delta: incremental_policy's rule 6), so keep
+ * those sources rather than refuse them alone.
+ */
+const KEEP_INCREMENTAL = { keepIncrementalUnbuildable: true };
 import { leftOutWindowTerms } from "./rolling_window";
 
 /**
@@ -72,7 +79,11 @@ async function compiled(files: string | Record<string, string>) {
    const duckdb = await pkg.getMalloyConnection!("duckdb");
    opened.push(duckdb);
    await duckdb.runSQL(SEED);
-   return { pkg, duckdb, c: await compilePackageBuildPlan(pkg) };
+   return {
+      pkg,
+      duckdb,
+      c: await compilePackageBuildPlan(pkg, undefined, KEEP_INCREMENTAL),
+   };
 }
 
 type Compiled = Awaited<ReturnType<typeof compilePackageBuildPlan>>;

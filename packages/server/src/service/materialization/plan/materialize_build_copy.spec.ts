@@ -95,7 +95,7 @@ source: raw is duckdb.sql("""
 """)
 `;
 
-   const packages = planPackages();
+   const packages = planPackages({}, { keepIncrementalUnbuildable: true });
    const settings = packages.settings;
 
    async function planOf(text: string | Record<string, string>) {
@@ -524,7 +524,7 @@ source: raw is duckdb.sql("""
 """)
 `;
 
-   const packages = planPackages();
+   const packages = planPackages({}, { keepIncrementalUnbuildable: true });
 
    type Field = Record<string, unknown>;
 

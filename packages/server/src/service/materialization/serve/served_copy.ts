@@ -67,7 +67,6 @@ import {
    inlinedJoinStatements,
    intoFirstExtend,
    labelledRenames,
-   renameAccess,
    renameBlock,
    TIMEFRAMES,
    type GeneratedRename,
@@ -162,9 +161,9 @@ export interface Reroot {
    keepsIncludes?: true;
    /**
     * With {@link keepsIncludes}: an `except:` item naming no stored column
-    * (a v1 `storage=` table stores public columns only) is deleted from the
-    * kept text, since the re-rooted source has nothing of that name to
-    * exclude and Malloy refuses the statement (`dropExceptItems`).
+    * (a v1 `storage=` table does not store one its source drops) is deleted
+    * from the kept text, since the re-rooted source has nothing of that name
+    * to exclude and Malloy refuses the statement (`dropExceptItems`).
     */
    dropsUnstoredExcepts?: true;
    /**
@@ -720,8 +719,9 @@ export function buildServedCopy(
             continue;
          }
          // A kept `include { … }` that hides a column the table does not
-         // store (a v1 `storage=` table stores public columns only) cannot
-         // compile on it: refused before the re-root, saying why.
+         // hold (a v1 `storage=` table that does not hold every column its
+         // source declares) cannot compile on it: refused before the
+         // re-root, saying why.
          const hiddenUnstored =
             r.keepsIncludes && spans?.extendStart !== undefined
                ? (
@@ -982,7 +982,7 @@ export function rerootDeclaration(
       ...timeframed.map((c) => ({
          internal: c.internalName,
          column: c.name,
-         access: renameAccess(c),
+         access: storedRenameAccess(c, r.storedDimensions),
       })),
       ...joinRenames,
    ];
@@ -992,7 +992,7 @@ export function rerootDeclaration(
    // author's own), which read them as they read the author's fields. Only a
    // hidden column kept under its own name needs that `include`: when the
    // re-root writes one, every internal name is renamed ahead of it and the
-   // include hides it ({@link renameAccess}), since Malloy refuses a rename
+   // include hides it (`renameAccess`), since Malloy refuses a rename
    // in the block just after an include. A hidden timeframe column or a
    // hidden join's columns alone are hidden by labelled renames in the first
    // block (`private rename:`) instead, so an author's `rename:` (and the
@@ -1124,6 +1124,7 @@ function servedExtend(
             timeframed,
             timeframed.filter((c) => !rewritten.has(c.name)),
             withRenames,
+            storedDimensions,
          ),
       );
       if (opened === undefined) return undefined;
@@ -1487,24 +1488,25 @@ function accessPrefix(access: "private" | "internal" | undefined): string {
  * inherited one, or a `#@ persist` query's output column), with the field's
  * annotations.
  *
- * A hidden field (P3) is redefined under the author's modifier, and its
- * stored column's internal name is `private` ({@link renameAccess}), so no
- * caller reaches it by any path (a `private rename:` here, or, when the
- * re-root writes an `include` for other hidden columns, a rename ahead of it
- * that the include hides, and `withRenames` is false). A public field's stored
- * column is renamed `internal`, so no `select:` reaches it.
+ * A field is redefined under the author's modifier, and its stored column's
+ * internal name is `private` ({@link storedRenameAccess}), so no caller
+ * reaches it by any path, a caller's own `include { public: * }` included (a
+ * `private rename:` here, or, when the re-root writes an `include` for other
+ * hidden columns, a rename ahead of it that the include hides, and
+ * `withRenames` is false).
  */
 function timeframeStatements(
    all: readonly Timeframed[],
    emitted: readonly Timeframed[],
    withRenames: boolean,
+   storedDimensions?: readonly string[],
 ): string {
    let out = withRenames
       ? labelledRenames(
            all.map((c) => ({
               internal: c.internalName,
               column: c.name,
-              access: renameAccess(c),
+              access: storedRenameAccess(c, storedDimensions),
            })),
         )
       : "";
@@ -1521,6 +1523,27 @@ function timeframeStatements(
       if (dims) out += `\n  ${accessPrefix(access)}dimension:\n${dims}`;
    }
    return out;
+}
+
+/**
+ * The access of a redefined column's internal name: `private`, so no caller
+ * reaches it by any path, a caller's own `include { public: * }` included,
+ * since what reads it (the redefined field) is written in the re-root's first
+ * block. A public `#(materialize)` stored dimension whose definition is
+ * rewritten in place may sit in a later block, where a private name is not
+ * readable: its internal name stays `internal`.
+ */
+function storedRenameAccess(
+   c: { name: string; access?: "private" | "internal" },
+   storedDimensions: readonly string[] | undefined,
+): "private" | "internal" {
+   if (c.access) return "private";
+   return storedDimensions?.includes(c.name) ? "internal" : "private";
+}
+
+/** Whether an annotation line is a `#(classification)`. */
+function isClassificationNote(note: string): boolean {
+   return /^#\(classification\)/.test(note.trimStart());
 }
 
 /** The emitted `type:` declaration for one re-rooted source. */
@@ -1545,11 +1568,14 @@ export function typeDeclaration(
       .map(
          (c) =>
             // A timeframe or cast column's notes go on its redefined field
-            // instead.
+            // instead, all but its `#(classification)`, which stays on the
+            // column too: the internal name it is renamed to keeps it, so a
+            // read of that name (a `select: *` the governor expands) is of
+            // the field's class, as live's.
             ((c.timeframe && TIMEFRAMES.has(c.timeframe)) ||
             c.castTo ||
             c.nativeCast
-               ? []
+               ? (c.notes ?? []).filter(isClassificationNote)
                : (c.notes ?? [])
             )
                .map((note) => noteSource(note, "   "))

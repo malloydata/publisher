@@ -21,7 +21,7 @@ import {
    duckdbTestConnections,
    loadTestModel,
 } from "../../../test_helpers/incremental_test_harness";
-import { projectToPublicColumns } from "./build_plan";
+import { projectToStoredColumns } from "./build_plan";
 import { validateSourcePreaggregation } from "./preaggregation_validation";
 
 let connections: FixedConnectionMap;
@@ -87,7 +87,7 @@ describe("public_surface_unknown", () => {
       } as unknown as PersistSource;
       let caught: unknown;
       try {
-         projectToPublicColumns(unreadable, "SELECT 1 AS a");
+         projectToStoredColumns(unreadable, "SELECT 1 AS a");
       } catch (err) {
          caught = err;
       }

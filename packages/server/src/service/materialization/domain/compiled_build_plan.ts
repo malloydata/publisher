@@ -72,6 +72,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
    /** Findings on the authored `#@` annotations (see annotation_reader). */
    annotationFindings?: Finding[];
    /**
+    * Each model's invalid `#@ preaggregate` declarations and misspelled
+    * materialization routes, as load-failure lines (`load_gate_text.ts` in
+    * `plan/`), so a run over the files reads them as the load does.
+    */
+   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
+   /**
     * Each `#(materialize)` uniqueness check's compiler over a run's compiler
     * manifest, by `keyCheckCompilerKey`; set only on a plan compiled on the thread
     * that builds (`build_plan_compile.ts`).

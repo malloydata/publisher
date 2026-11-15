@@ -82,7 +82,7 @@ describe("the conformance shapes under the default settings", () => {
       for (const variant of shape.variants ?? ["storage", "colocated"]) {
          it(`${shape.name} [${variant}]: every answer equals live`, async () => {
             const restore = installSettings({
-               env: { PERSIST_STORAGE_MODE: "on" },
+               env: { PERSIST_STORAGE_MODE: "on", ...shape.env },
             }).restore;
             await freshLoadPool();
             const entry = Object.keys(shape.files)[0];

@@ -18,11 +18,11 @@ import {
    BadRequestError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
-   MaterializationEligibilityError,
    MaterializationNotFoundError,
    PackageVersionError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { getPersistCollisionEnforce } from "../../../config";
 import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
@@ -48,7 +48,10 @@ import {
 } from "../../versions/materialization_scope";
 import type { MaterializationHost } from "../host";
 import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
-import { compilePackageBuildPlan } from "../plan/build_plan_compile";
+import {
+   compilePackageBuildPlan,
+   runLoadGateText,
+} from "../plan/build_plan_compile";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -687,6 +690,18 @@ export class MaterializationService {
          false,
          version !== null ? { versionId: VersionRef.parse(version) } : {},
       );
+      // A package that serves an older model than its files (its last reload
+      // refused them) is not run: the run would build the files the reload
+      // refused. Refused here, a 409, so a schedule does not pile up failed
+      // runs; the run itself checks again.
+      if (
+         version === null &&
+         (environment.getStaleCompileErrors?.().has(packageName) ?? false)
+      ) {
+         throw new BuildPlanUnavailableError(
+            `Package ${packageName} serves an older model than its files: its last reload refused them. Fix the files and reload the package, then run again.`,
+         );
+      }
       // Whose tables a version's run builds (see materialization_scope).
       const scope =
          version !== null
@@ -1074,24 +1089,32 @@ export class MaterializationService {
                  compilePackageBuildPlan(pkg, signal),
               );
 
-      // Refuse a `#@ persist` source that Malloy's build walk silently
-      // dropped (see detectDroppedPersistSources); otherwise the build
-      // succeeds with an empty manifest and the source serves live. Scoped to
-      // this build's targets so a dropped sibling does not block it.
-      const relevantDropped = (compiled.droppedPersistSources ?? []).filter(
-         (d) => !opts.sourceNames || opts.sourceNames.includes(d.name),
-      );
-      if (relevantDropped.length > 0) {
-         const names = relevantDropped.map((d) => `'${d.name}'`).join(", ");
-         throw new MaterializationEligibilityError({
-            message:
-               `Source(s) ${names} are annotated '#@ persist' but were not ` +
-               `recognized as a materializable source, so nothing would be ` +
-               `built (they would be served live). Only query/aggregate ` +
-               `sources materialize; a filtered pass-through does not. Persist ` +
-               `a query source, or invoke a parameterized source with a bound ` +
-               `argument, or drop the annotation to serve live.`,
-         });
+      // A `#@ persist` source Malloy's build walk did not plan fails the
+      // package's load (`persist-not-materializable`), so a package that
+      // reaches a run has none: one source's mistake never refuses the
+      // whole run. What can reach one is the files on disk changed since the
+      // load: a save the load refused (the package serves its last good
+      // model, stale). The run builds from those files, so it is refused
+      // until they are fixed, rather than build what the load refused. A
+      // version's files never change; only the unversioned package a reload
+      // replaces can be stale.
+      const stale =
+         versionId === undefined &&
+         (environment.getStaleCompileErrors?.().has(packageName) ?? false);
+      // The load gate's own text, so the run and the load agree.
+      const invalid = runLoadGateText(compiled, pkg, {
+         enforceCollisions: getPersistCollisionEnforce(),
+         versionScoped: owned !== undefined,
+      });
+      if (stale || invalid) {
+         throw new BadRequestError(
+            `Package ${packageName} is not built: ` +
+               (invalid
+                  ? `its files carry an invalid materialization annotation, which its load refuses:\n${invalid}`
+                  : "its files changed and its last reload refused them, " +
+                    "so it serves an older model") +
+               `\nFix the files and reload the package, then run again.`,
+         );
       }
       return {
          environmentId,
