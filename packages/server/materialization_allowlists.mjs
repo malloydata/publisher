@@ -130,115 +130,11 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
 };
 
 /** H1: modules with no header yet, by file under src/: step. */
-export const MATERIALIZATION_HEADER_ALLOWLIST = {
-   "service/materialization/plan/build_plan.ts": "5",
-   "service/materialization/plan/incremental_declaration.ts": "5",
-   "service/materialization/plan/incremental_policy.ts": "5",
-   "service/materialization/plan/materialization_eligibility.ts": "5",
-   "service/materialization/plan/persist_annotation_validation.ts": "5",
-   "service/materialization/plan/persist_dynamic_terms.ts": "5",
-   "service/materialization/run/build_failure_class.ts": "5",
-   "service/materialization/run/error_code.ts": "5",
-   "service/materialization/run/incremental_build.ts": "5",
-   "service/materialization/run/incremental_delta_strategy.ts": "5",
-   "service/materialization/run/incremental_storage.ts": "5",
-   "service/materialization/run/instructed_build.ts": "5",
-   "service/materialization/run/manifest_committer.ts": "5",
-   "service/materialization/run/manifest_loader.ts": "5",
-   "service/materialization/run/materialization_build_session.ts": "5",
-   "service/materialization/run/materialization_instructed_run.ts": "5",
-   "service/materialization/run/materialization_run_support.ts": "5",
-   "service/materialization/run/materialization_scheduler.ts": "5",
-   "service/materialization/run/materialization_service.ts": "5",
-   "service/materialization/run/reclaimer.ts": "5",
-   "service/materialization/run/run_instructions.ts": "5",
-   "service/materialization/run/run_lifecycle.ts": "5",
-   "service/materialization/run/run_telemetry.ts": "5",
-   "service/materialization/run/same_catalog_build.ts": "5",
-   "service/materialization/run/source_build.ts": "5",
-   "service/materialization/run/storage_build_strategy.ts": "5",
-   "service/materialization/run/storage_table_load.ts": "5",
-   "service/materialization/run/table_claims.ts": "5",
-};
+export const MATERIALIZATION_HEADER_ALLOWLIST = {};
 
 /** H2: ticket numbers, phase or step labels and dates in comments, per file: the count allowed, and the step that removes them. */
-export const MATERIALIZATION_HISTORY_ALLOWLIST = {
-   "service/materialization/package_materialization.ts": {
-      count: 7,
-      step: "5",
-   },
-   "service/materialization/domain/rollup_measures.ts": { count: 1, step: "5" },
-   "service/materialization/domain/table_plans.ts": { count: 1, step: "5" },
-   "service/materialization/plan/addressing.ts": { count: 1, step: "5" },
-   "service/materialization/plan/build_file_generator.ts": {
-      count: 6,
-      step: "5",
-   },
-   "service/materialization/plan/build_plan.ts": { count: 5, step: "5" },
-   "service/materialization/plan/build_plan_compile.ts": {
-      count: 1,
-      step: "5",
-   },
-   "service/materialization/plan/eligibility_collect.ts": {
-      count: 1,
-      step: "5",
-   },
-   "service/materialization/plan/materialization_eligibility.ts": {
-      count: 1,
-      step: "5",
-   },
-   "service/materialization/plan/persisted_view.ts": { count: 2, step: "5" },
-   "service/materialization/plan/rolling_window.ts": { count: 2, step: "5" },
-   "service/materialization/plan/rollup_compile.ts": { count: 2, step: "5" },
-   "service/materialization/plan/rollup_measure_grammar.ts": {
-      count: 1,
-      step: "5",
-   },
-   "service/materialization/plan/rollup_plan.ts": { count: 5, step: "5" },
-   "service/materialization/plan/v1_build_companion.ts": {
-      count: 2,
-      step: "5",
-   },
-   "service/materialization/run/incremental_build.ts": { count: 1, step: "5" },
-   "service/materialization/run/instructed_build.ts": { count: 6, step: "5" },
-   "service/materialization/run/materialization_build_session.ts": {
-      count: 2,
-      step: "5",
-   },
-   "service/materialization/run/materialization_instructed_run.ts": {
-      count: 1,
-      step: "5",
-   },
-   "service/materialization/run/materialization_run_support.ts": {
-      count: 7,
-      step: "5",
-   },
-   "service/materialization/run/materialization_service.ts": {
-      count: 3,
-      step: "5",
-   },
-   "service/materialization/run/source_build.ts": { count: 4, step: "5" },
-   "service/materialization/run/storage_build_strategy.ts": {
-      count: 6,
-      step: "5",
-   },
-   "service/materialization/serve/author_imports.ts": { count: 1, step: "5" },
-   "service/materialization/serve/join_rollup.ts": { count: 6, step: "5" },
-   "service/materialization/serve/rollup_variants.ts": { count: 3, step: "5" },
-   "service/materialization/serve/serve_verdict.ts": { count: 6, step: "5" },
-   "service/materialization/serve/served_copy.ts": { count: 3, step: "5" },
-   "service/materialization/serve/served_copy_serve.ts": {
-      count: 5,
-      step: "5",
-   },
-   "service/materialization/serve/storage_bindings.ts": { count: 1, step: "5" },
-   "service/materialization/serve/view_variants.ts": { count: 1, step: "5" },
-   "service/materialization/stored_column_types.ts": { count: 1, step: "5" },
-   "service/materialization/text/cross_connection_text.ts": {
-      count: 1,
-      step: "5",
-   },
-};
+export const MATERIALIZATION_HISTORY_ALLOWLIST = {};
+
 /** H4: exports no other file imports, "<file>#<name>": step. */
 export const MATERIALIZATION_UNIMPORTED_EXPORTS = {};
 /** Annotation payload reads outside plan/declaration.ts, per file. */
