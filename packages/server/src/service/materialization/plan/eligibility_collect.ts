@@ -417,7 +417,7 @@ export function collectSourceEligibility(
       try {
          assertRollupNameUnshared(source, gate);
          assertMaterializationEligible(source, deriveAnnotationFields(source), {
-            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled),
+            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled, true),
          });
          // A table built before this refusal existed is not served either.
          assertBuildReadsNoCurrentTime(source, gate);
