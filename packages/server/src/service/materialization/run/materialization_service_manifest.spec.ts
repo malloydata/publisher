@@ -20,7 +20,7 @@ function manifestMethods(service: MaterializationService): {
       env: unknown,
       pkg: string,
       entries: Record<string, unknown>,
-   ) => Promise<void>;
+   ) => Promise<boolean>;
    commitManifest: (
       id: string,
       entries: Record<string, unknown>,
@@ -98,7 +98,7 @@ describe("autoLoadManifest", () => {
       expect(Object.keys(bindStorage.firstCall.args[1])).toEqual(["ok"]);
    });
 
-   it("swallows a reload failure (best-effort; run already succeeded)", async () => {
+   it("swallows a reload failure (best-effort; run already succeeded), and says it did not bind", async () => {
       const reloadAllModelsForPackage = sinon
          .stub()
          .rejects(new Error("reload boom"));
@@ -108,7 +108,7 @@ describe("autoLoadManifest", () => {
             "pkg",
             { b1: { sourceEntityId: "b1", physicalTableName: "t" } },
          ),
-      ).resolves.toBeUndefined();
+      ).resolves.toBe(false);
    });
 });
 

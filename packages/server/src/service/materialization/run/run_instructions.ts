@@ -2,10 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
+import * as path from "path";
+import { fileURLToPath } from "url";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
+import {
+   PERSISTED_VIEW_COMPANION_SUFFIX,
+   ROLLUP_COMPANION_SUFFIX,
+} from "../text/read_text";
 import {
    namesBefore,
    readableTableName,
+   readableVersion,
    sourceLabel,
 } from "../domain/table_name";
 import { getPersistStorageMode } from "../../../config";
@@ -14,6 +21,7 @@ import {
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { recordEligibilityRefused } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import {
    packageTableSuffix,
@@ -65,6 +73,11 @@ export interface SelfTableNaming {
    packageName: string;
    /** The version that owns the run's tables, under `scope: version`. */
    ownedVersion?: string;
+   /**
+    * Where the package is on this server, which a source's declaring model
+    * path is read relative to (see modelPathOf).
+    */
+   packagePath?: string;
 }
 
 /**
@@ -200,19 +213,47 @@ function gateSources(
    return { sources, refused, refusals, cleared };
 }
 
+/** The generated companions a build source can be declared in. */
+const COMPANION_SUFFIXES = [
+   PERSISTED_VIEW_COMPANION_SUFFIX,
+   ROLLUP_COMPANION_SUFFIX,
+   ".materialize.malloy",
+];
+
 /**
- * The declaring model's package-relative path, else the base name of the
- * file its sourceID names.
+ * The package-relative path of the model that declares `persistSource`, read
+ * from the file its sourceID names (a generated companion's being its
+ * author's file), so it never depends on which model imported the source.
+ * Without `packagePath`, or for a sourceID that names no file in the package:
+ * the path the plan recorded, else the file's base name.
  */
 function modelPathOf(
    compiled: CompiledBuildPlan,
    persistSource: PersistSource,
+   packagePath: string | undefined,
 ): string {
+   const at = persistSource.sourceID.indexOf("@");
+   const url = at >= 0 ? persistSource.sourceID.slice(at + 1) : "";
+   if (packagePath && url.startsWith("file:")) {
+      try {
+         let file = fileURLToPath(url);
+         for (const suffix of COMPANION_SUFFIXES) {
+            if (file.endsWith(suffix)) file = file.slice(0, -suffix.length);
+         }
+         const relative = path.relative(packagePath, file);
+         if (
+            relative &&
+            !relative.startsWith("..") &&
+            !path.isAbsolute(relative)
+         ) {
+            return relative.split(path.sep).join("/");
+         }
+      } catch {
+         // Not a file URL Node reads: the recorded path below.
+      }
+   }
    const known = compiled.sourceModelPaths?.[persistSource.sourceID];
    if (known) return known;
-   const url = persistSource.sourceID.slice(
-      persistSource.sourceID.indexOf("@") + 1,
-   );
    return url.slice(url.lastIndexOf("/") + 1);
 }
 
@@ -237,6 +278,7 @@ function labelOf(
 function namingSources(
    compiled: CompiledBuildPlan,
    sources: ClearedSource[],
+   packagePath: string | undefined,
 ): Map<string, PersistSource> {
    const chosen = new Map<
       string,
@@ -245,7 +287,7 @@ function namingSources(
    for (const { persistSource, sourceEntityId } of sources) {
       const candidate = {
          source: persistSource,
-         modelPath: modelPathOf(compiled, persistSource),
+         modelPath: modelPathOf(compiled, persistSource, packagePath),
          label: labelOf(compiled, persistSource),
       };
       const current = chosen.get(sourceEntityId);
@@ -261,8 +303,9 @@ function namingSources(
  * is written as it stands in an unversioned or `scope: package` package.
  * Every other name is Publisher's readable one (domain/table_name.ts), named
  * after `namer` (see namingSources) and placed in the container the name the
- * build source carries gives, if any: a `name=`'s schema or dataset under
- * `scope: version`, or a rollup's namespace.
+ * build source carries gives, if any: a rollup's namespace, or a `name=`'s
+ * schema or dataset under `scope: version`, where the `name=`'s last segment
+ * also takes the place of `<pkg>__<file>__<source>` before the tail.
  */
 function selfTableName(
    compiled: CompiledBuildPlan,
@@ -280,11 +323,12 @@ function selfTableName(
       return written;
    }
    const dot = written.lastIndexOf(".");
+   const prefixed = hasAuthorTableName(compiled, persistSource);
    return readableTableName({
       identity: {
          environmentName: naming.environmentName,
          packageName: naming.packageName,
-         modelPath: modelPathOf(compiled, namer),
+         modelPath: modelPathOf(compiled, namer, naming.packagePath),
          sourceName: namer.name,
          ...(naming.ownedVersion !== undefined
             ? { version: naming.ownedVersion }
@@ -292,9 +336,50 @@ function selfTableName(
       },
       label: labelOf(compiled, namer),
       ...(dot > 0 ? { container: written.slice(0, dot) } : {}),
+      ...(prefixed ? { prefix: written.slice(dot + 1) } : {}),
       dialect: persistSource.dialectName,
       inDestination: !!destination,
    });
+}
+
+/** A readable name's tail: `__p` and 8 hex. */
+const READABLE_TAIL = /__p[0-9a-f]{8}$/;
+
+/**
+ * Whether a table an earlier run of this package built for the same source,
+ * in the same destination, at `recorded`, keeps that name rather than taking
+ * `fresh`: when `recorded` is a readable name this scheme gave it (all
+ * sanitized, ending `__p<8 hex>`, under this run's version, if any), in the
+ * same container. A `name=` under `scope: version` sets the name's prefix, so
+ * its table keeps its name only while that prefix is the same.
+ */
+function keepsReadableName(
+   recorded: string,
+   fresh: string,
+   naming: SelfTableNaming,
+   compiled: CompiledBuildPlan,
+   persistSource: PersistSource,
+): boolean {
+   if (recorded === fresh) return true;
+   const split = (name: string) => {
+      const dot = name.lastIndexOf(".");
+      return { container: name.slice(0, dot + 1), leaf: name.slice(dot + 1) };
+   };
+   const was = split(recorded);
+   const now = split(fresh);
+   if (was.container !== now.container) return false;
+   if (!/^[a-z0-9_]+$/.test(was.leaf) || !READABLE_TAIL.test(was.leaf)) {
+      return false;
+   }
+   const head = (leaf: string) => leaf.replace(READABLE_TAIL, "");
+   if (naming.ownedVersion !== undefined) {
+      const version = `__${readableVersion(naming.ownedVersion)}`;
+      if (!head(was.leaf).endsWith(version)) return false;
+      if (hasAuthorTableName(compiled, persistSource)) {
+         return head(was.leaf) === head(now.leaf);
+      }
+   }
+   return true;
 }
 
 /**
@@ -332,6 +417,40 @@ function previousTableName(
 }
 
 /**
+ * The refusal of a source whose readable table name another source's table
+ * already takes in this run (`table_name_collision`): it is not built, and is
+ * answered live, so two sources never write one table.
+ */
+function tableNameCollision(
+   compiled: CompiledBuildPlan,
+   persistSource: PersistSource,
+   tableName: string,
+   destination: string | undefined,
+): RefusedSource {
+   logger.warn(
+      "Not building a persist source: its table name is another source's",
+      { sourceName: persistSource.name, physicalTableName: tableName },
+   );
+   recordEligibilityRefused("table_name_collision");
+   return refusalRecord(
+      persistSource,
+      new MaterializationEligibilityError({
+         message:
+            `'${persistSource.name}' is not built: its table name ` +
+            `'${tableName}' is another source's table in this run, so it is ` +
+            `answered live.`,
+         reason: "table_name_collision",
+      }),
+      compiled.preaggregatePlans?.[persistSource.sourceID]
+         ? "preaggregate"
+         : destination
+           ? "storage"
+           : "colocated",
+      compiled.sourceModelPaths?.[persistSource.sourceID],
+   );
+}
+
+/**
  * Derive auto-run's own build instructions. Each persist source (respecting
  * `sourceNames`) gets a self-assigned physical name and COPY realization,
  * unless its sourceEntityId is unchanged since `priorEntries`, in which case
@@ -350,7 +469,8 @@ function previousTableName(
  *
  * A source whose readable name is another address's (only a hash collision
  * can do it: the package's collision check refuses every other case before a
- * run) is not built, and serves live: two sources never write one table.
+ * run) is not built, and serves live: two sources never write one table. It
+ * is returned in `refused`, `table_name_collision`.
  */
 export function deriveSelfInstructions(
    compiled: CompiledBuildPlan,
@@ -358,6 +478,11 @@ export function deriveSelfInstructions(
    priorEntries: Record<string, ManifestEntry>,
    incremental?: IncrementalRunContext,
    naming?: SelfTableNaming,
+   /**
+    * Rebuild every source (a scheduled fire, `forceRefresh`): nothing is
+    * carried. `priorEntries` still decide each table's name.
+    */
+   options: { forceRefresh?: boolean } = {},
 ): {
    instructions: BuildInstruction[];
    carried: Record<string, ManifestEntry>;
@@ -381,7 +506,7 @@ export function deriveSelfInstructions(
       compiled,
       include,
    );
-   const namers = namingSources(compiled, sources);
+   const namers = namingSources(compiled, sources, naming?.packagePath);
    const seen = new Set<string>();
    // Readable names this run writes, by where they live, and whose.
    const derived = new Map<string, string>();
@@ -398,13 +523,44 @@ export function deriveSelfInstructions(
          !!naming &&
          naming.ownedVersion === undefined &&
          hasAuthorTableName(compiled, persistSource);
-      const tableName = selfTableName(
+      const prior = priorEntries[sourceEntityId];
+      const sameDestination =
+         !!prior?.physicalTableName &&
+         (prior.storageDestinationName ?? undefined) === destination;
+      const fresh = selfTableName(
          compiled,
          persistSource,
          namers.get(sourceEntityId) ?? persistSource,
          destination,
          naming,
       );
+      // The table an earlier run built under the name Publisher gave it
+      // before readable names (see previousTableName).
+      const previous =
+         naming && sameDestination && !named
+            ? previousTableName(compiled, persistSource, naming)
+            : undefined;
+      const renaming =
+         previous !== undefined &&
+         prior!.physicalTableName === previous &&
+         previous !== fresh;
+      // Sticky: a table an earlier run built under a readable name keeps it,
+      // so a moved or renamed file, or a source that comes to share the
+      // address, does not rebuild it under another (see keepsReadableName).
+      const tableName =
+         naming &&
+         !named &&
+         sameDestination &&
+         !renaming &&
+         keepsReadableName(
+            prior!.physicalTableName,
+            fresh,
+            naming,
+            compiled,
+            persistSource,
+         )
+            ? prior!.physicalTableName
+            : fresh;
       if (naming && !named) {
          const key = tableKeyOf(
             persistSource.connectionName,
@@ -413,10 +569,13 @@ export function deriveSelfInstructions(
          );
          const holder = derived.get(key);
          if (holder !== undefined && holder !== sourceEntityId) {
-            logger.warn(
-               "Not building a persist source: its table name is another source's",
-               { sourceName: persistSource.name, physicalTableName: tableName },
+            refused[persistSource.sourceID] = tableNameCollision(
+               compiled,
+               persistSource,
+               tableName,
+               destination,
             );
+            cleared.delete(persistSource.sourceID);
             continue;
          }
          derived.set(key, sourceEntityId);
@@ -433,23 +592,11 @@ export function deriveSelfInstructions(
             sourceEntityId,
          }) !== undefined;
 
-      const prior = priorEntries[sourceEntityId];
-      const sameDestination =
-         !!prior?.physicalTableName &&
-         (prior.storageDestinationName ?? undefined) === destination;
-      // The table an earlier run built under the name Publisher gave it
-      // before readable names. An incremental source keeps it until it is
-      // reseeded: moving it would force a full re-seed, the costliest build
-      // there is. Any other source is rebuilt under its readable name, and
-      // the old table reclaimed once the run commits.
-      const previous =
-         naming && sameDestination && !named
-            ? previousTableName(compiled, persistSource, naming)
-            : undefined;
-      const renaming =
-         previous !== undefined &&
-         prior!.physicalTableName === previous &&
-         previous !== tableName;
+      // An incremental source keeps a table named before readable names
+      // until it is reseeded: its ledger is keyed by the table's name, so
+      // moving it would re-seed it in full, the costliest build there is.
+      // Any other source is rebuilt under its readable name, and the old
+      // table reclaimed once the run commits and is served.
       const logicalName =
          renaming && deltaEligible && !incremental?.forceRefresh
             ? previous
@@ -477,6 +624,7 @@ export function deriveSelfInstructions(
       // this run commits.
       if (
          !deltaEligible &&
+         !options.forceRefresh &&
          sameDestination &&
          samePath(
             prior!.physicalTableName,

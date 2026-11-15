@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    fileSegment,
+   fitPrefix,
    fitReadable,
    leafBudget,
    namesBefore,
@@ -156,6 +157,18 @@ describe("the prefix shared with the control plane", () => {
          expect(controlPlanePrefix(row)).toBe(row.prefix);
       });
    }
+
+   it("a name= sets the prefix: its last segment, sanitized, then cut to the room", () => {
+      // The control plane's room for a 1.2.0 version on Postgres: 50 less
+      // `__v1_2_0` and its 20-character tail.
+      expect(fitPrefix("summary_t", 22)).toBe("summary_t");
+      expect(fitPrefix("Big-Orders_Summary_Daily_Rollup_Table", 22)).toBe(
+         "big_orders_summary_dai",
+      );
+      // A cut that ends on `_` drops it.
+      expect(fitPrefix("orders_summary_x", 7)).toBe("orders");
+      expect(fitPrefix("2024 Totals", 50)).toBe("t2024_totals");
+   });
 
    it("a persisted view reads source_view", () => {
       expect(sourceLabel("orders__by_month__view")).toBe("orders__by_month");

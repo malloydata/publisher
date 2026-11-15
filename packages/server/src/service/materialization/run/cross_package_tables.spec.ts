@@ -45,7 +45,7 @@ const WAREHOUSE = {
 
 /** The table a package's auto-run builds `summary` into. */
 const summaryTable = (packageName: string) =>
-   autoRunTableName(ENV, packageName, "summary");
+   autoRunTableName(ENV, packageName, "summary", { modelPath: "model.malloy" });
 
 function model(who: string): string {
    return [

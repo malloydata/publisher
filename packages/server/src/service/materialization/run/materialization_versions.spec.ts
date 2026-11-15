@@ -49,7 +49,11 @@ const PKG = "sales";
 
 /** The table a `scope: version` version builds `summary` into. */
 const versionTable = (version: string, packageName = PKG) =>
-   autoRunTableName(ENV, packageName, "summary", { version });
+   autoRunTableName(ENV, packageName, "summary", {
+      modelPath: "model.malloy",
+      version,
+      prefix: "summary",
+   });
 const TABLE_V1 = versionTable("1.0.0");
 const TABLE_V2 = versionTable("2.0.0");
 

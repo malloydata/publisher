@@ -237,15 +237,32 @@ export function namesBefore(
 }
 
 /**
+ * A `name=`'s leaf as a name's prefix: sanitized as a segment
+ * ({@link readableSegment}) and cut from its end to `room`, a trailing `_`
+ * trimmed. Deterministic.
+ */
+export function fitPrefix(prefix: string, room: number): string {
+   const s = readableSegment(prefix);
+   if (s.length <= room) return s;
+   const c = s.slice(0, Math.max(1, room)).replace(/_+$/, "");
+   return c === "" ? s.slice(0, 1) : c;
+}
+
+/**
  * The readable name of the table `identity` names, after the source `label`
  * reads ({@link sourceLabel}): `container`, if any, then
  * `<pkg>__<file>__<source>` fitted to the dialect's budget, `__v<ver>` for a
  * `scope: version` table, and `__p` with 8 hex of the identity's hash.
+ *
+ * A `prefix` (the leaf of a `name=` that does not name the table outright,
+ * under `scope: version`) takes the place of `<pkg>__<file>__<source>`,
+ * sanitized and fitted the same way; the tail is never cut.
  */
 export function readableTableName(args: {
    identity: TableIdentity;
    label: string;
    container?: string;
+   prefix?: string;
    dialect: string | undefined;
    inDestination: boolean;
 }): string {
@@ -271,11 +288,14 @@ export function readableTableName(args: {
       1,
       leafBudget(args.dialect, args.inDestination) - tail.length,
    );
-   const readable = fitReadable(
-      readableSegment(identity.packageName),
-      fileSegment(identity.modelPath),
-      readableSegment(args.label),
-      room,
-   );
+   const readable =
+      args.prefix !== undefined
+         ? fitPrefix(args.prefix, room)
+         : fitReadable(
+              readableSegment(identity.packageName),
+              fileSegment(identity.modelPath),
+              readableSegment(args.label),
+              room,
+           );
    return `${args.container ? `${args.container}.` : ""}${readable}${tail}`;
 }

@@ -56,7 +56,13 @@ const versionTable = (
    version: string,
    packageName = PKG,
    base = "summary",
-) => autoRunTableName(environmentName, packageName, base, { version });
+) =>
+   autoRunTableName(environmentName, packageName, base, {
+      modelPath: "model.malloy",
+      version,
+      // Each source is declared with `persist name="<base>"`.
+      prefix: base,
+   });
 
 /**
  * A package whose persisted `summary` answers `answer`; with `detail`, a

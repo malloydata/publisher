@@ -131,7 +131,7 @@ describe("auto-run's table names", () => {
       expect(other.a2).toBe("named_t");
    });
 
-   it("under scope: version, show the version and keep only a name='s container", () => {
+   it("under scope: version, show the version, and let a name= set the prefix, schema included", () => {
       const r = deriveSelfInstructions(
          compiled(),
          undefined,
@@ -140,10 +140,44 @@ describe("auto-run's table names", () => {
          V120,
       );
       expect(names(r).a1).toMatch(/^pa__sales__summary__v1_2_0__p[0-9a-f]{8}$/);
-      expect(names(r).a2).toMatch(/^pa__sales__named__v1_2_0__p[0-9a-f]{8}$/);
-      expect(names(r).a3).toMatch(
-         /^analytics\.pa__sales__qualified__v1_2_0__p[0-9a-f]{8}$/,
+      // name="named_t": the prefix, then the tail.
+      expect(names(r).a2).toMatch(/^named_t__v1_2_0__p[0-9a-f]{8}$/);
+      // name="analytics.q_t": the schema, the prefix, then the tail.
+      expect(names(r).a3).toMatch(/^analytics\.q_t__v1_2_0__p[0-9a-f]{8}$/);
+   });
+
+   it("unversioned and under scope: package, a name= is the exact name, schema included", () => {
+      // A scope: package version's run names its tables as an unversioned
+      // package's does: no owned version.
+      const r = names(
+         deriveSelfInstructions(compiled(), undefined, {}, undefined, PKG),
       );
+      expect(r.a2).toBe("named_t");
+      expect(r.a3).toBe("analytics.q_t");
+   });
+
+   it("sanitize a name= prefix and cut it, never the tail, to fit the budget", () => {
+      const c = compiledWith(
+         {
+            s: fakeSource({
+               name: "s",
+               sourceEntityId: "a1",
+               dialectName: "postgres",
+               annotationFields: { name: `analytics.Big-${"x".repeat(60)}` },
+            }),
+         },
+         [["s"]],
+      );
+      const name = (n: SelfTableNaming) =>
+         deriveSelfInstructions(c, undefined, {}, undefined, n).instructions[0]
+            .physicalTableName;
+      const versioned = name(V120);
+      expect(versioned).toMatch(/^analytics\.big_x+__v1_2_0__p[0-9a-f]{8}$/);
+      expect(versioned.slice("analytics.".length)).toHaveLength(50);
+      // Deterministic.
+      expect(name(V120)).toBe(versioned);
+      // Unversioned, the name= stands as written.
+      expect(name(PKG)).toBe(`analytics.Big-${"x".repeat(60)}`);
    });
 
    it("fit the dialect's budget", () => {
@@ -283,12 +317,8 @@ describe("a #(materialize) table's name", () => {
          undefined,
          V120,
       );
-      expect(names(versioned).a2).toMatch(
-         /^pa__sales__named__v1_2_0__p[0-9a-f]{8}$/,
-      );
-      expect(names(versioned).a3).toMatch(
-         /^analytics\.pa__sales__qualified__v1_2_0__p/,
-      );
+      expect(names(versioned).a2).toMatch(/^named_t__v1_2_0__p[0-9a-f]{8}$/);
+      expect(names(versioned).a3).toMatch(/^analytics\.q_t__v1_2_0__p/);
    });
 });
 
@@ -502,6 +532,19 @@ describe("a table named before readable names", () => {
          expect(kept.renamed).toEqual([]);
       });
 
+      it("keeps its old name on a scheduled fire (forceRefresh), so its ledger is not lost", () => {
+         const scheduled = deriveSelfInstructions(
+            c,
+            undefined,
+            priorEntries,
+            context(false),
+            PKG,
+            { forceRefresh: true },
+         );
+         expect(scheduled.instructions[0].physicalTableName).toBe(legacy);
+         expect(scheduled.renamed).toEqual([]);
+      });
+
       it("moves to its readable name when reseeded, and its old table is offered", () => {
          const moved = deriveSelfInstructions(
             c,
@@ -535,5 +578,170 @@ describe("two sources whose readable names meet", () => {
       const r = deriveSelfInstructions(c, undefined, {}, undefined, PKG);
       expect(r.instructions.map((i) => i.sourceEntityId)).toEqual(["a1"]);
       expect(r.carried).toEqual({});
+      // Refused, with its own reason, so the run's record says why.
+      expect(r.refused.orders).toMatchObject({
+         reason: "table_name_collision",
+         tier: "colocated",
+         modelPath: "m.malloy",
+      });
+   });
+});
+
+describe("a source's file", () => {
+   /** `name`, declared in `file` (a URL path), under package root `/pkg`. */
+   const declared = (name: string, file: string, sourceEntityId: string) =>
+      Object.assign(fakeSource({ name, sourceEntityId }), {
+         sourceID: `${name}@file://${file}`,
+      });
+   const naming: SelfTableNaming = { ...PKG, packagePath: "/pkg" };
+
+   it("is the model that declares it, whatever model imports it or in what order", () => {
+      const build = (lastImporter: string, order: string[]) => {
+         const orders = declared("orders", "/pkg/models/a.malloy", "a1");
+         return deriveSelfInstructions(
+            {
+               ...compiledWith({ orders }, [order]),
+               // The plan's path as the last importing model left it.
+               sourceModelPaths: { [orders.sourceID]: lastImporter },
+            },
+            undefined,
+            {},
+            undefined,
+            naming,
+         ).instructions[0].physicalTableName;
+      };
+      const name = build("models/z_imports_a.malloy", ["orders"]);
+      expect(name).toMatch(/^pa__a__orders__p[0-9a-f]{8}$/);
+      expect(build("models/b_imports_a.malloy", ["orders"])).toBe(name);
+      expect(build("models/a.malloy", ["orders"])).toBe(name);
+   });
+
+   it("reads a percent-encoded path, and a generated companion as its author's file", () => {
+      const spaced = declared("orders", "/pkg/my%20models/b%20c.malloy", "a1");
+      const view = declared(
+         "orders__by_month__view",
+         "/pkg/m.malloy.persist-view.malloy",
+         "a2",
+      );
+      const r = names(
+         deriveSelfInstructions(
+            compiledWith({ spaced, view }, [["spaced", "view"]]),
+            undefined,
+            {},
+            undefined,
+            naming,
+         ),
+      );
+      expect(r.a1).toMatch(/^pa__b_c__orders__p[0-9a-f]{8}$/);
+      expect(r.a2).toMatch(/^pa__m__orders_by_month__p[0-9a-f]{8}$/);
+   });
+
+   it("names a shared table by the declaring paths, not the importers'", () => {
+      const zeta = declared("zeta", "/pkg/a.malloy", "a1");
+      const alpha = declared("alpha", "/pkg/b.malloy", "a1");
+      const r = deriveSelfInstructions(
+         {
+            ...compiledWith({ zeta, alpha }, [["alpha", "zeta"]]),
+            // Recorded the other way round by the importers.
+            sourceModelPaths: {
+               [zeta.sourceID]: "z.malloy",
+               [alpha.sourceID]: "a.malloy",
+            },
+         },
+         undefined,
+         {},
+         undefined,
+         naming,
+      );
+      expect(names(r).a1).toMatch(/^pa__a__zeta__p/);
+   });
+});
+
+describe("a table built under a readable name", () => {
+   it("keeps it when its file moves or a source with a smaller name comes to share it", () => {
+      const now = names(
+         deriveSelfInstructions(compiled(), undefined, {}, undefined, PKG),
+      );
+      // Built when the source lived in another file.
+      const recorded = "pa__old_file__summary__p0123abcd";
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a1: prior(recorded, "a1") },
+         undefined,
+         PKG,
+      );
+      expect(r.carried.a1.physicalTableName).toBe(recorded);
+      expect(now.a1).not.toBe(recorded);
+   });
+
+   it("takes the new name when its container or its name= prefix changes", () => {
+      // A rollup's namespace moved.
+      const moved = deriveSelfInstructions(
+         withRollup(compiled()),
+         undefined,
+         { a4: prior("old_ns.pa__sales__orders_by_category__p0123abcd", "a4") },
+         undefined,
+         PKG,
+      );
+      expect(names(moved).a4).toMatch(/^ns\.pa__sales__orders_by_category__p/);
+      // Under scope: version, a name= changed from `old_t` to `named_t`.
+      const renamedPrefix = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a2: prior("old_t__v1_2_0__p0123abcd", "a2") },
+         undefined,
+         V120,
+      );
+      expect(names(renamedPrefix).a2).toMatch(/^named_t__v1_2_0__p/);
+      // The same prefix, its file moved: kept.
+      const kept = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a2: prior("named_t__v1_2_0__p0123abcd", "a2") },
+         undefined,
+         V120,
+      );
+      expect(kept.carried.a2.physicalTableName).toBe(
+         "named_t__v1_2_0__p0123abcd",
+      );
+   });
+});
+
+describe("a forced refresh (every scheduled fire)", () => {
+   it("carries nothing, and still names each table from the run before", () => {
+      const now = names(
+         deriveSelfInstructions(compiled(), undefined, {}, undefined, PKG),
+      );
+      const recorded = "pa__old_file__summary__p0123abcd";
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         {
+            a1: prior(recorded, "a1"),
+            a3: prior(`qualified${LEGACY_PKG}`, "a3"),
+         },
+         undefined,
+         PKG,
+         { forceRefresh: true },
+      );
+      expect(r.carried).toEqual({});
+      // Rebuilt in place under its recorded readable name.
+      expect(names(r).a1).toBe(recorded);
+      expect(now.a1).not.toBe(recorded);
+   });
+
+   it("offers a table named before readable names for reclaim", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a1: prior(`summary${LEGACY_PKG}`, "a1") },
+         undefined,
+         PKG,
+         { forceRefresh: true },
+      );
+      expect(r.renamed.map((t) => t.previousName)).toEqual([
+         `summary${LEGACY_PKG}`,
+      ]);
    });
 });

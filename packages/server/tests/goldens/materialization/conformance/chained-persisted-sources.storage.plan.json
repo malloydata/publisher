@@ -51,8 +51,8 @@
       }
     },
     "sourceModelPaths": {
-      "orders_base@<pkg>/base.malloy": "rollup.malloy",
-      "orders_rollup@<pkg>/base.malloy": "rollup.malloy",
+      "orders_base@<pkg>/base.malloy": "base.malloy",
+      "orders_rollup@<pkg>/base.malloy": "base.malloy",
       "orders_rollup_x@<pkg>/rollup.malloy": "rollup.malloy"
     }
   },
@@ -126,7 +126,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "rollup.malloy",
+        "modelPath": "base.malloy",
         "name": "orders_base",
         "origin": "persist",
         "preaggregate": null,
@@ -158,7 +158,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "rollup.malloy",
+        "modelPath": "base.malloy",
         "name": "orders_rollup",
         "origin": "persist",
         "preaggregate": null,

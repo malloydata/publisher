@@ -71,7 +71,7 @@ import {
    withChainBuildText,
 } from "./materialization_run_support";
 import { packageOwner } from "./table_mark_sql";
-import { Reclaimer } from "./reclaimer";
+import { Reclaimer, RENAMED_TABLES_KEY } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
 import {
    buildKindOf,
@@ -765,15 +765,16 @@ export class MaterializationService {
             }
          } else {
             // Skip-if-unchanged: reuse tables from the most recent manifest for
-            // sources whose sourceEntityId is unchanged.
-            const priorEntries = opts.forceRefresh
-               ? {}
-               : await this.getMostRecentManifestEntries(
-                    environmentId,
-                    packageName,
-                    id,
-                    reader,
-                 );
+            // sources whose sourceEntityId is unchanged. Read under
+            // `forceRefresh` too, where nothing is carried: the entries still
+            // decide each table's name (an incremental source keeps the name
+            // its ledger is keyed by, a readable name stays put).
+            const priorEntries = await this.getMostRecentManifestEntries(
+               environmentId,
+               packageName,
+               id,
+               reader,
+            );
             let recheck: Record<string, BuildInstruction>;
             ({
                instructions,
@@ -790,8 +791,10 @@ export class MaterializationService {
                {
                   environmentName,
                   packageName,
+                  packagePath: pkg.getPackagePath(),
                   ...(owned !== undefined ? { ownedVersion: owned } : {}),
                },
+               { forceRefresh: opts.forceRefresh ?? false },
             ));
             // A carried table at the author's `name=` is reused only while
             // it is still marked as this package's (table_ownership.ts).
@@ -991,6 +994,9 @@ export class MaterializationService {
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
          await this.commitManifest(id, entries, failures, {
+            // Recorded before any is dropped, so a crash between this commit
+            // and the drops leaves them for the next run to finish.
+            ...(renamed.length > 0 ? { [RENAMED_TABLES_KEY]: renamed } : {}),
             forceRefresh: opts.forceRefresh,
             sourceNames: opts.sourceNames ?? null,
             mode,
@@ -1028,8 +1034,9 @@ export class MaterializationService {
 
          // Auto-run owns distribution; orchestrated leaves it to the caller
          // (manifestLocation).
+         let bound = false;
          if (!orchestrated) {
-            await this.autoLoadManifest(
+            bound = await this.autoLoadManifest(
                environment,
                packageName,
                entries,
@@ -1042,21 +1049,31 @@ export class MaterializationService {
             // binds only what its own definition built, and serves live what
             // this run rebuilt from a different one (see
             // Package.bindStorageServeBindings).
-            await this.committer.rebindLoadedVersions(
-               environmentName,
-               packageName,
-               versionId,
-            );
+            bound =
+               (await this.committer.rebindLoadedVersions(
+                  environmentName,
+                  packageName,
+                  versionId,
+               )) && bound;
          }
-         // Once nothing loaded reads them, the tables readable names replaced.
+         // Once nothing loaded reads them, the tables readable names replaced
+         // (this run's, and any an earlier run could not finish). Only after
+         // every loaded copy is bound to this run: one that failed to rebind
+         // still reads the old table.
          if (!orchestrated) {
-            await this.reclaimer.reclaimRenamedTables(
-               environmentName,
-               packageName,
-               id,
-               reader,
-               renamed,
-            );
+            if (bound) {
+               await this.reclaimer.reclaimRenamedTables(
+                  environmentName,
+                  packageName,
+                  id,
+                  reader,
+               );
+            } else if (renamed.length > 0) {
+               logger.warn(
+                  "Keeping the tables readable names replaced: the package did not bind to this run",
+                  { packageName, tables: renamed.map((t) => t.previousName) },
+               );
+            }
          }
 
          // Carried forward, so never in the build loop: counted once the run
@@ -1215,7 +1232,7 @@ export class MaterializationService {
    /** See {@link ManifestCommitter.autoLoad}. */
    private autoLoadManifest(
       ...args: Parameters<ManifestCommitter["autoLoad"]>
-   ): Promise<void> {
+   ): Promise<boolean> {
       return this.committer.autoLoad(...args);
    }
 

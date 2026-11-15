@@ -51,6 +51,7 @@ const MODEL = [
 
 describe("a table named before readable names", () => {
    let root: string;
+   let envPath: string;
    let db: DuckDBConnection;
    let repo: ResourceRepository;
    let env: Environment;
@@ -64,7 +65,7 @@ describe("a table named before readable names", () => {
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "readable-name-migration-")),
       );
-      const envPath = path.join(root, "env");
+      envPath = path.join(root, "env");
       fs.mkdirSync(envPath);
       writePackageFiles(
          path.join(envPath, PKG),
@@ -244,5 +245,38 @@ describe("a table named before readable names", () => {
       const m = await build();
       expect(m.status).toBe("MANIFEST_FILE_READY");
       expect(await tables()).toContain(LEGACY);
+   });
+
+   it("names a table, and plans its source, by the model that declares it, whatever imports it", async () => {
+      const importer = (name: string) =>
+         fs.writeFileSync(
+            path.join(envPath, PKG, name),
+            [
+               "##! experimental.persistence",
+               'import "model.malloy"',
+               "query: everyone is summary -> { select: who }",
+               "",
+            ].join("\n"),
+         );
+      const plannedPaths = async () =>
+         Object.values(
+            (await env.getPackage(parsePackageName(PKG), true)).getBuildPlan()!
+               .sources,
+         ).map((source) => source.modelPath);
+
+      // An importer that sorts after the declaring model.
+      importer("z_imports.malloy");
+      expect(await plannedPaths()).toEqual(["model.malloy"]);
+      const first = await build();
+      const [name] = readableNames(first);
+      expect(name).toMatch(/^pa__model__summary__p[0-9a-f]{8}$/);
+
+      // Another that sorts before it, and the first one gone.
+      fs.rmSync(path.join(envPath, PKG, "z_imports.malloy"));
+      importer("0_imports.malloy");
+      expect(await plannedPaths()).toEqual(["model.malloy"]);
+      const second = await build();
+      expect(readableNames(second)).toEqual([name]);
+      expect(await tables()).toEqual([name]);
    });
 });

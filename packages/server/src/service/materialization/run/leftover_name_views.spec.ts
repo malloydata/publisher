@@ -69,7 +69,10 @@ const WAREHOUSE = {
 
 /** The table a `scope: version` version builds `summary` into. */
 const versionTable = (version: string) =>
-   autoRunTableName(ENV, PKG, "summary", { version });
+   autoRunTableName(ENV, PKG, "summary", {
+      modelPath: "model.malloy",
+      version,
+   });
 
 function materializeModel(answer: number): string {
    return [
@@ -337,10 +340,14 @@ describe("leftover name= views through real builds", () => {
       await publish("2.0.0", 2, "version", named);
       const versioned = await build({ versionId: VersionRef.parse("2.0.0") });
       expect(versioned.status).toBe("MANIFEST_FILE_READY");
-      // The version's own table: its readable name, which name= only places.
-      expect(await tables()).toEqual(
-         ["summary_t", versionTable("2.0.0")].sort(),
-      );
+      // The version's own table: name= is its prefix, then the version's tail.
+      const versionedTable = autoRunTableName(ENV, PKG, "summary", {
+         modelPath: "model.malloy",
+         version: "2.0.0",
+         prefix: "summary_t",
+      });
+      expect(versionedTable).toMatch(/^summary_t__v2_0_0__p[0-9a-f]{8}$/);
+      expect(await tables()).toEqual(["summary_t", versionedTable].sort());
       expect(await views()).toEqual([]);
       expect(nameViewsIn(versioned.metadata)).toEqual([]);
    });

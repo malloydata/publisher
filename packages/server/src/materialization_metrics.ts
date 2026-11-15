@@ -211,7 +211,8 @@ export type EligibilityRefusalReason =
    | "read_only_dialect"
    | "env_reference"
    | "rollup_name_collision"
-   | "empty_storage";
+   | "empty_storage"
+   | "table_name_collision";
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
@@ -402,7 +403,7 @@ const eligibilityRefusedCounter = lazyCounter(
       "'dynamic_join'|'dynamic_joined_where'|'inherited_where_with_given'|" +
       "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
       "'authorize'|'not_duckdb_portable'|" +
-      "'public_surface_unknown'|'read_only_dialect'). 'given' is retained on the enum for records " +
+      "'public_surface_unknown'|'read_only_dialect'|'table_name_collision'). 'given' is retained on the enum for records " +
       "that carry it and is no longer produced: where a given sits decides the " +
       "outcome, so one reason covering every placement cannot be raised. The " +
       "three 'partition_*' reasons are likewise retained and no longer produced: " +

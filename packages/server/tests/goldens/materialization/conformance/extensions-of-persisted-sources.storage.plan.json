@@ -72,9 +72,9 @@
       }
     },
     "sourceModelPaths": {
-      "base_daily@<pkg>/m.malloy": "other.malloy",
-      "ext1@<pkg>/m.malloy": "other.malloy",
-      "ext2@<pkg>/m.malloy": "other.malloy",
+      "base_daily@<pkg>/m.malloy": "m.malloy",
+      "ext1@<pkg>/m.malloy": "m.malloy",
+      "ext2@<pkg>/m.malloy": "m.malloy",
       "ext_joined@<pkg>/joined.malloy": "joined.malloy",
       "ext_other@<pkg>/other.malloy": "other.malloy"
     }
@@ -186,7 +186,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "other.malloy",
+        "modelPath": "m.malloy",
         "name": "base_daily",
         "origin": "persist",
         "preaggregate": null,
@@ -230,7 +230,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "other.malloy",
+        "modelPath": "m.malloy",
         "name": "ext1",
         "origin": "persist",
         "preaggregate": null,
@@ -274,7 +274,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "other.malloy",
+        "modelPath": "m.malloy",
         "name": "ext2",
         "origin": "persist",
         "preaggregate": null,
