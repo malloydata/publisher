@@ -583,7 +583,16 @@ export class MaterializationService {
          return created;
       };
 
-      if (version === null || !versions) return start();
+      // An unversioned package's run is created under the package's lock,
+      // which a rebind from the store holds across its read and its bind
+      // (Environment.rebindPackageFromStore, and a load's): the read either
+      // sees this run active, and so binds no key check of a table it may
+      // rewrite (uncontestedAutoRun), or the bind lands first, and this run
+      // forgets what it bound before writing.
+      if (version === null) {
+         return environment.withPackageLock(packageName, start);
+      }
+      if (!versions) return start();
       // A version's run starts under that version's lock, which an archive
       // also takes: either the archive commits first and this answers 410, or
       // the run is registered first and the archive answers 409

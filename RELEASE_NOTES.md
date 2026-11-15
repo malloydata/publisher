@@ -21,11 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — a pair table's counts through its inlined join are served from the table again
+## [Unreleased] — a published version serves pair-table counts and joins to rollups from its tables again
 
-On a published package version (the default since package versions turned on), a `#(materialize) inline=[...]` pair table answered live, not from its table, for every `count()`, `sum` or `avg` through the inlined join: the path report gave `COUNT_SEMANTICS` ("a count, sum or average through the inlined join whose key is not known unique and never null"). The rows were right, since live answered, but the table was never used for those queries, on `storage=` and colocated tables alike.
+On a published package version (the default since package versions turned on), queries that depend on a key check the build records were answered live, not from their tables:
 
-The build checked the joined source's key and recorded the result, and the run's own load used it, but the rebind of the version that follows every run read the store without that result, and replaced the binding with one that knew nothing of the key. The rebind now carries the same key checks a package load reads from the store, under the same rule: only from the newest run, when no other run could have written its tables since. A key the check found held twice or NULL, a check that did not run, or a run another could have overtaken still answers live. No API, enum or metric value changes.
+- a `#(materialize) inline=[...]` pair table, for every `count()`, `sum` or `avg` through the inlined join (the path report gave `COUNT_SEMANTICS`: "a count, sum or average through the inlined join whose key is not known unique and never null"), on `storage=` and colocated tables alike;
+- a join to a `#(preaggregate)` rollup in a storage destination (known limitation 29, #1704), which needs the rollup's key and the stored source's key checked.
+
+The rows were right, since live answered, but the tables were never used for those queries. The build checked each key and recorded the result, and the run's own load used it, but the rebind of the version that follows every run read the store without those results, and replaced the bindings with ones that knew nothing of the keys. The rebind now reads the store the way a package load does, under the same rule: only from the newest run, when no other run could have written its tables since. A key the check found held twice or NULL, a check that did not run, or a run another could have overtaken still answers live.
+
+An unversioned package now creates a run under the package's lock, which every read of the store and the bind after it hold: a load, a reload, and the rebind after a run or a delete. Before, a refresh that started between a load's read and its bind could have a key check taken over the table's old rows bound over its new ones. No API, enum or metric value changes.
 
 ## [Unreleased] — `GET /status` answers from a snapshot, and never loads a package
 

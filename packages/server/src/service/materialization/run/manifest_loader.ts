@@ -108,10 +108,12 @@ export async function fetchManifestEntries(
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
    source: string,
-   // Only a bind from Publisher's own store reads a rollup key record
-   // (withRollupKeyRecords); a host's manifest is never trusted with one.
-   readKeyUniqueness = false,
+   // Where the entries came from. Only Publisher's own store is read for a
+   // key check record (withRollupKeyRecords); a host's manifest is never
+   // trusted with one.
+   from: "store" | "host" = "host",
 ): FetchedManifest {
+   const readKeyUniqueness = from === "store";
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {

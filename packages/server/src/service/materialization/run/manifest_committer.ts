@@ -11,8 +11,9 @@ import { errMessage } from "../../../utils";
 import { parseEnvironmentName } from "../../identity";
 import { resolveEnvironmentId } from "../../resolve_environment";
 import {
-   newestServingEntries,
    ServingReader,
+   storageBindingResolverFor,
+   storedServingEntries,
    SUPERSEDED_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
@@ -349,40 +350,32 @@ export class ManifestCommitter {
       excludeId: string,
       reader: ServingReader = {},
    ): Promise<Record<string, ManifestEntry>> {
-      const list = await this.runsFor(environmentId, packageName, reader);
-      return servingEntriesOf(list, reader, excludeId);
-   }
-
-   /**
-    * The entries a rebind binds: {@link mostRecentEntries}, each with the
-    * key checks the newest run stands behind (`withRollupKeyRecords`), as a
-    * load binds them from the store (`storageBindingResolverFor`). Without
-    * them a rebind after the run would drop what its own load bound, and a
-    * served copy would read every recorded key as unknown.
-    */
-   private async boundEntries(
-      environmentId: string,
-      packageName: string,
-      reader: ServingReader = {},
-   ): Promise<Record<string, ManifestEntry>> {
-      const list = await this.runsFor(environmentId, packageName, reader);
-      // "" excludes nothing — a deleted record is already gone.
-      return withRollupKeyRecords(servingEntriesOf(list, reader, ""), list);
-   }
-
-   /** The runs `reader` reads (see newestServingEntries). */
-   private async runsFor(
-      environmentId: string,
-      packageName: string,
-      reader: ServingReader,
-   ) {
-      return (
+      const list =
          (await this.repository.listMaterializations(
             environmentId,
             packageName,
             reader.owned !== undefined ? { version: reader.owned } : undefined,
-         )) ?? []
-      );
+         )) ?? [];
+      return storedServingEntries(list, reader, excludeId);
+   }
+
+   /**
+    * The entries a rebind binds, read as a package load reads them
+    * (`storageBindingResolverFor`): each with the key checks the newest run
+    * stands behind (`withRollupKeyRecords`). Without them a rebind after a
+    * run would drop what the run's own load bound, and the served copy would
+    * read every recorded key as unknown.
+    */
+   private boundEntries(
+      environmentId: string,
+      packageName: string,
+      reader: ServingReader = {},
+   ): Promise<Record<string, ManifestEntry>> {
+      return storageBindingResolverFor(
+         this.repository,
+         environmentId,
+         withRollupKeyRecords,
+      )(packageName, reader);
    }
 
    /**
@@ -591,26 +584,27 @@ export class ManifestCommitter {
             continue;
          }
          try {
-            const entries = await this.boundEntries(environmentId, packageName);
-            const { tableNameManifest, storageEntries } = splitManifestEntries(
-               entries,
-               `rebind (package ${packageName})`,
-               true,
-            );
-            // Colocated: re-derive (or clear) regardless of mode.
-            await environment.bindPackageColocatedServeManifest(
-               packageName,
-               tableNameManifest,
-               versionId,
-            );
-            // Storage=: only meaningful when the tier is not off.
-            if (getPersistStorageMode() !== "off") {
-               await environment.bindPackageStorageServeBindings(
-                  packageName,
-                  storageEntries,
-                  versionId,
-               );
-            }
+            // Read and bound under the package's lock, which an unversioned
+            // run is created under too: a run created before the read is
+            // active, so the read binds no key check of a table it may be
+            // rewriting (uncontestedAutoRun); one created after the bind
+            // forgets what was bound before it writes.
+            await environment.rebindPackageFromStore(packageName, async () => {
+               const { tableNameManifest, storageEntries } =
+                  splitManifestEntries(
+                     await this.boundEntries(environmentId, packageName),
+                     `rebind (package ${packageName})`,
+                     "store",
+                  );
+               return {
+                  // Colocated: re-derive (or clear) regardless of mode.
+                  colocated: tableNameManifest,
+                  // Storage=: only meaningful when the tier is not off.
+                  ...(getPersistStorageMode() !== "off"
+                     ? { storage: storageEntries }
+                     : {}),
+               };
+            });
          } catch (err) {
             rebound = false;
             logger.warn(
@@ -645,23 +639,4 @@ export function referenceManifestToEntries(
       };
    }
    return entries;
-}
-
-/**
- * The newest serving entries of `runs` for `reader`, but `excludeId`'s.
- * Legacy tolerance, removable with `ManifestEntry.error`: manifests from
- * 0.0.245-0.0.246 record failed sources among their entries. Reusing one
- * would never retry the source and would seed a downstream from a table that
- * was never created.
- */
-function servingEntriesOf(
-   runs: Parameters<typeof newestServingEntries>[0],
-   reader: ServingReader,
-   excludeId: string,
-): Record<string, ManifestEntry> {
-   return Object.fromEntries(
-      Object.entries(newestServingEntries(runs, reader, excludeId)).filter(
-         ([, entry]) => !isLegacyFailedEntry(entry),
-      ),
-   );
 }

@@ -176,8 +176,20 @@ describe("deleteMaterialization", () => {
                .resolves({ getMalloyConnection: async () => ({}) }),
             getApiConnection: () => ({ name: "lake", type: "duckdb" }),
             getEnvironmentPath: () => "/test",
-            bindPackageStorageServeBindings: storageSpy,
-            bindPackageColocatedServeManifest: colocatedSpy,
+            // What the rebind read binds: colocated always, storage= when
+            // the read returns it.
+            rebindPackageFromStore: async (
+               packageName: string,
+               read: () => Promise<{
+                  colocated: unknown;
+                  storage?: unknown;
+               }>,
+            ) => {
+               const { colocated, storage } = await read();
+               await colocatedSpy(packageName, colocated);
+               if (storage !== undefined)
+                  await storageSpy(packageName, storage);
+            },
          });
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
