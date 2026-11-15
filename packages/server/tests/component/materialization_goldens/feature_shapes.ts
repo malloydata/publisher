@@ -817,6 +817,47 @@ source: v1_rollups is orders_raw extend {
          },
       ],
    },
+   {
+      // Texts two readings of Malloy tell apart, where the rewriters read
+      // them: non-ASCII names and a `"""` block with a `%{ … }`, each on a
+      // stored source the served copy re-roots. (A backtick name with an
+      // escape does not compile as a source name; the lexer corpus pins it.)
+      name: "lexer edges",
+      files: {
+         "m.malloy": `##! experimental { persistence }
+import "raw.malloy"
+
+#@ persist storage="lake"
+source: café is orders_raw -> { group_by: region; aggregate: größe is count() } extend {
+  measure: summe is größe.sum()
+}
+
+#(materialize) storage="lake" name="orders_cjk"
+source: 注文 is orders_raw extend {
+  dimension: 地域 is region
+  measure: 件数 is count()
+}
+
+#@ persist storage="lake"
+source: via_sql is duckdb.sql("""select * from %{ orders_raw -> { select: region, amount } }""") -> { group_by: region; aggregate: total is amount.sum() }
+`,
+         ...raw,
+      },
+      queries: [
+         {
+            name: "a non-ASCII source and field",
+            malloy: "run: café -> { group_by: region; aggregate: summe }",
+         },
+         {
+            name: "a CJK source, dimension and measure",
+            malloy: "run: 注文 -> { group_by: 地域; aggregate: 件数 }",
+         },
+         {
+            name: "a source over a SQL block with Malloy in it",
+            malloy: "run: via_sql -> { select: * }",
+         },
+      ],
+   },
    ...EMPTY_STORAGE.map(([route, declaration]) => ({
       name: `storage placement, an empty destination on ${route}`,
       files: {
