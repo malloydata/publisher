@@ -1030,7 +1030,7 @@ export class ServedCopyServe {
          decline(
             computed
                ? "the query reads a table in another time zone than it was built in (a stored computed dimension or a row filter that depends on it)"
-               : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
+               : "the query reads a table in another time zone than it was built in, which moves a rolling window's cut-off past what its table stores",
             "served_copy_time_zone",
          );
       }
@@ -2856,10 +2856,10 @@ function v1ColumnsOf(
  * zone the source it runs on sets or inherits from anything on its chain
  * (`ny is orders extend { timezone: … }`), which its text never names, or
  * the default when neither sets one. A table is built in its stored source's
- * own zone, and an explicit `'UTC'` is the default zone ({@link sameZone}). One rule for every zone-dependent
- * stored value: a computed dimension, a rolling window's cut-off, and a
- * restated timestamp truncation. Fails closed: a source that cannot be
- * resolved counts as another zone.
+ * own zone, and an explicit `'UTC'` is the default zone ({@link sameZone}).
+ * One rule for every zone-dependent stored value: a computed dimension, a
+ * rolling window's cut-off, and a restated timestamp truncation. Fails
+ * closed: a source that cannot be resolved counts as another zone.
  */
 function readsInAnotherZone(
    compiled: Compiled,
