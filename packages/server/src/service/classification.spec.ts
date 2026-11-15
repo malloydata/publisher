@@ -45,6 +45,27 @@ import { Package } from "./package";
 import { writeTempPackage } from "../test_helpers/temp_package";
 
 describe("readClassification", () => {
+   it("reads a block-form note, as Malloy routes it (the regex it replaced did not)", () => {
+      // A compiled block note: dedented, no closer.
+      expect(
+         readClassification(['#|(classification)\n["phi.direct_identifier"]']),
+      ).toEqual({ values: ["phi.direct_identifier"] });
+   });
+
+   it("says a malformed prefix declares nothing, as Malloy does", () => {
+      expect(readClassification(['#(classification "phi.x")'])).toEqual({
+         values: [],
+      });
+   });
+
+   it("still reads a prefix glued to its payload, as the regex it replaced did", () => {
+      expect(
+         readClassification(['#(classification)"phi.direct_identifier"']),
+      ).toEqual({
+         values: ["phi.direct_identifier"],
+      });
+   });
+
    it("reads one quoted class, or a quoted list, from a string or a {value} note", () => {
       expect(
          readClassification(['#(classification) "phi.direct_identifier"']),
@@ -227,6 +248,44 @@ source: visits is duckdb.sql("select 1 as id, 1 as person_id") extend {
 });
 
 const ROWS = `duckdb.sql("select * from (values (1,'east','999-11-2222',10),(2,'west','999-33-4444',20)) as t(id, region, ssn, amount)")`;
+
+describe("readSourceClassifications over a record literal", () => {
+   // A record literal's parts are each their own element, so each reads what
+   // its element reads, not the whole record's union (an inlined join_one's
+   // served copy is one such record, over its stored columns). A record built
+   // any other way still hands its parts the record's class.
+   const MODEL = `
+source: r is duckdb.sql("select 'a' as n, 'b' as m") extend {
+  #(classification) "pii"
+  dimension: name_col is n
+  #(classification) "none"
+  dimension: misc_col is m
+  dimension: rec is { nick is name_col, other is upper(misc_col) }
+}
+`;
+   it("classifies each part by its own element", async () => {
+      const { modelDefs } = await compileModelFiles({ "m.malloy": MODEL });
+      const md = modelDefs["m.malloy"] as ModelDef;
+      const lineage = readSourceClassifications(
+         (md.contents.r as { fields?: unknown[] }).fields as never,
+      );
+      expect(lineage.get("rec.nick")).toMatchObject({
+         classifications: ["pii"],
+         inputs: [{ field: "name_col", classifications: ["pii"] }],
+         passthrough: true,
+      });
+      expect(lineage.get("rec.other")).toMatchObject({
+         classifications: ["none"],
+         inputs: [{ field: "misc_col", classifications: ["none"] }],
+         passthrough: false,
+      });
+      // The record as one value still carries both.
+      expect(lineage.get("rec")?.classifications.sort()).toEqual([
+         "none",
+         "pii",
+      ]);
+   });
+});
 
 describe("classification warnings on package load", () => {
    let tempDir: string;
@@ -1669,6 +1728,19 @@ describe("the join walk's bounds", () => {
       expect(readSourceClassifications(fields)).toBe(
          readSourceClassifications(fields),
       );
+   });
+
+   // A glued `#(carries)` that read as undeclared would skip the leak check:
+   // the fail-open the annotation reader's glued-prefix rule exists to prevent.
+   it("declares a #(carries) glued to its list, so its leak check still runs", () => {
+      const node = {
+         notes: [{ text: '#(carries)["phi.clinical","none"]' }],
+      } as unknown as AnnotationsDef;
+      expect(readCarries(node)).toMatchObject({ declared: true });
+      expect([...readCarries(node).classes].sort()).toEqual([
+         "none",
+         "phi.clinical",
+      ]);
    });
 
    it("refuses an annotation chain past the hop bound instead of reading none", () => {

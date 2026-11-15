@@ -218,7 +218,13 @@ describe("routes reached with a combined package name", () => {
          .send(body)
          .expect(200);
       expect(rebound).toEqual([
-         ["acme", "sales", "1.0.0", { ...body, versionId: "1.0.0" }],
+         [
+            "acme",
+            "sales",
+            "1.0.0",
+            { ...body, versionId: "1.0.0" },
+            { legacyPatch: true, json: true },
+         ],
       ]);
    });
 
@@ -353,6 +359,7 @@ describe("the legacy /projects routes reached with a combined package name", () 
             "sales",
             "1.0.0",
             { manifestLocation: "gs://b/manifest.json", versionId: "1.0.0" },
+            { legacyPatch: true, json: true },
          ],
       ]);
    });

@@ -6,7 +6,10 @@ import {
    FixedConnectionMap,
    InMemoryURLReader,
    Runtime,
+   type PersistSource,
+   MalloyError,
 } from "@malloydata/malloy";
+import { leaveOutDefinitionAt } from "../text/declarations_kept";
 import {
    existsSync,
    mkdirSync,
@@ -23,10 +26,27 @@ import {
    StorageCatalogNotFoundError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
 import { getPartitionedWriteFlushThreshold } from "../../../config";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
-import { plannedSources, projectToPublicColumns } from "../plan/build_plan";
+import { fromSubselect } from "../subselect";
+import {
+   type BuildCastOptions,
+   castToDeclaredTypes,
+   isCastConversionError,
+   keepsWarehouseType,
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   storageBuildCasts,
+   type DeclaredColumn,
+} from "../stored_column_types";
+import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics";
+import {
+   buildSQLOf,
+   plannedSources,
+   projectToPublicColumns,
+   publicColumnNames,
+} from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
@@ -51,28 +71,19 @@ import {
    managedSearchPathSql,
    federateSourceForPassthrough,
    type FederatedSourceType,
+   type PartitionKey,
 } from "../../connection";
 import type { WatermarkBound } from "./incremental_apply";
 import { storageDestinationRoot } from "../../connection_config";
 import {
-   assertServesInDuckDB,
-   type ServeBinding,
-} from "../serve/materialization_serve_transform";
-import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
    storageTablePath,
-} from "./storage_table_path";
+} from "../domain/storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
 
-/**
- * The process-wide session the build-time servability gate compiles against.
- * Created on first use and never disposed: it holds no attach and no
- * credentials, and a session per build was the largest per-build memory cost.
- */
-let sharedGateSession: DuckDBConnection | undefined;
 type WireColumn = components["schemas"]["Column"];
 
 /** Source warehouse types the native query-passthrough build supports. */
@@ -152,16 +163,21 @@ export function orderByPartitionColumns(
    partitionColumns: readonly string[],
    dialect: string,
 ): string {
-   if (partitionColumns.length === 0) {
+   return orderByExpressions(
+      selectSQL,
+      partitionColumns.map((name) => quoteIdentifier(name, dialect)),
+   );
+}
+
+/** {@link orderByPartitionColumns}, for order terms already rendered as SQL. */
+function orderByExpressions(
+   selectSQL: string,
+   expressions: readonly string[],
+): string {
+   if (expressions.length === 0) {
       return selectSQL;
    }
-   const order = partitionColumns
-      .map((name) => quoteIdentifier(name, dialect))
-      .join(", ");
-   // A trailing terminator would end the subselect early. The closing paren
-   // goes on its own line so a trailing `--` comment cannot swallow it.
-   const inner = selectSQL.replace(/[\s;]+$/, "");
-   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${order}`;
+   return `SELECT * ${fromSubselect(selectSQL, "partitioned_build")} ORDER BY ${expressions.join(", ")}`;
 }
 
 /**
@@ -631,6 +647,13 @@ export interface StorageBuildResult {
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
    /**
+    * Rows in the table after the build, counted in the destination (cheap in
+    * DuckDB and DuckLake, which keep row counts with their files), and
+    * recorded as the manifest entry's `rowCount`. Null when the count could
+    * not be read; the build stands either way.
+    */
+   rowCount: number | null;
+   /**
     * What the source warehouse charged for the read, when its shape reported it.
     * Null means unknown, not free (except on a chained build, which reads no
     * warehouse).
@@ -721,7 +744,7 @@ export async function buildSourceIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
    sourceConnection: ApiConnection;
-   /** The source-dialect compiled SELECT (`getSQL` output), verbatim. */
+   /** The source-dialect compiled SELECT (the target's `buildSQL` output), verbatim. */
    buildSQL: string;
    /**
     * Whether the source's compiled definition carries SQL its author wrote
@@ -737,6 +760,14 @@ export async function buildSourceIntoStorage(params: {
     * single-statement CTAS.
     */
    partitionColumns?: string[];
+   /**
+    * The source's public columns as Malloy declares them; the CTAS casts the
+    * ones with a single faithful DuckDB type to it ({@link castToDeclaredTypes}).
+    * Absent or empty stores whatever the warehouse returned.
+    */
+   declaredColumns?: readonly DeclaredColumn[];
+   /** What decides a build cast beyond the declared type (see BuildCastOptions). */
+   castOptions?: BuildCastOptions;
    environmentPath: string;
    /**
     * Per-query metadata for the warehouse read, already resolved. Applied here
@@ -749,6 +780,8 @@ export async function buildSourceIntoStorage(params: {
     * Absent for a non-incremental source, which always builds in full.
     */
    incremental?: StorageIncrementalRefresh;
+   /** The name holds this package's own `name=` view, which the table replaces. */
+   replacesNameView?: boolean;
    /**
     * Test seam for federation and the passthrough read; production passes
     * nothing. Lets a spec prove the `finally` closes a proxied source's tunnel
@@ -885,6 +918,7 @@ export async function buildSourceIntoStorage(params: {
                // declares the schema on every publication; omitting it would
                // leave the source unservable until its next full build.
                schema: await describeTable(session, target),
+               rowCount: await countStoredRows(session, target),
                readCost: refreshed.readCost,
                refresh: refreshed,
             };
@@ -901,12 +935,18 @@ export async function buildSourceIntoStorage(params: {
 
       // The serve transform declares exactly this schema, and the compiler does
       // not type-check a virtual source's declared columns.
-      const schema = await createTableAndDescribe(
+      // Cast in DuckDB, around the passthrough: the warehouse runs exactly
+      // the build SQL, and only the stored types change.
+      const schema = await createTableWithDeclaredTypes(
          session,
          target,
          passthrough.selectSQL,
+         { columns: params.declaredColumns ?? [], ...params.castOptions },
          params.partitionColumns ?? [],
-         { sourceType },
+         {
+            sourceType,
+            ...(params.replacesNameView ? { replacesView: true } : {}),
+         },
       );
       // Record where the new snapshot reaches, so the next refresh can be a
       // delta. On this session: the attach does not outlive this function.
@@ -919,6 +959,7 @@ export async function buildSourceIntoStorage(params: {
          seededThrough,
          storageDestinationName: destinationName,
          schema,
+         rowCount: await countStoredRows(session, target),
          // BigQuery's labelled read reports its cost; Snowflake's must be asked
          // after the read, while the session still holds the credentials.
          readCost:
@@ -976,7 +1017,10 @@ async function buildSameCatalogIntoStorage(params: {
    sourceCarriesAuthorSql?: boolean;
    physicalTableName: string;
    partitionColumns?: string[];
+   declaredColumns?: readonly DeclaredColumn[];
+   castOptions?: BuildCastOptions;
    environmentPath: string;
+   replacesNameView?: boolean;
 }): Promise<StorageBuildResult> {
    const { destinationName, destinationConnection, physicalTableName } = params;
    const alias = params.sourceConnection.name || destinationName;
@@ -1017,16 +1061,19 @@ async function buildSameCatalogIntoStorage(params: {
          ),
          STORAGE_TARGET_DIALECT,
       );
-      const schema = await createTableAndDescribe(
+      const schema = await createTableWithDeclaredTypes(
          session,
          target,
          params.buildSQL,
+         { columns: params.declaredColumns ?? [], ...params.castOptions },
          params.partitionColumns ?? [],
+         params.replacesNameView ? { replacesView: true } : {},
       );
       // Reads no warehouse, as a chained build does: nothing was charged.
       return {
          storageDestinationName: destinationName,
          schema,
+         rowCount: await countStoredRows(session, target),
          readCost: null,
       };
    } finally {
@@ -1035,28 +1082,228 @@ async function buildSameCatalogIntoStorage(params: {
 }
 
 /**
+ * Compile a chained `storage=` build's model over `connections` (the
+ * destination alone) and plan its downstream under `virtualMap`: the SQL to
+ * CTAS, projected to its public columns, and the downstream it built. The
+ * model is `files` by URL, loaded from `entry`: a one-file model of the build's
+ * own, or the author's files with the upstreams re-rooted (the host port's
+ * `chainBuildText`).
+ * The only SHAPE step of a chained build: every failure is a
+ * {@link MaterializationEligibilityError}, so the caller may fall back.
+ */
+/** A chained build's model: its files by URL, and the one it loads. */
+export interface ChainedBuildModel {
+   files: ReadonlyMap<string, string>;
+   entry: string;
+   /**
+    * Ranges of `files` whose definitions may be left out when they do not
+    * compile on the destination (see ChainBuildText.rerootedSpans). None: a
+    * failure is the build's.
+    */
+   leaveOutWithin?: readonly { url: string; start: number; end: number }[];
+}
+
+/** How many definitions a chained build's compile may leave out, at most. */
+const MAX_LEFT_OUT = 32;
+
+/**
+ * Leave out of `files` each definition a compile error points at, when every
+ * error points inside a range `build` allows; false (nothing changed) when
+ * one does not.
+ */
+function leaveOutFailing(
+   files: Map<string, string>,
+   err: unknown,
+   build: ChainedBuildModel,
+): boolean {
+   if (!(err instanceof MalloyError) || !build.leaveOutWithin?.length) {
+      return false;
+   }
+   const problems = (
+      err.problems as {
+         severity?: string;
+         at?: {
+            url?: string;
+            range?: { start: { line: number; character: number } };
+         };
+      }[]
+   ).filter((p) => (p.severity ?? "error") === "error");
+   const next = new Map(files);
+   for (const p of problems) {
+      const url = p.at?.url;
+      const start = p.at?.range?.start;
+      const text = url === undefined ? undefined : next.get(url);
+      if (url === undefined || !start || text === undefined) return false;
+      const within = build.leaveOutWithin.filter((w) => w.url === url);
+      const left = leaveOutDefinitionAt(text, start, within);
+      // A second error in a definition already left out needs nothing more.
+      if (left === undefined) {
+         const before = files.get(url);
+         if (before === text || before === undefined) return false;
+         continue;
+      }
+      next.set(url, left);
+   }
+   for (const [url, text] of next) files.set(url, text);
+   return true;
+}
+
+/** A one-file model of the build's own, as a {@link ChainedBuildModel}. */
+export function oneFileModel(text: string): ChainedBuildModel {
+   const entry = "file:///chained-build/m.malloy";
+   return { files: new Map([[entry, text]]), entry };
+}
+
+export async function planChainedDownstream(params: {
+   model: ChainedBuildModel;
+   downstreamName: string;
+   virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
+   connections: FixedConnectionMap;
+   /**
+    * The planned source a recompute of the downstream builds. A chained
+    * build whose downstream lacks one of its public columns (a column read
+    * through a definition left out of a stored upstream, as a `select: *`
+    * does) is a shape it could not carry: stored, the table would answer
+    * with fewer columns than live. Absent: not checked.
+    */
+   recomputes?: PersistSource;
+}): Promise<{ sql: string; downstream: PersistSource }> {
+   const { model: build, downstreamName } = params;
+   const virtualMap = new Map(
+      [...params.virtualMap].map(([k, v]) => [k, new Map(v)] as const),
+   );
+   // The upstream virtual sources declare their captured schema, so compiling
+   // reads no tables; the CTAS below runs the real SQL.
+   const files = new Map(build.files);
+   let runtime!: Runtime;
+   // The only SHAPE step here: a compile failure means the downstream cannot
+   // be expressed over its rebound parents, so the caller may fall back to
+   // recomputing. Infrastructure failures (attach, CTAS, DESCRIBE) would fail
+   // the same way on fallback, so only shape failures are marked eligible.
+   // A definition of a re-rooted upstream that does not compile here (a join
+   // to a source the build cannot read, and what reads it) is left out, as
+   // the served copy leaves out a join across connections; one the downstream
+   // reads then fails in the downstream's own text, which is never left out.
+   let model;
+   for (let pass = 0; ; pass++) {
+      runtime = new Runtime({
+         urlReader: new InMemoryURLReader(files),
+         connections: params.connections,
+      });
+      try {
+         model = await runtime
+            .loadModel(new URL(build.entry), {
+               importBaseURL: new URL(".", build.entry),
+            })
+            .getModel();
+         break;
+      } catch (err) {
+         const left =
+            pass < MAX_LEFT_OUT ? leaveOutFailing(files, err, build) : false;
+         if (!left) {
+            throw new MaterializationEligibilityError({
+               message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
+            });
+         }
+      }
+   }
+   // Planning renders every source's SQL, and the rebound virtual parents
+   // render only through the `virtualMap`.
+   const targets = await runtime.getBuildTargets(model, { virtualMap });
+   const unbuildable = targets.unbuildable.find(
+      (u) => u.source.name === downstreamName,
+   );
+   if (unbuildable) {
+      throw new MaterializationEligibilityError({
+         message:
+            `Chained build model could not plan '${downstreamName}' over ` +
+            `the rebound parents: ${unbuildable.problem.message}`,
+      });
+   }
+   const downstream = plannedSources(targets).find(
+      (ps) => ps.name === downstreamName,
+   );
+   if (!downstream) {
+      // The downstream references something the rebind model lacks (an
+      // uncarried parent refinement, a live leaf). The caller falls back.
+      throw new MaterializationEligibilityError({
+         message:
+            `Chained build model did not yield a persist source named ` +
+            `'${downstreamName}' (the downstream references something the ` +
+            `rebound parents don't provide).`,
+      });
+   }
+   if (params.recomputes) {
+      let expected: string[] = [];
+      let built: string[] = [];
+      try {
+         expected = publicColumnNames(params.recomputes);
+         built = publicColumnNames(downstream);
+      } catch {
+         // An unknown surface is refused where the table is projected to it.
+      }
+      const has = new Set(built);
+      const lost = expected.filter((c) => !has.has(c));
+      if (lost.length > 0) {
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained build model of '${downstreamName}' over the rebound ` +
+               `parents lacks ${lost.length === 1 ? "a column" : "columns"} ` +
+               `a recompute writes (${lost.map((c) => `'${c}'`).join(", ")}), ` +
+               `read through a definition no stored upstream carries`,
+         });
+      }
+   }
+   // The CTAS runs on a read-write session on the destination, as a
+   // same-catalog build does, so the same rule holds: only SQL Malloy
+   // generated. The rebound parents are virtual, so this reads the
+   // downstream's own definition. Marked eligible, so the caller recomputes
+   // from raw, where author SQL runs in the source warehouse (or a
+   // same-catalog source is refused).
+   if (carriesAuthorSql(downstream._sourceDef)) {
+      throw new MaterializationEligibilityError({
+         message:
+            `Chained source '${downstreamName}' carries SQL its author wrote ` +
+            `(an .sql() source, a sql_* expression, or a file or URL table), ` +
+            `which does not run on the destination's read-write session.`,
+      });
+   }
+   // Projected to public columns so hidden (`except:` / access-restricted)
+   // values are not stored at rest.
+   const sql = projectToPublicColumns(
+      downstream,
+      buildSQLOf(downstream, { entries: {} }),
+   );
+   return { sql, downstream };
+}
+
+/**
  * Build a CHAINED `storage=` source from its upstreams' already-materialized
  * tables in the destination, instead of recomputing them from the warehouse.
  * The downstream is then a pure function of the parents' STORED rows.
  *
- * `transientModel` (see {@link buildChainedStorageBuildModel}) rebinds every
- * upstream to a virtual source on this destination and re-declares the
- * downstream as a persist source over them. It is compiled against the build
- * session, and the downstream's `getSQL({ virtualMap })` is CTAS'd into the
- * destination; nothing is federated and nothing leaves DuckDB. Session
- * lifecycle mirrors {@link buildSourceIntoStorage}.
+ * `model` reads every upstream as a virtual source on this destination (the
+ * author's files with the upstreams re-rooted, or an extension's chain over
+ * its parent's table) and declares the downstream as a persist source. It is compiled against the build
+ * session, and the downstream's `buildSQL` (planned under the `virtualMap`) is
+ * CTAS'd into the destination; nothing is federated and nothing leaves DuckDB.
+ * Session lifecycle mirrors {@link buildSourceIntoStorage}.
  *
  * @returns the destination name and the captured schema.
  */
 export async function buildDownstreamIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
-   /** Transient rebind model: upstream virtuals + persist-annotated downstream. */
-   transientModel: string;
+   /** The model the downstream compiles from (see planChainedDownstream). */
+   model: ChainedBuildModel;
+   /** The connection the model reads the destination by; the destination's name when absent. */
+   connectionName?: string;
    /** The downstream source's Malloy name, to locate it in the transient plan. */
    downstreamName: string;
-   /** destinationName → handle → quoted physical path for the upstream virtuals. */
-   virtualMap: Map<string, Map<string, string>>;
+   /** See planChainedDownstream's `recomputes`. */
+   recomputes?: PersistSource;
+   /** connection → handle → quoted physical path for the upstream virtuals. */
+   virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
    /**
@@ -1066,11 +1313,13 @@ export async function buildDownstreamIntoStorage(params: {
     */
    partitionColumns?: string[];
    environmentPath: string;
+   /** The name holds this package's own `name=` view, which the table replaces. */
+   replacesNameView?: boolean;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
       destinationConnection,
-      transientModel,
+      model,
       downstreamName,
       virtualMap,
       physicalTableName,
@@ -1105,77 +1354,17 @@ export async function buildDownstreamIntoStorage(params: {
       // delta path); pinned so lifting that exclusion stays correct.
       await pinSessionToUTC(session);
 
-      // The upstream virtual sources declare their captured schema, so compiling
-      // reads no tables; the CTAS below runs the real SQL.
-      const root = "file:///chained-build/";
-      const url = `${root}m.malloy`;
-      const runtime = new Runtime({
-         urlReader: new InMemoryURLReader(new Map([[url, transientModel]])),
+      const connectionName = params.connectionName ?? destinationName;
+      const { sql, downstream } = await planChainedDownstream({
+         model,
+         downstreamName,
+         virtualMap,
+         ...(params.recomputes ? { recomputes: params.recomputes } : {}),
          connections: new FixedConnectionMap(
-            new Map([[destinationName, session]]),
-            destinationName,
+            new Map([[connectionName, session]]),
+            connectionName,
          ),
       });
-      // The only SHAPE step here: a compile failure means the downstream cannot
-      // be expressed over its rebound parents, so the caller may fall back to
-      // recomputing. Infrastructure failures (attach, CTAS, DESCRIBE) would fail
-      // the same way on fallback, so only shape failures are marked eligible.
-      let model;
-      try {
-         model = await runtime
-            .loadModel(new URL(url), { importBaseURL: new URL(root) })
-            .getModel();
-      } catch (err) {
-         throw new MaterializationEligibilityError({
-            message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
-         });
-      }
-      // Planning renders every source's SQL, and the rebound virtual parents
-      // render only through the `virtualMap`.
-      const targets = await runtime.getBuildTargets(model, { virtualMap });
-      const unbuildable = targets.unbuildable.find(
-         (u) => u.source.name === downstreamName,
-      );
-      if (unbuildable) {
-         throw new MaterializationEligibilityError({
-            message:
-               `Chained build model could not plan '${downstreamName}' over ` +
-               `the rebound parents: ${unbuildable.problem.message}`,
-         });
-      }
-      const downstream = plannedSources(targets).find(
-         (ps) => ps.name === downstreamName,
-      );
-      if (!downstream) {
-         // The downstream references something the rebind model lacks (an
-         // uncarried parent refinement, a live leaf). The caller falls back.
-         throw new MaterializationEligibilityError({
-            message:
-               `Chained build model did not yield a persist source named ` +
-               `'${downstreamName}' (the downstream references something the ` +
-               `rebound parents don't provide).`,
-         });
-      }
-      // The CTAS runs on a read-write session on the destination, as a
-      // same-catalog build does, so the same rule holds: only SQL Malloy
-      // generated. The rebound parents are virtual, so this reads the
-      // downstream's own definition. Marked eligible, so the caller recomputes
-      // from raw, where author SQL runs in the source warehouse (or a
-      // same-catalog source is refused).
-      if (carriesAuthorSql(downstream._sourceDef)) {
-         throw new MaterializationEligibilityError({
-            message:
-               `Chained source '${downstreamName}' carries SQL its author wrote ` +
-               `(an .sql() source, a sql_* expression, or a file or URL table), ` +
-               `which does not run on the destination's read-write session.`,
-         });
-      }
-      // Projected to public columns so hidden (`except:` / access-restricted)
-      // values are not stored at rest.
-      const sql = projectToPublicColumns(
-         downstream,
-         downstream.getSQL({ virtualMap }),
-      );
 
       // Quoted as in buildSourceIntoStorage, to match the serve side.
       const target = quoteManifestTablePath(
@@ -1186,16 +1375,21 @@ export async function buildDownstreamIntoStorage(params: {
          ),
          STORAGE_TARGET_DIALECT,
       );
-      const schema = await createTableAndDescribe(
+      // The downstream's own declared types, as for a recompute.
+      const casts = storageBuildCasts(downstream);
+      const schema = await createTableWithDeclaredTypes(
          session,
          target,
          sql,
+         { columns: casts.declaredColumns, ...casts.castOptions },
          params.partitionColumns ?? [],
+         params.replacesNameView ? { replacesView: true } : {},
       );
 
       return {
          storageDestinationName: destinationName,
          schema,
+         rowCount: await countStoredRows(session, target),
          // Reads no source warehouse: here, uniquely, null means "spent nothing".
          readCost: null,
          upstreamReuse: "reused",
@@ -1203,67 +1397,6 @@ export async function buildDownstreamIntoStorage(params: {
    } finally {
       await dispose();
    }
-}
-
-/**
- * Build-time servability gate: compile the source's serve shape in DuckDB
- * against the captured (post-build) schema and refuse the build if it does not
- * compile. The served table lives in DuckDB, so this turns a serve-time error
- * into a build-time 422. No SQL runs and no table is read, so an in-memory
- * session with no attach suffices.
- *
- * @throws {MaterializationEligibilityError} (HTTP 422) if the shape can't compile.
- */
-export async function assertStorageServeShapeCompiles(params: {
-   destinationName: string;
-   /** The destination's schema (see storageTablePath); absent is `main`. */
-   destinationSchema?: string;
-   sourceName: string;
-   virtualHandle: string;
-   physicalTableName: string;
-   schema: WireColumn[];
-}): Promise<void> {
-   const { destinationName, sourceName, virtualHandle, physicalTableName } =
-      params;
-   // No `origin`: the gate compiles from the captured schema alone, so it treats
-   // a rollup's table and an authored one alike.
-   const binding: ServeBinding = {
-      sourceName,
-      destinationName,
-      virtualHandle,
-      tablePath: storageTablePath(
-         destinationName,
-         physicalTableName,
-         params.destinationSchema,
-      ),
-      schema: params.schema
-         .filter((c) => c.name && c.type)
-         .map((c) => ({ name: c.name as string, type: c.type as string })),
-   };
-   // ONE session for the process: this gate neither attaches nor federates, so
-   // it has no cross-tenant collision surface, and an instance per build was
-   // the bulk of the build path's unreclaimed memory growth. The risk is a
-   // shared catalog (earlier declarations leaking into later compiles); the
-   // spec pins that refusals still refuse and recompiles see new schemas.
-   //
-   // Assigned synchronously: an `await` before the assignment would let two
-   // concurrent callers each create a session, orphaning one for the life of
-   // the process.
-   sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
-   // Bounded on every use (idempotent per connection) so the line above stays
-   // synchronous. It must be bounded here: it is the longest-lived instance and
-   // reaches no connection lookup or attach that would bound it otherwise. No
-   // session-owned spill directory: one would accumulate for the process's life,
-   // so it uses the configured one.
-   await applySessionResourceLimits(sharedGateSession);
-   await assertServesInDuckDB(
-      sourceName,
-      binding,
-      new FixedConnectionMap(
-         new Map([[destinationName, sharedGateSession]]),
-         destinationName,
-      ),
-   );
 }
 
 /** DDL to drop a storage table by its recorded name, catalog-qualified for DuckDB. */
@@ -1292,6 +1425,11 @@ export async function dropStorageTable(params: {
    destinationConnection: ApiConnection;
    physicalTableName: string;
    environmentPath: string;
+   /**
+    * More tables to drop in the same session once the table is dropped (or
+    * found not to be one): a table's own backup name (reclaimer.ts).
+    */
+   alsoDrop?: string[];
 }): Promise<void> {
    const {
       destinationName,
@@ -1315,13 +1453,53 @@ export async function dropStorageTable(params: {
          destinationConnection,
          environmentPath,
       );
-      await session.runSQL(
-         dropStorageTableSql(
-            destinationName,
-            physicalTableName,
-            destinationSchemaOf(destinationConnection),
-         ),
+      const schema = destinationSchemaOf(destinationConnection);
+      let dropErr: unknown;
+      try {
+         await session.runSQL(
+            dropStorageTableSql(destinationName, physicalTableName, schema),
+         );
+      } catch (err) {
+         dropErr = err;
+      }
+      for (const table of params.alsoDrop ?? []) {
+         await session.runSQL(
+            dropStorageTableSql(destinationName, table, schema),
+         );
+      }
+      if (dropErr !== undefined) throw dropErr;
+   } finally {
+      await dispose();
+   }
+}
+
+/**
+ * Run `fn` on an isolated read-write session with a `storage=` destination
+ * attached under its own name, as {@link dropStorageTable} reaches it. For
+ * statements on one named object (the `name=` view), never a scan.
+ */
+export async function withStorageDestinationSession<T>(
+   params: {
+      destinationName: string;
+      destinationConnection: ApiConnection;
+      environmentPath: string;
+   },
+   fn: (session: DuckDBConnection) => Promise<T>,
+): Promise<T> {
+   const { destinationName, destinationConnection, environmentPath } = params;
+   assertSupportedDestination(destinationName, destinationConnection);
+   const { session, dispose, workDir } = createIsolatedBuildSession(
+      `view_${destinationName}`,
+   );
+   try {
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
+      await attachDestinationReadWrite(
+         session,
+         destinationName,
+         destinationConnection,
+         environmentPath,
       );
+      return await fn(session);
    } finally {
       await dispose();
    }
@@ -1329,6 +1507,8 @@ export async function dropStorageTable(params: {
 
 /**
  * The tables in one schema of a `storage=` destination, in name order.
+ * Tables only: a `name=` view (name_view.ts) is never listed, so a sweep
+ * that drops what it lists never reaches one.
  *
  * Read-only, on an isolated instance. A plain DuckDB destination with no
  * database file yet is reported empty rather than created by looking.
@@ -1586,6 +1766,114 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
 }
 
 /**
+ * {@link createTableAndDescribe} over `selectSQL` with its columns cast to their
+ * declared types (ms2data/service#6642). A value a cast cannot convert (a
+ * boolean the warehouse returned as 'Y'/'N') retries the CTAS without the
+ * casts, storing what the warehouse returned, rather than failing a build that
+ * used to succeed; the serve side then decides that column. Never TRY_CAST,
+ * whose NULLs would be wrong answers. The retry re-reads the source, so it is
+ * paid only by a source whose data the cast rejects.
+ */
+export async function createTableWithDeclaredTypes(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+   selectSQL: string,
+   declared: { columns: readonly DeclaredColumn[] } & BuildCastOptions,
+   partitionColumns: readonly string[],
+   options: Parameters<typeof createTableAndDescribe>[4] = {},
+): Promise<WireColumn[]> {
+   const columns = await columnsToCast(
+      session,
+      selectSQL,
+      declared.columns,
+      options.sourceType,
+   );
+   const cast = castToDeclaredTypes(selectSQL, columns, declared);
+   if (cast === selectSQL) {
+      return createTableAndDescribe(
+         session,
+         quotedTablePath,
+         selectSQL,
+         partitionColumns,
+         options,
+      );
+   }
+   try {
+      return await createTableAndDescribe(
+         session,
+         quotedTablePath,
+         cast,
+         partitionColumns,
+         options,
+      );
+   } catch (err) {
+      if (!isCastConversionError(err)) throw err;
+      recordStoredColumnTypeMismatch("build", "cast_failed");
+      logger.warn(
+         "A declared-type cast could not convert a stored value; storing the warehouse's types instead",
+         {
+            code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+            table: quotedTablePath,
+            // Not the message: it quotes the value the cast refused.
+            errorCode: errorCodeOf(err),
+         },
+      );
+      return await createTableAndDescribe(
+         session,
+         quotedTablePath,
+         selectSQL,
+         partitionColumns,
+         options,
+      );
+   }
+}
+
+/**
+ * The declared columns a build casts: all of them, less the ones whose
+ * warehouse type the build keeps ({@link keepsWarehouseType}: a Postgres
+ * `bytea` or `interval`, which the dialect declares `string`).
+ *
+ * The warehouse's types are read by describing the SELECT in the destination's
+ * session, for a Postgres source only: there the describe prepares the
+ * statement and runs nothing, and only Postgres's dialect declares such a
+ * column `string`. No other passthrough is described: whether it runs (and
+ * bills) the query is not known. A describe that fails changes nothing: every
+ * column is cast, as before, and the build itself reports the error.
+ */
+async function columnsToCast(
+   session: DuckDBConnection,
+   selectSQL: string,
+   declared: readonly DeclaredColumn[],
+   sourceType: FederatedSourceType | undefined,
+): Promise<readonly DeclaredColumn[]> {
+   if (sourceType !== "postgres") return declared;
+   if (!declared.some((d) => d.type === "string")) return declared;
+   let described: WireColumn[];
+   try {
+      described = await describeTable(session, `(${selectSQL})`);
+   } catch (err) {
+      logger.warn(
+         "Could not describe a storage build's source columns; casting every declared column",
+         { errorCode: errorCodeOf(err) },
+      );
+      return declared;
+   }
+   const kept = new Set(
+      described.flatMap((c) => {
+         const d = declared.find(
+            (x) => x.name.toLowerCase() === c.name?.toLowerCase(),
+         );
+         return d && c.type && keepsWarehouseType(c.type, d.type)
+            ? [d.name]
+            : [];
+      }),
+   );
+   return kept.size === 0
+      ? declared
+      : declared.filter((d) => !kept.has(d.name));
+}
+
+/**
  * Build the table and read back its schema.
  *
  * Without partition columns, a CTAS; with them, create-empty / lay out / insert,
@@ -1610,6 +1898,12 @@ export async function createTableAndDescribe(
        * failure they prevent is the writer's, whatever the source.
        */
       sourceType?: FederatedSourceType;
+      /**
+       * The name holds this package's own `name=` view, which the table
+       * replaces: the view is dropped in the same transaction, so a failure
+       * leaves it (see viewToTableSwap in name_view.ts).
+       */
+      replacesView?: boolean;
    } = {},
 ): Promise<WireColumn[]> {
    if (partitionColumns.length === 0) {
@@ -1617,27 +1911,114 @@ export async function createTableAndDescribe(
       // CREATE OR REPLACE committed would delete the name the previous
       // manifest serves from.
       return await inTransaction(session, quotedTablePath, async () => {
+         if (options.replacesView) {
+            await session.runSQL(`DROP VIEW IF EXISTS ${quotedTablePath}`);
+         }
          await session.runSQL(
             `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
          );
          return await describeTable(session, quotedTablePath);
       });
    }
+   return await writePartitionedTable(session, {
+      quotedTablePath,
+      selectSQL,
+      keys: partitionColumns.map((column) => ({
+         column,
+         transform: "identity",
+      })),
+      createStatement: "CREATE OR REPLACE TABLE",
+      bounded: options.sourceType !== undefined,
+      read: () => describeTable(session, quotedTablePath),
+      ...(options.replacesView ? { replacesView: true } : {}),
+   });
+}
 
-   // Run bare, `WITH NO DATA` would serve zero rows until the INSERT lands,
-   // and a failed INSERT would lose the previous generation; a ROLLBACK keeps
-   // it.
-   //
-   // The layout only means something because the session disabled inlining
-   // (`ducklake_default_data_inlining_row_limit=0`); inlined rows have no files.
-   const columns = partitionColumns
-      .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
-      .join(", ");
+const TIME_TRANSFORMS = new Set(["year", "month", "day", "hour"]);
+const BUCKET_TRANSFORM = /^bucket\((\d+)\)$/;
+
+/**
+ * A partition key as `ALTER TABLE … SET PARTITIONED BY` takes it, from the
+ * transform DuckLake records for it. A transform outside the ones DuckLake
+ * defines is refused rather than written as some other layout.
+ */
+export function partitionKeySql(key: PartitionKey): string {
+   const column = quoteIdentifier(key.column, STORAGE_TARGET_DIALECT);
+   if (key.transform === "identity") return column;
+   if (TIME_TRANSFORMS.has(key.transform)) return `${key.transform}(${column})`;
+   const bucket = BUCKET_TRANSFORM.exec(key.transform);
+   if (bucket) return `bucket(${Number(bucket[1])}, ${column})`;
+   throw new BadRequestError(
+      `Partition transform '${key.transform}' on column '${key.column}' is not one ` +
+         "DuckLake defines (identity, year, month, day, hour, bucket(N)), so the " +
+         "table cannot be written with that layout.",
+   );
+}
+
+/**
+ * The ORDER BY terms that bring a partitioned insert's rows in partition order:
+ * each key as DuckLake partitions on it (`year("day")`, not `"day"`, so a year's
+ * categories are not interleaved across its days), then each transformed key's
+ * own column, so a time partition's rows also arrive in time order. Each term
+ * once, in key order.
+ *
+ * A `bucket(N)` key cannot be ordered by: DuckDB has no scalar `bucket`, only
+ * the partition transform. It orders by its column, which does not group a
+ * bucket's rows, so on a bucketed key the appender can meet every bucket at
+ * once and the memory bound the order exists for does not hold for that key.
+ */
+export function partitionOrderSql(keys: readonly PartitionKey[]): string[] {
+   const terms: string[] = [];
+   const add = (term: string) => {
+      if (!terms.includes(term)) terms.push(term);
+   };
+   for (const key of keys) {
+      if (!BUCKET_TRANSFORM.test(key.transform)) add(partitionKeySql(key));
+   }
+   for (const key of keys) {
+      if (key.transform !== "identity") {
+         add(quoteIdentifier(key.column, STORAGE_TARGET_DIALECT));
+      }
+   }
+   return terms;
+}
+
+/**
+ * Create `quotedTablePath` empty, lay it out by `keys`, fill it from `selectSQL`,
+ * then run `read`, all in ONE transaction, and return what `read` returns.
+ * Shared by a partitioned build and a partitioned copy (the admin API's).
+ *
+ * Create-empty / lay out / insert because DuckLake applies a layout only to files
+ * written after it is set. Run bare, `WITH NO DATA` would serve zero rows until
+ * the INSERT lands, and a failed INSERT would lose the previous generation; a
+ * ROLLBACK keeps it.
+ *
+ * The layout only means something because the session disabled inlining
+ * (`ducklake_default_data_inlining_row_limit=0`); inlined rows have no files.
+ *
+ * @param params.bounded Turn on the memory bounds (ordered insert, single
+ *   thread, flush threshold) unless the flush threshold is configured `off`.
+ */
+export async function writePartitionedTable<T>(
+   session: DuckDBConnection,
+   params: {
+      quotedTablePath: string;
+      selectSQL: string;
+      keys: readonly PartitionKey[];
+      createStatement: "CREATE TABLE" | "CREATE OR REPLACE TABLE";
+      bounded: boolean;
+      read: () => Promise<T>;
+      /** Drop this package's own `name=` view at the name first, in the transaction. */
+      replacesView?: boolean;
+   },
+): Promise<T> {
+   const { quotedTablePath, selectSQL, keys } = params;
+   const layout = keys.map(partitionKeySql).join(", ");
+   const order = partitionOrderSql(keys);
    // One switch: `off` on the threshold disables all three bounds, which only
    // work together.
    const flushThreshold = getPartitionedWriteFlushThreshold();
-   const bounded =
-      options.sourceType !== undefined && flushThreshold !== undefined;
+   const bounded = params.bounded && flushThreshold !== undefined;
    if (bounded) {
       // Bounds the rows each appender holds before flushing to partition files
       // (see getPartitionedWriteFlushThreshold). The session is this build's
@@ -1654,22 +2035,21 @@ export async function createTableAndDescribe(
    }
    try {
       return await inTransaction(session, quotedTablePath, async () => {
+         if (params.replacesView) {
+            await session.runSQL(`DROP VIEW IF EXISTS ${quotedTablePath}`);
+         }
          await session.runSQL(
-            `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
+            `${params.createStatement} ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
          );
          await session.runSQL(
-            `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
+            `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${layout})`,
          );
          // See orderByPartitionColumns.
          const inserted = bounded
-            ? orderByPartitionColumns(
-                 selectSQL,
-                 partitionColumns,
-                 STORAGE_TARGET_DIALECT,
-              )
+            ? orderByExpressions(selectSQL, order)
             : selectSQL;
          await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
-         return await describeTable(session, quotedTablePath);
+         return await params.read();
       });
    } finally {
       // Best-effort: the session is disposed with the build, so a stuck setting
@@ -1710,13 +2090,39 @@ async function inTransaction<T>(
             {
                table: quotedTablePath,
                error: errMessage(rollbackErr),
-               cause: errMessage(buildErr),
+               // The build's error can quote its SQL or a value; it is
+               // rethrown to the run's record.
+               causeCode: errorCodeOf(buildErr),
             },
          );
       }
       throw buildErr;
    }
    return result;
+}
+
+/**
+ * The rows a built table holds, or null when the count could not be read
+ * (logged at debug): the manifest entry records it, and a build never fails
+ * on it.
+ */
+async function countStoredRows(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+): Promise<number | null> {
+   try {
+      const result = await session.runSQL(
+         `SELECT count(*) AS n FROM ${quotedTablePath}`,
+      );
+      const n = Number(resultRows(result)[0]?.n);
+      return Number.isFinite(n) ? n : null;
+   } catch (error) {
+      logger.debug("Could not count a built table's rows", {
+         table: quotedTablePath,
+         error: errMessage(error),
+      });
+      return null;
+   }
 }
 
 async function describeTable(

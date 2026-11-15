@@ -24,7 +24,7 @@ import {
    runUnrecorded,
    withAccessRecord,
 } from "../../service/access_record";
-import { quoteMalloyIdentifier } from "../../service/authorize";
+import { quotedIdentifier, stringLiteral } from "../../service/malloy_text";
 import type { PackageLookup } from "../../service/environment_ports";
 import { QueryPrivileges } from "../../service/model_query_request";
 import { runWithQueryTimeout } from "../../query_timeout";
@@ -101,7 +101,8 @@ interface ValueFetchRequest {
    packageName: string;
    modelPath: string;
    source: string;
-   dimension: string;
+   /** The field: one name, or a record member's path, one entry per segment. */
+   dimension: string | readonly string[];
    /** Distinct values to read; one more is asked for to learn whether there are more. */
    limit: number;
    /** When set, only values containing this text (case-insensitive) are read. */
@@ -135,7 +136,8 @@ interface DistinctValueQuery {
    packageName: string;
    modelPath: string;
    source: string;
-   dimension: string;
+   /** The field: one name, or a record member's path, one entry per segment. */
+   dimension: string | readonly string[];
    /** Rows to read; one more is asked for to learn whether there are more. */
    limit: number;
    timeoutMs: number;
@@ -153,16 +155,28 @@ interface DistinctValueQuery {
    system?: boolean;
 }
 
+/** What a value-scan stem may hold: no `~` (LIKE) wildcard can appear. */
+const LIKE_SAFE_STEM = /^[\p{L}\p{N}]+$/u;
+
 /**
  * The one query that reads a dimension's distinct values: up to `limit + 1`
  * non-null values as rows of `v` (and `n` when counted), through the normal
  * query path, with the caller's givens and no `#(authorize)` bypass. The
  * value index and the query-time lookup both read through it.
  */
+
 export async function queryDistinctValues(
    request: DistinctValueQuery,
    deps: ValueQueryDeps,
 ): Promise<Array<Record<string, unknown>>> {
+   // The stem goes inside a `~` (SQL LIKE) pattern, where `%` and `_` are
+   // wildcards that quoting does not neutralise. filterStem yields only
+   // letters and digits; refuse anything else, before any model is resolved
+   // or access recorded, so a direct caller cannot widen the match. The
+   // quoting covers the rest.
+   if (request.stem && !LIKE_SAFE_STEM.test(request.stem)) {
+      throw new Error("A value-scan stem may contain only letters and digits");
+   }
    let refusal: SearchErrorDetails | undefined;
    const queryModelResolver =
       deps.queryModelResolver ?? plainQueryModelResolver;
@@ -180,15 +194,21 @@ export async function queryDistinctValues(
          }
          const version = found.pkg.getVersionId();
          if (version) audit.version = version;
-         const dim = quoteMalloyIdentifier(request.dimension);
-         // The stem is letters and digits only (see filterStem), so it needs no escaping.
+         // Each segment of a member's path is quoted on its own:
+         // `delivery.city` quoted whole is one name that does not exist.
+         const dim =
+            typeof request.dimension === "string"
+               ? quotedIdentifier(request.dimension)
+               : request.dimension.map(quotedIdentifier).join(".");
          const where = request.stem
-            ? `${dim} != null and lower(${dim}) ~ '%${request.stem}%'`
+            ? `${dim} != null and lower(${dim}) ~ ${stringLiteral(`%${request.stem}%`)}`
             : `${dim} != null`;
+         // One row past the limit, to tell a full page from a truncated one.
+         const limit = Math.trunc(request.limit) + 1;
          const body = request.counted
-            ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${request.limit + 1}`
-            : `where: ${where} group_by: v is ${dim} limit: ${request.limit + 1}`;
-         const query = `run: ${quoteMalloyIdentifier(request.source)} -> { ${body} }`;
+            ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${limit}`
+            : `where: ${where} group_by: v is ${dim} limit: ${limit}`;
+         const query = `run: ${quotedIdentifier(request.source)} -> { ${body} }`;
          const slot = deps.querySlots.tryAcquire(request.routeLabel);
          try {
             const { compactResult } = await runWithQueryTimeout(

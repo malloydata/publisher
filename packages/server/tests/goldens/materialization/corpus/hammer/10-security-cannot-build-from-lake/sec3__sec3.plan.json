@@ -1,0 +1,75 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "lake",
+        "dependsOn": {
+          "sneaky@<hammer>/sec3/sec3.malloy": []
+        },
+        "order": [
+          "sneaky@<hammer>/sec3/sec3.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "sneaky@<hammer>/sec3/sec3.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "sneaky@<hammer>/sec3/sec3.malloy": "sec3.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "lake",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "sneaky@<hammer>/sec3/sec3.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "sneaky@<hammer>/sec3/sec3.malloy": {
+        "annotationFields": {
+          "name": "sec3_out",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "x",
+            "type": "number"
+          }
+        ],
+        "connectionName": "lake",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "sec3.malloy",
+        "name": "sneaky",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "b6198f2201a5f4d39b08283dcbc4e05ed5e46ff54570f38600f5609e4b1af71a",
+        "sourceID": "sneaky@<hammer>/sec3/sec3.malloy",
+        "sql": "sha256:8803af707789d483"
+      }
+    }
+  }
+}

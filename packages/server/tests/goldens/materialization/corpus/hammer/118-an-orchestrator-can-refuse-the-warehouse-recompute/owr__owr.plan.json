@@ -1,0 +1,171 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/owr/owr.malloy": [],
+          "daily_regional@<hammer>/owr/owr.malloy": [],
+          "rollup@<hammer>/owr/owr.malloy": [
+            "daily@<hammer>/owr/owr.malloy",
+            "daily_regional@<hammer>/owr/owr.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/owr/owr.malloy",
+          "daily_regional@<hammer>/owr/owr.malloy",
+          "rollup@<hammer>/owr/owr.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/owr/owr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_regional@<hammer>/owr/owr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/owr/owr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/owr/owr.malloy": "owr.malloy",
+      "daily_regional@<hammer>/owr/owr.malloy": "owr.malloy",
+      "rollup@<hammer>/owr/owr.malloy": "owr.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/owr/owr.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_regional@<hammer>/owr/owr.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/owr/owr.malloy",
+                "daily_regional@<hammer>/owr/owr.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/owr/owr.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/owr/owr.malloy": {
+        "annotationFields": {
+          "name": "owr_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "owr.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "1997ed9b6f5e8e658f6671e2e85ab91fca60278f5f894dff7ae59251290160de",
+        "sourceID": "daily@<hammer>/owr/owr.malloy",
+        "sql": "sha256:bdab7a9ffa5a6f8d"
+      },
+      "daily_regional@<hammer>/owr/owr.malloy": {
+        "annotationFields": {
+          "name": "owr_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "owr.malloy",
+        "name": "daily_regional",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "1997ed9b6f5e8e658f6671e2e85ab91fca60278f5f894dff7ae59251290160de",
+        "sourceID": "daily_regional@<hammer>/owr/owr.malloy",
+        "sql": "sha256:bdab7a9ffa5a6f8d"
+      },
+      "rollup@<hammer>/owr/owr.malloy": {
+        "annotationFields": {
+          "name": "owr_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "owr.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e9c5961d50654eb6b8849888003b5ad3e0ebf92d67be62e0d649608277f4c4b8",
+        "sourceID": "rollup@<hammer>/owr/owr.malloy",
+        "sql": "sha256:5263a0f9bd2f3b29"
+      }
+    }
+  }
+}

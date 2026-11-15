@@ -3,11 +3,10 @@
 
 import {
    MalloyTranslator,
-   payloadOf,
-   routeOf,
    type LogMessage,
    type ModelDef,
 } from "@malloydata/malloy";
+import { payloadOfNote, routeOfNote } from "./annotation_reader";
 import { type AnnotationNote } from "./annotations";
 import { docCommentText } from "./motly";
 
@@ -74,10 +73,8 @@ const ARTIFACT_NOTE = {
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
 
-/** Malloy's own routing for one note: its route, empty for a plain tag, `undefined` when the prefix is malformed. */
-export function routeOfNote(text: string): string | undefined {
-   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
-}
+/** Malloy's own routing for one note (see annotation_reader.ts). */
+export { routeOfNote };
 
 /** Whether a note is on the `(markdown)` route, at either level and in either form. */
 export function isMarkdownNote(text: string): boolean {
@@ -413,9 +410,7 @@ type ReaderItem =
 
 /** A `(markdown)` block's body: text on its opener line is prose too, except a lone bare word, which names it. */
 function markdownBlockBody(opener: string, bodyLines: string[]): string {
-   const rest = payloadOf({ value: opener } as Parameters<
-      typeof payloadOf
-   >[0]).trim();
+   const rest = payloadOfNote(opener).trim();
    // Only a `(markdown)` or `(text)` opener names its block; a `"` opener's text is always prose.
    const onOpener =
       routeOfNote(opener) !== '"' && TEXT_BLOCK_NAME.test(rest) ? "" : rest;
@@ -426,9 +421,7 @@ function markdownBlockBody(opener: string, bodyLines: string[]): string {
 
 /** A `(markdown)` line note's prose: what follows the route and its one separator. */
 function markdownLineBody(noteText: string): string {
-   return normalizeNewlines(
-      payloadOf({ value: noteText } as Parameters<typeof payloadOf>[0]),
-   ).replace(/\n$/, "");
+   return normalizeNewlines(payloadOfNote(noteText)).replace(/\n$/, "");
 }
 
 /**
@@ -868,9 +861,7 @@ export function parseMarkdownOpener(
    const route = routeOfNote(line);
    if (route !== MARKDOWN_ROUTE && !(sigil[1] === "##" && route === "text"))
       return undefined;
-   const rest = payloadOf({ value: line } as Parameters<
-      typeof payloadOf
-   >[0]).trim();
+   const rest = payloadOfNote(line).trim();
    return {
       level: sigil[1].length as 1 | 2,
       route,

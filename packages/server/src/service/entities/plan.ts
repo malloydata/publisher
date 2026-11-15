@@ -41,6 +41,7 @@ import {
    type DimIndexFingerprintInputs,
 } from "./dim_index_entity_id";
 import { errMessage } from "../../utils";
+import { marksAgentHidden } from "../annotation_reader";
 import {
    BoundaryDescents,
    type QueryabilityGuard,
@@ -188,7 +189,7 @@ async function plan(
    // routes: `#[agent-hidden]` routes exactly as `#(agent-hidden)` does.
    const isAgentHiddenTagPresentOnModelFile = compiledModel
       .getTaglines()
-      .some((t) => /^##\|?\s*[([{<]?\s*agent-hidden\b/.test(t));
+      .some((t) => marksAgentHidden(t, "file"));
 
    // Every annotation the index refuses, so the load names them all.
    const findings: Guarded<EntitiesFinding>[] = [];

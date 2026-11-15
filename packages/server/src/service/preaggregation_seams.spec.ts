@@ -416,32 +416,75 @@ source: regions is duckdb.sql("""
    );
 
    it(
-      "answers a given-supplying query, which cannot route",
+      "routes a query through index.malloy's re-export to the declaring model's rollup (#7096)",
       async () => {
-         // A model-level `given:` does not cross the companion's `import`, so the
-         // companion surfaces no givens and a query supplying one cannot compile
-         // against it. That is a coverage limit (documented in
-         // docs/preaggregation.md) but it must not be an ERROR, and it is only
-         // not one because the probe is given the same givens the run will use:
-         // probe without them and the query compiles, then fails at run with
-         // "unknown given 'MIN_AMOUNT'. Model surfaces []".
-         //
-         // The rollup entry is bound to a table that does not exist, so a query
-         // that wrongly routed here would fail loudly instead of quietly
-         // returning the right answer from the base.
-         const pkg =
-            await loadPackage(`##! experimental { persistence composite_sources givens }
-
-given: MIN_AMOUNT :: number is 0
-
+         // The recommended curation: `index.malloy` imports the file that
+         // declares the rollup and re-exports `orders`. Both models plan the
+         // rollup, under one name and one address, so it is one table, not a
+         // collision, and the curated surface routes to it.
+         const pkg = await loadPackageFiles({
+            "sub/jaffle.malloy": `##! experimental { persistence composite_sources }
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
 """) extend {
-  where: amount >= $MIN_AMOUNT
   #@ preaggregate grain="category"
   measure: total is amount.sum()
 }
-`);
+`,
+            "index.malloy": `import "sub/jaffle.malloy"
+export { orders }
+`,
+         });
+         // One content address for both models' rollups: one table.
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         // Bound to a table that does not exist, so a routed query fails
+         // naming it, and a live one would quietly answer from the base.
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         const query =
+            "run: orders -> { group_by: category; aggregate: total; order_by: category }";
+         // With an index.malloy, only it is queryable: the curated surface.
+         const model = pkg.getModel("index.malloy");
+         expect(model).toBeDefined();
+         await expect(
+            model!.runQuery(unrecordedAudit(), { query }),
+         ).rejects.toThrow(/no_such_rollup_table/);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "routes a query through a model that imports the rollup's base without re-exporting it (#6646)",
+      async () => {
+         // No index.malloy, so every model is queryable. `report.malloy`
+         // imports `orders` but exports only its own source.
+         // Its companion used to rename-import the base from report.malloy,
+         // which hands an importer only what it exports, so the companion
+         // failed to compile and every query here ran live.
+         const pkg = await loadPackageFiles({
+            "sub/jaffle.malloy": `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+            "report.malloy": `import { orders } from "sub/jaffle.malloy"
+source: notes is duckdb.sql("SELECT 1 AS id")
+export { notes }
+`,
+         });
          const rollupIds = [...pkg.getPreaggregateEntityIds()];
          expect(rollupIds).toHaveLength(1);
          pkg.bindColocatedServeManifest(
@@ -455,6 +498,38 @@ source: orders is duckdb.sql("""
                ]),
             ),
          );
+         await expect(
+            pkg.getModel("report.malloy")!.runQuery(unrecordedAudit(), {
+               query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            }),
+         ).rejects.toThrow(/no_such_rollup_table/);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "answers a given-supplying query live, with no rollup planned over rows that read the given",
+      async () => {
+         // A rollup over rows that read a given holds one value's rows, so
+         // the rollup leg plans none and warns; a query supplying the given
+         // is answered live, with the given applied, never an error.
+         const pkg =
+            await loadPackage(`##! experimental { persistence composite_sources givens }
+
+given: MIN_AMOUNT :: number is 0
+
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  where: amount >= $MIN_AMOUNT
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+         expect(pkg.getPreaggregateEntityIds().size).toBe(0);
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).map((w) => w.code),
+         ).toContain("preaggregate-reads-given");
          const model = pkg.getModel("model.malloy");
          const { compactResult } = await model!.runQuery(unrecordedAudit(), {
             query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
@@ -690,17 +765,18 @@ source: orders is duckdb.sql("""
 `;
 
    it(
-      "plans the rollup — the gate stops materialization, not synthesis",
+      "plans no rollup over the gated source, and says so",
       async () => {
-         // Worth pinning both halves separately. Synthesis is unaffected by the
-         // gate, so the rollup reaches the plan; what keeps the combination safe
-         // is that MATERIALIZING it is then refused, which is asserted directly
-         // against the build gate in `materialization_eligibility.spec.ts` (a
-         // rollup-shaped `#@ persist` over a gated base). A frozen rollup
-         // pre-aggregates ACROSS org_id, so it could not be filtered by org_id
-         // afterwards at all.
+         // A frozen rollup pre-aggregates ACROSS org_id, so it could not be
+         // filtered by org_id afterwards at all. The rollup leg, which reads
+         // v1 `#@ preaggregate` lines under the cutover, never plans one over
+         // a gated base whose gate reads a column outside the grain, and the
+         // package warns that the measure is served live.
          const pkg = await loadPackage(GATED);
-         expect(planSources(pkg)).toHaveLength(1);
+         expect(planSources(pkg)).toHaveLength(0);
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).map((w) => w.code),
+         ).toContain("preaggregate-access-filter");
       },
       { timeout: 60000 },
    );
@@ -777,25 +853,19 @@ source: orders is duckdb.sql("""
       const ROUTING_COUNTER = "publisher_storage_serve_routing_total";
 
       it(
-         "meters blocked_by_row_level_gate exactly once for a gated query, computed at the single routingBlockedByRowLevelGate site rather than per tier",
+         "records no routing outcome for a gated query no rollup is planned for",
          async () => {
+            // The gate keeps a gated query off frozen rows. Under the cutover
+            // no rollup is planned over this source, so no candidate exists
+            // for the gate to veto and nothing is metered: a per-tier emit
+            // would count a block that never happened.
             const pkg = await loadPackage(GATED);
             await runGatedQuery(
                pkg,
                "run: orders -> { group_by: category; aggregate: total; order_by: category }",
                { GROUPS: [1] },
             );
-
-            expect(
-               await harness.collectCounter(ROUTING_COUNTER, {
-                  outcome: "blocked_by_row_level_gate",
-               }),
-            ).toBe(1);
-            // Nothing else on this path should record a routing outcome: the
-            // storage tier never ran (no storage bindings configured for this
-            // package) and pre-aggregation's own guard emits no metric of its
-            // own — a per-tier emit would have doubled this count.
-            expect(await harness.collectCounter(ROUTING_COUNTER, {})).toBe(1);
+            expect(await harness.collectCounter(ROUTING_COUNTER, {})).toBe(0);
          },
          { timeout: 60000 },
       );
@@ -863,12 +933,15 @@ source: orders is duckdb.sql("""
    );
 
    it(
-      "meters blocked_by_row_level_gate for a authorize-only entry point",
+      "plans no rollup for an authorize-only entry point, so nothing routes or is metered",
       async () => {
          const harness = await startMetricsHarness();
          resetMaterializationTelemetryForTesting();
          try {
             const pkg = await loadPackage(SOURCE_AUTHORIZE_GATED);
+            // A lock-only gate stops the rollup leg exactly as a row filter
+            // does: no rollup is planned over the gated source.
+            expect(planSources(pkg)).toHaveLength(0);
             await runGatedQuery(
                pkg,
                "run: orders -> { group_by: category; aggregate: total; order_by: category }",
@@ -877,9 +950,9 @@ source: orders is duckdb.sql("""
             expect(
                await harness.collectCounter(
                   "publisher_storage_serve_routing_total",
-                  { outcome: "blocked_by_row_level_gate" },
+                  {},
                ),
-            ).toBe(1);
+            ).toBe(0);
          } finally {
             resetMaterializationTelemetryForTesting();
             await harness.shutdown();

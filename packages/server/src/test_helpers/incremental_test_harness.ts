@@ -122,7 +122,9 @@ export function tempBuildPlanPackages(): {
          );
          dirs.push(dir);
          for (const [modelFile, modelText] of Object.entries(models)) {
-            await fs.writeFile(path.join(dir, modelFile), modelText);
+            const file = path.join(dir, modelFile);
+            await fs.mkdir(path.dirname(file), { recursive: true });
+            await fs.writeFile(file, modelText);
          }
          const { duckdb, connections } = duckdbTestConnections();
          const malloyConfig = new MalloyConfig({ connections: {} });

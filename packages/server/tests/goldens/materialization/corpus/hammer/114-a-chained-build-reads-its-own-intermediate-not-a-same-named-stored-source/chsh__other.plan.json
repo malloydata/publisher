@@ -1,0 +1,79 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "mid@<hammer>/chsh/other.malloy": []
+        },
+        "order": [
+          "mid@<hammer>/chsh/other.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "mid@<hammer>/chsh/other.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "mid@<hammer>/chsh/other.malloy": "other.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "mid@<hammer>/chsh/other.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "mid@<hammer>/chsh/other.malloy": {
+        "annotationFields": {
+          "name": "chsh_other_mid",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "v",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "other.malloy",
+        "name": "mid",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "c60a1c296206c555bb268cc320acddc1e51ae519676e66ffc55a76af673caa7a",
+        "sourceID": "mid@<hammer>/chsh/other.malloy",
+        "sql": "sha256:b658c4e1ea3b11cf"
+      }
+    }
+  }
+}

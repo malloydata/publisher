@@ -89,7 +89,10 @@ component](#the-dashboard-component-tag-only-path)).
 **Non-goals (for this design):**
 
 - No MCP surface for dashboards. They are a human/UI artifact; agents keep using
-  `get_context` / `execute_query` against the underlying models.
+  `get_context` / `execute_query` against the underlying models. _(Revisited 2026-11-06: `list_reports`
+  and `show_report` now show a report in an MCP Apps panel, the one MCP surface Malloyyo added after this
+  design, as `show_dashboard`. Agents still answer questions with `execute_query`; see
+  [reports.md](reports.md#showing-one-in-a-conversation).)_
 - No query log / share links. Worth having, but a server-wide concern rather than a dashboards
   one, so it is tracked separately.
 - No converter to `.malloynb` — dashboards render natively, they are not translated.

@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { MaterializationUpdate } from "../../../storage/DatabaseInterface";
-import { MaterializationStatus } from "../types";
+import { MaterializationStatus } from "../domain/types";
 import { makeMaterialization } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
 import type { MaterializationService } from "./materialization_service";

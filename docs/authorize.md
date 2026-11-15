@@ -273,6 +273,19 @@ for the full contract and how to bound that staleness. `storage=` and `#@ preagg
 unconditionally refused for any `#(access_filter)`-gated source — the relaxation applies to colocated
 persistence only.
 
+**Colocated `#(preaggregate)` rollups (in development).** With `PUBLISHER_MATERIALIZE` and
+`PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(preaggregate)` rollup over a gated
+source is built in the source's own warehouse and read past the gate, the same way: the queried source
+is redeclared over the rollup with its own gates and keeps its identity, so this section's rules hold
+on it unchanged — the gate is grafted onto it per request, proven bound to the source's own field, and
+a gate that cannot be grafted denies. It is built only when every field the gate reads is one of the
+rollup's grain dimensions (so filtering the rollup's groups admits exactly the rows live admits), and
+read only when the gates on the rollup equal the live entry point's; otherwise the rollup is not built,
+or the query is answered live. One table holds every caller's groups, filtered per caller at read, so the
+staleness contract above applies to it as to any colocated table. A rollup in a `storage=` destination
+over a gated source stays off until the managed tier's security review, and a v1 `#@ preaggregate`
+rollup is never read past a gate. See [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize).
+
 Declare the gate the same way as on any other source — directly above the `source:` line, whether or
 not that line is also tagged `#@ persist`:
 
@@ -426,7 +439,7 @@ Under that design, an author join from a broader entry to a stricter source is t
 
 A join the **caller** writes is gated, as the caller entering that source (see [Enforcement](#enforcement)). A join the **author** writes is not: it is part of the entry source's own build, so a published source that declares `join_one: person is people` hands `people`'s rows to every caller it admits, with `people`'s gate never consulted. The two fixes are the author's: scope the entry source on the same given the joined source is scoped on (`#(access_filter) person.org_id in $ORGS`, which also turns the `join_one` inner, see above), or carry the caller's key in the join's `on`.
 
-Publisher checks that one of them was done. When neither was, the package still loads, with a `join-bypass` warning in `GET …/packages/{pkg}` `warnings` and `get_status`. That follows from [gates being edge controls](#gates-are-edge-controls): what each door exposes is the author's call, and the warning asks whether this one was meant. For every join a published, reachable source declares, up to 16 joins deep and 1024 join paths per source, it reads the gates in force on the joined struct (own and inherited, both routes) and compares them with the entry source's own gates. Joins written inside a `->` query source's pipeline, and the joins of the source a `->` derives from (a `compose` member included), are walked the same way. Four cases warn:
+Publisher checks that one of them was done. When neither was, the package still loads, with a `join-bypass` warning in `GET …/packages/{pkg}` `warnings` and `get_status`. That follows from [gates being edge controls](#gates-are-edge-controls): what each door exposes is the author's call, and the warning asks whether this one was meant. For every join a published, reachable source declares, up to 16 joins deep and 1024 join paths per source, it reads the gates in force on the joined struct (own and inherited, both routes) and compares them with the entry source's own gates. Joins written inside a `->` query source's pipeline, and the joins of the source a `->` derives from (a `compose` member included), are walked the same way. A join written inside a query on an array (`items -> { extend: { join_one: … } }`, Malloy's experimental `##! experimental.array_queries`) is not walked, so a model that declares any gate, `#(carries)` or `#(classification)` refuses one: the load fails, and so does a caller's query that writes one. Four cases warn:
 
 - the joined struct is locked outright (`#(authorize) false`) and the entry source carries no gate at all: the open-source-over-a-locked-base leak. A gated entry over a locked base does not refuse; that is the [recommended pattern](#recommended-pattern-locked-base-and-curated-extensions), where the extension's own gate replaces the base's `false`;
 - the joined struct's `#(authorize)` lock has a term the entry's lock does not also demand;

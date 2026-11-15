@@ -81,11 +81,11 @@ neighbour's.
 
 Which grain landed where, not merely which schemas were used: the set alone passes
 whichever rollup went to which, so it would read as green if the two were swapped. The
-rollup's name carries its grain — `<base>__preagg__<grain>__<digest>` — so the catalog
+rollup's name carries its grain — `<base>__preagg__<grain>__<digest>`, or `<base>__rollup__<grain>__<digest>` once the v1 cutover builds it on the rollup leg — so the catalog
 can be asked for the pairing without knowing the digest.
 
 ```sql
-SELECT table_schema, split_part(table_name, '__', 3) AS grain FROM information_schema.tables WHERE table_name LIKE '%__preagg__%' ORDER BY table_schema
+SELECT table_schema, split_part(table_name, '__', 3) AS grain FROM information_schema.tables WHERE (table_name LIKE '%__preagg__%' OR table_name LIKE '%__rollup__%') ORDER BY table_schema
 ```
 
 Expect:

@@ -355,6 +355,8 @@ function sharedAddressAdvisories(
          warnings.push({
             model: source.modelPath ?? "",
             subject: source.sourceName,
+            code: INCREMENTAL_SHARED_ADDRESS_CODE,
+            severity: "warn",
             message:
                `compiles to the same SQL as ${quoteList(others)} on the same ` +
                `connection, so they share ONE content address — and therefore ` +
@@ -373,6 +375,13 @@ function sharedAddressAdvisories(
    return warnings;
 }
 
+/** The code on the advisory for an incremental source with no `merge_key=`. */
+export const INCREMENTAL_NO_MERGE_KEY_CODE = "persist-incremental-no-merge-key";
+
+/** The code on the advisory for sources that share one content address. */
+export const INCREMENTAL_SHARED_ADDRESS_CODE =
+   "persist-incremental-shared-address";
+
 /**
  * Advisory findings: surfaced on the package's warnings array, never blocking.
  * Each is a case where the declaration is legal and does something the author
@@ -386,19 +395,9 @@ export function incrementalPolicyAdvisories(
       const { declaration: d } = source;
       const at = { model: source.modelPath ?? "", subject: source.sourceName };
 
-      // Unknown keys pass through by design, so this is the ONLY guard for a
-      // misspelled `merge_key=`, which would silently degrade to range replace.
-      for (const key of d.unknownKeys) {
-         warnings.push({
-            ...at,
-            message:
-               `declares an unrecognized #@ persist key "${key}", which the ` +
-               `publisher passes through untouched. If it is a typo the intended ` +
-               `behavior is silently absent — note that a misspelled merge_key= ` +
-               `leaves an incremental source applying its delta by range replace ` +
-               `instead of by row identity.`,
-         });
-      }
+      // An unknown key (a misspelled `merge_key=`, which would silently
+      // degrade to range replace) is reported for every persist source, coded
+      // `persist-unknown-key`, by the annotation reader; not again here.
 
       if (d.incremental && d.watermark !== undefined && !d.declaredMergeKey) {
          // Per-engine cost: a warehouse prunes a range DELETE by partitioning; a
@@ -412,6 +411,8 @@ export function incrementalPolicyAdvisories(
               `table on every run.`;
          warnings.push({
             ...at,
+            code: INCREMENTAL_NO_MERGE_KEY_CODE,
+            severity: "warn",
             message:
                `is ${MODE} with no merge_key=, so each refresh REPLACES the ` +
                `watermark range it just computed. Two consequences worth ` +

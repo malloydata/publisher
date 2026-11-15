@@ -1,0 +1,157 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/pow/pow.malloy": [],
+          "rollup@<hammer>/pow/pow.malloy": [
+            "daily@<hammer>/pow/pow.malloy"
+          ],
+          "rollup_wide@<hammer>/pow/pow.malloy": [
+            "daily@<hammer>/pow/pow.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/pow/pow.malloy",
+          "rollup@<hammer>/pow/pow.malloy",
+          "rollup_wide@<hammer>/pow/pow.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/pow/pow.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/pow/pow.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup_wide@<hammer>/pow/pow.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/pow/pow.malloy": "pow.malloy",
+      "rollup@<hammer>/pow/pow.malloy": "pow.malloy",
+      "rollup_wide@<hammer>/pow/pow.malloy": "pow.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/pow/pow.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/pow/pow.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/pow/pow.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/pow/pow.malloy"
+              ],
+              "sourceID": "rollup_wide@<hammer>/pow/pow.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/pow/pow.malloy": {
+        "annotationFields": {
+          "name": "pow_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pow.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "da948460b5d6502931ca9f86fd869d810bbdf141b4a9533d3255071595e54840",
+        "sourceID": "daily@<hammer>/pow/pow.malloy",
+        "sql": "sha256:356d50c9e4db9794"
+      },
+      "rollup@<hammer>/pow/pow.malloy": {
+        "annotationFields": {
+          "name": "pow_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pow.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ac73059f2d2e96c361028db929c2655c05cee2fb50faac3574446180a1367142",
+        "sourceID": "rollup@<hammer>/pow/pow.malloy",
+        "sql": "sha256:3e705754835cf125"
+      },
+      "rollup_wide@<hammer>/pow/pow.malloy": {
+        "annotationFields": {
+          "name": "pow_rollup_wide",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pow.malloy",
+        "name": "rollup_wide",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e4a9b36d870cf7eae94fb53d317300f830933e333b93f795ba93fd34c8096ae4",
+        "sourceID": "rollup_wide@<hammer>/pow/pow.malloy",
+        "sql": "sha256:223cda5ad9f8db21"
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+// conformance: multi-line annotations [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+## renderer_hint=table
+##! experimental { virtual_source }
+type: annotated__served is {
+   #(doc) "The order's region"
+   # label="Region"
+   region::string,
+   order_month::date,
+   # currency
+   total::number
+}
+
+import "raw.malloy"
+
+#(doc) "Orders per region and month."
+#(doc) "Rebuilt nightly."
+#@ persist name="annotated"
+# dashboard
+source: annotated is duckdb.virtual('e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924')::annotated__served extend {
+  internal rename:
+    order_month__stored is order_month
+  dimension:
+    order_month is order_month__stored.month
+  #(doc) "Total over every row"
+  # currency
+  # number="#,##0.00"
+  measure: grand is total.sum()
+}

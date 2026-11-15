@@ -1,0 +1,38 @@
+// conformance: keyed join_one with [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: order_facts__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   amount::number
+}
+type: cust__served is {
+   id::number,
+   segment::string,
+   home_region::string
+}
+
+import "raw.malloy"
+
+#@ persist name="cust"
+source: cust is duckdb.virtual('d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e')::cust__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  primary_key: id
+}
+
+#@ persist name="order_facts"
+source: order_facts is duckdb.virtual('f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee')::order_facts__served extend {
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+  dimension:
+    id is id__stored::"BIGINT"
+    customer_id is customer_id__stored::"BIGINT"
+  join_one: c is cust with customer_id
+}

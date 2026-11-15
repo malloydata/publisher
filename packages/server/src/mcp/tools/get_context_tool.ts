@@ -164,7 +164,7 @@ function runListing(
    // collectEntities pushes a source ahead of its own fields and Array.from
    // keeps that order, so toSourceResults sees the source before the
    // entities that nest under it.
-   const inScope = Array.from(byId.values()).filter(
+   const matching = Array.from(byId.values()).filter(
       (e) =>
          // A scoped source's own row always survives: it becomes the
          // card rather than competing for an entity slot.
@@ -174,6 +174,13 @@ function runListing(
          // A source the caller cannot enter spends no slot and is not counted.
          !droppedSources.has(sourceContextKey(e.modelPath, e.source ?? "")),
    );
+   // A record's members (`delivery.city`) after everything else, so a wide
+   // record cannot spend the cap before the source's other fields, joins and
+   // views. Every member still follows its source's row.
+   const inScope = [
+      ...matching.filter((e) => !e.recordPath),
+      ...matching.filter((e) => e.recordPath),
+   ];
    // The limit caps entities; a drill-down's source row becomes the card and
    // does not spend a slot. Only a pure browse has a stable order, so only it
    // honours `offset`.

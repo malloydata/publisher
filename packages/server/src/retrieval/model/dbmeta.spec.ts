@@ -202,3 +202,33 @@ describe("the response", () => {
       expect(invoices?.entities?.[0]).not.toHaveProperty("description_source");
    });
 });
+
+describe("an authored block doc", () => {
+   // The `#(doc)` reader matched single-line notes only, so a block doc
+   // (`#|(doc) … |#`) read as no doc, and the database's description won.
+   it("documents its source, ahead of the database's description", async () => {
+      const { pkg } = await compileJoinFixture("m.malloy", {
+         modelText: `
+#|(doc)
+  Authored orders,
+  in a block.
+|#
+source: block_documented is duckdb.sql("${ORDERS_SQL}") extend {
+  dimension: one is 1
+}
+`,
+         dbmeta: { [ORDERS_SQL]: { table: "Orders table.", columns: {} } },
+      });
+      const index = await getPackageIndex(
+         new WeakMap(),
+         storeServing(pkg),
+         "env",
+         "pkg",
+      );
+      const source = [...index.byId.values()].find(
+         (e) => e.kind === "source" && e.name === "block_documented",
+      );
+      expect(source?.doc).toBe("Authored orders, in a block.");
+      expect(source?.docSource).toBeUndefined();
+   });
+});

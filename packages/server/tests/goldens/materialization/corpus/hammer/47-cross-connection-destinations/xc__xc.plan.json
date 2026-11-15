@@ -1,0 +1,114 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "a@<hammer>/xc/xc.malloy": [],
+          "b@<hammer>/xc/xc.malloy": []
+        },
+        "order": [
+          "a@<hammer>/xc/xc.malloy",
+          "b@<hammer>/xc/xc.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "a@<hammer>/xc/xc.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "b@<hammer>/xc/xc.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "a@<hammer>/xc/xc.malloy": "xc.malloy",
+      "b@<hammer>/xc/xc.malloy": "xc.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "a@<hammer>/xc/xc.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "b@<hammer>/xc/xc.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "a@<hammer>/xc/xc.malloy": {
+        "annotationFields": {
+          "name": "xc_a",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "xc.malloy",
+        "name": "a",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d03f3258bd862108f5b80f2cf9a8df6168cdbd16acef45948725101095676270",
+        "sourceID": "a@<hammer>/xc/xc.malloy",
+        "sql": "sha256:c6a635b95bd5af39"
+      },
+      "b@<hammer>/xc/xc.malloy": {
+        "annotationFields": {
+          "name": "xc_b",
+          "storage": "lake2"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "xc.malloy",
+        "name": "b",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8e4c34b6a1e9baa72f662ee6da149e30bc434dceb97e9705c31174b7eaae414d",
+        "sourceID": "b@<hammer>/xc/xc.malloy",
+        "sql": "sha256:35a69623562946b4"
+      }
+    }
+  }
+}

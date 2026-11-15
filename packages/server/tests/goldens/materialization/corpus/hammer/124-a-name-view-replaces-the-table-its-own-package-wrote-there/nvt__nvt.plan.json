@@ -1,0 +1,112 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily_orders@<hammer>/nvt/nvt.malloy": []
+        },
+        "order": [
+          "daily_orders@<hammer>/nvt/nvt.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "daily_orders@<hammer>/nvt/nvt.malloy": {
+        "buildSourceName": "daily_orders__mat",
+        "columns": [
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "total_amount",
+            "computed": false,
+            "dimension": "total_amount"
+          }
+        ],
+        "persist": {
+          "name": "nvt_daily",
+          "storage": "lake"
+        },
+        "sourceID": "daily_orders@<hammer>/nvt/nvt.malloy",
+        "sourceName": "daily_orders",
+        "storedColumns": [
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "total_amount",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily_orders@<hammer>/nvt/nvt.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily_orders@<hammer>/nvt/nvt.malloy": "nvt.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily_orders@<hammer>/nvt/nvt.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily_orders@<hammer>/nvt/nvt.malloy": {
+        "annotationFields": {
+          "name": "nvt_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "nvt.malloy",
+        "name": "daily_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8bd0cc6964fd5e4945612e1bb0b75d4c154cbc3742504b806d548b466f2cfda6",
+        "sourceID": "daily_orders@<hammer>/nvt/nvt.malloy",
+        "sql": "sha256:7aa8a6dc5304e60e"
+      }
+    }
+  }
+}

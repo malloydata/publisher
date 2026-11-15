@@ -91,7 +91,13 @@ describe("secureGivens on the package responses", () => {
       manifest: Record<string, unknown> = {},
    ): string {
       const dir = path.join(tempDir, name);
-      writePackageFiles(dir, {}, { manifest: { name, ...manifest } });
+      writePackageFiles(
+         dir,
+         {},
+         {
+            manifest: { name, version: "1.0.0", ...manifest },
+         },
+      );
       for (const [file, text] of Object.entries(files)) {
          fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
          fs.writeFileSync(path.join(dir, file), text);
@@ -154,7 +160,10 @@ describe("secureGivens on the package responses", () => {
    }, 180_000);
 
    afterEach(() => {
-      setVariable(FLAG, undefined);
+      // Back to the process's own settings (versioning on).
+      restoreSettings?.();
+      restoreSettings = undefined;
+      delete variables[FLAG];
    });
 
    afterAll(async () => {
@@ -222,7 +231,6 @@ describe("secureGivens on the package responses", () => {
    }, 120_000);
 
    it("a versioned publish carries it too", async () => {
-      setVariable(FLAG, "on");
       const location = writePackage("versioned", SECURE_FILES, {
          version: "1.0.0",
       });
@@ -234,7 +242,7 @@ describe("secureGivens on the package responses", () => {
          EXPECTED,
       );
    }, 120_000);
-   it("follows the models through a reload in place and a reinstall", async () => {
+   it("follows the models through a reload in place and a new version", async () => {
       const location = writePackage("editable", {
          "shared.malloy": SHARED,
          "orders.malloy": ORDERS,
@@ -265,14 +273,18 @@ describe("secureGivens on the package responses", () => {
          withTenant,
       );
 
-      // A reinstall from the location: ROLES is no longer secure.
+      // A new version from the location: ROLES is no longer secure.
       fs.writeFileSync(
          path.join(location, "shared.malloy"),
          SHARED_WITHOUT_SECURE,
       );
-      expect(
-         (await get("editable", "?reload=true")).secureGivens as SecureGiven[],
-      ).toEqual([]);
+      fs.writeFileSync(
+         path.join(location, "publisher.json"),
+         JSON.stringify({ name: "editable", version: "1.1.0" }),
+      );
+      const next = await publish("editable", location);
+      expect(next.status).toBe(200);
+      expect(next.json.secureGivens).toEqual([]);
       expect((await get("editable")).secureGivens).toEqual([]);
    }, 120_000);
 
@@ -300,6 +312,9 @@ describe("secureGivens on the package responses", () => {
    }, 120_000);
 
    it("a PATCH body cannot set it", async () => {
+      // The package PATCH edits only a package installed in place, which a
+      // publish is only with versioning off.
+      setVariable(FLAG, "off");
       const location = writePackage("patched", {
          "shared.malloy": SHARED,
          "orders.malloy": ORDERS,

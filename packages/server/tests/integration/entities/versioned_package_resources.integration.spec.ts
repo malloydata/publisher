@@ -13,7 +13,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { components } from "../../../src/api";
 import { installVariables } from "../../../src/test_helpers/settings_env";
-import { versioningOnForSuite } from "../../harness/versioning";
 import { type ResourcesEnv, startResourcesEnv } from "./resources_harness";
 
 type ModelEntities = components["schemas"]["ModelEntities"];
@@ -35,7 +34,6 @@ function orders(n: number): string {
 }
 
 describe("a versioned package's sub-resources", () => {
-   versioningOnForSuite();
    let r: ResourcesEnv;
    const at = (sub: string, versionId?: string) =>
       r.get(

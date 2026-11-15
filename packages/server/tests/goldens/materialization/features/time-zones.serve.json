@@ -1,0 +1,1347 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "mat",
+        "tier": "storage"
+      },
+      {
+        "name": "wide",
+        "tier": "storage"
+      },
+      {
+        "name": "orders__rollup__m_region__75e7c0f9",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [
+      "mat:serves",
+      "wide:serves"
+    ],
+    "warnings": [
+      {
+        "code": "preaggregate-time-zone",
+        "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "subject": "zoned.total"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "9017732092194ceb",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: m; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a rollup, no zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "61974a73080d241b",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1,
+          "timezone": "America/Los_Angeles"
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { timezone: 'America/Los_Angeles'; group_by: m; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders",
+          "timeZone": "America/Los_Angeles"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a rollup under a query time zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d0505d6126410038",
+          "kind": "reduce",
+          "measures": [],
+          "nested": true,
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: region; nest: n is { timezone: 'America/Los_Angeles'; group_by: m; aggregate: total } }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a rollup under a nest's time zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "fb5c90a477e279d2",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "zoned",
+          "stages": 1
+        },
+        "source": "zoned"
+      },
+      "equalToLive": true,
+      "malloy": "run: zoned -> { group_by: m; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "zoned"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a zoned source's rollup",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5e815f09b18a5a6b",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "rezoned",
+          "stages": 1
+        },
+        "source": "rezoned"
+      },
+      "equalToLive": true,
+      "malloy": "run: rezoned -> { group_by: m; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "rezoned"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an extension that sets its own zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_day"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "created_day"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "a88d591320c48f53",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "mat",
+          "stages": 1
+        },
+        "source": "mat"
+      },
+      "equalToLive": true,
+      "malloy": "run: mat -> { group_by: created_day; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_day"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "mat"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a materialized source's stored day, no zone",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_day"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "created_day"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "70dba07ad82dae17",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "mat",
+          "stages": 1,
+          "timezone": "America/Los_Angeles"
+        },
+        "source": "mat"
+      },
+      "equalToLive": true,
+      "malloy": "run: mat -> { timezone: 'America/Los_Angeles'; group_by: created_day; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_day"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "mat",
+          "timeZone": "America/Los_Angeles"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a materialized source's stored day under a query time zone",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.segment"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customers.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3689f0679061534b",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "wide",
+          "stages": 1,
+          "timezone": "America/Los_Angeles"
+        },
+        "source": "wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: wide -> { timezone: 'America/Los_Angeles'; group_by: customers.segment; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "TIME_ZONE",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customers.segment"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "wide",
+          "timeZone": "America/Los_Angeles"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an inlined join under a query time zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "9017732092194ceb",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: m; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+        },
+        "warnings": []
+      },
+      "query": "a rollup, no zone",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "61974a73080d241b",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1,
+          "timezone": "America/Los_Angeles"
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { timezone: 'America/Los_Angeles'; group_by: m; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "detail": "the query sets its own time zone, and the rollup was built in the model's",
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "TIME_ZONE",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders",
+          "timeZone": "America/Los_Angeles"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a rollup under a query time zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "d0505d6126410038",
+          "kind": "reduce",
+          "measures": [],
+          "nested": true,
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> { group_by: region; nest: n is { timezone: 'America/Los_Angeles'; group_by: m; aggregate: total } }",
+      "path": {
+        "considered": [
+          {
+            "detail": "the query sets its own time zone, and the rollup was built in the model's",
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "TIME_ZONE",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a rollup under a nest's time zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "fb5c90a477e279d2",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "zoned",
+          "stages": 1
+        },
+        "source": "zoned"
+      },
+      "equalToLive": true,
+      "malloy": "run: zoned -> { group_by: m; aggregate: total }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "orders",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "zoned"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a zoned source's rollup",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "m"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "m"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5e815f09b18a5a6b",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "rezoned",
+          "stages": 1
+        },
+        "source": "rezoned"
+      },
+      "equalToLive": true,
+      "malloy": "run: rezoned -> { group_by: m; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "detail": "the query's source sets its own time zone, and the rollup was built in its base's",
+            "kind": "rollup",
+            "outcome": "skipped",
+            "reason": "TIME_ZONE",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "m"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "rezoned"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an extension that sets its own zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_day"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "created_day"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "a88d591320c48f53",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "mat",
+          "stages": 1
+        },
+        "source": "mat"
+      },
+      "equalToLive": true,
+      "malloy": "run: mat -> { group_by: created_day; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "orders",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_day"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "mat"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a materialized source's stored day, no zone",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_day"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "created_day"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "70dba07ad82dae17",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "mat",
+          "stages": 1,
+          "timezone": "America/Los_Angeles"
+        },
+        "source": "mat"
+      },
+      "equalToLive": true,
+      "malloy": "run: mat -> { timezone: 'America/Los_Angeles'; group_by: created_day; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "orders",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "wide",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_day"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "mat",
+          "timeZone": "America/Los_Angeles"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a materialized source's stored day under a query time zone",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers.segment"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customers.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3689f0679061534b",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "wide",
+          "stages": 1,
+          "timezone": "America/Los_Angeles"
+        },
+        "source": "wide"
+      },
+      "equalToLive": true,
+      "malloy": "run: wide -> { timezone: 'America/Los_Angeles'; group_by: customers.segment; aggregate: n }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "TIME_ZONE",
+            "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "relationship": "sibling",
+            "sourceName": "orders",
+            "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customers.segment"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "wide",
+          "timeZone": "America/Los_Angeles"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an inlined join under a query time zone",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

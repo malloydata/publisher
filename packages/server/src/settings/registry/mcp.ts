@@ -11,7 +11,7 @@ export const mcp = [
       type: integer({ min: 0, max: 65535 }),
       default: 4040,
       description: "MCP HTTP port.",
-      notes: "MCP HTTP port. Serves the ten MCP tools (`list_packages`, `get_context`, `execute_query`, `compile_model`, `reload_package`, `get_status`, `search_malloy_docs`, `search_database_schema`, `get_skill`, `get_agent`) and the agent skills as MCP prompts. `list_packages` is listed first because it is where an agent starts: `get_context` requires an environment and package in its `scopes`, and those names come from there.",
+      notes: "MCP HTTP port. Serves the MCP tools (`list_packages`, `get_context`, `execute_query`, `compile_model`, `reload_package`, `get_status`, `search_malloy_docs`, `search_database_schema`, `get_skill`, `get_agent`, `list_reports`, `show_report`, and the panel-only `report_api`) and the agent skills as MCP prompts. `list_packages` is listed first because it is where an agent starts: `get_context` requires an environment and package in its `scopes`, and those names come from there.",
       aliases: {
          env: ["MCP_PORT"],
          flags: ["--mcp_port"],
@@ -63,6 +63,15 @@ export const mcp = [
          file: ["mcp.includeHiddenFilesAndSources"],
          today: { file: "json-boolean", invalid: "warn" },
       },
+   }),
+   setting({
+      key: "mcp.appOrigin",
+      type: string(),
+      description:
+         "The REST server's address as an MCP host's browser reaches it; the show_report panel loads its script from there.",
+      notes: "The origin (`scheme://host[:port]`, no path) the `show_report` panel, an MCP App that hosts such as Claude Desktop draw inside the conversation, loads `/mcp-app/report.js` and `/mcp-app/report.css` from, and the address the tool's \"Open in Publisher\" link points at. It is declared as the panel's only resource domain. The panel's data never comes from here: every request it makes goes back through the MCP host as a `report_api` tool call. Set it when the REST server is reached at another address, such as behind a gateway (`https://publisher.example.com`). The host's browser fetches those two files with no credentials, so behind a gateway that authenticates everything the panel stays blank: expose only `/mcp-app/*` without authentication, and keep every other path on that origin behind the gateway, because the rest of the REST API is unauthenticated and includes writes.",
+      defaultText: "http://localhost:{port}",
+      aliases: { env: ["MCP_APP_ORIGIN"] },
    }),
    setting({
       key: "mcp.trace",

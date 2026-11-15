@@ -105,6 +105,20 @@ source: broken is duckdb.sql("select 1 as id") extend { dimension: x is no_such_
          },
          { timeout: 20000 },
       );
+
+      it(
+         "names a skipped source's connection in the outcome, so creating that connection re-derives the plan",
+         async () => {
+            const pkg = await packages.create(ONE_PERSIST_SOURCE, {
+               getMalloyConnection: async () => {
+                  throw new Error("no such connection");
+               },
+            });
+            const outcome = await computePackageBuildPlan(pkg);
+            expect(outcome.buildConnectionNames).toEqual(["duckdb"]);
+         },
+         { timeout: 20000 },
+      );
    });
 });
 
@@ -168,6 +182,7 @@ describe("compilePackageBuildPlan", () => {
          hasFlag,
          sourceIDs,
          modelAnnotations: {
+            forRoute: () => [],
             parseAsTag: () => ({ tag: { has: () => hasFlag } }),
          },
          givens: new Map(),
@@ -418,7 +433,8 @@ source: scoped is base -> { where: category = $TENANT; group_by: category }
             // model_a's eligibility. Keying by each source's own sourceEntityId
             // (computed from ITS OWN connection digest + SQL, never looked up by
             // name) cannot make that mistake — the two sources are examined,
-            // and recorded, independently.
+            // and recorded, independently. Each has a table of its own: two
+            // sources writing one table are refused for that alone.
             const pkg = await packages.create({
                "model_a.malloy": `##! experimental.persistence
 ##! experimental.givens
@@ -429,7 +445,7 @@ given:
 source: base_a is duckdb.sql("select 1 as org_id")
 
 #(access_filter) org_id = $ORG
-#@ persist name="s"
+#@ persist name="s_a"
 source: s is base_a -> { select: org_id } extend {}
 `,
                "model_b.malloy": `##! experimental.persistence
@@ -441,7 +457,7 @@ given:
 #(authorize) "org_id = 999"
 source: base_b is duckdb.sql("select 2 as org_id")
 
-#@ persist name="s"
+#@ persist name="s_b"
 source: s is base_b -> { select: org_id }
 `,
             });

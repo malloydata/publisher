@@ -55,12 +55,9 @@ function mockDimensionField(
       type: { toString: () => "boolean" },
       getTaglines: () => [],
       parentExplore: {
-         tagParse: () => ({
-            tag: {
-               array: () => undefined,
-               text: () => undefined,
-            },
-         }),
+         // ``isFieldHidden`` reads the parent's taglines; none keeps the field
+         // non-hidden.
+         getTaglines: () => [],
       },
    }) as unknown as Field;
    return { field, doc };
@@ -230,6 +227,10 @@ describe("getAccessModifier", () => {
 });
 
 describe("parseDocAnnotation", () => {
+   test("does not read another route that starts like #(doc)", () => {
+      assert.strictEqual(parseDocAnnotation("#(docs) Not a doc."), null);
+   });
+
    test("line form #(doc) strips prefix", () => {
       assert.strictEqual(parseDocAnnotation("#(doc) A name."), "A name.");
    });

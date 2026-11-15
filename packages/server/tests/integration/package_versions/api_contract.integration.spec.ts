@@ -182,7 +182,7 @@ async function everyRunResponse(
 
 describe("the versions contract a generated client sees", () => {
    beforeAll(async () => {
-      setEnv(FLAG, undefined);
+      setEnv(FLAG, "off");
       setEnv(PROMOTION, undefined);
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "versions-api-contract-")),
@@ -215,11 +215,11 @@ describe("the versions contract a generated client sees", () => {
          200,
          "1.0.0",
       ]);
-      setEnv(FLAG, undefined);
+      setEnv(FLAG, "off");
    }, 180_000);
 
    afterEach(() => {
-      setEnv(FLAG, undefined);
+      setEnv(FLAG, "off");
       setEnv(PROMOTION, undefined);
    });
 
@@ -370,7 +370,7 @@ describe("the versions contract a generated client sees", () => {
 
    it("answers a malformed versionId 400 VERSION_ID_INVALID on the sampled routes, versioning off and on", async () => {
       for (const [flag, name] of [
-         [undefined, "plain"],
+         ["off", "plain"],
          ["on", "ver"],
       ] as const) {
          setEnv(FLAG, flag);

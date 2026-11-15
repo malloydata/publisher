@@ -1,0 +1,37 @@
+// conformance: extensions of persisted sources [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: base_daily__served is {
+   customer_id::number,
+   region::string,
+   status::string,
+   order_date::date,
+   total::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#@ persist name="base_daily"
+source: base_daily is duckdb.virtual('175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad')::base_daily__served extend {
+  internal rename:
+    customer_id__stored is customer_id
+  dimension:
+    customer_id is customer_id__stored::"BIGINT"
+}
+
+source: ext1 is base_daily extend {
+  where: status != 'returned'
+  measure: grand is total.sum()
+}
+
+source: ext2 is ext1 extend {
+  dimension: winter is order_date.month = @2025-01 or order_date.month = @2024-12
+}
+
+source: ext2_rollup is ext2 -> {
+  group_by: region, winter
+  aggregate: g is grand
+}

@@ -34,6 +34,7 @@ export interface LoadGatedPackage {
    formatInvalidIncrementalPolicy(): string;
    formatInvalidPreaggregatePolicy(): string;
    formatClassificationLeaks(): string;
+   formatArrayQueryJoins(): string;
    formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string;
    preaggregateAccessWarnings(): ApiPackageWarning[];
    persistenceCollisionWarnings(): string[];
@@ -152,6 +153,17 @@ function judgeLoadGates(
       );
       throw new BadRequestError(invalidIncremental);
    }
+   // A join inside a query on an array is read by none of the access checks,
+   // so a model that declares one refuses it rather than serve reads nothing
+   // accounts for (a `#(carries)` ceiling or a gate it would pass unseen).
+   const arrayQueryJoins = pkg.formatArrayQueryJoins();
+   if (arrayQueryJoins) {
+      logger.error(
+         `Package ${packageName} joins a source inside a query on an array`,
+         { packageName, detail: arrayQueryJoins },
+      );
+      throw new BadRequestError(arrayQueryJoins);
+   }
    // A `#(carries)` ceiling is strict at load too: a surface that lists what
    // it carries must not serve a field outside the list, and a warning would
    // leave it serving. The message names every leak so one fix clears them.
@@ -196,7 +208,8 @@ function judgeLoadGates(
       throw new BadRequestError(invalidPreaggregate);
    }
    // Persist-target collisions only warn at load, whatever
-   // PERSIST_COLLISION_ENFORCE says; that flag governs publish rejection.
+   // PERSIST_COLLISION_ENFORCE says; that flag (on by default) governs publish
+   // and build rejection.
    const collisions = pkg.persistenceCollisionWarnings();
    if (collisions.length > 0) {
       logger.warn(`Package ${packageName} has persist-target collisions`, {

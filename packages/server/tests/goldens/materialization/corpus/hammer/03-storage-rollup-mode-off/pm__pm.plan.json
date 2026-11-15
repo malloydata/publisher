@@ -1,0 +1,141 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders__rollup__category__845156d3@<hammer>/pm/pm.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "orders__rollup__category__845156d3@<hammer>/pm/pm.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__rollup__category__845156d3@<hammer>/pm/pm.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "orders",
+        "baseGated": false,
+        "baseSourceID": "orders@<hammer>/pm/pm.malloy",
+        "baseSourceName": "orders",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "category"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "orders__rollup__category__845156d3",
+        "storage": "lake",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__rollup__category__845156d3@<hammer>/pm/pm.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__rollup__category__845156d3@<hammer>/pm/pm.malloy.preaggregate.malloy": "pm.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__rollup__category__845156d3@<hammer>/pm/pm.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__rollup__category__845156d3@<hammer>/pm/pm.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pm.malloy",
+        "name": "orders__rollup__category__845156d3",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "category"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ac71344c5b1efc51d294817ea1e5eaf04a97994793bf671038bbe0cf57cb6d32",
+        "sourceID": "orders__rollup__category__845156d3@<hammer>/pm/pm.malloy.preaggregate.malloy",
+        "sql": "sha256:6bd991f7f20d9279"
+      }
+    }
+  }
+}

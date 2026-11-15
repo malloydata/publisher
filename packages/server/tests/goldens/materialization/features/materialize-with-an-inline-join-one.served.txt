@@ -1,0 +1,186 @@
+// feature: materialize with an inline join_one: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 2)
+##! experimental { virtual_source }
+type: orders_wide_local__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   customer_region::string,
+   customer_segment::string,
+   customers__id::number,
+   customers__name::string,
+   customers__segment::string,
+   customers__home_region::string,
+   customers__signup_date::date,
+   customers__loud_name::string
+}
+
+import "raw.malloy"
+
+source: customers is customers_raw extend {
+  dimension: loud_name is upper(name)
+  measure: customer_count is count()
+}
+
+#(materialize) storage="lake" inline=["customers"]
+source: orders_wide is orders_raw extend {
+  join_one: customers with customer_id
+  dimension: customer_region is customers.home_region
+  measure:
+    order_count is count()
+    total is amount.sum()
+    customers_ordering is count(customers.id)
+  view: by_segment is { group_by: customers.segment; aggregate: order_count, total }
+}
+
+#(materialize) name="orders_wide_local" inline=["customers"]
+source: orders_wide_local is duckdb.virtual('af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223')::orders_wide_local__served extend {
+  internal rename:
+    customers__id__stored is customers__id
+    customers__name__stored is customers__name
+    customers__segment__stored is customers__segment
+    customers__home_region__stored is customers__home_region
+    customers__signup_date__stored is customers__signup_date
+    customers__loud_name__stored is customers__loud_name
+  dimension:
+    customers is {
+      id is customers__id__stored::"BIGINT",
+      name is customers__name__stored,
+      segment is customers__segment__stored,
+      home_region is customers__home_region__stored,
+      signup_date is customers__signup_date__stored,
+      loud_name is customers__loud_name__stored
+    }
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"BIGINT"
+    customer_id is customer_id__stored::"BIGINT"
+    order is order__stored::"BIGINT"
+
+  measure:
+    order_count is count()
+    total is amount.sum()
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
+##! experimental { virtual_source }
+type: orders_wide_local__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   customer_region::string,
+   customer_segment::string,
+   customers__id::number,
+   customers__name::string,
+   customers__segment::string,
+   customers__home_region::string,
+   customers__signup_date::date,
+   customers__loud_name::string
+}
+type: orders_wide__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   customer_region::string,
+   customers__id::number,
+   customers__name::string,
+   customers__segment::string,
+   customers__home_region::string,
+   customers__signup_date::date,
+   customers__loud_name::string
+}
+
+import "raw.malloy"
+
+source: customers is customers_raw extend {
+  dimension: loud_name is upper(name)
+  measure: customer_count is count()
+}
+
+#(materialize) storage="lake" inline=["customers"]
+source: orders_wide is __served_copy_alias_of_lake.virtual('e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1')::orders_wide__served extend {
+  internal rename:
+    customers__id__stored is customers__id
+    customers__name__stored is customers__name
+    customers__segment__stored is customers__segment
+    customers__home_region__stored is customers__home_region
+    customers__signup_date__stored is customers__signup_date
+    customers__loud_name__stored is customers__loud_name
+  dimension:
+    customers is {
+      id is customers__id__stored::"HUGEINT",
+      name is customers__name__stored,
+      segment is customers__segment__stored,
+      home_region is customers__home_region__stored,
+      signup_date is customers__signup_date__stored,
+      loud_name is customers__loud_name__stored
+    }
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
+
+  measure:
+    order_count is count()
+    total is amount.sum()
+    customers_ordering is count(customers.id)
+  view: by_segment is { group_by: customers.segment; aggregate: order_count, total }
+}
+
+#(materialize) name="orders_wide_local" inline=["customers"]
+source: orders_wide_local is duckdb.virtual('af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223')::orders_wide_local__served extend {
+  internal rename:
+    customers__id__stored is customers__id
+    customers__name__stored is customers__name
+    customers__segment__stored is customers__segment
+    customers__home_region__stored is customers__home_region
+    customers__signup_date__stored is customers__signup_date
+    customers__loud_name__stored is customers__loud_name
+  dimension:
+    customers is {
+      id is customers__id__stored::"BIGINT",
+      name is customers__name__stored,
+      segment is customers__segment__stored,
+      home_region is customers__home_region__stored,
+      signup_date is customers__signup_date__stored,
+      loud_name is customers__loud_name__stored
+    }
+  internal rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"BIGINT"
+    customer_id is customer_id__stored::"BIGINT"
+    order is order__stored::"BIGINT"
+
+  measure:
+    order_count is count()
+    total is amount.sum()
+}

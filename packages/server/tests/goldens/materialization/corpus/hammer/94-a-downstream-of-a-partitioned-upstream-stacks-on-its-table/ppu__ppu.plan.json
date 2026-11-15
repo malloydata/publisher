@@ -1,0 +1,130 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders_all@<hammer>/ppu/ppu.malloy": [],
+          "rollup@<hammer>/ppu/ppu.malloy": [
+            "orders_all@<hammer>/ppu/ppu.malloy"
+          ]
+        },
+        "order": [
+          "orders_all@<hammer>/ppu/ppu.malloy",
+          "rollup@<hammer>/ppu/ppu.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders_all@<hammer>/ppu/ppu.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/ppu/ppu.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders_all@<hammer>/ppu/ppu.malloy": "ppu.malloy",
+      "rollup@<hammer>/ppu/ppu.malloy": "ppu.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders_all@<hammer>/ppu/ppu.malloy"
+            },
+            {
+              "dependsOn": [
+                "orders_all@<hammer>/ppu/ppu.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/ppu/ppu.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders_all@<hammer>/ppu/ppu.malloy": {
+        "annotationFields": {
+          "name": "ppu_orders",
+          "partition": "org_id",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ppu.malloy",
+        "name": "orders_all",
+        "origin": "persist",
+        "partition": [
+          "org_id"
+        ],
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "4ec213661900b95f0c62b5af954319decea2cf369c2cf55ca3f87c02866990c5",
+        "sourceID": "orders_all@<hammer>/ppu/ppu.malloy",
+        "sql": "sha256:7e01dc96ad4d2a08"
+      },
+      "rollup@<hammer>/ppu/ppu.malloy": {
+        "annotationFields": {
+          "name": "ppu_rollup",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "org_id",
+            "type": "number"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ppu.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ff3ca9a7ab0fd8044b9e6153c920629b13a945d2193f863242028fa682fb8b89",
+        "sourceID": "rollup@<hammer>/ppu/ppu.malloy",
+        "sql": "sha256:83df739967bf6ee3"
+      }
+    }
+  }
+}

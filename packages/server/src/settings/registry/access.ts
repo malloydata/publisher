@@ -4,7 +4,7 @@
 import { setting } from "../setting";
 import { boolean, integer, oneOf, string } from "../types";
 
-/** The configuration design's `allow`, `authorize`, `logging`, `shutdown` table. */
+/** The configuration design's `allow`, `authorize`, `logging`, `shutdown`, `workloadLog` table. */
 export const access = [
    setting({
       key: "allow.proxyConnections",
@@ -97,5 +97,31 @@ export const access = [
          env: ["SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS"],
          flags: ["--shutdown_graceful_close_timeout_seconds"],
       },
+   }),
+   setting({
+      key: "workloadLog.store",
+      type: oneOf(["off", "on"]),
+      default: "off",
+      description:
+         "on keeps every access record, with its workload shape, in publisher.db's workload_log table; off only logs it.",
+      notes: "`on` or `off`: whether the workload log (materialization v2, T1) is also kept locally, in the `workload_log` table of Publisher's own metadata database (`publisher.db`), beside the log line every query already writes. Off by default: the access record goes to the log either way. Each row is one access record with its workload shape, without the values of `#(secure)` givens. Bounded by `PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS` and `PUBLISHER_WORKLOAD_LOG_MAX_ROWS`, flushed every two seconds, so a process that exits loses at most that interval's records; a failed write drops its batch and never fails a query. See [access-record.md](access-record.md#the-workload-log). Any other value fails startup.",
+      aliases: { env: ["PUBLISHER_WORKLOAD_LOG_STORE"] },
+   }),
+   setting({
+      key: "workloadLog.retentionDays",
+      type: integer({ min: 1 }),
+      default: 30,
+      description: "Days the workload log's local store keeps a record.",
+      notes: "How many days a row stays in the workload log's local store (`PUBLISHER_WORKLOAD_LOG_STORE=on`); older rows are deleted on each flush. Read only when the store is on.",
+      aliases: { env: ["PUBLISHER_WORKLOAD_LOG_RETENTION_DAYS"] },
+   }),
+   setting({
+      key: "workloadLog.maxRows",
+      type: integer({ min: 1 }),
+      default: 1000000,
+      description:
+         "Rows the workload log's local store holds; the oldest go first.",
+      notes: "The most rows the workload log's local store (`PUBLISHER_WORKLOAD_LOG_STORE=on`) keeps, whatever their age; past it the oldest are deleted on each flush. Read only when the store is on.",
+      aliases: { env: ["PUBLISHER_WORKLOAD_LOG_MAX_ROWS"] },
    }),
 ];

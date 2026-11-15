@@ -1169,6 +1169,34 @@ describe("ConnectionController getTable not-found mapping", () => {
    const getTable = (controller: ConnectionController) =>
       controller.getTable("env", "warehouse", "ds", "ds.missing");
 
+   it("lists a record column's members after it, as a listing does", async () => {
+      const { controller } = buildTableController(
+         sinon.stub().resolves({
+            type: "table",
+            name: "ds.orders",
+            fields: [
+               { name: "id", type: "number" },
+               {
+                  name: "delivery",
+                  type: "record",
+                  fields: [{ name: "city", type: "string" }],
+               },
+            ],
+         }),
+      );
+      const table = await controller.getTable(
+         "env",
+         "warehouse",
+         "ds",
+         "ds.orders",
+      );
+      expect(table.columns).toEqual([
+         { name: "id", type: "number" },
+         { name: "delivery", type: "record" },
+         { name: "delivery.city", type: "string" },
+      ]);
+   });
+
    it("classifies BigQuery's returned not-found string as TableNotFoundError", async () => {
       // BigQuery's driver RETURNS the message instead of throwing, discarding
       // the structured 404 it was handed.

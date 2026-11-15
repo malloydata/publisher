@@ -80,6 +80,21 @@ describe("incrementalLineage", () => {
       });
    });
 
+   it("carries a #(materialize) source's rolling window, for the refresh's delete", () => {
+      const window = [
+         {
+            field: "order_ts",
+            op: ">=" as const,
+            offset: { sign: -1 as const, amount: 30, unit: "day" as const },
+         },
+      ];
+      expect(
+         lineage({ declaration: declaration({ rollingWindow: window }) })
+            ?.rollingWindow,
+      ).toEqual(window);
+      expect(lineage()).not.toHaveProperty("rollingWindow");
+   });
+
    // Every case below means "build this the ordinary way and do not touch the
    // ledger". The first two are the overwhelming majority of sources; the rest
    // are declarations the publish gate rejects, so reaching a build with one
@@ -107,6 +122,27 @@ describe("incrementalLineage", () => {
       });
       expect(stored?.storageDestinationName).toBe("lake");
       expect(lineage()?.storageDestinationName).toBeUndefined();
+   });
+
+   it("describes a pair table, replaced by its parent key in DuckDB", () => {
+      const pair = declaration({
+         declaredMergeKey: true,
+         mergeKeys: [{ name: "id", ...DIMENSION, malloyType: "number" }],
+         strategy: "merge",
+         pair: { parentKey: "id", parentRow: "__parent_row" },
+      });
+      expect(
+         lineage({ declaration: pair, targetDialect: "duckdb" })?.pair,
+      ).toEqual({ parentKey: "id", parentRow: "__parent_row" });
+      // Anywhere else, or keyed on anything but the parent, it seeds.
+      expect(lineage({ declaration: pair })).toBeUndefined();
+      expect(
+         lineage({
+            declaration: { ...pair, mergeKeys: [] },
+            targetDialect: "duckdb",
+         }),
+      ).toBeUndefined();
+      expect(lineage()).not.toHaveProperty("pair");
    });
 
    it("declines a target engine whose transactional apply is unproven", () => {

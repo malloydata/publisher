@@ -1,0 +1,79 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "raw@<hammer>/ss/ss.malloy": []
+        },
+        "order": [
+          "raw@<hammer>/ss/ss.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "raw@<hammer>/ss/ss.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "raw@<hammer>/ss/ss.malloy": "ss.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "raw@<hammer>/ss/ss.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "raw@<hammer>/ss/ss.malloy": {
+        "annotationFields": {
+          "name": "ss_raw",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ss.malloy",
+        "name": "raw",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ea1ce5a0a405bd0258bb8f4191a887ac9d95c9bd52c9c165052fe3831d0f6927",
+        "sourceID": "raw@<hammer>/ss/ss.malloy",
+        "sql": "sha256:2ccb88deb51ee712"
+      }
+    }
+  }
+}

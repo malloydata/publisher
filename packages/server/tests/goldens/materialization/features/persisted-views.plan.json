@@ -1,0 +1,173 @@
+{
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "persist-view-not-built",
+        "message": "#@ persist on view \"recent\" of source \"orders\" is not built, so the view is served live: its result reads the current time, so it differs per read.",
+        "model": "m.malloy",
+        "route": "@",
+        "subject": "orders -> recent",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy": [],
+          "orders__by_status__view@<pkg>/m.malloy.persist-view.malloy": [],
+          "orders__two_stage__view@<pkg>/m.malloy.persist-view.malloy": []
+        },
+        "order": [
+          "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy",
+          "orders__by_status__view@<pkg>/m.malloy.persist-view.malloy",
+          "orders__two_stage__view@<pkg>/m.malloy.persist-view.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders__by_status__view@<pkg>/m.malloy.persist-view.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders__two_stage__view@<pkg>/m.malloy.persist-view.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy": "m.malloy",
+      "orders__by_status__view@<pkg>/m.malloy.persist-view.malloy": "m.malloy",
+      "orders__two_stage__view@<pkg>/m.malloy.persist-view.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "persist-view-not-built",
+      "message": "#@ persist on view \"recent\" of source \"orders\" is not built, so the view is served live: its result reads the current time, so it differs per read.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "orders -> recent"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "orders__by_status__view@<pkg>/m.malloy.persist-view.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "orders__two_stage__view@<pkg>/m.malloy.persist-view.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__by_region__view",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a",
+        "sourceID": "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy",
+        "sql": "sha256:7d60d8f1b57e5879"
+      },
+      "orders__by_status__view@<pkg>/m.malloy.persist-view.malloy": {
+        "annotationFields": {
+          "name": "orders_by_status"
+        },
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__by_status__view",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+        "sourceID": "orders__by_status__view@<pkg>/m.malloy.persist-view.malloy",
+        "sql": "sha256:8b0c58a474b6c64b"
+      },
+      "orders__two_stage__view@<pkg>/m.malloy.persist-view.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__two_stage__view",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88",
+        "sourceID": "orders__two_stage__view@<pkg>/m.malloy.persist-view.malloy",
+        "sql": "sha256:150254e4f2f50a0b"
+      }
+    }
+  }
+}

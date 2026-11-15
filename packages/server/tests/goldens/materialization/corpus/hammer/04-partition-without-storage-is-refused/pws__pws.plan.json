@@ -1,0 +1,59 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/pws/pws.malloy": []
+        },
+        "order": [
+          "orders@<hammer>/pws/pws.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<hammer>/pws/pws.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/pws/pws.malloy": "pws.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/pws/pws.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {
+      "orders@<hammer>/pws/pws.malloy": {
+        "message": "Source 'orders' cannot be materialized (colocated '#@ persist'): 'partition=' is declared without 'storage='. A colocated '#@ persist' writes into the source's own warehouse, where the table layout is that warehouse's own DDL — the publisher does not lay it out. Add 'storage=' to build into a storage destination, or drop 'partition='.",
+        "modelPath": "pws.malloy",
+        "name": "orders",
+        "reason": "partition_without_storage",
+        "sourceID": "orders@<hammer>/pws/pws.malloy",
+        "tier": "colocated"
+      }
+    },
+    "sources": {}
+  }
+}

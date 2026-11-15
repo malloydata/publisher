@@ -1253,7 +1253,8 @@ source: orders is duckdb.sql("""
                "persist:by_category",
                "persist:gated",
                "persist:stored",
-               "preaggregate:orders__preagg__category__edb2cd3b",
+               // The rollup leg's name for the v1 rollup (the v1 cutover, G4).
+               "preaggregate:orders__rollup__category__81e09214",
             ]);
 
             // A plan the worker left at its soft deadline is derived here, and
@@ -1452,7 +1453,7 @@ source: t is base -> { group_by: a }
       }
    });
 
-   it("hydrates the pre-aggregation companion the worker compiled, without compiling it here", async () => {
+   it("compiles no pre-aggregation companion, in the worker or here", async () => {
       writeManifest();
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
@@ -1470,11 +1471,9 @@ source: orders is duckdb.sql("""
       const runtimeSpy = spyOn(Model, "getModelRuntime");
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("orders.malloy") as unknown as {
-            preaggregateServeMaterializer?: unknown;
-         };
-         expect(model.preaggregateServeMaterializer).toBeDefined();
+         await Package.create("env", "pkg", tempDir, malloyConfig);
+         // A v1 rollup is the rollup leg's: no composite companion is
+         // compiled in the worker, and none is compiled here in its place.
          expect(runtimeSpy).not.toHaveBeenCalled();
       } finally {
          runtimeSpy.mockRestore();

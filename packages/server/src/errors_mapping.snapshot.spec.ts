@@ -10,8 +10,10 @@ import {
    AccessDeniedError,
    AgentNotFoundError,
    BadRequestError,
+   BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    ChainedShapeNotCarriedError,
+   WarehouseRecomputeRefusedError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -148,6 +150,10 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "BuildPlanUnavailableError",
       () => new BuildPlanUnavailableError("build plan could not be derived"),
+   ],
+   [
+      "BuildPlanRefreshingError",
+      () => new BuildPlanRefreshingError("build plan is being re-derived"),
    ],
    [
       "NotImplementedError",
@@ -335,6 +341,15 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "ChainedShapeNotCarriedError",
       () => new ChainedShapeNotCarriedError("shape not carried"),
+   ],
+   [
+      "WarehouseRecomputeRefusedError",
+      () =>
+         new WarehouseRecomputeRefusedError(
+            "rollup",
+            "lake",
+            "'rollup' reads the source warehouse (regions) through 'via'",
+         ),
    ],
    [
       "PublisherConfigError",

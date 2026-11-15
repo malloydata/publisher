@@ -1,0 +1,163 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "monthly@<pkg>/m.malloy": []
+        },
+        "order": [
+          "monthly@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "monthly@<pkg>/m.malloy": {
+        "buildSourceName": "monthly__mat",
+        "columns": [
+          {
+            "column": "order_month",
+            "computed": false,
+            "dimension": "order_month"
+          },
+          {
+            "column": "created_hour",
+            "computed": false,
+            "dimension": "created_hour"
+          },
+          {
+            "column": "order_week",
+            "computed": false,
+            "dimension": "order_week"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          },
+          {
+            "column": "discount_rate",
+            "computed": false,
+            "dimension": "discount_rate"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "monthly",
+          "storage": "lake"
+        },
+        "sourceID": "monthly@<pkg>/m.malloy",
+        "sourceName": "monthly",
+        "storedColumns": [
+          {
+            "name": "order_month",
+            "type": "DATE"
+          },
+          {
+            "name": "created_hour",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order_week",
+            "type": "DATE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount_rate",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "monthly@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "monthly@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "monthly@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "monthly@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "monthly",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_month",
+            "type": "date"
+          },
+          {
+            "name": "created_hour",
+            "type": "timestamp"
+          },
+          {
+            "name": "order_week",
+            "type": "date"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          },
+          {
+            "name": "discount_rate",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "monthly",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+        "sourceID": "monthly@<pkg>/m.malloy",
+        "sql": "sha256:1b44eec2b835345d"
+      }
+    }
+  }
+}

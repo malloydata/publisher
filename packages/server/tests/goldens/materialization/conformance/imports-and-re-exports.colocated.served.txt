@@ -1,0 +1,23 @@
+// conformance: imports and re-exports [colocated]: files generated while serving
+
+// ==== <pkg>/facts.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: daily__served is {
+   region::string,
+   status::string,
+   order_date::date,
+   total::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#@ persist name="daily"
+source: daily is duckdb.virtual('59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632')::daily__served extend {
+  measure: grand is total.sum()
+}
+
+source: daily_ext is daily extend {
+  measure: orders is n.sum()
+}

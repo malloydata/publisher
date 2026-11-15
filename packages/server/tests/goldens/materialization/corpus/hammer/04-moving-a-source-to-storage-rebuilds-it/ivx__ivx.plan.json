@@ -1,0 +1,80 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "batch_totals@<hammer>/ivx/ivx.malloy": []
+        },
+        "order": [
+          "batch_totals@<hammer>/ivx/ivx.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "batch_totals@<hammer>/ivx/ivx.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "batch_totals@<hammer>/ivx/ivx.malloy": "ivx.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "batch_totals@<hammer>/ivx/ivx.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "batch_totals@<hammer>/ivx/ivx.malloy": {
+        "annotationFields": {
+          "name": "ivx_batches",
+          "refresh": "incremental",
+          "watermark": "batch"
+        },
+        "columns": [
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ivx.malloy",
+        "name": "batch_totals",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "e75a78c5fffa495f44acadeae0f4920b0814df2e3db3c71c8d84b3777e22323c",
+        "sourceID": "batch_totals@<hammer>/ivx/ivx.malloy",
+        "sql": "sha256:11a6a2097f19272f"
+      }
+    }
+  }
+}

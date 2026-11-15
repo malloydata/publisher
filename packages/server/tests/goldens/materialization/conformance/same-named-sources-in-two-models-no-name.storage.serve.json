@@ -1,0 +1,334 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "summary",
+        "tier": "storage"
+      },
+      {
+        "name": "summary",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "summary:live:refused",
+      "summary:live:refused"
+    ],
+    "warnings": [
+      {
+        "message": "#@ persist sources \"summary\", \"summary\" all resolve to the same materialized table \"summary\" in destination \"lake\". Distinct sources must not share a physical target — the second build would overwrite the first, and a serve binding or GC drop for one would affect the other, so none is served from it and queries on them are answered live. Give each a distinct #@ persist name=."
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b9fdea7dcfcfd9af",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "summary",
+          "stages": 1
+        },
+        "source": "summary"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "code": "refused",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "WARNED",
+            "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "summary"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": [
+          {
+            "code": "refused",
+            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
+            "sourceName": "summary",
+            "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
+          }
+        ]
+      },
+      "query": "summary in a.malloy",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b9fdea7dcfcfd9af",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "summary",
+          "stages": 1
+        },
+        "source": "summary"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "code": "refused",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "WARNED",
+            "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "summary"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": [
+          {
+            "code": "refused",
+            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
+            "sourceName": "summary",
+            "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
+          }
+        ]
+      },
+      "query": "summary in b.malloy",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b9fdea7dcfcfd9af",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "summary",
+          "stages": 1
+        },
+        "source": "summary"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "code": "refused",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "WARNED",
+            "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "summary"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": [
+          {
+            "code": "refused",
+            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
+            "sourceName": "summary",
+            "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
+          }
+        ]
+      },
+      "query": "summary in a.malloy",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b9fdea7dcfcfd9af",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "summary",
+          "stages": 1
+        },
+        "source": "summary"
+      },
+      "equalToLive": true,
+      "malloy": "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "code": "refused",
+            "kind": "materialized",
+            "outcome": "skipped",
+            "reason": "WARNED",
+            "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "summary"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": [
+          {
+            "code": "refused",
+            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
+            "sourceName": "summary",
+            "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
+          }
+        ]
+      },
+      "query": "summary in b.malloy",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

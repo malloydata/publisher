@@ -1,0 +1,45 @@
+{
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "materialize-not-built",
+        "message": "#(materialize) on source \"summary\" is not built, so the source is served live: with no name=, its table takes the source's name `summary` in \"lake\", which \"summary\" (b.malloy) also writes, so each build would overwrite the other and one source would read the other's rows; give each source a distinct name=.",
+        "model": "a.malloy",
+        "route": "materialize",
+        "subject": "summary",
+        "tier": "unservable"
+      },
+      {
+        "code": "materialize-not-built",
+        "message": "#(materialize) on source \"summary\" is not built, so the source is served live: with no name=, its table takes the source's name `summary` in \"lake\", which \"summary\" (a.malloy) also writes, so each build would overwrite the other and one source would read the other's rows; give each source a distinct name=.",
+        "model": "b.malloy",
+        "route": "materialize",
+        "subject": "summary",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {},
+    "sourceModelPaths": {}
+  },
+  "loadWarnings": [
+    {
+      "code": "materialize-not-built",
+      "message": "#(materialize) on source \"summary\" is not built, so the source is served live: with no name=, its table takes the source's name `summary` in \"lake\", which \"summary\" (b.malloy) also writes, so each build would overwrite the other and one source would read the other's rows; give each source a distinct name=.",
+      "model": "a.malloy",
+      "severity": "warn",
+      "subject": "summary"
+    },
+    {
+      "code": "materialize-not-built",
+      "message": "#(materialize) on source \"summary\" is not built, so the source is served live: with no name=, its table takes the source's name `summary` in \"lake\", which \"summary\" (a.malloy) also writes, so each build would overwrite the other and one source would read the other's rows; give each source a distinct name=.",
+      "model": "b.malloy",
+      "severity": "warn",
+      "subject": "summary"
+    }
+  ],
+  "wirePlan": null
+}

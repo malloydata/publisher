@@ -50,10 +50,24 @@ export interface AlsoLikelyField {
    reason: string;
 }
 
-/** The name an id carries, past its kind, source and any join path. */
+/**
+ * The last segment of an id's name. Only for an id with no catalog node
+ * behind it: it cannot tell a join path from a record's path, so
+ * `customer.city` and `delivery.city` both read as `city`. See fieldNameOf.
+ */
 export function nameOfId(id: string): string {
    const last = id.split(":").at(-1) ?? id;
    return last.split(".").at(-1) ?? last;
+}
+
+/**
+ * A field's name past its join path, as connect.ts's leafOf reads it:
+ * `customer.city` reached through `customer` is `city`, and a member of the
+ * source's own record keeps its whole name, so `delivery.city` and
+ * `billing.city` are two names.
+ */
+function fieldNameOf(node: CatalogNode): string {
+   return node.joinPath ? node.name.slice(node.joinPath.length + 1) : node.name;
 }
 
 function kindOfId(id: string): string {
@@ -94,8 +108,15 @@ export function alsoLikelyFields(args: {
    const best = new Map<string, number>();
    const same = new Map<string, Set<string>>();
    const inInput = new Set<string>();
+   // Each id's field name, read off the node it reaches (fieldNameOf). The
+   // ids seen together are one field: its own id and its routes.
+   const nameOf = new Map<string, string>();
+   const nameFor = (id: string) => nameOf.get(id) ?? nameOfId(id);
    const see = (node: CatalogNode, rank: number, ids: string[]) => {
       if (!keyOfId.has(node.id)) keyOfId.set(node.id, node.key);
+      for (const id of ids) {
+         if (!nameOf.has(id)) nameOf.set(id, fieldNameOf(node));
+      }
       best.set(node.id, Math.min(best.get(node.id) ?? EXTRA_RANK, rank));
       const all = new Set(ids);
       for (const i of all) {
@@ -147,8 +168,10 @@ export function alsoLikelyFields(args: {
          for (const k of p.keys) {
             // A picked route is a pick of its field: the field's own id is
             // then never added beside it (it is the other population).
-            const id = nodes.get(fieldKeyOf(k))?.id;
-            if (id && !pickIds.includes(id)) pickIds.push(id);
+            const node = nodes.get(fieldKeyOf(k));
+            if (!node) continue;
+            if (!nameOf.has(node.id)) nameOf.set(node.id, fieldNameOf(node));
+            if (!pickIds.includes(node.id)) pickIds.push(node.id);
          }
       }
    }
@@ -165,10 +188,10 @@ export function alsoLikelyFields(args: {
 
    const additions: Array<Omit<AlsoLikelyField, "key">> = [];
    // Named: one field per name the judge wrote that no pick carries.
-   const pickNames = new Set(pickIds.map(nameOfId));
+   const pickNames = new Set(pickIds.map(nameFor));
    const named = new Set<string>();
    for (const id of pool) {
-      const name = nameOfId(id);
+      const name = nameFor(id);
       if (pickNames.has(name) || name.length < 2 || named.has(name)) continue;
       if (inInput.has(id) && mentions(words, name)) {
          named.add(name);
@@ -188,12 +211,12 @@ export function alsoLikelyFields(args: {
    if (args.twins > 0) {
       for (const pick of pickIds) {
          if (kindOfId(pick) === "source") continue;
-         const name = nameOfId(pick);
+         const name = nameFor(pick);
          const kind = kindOfId(pick);
          const twins = pool
             .filter(
                (id) =>
-                  nameOfId(id) === name &&
+                  nameFor(id) === name &&
                   kindOfId(id) === kind &&
                   !pickFields.has(id),
             )

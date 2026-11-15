@@ -10,6 +10,7 @@
  */
 
 import type { AtomicField, PersistSource } from "@malloydata/malloy";
+import { parseRouteTag } from "../../motly";
 import { components } from "../../../api";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -45,7 +46,7 @@ export function deriveAnnotationFields(
 ): Record<string, string> {
    const out: Record<string, string> = {};
    try {
-      const tag = persistSource.annotations.parseAsTag("@").tag;
+      const tag = parseRouteTag(persistSource.annotations, "@").tag;
       for (const [key, value] of tag.entries()) {
          const text = value.text();
          if (text !== undefined) out[key] = text;
@@ -70,9 +71,23 @@ export type PersistSourceGateClassification = "row_level" | "rejected";
  * enforceable. `attributed`: `false` when `isAuthorizeAttributedToEntryPoint`
  * (materialization_eligibility.ts) finds a note reachable only through a join —
  * checked independently because `collectEntryPointGates` does not trace joins,
- * so `classification` cannot see a join-carried gate.
+ * so `classification` cannot see a join-carried gate. `inheritedRowFilter`:
+ * an `#(access_filter)` the entry point reads from a source it derives from or
+ * extends rather than declares itself. A table of it holds every caller's
+ * rows, and the served copy, which re-roots the entry point and so replaces
+ * the source that declares the gate, cannot graft it: every query is declined
+ * and answered live, so such a table is never built. Absent reads false (a
+ * plan recorded before it).
  */
 export interface PersistSourceGateOutcome {
    classification: PersistSourceGateClassification;
    attributed: boolean;
+   inheritedRowFilter?: boolean;
+}
+
+/** The `storage=` destination a persist source declares, trimmed; undefined for none. */
+export function declaredStorage(
+   persistSource: PersistSource,
+): string | undefined {
+   return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
 }

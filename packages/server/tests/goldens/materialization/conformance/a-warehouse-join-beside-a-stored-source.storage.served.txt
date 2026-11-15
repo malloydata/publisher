@@ -1,0 +1,47 @@
+// conformance: a warehouse join beside a stored source [storage]: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 2)
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: cust_b__served is {
+   id::number,
+   segment::string
+}
+
+import "raw.malloy"
+
+#@ persist name="cust_b" storage="lake"
+source: cust_b is __served_copy_alias_of_lake.virtual('820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280')::cust_b__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
+  primary_key: id
+}
+
+source: orders_b is orders_raw extend {
+  join_one: c is cust_b with customer_id
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: cust_b__served is {
+   id::number,
+   segment::string
+}
+
+import "raw.malloy"
+
+#@ persist name="cust_b" storage="lake"
+source: cust_b is __served_copy_alias_of_lake.virtual('820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280')::cust_b__served extend {
+  internal rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
+  primary_key: id
+}
+
+source: orders_b is orders_raw extend {
+                                        
+}

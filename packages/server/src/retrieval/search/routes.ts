@@ -140,8 +140,26 @@ export function routesOf(catalog: Catalog, node: CatalogNode): string[] {
 export interface RouteOption extends Route {
    /** Catalog key of the field the route reaches. */
    node: string;
-   /** Widest relationship on the path. */
+   /**
+    * Widest relationship on the route: the joins', or `many` for a member
+    * of a repeated record (throughFanout).
+    */
    fanout: Relationship;
+   /** Widest relationship on the join path alone, without the field's own. */
+   joinFanout: Relationship;
+}
+
+/**
+ * The relationship of a field reached through a join: the join's, unless the
+ * field itself fans out. A member of a repeated record (`items.sku`) holds a
+ * value per element, so it is `many` even behind a join_one. For a dimension
+ * or measure only: a join's relationship is a hop of its own.
+ */
+export function throughFanout(
+   join: Relationship | undefined,
+   field: Relationship | undefined,
+): Relationship | undefined {
+   return field === "many" ? "many" : (join ?? field);
 }
 
 /**
@@ -168,7 +186,8 @@ export function routeOptions(
       out.push({
          from: r.from,
          path: r.path,
-         fanout: r.fanout,
+         fanout: throughFanout(r.fanout, node.relationship) ?? r.fanout,
+         joinFanout: r.fanout,
          node: node.key,
          id: entityId(
             node.kind,

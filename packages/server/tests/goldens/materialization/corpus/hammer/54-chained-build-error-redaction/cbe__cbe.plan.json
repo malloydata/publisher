@@ -1,0 +1,118 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cbe/cbe.malloy": [],
+          "rollup@<hammer>/cbe/cbe.malloy": [
+            "daily@<hammer>/cbe/cbe.malloy"
+          ]
+        },
+        "order": [
+          "daily@<hammer>/cbe/cbe.malloy",
+          "rollup@<hammer>/cbe/cbe.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cbe/cbe.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollup@<hammer>/cbe/cbe.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cbe/cbe.malloy": "cbe.malloy",
+      "rollup@<hammer>/cbe/cbe.malloy": "cbe.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cbe/cbe.malloy"
+            },
+            {
+              "dependsOn": [
+                "daily@<hammer>/cbe/cbe.malloy"
+              ],
+              "sourceID": "rollup@<hammer>/cbe/cbe.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/cbe/cbe.malloy": {
+        "annotationFields": {
+          "name": "cbe_daily",
+          "storage": "cbelake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cbe.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "0beb870b10cae460bb65ba6ae5c84ca108926387326fd6d114b5940997ff3e01",
+        "sourceID": "daily@<hammer>/cbe/cbe.malloy",
+        "sql": "sha256:0daa85b6d469e47d"
+      },
+      "rollup@<hammer>/cbe/cbe.malloy": {
+        "annotationFields": {
+          "name": "cbe_rollup",
+          "storage": "cbelake"
+        },
+        "columns": [
+          {
+            "name": "grand_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cbe.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "ae4389d8da4e60c248915a38e6753a2e5f91541e549ba7485ced46b110d0cdd1",
+        "sourceID": "rollup@<hammer>/cbe/cbe.malloy",
+        "sql": "sha256:fac9370a86eecd0b"
+      }
+    }
+  }
+}

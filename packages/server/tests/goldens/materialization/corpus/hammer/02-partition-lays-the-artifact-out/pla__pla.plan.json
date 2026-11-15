@@ -1,0 +1,95 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/pla/pla.malloy": []
+        },
+        "order": [
+          "orders@<hammer>/pla/pla.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<hammer>/pla/pla.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/pla/pla.malloy": "pla.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/pla/pla.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders@<hammer>/pla/pla.malloy": {
+        "annotationFields": {
+          "name": "pla_orders",
+          "partition": "org_id",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pla.malloy",
+        "name": "orders",
+        "origin": "persist",
+        "partition": [
+          "org_id"
+        ],
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5b4b8f458a0daba28a1c7bd6c14e50cbbb78ae53232cdff8d309a400a4ab9a67",
+        "sourceID": "orders@<hammer>/pla/pla.malloy",
+        "sql": "sha256:6850ab918f10e4fa",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

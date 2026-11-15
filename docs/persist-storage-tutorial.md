@@ -490,60 +490,33 @@ info: Dropped materialized storage table on delete { physicalTableName: "daily_o
 
 ### What serves from storage, and the safe fallback
 
-The serve shape carries the materialized table's stored columns **and**
-re-declares the source's **dimensions and measures** over them, so anything
-computed from the stored columns is served from storage. For example, if
-`daily_orders` defines `dimension: avg_order_value is total_amount / order_count`,
-a query using `avg_order_value` is served from the lake — the expression is
-projected over the materialized table (`SELECT total_amount / order_count …
-FROM lake.daily_orders`), not recomputed in the warehouse.
+A query is answered from the lake by the model's **served copy**: your own
+model files, held in memory, with the stored source re-rooted on its table under
+the same name. Everything after that line is your text, compiled over the stored
+columns, so the source's **dimensions and measures**, its **views**, its
+`where:` clauses, a source that `extend`s it and a model that imports it all read
+the stored table. For example, if `daily_orders` defines
+`dimension: avg_order_value is total_amount / order_count`, a query using
+`avg_order_value` is projected over the materialized table (`SELECT total_amount
+/ order_count … FROM lake.daily_orders`), not recomputed in the warehouse.
 
-It also re-declares the source's **joins whose joined source is itself
-materialized** (the join runs in DuckDB over the two stored tables) and its
-**views** built from what's carried, so a query traversing such a join or
-invoking such a view by name is served from storage too.
+A source's own `where:` is part of what the source means, and the build does not
+apply an extend-block filter: the build stores the persisted relation, and the
+filter refines it when it is read. Because the served copy keeps your text, the
+filter stays where you wrote it and is applied on every read.
 
-And it re-declares the source's own **`where:` clauses**. Those are not an
-optimization like the rest: a source's filter is part of what the source means,
-and the build does not apply it — the build SQL is the persisted relation alone,
-and an extend-block `where:` refines that relation when it is read. The
-colocated tier gets this for free, because substitution swaps only the `FROM` and
-leaves the reading query's own `WHERE` in place; the storage tier re-declares the
-source, so it has to carry the filter or answer with rows the source excludes.
-Filters accumulate through `extend`, so a source extending a filtered source
-carries both.
+What still **serves live** (no error; the right answer, computed in the
+warehouse): a query the stored table cannot answer, such as one reaching through
+a join to a source that is not in the destination, or one reading a column the
+table does not hold (a nested field a destination cannot store, say). This is
+decided per query: the source's other queries still serve from storage. A source
+the served copy cannot re-root at all (one whose re-root would lose a measure,
+view or join its base declares, say) is left as written and serves live, and its
+verdict says why.
 
-What still **falls back to serving live** (no error; the right answer, computed
-in the warehouse): a query that reaches something the serve shape can't
-reproduce — a join or view that reaches a **non-materialized source**, a
-**window/analytic** field defined on the source, a query that **traverses a
-nested field** (a `nest:`ed repeated record is materialized but carried as an
-opaque `json` column, so `by_region.region` does not resolve against the shape),
-or a query against a source that isn't materialized. (When a view reaches
-something not carried, only that view falls back; the source's other queries
-still serve from storage.) Note this is per-query, not per-source: a source with
-a nested field still serves its scalar columns from storage, and only the queries
-touching the nested field recompute.
-
-A **filter** is the one exception to that per-query rule, deliberately. If a
-source's `where:` cannot be reproduced on the shape — one reaching through a join
-whose target is not materialized, or one over a column the source hides with
-`except:` — that **source** serves live, rather than serving from storage without
-its filter. Serving fewer queries from the tier is a cost; serving the wrong rows
-is not a trade worth making. Normally only that source is affected: its siblings
-keep the tier, and keep it at full strength rather than falling back to bare
-stored columns. Two cases still cost the whole model its tier — when no source in
-it can be served, and when each compiles alone so the failure is in their
-combination rather than in any one of them (a duplicate source name). Both serve
-live, so the rows stay right either way. For the same reason a filter is never dropped when the shape sheds
-its riskier refinements: a source whose view cannot be reproduced loses the view
-and keeps the filter.
-
-You'll see:
-
-```
-debug: storage serve-shape ineligible for this query; serving live { modelPath: "orders.malloy", ... }
-```
+Each answer's path report says which happened: an answer read from the lake
+carries `servedBy` with `via: "served_copy"`, and a live answer carries no
+`servedFrom`.
 
 Fallback means turning the feature on can never make a query wrong — at worst it
 serves live, exactly as it would with the feature off.
@@ -643,7 +616,9 @@ downstream's build query). That still produces a correct table, but two
 independently-timed builds can then drift; rebuild the whole package together
 (`forceRefresh`) to keep them aligned. Under `strictUpstreams` (orchestrated
 builds) only the first kind is recomputed, because no build over the stored
-tables exists for a source that reaches the warehouse; everything else strict
+tables exists for a source that reaches the warehouse (an orchestrator that
+must never read the warehouse sets `warehouseReach: refuse` in its build
+instructions, and the source fails instead, not retryable); everything else strict
 refuses, since recomputing it would rebuild a table the orchestrator meant to
 pin — an upstream the build neither materialized nor was handed by reference,
 one whose table lives in a _different_ destination, or a shape over stored
@@ -752,13 +727,14 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 
 Remove `paramtest.malloy` and reload to continue.
 
-A third check runs **after** the build, once the table's authoritative schema is
-captured: the served shape must **compile in DuckDB** (the served table lives
-there, even for a warehouse-authored source). A source whose materialized shape
-isn't DuckDB-portable is refused the same way — a serve-time error turned into a
-build-time refusal. In practice it rarely fires, because the served shape is
-just the stored columns; it's the floor that guarantees the captured schema
-forms a valid DuckDB source.
+Once the table is built, its authoritative schema is captured, and whether
+each stored column can be read is decided when the table is bound, per source,
+not by refusing the build. A list or struct column is declared as Malloy's
+array or record type. A column Malloy has no faithful declaration for (a MAP,
+UNION, ENUM, BLOB, INTERVAL or JSON column, or a list or struct holding one)
+is left out of the source's declaration, so a query that reads it is answered
+live and every other query reads the table. A table with no column left to
+declare still builds; its source is answered live.
 
 These are the checks derivable from the compiled source and the built schema
 alone. One more belongs here and **is enforced**: a source protected by
@@ -782,11 +758,9 @@ follows from it.
 
 ### Field-level hiding and the materialized table
 
-Field visibility is preserved on the **serve** path: the serve shape declares
-only the source's publicly visible columns, so a field hidden with `except:` (or
-a `private`/`internal` access modifier) is dropped from the virtual source — a
-query that references it falls back to serving live, where the source's own
-visibility applies, exactly as it would un-materialized.
+Field visibility is preserved on the **serve** path: the served copy keeps your
+source's text, so a field hidden with `except:` (or a `private`/`internal` access
+modifier) is hidden on the stored read exactly as it is live.
 
 But be aware of the table **at rest**: the build materializes whatever the
 source's compiled SQL projects, so an `except:`-ed column is still physically
@@ -838,7 +812,8 @@ Everything you need is on the package status and the logs:
     (`parent_reuse`) or fell back to recompute-from-raw (`inline_fallback`
     non-strict, `strict_shape_fallback` under `strictUpstreams`, where only a
     shape the destination cannot express is recomputed). `strict_refused` is an
-    upstream strict would not recompute. `infra_failure` is a destination that
+    upstream strict would not recompute, or a warehouse recompute that
+    `warehouseReach: refuse` refused. `infra_failure` is a destination that
     was unreachable, kept distinct from the shape limits so a store outage is not
     read as an un-carriable query.
   - `malloy_model_query_duration` tags a routed query with

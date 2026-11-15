@@ -142,3 +142,16 @@ describe("buildFingerprintQuery", () => {
       expect(gates).toEqual(["b", "a"]);
    });
 });
+
+describe("the fingerprint query names its source as one identifier", () => {
+   // A source is never a join path, so a dotted source name is one quoted
+   // identifier, not segments; a name that compiled before is unchanged.
+   test("quotes a dotted source name whole, and leaves a plain one as before", () => {
+      expect(buildFingerprintQuery("a.b", "region", [])).toContain(
+         "run: `a.b` -> {",
+      );
+      expect(buildFingerprintQuery("orders", "region", [])).toContain(
+         "run: `orders` -> {",
+      );
+   });
+});

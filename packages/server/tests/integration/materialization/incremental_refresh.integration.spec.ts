@@ -165,13 +165,20 @@ describe("Incremental refresh over REST", () => {
       );
       expect(res.status).toBe(200);
       const pkg = (await res.json()) as {
-         warnings?: { message: string; subject?: string }[];
+         warnings?: {
+            message: string;
+            subject?: string;
+            code?: string;
+            severity?: string;
+         }[];
          buildPlan?: { sources?: Record<string, { name?: string }> };
       };
-      const advisory = (pkg.warnings ?? []).find((w) =>
-         w.message.includes('"mergekey"'),
+      const advisory = (pkg.warnings ?? []).find(
+         (w) =>
+            w.code === "persist-unknown-key" && w.message.includes("mergekey="),
       );
       expect(advisory).toBeDefined();
+      expect(advisory?.severity).toBe("warn");
       expect(advisory?.subject).toBe("daily_orders");
       // And the package really is serving: the source is on its build plan.
       expect(

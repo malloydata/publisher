@@ -1,0 +1,208 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "big_orders@<hammer>/fmj/fmj.malloy": [],
+          "broken_orders@<hammer>/fmj/fmj.malloy": [],
+          "north_orders@<hammer>/fmj/fmj.malloy": [],
+          "regions@<hammer>/fmj/fmj.malloy": []
+        },
+        "order": [
+          "regions@<hammer>/fmj/fmj.malloy",
+          "north_orders@<hammer>/fmj/fmj.malloy",
+          "broken_orders@<hammer>/fmj/fmj.malloy",
+          "big_orders@<hammer>/fmj/fmj.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "big_orders@<hammer>/fmj/fmj.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "broken_orders@<hammer>/fmj/fmj.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "north_orders@<hammer>/fmj/fmj.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "regions@<hammer>/fmj/fmj.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "big_orders@<hammer>/fmj/fmj.malloy": "fmj.malloy",
+      "broken_orders@<hammer>/fmj/fmj.malloy": "fmj.malloy",
+      "north_orders@<hammer>/fmj/fmj.malloy": "fmj.malloy",
+      "regions@<hammer>/fmj/fmj.malloy": "fmj.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "regions@<hammer>/fmj/fmj.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "north_orders@<hammer>/fmj/fmj.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "broken_orders@<hammer>/fmj/fmj.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "big_orders@<hammer>/fmj/fmj.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "big_orders@<hammer>/fmj/fmj.malloy": {
+        "annotationFields": {
+          "name": "fmj_big",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "region_id",
+            "type": "string"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "fmj.malloy",
+        "name": "big_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604",
+        "sourceID": "big_orders@<hammer>/fmj/fmj.malloy",
+        "sql": "sha256:6f2c4677dd004c1f"
+      },
+      "broken_orders@<hammer>/fmj/fmj.malloy": {
+        "annotationFields": {
+          "name": "fmj_broken",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "region_id",
+            "type": "string"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "fmj.malloy",
+        "name": "broken_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604",
+        "sourceID": "broken_orders@<hammer>/fmj/fmj.malloy",
+        "sql": "sha256:6f2c4677dd004c1f"
+      },
+      "north_orders@<hammer>/fmj/fmj.malloy": {
+        "annotationFields": {
+          "name": "fmj_north",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "region_id",
+            "type": "string"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "fmj.malloy",
+        "name": "north_orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604",
+        "sourceID": "north_orders@<hammer>/fmj/fmj.malloy",
+        "sql": "sha256:6f2c4677dd004c1f"
+      },
+      "regions@<hammer>/fmj/fmj.malloy": {
+        "annotationFields": {
+          "name": "fmj_regions",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region_id",
+            "type": "string"
+          },
+          {
+            "name": "region_name",
+            "type": "string"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "fmj.malloy",
+        "name": "regions",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "41bb2149613988fd939c3f76d037a9ec4589048c3c09a8114c553f10828b2e3e",
+        "sourceID": "regions@<hammer>/fmj/fmj.malloy",
+        "sql": "sha256:068b5614efa39420"
+      }
+    }
+  }
+}
