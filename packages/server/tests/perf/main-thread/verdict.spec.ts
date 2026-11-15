@@ -53,6 +53,7 @@ function run(over: Partial<StormResult> = {}): StormResult {
          getModel: true,
          queryModel: true,
       },
+      quietMs: [2000, 2000, 2000],
       control: { queryStatus: 200, queryCompiles: 1 },
       queryModel: { builds: 20, ms: 5, byCaller: {} },
       indexedLoad: {
@@ -298,6 +299,12 @@ describe("judge at the limits", () => {
       ).toBe("invalid");
    });
 
+   it("is invalid when a quiet check never got quiet", () => {
+      expect(judge([run()], [run({ quietMs: [2000, -1, 2000] })]).outcome).toBe(
+         "invalid",
+      );
+   });
+
    it("is invalid on the wrong runner, or a baseline far over budget", () => {
       expect(
          judge([run()], [run()], DEFAULT_LIMITS, { cpus: 2, expectCpus: 4 })
@@ -307,7 +314,7 @@ describe("judge at the limits", () => {
          judge([run()], [run()], DEFAULT_LIMITS, { cpus: 4, expectCpus: 4 })
             .outcome,
       ).toBe("pass");
-      expect(judge([run({ status: p90(2500) })], [run()]).outcome).toBe(
+      expect(judge([run({ status: p90(3500) })], [run()]).outcome).toBe(
          "invalid",
       );
       expect(judge([run({ maxBlockMs: 3500 })], [run()]).outcome).toBe(

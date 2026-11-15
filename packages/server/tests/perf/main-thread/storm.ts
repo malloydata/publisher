@@ -129,6 +129,8 @@ export interface StormResult {
    };
    /** Which probe hooks took (probe.ts); a counter whose hook failed counts nothing. */
    hooks: ProbeSnapshot["hooks"];
+   /** How long each quiet check waited for quiet, ms; -1 when it never came. */
+   quietMs: number[];
    /** Positive controls: an ad-hoc query's compiles, which must be at least 1. */
    control: { queryStatus: number; queryCompiles: number };
    /** Main-thread Malloy QueryModel builds over the storm (ms2data/service#7641). */
@@ -280,6 +282,31 @@ async function stopServer(s: Server): Promise<void> {
    rmSync(s.root, { recursive: true, force: true });
 }
 
+/**
+ * Wait until the main thread is quiet: two consecutive one-second windows
+ * with no Malloy compile, no QueryModel build and no load dispatched, so
+ * background work the storm started (a retrieval index build reading
+ * #(index) values, a queued load) cannot land in a quiet check's window.
+ * Returns how long it took, or -1 when the server never went quiet.
+ */
+async function waitQuiet(s: Server, limitMs = 120_000): Promise<number> {
+   const start = Date.now();
+   let quietFor = 0;
+   await readProbe(s, true);
+   while (Date.now() - start < limitMs) {
+      await Bun.sleep(1000);
+      const w = await readProbe(s, true);
+      const busy =
+         w.compiles +
+         w.queryModelBuilds +
+         (w.dispatches["load-package"] ?? 0) +
+         (w.dispatches["load-package+manifest"] ?? 0);
+      quietFor = busy === 0 ? quietFor + 1 : 0;
+      if (quietFor >= 2) return Date.now() - start;
+   }
+   return -1;
+}
+
 async function readProbe(s: Server, reset = false): Promise<ProbeSnapshot> {
    const r = await fetch(reset ? `${s.probe}/reset` : s.probe, {
       method: reset ? "POST" : "GET",
@@ -411,7 +438,7 @@ type Op =
    | "context"
    | "patchEnv";
 const MIX: Array<[Op, number]> = [
-   ["load", 0.35],
+   ["load", 0.38],
    ["unload", 0.2],
    ["reload", 0.1],
    ["bind", 0.1],
@@ -419,7 +446,9 @@ const MIX: Array<[Op, number]> = [
    // What an indexer and an agent read: the package's entities, and
    // get_context (MCP only; it has no REST form).
    ["entities", 0.07],
-   ["context", 0.05],
+   // Few: each starts a background index build of its package (reading its
+   // #(index) values) that runs on past the storm, as in the fleet.
+   ["context", 0.02],
    ["patchEnv", 0.03],
 ];
 
@@ -718,7 +747,7 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
          `${pkgUrl(target)}/versions/${target.version}/manifest`,
          { manifestLocation: m[m.bound] },
       );
-      await Bun.sleep(2000);
+      const quietMs: number[] = [await waitQuiet(s)];
       // Positive control first: one ad-hoc query must count as a compile, or
       // a zero in the re-bind window means nothing.
       await readProbe(s, true);
@@ -755,7 +784,7 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
          });
          await call("DELETE", `${pkgUrl(p)}/versions/${p.version}`);
       }
-      await Bun.sleep(1000);
+      quietMs.push(await waitQuiet(s));
       await readProbe(s, true);
       const POLLS = 10;
       for (let i = 0; i < POLLS; i++) {
@@ -783,7 +812,7 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
       };
       if (ip) {
          await call("DELETE", `${pkgUrl(ip)}/versions/${ip.version}`);
-         await Bun.sleep(1000);
+         quietMs.push(await waitQuiet(s));
          await readProbe(s, true);
          const a = await call(
             "POST",
@@ -865,6 +894,7 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
             dispatches: statusLoads.dispatches,
          },
          hooks: after.hooks,
+         quietMs,
          control: { queryStatus: q.status, queryCompiles: control.compiles },
          queryModel: {
             builds: after.queryModelBuilds,

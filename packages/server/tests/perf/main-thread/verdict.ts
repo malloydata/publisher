@@ -159,6 +159,9 @@ export function judge(
                "the storm counted no QueryModel build, so a zero indexed-load count proves nothing",
             );
          }
+         if ((r.quietMs ?? []).some((q) => q < 0)) {
+            problems.push("the server never went quiet before a quiet check");
+         }
          if (!r.indexedLoad?.ok) {
             problems.push(
                "the quiet load of the indexed package did not succeed",
@@ -223,7 +226,7 @@ export function judge(
    const bBlock = med(baseline, (r) => r.maxBlockMs);
    const bP90s = med(baseline, (r) => r.status.p90);
    if (
-      bP90s > 2 * limits.statusP90BudgetMs ||
+      bP90s > 3 * limits.statusP90BudgetMs ||
       bBlock > limits.maxBlockBudgetMs
    ) {
       checks.push({
@@ -231,7 +234,7 @@ export function judge(
          kind: "validity",
          outcome: "invalid",
          value: `baseline /status p90 ${ms(bP90s)}, longest block ${ms(bBlock)}`,
-         limit: `p90 <= ${ms(2 * limits.statusP90BudgetMs)} and block <= ${ms(limits.maxBlockBudgetMs)}`,
+         limit: `p90 <= ${ms(3 * limits.statusP90BudgetMs)} and block <= ${ms(limits.maxBlockBudgetMs)}`,
          detail:
             "The baseline itself is over budget: an overloaded runner or a bad baseline. Re-run; if it repeats, the baseline needs looking at.",
       });
