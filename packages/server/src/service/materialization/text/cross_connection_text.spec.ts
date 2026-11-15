@@ -225,6 +225,55 @@ source: report is account_usage extend {
       ]);
    });
 
+   it("leaves the join out of a file an index exports from", async () => {
+      const base = "file:///p/base.malloy";
+      const files: Record<string, string> = {
+         [base]: model,
+         [URL_]: `import "base.malloy"
+export { account_usage, usage }
+`,
+      };
+      const compile = compileFiles(files);
+      const firstError = await compile(new Map()).catch((e) => e);
+      // The importer's export fails only because its import did.
+      expect(isCrossConnectionRefusal(firstError)).toBe(true);
+      const view = await leaveOut({
+         firstError,
+         readText: (u) => files[u],
+         load: compile,
+      });
+      expect(view?.leftOut.map((l) => [l.url, l.name])).toEqual([
+         [base, "u"],
+         [base, "first_events"],
+         [base, "total_events"],
+         [base, "by_account"],
+      ]);
+      expect(view?.overlay.get(URL_)).toBeUndefined();
+   });
+
+   it("leaves an index alone that exports a source the passes leave out", async () => {
+      const base = "file:///p/base.malloy";
+      const files: Record<string, string> = {
+         [base]: `${model}source: per_usage is account_usage -> { group_by: u.events }
+`,
+         [URL_]: `import "base.malloy"
+export { per_usage }
+`,
+      };
+      const compile = compileFiles(files);
+      const firstError = await compile(new Map()).catch((e) => e);
+      expect(isCrossConnectionRefusal(firstError)).toBe(true);
+      // Leaving out `per_usage` would leave its export naming nothing: the
+      // export is never cut, so the file fails as it did.
+      expect(
+         await leaveOut({
+            firstError,
+            readText: (u) => files[u],
+            load: compile,
+         }),
+      ).toBeUndefined();
+   });
+
    it("leaves a file alone whose own error outlives the left-out joins", async () => {
       const base = "file:///p/base.malloy";
       const files: Record<string, string> = {

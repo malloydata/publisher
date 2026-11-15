@@ -31,8 +31,6 @@ import {
    ServingReader,
    tableIdentity,
    tableNamesIn,
-   packageTableSuffix,
-   versionTableSuffix,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
@@ -74,7 +72,7 @@ import {
    withChainBuildText,
 } from "./materialization_run_support";
 import { packageOwner } from "./table_mark_sql";
-import { Reclaimer } from "./reclaimer";
+import { Reclaimer, RENAMED_TABLES_KEY } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
 import {
    buildKindOf,
@@ -88,6 +86,7 @@ import {
 } from "./run_telemetry";
 import {
    deriveSelfInstructions,
+   type RenamedTable,
    validateInstructions,
    writeTargetsFor,
 } from "./run_instructions";
@@ -732,6 +731,9 @@ export class MaterializationService {
          });
 
          let instructions: BuildInstruction[];
+         // Tables built under readable names in place of an earlier run's,
+         // reclaimed once this run commits (Reclaimer.reclaimRenamedTables).
+         let renamed: RenamedTable[] = [];
          let carried: Record<string, ManifestEntry>;
          let derivedRefused: Record<string, RefusedSource> = {};
          let clearedTiers: ReadonlyMap<string, EligibilityTier> | undefined;
@@ -766,15 +768,16 @@ export class MaterializationService {
             }
          } else {
             // Skip-if-unchanged: reuse tables from the most recent manifest for
-            // sources whose sourceEntityId is unchanged.
-            const priorEntries = opts.forceRefresh
-               ? {}
-               : await this.getMostRecentManifestEntries(
-                    environmentId,
-                    packageName,
-                    id,
-                    reader,
-                 );
+            // sources whose sourceEntityId is unchanged. Read under
+            // `forceRefresh` too, where nothing is carried: the entries still
+            // decide each table's name (an incremental source keeps the name
+            // its ledger is keyed by, a readable name stays put).
+            const priorEntries = await this.getMostRecentManifestEntries(
+               environmentId,
+               packageName,
+               id,
+               reader,
+            );
             let recheck: Record<string, BuildInstruction>;
             ({
                instructions,
@@ -782,25 +785,19 @@ export class MaterializationService {
                refused: derivedRefused,
                cleared: clearedTiers,
                recheck = {},
+               renamed = [],
             } = this.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
                priorEntries,
                incremental,
-               owned !== undefined
-                  ? {
-                       versionSuffix: versionTableSuffix({
-                          environmentName,
-                          packageName,
-                          version: owned,
-                       }),
-                    }
-                  : {
-                       packageSuffix: packageTableSuffix({
-                          environmentName,
-                          packageName,
-                       }),
-                    },
+               {
+                  environmentName,
+                  packageName,
+                  packagePath: pkg.getPackagePath(),
+                  ...(owned !== undefined ? { ownedVersion: owned } : {}),
+               },
+               { forceRefresh: opts.forceRefresh ?? false },
             ));
             // A carried table at the author's `name=` is reused only while
             // it is still marked as this package's (table_ownership.ts).
@@ -1004,6 +1001,9 @@ export class MaterializationService {
             entries,
             failures,
             {
+               // Recorded before any is dropped, so a crash between this
+               // commit and the drops leaves them for the next run to finish.
+               ...(renamed.length > 0 ? { [RENAMED_TABLES_KEY]: renamed } : {}),
                forceRefresh: opts.forceRefresh,
                sourceNames: opts.sourceNames ?? null,
                mode,
@@ -1070,6 +1070,9 @@ export class MaterializationService {
                     ),
          );
 
+         // Whether every loaded copy of the package now reads this run: its
+         // own load, then the other versions' rebinds below.
+         let bound = !orchestrated && served?.autoLoad === "loaded";
          if (
             !orchestrated &&
             versionId !== undefined &&
@@ -1086,11 +1089,38 @@ export class MaterializationService {
             // binds only what its own definition built, and serves live what
             // this run rebuilt from a different one (see
             // Package.bindStorageServeBindings).
-            await this.committer.rebindLoadedVersions(
-               environmentName,
-               packageName,
-               versionId,
-            );
+            bound =
+               (await this.committer.rebindLoadedVersions(
+                  environmentName,
+                  packageName,
+                  versionId,
+               )) && bound;
+         }
+         // Once nothing loaded reads them, the tables readable names replaced
+         // (this run's, and any an earlier run could not finish). Only after
+         // this run's own load took, and, before any drop, once every loaded
+         // copy of the package has rebound from the store: one that did not
+         // (a version an earlier run's failed load left on the old table)
+         // still reads it.
+         if (!orchestrated) {
+            if (bound) {
+               await this.reclaimer.reclaimRenamedTables(
+                  environmentName,
+                  packageName,
+                  id,
+                  reader,
+                  () =>
+                     this.committer.rebindLoadedVersions(
+                        environmentName,
+                        packageName,
+                     ),
+               );
+            } else if (renamed.length > 0) {
+               logger.warn(
+                  "Keeping the tables readable names replaced: the package did not bind to this run",
+                  { packageName, tables: renamed.map((t) => t.previousName) },
+               );
+            }
          }
 
          // Carried forward, so never in the build loop: counted once the run

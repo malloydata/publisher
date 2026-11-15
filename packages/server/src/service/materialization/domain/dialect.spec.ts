@@ -56,6 +56,7 @@ const DECIDED: Record<keyof Capabilities, DialectName[]> = {
       "standardsql",
       "trino",
    ],
+   onlyBigIntegerType: ["standardsql"],
    foldsTableNameCase: ["databricks", "duckdb", "presto", "sqlserver", "trino"],
 };
 

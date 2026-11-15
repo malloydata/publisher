@@ -627,6 +627,18 @@ describe("bigIntegerReads (known limitation 12)", () => {
       // without it): nothing is known to be exact.
       expect(colocated("postgres", undefined)).toEqual([{ column: "id" }]);
       expect(colocated("duckdb", undefined)).toEqual([{ column: "id" }]);
+      expect(colocated("snowflake", undefined)).toEqual([{ column: "id" }]);
+      expect(colocated("sqlserver", undefined)).toEqual([{ column: "id" }]);
+   });
+
+   it("reads an uncaptured colocated BigQuery column through INT64, its only integer type", () => {
+      expect(colocated("standardsql", undefined)).toEqual([
+         { column: "id", castTo: "INT64" },
+      ]);
+      // A captured type still decides, even on BigQuery.
+      expect(colocated("standardsql", "BIGNUMERIC")).toEqual([
+         { column: "id" },
+      ]);
    });
 
    it("matches a captured type to its column by a unique case fold", () => {

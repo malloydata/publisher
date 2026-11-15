@@ -632,7 +632,8 @@ const HUGEINT_EXACT =
  *   Malloy types that type as a `bigint` number, so nothing is narrowed and
  *   the value keeps live's representation. A column of any other type (a
  *   `numeric`, which Malloy reads as a float), or one whose type its build
- *   did not capture, is left out.
+ *   did not capture, is left out, except on BigQuery, whose only integer
+ *   type is INT64 ({@link exactWarehouseCast}).
  */
 export function bigIntegerReads(
    schema: readonly { name: string; type: string }[],
@@ -706,12 +707,21 @@ export interface BigIntegerReadOptions {
  * (`numeric`, read as a float), a type the dialect's CAST does not take by
  * that name (MySQL's `bigint`), or none captured: no cast keeps both the
  * value and live's representation, so the column is left out.
+ *
+ * BigQuery is the one exception to "none captured": it has exactly one
+ * integer type, INT64, and it is the only BigQuery type Malloy reads as a
+ * `bigint` number, so the field's own type names the column's exactly. A
+ * table bound before its build captured the catalog's types is read through
+ * INT64 there; no other dialect is inferred.
  */
 function exactWarehouseCast(
    dialect: unknown,
    nativeType: string | undefined,
 ): string | undefined {
-   if (typeof dialect !== "string" || !nativeType?.trim()) return undefined;
+   if (typeof dialect !== "string") return undefined;
+   if (!nativeType?.trim()) {
+      return capabilitiesOf(dialect).onlyBigIntegerType;
+   }
    // MySQL's CAST names no integer type (`CAST(x AS bigint)` is a syntax
    // error; its SIGNED and UNSIGNED are not numbers to Malloy), so only a
    // DECIMAL is a type the column can be read through.

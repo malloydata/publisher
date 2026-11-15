@@ -1339,7 +1339,17 @@ async function planV1PersistSources(
       }
       parts.tables[sourceID] = {
          kind: "persist",
-         ...plannedFacts(source, modelPath),
+         // The DECLARING model, never this one: a model that imports the
+         // source walks it again, and the last walk would otherwise decide
+         // its path.
+         ...plannedFacts(
+            source,
+            declaringModelPath(
+               sourceIDFileURL(sourceID),
+               packagePath,
+               modelPath,
+            ),
+         ),
          gate: await classifyPersistSourceGate(
             source,
             classificationCtx.modelDef,

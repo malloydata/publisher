@@ -260,6 +260,13 @@ jobs:
         run: bun run --cwd packages/create-malloy-package test
         shell: bash
 
+      # The CLI's unit tests import its own generated API client, which the
+      # repo-wide generate-api-types above does not produce (it covers the SDK
+      # and server only), so test:cli generates it first.
+      - name: Run CLI tests
+        run: bun run test:cli
+        shell: bash
+
       # These specs are the only ones that prove a generated config is one a
       # real server actually serves: they boot the server bin built above
       # against the scaffolded workspace. Ubuntu only, because booting a server

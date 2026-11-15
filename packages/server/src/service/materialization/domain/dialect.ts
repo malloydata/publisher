@@ -96,6 +96,12 @@ export interface Capabilities {
     */
    castsToIntegerType: boolean;
    /**
+    * Its one type Malloy reads as a `bigint` number, when it has exactly one
+    * (BigQuery's INT64): a column whose field is one is that type, captured
+    * or not. Undefined: none is inferred.
+    */
+   onlyBigIntegerType: string | undefined;
+   /**
     * Table names resolve case-insensitively, quoted or not (SQL Server under
     * its default collation). Not MySQL, where it depends on the server's
     * `lower_case_table_names`, which Publisher cannot see.
@@ -117,6 +123,7 @@ const NONE: Capabilities = {
    nestedColumns: false,
    driverKeepsBigIntegers: false,
    castsToIntegerType: false,
+   onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
 };
 
@@ -156,6 +163,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       tableOwnership: true,
       needsQualifiedTable: true,
       castsToIntegerType: true,
+      onlyBigIntegerType: "INT64",
    },
    snowflake: {
       ...NONE,

@@ -44,9 +44,9 @@
       }
     },
     "sourceModelPaths": {
-      "daily@<hammer>/tim/a.malloy": "c.malloy",
+      "daily@<hammer>/tim/a.malloy": "a.malloy",
       "monthly@<hammer>/tim/c.malloy": "c.malloy",
-      "weekly@<hammer>/tim/b.malloy": "c.malloy"
+      "weekly@<hammer>/tim/b.malloy": "b.malloy"
     }
   },
   "rollupsKeepingGates": [],
@@ -99,7 +99,7 @@
         "connectionName": "orders_pg",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "c.malloy",
+        "modelPath": "a.malloy",
         "name": "daily",
         "origin": "persist",
         "preaggregate": null,
@@ -151,7 +151,7 @@
         "connectionName": "orders_pg",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "c.malloy",
+        "modelPath": "b.malloy",
         "name": "weekly",
         "origin": "persist",
         "preaggregate": null,

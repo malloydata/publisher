@@ -512,7 +512,9 @@ export class ManifestCommitter {
     * the runs that own its tables (its own under `scope: version`, the
     * package's otherwise; see ownedVersionOf), and one bound to a host
     * manifest is left alone, as on load. `exceptVersion` skips the version a
-    * caller has just bound itself. Best-effort per slot.
+    * caller has just bound itself. Best-effort per slot: answers whether
+    * every slot rebound (or was taken out of service), so a caller can tell
+    * that nothing loaded still reads what the store no longer names.
     *
     * Colocated is rebound regardless of `PERSIST_STORAGE_MODE` (it is not gated
     * by the storage kill switch); storage= only when the tier is not `off`.
@@ -521,7 +523,7 @@ export class ManifestCommitter {
       environmentName: string,
       packageName: string,
       exceptVersion?: string,
-   ): Promise<void> {
+   ): Promise<boolean> {
       let environment: Awaited<
          ReturnType<MaterializationHost["getEnvironment"]>
       >;
@@ -549,8 +551,11 @@ export class ManifestCommitter {
             packageName,
             error: errMessage(err),
          });
-         return;
+         return false;
       }
+      // Whether every slot now reads the store: a version that cannot be
+      // rebound is taken out of service, which reads nothing old either.
+      let rebound = true;
       for (const versionId of slots) {
          if (versionId !== undefined && versionId === exceptVersion) continue;
          if (versionId !== undefined) {
@@ -596,6 +601,7 @@ export class ManifestCommitter {
                );
             }
          } catch (err) {
+            rebound = false;
             logger.warn(
                "Failed to rebind serve bindings (leaving current bindings; a " +
                   "reload/build will re-derive)",
@@ -603,6 +609,7 @@ export class ManifestCommitter {
             );
          }
       }
+      return rebound;
    }
 }
 

@@ -55,7 +55,6 @@ import { parsePackageName } from "../../src/service/identity";
 import { listStorageTables } from "../../src/service/materialization/run/materialization_build_session";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";
-import { packageTableSuffix } from "../../src/service/versions/materialization_scope";
 import type { Package } from "../../src/service/package";
 import type {
    Materialization,
@@ -470,14 +469,16 @@ describe.skipIf(process.platform === "win32")(
          });
          firstEntries = entriesOf(first);
          const { daily, orders, sales } = firstEntries;
-         // Self-assigned names: the source's name and the package's suffix.
-         const suffix = packageTableSuffix({
-            environmentName: ENV,
-            packageName: PKG,
-         });
-         expect(daily.physicalTableName).toBe(`daily${suffix}`);
-         expect(orders.physicalTableName).toBe(`orders${suffix}`);
-         expect(sales.physicalTableName).toBe(`${sales.sourceName}${suffix}`);
+         // Self-assigned names: the readable `<pkg>__<file>__<source>__p<hash>`.
+         expect(daily.physicalTableName).toMatch(
+            /^pkg__m__daily__p[0-9a-f]{8}$/,
+         );
+         expect(orders.physicalTableName).toMatch(
+            /^pkg__m__orders__p[0-9a-f]{8}$/,
+         );
+         expect(sales.physicalTableName).toMatch(
+            /^pkg__m__sales_by_cat__p[0-9a-f]{8}$/,
+         );
          for (const entry of [daily, orders, sales]) {
             expect(entry).toMatchObject({
                connectionName: "warehouse",

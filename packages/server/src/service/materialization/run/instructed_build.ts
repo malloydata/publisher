@@ -986,8 +986,9 @@ export class InstructedBuild {
 /**
  * Where an auto-run writes a source's table at the author's own `name=`, or
  * undefined: a host-instructed build (the host chose the name), a name
- * Publisher chose (suffixed for the package or the version, so no other
- * package writes it), or a run that cannot say whose it is.
+ * Publisher chose (its readable name, hashed over the package and the
+ * version, so no other package writes it), or a run that cannot say whose it
+ * is.
  */
 function authorNamedTarget(
    run: InstructedRun,

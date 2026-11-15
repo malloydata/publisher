@@ -18,10 +18,8 @@ import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
 import type { EnvironmentStore } from "../../environment_store";
 import { VersionRef } from "../../identity";
-import {
-   storageBindingResolverFor,
-   versionTableSuffix,
-} from "../../versions/materialization_scope";
+import { storageBindingResolverFor } from "../../versions/materialization_scope";
+import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { DuckDBConnection as WarehouseConnection } from "@malloydata/db-duckdb";
 import { MaterializationService } from "./materialization_service";
 import {
@@ -71,7 +69,10 @@ const WAREHOUSE = {
 
 /** The table a `scope: version` version builds `summary` into. */
 const versionTable = (version: string) =>
-   `summary${versionTableSuffix({ environmentName: ENV, packageName: PKG, version })}`;
+   autoRunTableName(ENV, PKG, "summary", {
+      modelPath: "model.malloy",
+      version,
+   });
 
 function materializeModel(answer: number): string {
    return [
@@ -339,11 +340,14 @@ describe("leftover name= views through real builds", () => {
       await publish("2.0.0", 2, "version", named);
       const versioned = await build({ versionId: VersionRef.parse("2.0.0") });
       expect(versioned.status).toBe("MANIFEST_FILE_READY");
-      // The version's own table: name='s leaf with the version's suffix.
-      expect(await tables()).toEqual([
-         "summary_t",
-         `summary_t${versionTableSuffix({ environmentName: ENV, packageName: PKG, version: "2.0.0" })}`,
-      ]);
+      // The version's own table: name= is its prefix, then the version's tail.
+      const versionedTable = autoRunTableName(ENV, PKG, "summary", {
+         modelPath: "model.malloy",
+         version: "2.0.0",
+         prefix: "summary_t",
+      });
+      expect(versionedTable).toMatch(/^summary_t__v2_0_0__p[0-9a-f]{8}$/);
+      expect(await tables()).toEqual(["summary_t", versionedTable].sort());
       expect(await views()).toEqual([]);
       expect(nameViewsIn(versioned.metadata)).toEqual([]);
    });
