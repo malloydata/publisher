@@ -26,16 +26,71 @@
       "order_rows@<hammer>/xt/xt.malloy": "xt.malloy"
     }
   },
-  "refusedAlone": [
-    {
-      "code": "persist-not-built",
-      "message": "#@ persist source \"order_rows\" is not built, so it is answered live: it declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" to build it; the supported set widens in a later release.",
-      "model": "xt.malloy",
-      "route": "@",
-      "subject": "order_rows",
-      "tier": "unservable"
-    }
-  ],
   "rollupsKeepingGates": [],
-  "wirePlan": null
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order_rows@<hammer>/xt/xt.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "order_rows@<hammer>/xt/xt.malloy": {
+        "annotationFields": {
+          "merge_key": "order_id",
+          "name": "xt_rows",
+          "refresh": "incremental",
+          "watermark": "batch"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          },
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "amount_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "xt.malloy",
+        "name": "order_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "a5362d1c70d80dd3e761f0cd761d1175187b5f2645fc76c5963d2b4202d554ba",
+        "sourceID": "order_rows@<hammer>/xt/xt.malloy",
+        "sql": "sha256:dce4bf71b8d66b9c",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
 }

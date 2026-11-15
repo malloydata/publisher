@@ -291,16 +291,6 @@
       "flights_full@<hammer>/pfx/pfx.malloy": "pfx.malloy"
     }
   },
-  "refusedAlone": [
-    {
-      "code": "materialize-not-built",
-      "message": "#(materialize) on source \"flights\" is not built, so the source is served live: it declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" to build it; the supported set widens in a later release.",
-      "model": "pfx.malloy",
-      "route": "materialize",
-      "subject": "flights",
-      "tier": "unservable"
-    }
-  ],
   "rollupsKeepingGates": [],
   "wirePlan": {
     "graphs": [
@@ -308,6 +298,10 @@
         "connectionName": "orders_pg",
         "nodes": [
           [
+            {
+              "dependsOn": [],
+              "sourceID": "flights@<hammer>/pfx/pfx.malloy"
+            },
             {
               "dependsOn": [],
               "sourceID": "flights_full@<hammer>/pfx/pfx.malloy"
@@ -320,6 +314,65 @@
     "omittedSources": [],
     "refusedSources": {},
     "sources": {
+      "flights@<hammer>/pfx/pfx.malloy": {
+        "annotationFields": {
+          "merge_key": "id",
+          "name": "flights",
+          "refresh": "incremental",
+          "storage": "lake",
+          "watermark": "__pair_watermark"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "carrier",
+            "type": "string"
+          },
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "segments__seg_id",
+            "type": "number"
+          },
+          {
+            "name": "segments__flight_id",
+            "type": "number"
+          },
+          {
+            "name": "segments__miles",
+            "type": "number"
+          },
+          {
+            "name": "segments__batch",
+            "type": "number"
+          },
+          {
+            "name": "__parent_row",
+            "type": "boolean"
+          },
+          {
+            "name": "__pair_watermark",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pfx.malloy",
+        "name": "flights",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "6d7c8ec876bb43d20d0fe128a9b6496061993c33daf789899eb25136c28ca4b0",
+        "sourceID": "flights@<hammer>/pfx/pfx.malloy",
+        "sql": "sha256:ed916aef143b4fea"
+      },
       "flights_full@<hammer>/pfx/pfx.malloy": {
         "annotationFields": {
           "name": "pfx_flights_full",

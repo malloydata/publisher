@@ -42,8 +42,9 @@
   "loadWarnings": [
     {
       "code": "persist-not-built",
-      "message": "#@ persist sources \"summary\", \"summary\" all resolve to the same materialized table \"summary\" in destination \"duckdb\". Distinct sources must not share a physical target — the second build would overwrite the first, and a serve binding or GC drop for one would affect the other, so none is served from it and queries on them are answered live. Give each a distinct #@ persist name=.",
-      "severity": "warn"
+      "message": "#@ persist sources \"summary\" (a.malloy), \"summary\" (b.malloy) all resolve to the same materialized table \"summary\" in destination \"duckdb\". Distinct sources must not share a physical target — the second build would overwrite the first, and a serve binding or GC drop for one would affect the other, so none is built or served from it and queries on them are answered live. Give each a distinct #@ persist name=.",
+      "severity": "warn",
+      "subject": "summary"
     }
   ],
   "wirePlan": {

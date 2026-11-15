@@ -26,16 +26,60 @@
       "order_rows@<hammer>/ivm/ivm.malloy": "ivm.malloy"
     }
   },
-  "refusedAlone": [
-    {
-      "code": "persist-not-built",
-      "message": "#@ persist source \"order_rows\" is not built, so it is answered live: it declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" to build it; the supported set widens in a later release.",
-      "model": "ivm.malloy",
-      "route": "@",
-      "subject": "order_rows",
-      "tier": "unservable"
-    }
-  ],
   "rollupsKeepingGates": [],
-  "wirePlan": null
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order_rows@<hammer>/ivm/ivm.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "order_rows@<hammer>/ivm/ivm.malloy": {
+        "annotationFields": {
+          "merge_key": "order_id",
+          "name": "ivm_rows",
+          "refresh": "incremental",
+          "storage": "lake",
+          "watermark": "batch"
+        },
+        "columns": [
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "batch",
+            "type": "number"
+          },
+          {
+            "name": "amount_total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ivm.malloy",
+        "name": "order_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "0590287a429e95b9a7f1c85100e5da24bf537419ecef8ac84d2556d481d83ee3",
+        "sourceID": "order_rows@<hammer>/ivm/ivm.malloy",
+        "sql": "sha256:4c9ea00b8753229d"
+      }
+    }
+  }
 }
