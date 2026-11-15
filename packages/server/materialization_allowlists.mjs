@@ -159,7 +159,6 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {
    "service/materialization/run/build_failure_class.ts": "5",
    "service/materialization/run/build_query_tag.ts": "5",
    "service/materialization/run/build_read_cost.ts": "5",
-   "service/materialization/run/build_strategy.ts": "5",
    "service/materialization/run/colocated_build_strategy.ts": "5",
    "service/materialization/run/error_code.ts": "5",
    "service/materialization/run/incremental_apply.ts": "5",

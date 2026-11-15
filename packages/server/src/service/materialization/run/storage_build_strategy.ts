@@ -48,7 +48,7 @@ import {
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
-import type { BuildStrategy } from "./build_strategy";
+import type { TierAdapter } from "./tier";
 import {
    ledgerFields,
    refreshFields,
@@ -133,9 +133,9 @@ export interface StorageBuildRequest {
  * plan: a table whose columns no type declares faithfully is built and
  * answers live.
  */
-export class StorageBuildStrategy
-   implements BuildStrategy<StorageBuildRequest>
-{
+export class StorageBuildStrategy implements TierAdapter<StorageBuildRequest> {
+   readonly tier = "storage" as const;
+
    constructor(
       private readonly seams: {
          /**

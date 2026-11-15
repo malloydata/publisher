@@ -1,12 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The tier port a build runs through ({@link TierAdapter}), and what a
+ * colocated build of one source starts from. Read by the source build and
+ * the two adapters.
+ *
+ * Types only.
+ */
+
 import type {
    Connection as MalloyConnection,
    Manifest,
    PersistSource,
 } from "@malloydata/malloy";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
+import type { BuildTier } from "../../../materialization_metrics";
 import type { QueryMetadata } from "../../query_metadata";
 import type { sourceIncrementalRefresh } from "./incremental_build";
 
@@ -16,22 +25,25 @@ type IncrementalRefreshTarget = NonNullable<
 >;
 
 /**
- * How one tier materializes one source. A run renders the source's SQL and
- * classifies its stored upstreams once (source_build.ts), then hands the
- * source to the strategies of its tier in order: the first to return an entry
- * built it, and `undefined` passes the source to the next.
+ * The tier port: how a table is built where it lives. A run renders a
+ * source's SQL and classifies its stored upstreams once (source_build.ts),
+ * then hands the source to its tier's adapter, which builds it by whichever
+ * method the run can take (a delta, else in full) and returns its manifest
+ * entry:
  *
- * - colocated: {@link IncrementalDeltaStrategy} advances an incremental
- *   table by a bounded delta, else {@link ColocatedCtasStrategy} rebuilds it
- *   by a staging CTAS and a swap onto the served name (one transaction where
- *   DDL is transactional), in the source's own warehouse;
- * - storage: {@link StorageBuildStrategy} builds into a `storage=` destination
- *   (its delta, when there is one, applies inside the destination session);
- * - instructed: {@link InstructedBuild} drives a run's instructions through
- *   the tiers in dependency order and records each outcome.
+ * - {@link ColocatedTier} (colocated_build_strategy.ts), in the source's own
+ *   warehouse: a bounded delta for an incremental table
+ *   (incremental_delta_strategy.ts), else a staging CTAS and a swap onto the
+ *   served name (one transaction where DDL is transactional);
+ * - {@link StorageBuildStrategy} (storage_build_strategy.ts), into a `storage=`
+ *   destination, its delta, when there is one, applied inside the
+ *   destination session.
+ *
+ * A table's kind changes nothing here: it is in the text the plan wrote.
  */
-export interface BuildStrategy<Request> {
-   build(request: Request): Promise<ManifestEntry | undefined>;
+export interface TierAdapter<Request> {
+   readonly tier: BuildTier;
+   build(request: Request): Promise<ManifestEntry>;
 }
 
 /** What a colocated build of one source starts from. */

@@ -20,13 +20,12 @@ import {
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
-import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
-import { ColocatedCtasStrategy } from "./colocated_build_strategy";
+import type { ColocatedBuildRequest } from "./tier";
+import { ColocatedTier } from "./colocated_build_strategy";
 import {
    sourceIncrementalRefresh,
    type IncrementalRunContext,
 } from "./incremental_build";
-import { IncrementalDeltaStrategy } from "./incremental_delta_strategy";
 import {
    BuildEnvironment,
    BuildQueryMetadata,
@@ -47,17 +46,14 @@ import {
 import type { StorageBuildRequest } from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
 
-/** The colocated tier, in the order it is tried: a delta, else a full rebuild. */
-const COLOCATED_STRATEGIES: readonly BuildStrategy<ColocatedBuildRequest>[] = [
-   new IncrementalDeltaStrategy(),
-   new ColocatedCtasStrategy(),
-];
+/** The colocated tier's adapter: a delta, else a full rebuild. */
+const COLOCATED = new ColocatedTier();
 
 /**
  * One source's build, whatever its tier: render its SQL over the run's
  * manifest, decide once how its stored upstreams are read, resolve the query
- * metadata every statement carries, then hand it to the storage tier or to the
- * colocated strategies (see build_strategy.ts).
+ * metadata every statement carries, then hand it to its tier's adapter (see
+ * tier.ts).
  */
 export class SourceBuilder {
    constructor(
@@ -440,13 +436,7 @@ export class SourceBuilder {
          ),
          ...(replacesView ? { replacesView } : {}),
       };
-      for (const strategy of COLOCATED_STRATEGIES) {
-         const entry = await strategy.build(request);
-         if (entry) return entry;
-      }
-      throw new Error(
-         `No colocated build strategy built source '${persistSource.name}'`,
-      );
+      return COLOCATED.build(request);
    }
 
    /**

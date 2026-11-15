@@ -9,7 +9,8 @@ import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import { capturedNativeSchema } from "./colocated_native_types";
 import { ManifestEntry } from "../domain/types";
-import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
+import type { ColocatedBuildRequest, TierAdapter } from "./tier";
+import { buildColocatedDelta } from "./incremental_delta_strategy";
 import {
    advanceLedgerAfterSeed,
    ledgerFields,
@@ -36,10 +37,18 @@ import { backupSuffix, stagingSuffix } from "./materialization_run_support";
  * incremental source it also clears the ledger before the rebuild and records
  * the new boundary after it.
  */
-export class ColocatedCtasStrategy
-   implements BuildStrategy<ColocatedBuildRequest>
-{
+export class ColocatedTier implements TierAdapter<ColocatedBuildRequest> {
+   readonly tier = "colocated" as const;
+
+   /** A delta for an incremental table the run can advance, else a rebuild in full. */
    async build(request: ColocatedBuildRequest): Promise<ManifestEntry> {
+      return (await buildColocatedDelta(request)) ?? this.buildInFull(request);
+   }
+
+   /** The staging CTAS and the swap onto the served name. */
+   private async buildInFull(
+      request: ColocatedBuildRequest,
+   ): Promise<ManifestEntry> {
       const {
          persistSource,
          instruction,
