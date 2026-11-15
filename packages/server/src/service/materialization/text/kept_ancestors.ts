@@ -3,8 +3,8 @@
 
 /**
  * The ancestors whose trailing `extend { … }` runs a `#(materialize)` re-root
- * keeps (materialization v2, P10 and its generalization for given-reading
- * terms and dimensions declared on a base).
+ * keeps: an extension table's bases, and a base whose given-reading terms or
+ * dimensions the build leaves out.
  *
  * The served copy replaces a source's declaration base with its stored table,
  * so whatever a base it is built from declares is gone from the served source
@@ -19,11 +19,13 @@
  * text; the served copy walks again with the text. Both stop where the walk
  * stops here, so a term or dimension the build leaves out because a kept
  * block re-applies it is in the served copy's kept blocks.
+ *
+ * Pure.
  */
 
 import { declarationSpans, declaredBaseName } from "./declaration_text";
 import { offsetOf } from "./malloy_lexer";
-import type { SourceMap } from "./plan/source_map";
+import type { SourceMap } from "./source_map";
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
 interface KeptRange {

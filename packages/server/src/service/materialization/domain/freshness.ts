@@ -2,27 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Per-query freshness gate for persisted sources. A query on a `#@ persist`
- * source may use its materialized table only while that table is within its
- * declared freshness window; otherwise the query does what the source's
- * `fallback` says.
+ * Whether a persisted source's stored table is fresh enough to read at an
+ * instant, and what a query does when it is not (the source's `fallback`).
  *
  * Two invariants:
- *  1. Enforce per query, not at bind. Filtering stale entries once at bind
- *     would let a table that crosses its window while the package stays loaded
- *     keep serving stale.
- *  2. Clock on `dataAsOf` (the snapshot start the control plane supplies), not
- *     build completion: the window bounds *data* age. `age = now - dataAsOf`.
+ *  1. Evaluated per query, never at bind: a table that crosses its window
+ *     while the package stays loaded must stop serving.
+ *  2. Aged from `dataAsOf` (the snapshot start the host supplies), not from
+ *     build completion: the window bounds the data's age.
  *
- * `fail` currently degrades to serve-live (the entry is dropped like `live`);
- * erroring a query that joins a stale persist source is not implemented.
+ * `fail` degrades to answering live, as `live` does: erroring a query that
+ * joins a stale source is not implemented.
+ *
+ * Pure: the caller passes the instant.
  */
 
 import {
    BuildManifest,
    FreshnessAwareManifestEntry,
    FreshnessManifest,
-} from "../types";
+} from "./types";
 
 /**
  * What to do with a single manifest entry at query time.

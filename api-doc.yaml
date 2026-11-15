@@ -10679,12 +10679,13 @@ components:
             longer produced. It was the storage tier's blanket refusal of any
             given reference, and the positional reasons above replaced it: where
             a given sits decides the outcome, so a single reason covering every
-            placement can no longer be raised. `not_duckdb_portable` is decided against the
-            post-build captured schema, which does not exist at compile time,
-            and `public_surface_unknown` is raised by the build-time narrowing
-            of a stored table to the source's public columns; both are listed
-            only because they share the enum the runtime eligibility metric
-            uses.
+            placement can no longer be raised. `not_duckdb_portable` is
+            likewise retained and no longer produced: a `storage=` table no
+            column of which Malloy can type is now built, and its source is
+            answered live. `public_surface_unknown` is raised by the build-time
+            narrowing of a stored table to the source's public columns; both
+            are listed only because they share the enum the runtime
+            eligibility metric uses.
         message:
           type: string
           description: >-

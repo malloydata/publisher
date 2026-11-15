@@ -730,6 +730,25 @@ source: by_category is orders -> {
          }
       });
 
+      it("never admits a row filter the source inherits: the served copy cannot graft it", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const plan = inputs(id, {
+            classification: "row_level",
+            attributed: true,
+            inheritedRowFilter: true,
+         });
+         // Asked by the build, the serve bind and the host-instructed build.
+         expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(false);
+         const refused = withEnv(R3_ON, () =>
+            refusal(() => assertTierEligible(source, true, plan)),
+         );
+         expect(refused.reason).toBe("authorize");
+         expect(refused.message).toContain(
+            "reads an #(access_filter) row-level gate from a source it derives from",
+         );
+      });
+
       it("lifts only the gate refusal: every other storage check still runs", async () => {
          const source = (
             await persistSources(`##! experimental { persistence givens }

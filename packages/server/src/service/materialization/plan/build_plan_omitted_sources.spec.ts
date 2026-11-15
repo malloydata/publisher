@@ -31,7 +31,7 @@ import {
    plannedSources,
    type BuildPlanParts,
 } from "./build_plan";
-import { finalizeOmissions, omittedFromFile } from "./omitted_sources";
+import { finalizeOmissions, omittedFromFile } from "../domain/omitted_sources";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 

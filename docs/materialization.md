@@ -487,10 +487,10 @@ types as a warehouse-native type (`sql native`: a `uuid`, or a Postgres `json`, 
 type, which the destination stores as text) is left out the same way, and a Postgres `bytea` or
 `interval` is stored as BLOB or INTERVAL rather than cast to text, so it is left out too: live answers
 each in a type or text the stored column does not reproduce. A table built before 0.13.1 keeps a `bytea`
-or `interval` column as text until it is rebuilt in full. The build no
-longer refuses such a table; it refuses (reason `not_duckdb_portable`) only one with no column left
-to declare. Each column the build-time check leaves out is counted in
-`publisher_storage_serve_shape_type_fallback_total`.
+or `interval` column as text until it is rebuilt in full. The build does
+not refuse such a table, even one with no column left to declare: the served copy declines that
+source at bind, so every query over it is answered live. Each column a `storage=` build stores that
+no type declares is counted in `publisher_storage_serve_shape_type_fallback_total` and logged.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A

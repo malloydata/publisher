@@ -1,8 +1,26 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * One vocabulary for why a serving leg does not answer a query: each decline
+ * carries its public `SkipReason`, its code, the package warning a `WARNED`
+ * decline points to, and the caller's detail, all from one table.
+ *
+ * Thrown as a `LegDecline` by the view, rollup and served legs; read by the
+ * router (query_router.ts, through `VariantSkipExplanation`) and the path
+ * report (serve/query_path.ts). A decline's public form is fixed by its row,
+ * never chosen at the throw site.
+ *
+ * Pure.
+ */
+
 import type { components } from "../../../api";
-import type { VariantSkipExplanation } from "../../query_router";
+
+/** A candidate's own account of why it did not answer (see the router's `Variant.explain`). */
+export interface VariantSkipExplanation {
+   code: string;
+   callerDetail?: string;
+}
 
 type SkipReason = components["schemas"]["SkipReason"];
 

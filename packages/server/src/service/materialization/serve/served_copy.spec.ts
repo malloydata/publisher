@@ -19,7 +19,7 @@ import {
    type Reroot,
    replacePairJoin,
 } from "./served_copy";
-import { inverseRenameBlocks } from "../declaration_text";
+import { inverseRenameBlocks } from "../text/declaration_text";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
 function rangeOf(text: string, name: string): Reroot["range"] {

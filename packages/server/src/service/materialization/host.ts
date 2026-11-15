@@ -16,8 +16,13 @@ import type {
 import type { EnvironmentName, PackageName, VersionRef } from "../identity";
 import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
-import type { BuildPlanPackage } from "./plan/build_plan";
-import type { BuildPlan, FreshnessManifest, ManifestEntry } from "./types";
+import type { BuildPlanPackage } from "./domain/plan_input";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
+import type {
+   BuildPlan,
+   FreshnessManifest,
+   ManifestEntry,
+} from "./domain/types";
 
 /** The package surface a run reads: its plan, its metadata, its connections. */
 interface MaterializationPackage extends BuildPlanPackage {
@@ -48,6 +53,14 @@ interface MaterializationPackage extends BuildPlanPackage {
     * stand-in package binds none.
     */
    forgetKeyUniqueness?(sourceEntityIds: Iterable<string>): void;
+   /**
+    * The text a chained `storage=` build compiles on its destination alone:
+    * the request's downstream, with each stored upstream the request carries
+    * re-rooted as the served copy re-roots it, from those entries alone and
+    * never the package's bound tables. Optional: a stand-in package has no
+    * served copy, and its chained builds recompute.
+    */
+   chainBuildText?(request: ChainBuildRequest): ChainBuildText;
 }
 
 /** The part of an environment's version registry a run consults. */
@@ -96,6 +109,12 @@ export interface MaterializationEnvironment {
       options?: { versionId?: VersionRef },
    ): Promise<MaterializationPackage>;
    getLoadedPackages(): MaterializationPackage[];
+   /**
+    * Whether the package serves a model older than its files, because its
+    * last reload did not compile (a `stale: true` load error). Optional: a
+    * test double's packages are never stale.
+    */
+   getStaleCompileErrors?(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
 
    getVersionService(): MaterializationVersions | null;

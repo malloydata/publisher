@@ -8,10 +8,7 @@ import {
    deriveColocatedServeBindings,
    v1StoredColumnsOf,
 } from "./colocated_bindings";
-import {
-   boundTablePath,
-   buildVirtualMap,
-} from "./materialization_serve_transform";
+import { boundTablePath, buildVirtualMap } from "./bindings";
 
 const ID = "orders@file:///pkg/m.malloy";
 

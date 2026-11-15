@@ -23,7 +23,7 @@ import {
    ManifestEntry,
    ManifestReference,
    SourceFailure,
-} from "../types";
+} from "../domain/types";
 import { keyUniquenessAt, type RollupKeyRecord } from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import type { RunLifecycle } from "./run_lifecycle";

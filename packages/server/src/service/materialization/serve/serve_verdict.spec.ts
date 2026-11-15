@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import type { components } from "../../../api";
 import { computeServeVerdicts, type ServeVerdictFacts } from "./serve_verdict";
-import { reachableSourceIDs } from "../plan/source_map";
+import { reachableSourceIDs } from "../text/source_map";
 
 type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 

@@ -26,7 +26,7 @@ import type {
    BuildManifest,
    Connection as MalloyConnection,
 } from "@malloydata/malloy";
-import type { KeyUniqueness, ManifestEntry } from "../types";
+import type { KeyUniqueness, ManifestEntry } from "../domain/types";
 import type {
    InlineUniquenessCheck,
    MaterializePlan,

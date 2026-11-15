@@ -40,6 +40,7 @@ import {
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
+import { packageRelativeText } from "../package_relative_text";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -52,7 +53,10 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { FreshnessManifest, ManifestEntry } from "./materialization/types";
+import {
+   FreshnessManifest,
+   ManifestEntry,
+} from "./materialization/domain/types";
 import { errMessage } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -92,7 +96,7 @@ import {
    type TaggedLogMessage,
 } from "./compile_source";
 import { type OverlayFile } from "./request_overlay";
-import { destinationSchemaOf } from "./materialization/run/storage_table_path";
+import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
 
 export {
    COMPILE_SCOPES,
@@ -926,7 +930,7 @@ export class Environment {
          // Memoized serve shapes hold the retired generation's connections but
          // are keyed on the binding set, which this does not change; left in
          // place, every routed query would quietly fall back to live.
-         this.invalidateServeShapes();
+         this.invalidateCompiledLegs();
       }
    }
 
@@ -1096,14 +1100,14 @@ export class Environment {
    }
 
    /** Drop every loaded model's memoized serve shape; the next query recompiles. */
-   private invalidateServeShapes(): void {
+   private invalidateCompiledLegs(): void {
       for (const _package of this.packages.values()) {
-         _package.invalidateServeShapes();
+         _package.invalidateCompiledLegs();
       }
       // Loaded versions too: they compiled against the destinations that just
       // changed.
       for (const [, , version] of this.versionService?.cache.entries() ?? []) {
-         version.invalidateServeShapes();
+         version.invalidateCompiledLegs();
       }
    }
 
@@ -2764,12 +2768,10 @@ export class Environment {
       return this.trackPackageLoad(packageName, async () => {
          this.transition(packageName, { type: "beginLoad" });
 
+         let packagePath: string | undefined;
          try {
             logger.debug(`Loading package ${packageName}...`);
-            const packagePath = safeJoinUnderRoot(
-               this.environmentPath,
-               packageName,
-            );
+            packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
             const _package = await Package.create(
                this.environmentName,
                packageName,
@@ -2787,6 +2789,12 @@ export class Environment {
             return _package;
          } catch (error) {
             logger.error(`Failed to load package ${packageName}`, { error });
+            // The load failure is the caller's answer and the package's
+            // status: a compile error in it names the package's files
+            // package-relative, never where this server keeps them.
+            if (packagePath !== undefined && error instanceof Error) {
+               error.message = packageRelativeText(error.message, packagePath);
+            }
             if (existingPackage !== undefined) {
                // A failed reload keeps serving the last good model (replaced
                // only on success) rather than evicting the package. Recorded

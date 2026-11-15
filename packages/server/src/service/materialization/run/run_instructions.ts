@@ -27,7 +27,7 @@ import {
    LedgerEntry,
    ManifestEntry,
    RefusedSource,
-} from "../types";
+} from "../domain/types";
 import {
    sourceIncrementalRefresh,
    type IncrementalRunContext,

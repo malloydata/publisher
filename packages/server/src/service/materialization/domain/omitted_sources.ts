@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `BuildPlan.omittedSources` and `omittedFiles`: the sources a build plan left out because
- * planning them FAILED, so a host can tell "this source left the plan" from
- * "this plan could not say" before it retires a table. A source the plan
- * DECIDES not to build is refused or warned on instead, and is not one.
+ * `BuildPlan.omittedSources` and `omittedFiles`: the sources a build plan left
+ * out because planning them failed, so a host can tell "this source left the
+ * plan" from "this plan could not say" before it retires a table.
  *
- * Each entry carries a sourceID and a code, never the failure's message,
- * which could quote the source's SQL or a value; the message is logged where
- * the failure is caught.
+ * Filled by the planners that compile a companion and by the build plan; read
+ * by the wire projection. A source the plan decides not to build is refused
+ * or warned on instead, and is never one of these. An entry carries a
+ * sourceID and a code, never the failure's message, which could quote the
+ * source's SQL or a value.
+ *
+ * Pure.
  */
 
 import { components } from "../../../api";

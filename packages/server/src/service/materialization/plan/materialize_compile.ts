@@ -21,7 +21,11 @@ import {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
-import { omittedByID, omittedFromFile, type Omission } from "./omitted_sources";
+import {
+   omittedByID,
+   omittedFromFile,
+   type Omission,
+} from "../domain/omitted_sources";
 import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
 import {
    buildCopyDeclarationAt,

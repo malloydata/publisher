@@ -36,19 +36,19 @@ describe("routeQuery", () => {
       const calls: string[] = [];
       const decision = await routeQuery(
          [
-            variant("storage", "answers", calls),
+            variant("served", "answers", calls),
             variant("rollup", "answers", calls),
          ],
          async () => false,
       );
       expect(decision).toMatchObject({
          served: "variant",
-         kind: "storage",
-         extra: "storage-extra",
+         kind: "served",
+         extra: "served-extra",
       });
-      expect(calls).toEqual(["attempt:storage"]);
+      expect(calls).toEqual(["attempt:served"]);
       expect(decision.considered).toEqual([
-         { kind: "storage", outcome: "used" },
+         { kind: "served", outcome: "used" },
       ]);
    });
 
@@ -56,23 +56,23 @@ describe("routeQuery", () => {
       const calls: string[] = [];
       const decision = await routeQuery(
          [
-            variant("storage", "misses", calls),
+            variant("served", "misses", calls),
             variant("rollup", "answers", calls),
          ],
          async () => false,
       );
       expect(decision).toMatchObject({ served: "variant", kind: "rollup" });
       expect(calls).toEqual([
-         "attempt:storage",
-         "skip:storage",
+         "attempt:served",
+         "skip:served",
          "attempt:rollup",
       ]);
       expect(decision.considered).toEqual([
          {
-            kind: "storage",
+            kind: "served",
             outcome: "skipped",
             reason: "does_not_answer",
-            detail: "storage cannot answer",
+            detail: "served cannot answer",
          },
          { kind: "rollup", outcome: "used" },
       ]);
@@ -82,7 +82,7 @@ describe("routeQuery", () => {
       const calls: string[] = [];
       const decision = await routeQuery(
          [
-            variant("storage", "misses", calls),
+            variant("served", "misses", calls),
             variant("rollup", "misses", calls),
          ],
          async () => false,
@@ -98,7 +98,7 @@ describe("routeQuery", () => {
       const calls: string[] = [];
       const decision = await routeQuery(
          [
-            variant("storage", "answers", calls),
+            variant("served", "answers", calls),
             variant("rollup", "answers", calls),
          ],
          async () => true,
@@ -119,7 +119,7 @@ describe("routeQuery", () => {
          const calls: string[] = [];
          const decision = await routeQuery(
             [
-               variant("storage", "answers", calls),
+               variant("served", "answers", calls),
                { ...variant("served", "answers", calls), keepsContracts: true },
             ],
             async () => veto,
@@ -177,7 +177,7 @@ describe("routeQuery", () => {
          return false;
       };
       await routeQuery(
-         [variant("storage", "misses", []), variant("rollup", "answers", [])],
+         [variant("served", "misses", []), variant("rollup", "answers", [])],
          gate,
       );
       expect(asked).toBe(1);
@@ -203,7 +203,7 @@ describe("routeQuery", () => {
 
    it("records a candidate's own explanation of its skip, and survives one that throws", async () => {
       const explained: Variant<string> = {
-         ...variant("storage", "misses", []),
+         ...variant("served", "misses", []),
          explain: () => ({ code: "rollup_missing_field", callerDetail: "x" }),
       };
       const broken: Variant<string> = {
@@ -215,10 +215,10 @@ describe("routeQuery", () => {
       const decision = await routeQuery([explained, broken], async () => false);
       expect(decision.considered).toEqual([
          {
-            kind: "storage",
+            kind: "served",
             outcome: "skipped",
             reason: "does_not_answer",
-            detail: "storage cannot answer",
+            detail: "served cannot answer",
             code: "rollup_missing_field",
             callerDetail: "x",
          },
@@ -248,12 +248,12 @@ describe("routeQuery metrics", () => {
 
    it("counts each candidate by variant, outcome and reason", async () => {
       await routeQuery(
-         [variant("storage", "misses", []), variant("rollup", "answers", [])],
+         [variant("served", "misses", []), variant("rollup", "answers", [])],
          async () => false,
       );
       expect(
          await count({
-            variant: "storage",
+            variant: "served",
             outcome: "skipped",
             reason: "does_not_answer",
          }),
@@ -265,17 +265,17 @@ describe("routeQuery metrics", () => {
 
    it("counts a chosen variant whose run failed as skipped run_failed, not used", async () => {
       const decision = await routeQuery(
-         [variant("storage", "answers", [])],
+         [variant("served", "answers", [])],
          async () => false,
          { recordMetrics: false },
       );
       recordVariantRouting(decision.considered, true);
       expect(
-         await count({ variant: "storage", outcome: "used", reason: "none" }),
+         await count({ variant: "served", outcome: "used", reason: "none" }),
       ).toBe(0);
       expect(
          await count({
-            variant: "storage",
+            variant: "served",
             outcome: "skipped",
             reason: "run_failed",
          }),

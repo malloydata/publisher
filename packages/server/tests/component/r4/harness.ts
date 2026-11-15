@@ -33,7 +33,7 @@ import {
    parentKeyNeedsOf,
    storedKeyChecksOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
-import { SourceMap } from "../../../src/service/materialization/plan/source_map";
+import { SourceMap } from "../../../src/service/materialization/text/source_map";
 import {
    pairLeafKeyChecksOf,
    runRollupKeyCheck,
@@ -45,8 +45,11 @@ import {
    extensionOverStoredModel,
    type MaterializePlan,
 } from "../../../src/service/materialization/plan/build_file_generator";
-import { planChainedDownstream } from "../../../src/service/materialization/run/materialization_build_session";
-import { storageTablePath } from "../../../src/service/materialization/run/storage_table_path";
+import {
+   oneFileModel,
+   planChainedDownstream,
+} from "../../../src/service/materialization/run/materialization_build_session";
+import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
@@ -75,14 +78,16 @@ import {
    compilerBuildId,
    presentAs,
 } from "../../../src/service/materialization/plan/addressing";
+import { buildVirtualMap } from "../../../src/service/materialization/serve/bindings";
 import {
-   buildVirtualMap,
    deriveServeBindings,
-   declarableColumns,
+   type ServeBinding,
+} from "../../../src/service/materialization/domain/serve_binding";
+import {
    groupAliasesByName,
    planSourceIds,
-   type ServeBinding,
-} from "../../../src/service/materialization/serve/materialization_serve_transform";
+} from "../../../src/service/materialization/domain/source_aliases";
+import { declarableColumns } from "../../../src/service/materialization/stored_column_types";
 import {
    castToDeclaredTypes,
    persistSourceDeclaredColumns,
@@ -91,7 +96,7 @@ import {
 import type {
    KeyUniqueness,
    ManifestEntry,
-} from "../../../src/service/materialization/types";
+} from "../../../src/service/materialization/domain/types";
 import { Model } from "../../../src/service/model";
 import type { HydrationRuntime } from "../../../src/service/model_runtime";
 import { malloyGivenToApi, type MalloyGiven } from "../../../src/service/given";
@@ -876,16 +881,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             type: c.type as string,
          }));
          const planned = await planChainedDownstream({
-            transientModel: extensionOverStoredModel({
-               plan: materializePlans[source.sourceID],
-               chain: over.overStored,
-               connectionName: DESTINATION,
-               virtualHandle: parentEntry.sourceEntityId,
-               columns: declarableColumns(schema).declared.map((c) => ({
-                  name: c.name,
-                  type: c.malloyType,
-               })),
-            }),
+            model: oneFileModel(
+               extensionOverStoredModel({
+                  plan: materializePlans[source.sourceID],
+                  chain: over.overStored,
+                  connectionName: DESTINATION,
+                  virtualHandle: parentEntry.sourceEntityId,
+                  columns: declarableColumns(schema).declared.map((c) => ({
+                     name: c.name,
+                     type: c.malloyType,
+                  })),
+               }),
+            ),
             downstreamName: materializePlans[source.sourceID].buildSourceName,
             virtualMap: buildVirtualMap([
                {

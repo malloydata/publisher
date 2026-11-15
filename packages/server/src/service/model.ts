@@ -76,11 +76,11 @@ import {
    summarizeQueryAccess,
    type QueryAudit,
 } from "./access_record";
-import { type ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import { type ServeBinding } from "./materialization/domain/serve_binding";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
-import { BuildManifest } from "./materialization/types";
+import { BuildManifest } from "./materialization/domain/types";
 import {
    modelAnnotations,
    ownModelAnnotations,
@@ -221,13 +221,19 @@ import {
 import type { MaterializePlan } from "./materialization/plan/build_file_generator";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
+   chainBuildText,
    resultShapeOf,
    ServedCopyServe,
    type ServedCopyProblem,
 } from "./materialization/serve/served_copy_serve";
 import { type ApiQueryPath } from "./materialization/serve/query_path";
+import type {
+   ChainBuildRequest,
+   ChainBuildText,
+} from "./materialization/domain/chain_build";
+
 import { PersistedViewServe } from "./materialization/serve/view_variants";
-import { sourceChain } from "./materialization/plan/source_map";
+import { sourceChain } from "./materialization/text/source_map";
 import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
@@ -2849,7 +2855,7 @@ export class Model {
    }
 
    /** Drop every compiled leg (the destinations or the model changed). */
-   public invalidateServeShapeCache(): void {
+   public invalidateCompiledLegs(): void {
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
@@ -2917,13 +2923,31 @@ export class Model {
    }
 
    /**
-    * Whether each named view of the given stored sources compiles against a
-    * serve shape over `bindings`, without touching this model's own shape
-    * (ms2data/service#7090). The shape is a throwaway: it compiles against the
-    * same destinations a served query would, and needs no built table, since a
-    * virtual source declares its columns. Empty when no destination is
-    * configured, since then nothing serves from storage either way.
+    * The text a chained `storage=` build of a downstream this model declares
+    * compiles from, with each stored upstream the request carries re-rooted
+    * as this model's served copy re-roots it (`chainBuildText` in
+    * serve/served_copy_serve.ts).
+    * Undefined when this model has no served copy or does not declare the
+    * downstream.
     */
+   public chainBuildText(
+      request: ChainBuildRequest,
+   ): ChainBuildText | undefined {
+      if (
+         this.modelType !== "model" ||
+         this.isNotebook() ||
+         !this.modelDef ||
+         !this.servedCopyContext
+      ) {
+         return undefined;
+      }
+      return chainBuildText(request, {
+         modelPath: this.modelPath,
+         modelDef: this.modelDef,
+         context: this.servedCopyContext,
+      });
+   }
+
    /**
     * The v1 cutover's preview (dry run): the sources this model's served copy
     * would re-root over `bindings` (declared from the plan's output columns,
@@ -3489,9 +3513,7 @@ export class Model {
             // author's text with its classifications kept (the load's checks
             // decline a copy that does not keep them), and the only compile
             // that has a join a cross-connection build view leaves out.
-            ...(answer.tier === "storage" &&
-            answer.via === "served_copy" &&
-            answer.routedRunnable
+            ...(answer.tier === "served" && answer.routedRunnable
                ? { answeredBy: "served_copy" as const }
                : {}),
          },

@@ -32,9 +32,9 @@
 
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
-import type { KeyUniqueness } from "../types";
+import type { KeyUniqueness } from "../domain/types";
 import { forEachFieldPath } from "../../governance/ir/array_query";
-import { declineOfCode } from "./leg_decline";
+import { declineOfCode } from "../domain/leg_decline";
 
 export type ApiQueryPath = components["schemas"]["QueryPath"];
 type ApiQueryShape = components["schemas"]["QueryShape"];
@@ -276,22 +276,9 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    for (const c of input.considered) {
       if (!decided.has(c.kind) || c.outcome === "used") decided.set(c.kind, c);
    }
-   // The served copy on `virtual` reads the same stored tables as the serve
-   // shape; when it answered, its decision is the storage tier's.
+   // The served copy's decision is the stored tables' decision.
    const servedCopyAnswered = input.via === "served_copy";
-   // Otherwise the serve shape's decision, or, when only the served copy was
-   // tried (a `#(materialize)` table), the served copy's. A served copy that
-   // declined a query through a join it leaves out across connections says
-   // why the table did not answer better than the serve shape's compile
-   // failure behind it, unless the serve shape answered.
-   const servedDecision = decided.get("served");
-   const shapeDecision = decided.get("storage");
-   const storageDecision =
-      servedCopyAnswered ||
-      (servedDecision?.code === "served_copy_cross_connection" &&
-         shapeDecision?.outcome !== "used")
-         ? servedDecision
-         : (shapeDecision ?? servedDecision);
+   const storageDecision = decided.get("served");
    const rollupDecision = decided.get("rollup");
    // Computed once per report.
    const freshStorage = new Set(input.storage.fresh.map((b) => b.tablePath));

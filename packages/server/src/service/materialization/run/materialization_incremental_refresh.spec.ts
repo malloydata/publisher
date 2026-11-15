@@ -4,7 +4,7 @@
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
-import { BuildInstruction, LedgerEntry } from "../types";
+import { BuildInstruction, LedgerEntry } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
 import { indexCallerLedger } from "./incremental_build";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";

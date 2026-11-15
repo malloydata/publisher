@@ -14,7 +14,7 @@ import {
    isLegacyFailedEntry,
    type KeyUniqueness,
    ManifestEntry,
-} from "../types";
+} from "../domain/types";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 

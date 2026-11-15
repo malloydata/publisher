@@ -10,7 +10,11 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../../../errors";
-import { BuildInstruction, LedgerEntry, MaterializationStatus } from "../types";
+import {
+   BuildInstruction,
+   LedgerEntry,
+   MaterializationStatus,
+} from "../domain/types";
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
 import {
    makeBuildPlan,
@@ -903,6 +907,95 @@ describe("runBuild (branch behavior)", () => {
       });
       expect(svc.commitManifest.firstCall.args[3]).not.toHaveProperty(
          "refusedSources",
+      );
+   });
+
+   it("names the package's files package-relative in every message the run records", async () => {
+      // The harness's package lives at /test; a compile error names its file
+      // by the URL the compiler loaded it from.
+      const svc = stubEngine();
+      const where =
+         "FILE: file:///test/sub/m.malloy\nline 3: 'x' is not defined";
+      svc.executeInstructedBuild.resolves({
+         entries: {
+            "build-orders": {
+               sourceEntityId: "build-orders",
+               physicalTableName: '"orders_v1"',
+               connectionName: "duckdb",
+               upstreamReuse: "recomputed",
+               upstreamRecomputeReason: `could not stack: ${where}`,
+            },
+         },
+         failures: {
+            other: {
+               sourceEntityId: "other",
+               reason: "Failed to materialize source 'other': /test/m.malloy",
+            },
+         },
+         sourcesRefused: 1,
+         refusalsInFailures: 0,
+         refusedBesideBuilt: {
+            gated: {
+               name: "gated",
+               sourceID: "gated",
+               tier: "storage",
+               reason: "authorize",
+               message:
+                  "Source 'gated' in /test/m.malloy cannot be materialized",
+            },
+         },
+      });
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: [makeInstruction()],
+         },
+         new AbortController().signal,
+      );
+
+      const [, entries, failures, metadata] = svc.commitManifest.firstCall
+         .args as [
+         string,
+         Record<string, { upstreamRecomputeReason?: string }>,
+         Record<string, { reason: string }>,
+         { refusedSources: Record<string, { message: string }> },
+      ];
+      expect(entries["build-orders"].upstreamRecomputeReason).toBe(
+         "could not stack: FILE: sub/m.malloy\nline 3: 'x' is not defined",
+      );
+      expect(failures.other.reason).toBe(
+         "Failed to materialize source 'other': m.malloy",
+      );
+      expect(metadata.refusedSources.gated.message).toBe(
+         "Source 'gated' in m.malloy cannot be materialized",
+      );
+   });
+
+   it("names the package's files package-relative in a whole run's failure", async () => {
+      const svc = stubEngine();
+      svc.executeInstructedBuild.rejects(
+         new Error("did not compile: FILE: /test/m.malloy line 1"),
+      );
+      const err = await svc
+         .runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: false,
+               buildInstructions: [makeInstruction()],
+            },
+            new AbortController().signal,
+         )
+         .catch((e: unknown) => e);
+      expect((err as Error).message).toBe(
+         "did not compile: FILE: m.malloy line 1",
       );
    });
 
