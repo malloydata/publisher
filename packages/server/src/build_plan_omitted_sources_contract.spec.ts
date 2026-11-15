@@ -60,12 +60,21 @@ describe("the BuildPlan.omittedSources contract", () => {
    });
 
    it("round-trips a derived plan through JSON as the generated type, with only declared fields", () => {
-      const plan = deriveBuildPlan([], {}, {}, undefined, undefined, null, {
-         omittedSources: [
-            { sourceID: "a@file:///p/m.malloy", reason: "projection_failed" },
-            { file: "file:///p/m.malloy.preaggregate.malloy", reason: "x" },
-         ],
-      });
+      const plan = deriveBuildPlan(
+         {
+            builds: [],
+            tables: {},
+            connectionDigests: {},
+            omittedSources: [
+               {
+                  sourceID: "a@file:///p/m.malloy",
+                  reason: "projection_failed",
+               },
+               { file: "file:///p/m.malloy.preaggregate.malloy", reason: "x" },
+            ],
+         },
+         null,
+      );
       const wire = JSON.parse(
          JSON.stringify(plan),
       ) as components["schemas"]["BuildPlan"];

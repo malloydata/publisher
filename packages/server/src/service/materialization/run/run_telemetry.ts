@@ -68,15 +68,19 @@ export function runTriggerOf(args: {
    return "api";
 }
 
-/** What one planned source's build makes (see {@link BuildKind}). */
+/**
+ * What one planned source's build makes (see {@link BuildKind}): its table's
+ * kind, fixed at plan. A source this compile did not plan (the load's plan
+ * can list one the run's own compile does not) is read as a persisted view
+ * by its generated companion's sourceID, else as `persist`.
+ */
 export function buildKindOf(
-   compiled: Pick<CompiledBuildPlan, "preaggregatePlans" | "materializePlans">,
+   compiled: Pick<CompiledBuildPlan, "tables">,
    sourceID: string | undefined,
 ): BuildKind {
    if (sourceID === undefined) return "persist";
-   if (compiled.preaggregatePlans?.[sourceID]) return "rollup";
-   const materialize = compiled.materializePlans?.[sourceID];
-   if (materialize) return materialize.pair ? "pair" : "materialize";
+   const table = compiled.tables[sourceID];
+   if (table) return table.kind;
    if (sourceID.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) return "view";
    return "persist";
 }
@@ -87,7 +91,7 @@ export function buildKindOf(
  * a kind; an address the plan does not list is left to the caller.
  */
 export function buildKindsByAddress(
-   compiled: Pick<CompiledBuildPlan, "preaggregatePlans" | "materializePlans">,
+   compiled: Pick<CompiledBuildPlan, "tables">,
    plan: Pick<BuildPlan, "sources"> | null | undefined,
 ): Map<string, BuildKind> {
    const kinds = new Map<string, BuildKind>();

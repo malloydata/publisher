@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   materializePlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
@@ -58,7 +63,7 @@ async function compiled(text: string | Record<string, string>) {
 type Compiled = Awaited<ReturnType<typeof compilePackageBuildPlan>>;
 
 function planOf(c: Compiled, name: string): MaterializePlan | undefined {
-   return Object.values(c.materializePlans ?? {}).find(
+   return Object.values(materializePlansIn(c) ?? {}).find(
       (p) => p.sourceName === name,
    );
 }
@@ -70,7 +75,7 @@ function notBuilt(c: Compiled, source: string): string | undefined {
 }
 
 function sourceNamed(c: Compiled, name: string) {
-   return Object.values(c.sources).find((s) => s.name === name);
+   return Object.values(sourcesIn(c)).find((s) => s.name === name);
 }
 
 const SCOPED = `${HEAD}
@@ -191,7 +196,7 @@ source: orders is raw extend {
             expect(p?.leftOut?.map((d) => d.dimension)).toEqual(["mine"]);
             const sql = addressSQL(
                sourceNamed(c, "orders")!,
-               c.targets?.[p!.sourceID],
+               targetsIn(c)?.[p!.sourceID],
             );
             expect(sql).not.toMatch(new RegExp(`=\\s*${org}\\b`));
             expect(sql).not.toContain('"mine"');

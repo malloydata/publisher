@@ -15,6 +15,7 @@ import { BuildInstruction } from "../domain/types";
 import {
    compiledWith,
    fakeSource,
+   persistTables,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
 import { logger } from "../../../logger";
@@ -153,7 +154,7 @@ describe("executeInstructedBuild", () => {
       });
       const compiled = {
          builds: [{ connectionName: "duckdb", order: ["only"], dependsOn: {} }],
-         sources: { only },
+         tables: persistTables({ only }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -228,7 +229,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -302,19 +303,23 @@ describe("executeInstructedBuild", () => {
                dependsOn: {},
             },
          ],
-         sources: { orders, orders__preagg__category: rollup },
+         tables: {
+            ...persistTables({ orders }),
+            orders__preagg__category: {
+               kind: "rollup" as const,
+               source: rollup,
+               rollup: {
+                  baseSourceName: "orders",
+                  baseSourceID: "orders",
+                  grainDimensions: ["category"],
+                  measures: [],
+               },
+            },
+         },
          connectionDigests: { duckdb: "dig" },
          connections: new Map([
             ["duckdb", { runSQL } as unknown as MalloyConnection],
          ]),
-         preaggregatePlans: {
-            orders__preagg__category: {
-               baseSourceName: "orders",
-               baseSourceID: "orders",
-               grainDimensions: ["category"],
-               measures: [],
-            },
-         },
       };
       // Only the rollup instructed: refused, so the run has nothing to build.
       const err = await callExecute(
@@ -384,7 +389,7 @@ describe("executeInstructedBuild", () => {
                   dependsOn: { down: ["up"] },
                },
             ],
-            sources: { ok, up, down },
+            tables: persistTables({ ok, up, down }),
             connectionDigests: { duckdb: "dig" },
             connections: new Map([["duckdb", connection]]),
          };
@@ -439,7 +444,7 @@ describe("executeInstructedBuild", () => {
                builds: [
                   { connectionName: "duckdb", order: ["only"], dependsOn: {} },
                ],
-               sources: { only },
+               tables: persistTables({ only }),
                connectionDigests: { duckdb: "dig" },
                connections: new Map([
                   ["duckdb", { runSQL } as unknown as MalloyConnection],
@@ -525,7 +530,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -596,7 +601,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -654,7 +659,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -782,7 +787,7 @@ describe("executeInstructedBuild", () => {
       });
       const compiled = {
          builds: [{ connectionName: "duckdb", order: ["only"], dependsOn: {} }],
-         sources: { only },
+         tables: persistTables({ only }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -819,7 +824,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["mid", "root"], dependsOn: {} },
          ],
-         sources: { root, mid },
+         tables: persistTables({ root, mid }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -885,7 +890,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["base", "ext"], dependsOn: {} },
          ],
-         sources: { base, ext },
+         tables: persistTables({ base, ext }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -934,7 +939,7 @@ describe("executeInstructedBuild", () => {
             { connectionName: "duckdb", order: ["shared"], dependsOn: {} },
             { connectionName: "postgres", order: ["shared"], dependsOn: {} },
          ],
-         sources: { shared },
+         tables: persistTables({ shared }),
          connectionDigests: { duckdb: "dig", postgres: "dig2" },
          connections: new Map([
             ["duckdb", { runSQL: runDuck } as unknown as MalloyConnection],
@@ -976,7 +981,7 @@ describe("executeInstructedBuild", () => {
       };
       const compiled = {
          builds: [build, build],
-         sources: { shared },
+         tables: persistTables({ shared }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };

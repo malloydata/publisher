@@ -27,7 +27,11 @@ import {
    loadTestRuntime,
    tempBuildPlanPackages,
 } from "../test_helpers/incremental_test_harness";
-import { fakeSource } from "../test_helpers/materialization_test_fixtures";
+import {
+   fakeSource,
+   persistTables,
+   sourcesIn,
+} from "../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../test_helpers/settings_env";
 
 describe("source builds from getBuildTargets", () => {
@@ -90,7 +94,11 @@ source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
       const sources = Object.fromEntries(
          plannedSources(targets).map((src) => [src.sourceID, src]),
       );
-      const plan = deriveBuildPlan(builds, sources, { duckdb: "dig" });
+      const plan = deriveBuildPlan({
+         builds,
+         tables: persistTables(sources),
+         connectionDigests: { duckdb: "dig" },
+      });
       const edges = plan.graphs.flatMap((g) =>
          g.nodes
             .flat()
@@ -148,9 +156,12 @@ source: open is base -> { group_by: category }
          dependsOn: {},
       };
       expect(
-         [...sourcesInBuildOrder(build, { "a@m": a, "b@m": b })].map(
-            (src) => src.name,
-         ),
+         [
+            ...sourcesInBuildOrder(
+               build,
+               persistTables({ "a@m": a, "b@m": b }),
+            ),
+         ].map((src) => src.name),
       ).toEqual(["a", "b"]);
    });
 });
@@ -208,7 +219,7 @@ source: rolled is duckdb.table('t') -> { group_by: a }
          },
       });
 
-      expect(Object.values(parts.sources).map((src) => src.name)).toEqual([
+      expect(Object.values(sourcesIn(parts)).map((src) => src.name)).toEqual([
          "rolled",
       ]);
       expect(parts.droppedPersistSources).toEqual([
@@ -450,17 +461,17 @@ source: opps is raw -> { select: * } extend {
          const bySourceID = Object.fromEntries(
             Object.values(sources).map((src) => [src.sourceID, src]),
          );
-         const plan = deriveBuildPlan(
-            [
+         const plan = deriveBuildPlan({
+            builds: [
                {
                   connectionName: "duckdb",
                   order: Object.keys(bySourceID),
                   dependsOn: {},
                },
             ],
-            bySourceID,
-            { duckdb: "dig" },
-         );
+            tables: persistTables(bySourceID),
+            connectionDigests: { duckdb: "dig" },
+         });
          const opps = Object.values(plan.sources).find(
             (p) => p.name === "opps",
          );
@@ -494,11 +505,13 @@ source: opps is raw -> { select: * } extend {
          sourceEntityId: "bid-orders",
          sql: "SELECT 1",
       });
-      const plan = deriveBuildPlan(
-         [{ connectionName: "duckdb", order: ["orders@m"], dependsOn: {} }],
-         { "orders@m": orders },
-         { duckdb: "dig" },
-      );
+      const plan = deriveBuildPlan({
+         builds: [
+            { connectionName: "duckdb", order: ["orders@m"], dependsOn: {} },
+         ],
+         tables: persistTables({ "orders@m": orders }),
+         connectionDigests: { duckdb: "dig" },
+      });
 
       expect(plan.graphs[0].connectionName).toBe("duckdb");
       expect(plan.sources["orders@m"]).toMatchObject({
@@ -524,17 +537,17 @@ source: opps is raw -> { select: * } extend {
          },
       });
       const unset = fakeSource({ name: "unset", sourceEntityId: "bid-u" });
-      const plan = deriveBuildPlan(
-         [
+      const plan = deriveBuildPlan({
+         builds: [
             {
                connectionName: "duckdb",
                order: ["declared@m", "unset@m"],
                dependsOn: {},
             },
          ],
-         { "declared@m": declared, "unset@m": unset },
-         { duckdb: "dig" },
-      );
+         tables: persistTables({ "declared@m": declared, "unset@m": unset }),
+         connectionDigests: { duckdb: "dig" },
+      });
 
       expect(plan.sources["declared@m"].refresh).toBe("incremental");
       // Retired typed fields are absent from the wire projection.
@@ -559,15 +572,18 @@ source: opps is raw -> { select: * } extend {
       const a = fakeSource({ name: "a", sourceEntityId: "bid-a" });
       const b = fakeSource({ name: "b", sourceEntityId: "bid-b" });
       const plan = deriveBuildPlan(
-         [
-            {
-               connectionName: "duckdb",
-               order: ["a@m"],
-               dependsOn: {},
-            },
-         ],
-         { "a@m": a, "b@m": b },
-         { duckdb: "dig" },
+         {
+            builds: [
+               {
+                  connectionName: "duckdb",
+                  order: ["a@m"],
+                  dependsOn: {},
+               },
+            ],
+            tables: persistTables({ "a@m": a, "b@m": b }),
+            connectionDigests: { duckdb: "dig" },
+         },
+         undefined,
          ["a"],
       );
 
@@ -577,19 +593,19 @@ source: opps is raw -> { select: * } extend {
    it("carries the per-source package-relative modelPath", () => {
       const a = fakeSource({ name: "a", sourceEntityId: "bid-a" });
       const b = fakeSource({ name: "b", sourceEntityId: "bid-b" });
-      const plan = deriveBuildPlan(
-         [
+      const tables = persistTables({ "a@m": a, "b@m": b });
+      tables["a@m"].modelPath = "rollup.malloy";
+      const plan = deriveBuildPlan({
+         builds: [
             {
                connectionName: "duckdb",
                order: ["a@m"],
                dependsOn: {},
             },
          ],
-         { "a@m": a, "b@m": b },
-         { duckdb: "dig" },
-         undefined,
-         { "a@m": "rollup.malloy" },
-      );
+         tables,
+         connectionDigests: { duckdb: "dig" },
+      });
 
       // Mapped source gets its model path; an unmapped source stays undefined.
       expect(plan.sources["a@m"].modelPath).toBe("rollup.malloy");
@@ -793,17 +809,17 @@ describe("deriveBuildPlan freshness", () => {
          freshnessSchedule: { freshness: { window: "1h" } },
       });
       const plan = deriveBuildPlan(
-         [
-            {
-               connectionName: "duckdb",
-               order: ["s@m"],
-               dependsOn: {},
-            },
-         ],
-         { "s@m": source },
-         { duckdb: "dig" },
-         undefined,
-         undefined,
+         {
+            builds: [
+               {
+                  connectionName: "duckdb",
+                  order: ["s@m"],
+                  dependsOn: {},
+               },
+            ],
+            tables: persistTables({ "s@m": source }),
+            connectionDigests: { duckdb: "dig" },
+         },
          {
             schedule: null,
             freshness: { window: "24h", fallback: "live" as const },

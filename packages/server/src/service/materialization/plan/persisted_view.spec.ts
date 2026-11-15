@@ -7,6 +7,7 @@
  * holds, warns about and leaves alone with PUBLISHER_MATERIALIZE on and off.
  */
 
+import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
@@ -59,7 +60,7 @@ async function compiledFiles(files: Record<string, string>) {
 }
 
 function viewSources(c: Awaited<ReturnType<typeof compiled>>): string[] {
-   return Object.values(c.sources)
+   return Object.values(sourcesIn(c))
       .map((s) => s.name)
       .filter((n) => n.endsWith("__view"))
       .sort();

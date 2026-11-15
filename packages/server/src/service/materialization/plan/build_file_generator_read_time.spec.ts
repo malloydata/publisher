@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   materializePlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { makeDigest, Runtime } from "@malloydata/malloy";
 import {
@@ -66,10 +71,10 @@ async function compiled(text: string) {
 
 /** The generated build source, presented under the author's sourceID. */
 function generated(c: Awaited<ReturnType<typeof compilePackageBuildPlan>>) {
-   const [sourceID] = Object.keys(c.materializePlans ?? {});
-   const source = c.sources[sourceID];
+   const [sourceID] = Object.keys(materializePlansIn(c) ?? {});
+   const source = sourcesIn(c)[sourceID];
    if (!source) throw new Error("no #(materialize) source was planned");
-   return { sourceID, source, target: c.targets?.[sourceID] };
+   return { sourceID, source, target: targetsIn(c)?.[sourceID] };
 }
 
 const ORDERS = `${HEAD}
@@ -85,7 +90,7 @@ describe("P2: a given-reading where: is left out of the build", () => {
       "builds every caller's rows, applies the fixed terms, and keeps the given term for the read",
       async () => {
          const { pkg, c } = await compiled(ORDERS);
-         const plan = Object.values(c.materializePlans ?? {})[0];
+         const plan = Object.values(materializePlansIn(c) ?? {})[0];
          expect(plan.readTimeTerms?.map((t) => t.code)).toEqual([
             "org_id = $ORG_ID",
          ]);
@@ -148,7 +153,7 @@ describe("P2: a given-reading where: is left out of the build", () => {
       "writes the build copy and the generated where: from the author's text",
       async () => {
          const { c } = await compiled(ORDERS);
-         const plan = Object.values(c.materializePlans ?? {})[0];
+         const plan = Object.values(materializePlansIn(c) ?? {})[0];
          // The text the package's model file holds.
          const result = buildCopyText(ORDERS, plan);
          if (!("copy" in result)) throw new Error(result.reason);
@@ -198,7 +203,7 @@ source: orders is raw extend { where: org_id = $ORG_ID }
          const { source, target } = generated(c);
          // The term reads `true` in the build copy; no org filter is built.
          expect(addressSQL(source, target)).not.toMatch(/"org_id"\s*=/);
-         const plan = Object.values(c.materializePlans ?? {})[0];
+         const plan = Object.values(materializePlansIn(c) ?? {})[0];
          expect(plan.givenDeclarations?.map((g) => g.name)).toEqual(["ORG_ID"]);
          expect(plan.givenDeclarations?.[0].url).toEndWith("/g.malloy");
       },
@@ -212,7 +217,7 @@ source: orders is raw extend { where: org_id = $ORG_ID }
 #(materialize) storage="lake"
 source: orders is raw extend { where: s != 'zz' }
 `);
-         const plan = Object.values(c.materializePlans ?? {})[0];
+         const plan = Object.values(materializePlansIn(c) ?? {})[0];
          expect(plan.readTimeTerms).toBeUndefined();
          expect(generateBuildFile([plan], "m.malloy")).toStartWith(
             "##! experimental.persistence\nimport { orders__mat__base is orders } from 'm.malloy'\n",
@@ -226,8 +231,8 @@ describe("P2: what is refused rather than left out", () => {
    async function refusal(text: string): Promise<string> {
       const { c } = await compiled(text);
       // Nothing is planned for it, and so nothing is built.
-      expect(Object.keys(c.materializePlans ?? {})).toEqual([]);
-      expect(Object.values(c.sources).some((s) => s.name === "orders")).toBe(
+      expect(Object.keys(materializePlansIn(c) ?? {})).toEqual([]);
+      expect(Object.values(sourcesIn(c)).some((s) => s.name === "orders")).toBe(
          false,
       );
       const { connections } = duckdbTestConnections();
@@ -260,7 +265,7 @@ source: orders is scoped extend { dimension: big is amount > 10 }
 `,
          });
          const c = await compilePackageBuildPlan(pkg);
-         expect(Object.keys(c.materializePlans ?? {})).toEqual([]);
+         expect(Object.keys(materializePlansIn(c) ?? {})).toEqual([]);
          expect(
             (c.annotationFindings ?? []).find(
                (f) =>
@@ -368,7 +373,7 @@ source: b is raw -> { select: id, org_id } extend {
 `;
          const { pkg, c } = await compiled(text);
          const ids = Object.fromEntries(
-            Object.entries(c.sources).map(([id, s]) => [s.name, id]),
+            Object.entries(sourcesIn(c)).map(([id, s]) => [s.name, id]),
          );
          expect(ids.b).toBeUndefined();
          expect(notBuilt(c, "b")).toContain(
@@ -378,7 +383,11 @@ source: b is raw -> { select: id, org_id } extend {
          expect(plan?.refusedSources?.[ids.a]).toBeUndefined();
          // `a`'s own build still leaves its term out.
          expect(
-            buildSQLOf(c.sources[ids.a], { entries: {} }, c.targets?.[ids.a]),
+            buildSQLOf(
+               sourcesIn(c)[ids.a],
+               { entries: {} },
+               targetsIn(c)?.[ids.a],
+            ),
          ).not.toMatch(/"org_id"\s*=\s*1/);
       },
       { timeout: 30000 },
@@ -395,12 +404,12 @@ source: base is raw -> { select: org_id, s }
 #(materialize) storage="lake"
 source: orders is base -> { select: org_id, s } extend { where: org_id = $ORG_ID }
 `);
-         expect(Object.keys(c.materializePlans ?? {})).toEqual([]);
+         expect(Object.keys(materializePlansIn(c) ?? {})).toEqual([]);
          const nodes = c.builds.flatMap((b) => b.order);
          expect(nodes.every((id) => !id.includes(".materialize-build."))).toBe(
             true,
          );
-         expect(nodes.every((id) => c.sources[id] !== undefined)).toBe(true);
+         expect(nodes.every((id) => sourcesIn(c)[id] !== undefined)).toBe(true);
          expect(notBuilt(c, "orders")).toContain("#@ persist source (base)");
       },
       { timeout: 30000 },
@@ -415,7 +424,7 @@ source: orders is (raw extend { where: org_id = $ORG_ID }) extend {
   dimension: big is amount > 10
 }
 `);
-         expect(Object.keys(c.materializePlans ?? {})).toEqual([]);
+         expect(Object.keys(materializePlansIn(c) ?? {})).toEqual([]);
          expect(notBuilt(c, "orders")).toContain("trailing `extend");
       },
       { timeout: 30000 },
@@ -439,7 +448,7 @@ source: orders is dated extend {
   where: org_id = $ORG_ID
 }
 `);
-         const plan = Object.values(c.materializePlans ?? {})[0];
+         const plan = Object.values(materializePlansIn(c) ?? {})[0];
          expect(plan.readTimeTerms?.map((t) => t.kind).sort()).toEqual([
             "current_time",
             "given",
@@ -465,7 +474,7 @@ source: orders is dated extend {
   where: org_id = $ORG_ID and t >= now - 30 days
 }
 `);
-         expect(Object.keys(c.materializePlans ?? {})).toEqual([]);
+         expect(Object.keys(materializePlansIn(c) ?? {})).toEqual([]);
          const reason = (c.annotationFindings ?? []).find(
             (f) => f.code === "materialize-not-built" && f.subject === "orders",
          )?.message;

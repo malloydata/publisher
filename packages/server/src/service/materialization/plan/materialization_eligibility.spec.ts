@@ -26,7 +26,7 @@ import {
    READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
 import { installSettings } from "../../../test_helpers/settings_env";
-import type { PersistSourceGateOutcome } from "./persist_source_fields";
+import type { PersistSourceGateOutcome } from "../domain/table_plans";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
    admitGivenPositions,
@@ -639,7 +639,9 @@ source: by_category is orders -> {
       expect(asPersist.message).toContain("#@ persist");
       const asRollup = refusal(() =>
          assertTierEligible(source, false, {
-            preaggregatePlans: { [source.sourceID]: {} },
+            tables: {
+               [source.sourceID]: { kind: "rollup", rollup: {} as never },
+            },
          }),
       );
       expect(asRollup.message).toContain("#@ preaggregate");
@@ -666,8 +668,15 @@ source: by_category is orders -> {
          },
          materialized = true,
       ) => ({
-         materializePlans: materialized ? { [sourceID]: {} } : {},
-         sourceGateOutcomes: { [sourceID]: outcome },
+         tables: {
+            [sourceID]: materialized
+               ? {
+                    kind: "materialize" as const,
+                    materialize: {} as never,
+                    gate: outcome,
+                 }
+               : { kind: "persist" as const, gate: outcome },
+         },
       });
 
       it("admits a #(materialize) source's own row-level gate to the storage tier only with the switch on", async () => {
@@ -706,7 +715,14 @@ source: by_category is orders -> {
             inputs(id, { classification: "rejected", attributed: true }),
             // A gate reached only through a join is not the entry point's.
             inputs(id, { classification: "row_level", attributed: false }),
-            { materializePlans: { [id]: {} } },
+            {
+               tables: {
+                  [id]: {
+                     kind: "materialize" as const,
+                     materialize: {} as never,
+                  },
+               },
+            },
          ]) {
             expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(
                false,
@@ -1412,8 +1428,9 @@ describe("gateEnforcedAtRead's tier", () => {
          ] as const) {
             spy.mockClear();
             gateEnforcedAtRead(id, {
-               materializePlans: { [id]: { persist } },
-               sourceGateOutcomes: { [id]: gate },
+               tables: {
+                  [id]: { kind: "materialize", materialize: { persist }, gate },
+               },
             } as never);
             expect(spy).toHaveBeenCalledTimes(1);
             expect(spy.mock.calls[0][0]).toMatchObject({

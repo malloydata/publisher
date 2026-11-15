@@ -500,41 +500,49 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
       classification: "row_level" as const,
       attributed: true,
    };
+   // The one table `ID` the gate is asked about, as the plan records it.
+   const table = (plan: Record<string, unknown>) => ({
+      tables: { [ID]: plan },
+   });
    const inputs: Record<string, Parameters<typeof gateEnforcedAtRead>[1]> = {
-      "persist (v1), colocated": { sourceGateOutcomes: { [ID]: gate } },
-      "persist (v1), storage": { sourceGateOutcomes: { [ID]: gate } },
-      "materialize, colocated": {
-         materializePlans: { [ID]: {} },
-         sourceGateOutcomes: { [ID]: gate },
-      },
-      "materialize, storage": {
-         materializePlans: { [ID]: { persist: { storage: "lake" } } },
-         sourceGateOutcomes: { [ID]: gate },
-      },
-      "materialize, storage, an inherited row filter": {
-         materializePlans: { [ID]: { persist: { storage: "lake" } } },
-         sourceGateOutcomes: { [ID]: { ...gate, inheritedRowFilter: true } },
-      },
-      "materialize, storage, a gate not row-level": {
-         materializePlans: { [ID]: { persist: { storage: "lake" } } },
-         sourceGateOutcomes: {
-            [ID]: { classification: "unclassified", attributed: true },
-         },
-      },
-      "rollup, colocated": {
-         preaggregatePlans: { [ID]: { variant: true, baseGated: true } },
-      },
-      "rollup, storage": {
-         preaggregatePlans: {
-            [ID]: { variant: true, baseGated: true, storage: "lake" },
-         },
-      },
-      "rollup, colocated, ungated base": {
-         preaggregatePlans: { [ID]: { variant: true, baseGated: false } },
-      },
-      "rollup (v1), colocated": {
-         preaggregatePlans: { [ID]: { baseGated: true } },
-      },
+      "persist (v1), colocated": table({ kind: "persist", gate }),
+      "persist (v1), storage": table({ kind: "persist", gate }),
+      "materialize, colocated": table({
+         kind: "materialize",
+         materialize: {},
+         gate,
+      }),
+      "materialize, storage": table({
+         kind: "materialize",
+         materialize: { persist: { storage: "lake" } },
+         gate,
+      }),
+      "materialize, storage, an inherited row filter": table({
+         kind: "materialize",
+         materialize: { persist: { storage: "lake" } },
+         gate: { ...gate, inheritedRowFilter: true },
+      }),
+      "materialize, storage, a gate not row-level": table({
+         kind: "materialize",
+         materialize: { persist: { storage: "lake" } },
+         gate: { classification: "unclassified", attributed: true },
+      }),
+      "rollup, colocated": table({
+         kind: "rollup",
+         rollup: { variant: true, baseGated: true },
+      }),
+      "rollup, storage": table({
+         kind: "rollup",
+         rollup: { variant: true, baseGated: true, storage: "lake" },
+      }),
+      "rollup, colocated, ungated base": table({
+         kind: "rollup",
+         rollup: { variant: true, baseGated: false },
+      }),
+      "rollup (v1), colocated": table({
+         kind: "rollup",
+         rollup: { baseGated: true },
+      }),
    } as unknown as Record<string, Parameters<typeof gateEnforcedAtRead>[1]>;
 
    for (const s of SWITCHES) {

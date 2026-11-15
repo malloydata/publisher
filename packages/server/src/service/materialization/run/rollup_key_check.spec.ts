@@ -15,7 +15,12 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { makeMaterialization } from "../../../test_helpers/materialization_test_fixtures";
+import {
+   makeMaterialization,
+   rollupPlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
@@ -107,16 +112,16 @@ async function scenario(model: string) {
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
-   const [rollupID] = Object.keys(compiled.preaggregatePlans ?? {});
-   const rollup = compiled.preaggregatePlans?.[rollupID ?? ""] as
+   const [rollupID] = Object.keys(rollupPlansIn(compiled) ?? {});
+   const rollup = rollupPlansIn(compiled)?.[rollupID ?? ""] as
       | RollupVariantPlan
       | undefined;
-   const source = compiled.sources[rollupID ?? ""];
+   const source = sourcesIn(compiled)[rollupID ?? ""];
    const address = source
       ? computeSourceEntityId(
            source,
            compiled.connectionDigests,
-           compiled.targets?.[rollupID ?? ""],
+           targetsIn(compiled)?.[rollupID ?? ""],
         )
       : "";
    const environment = {
@@ -427,13 +432,13 @@ async function storedScenario(
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
-   const [sourceID] = Object.keys(compiled.preaggregatePlans ?? {});
-   const source = compiled.sources[sourceID ?? ""];
+   const [sourceID] = Object.keys(rollupPlansIn(compiled) ?? {});
+   const source = sourcesIn(compiled)[sourceID ?? ""];
    if (!sourceID || !source) throw new Error("no planned source");
-   compiled.storedKeyChecks = { [sourceID]: "flight_id" };
+   compiled.tables[sourceID].storedKeyCheck = "flight_id";
    if (baseChecks.length > 0) {
       (
-         compiled.preaggregatePlans?.[sourceID] as RollupVariantPlan
+         rollupPlansIn(compiled)?.[sourceID] as RollupVariantPlan
       ).parentKeyChecks = baseChecks.map((c) => ({
          ...c,
          connectionName: "duckdb",
@@ -442,7 +447,7 @@ async function storedScenario(
    const address = computeSourceEntityId(
       source,
       compiled.connectionDigests,
-      compiled.targets?.[sourceID],
+      targetsIn(compiled)?.[sourceID],
    );
    const root = storageDestinationRoot(pkg.getPackagePath());
    fs.mkdirSync(root, { recursive: true });

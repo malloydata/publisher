@@ -206,7 +206,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       count: 7,
       step: "5",
    },
-   "service/materialization/plan/build_plan.ts": { count: 8, step: "5" },
+   "service/materialization/plan/build_plan.ts": { count: 6, step: "5" },
    "service/materialization/plan/build_plan_compile.ts": {
       count: 1,
       step: "5",
@@ -274,10 +274,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
 };
 /** H4: exports no other file imports, "<file>#<name>": step. */
 export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
-   "service/materialization/plan/build_plan.ts#PersistSourceGateOutcome":
-      "2g.3",
-   "service/materialization/plan/build_plan.ts#collidingRollups": "2g.3",
-   "service/materialization/plan/build_plan.ts#sourceBuildOf": "2g.3",
    "service/materialization/plan/eligibility_collect.ts#sharedTables": "2g.3",
    "service/materialization/plan/incremental_declaration.ts#IncrementalStrategy":
       "2g.3",

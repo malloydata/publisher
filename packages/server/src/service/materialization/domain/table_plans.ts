@@ -15,6 +15,7 @@
  * Pure.
  */
 
+import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type { MaterializeReadTimeTerm, TermUse } from "./read_time_terms";
 import type { AggregateLeaf, MeasureExpr, RollupPlan } from "./rollup_measures";
 
@@ -493,4 +494,101 @@ export interface ParentKeyCheck {
 export interface RollupKeyCheck {
    keyColumn: string;
    sql: string;
+}
+
+/**
+ * Whether every gate on the entry point RESOLVED, not which route it was written
+ * on. `"row_level"` is kept as the name so stored plans still read; an
+ * `#(authorize)` lock lands there too, deliberately — this decides whether a
+ * source may be BUILT, and `Model.queryEntryPointHasRowLevelGate` blocks routing
+ * to frozen rows per request on ANY collected gate.
+ */
+export type PersistSourceGateClassification = "row_level" | "rejected";
+
+/**
+ * `classification`: whether the entry point's gates resolved to something
+ * enforceable. `attributed`: `false` when `isAuthorizeAttributedToEntryPoint`
+ * (`plan/materialization_eligibility.ts`) finds a note reachable only through a join —
+ * checked independently because `collectEntryPointGates` does not trace joins,
+ * so `classification` cannot see a join-carried gate. `inheritedRowFilter`:
+ * an `#(access_filter)` the entry point reads from a source it derives from or
+ * extends rather than declares itself. A table of it holds every caller's
+ * rows, and the served copy, which re-roots the entry point and so replaces
+ * the source that declares the gate, cannot graft it: every query is declined
+ * and answered live, so such a table is never built. Absent reads false (a
+ * plan recorded before it).
+ */
+export interface PersistSourceGateOutcome {
+   classification: PersistSourceGateClassification;
+   attributed: boolean;
+   inheritedRowFilter?: boolean;
+}
+
+/**
+ * What a planned table holds, fixed when it is planned and carried to the
+ * build, its telemetry and the binding: never re-derived from which other
+ * plan a source also has, nor from a name.
+ */
+type TableKind = "persist" | "materialize" | "pair" | "rollup" | "view";
+
+/** What every planned table carries, whatever its kind. */
+interface TablePlanFacts {
+   /** The planned source, as Malloy's persistence planner planned it. */
+   source: PersistSource;
+   /**
+    * The build target the source maps onto, for a keyable source (an
+    * unkeyable one has none). The addressing helpers address it without the
+    * fallback lookup.
+    */
+   target?: BuildTarget;
+   /**
+    * The package-relative path of the declaring `.malloy` model. Only known
+    * at plan: a sourceID embeds an absolute `file://` URL with no package
+    * boundary.
+    */
+   modelPath?: string;
+   /** The entry point's `#(authorize)` gate, classified where it compiled. */
+   gate?: PersistSourceGateOutcome;
+   /**
+    * The declared primary key a build checks for a repeated or NULL value
+    * over this table, when it is stored in a destination and read beside a
+    * `storage=` rollup through a join_many keyed on it (the join-to-rollup
+    * leg in a destination). Absent: no such leg, so no check.
+    */
+   storedKeyCheck?: string;
+}
+
+/**
+ * One table a run should build: its kind, the source that builds it and what
+ * the planner decided for it. A `materialize` or `pair` table carries its
+ * `#(materialize)` plan and a `rollup` its rollup; no other kind carries
+ * either.
+ *
+ * Holds the planned Malloy source, so it stays on the thread that planned
+ * it; what crosses the package-load worker is the plan's projection.
+ */
+export type TablePlan = TablePlanFacts &
+   (
+      | {
+           kind: Extract<TableKind, "persist" | "view">;
+           materialize?: undefined;
+           rollup?: undefined;
+        }
+      | {
+           kind: Extract<TableKind, "materialize" | "pair">;
+           materialize: MaterializePlan;
+           rollup?: undefined;
+        }
+      | {
+           kind: Extract<TableKind, "rollup">;
+           rollup: RollupPlan;
+           materialize?: undefined;
+        }
+   );
+
+/** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */
+export function materializeKindOf(
+   plan: Pick<MaterializePlan, "pair">,
+): "materialize" | "pair" {
+   return plan.pair ? "pair" : "materialize";
 }

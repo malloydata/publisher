@@ -1248,7 +1248,7 @@ export function readsAsJoinMany(
 }
 
 /**
- * The stored-table key checks a build runs (`CompiledBuildPlan.storedKeyChecks`):
+ * The stored-table key checks a build runs (each table's `storedKeyCheck`):
  * each of `sourceIDs` (the planned sources, the rollups left out) with a declared
  * primary key, by sourceID, when some `storage=` rollup in `plans` is read
  * through a join keyed on a source's primary key as a join_many. That leg

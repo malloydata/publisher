@@ -126,8 +126,10 @@ export async function compilePackageBuildPlan(
 
    // A rollup key check no join_one of the package reads is not run: it
    // would scan the base for nothing (known limitation 29).
-   for (const plan of Object.values(parts.preaggregatePlans)) {
-      const rollup = plan as RollupVariantPlan;
+   const rollupPlans = Object.values(parts.tables).flatMap((table) =>
+      table.rollup ? [table.rollup as RollupVariantPlan] : [],
+   );
+   for (const rollup of rollupPlans) {
       if (
          rollup.keyCheck &&
          !joinOneKeys.has(
@@ -141,9 +143,6 @@ export async function compilePackageBuildPlan(
    // A query source read through a join_many keyed on its primary key, and
    // a rollup's base reached by a join on another column: the rollup's build
    // checks that key unique and never NULL.
-   const rollupPlans = Object.values(
-      parts.preaggregatePlans,
-   ) as RollupVariantPlan[];
    await compileParentKeyChecks(rollupPlans, parentKeyNeeds, joinedKeyNeeds);
    // A `storage=` rollup read that way is read beside the query source's
    // stored table (#1704): each stored source's key is checked over its
@@ -152,10 +151,13 @@ export async function compilePackageBuildPlan(
       rollupPlans,
       parentKeyNeeds.map(({ need }) => need),
       (sourceID) => primaryKeys.get(sourceID),
-      Object.keys(parts.sources).filter(
-         (sourceID) => !parts.preaggregatePlans[sourceID],
+      Object.keys(parts.tables).filter(
+         (sourceID) => !parts.tables[sourceID].rollup,
       ),
    );
+   for (const [sourceID, keyColumn] of Object.entries(storedKeyChecks)) {
+      parts.tables[sourceID].storedKeyCheck = keyColumn;
+   }
 
    const connections = await resolvePackageConnections(
       pkg,
@@ -182,18 +184,12 @@ export async function compilePackageBuildPlan(
          ? { versionScoped: true }
          : {}),
       builds: parts.builds,
-      sources: parts.sources,
-      targets: parts.targets,
+      tables: parts.tables,
       connectionDigests,
       connections,
-      sourceModelPaths: parts.sourceModelPaths,
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
-      preaggregatePlans: parts.preaggregatePlans,
-      ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
-      materializePlans: parts.materializePlans,
       ...(keyCheckCompilers.size > 0 ? { keyCheckCompilers } : {}),
-      sourceGateOutcomes: parts.sourceGateOutcomes,
       omittedSources: parts.omittedSources,
    });
 }

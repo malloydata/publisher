@@ -362,7 +362,7 @@ export function compilerMissingUpstream(
  * by `manifestForCompiler`).
  */
 export function chainedPlanFacts(
-   sources: Record<string, PersistSource>,
+   tables: Readonly<Record<string, { source: PersistSource }>>,
    connectionDigests: Record<string, string>,
    /**
     * The run's instruction for a source, when it has one: its `destination`
@@ -385,7 +385,7 @@ export function chainedPlanFacts(
    const declaredTiersByAddress: Record<string, (string | null)[]> = {};
    const namesByAddress: Record<string, string[]> = {};
    const storageOn = getPersistStorageMode() !== "off";
-   for (const [sourceID, source] of Object.entries(sources)) {
+   for (const [sourceID, { source }] of Object.entries(tables)) {
       let sourceEntityId: string | undefined;
       try {
          sourceEntityId = computeSourceEntityId(source, connectionDigests);
@@ -421,7 +421,7 @@ export function chainedPlanFacts(
       }
    }
    return {
-      persistSourceIds: new Set(Object.keys(sources)),
+      persistSourceIds: new Set(Object.keys(tables)),
       aliasesBySourceName: groupAliasesByName(planSources),
       addressBySourceId,
       compilerKeyBySourceId,

@@ -40,18 +40,27 @@ const compiled = (): CompiledBuildPlan =>
             sourceEntityId: "a3",
             annotationFields: { name: "analytics.q_t" },
          }),
-         rollup: fakeSource({
+         // Keyed by its sourceID, as a plan keys every table.
+         rollup__g1a2b3c4: fakeSource({
             name: "rollup__g1a2b3c4",
             sourceEntityId: "a4",
             annotationFields: { name: "ns.rollup__g1a2b3c4" },
          }),
       },
-      [["summary", "named", "qualified", "rollup"]],
+      [["summary", "named", "qualified", "rollup__g1a2b3c4"]],
    );
 
 const withRollup = (c: CompiledBuildPlan): CompiledBuildPlan => ({
    ...c,
-   preaggregatePlans: { [c.sources.rollup.sourceID]: {} as never },
+   tables: {
+      ...c.tables,
+      rollup__g1a2b3c4: {
+         ...c.tables.rollup__g1a2b3c4,
+         kind: "rollup",
+         rollup: {} as never,
+         materialize: undefined,
+      },
+   },
 });
 
 const names = (r: ReturnType<typeof deriveSelfInstructions>) =>
@@ -174,11 +183,17 @@ describe("a #(materialize) table's name", () => {
       defaulted: boolean,
    ): CompiledBuildPlan => ({
       ...c,
-      materializePlans: {
-         [c.sources.named.sourceID]: {
-            persist: { name: "named_t" },
-            ...(defaulted ? { nameDefaulted: true } : {}),
-         } as never,
+      tables: {
+         ...c.tables,
+         named: {
+            ...c.tables.named,
+            kind: "materialize",
+            materialize: {
+               persist: { name: "named_t" },
+               ...(defaulted ? { nameDefaulted: true } : {}),
+            } as never,
+            rollup: undefined,
+         },
       },
    });
 

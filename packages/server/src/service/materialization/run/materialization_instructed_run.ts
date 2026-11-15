@@ -273,7 +273,7 @@ export function resolveInstruction(
  */
 export function assertNoTableCollisions(
    builds: CompiledBuildPlan["builds"],
-   sources: CompiledBuildPlan["sources"],
+   tables: CompiledBuildPlan["tables"],
    connectionDigests: CompiledBuildPlan["connectionDigests"],
    index: InstructionIndex,
 ): void {
@@ -283,7 +283,7 @@ export function assertNoTableCollisions(
    >();
    const collisions: { first: string; second: string; table: string }[] = [];
    for (const build of builds) {
-      for (const persistSource of sourcesInBuildOrder(build, sources)) {
+      for (const persistSource of sourcesInBuildOrder(build, tables)) {
          let address: string;
          try {
             address = computeSourceEntityId(persistSource, connectionDigests);
@@ -378,7 +378,7 @@ export function assertInstructedDestinationWritable(
       // synthesized, so it is named by its base and grain, which the author
       // wrote. The grain renders as a set: the wire plan sorts and dedupes
       // dimensions, so quoting it would misrepresent the author's order.
-      const rollup = compiled.preaggregatePlans?.[persistSource.sourceID];
+      const rollup = compiled.tables[persistSource.sourceID]?.rollup;
       throw new BadRequestError(
          (rollup
             ? `Measures of \`${rollup.baseSourceName}\` ` +

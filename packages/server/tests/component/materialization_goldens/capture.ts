@@ -25,8 +25,10 @@ import {
    compilerBuildId,
    computeSourceEntityId,
 } from "../../../src/service/materialization/plan/addressing";
-import type { CompiledBuildPlan } from "../../../src/service/materialization/plan/build_plan";
-import { buildKindOf } from "../../../src/service/materialization/run/run_telemetry";
+import {
+   materializePlansOf,
+   type CompiledBuildPlan,
+} from "../../../src/service/materialization/plan/build_plan";
 import * as modelRuntime from "../../../src/service/model_runtime";
 import type { Normalizer } from "./normalize";
 
@@ -148,7 +150,7 @@ export function addressesOf(compiled: CompiledBuildPlan): SourceAddressing[] {
    const ordered: { source: PersistSource; reads: string[] }[] = [];
    for (const build of compiled.builds) {
       for (const sourceID of build.order) {
-         const source = compiled.sources[sourceID];
+         const source = compiled.tables[sourceID]?.source;
          if (!source || seen.has(sourceID)) continue;
          seen.add(sourceID);
          fixed[source.connectionName] = fixedDigest(source.connectionName);
@@ -164,7 +166,7 @@ export function addressesOf(compiled: CompiledBuildPlan): SourceAddressing[] {
             compilerBuildId(
                source,
                digests,
-               compiled.targets?.[source.sourceID],
+               compiled.tables[source.sourceID]?.target,
             ),
          );
       } catch {
@@ -178,7 +180,7 @@ export function addressesOf(compiled: CompiledBuildPlan): SourceAddressing[] {
          connectionName: source.connectionName,
          reads,
       };
-      const target = compiled.targets?.[source.sourceID];
+      const target = compiled.tables[source.sourceID]?.target;
       try {
          const realAddress = computeSourceEntityId(source, digests, target);
          const address = computeSourceEntityId(source, fixed, target);
@@ -297,22 +299,25 @@ export function renderBuild(
 
 /** The internal plan state a golden keeps, beside the wire plan. */
 export function internalPlans(compiled: CompiledBuildPlan): unknown {
-   const storedKeyChecks = compiled.storedKeyChecks ?? {};
+   const tables = Object.entries(compiled.tables);
+   const each = <T>(read: (table: (typeof tables)[number][1]) => T) =>
+      Object.fromEntries(
+         tables.flatMap(([sourceID, table]) => {
+            const value = read(table);
+            return value === undefined ? [] : [[sourceID, value]];
+         }),
+      );
+   const storedKeyChecks = each((table) => table.storedKeyCheck);
    return {
       // What each planned table is, as the build and its telemetry read it.
-      kinds: Object.fromEntries(
-         Object.keys(compiled.sources).map((sourceID) => [
-            sourceID,
-            buildKindOf(compiled, sourceID),
-         ]),
-      ),
+      kinds: each((table) => table.kind),
       ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
-      materializePlans: compiled.materializePlans ?? {},
-      rollupPlans: compiled.preaggregatePlans ?? {},
-      sourceGateOutcomes: compiled.sourceGateOutcomes ?? {},
+      materializePlans: materializePlansOf(compiled.tables),
+      rollupPlans: each((table) => table.rollup),
+      sourceGateOutcomes: each((table) => table.gate),
       droppedPersistSources: compiled.droppedPersistSources ?? [],
       annotationFindings: compiled.annotationFindings ?? [],
-      sourceModelPaths: compiled.sourceModelPaths ?? {},
+      sourceModelPaths: each((table) => table.modelPath),
       builds: compiled.builds,
    };
 }

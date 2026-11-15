@@ -116,10 +116,7 @@ export function deriveSelfInstructions(
    const seen = new Set<string>();
 
    for (const build of compiled.builds) {
-      for (const persistSource of sourcesInBuildOrder(
-         build,
-         compiled.sources,
-      )) {
+      for (const persistSource of sourcesInBuildOrder(build, compiled.tables)) {
          if (include && !include.has(persistSource.name)) continue;
 
          // A source that DECLARES `storage=` must never silently downgrade
@@ -136,11 +133,12 @@ export function deriveSelfInstructions(
          }
 
          // Never buildable today (#6293); the package warning says so.
-         if (storedBaseOfRollup(compiled, persistSource.sourceID)) continue;
+         if (storedBaseOfRollup(compiled.tables, persistSource.sourceID)) {
+            continue;
+         }
 
          const destination = resolveStorageDestination(persistSource);
-         const isRollup =
-            !!compiled.preaggregatePlans?.[persistSource.sourceID];
+         const isRollup = !!compiled.tables[persistSource.sourceID]?.rollup;
          // Gate BEFORE computeSourceEntityId: an unbound parameter or a given
          // makes its getSQL() throw opaquely.
          //
@@ -170,7 +168,7 @@ export function deriveSelfInstructions(
                      : destination
                        ? "storage"
                        : "colocated",
-                  compiled.sourceModelPaths?.[persistSource.sourceID],
+                  compiled.tables[persistSource.sourceID]?.modelPath,
                );
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.

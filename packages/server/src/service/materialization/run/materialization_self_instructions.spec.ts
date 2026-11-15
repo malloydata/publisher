@@ -128,17 +128,15 @@ describe("deriveSelfInstructions", () => {
             },
             [["orders", "rollup"]],
          );
-         (
-            compiled as unknown as {
-               preaggregatePlans: Record<string, unknown>;
-            }
-         ).preaggregatePlans = {
+         compiled.tables.rollup = {
+            kind: "rollup",
+            source: compiled.tables.rollup.source,
             rollup: {
                baseSourceName: "orders",
                baseSourceID: "orders",
                grainDimensions: ["category"],
                measures: [],
-            },
+            } as never,
          };
          const { instructions, refused } = (
             ctx.service as unknown as {
@@ -426,16 +424,14 @@ describe("deriveSelfInstructions", () => {
          // refused work is one must not fail every run over it.
          const rollup = gated("rollup");
          const compiled = compiledWith({ rollup }, [["rollup"]]);
-         (
-            compiled as unknown as {
-               preaggregatePlans: Record<string, unknown>;
-            }
-         ).preaggregatePlans = {
+         compiled.tables.rollup = {
+            kind: "rollup",
+            source: compiled.tables.rollup.source,
             rollup: {
                baseSourceName: "orders",
                grainDimensions: ["category"],
                measures: [],
-            },
+            } as never,
          };
 
          const { instructions, refused } = deriveWith(compiled);

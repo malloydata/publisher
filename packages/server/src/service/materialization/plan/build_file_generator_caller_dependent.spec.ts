@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   materializePlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
@@ -54,7 +59,7 @@ function planOf(
    c: Awaited<ReturnType<typeof compilePackageBuildPlan>>,
    name: string,
 ): MaterializePlan | undefined {
-   return Object.values(c.materializePlans ?? {}).find(
+   return Object.values(materializePlansIn(c) ?? {}).find(
       (p) => p.sourceName === name,
    );
 }
@@ -120,10 +125,10 @@ describe("P9: caller-dependent dimensions are left out of the build", () => {
          ]);
          // The build selects none of them, so it reads no given and bakes no
          // default: the eligibility gate admits it.
-         const source = Object.values(c.sources).find(
+         const source = Object.values(sourcesIn(c)).find(
             (s) => s.name === "orders",
          );
-         const sql = addressSQL(source!, c.targets?.[p!.sourceID]);
+         const sql = addressSQL(source!, targetsIn(c)?.[p!.sourceID]);
          for (const left of ["mine", "label", "imine", "hr", "age"]) {
             expect(sql).not.toContain(`"${left}"`);
          }

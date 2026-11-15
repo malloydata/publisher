@@ -196,10 +196,19 @@ describe("whose name a table is", () => {
 
    it("the author's only for a name= the author wrote", () => {
       const compiled = {
-         preaggregatePlans: { rollup: {} },
-         materializePlans: {
-            declared: { persist: { name: "t" } },
-            defaulted: { persist: { name: "defaulted" }, nameDefaulted: true },
+         tables: {
+            rollup: { kind: "rollup", rollup: {} },
+            declared: {
+               kind: "materialize",
+               materialize: { persist: { name: "t" } },
+            },
+            defaulted: {
+               kind: "materialize",
+               materialize: {
+                  persist: { name: "defaulted" },
+                  nameDefaulted: true,
+               },
+            },
          },
       } as never;
       expect(

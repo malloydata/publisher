@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   materializePlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
@@ -96,7 +101,9 @@ afterEach(async () => {
 async function planOf(text: string | Record<string, string>) {
    const pkg = await packages.create(text);
    const c = await compilePackageBuildPlan(pkg);
-   const plans = Object.values(c.materializePlans ?? {}) as MaterializePlan[];
+   const plans = Object.values(
+      materializePlansIn(c) ?? {},
+   ) as MaterializePlan[];
    return { pkg, c, plans };
 }
 
@@ -132,11 +139,11 @@ source: orders is base extend {
          ]);
          // Never the field private on the source it extends.
          expect(stored(p).some((c) => c.startsWith("base_secret"))).toBe(false);
-         const source = c.sources[p.sourceID];
+         const source = sourcesIn(c)[p.sourceID];
          const sql = buildSQLOf(
             source,
             { entries: {} },
-            c.targets?.[p.sourceID],
+            targetsIn(c)?.[p.sourceID],
          );
          const duckdb = await pkg.getMalloyConnection!("duckdb");
          const rows = (
@@ -150,7 +157,7 @@ source: orders is base extend {
             ["acme", "EAST", 21, false],
             ["globex", "WEST", 40, true],
          ]);
-         expect(addressSQL(source, c.targets?.[p.sourceID])).not.toContain(
+         expect(addressSQL(source, targetsIn(c)?.[p.sourceID])).not.toContain(
             "base_secret",
          );
       },
@@ -223,7 +230,10 @@ source: orders is raw include { private: org_id; public: * } extend {
          expect(stored(p)).toEqual(["id", "org_id:private"]);
          expect(p.readTimeTerms?.map((t) => t.code)).toEqual(["org_id = $ORG"]);
          // One build copy: the term taken out and the modifier lifted.
-         const sql = addressSQL(c.sources[p.sourceID], c.targets?.[p.sourceID]);
+         const sql = addressSQL(
+            sourcesIn(c)[p.sourceID],
+            targetsIn(c)?.[p.sourceID],
+         );
          expect(sql).toContain('"org_id"');
          expect(sql).toContain("WHERE true");
       },
@@ -283,7 +293,7 @@ source: orders is raw include { internal: org_id; private: id; public: * }
                "amount",
             ]);
             const outcome = deriveBuildPlanOutcome(c, null);
-            const [sourceID] = Object.keys(c.materializePlans ?? {});
+            const [sourceID] = Object.keys(materializePlansIn(c) ?? {});
             if (on) {
                expect(outcome.sourceEligibility.eligible).toEqual([sourceID]);
             } else {
@@ -357,8 +367,8 @@ source: private_join is orders0 extend {
          for (const name of ["hidden_join", "private_join"]) {
             const p = byName.get(name) as MaterializePlan;
             const sql = addressSQL(
-               c.sources[p.sourceID],
-               c.targets?.[p.sourceID],
+               sourcesIn(c)[p.sourceID],
+               targetsIn(c)?.[p.sourceID],
             );
             expect(sql).toContain('"r__label"');
          }
@@ -421,8 +431,8 @@ source: private_many is orders0 extend {
             const p = byName.get(name) as MaterializePlan;
             expect(p.pair?.join).toBe("i");
             const sql = addressSQL(
-               c.sources[p.sourceID],
-               c.targets?.[p.sourceID],
+               sourcesIn(c)[p.sourceID],
+               targetsIn(c)?.[p.sourceID],
             );
             expect(sql).toContain('"i__sku"');
          }

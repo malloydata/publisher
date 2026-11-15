@@ -161,11 +161,12 @@ export async function acquireOwnedNameLock(
  * table that defaults to its source's name are Publisher's.
  */
 export function hasAuthorTableName(
-   compiled: Pick<CompiledBuildPlan, "preaggregatePlans" | "materializePlans">,
+   compiled: Pick<CompiledBuildPlan, "tables">,
    persistSource: PersistSource,
 ): boolean {
-   if (compiled.preaggregatePlans?.[persistSource.sourceID]) return false;
-   const materialize = compiled.materializePlans?.[persistSource.sourceID];
+   const table = compiled.tables[persistSource.sourceID];
+   if (table?.rollup) return false;
+   const materialize = table?.materialize;
    if (materialize) return !materialize.nameDefaulted;
    return !!deriveAnnotationFields(persistSource).name;
 }

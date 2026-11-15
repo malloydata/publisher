@@ -13,8 +13,11 @@ import {
    declaresEmptyStorage,
    deriveAnnotationFields,
    deriveColumns,
-   type PersistSourceGateOutcome,
 } from "./persist_source_fields";
+import type {
+   PersistSourceGateOutcome,
+   TablePlan,
+} from "../domain/table_plans";
 import {
    buildSubstitutesAGiven,
    admitGivenPositions,
@@ -265,7 +268,7 @@ function assertNoInheritedGivenWhere(
  * `origin` names the annotation the author wrote: a rollup's name is
  * synthesized, so the refusal must point at `#@ preaggregate`, not
  * `#@ persist`. Callers pass `"preaggregate"` when
- * `CompiledBuildPlan.preaggregatePlans` has an entry for the source.
+ * the source's planned table is a `rollup`.
  *
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
  *   annotation to remove, and the alternative of moving the gate to a source
@@ -662,11 +665,11 @@ function walkForAuthorizeNotes(
  * - `materialize.gatedSources` is on (with `materialize.enabled`), so the
  *   router lets the served copy past the gate; off, the managed tier never
  *   holds a gated source's columns (plan, question 14);
- * - the source is a `#(materialize)` source (`materializePlans`), so its table
+ * - the source is a `#(materialize)` source (a `materialize` table), so its table
  *   is read only through the served copy, which keeps the author's gates; the
  *   router keeps every other stored shape away from a gated entry point;
  * - its gate is the entry point's own and classifies `row_level` against the
- *   author's model (`sourceGateOutcomes`), the bar the colocated tier sets.
+ *   author's model (the table's `gate`), the bar the colocated tier sets.
  *
  * A rollup is asked {@link rollupGateEnforcedAtRead} instead (rows 1 and 21).
  *
@@ -676,30 +679,26 @@ function walkForAuthorizeNotes(
  */
 export function gateEnforcedAtRead(
    sourceID: string,
-   plan:
-      | Pick<
-           TierGateInputs,
-           "materializePlans" | "sourceGateOutcomes" | "preaggregatePlans"
-        >
-      | undefined,
+   plan: Pick<TierGateInputs, "tables"> | undefined,
 ): boolean {
+   const table = plan?.tables?.[sourceID];
    // A rollup asks its own question: its base gates are grafted and proven on
    // its variant (R3 for rollups), for a `#(preaggregate)` rollup and a v1
    // `#@ preaggregate` line read as one (the cutover's G4) alike.
-   const rollup = plan?.preaggregatePlans?.[sourceID];
-   if (rollup !== undefined) return rollupGateEnforcedAtRead(rollup);
+   if (table?.rollup !== undefined) {
+      return rollupGateEnforcedAtRead(table.rollup);
+   }
    // A `#(materialize)` source is v2's: its gate is admitted only with v2's
    // switch, not with the v1 cutover that also enables the gated switch, and
    // only for the entry point's own row-level gate (the gate policy).
-   const materialized = plan?.materializePlans?.[sourceID];
+   const materialized = table?.materialize;
    if (!materialized) return false;
-   const outcome = plan.sourceGateOutcomes?.[sourceID];
+   const outcome = table.gate;
    return tableKeepsGates(
       {
          kind: "materialize",
          tier:
-            (materialized as { persist?: Record<string, string> }).persist
-               ?.storage === undefined
+            materialized.persist?.storage === undefined
                ? "colocated"
                : "storage",
          v1: false,
@@ -737,10 +736,13 @@ function inheritedRowFilterRefusal(
 
 /** What {@link assertTierEligible} reads from a compiled plan. */
 export interface TierGateInputs {
-   preaggregatePlans?: Readonly<Record<string, unknown>>;
-   /** The `#(materialize)` plans, by the author's sourceID. */
-   materializePlans?: Readonly<Record<string, unknown>>;
-   sourceGateOutcomes?: Readonly<Record<string, PersistSourceGateOutcome>>;
+   /** The planned tables, by sourceID: each one's kind, plans and gate. */
+   tables?: Readonly<
+      Record<
+         string,
+         Pick<TablePlan, "kind" | "materialize" | "rollup" | "gate">
+      >
+   >;
    /**
     * Rollups refused for sharing a table with a different rollup, by sourceID,
     * with the message to report (`collidingRollups` in build_plan.ts).
@@ -832,14 +834,18 @@ export function assertTierEligible(
    if (storage) {
       // Admitted at read but for a row filter it inherits: say so, rather
       // than the generic gate refusal.
-      const outcome = plan?.sourceGateOutcomes?.[source.sourceID];
+      const table = plan?.tables?.[source.sourceID];
+      const outcome = table?.gate;
       if (
+         table &&
          outcome?.inheritedRowFilter &&
          gateEnforcedAtRead(source.sourceID, {
-            ...plan,
-            sourceGateOutcomes: {
-               ...plan?.sourceGateOutcomes,
-               [source.sourceID]: { ...outcome, inheritedRowFilter: false },
+            tables: {
+               ...plan?.tables,
+               [source.sourceID]: {
+                  ...table,
+                  gate: { ...outcome, inheritedRowFilter: false },
+               },
             },
          })
       ) {
@@ -854,12 +860,13 @@ export function assertTierEligible(
       });
       return;
    }
-   const rollup = plan?.preaggregatePlans?.[source.sourceID];
+   const table = plan?.tables?.[source.sourceID];
+   const rollup = table?.rollup;
    assertColocatedPersistNotAuthorizeGated(
       source,
       source.name,
       rollup ? "preaggregate" : "persist",
-      plan?.sourceGateOutcomes?.[source.sourceID],
+      table?.gate,
       annotationFields,
       { gateEnforcedAtRead: !!rollup && rollupGateEnforcedAtRead(rollup) },
    );
@@ -869,7 +876,7 @@ export function assertTierEligible(
    // gated one is built only then, so a table is never built that cannot be
    // served (phase 3 pull request 6).
    if (
-      plan?.materializePlans?.[source.sourceID] &&
+      table?.materialize &&
       referencesAuthorize(source) &&
       !gateEnforcedAtRead(source.sourceID, plan)
    ) {

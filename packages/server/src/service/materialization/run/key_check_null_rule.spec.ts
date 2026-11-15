@@ -13,6 +13,7 @@
  *    check, and a stored table's key check (raw SQL on the destination).
  */
 
+import { materializePlansIn } from "../../../test_helpers/materialization_test_fixtures";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -250,7 +251,7 @@ query: orders__mat__pair_key is orders__mat__pair_key__source -> {
    ): Promise<boolean> {
       const pkg = await packages.create(model);
       const c = await compilePackageBuildPlan(pkg);
-      const [compiled] = Object.values(c.materializePlans ?? {});
+      const [compiled] = Object.values(materializePlansIn(c) ?? {});
       const check = compiled?.uniquenessChecks?.find(
          (x) => x.pairLevel === pairLevel,
       );

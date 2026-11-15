@@ -1,6 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   gatesIn,
+   materializePlansIn,
+   modelPathsIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
@@ -85,7 +92,7 @@ async function compiled(files: string | Record<string, string>) {
 function generatedPlans(
    c: Awaited<ReturnType<typeof compiled>>,
 ): MaterializePlan[] {
-   return Object.values(c.materializePlans ?? {});
+   return Object.values(materializePlansIn(c) ?? {});
 }
 
 describe("planModelMaterialize and generateBuildFile", () => {
@@ -406,11 +413,11 @@ source: nested is orders_raw -> {
             { dimension: "by_day", column: "by_day", computed: false },
          ]);
          // The build selects it, so the table stores the nest's rows.
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "nested",
          )!;
          expect(
-            buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]),
+            buildSQLOf(source, { entries: {} }, targetsIn(c)?.[sourceID]),
          ).toContain('"by_day"');
       },
       { timeout: 30000 },
@@ -446,10 +453,9 @@ source: recent is events_raw extend {
          ]);
          // The keying rule: the plan, the source and the declaration all sit
          // under the author's sourceID.
-         const declaration = collectIncrementalDeclarations(
-            c.sources,
-            c.materializePlans,
-         )[p.sourceID];
+         const declaration = collectIncrementalDeclarations(c.tables)[
+            p.sourceID
+         ];
          expect(declaration?.rollingWindow).toEqual([
             rollingWindowsOf(p.readTimeTerms)[0],
          ]);
@@ -467,7 +473,10 @@ source: recent is events_raw extend {
          ).toEqual([rollingWindowsOf(p.readTimeTerms)[0]]);
          // Built as written: the address reads the warehouse's own clock, never
          // a literal of Publisher's, so it does not move between builds.
-         const sql = addressSQL(c.sources[p.sourceID], c.targets?.[p.sourceID]);
+         const sql = addressSQL(
+            sourcesIn(c)[p.sourceID],
+            targetsIn(c)?.[p.sourceID],
+         );
          expect(sql).toContain("LOCALTIMESTAMP");
          expect(sql).not.toMatch(/TIMESTAMP '20\d\d-/);
       },
@@ -514,21 +523,23 @@ source: orders is orders_raw extend {
                access: "private",
             },
          ]);
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         expect(c.sourceModelPaths?.[sourceID]).toBe("m.malloy");
+         expect(modelPathsIn(c)?.[sourceID]).toBe("m.malloy");
          // Addressed like any persist source.
          expect(
             computeSourceEntityId(
                source,
                c.connectionDigests,
-               c.targets?.[sourceID],
+               targetsIn(c)?.[sourceID],
             ),
          ).toEqual(expect.any(String));
          // Built from a copy with the source's own `private` lifted, so the
          // build selects it (P3).
-         expect(addressSQL(source, c.targets?.[sourceID])).toContain("secret");
+         expect(addressSQL(source, targetsIn(c)?.[sourceID])).toContain(
+            "secret",
+         );
       },
       { timeout: 30000 },
    );
@@ -541,10 +552,14 @@ source: orders is orders_raw extend {
 source: orders is orders_raw extend { dimension: big is amount > 10 }
 `);
          const c = await compilePackageBuildPlan(pkg);
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const sql = buildSQLOf(
+            source,
+            { entries: {} },
+            targetsIn(c)?.[sourceID],
+         );
          const duckdb = await pkg.getMalloyConnection!("duckdb");
          const rows = (
             await duckdb.runSQL(
@@ -576,9 +591,9 @@ source: orders is orders_raw
             watermark: "order_date",
             storage: "lake",
          });
-         expect(Object.values(c.sources).some((s) => s.name === "orders")).toBe(
-            true,
-         );
+         expect(
+            Object.values(sourcesIn(c)).some((s) => s.name === "orders"),
+         ).toBe(true);
       },
       { timeout: 30000 },
    );
@@ -632,9 +647,9 @@ source: orders_ext2 is orders_ext extend { where: east_big }
          // Its table holds what the extension computes, read over the parent's.
          const sourceID = ids[2];
          const sql = buildSQLOf(
-            c.sources[sourceID],
+            sourcesIn(c)[sourceID],
             { entries: {} },
-            c.targets?.[sourceID],
+            targetsIn(c)?.[sourceID],
          );
          const duckdb = await pkg.getMalloyConnection!("duckdb");
          const rows = (
@@ -741,7 +756,9 @@ source: east is mid extend {
          expect(Object.fromEntries(deps)[plan("east").sourceID]).toEqual([
             plan("orders").sourceID,
          ]);
-         expect(addressSQL(c.sources[plan("east").sourceID])).toContain("big");
+         expect(addressSQL(sourcesIn(c)[plan("east").sourceID])).toContain(
+            "big",
+         );
       },
       { timeout: 30000 },
    );
@@ -791,7 +808,7 @@ source: o2 is o
          });
          // index.malloy re-exports `orders` as `o`; the contents of index hold
          // `o`, which carries orders' sourceID and its #(materialize).
-         const names = Object.values(c.sources).map((s) => s.name);
+         const names = Object.values(sourcesIn(c)).map((s) => s.name);
          expect(names.filter((n) => n === "orders").length).toBe(1);
       },
       { timeout: 30000 },
@@ -806,10 +823,10 @@ source: o2 is o
 source: orders is orders_raw
 `,
          });
-         const [sourceID] = Object.entries(c.sources).find(
+         const [sourceID] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         expect(c.sourceModelPaths?.[sourceID]).toBe("sub/m.malloy");
+         expect(modelPathsIn(c)?.[sourceID]).toBe("sub/m.malloy");
          expect(generatedPlans(c).map((p) => p.sourceName)).toEqual(["orders"]);
       },
       { timeout: 30000 },
@@ -985,10 +1002,14 @@ source: orders is orders_raw extend {
             childSourceID: expect.stringMatching(/^lines@/),
             parentRowColumn: "__parent_row",
          });
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const sql = buildSQLOf(
+            source,
+            { entries: {} },
+            targetsIn(c)?.[sourceID],
+         );
          const duckdb = await pkg.getMalloyConnection("duckdb");
          const rows = (
             await duckdb.runSQL(
@@ -1044,13 +1065,13 @@ source: orders_ext is orders extend {
             // Over the raw chain, one row per order, never the parent's
             // build source, whose rows are the pairs.
             expect(plan("orders_ext").buildsOver).toBeUndefined();
-            const [sourceID, source] = Object.entries(c.sources).find(
+            const [sourceID, source] = Object.entries(sourcesIn(c)).find(
                ([, s]) => s.name === "orders_ext",
             )!;
             const sql = buildSQLOf(
                source,
                { entries: {} },
-               c.targets?.[sourceID],
+               targetsIn(c)?.[sourceID],
             );
             const duckdb = await pkg.getMalloyConnection("duckdb");
             const rows = (
@@ -1158,10 +1179,14 @@ source: orders is orders_raw extend {
             ["lp__picks__line_id", ["lp", "picks"]],
             ["lp__picks__bin", ["lp", "picks"]],
          ]);
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const sql = buildSQLOf(
+            source,
+            { entries: {} },
+            targetsIn(c)?.[sourceID],
+         );
          const duckdb = await pkg.getMalloyConnection("duckdb");
          const rows = (
             await duckdb.runSQL(
@@ -1240,10 +1265,14 @@ source: orders is orders_raw extend {
             },
             levels: 1,
          });
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const sql = buildSQLOf(
+            source,
+            { entries: {} },
+            targetsIn(c)?.[sourceID],
+         );
          const duckdb = await pkg.getMalloyConnection("duckdb");
          const rows = (
             await duckdb.runSQL(
@@ -1500,10 +1529,14 @@ source: orders is orders_raw extend {
 }
 `);
          const c = await compilePackageBuildPlan(pkg);
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const sql = buildSQLOf(
+            source,
+            { entries: {} },
+            targetsIn(c)?.[sourceID],
+         );
          const duckdb = await pkg.getMalloyConnection("duckdb");
          const rows = (
             await duckdb.runSQL(
@@ -1738,10 +1771,14 @@ source: orders is orders_raw extend {
          ).toEqual([]);
          // Each parent's rows carry one watermark: the greatest over the
          // parent and its children; a childless parent its own.
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const sql = buildSQLOf(
+            source,
+            { entries: {} },
+            targetsIn(c)?.[sourceID],
+         );
          const pkg = await packages.create(DATED);
          const duckdb = await pkg.getMalloyConnection("duckdb");
          const rows = (
@@ -1765,10 +1802,9 @@ source: orders is orders_raw extend {
          ]);
          // The two generated windows are partitioned by the parent key, so
          // the window gate does not apply to them; nothing else changes.
-         const declaration = collectIncrementalDeclarations(
-            c.sources,
-            c.materializePlans,
-         )[plan.sourceID];
+         const declaration = collectIncrementalDeclarations(c.tables)[
+            plan.sourceID
+         ];
          expect(declaration.calculateFields).toEqual([]);
          expect(declaration.pair).toEqual({
             parentKey: "id",
@@ -1837,10 +1873,9 @@ source: orders is orders_raw extend {
             watermark: "__pair_watermark",
             merge_key: "id",
          });
-         const declaration = collectIncrementalDeclarations(
-            c.sources,
-            c.materializePlans,
-         )[plan.sourceID];
+         const declaration = collectIncrementalDeclarations(c.tables)[
+            plan.sourceID
+         ];
          // Every generated window is partitioned within a parent.
          expect(declaration.calculateFields).toEqual([]);
          expect(declaration.pair).toEqual({
@@ -1933,10 +1968,9 @@ source: orders is orders_raw extend {
             watermark: "__pair_watermark",
             merge_key: "id",
          });
-         const declaration = collectIncrementalDeclarations(
-            c.sources,
-            c.materializePlans,
-         )[plan.sourceID];
+         const declaration = collectIncrementalDeclarations(c.tables)[
+            plan.sourceID
+         ];
          expect(declaration.calculateFields).toEqual([]);
          expect(declaration.pair).toEqual({
             parentKey: "id",
@@ -1958,10 +1992,14 @@ source: orders is orders_raw extend {
          ).toEqual([]);
          // Built: each parent carries one watermark across both blocks, the
          // greatest over all of its rows.
-         const [sourceID, source] = Object.entries(c.sources).find(
+         const [sourceID, source] = Object.entries(sourcesIn(c)).find(
             ([, s]) => s.name === "orders",
          )!;
-         const sql = buildSQLOf(source, { entries: {} }, c.targets?.[sourceID]);
+         const sql = buildSQLOf(
+            source,
+            { entries: {} },
+            targetsIn(c)?.[sourceID],
+         );
          const duckdb = await pkg.getMalloyConnection("duckdb");
          const rows = (
             await duckdb.runSQL(
@@ -1999,10 +2037,9 @@ source: orders is orders_raw extend {
          const [plan] = generatedPlans(c);
          expect(plan.pair?.watermark).toBeUndefined();
          expect(plan.persist.refresh).toBeUndefined();
-         const declaration = collectIncrementalDeclarations(
-            c.sources,
-            c.materializePlans,
-         )[plan.sourceID];
+         const declaration = collectIncrementalDeclarations(c.tables)[
+            plan.sourceID
+         ];
          expect(declaration.pair).toBeUndefined();
          expect(declaration.calculateFields).toEqual(["__parent_row"]);
       },
@@ -2189,18 +2226,18 @@ source: by_region is orders_raw -> { group_by: region; aggregate: n is count() }
          const on = await compiled(files);
          enable(false);
          const off = await compiled(files);
-         expect(off.materializePlans).toEqual({});
-         expect(Object.values(off.sources).map((s) => s.name)).toEqual([
+         expect(materializePlansIn(off)).toEqual({});
+         expect(Object.values(sourcesIn(off)).map((s) => s.name)).toEqual([
             "by_region",
          ]);
          const address = (c: typeof on) => {
-            const [id, s] = Object.entries(c.sources).find(
+            const [id, s] = Object.entries(sourcesIn(c)).find(
                ([, x]) => x.name === "by_region",
             )!;
             return computeSourceEntityId(
                s,
                c.connectionDigests,
-               c.targets?.[id],
+               targetsIn(c)?.[id],
             );
          };
          // The authored persist source keeps its address either way.
@@ -2400,16 +2437,16 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
 `);
          const [p] = generatedPlans(c);
          // Keyed by the author's declaration, never by the generated name.
-         const source = c.sources[p.sourceID];
+         const source = sourcesIn(c)[p.sourceID];
          expect(source.name).toBe("orders");
          expect(source.sourceID).toBe(p.sourceID);
          expect(p.sourceID.startsWith("orders@")).toBe(true);
-         expect(c.materializePlans?.[p.sourceID]).toBe(p);
+         expect(materializePlansIn(c)?.[p.sourceID]).toBe(p);
          // The generated source it presents: the companion's, at the same
          // address and SQL, so no key the control plane holds moves.
          const generated = Object.getPrototypeOf(source) as typeof source;
          expect(generated.name).toBe("orders__mat");
-         const target = c.targets?.[p.sourceID];
+         const target = targetsIn(c)?.[p.sourceID];
          expect(
             computeSourceEntityId(source, c.connectionDigests, target),
          ).toBe(computeSourceEntityId(generated, c.connectionDigests, target));
@@ -2443,7 +2480,7 @@ source: orders is orders_raw -> { select: * }
          expect(generatedPlans(c)).toEqual([]);
          // One source of that name: the author's own #@ persist, not a second
          // presented as the same name.
-         expect(Object.values(c.sources).map((s) => s.name)).toEqual([
+         expect(Object.values(sourcesIn(c)).map((s) => s.name)).toEqual([
             "orders",
          ]);
          const wire = deriveBuildPlanOutcome(c, null).plan;
@@ -2666,7 +2703,7 @@ source: west_orders is orders extend { where: region = 'west' }
             ["orders", "orders__mat"],
             ["west_orders", "west_orders__mat"],
          ]);
-         expect(Object.values(c.sources).map((s) => s.name)).not.toContain(
+         expect(Object.values(sourcesIn(c)).map((s) => s.name)).not.toContain(
             "east_orders__mat",
          );
          expect(
@@ -2746,7 +2783,7 @@ source: orders is orders_raw
          },
       }).restore;
       const c = await compiled(text);
-      const [sourceID] = Object.keys(c.materializePlans ?? {});
+      const [sourceID] = Object.keys(materializePlansIn(c) ?? {});
       return { c, sourceID, outcome: deriveBuildPlanOutcome(c, null) };
    }
 
@@ -2754,7 +2791,7 @@ source: orders is orders_raw
       "classifies the gate against the author's model, where its givens are declared",
       async () => {
          const { c, sourceID } = await outcome(true);
-         expect(c.sourceGateOutcomes?.[sourceID]).toEqual({
+         expect(gatesIn(c)?.[sourceID]).toEqual({
             classification: "row_level",
             attributed: true,
          });

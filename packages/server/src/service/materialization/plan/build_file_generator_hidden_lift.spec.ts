@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { materializePlansIn } from "../../../test_helpers/materialization_test_fixtures";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -97,7 +98,9 @@ const accessOf = (f: Field) => String(f.accessModifier ?? "public");
 async function lift(files: Record<string, string>, entry = "m.malloy") {
    const pkg = await packages.create(files);
    const c = await compilePackageBuildPlan(pkg);
-   const plans = Object.values(c.materializePlans ?? {}) as MaterializePlan[];
+   const plans = Object.values(
+      materializePlansIn(c) ?? {},
+   ) as MaterializePlan[];
    expect(plans.length).toBe(1);
    const [plan] = plans;
    const copy = buildCopyText(files[entry], plan, undefined, {

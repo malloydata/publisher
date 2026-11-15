@@ -88,12 +88,17 @@ describe("run telemetry vocabulary", () => {
    });
 
    it("names a build's kind from the plan that made its source", () => {
+      const source = {} as never;
       const compiled = {
-         preaggregatePlans: { "r@m": {} as never },
-         materializePlans: {
-            "m@m": {} as never,
-            "p@m": { pair: {} } as never,
-         },
+         tables: {
+            "r@m": { kind: "rollup", source, rollup: {} as never },
+            "m@m": { kind: "materialize", source, materialize: {} as never },
+            "p@m": {
+               kind: "pair",
+               source,
+               materialize: { pair: {} } as never,
+            },
+         } as const,
       };
       expect(buildKindOf(compiled, "r@m")).toBe("rollup");
       expect(buildKindOf(compiled, "m@m")).toBe("materialize");

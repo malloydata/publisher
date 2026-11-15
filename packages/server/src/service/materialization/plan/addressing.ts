@@ -47,7 +47,7 @@ export interface SourceBuild {
 }
 
 /** Project Malloy's targets for one connection into a {@link SourceBuild}. */
-export function sourceBuildOf(
+function sourceBuildOf(
    build: ConnectionBuild,
    unbuildable: UnbuildableSource[],
 ): SourceBuild {
@@ -267,23 +267,20 @@ export function withoutSourceIDs(
    };
 }
 
-/** Record `source`'s target on `parts`, when it has one (an unkeyable source has none). */
-export function recordTarget(
-   parts: { targets: Record<string, BuildTarget> },
-   sourceID: string,
+/** `source`'s build target, when it has one (an unkeyable source has none). */
+export function plannedTargetOf(
    source: PersistSource,
-): void {
-   const target = buildTargets.get(source);
-   if (target !== undefined) parts.targets[sourceID] = target;
+): BuildTarget | undefined {
+   return buildTargets.get(source);
 }
 
-/** The sources of `build` in build order, skipping any absent from `sources`. */
+/** The planned sources of `build` in build order, skipping any not in `tables`. */
 export function* sourcesInBuildOrder(
    build: SourceBuild,
-   sources: Record<string, PersistSource>,
+   tables: Readonly<Record<string, { source: PersistSource }>>,
 ): Iterable<PersistSource> {
    for (const sourceID of build.order) {
-      const source = sources[sourceID];
+      const source = tables[sourceID]?.source;
       if (source) yield source;
    }
 }
