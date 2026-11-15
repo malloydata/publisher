@@ -32,7 +32,7 @@ const MZ_DIR = __dirname;
 const LAYERS = ["domain", "text", "plan", "run", "serve"] as const;
 
 /** A step of the plan, as an entry's tag names it. */
-const STEP = /^(L|R|2[a-l]|2g\.[1-4]|5)$/;
+const STEP = /^(L|R|2[a-p]|2g\.[1-4]|5)$/;
 
 function walk(dir: string): string[] {
    return fs

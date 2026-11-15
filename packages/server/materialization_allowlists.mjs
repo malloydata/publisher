@@ -12,121 +12,121 @@
 export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    // R8: plan/, run/ and serve/ never import one another.
    "service/materialization/run/incremental_build.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2m",
    "service/materialization/run/incremental_storage.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2m",
    "service/materialization/run/instructed_build.ts -> service/materialization/plan/addressing":
-      "2g.3",
+      "2m",
    "service/materialization/run/instructed_build.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2m",
    "service/materialization/run/instructed_build.ts -> service/materialization/plan/materialization_eligibility":
-      "2g.3",
+      "2m",
    "service/materialization/run/materialization_build_session.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2m",
    "service/materialization/run/materialization_instructed_run.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2m",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_file_generator":
-      "2g.3",
+      "2m",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2m",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_source_fields":
-      "2g.3",
+      "2m",
    "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan_compile":
-      "2g.3",
+      "2m",
    "service/materialization/run/run_instructions.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2m",
    "service/materialization/run/run_instructions.ts -> service/materialization/plan/materialization_eligibility":
-      "2g.3",
+      "2m",
    "service/materialization/run/source_build.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2m",
    "service/materialization/run/storage_build_strategy.ts -> service/materialization/plan/materialize_stored_chain":
-      "2g.3",
+      "2m",
    "service/materialization/run/table_ownership.ts -> service/materialization/plan/persist_source_fields":
-      "2g.3",
+      "2m",
    "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/persist_dynamic_terms":
-      "2g.3",
+      "2m",
    // R10: outside the module, only index.ts and domain/.
    "controller/materialization.controller.ts -> service/materialization/run/materialization_run_support":
-      "2g.3",
+      "2n",
    "controller/materialization.controller.ts -> service/materialization/run/materialization_service":
-      "2g.3",
+      "2n",
    "controller/storage_destination.controller.ts -> service/materialization/run/materialization_build_session":
-      "2g.3",
+      "2n",
    "main_server.ts -> service/materialization/run/materialization_scheduler":
-      "2g.3",
+      "2n",
    "main_server.ts -> service/materialization/run/materialization_service":
-      "2g.3",
+      "2n",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2n",
    "package_load/protocol.ts -> service/materialization/plan/build_plan":
-      "2g.3",
+      "2n",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
-      "2g.3",
+      "2n",
    "service/catalog_admin.ts -> service/materialization/run/storage_table_load":
-      "2g.3",
+      "2n",
    "service/environment.ts -> service/materialization/run/manifest_loader":
-      "2g.3",
+      "2n",
    "service/environment_store.ts -> service/materialization/run/inline_uniqueness":
-      "2g.3",
-   "service/model.ts -> service/materialization/plan/build_plan": "2g.3",
-   "service/model.ts -> service/materialization/plan/persisted_view": "2g.3",
+      "2n",
+   "service/model.ts -> service/materialization/plan/build_plan": "2n",
+   "service/model.ts -> service/materialization/plan/persisted_view": "2n",
    "service/model.ts -> service/materialization/plan/preaggregation_validation":
-      "2g.3",
-   "service/model.ts -> service/materialization/plan/rollup_plan": "2g.3",
-   "service/model.ts -> service/materialization/serve/rollup_variants": "2g.3",
-   "service/model.ts -> service/materialization/serve/serve_verdict": "2g.3",
+      "2n",
+   "service/model.ts -> service/materialization/plan/rollup_plan": "2n",
+   "service/model.ts -> service/materialization/serve/rollup_variants": "2n",
+   "service/model.ts -> service/materialization/serve/serve_verdict": "2n",
    "service/model.ts -> service/materialization/serve/served_copy_serve":
-      "2g.3",
-   "service/model.ts -> service/materialization/serve/storage_bindings": "2g.3",
-   "service/model.ts -> service/materialization/serve/view_variants": "2g.3",
-   "service/model.ts -> service/materialization/text/source_map": "2g.3",
+      "2n",
+   "service/model.ts -> service/materialization/serve/storage_bindings": "2n",
+   "service/model.ts -> service/materialization/serve/view_variants": "2n",
+   "service/model.ts -> service/materialization/text/source_map": "2n",
    "service/model_policy.ts -> service/materialization/serve/query_path":
-      "2g.3",
+      "2n",
    "service/package.ts -> service/materialization/package_materialization":
-      "2g.3",
-   "service/package.ts -> service/materialization/plan/build_plan": "2g.3",
+      "2n",
+   "service/package.ts -> service/materialization/plan/build_plan": "2n",
    "service/package.ts -> service/materialization/plan/incremental_policy":
-      "2g.3",
+      "2n",
    "service/package.ts -> service/materialization/plan/materialization_config_validation":
-      "2g.3",
+      "2n",
    "service/package.ts -> service/materialization/plan/persist_annotation_validation":
-      "2g.3",
-   "service/model_serving.ts -> service/materialization/serve/leg": "2g.3",
+      "2n",
+   "service/model_serving.ts -> service/materialization/serve/leg": "2n",
    "service/model_serving.ts -> service/materialization/serve/query_path":
-      "2g.3",
+      "2n",
    "service/model_serving.ts -> service/materialization/serve/served_copy_serve":
-      "2g.3",
-   "service/model.ts -> service/materialization/serve/leg": "2g.3",
-   "service/query_serving.ts -> service/materialization/serve/leg": "2g.3",
+      "2n",
+   "service/model.ts -> service/materialization/serve/leg": "2n",
+   "service/query_serving.ts -> service/materialization/serve/leg": "2n",
    "service/query_serving.ts -> service/materialization/serve/query_path":
-      "2g.3",
+      "2n",
    "service/query_serving.ts -> service/materialization/serve/rollup_variants":
-      "2g.3",
+      "2n",
    "service/query_serving.ts -> service/materialization/serve/served_copy_serve":
-      "2g.3",
+      "2n",
    "service/query_serving.ts -> service/materialization/serve/view_variants":
-      "2g.3",
+      "2n",
    "service/query_serving.ts -> service/materialization/text/source_map":
-      "2g.3",
+      "2n",
    "service/skills/package_skills.ts -> service/materialization/run/cron_evaluator":
-      "2g.3",
+      "2n",
    // H5: logger and metrics only in run/, the facade and the query pipeline.
-   "service/materialization/plan/build_plan.ts -> logger": "2g.3",
+   "service/materialization/plan/build_plan.ts -> logger": "2o",
    "service/materialization/plan/build_plan.ts -> materialization_metrics":
-      "2g.3",
-   "service/materialization/plan/build_plan_compile.ts -> logger": "2g.3",
+      "2o",
+   "service/materialization/plan/build_plan_compile.ts -> logger": "2o",
    "service/materialization/plan/build_plan_compile.ts -> materialization_metrics":
-      "2g.3",
-   "service/materialization/plan/eligibility_collect.ts -> logger": "2g.3",
+      "2o",
+   "service/materialization/plan/eligibility_collect.ts -> logger": "2o",
    "service/materialization/plan/materialization_eligibility.ts -> materialization_metrics":
-      "2g.3",
-   "service/materialization/plan/materialize_compile.ts -> logger": "2g.3",
-   "service/materialization/plan/persist_source_fields.ts -> logger": "2g.3",
-   "service/materialization/plan/persisted_view_compile.ts -> logger": "2g.3",
-   "service/materialization/plan/rollup_compile.ts -> logger": "2g.3",
-   "service/materialization/serve/rollup_variants.ts -> logger": "2g.3",
-   "service/materialization/serve/served_copy_serve.ts -> logger": "2g.3",
-   "service/materialization/serve/view_variants.ts -> logger": "2g.3",
+      "2o",
+   "service/materialization/plan/materialize_compile.ts -> logger": "2o",
+   "service/materialization/plan/persist_source_fields.ts -> logger": "2o",
+   "service/materialization/plan/persisted_view_compile.ts -> logger": "2o",
+   "service/materialization/plan/rollup_compile.ts -> logger": "2o",
+   "service/materialization/serve/rollup_variants.ts -> logger": "2o",
+   "service/materialization/serve/served_copy_serve.ts -> logger": "2o",
+   "service/materialization/serve/view_variants.ts -> logger": "2o",
 };
 
 /** H1: modules with no header yet, by file under src/: step. */
