@@ -340,3 +340,37 @@ const RESERVED_TABLE_SUFFIX = /__(?:p[0-9a-f]{8}|v[a-z0-9_]*_[0-9a-f]{8})$/i;
 export function hasReservedTableSuffix(name: string): boolean {
    return RESERVED_TABLE_SUFFIX.test(name.slice(name.lastIndexOf(".") + 1));
 }
+
+/**
+ * A written table name split for comparison: its last segment, the table,
+ * and the container before it, if any (`main.t` → `main`, `t`).
+ */
+export function tableNameParts(name: string): {
+   container?: string;
+   leaf: string;
+} {
+   const dot = name.lastIndexOf(".");
+   return dot < 0
+      ? { leaf: name }
+      : { container: name.slice(0, dot), leaf: name.slice(dot + 1) };
+}
+
+/**
+ * Whether two written table names, on one connection or destination, may be
+ * one table: the same table segment, and the same container or no container
+ * on either. A name with no container is written into the connection's
+ * default schema or dataset, which cannot be told from here (`main.t` and
+ * `t` are one table on DuckDB), so a bare name meets any container: the
+ * conservative answer, since a missed one serves one source the other's
+ * rows. Compared as given; the caller folds case where the destination does.
+ */
+export function tableNamesMeet(a: string, b: string): boolean {
+   const x = tableNameParts(a);
+   const y = tableNameParts(b);
+   return (
+      x.leaf === y.leaf &&
+      (x.container === undefined ||
+         y.container === undefined ||
+         x.container === y.container)
+   );
+}

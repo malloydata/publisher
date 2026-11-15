@@ -104,7 +104,11 @@ import {
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./domain/storage_table_path";
-import { persistTableTarget } from "./plan/eligibility_collect";
+import {
+   describeMembers,
+   membersOnOneTable,
+   persistTableTarget,
+} from "./plan/eligibility_collect";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
@@ -2305,33 +2309,36 @@ export class PackageMaterialization {
     * (otherwise they fail the load): each source's own not-built code.
     */
    persistenceCollisionRefusals(): ApiPackageWarning[] {
-      return this.persistenceCollisions().map(({ message, code }) => ({
+      return this.persistenceCollisions().map(({ message, code, subject }) => ({
          message,
          code,
+         subject,
          severity: "warn" as const,
       }));
    }
 
-   private persistenceCollisions(): { message: string; code: string }[] {
+   private persistenceCollisions(): {
+      message: string;
+      code: string;
+      subject: string;
+   }[] {
+      type Member = {
+         address: string;
+         name: string;
+         model?: string;
+         written?: string;
+         kind: string;
+      };
       const targets = new Map<
          string,
-         {
-            name: string;
-            destination: string;
-            sources: Map<string, string>;
-            kinds: Set<string>;
-         }
+         { name: string; destination: string; members: Member[] }
       >();
       for (const [sourceID, source] of Object.entries(
          this.buildPlan?.sources ?? {},
       )) {
          // The one definition of a collision, shared with the serve refusal.
          const materialize = this.materializePlans?.[sourceID];
-         const {
-            key,
-            name: physicalName,
-            destination,
-         } = persistTableTarget(
+         const target = persistTableTarget(
             source.annotationFields ?? {},
             source.name,
             source.connectionName,
@@ -2348,39 +2355,45 @@ export class PackageMaterialization {
                identity: sourceID,
             },
          );
-         const bucket = targets.get(key) ?? {
-            name: physicalName,
-            destination,
-            sources: new Map<string, string>(),
-            kinds: new Set<string>(),
+         const bucket = targets.get(target.key) ?? {
+            name: target.name,
+            destination: target.destination,
+            members: [],
          };
-         // Keyed by sourceEntityId so identical-content imports collapse to one.
-         bucket.sources.set(source.sourceEntityId, source.name);
-         bucket.kinds.add(refusalCodeOf(sourceID, source.name));
-         targets.set(key, bucket);
+         // One member per content address: identical-content imports are
+         // one source.
+         if (!bucket.members.some((m) => m.address === source.sourceEntityId)) {
+            bucket.members.push({
+               address: source.sourceEntityId,
+               name: source.name,
+               ...(source.modelPath ? { model: source.modelPath } : {}),
+               ...(target.written !== undefined
+                  ? { written: target.written }
+                  : {}),
+               kind: refusalCodeOf(sourceID, source.name),
+            });
+         }
+         targets.set(target.key, bucket);
       }
-      const warnings: { message: string; code: string }[] = [];
-      for (const {
-         name,
-         destination,
-         sources: colliding,
-         kinds,
-      } of targets.values()) {
-         if (colliding.size < 2) continue;
-         const names = [...colliding.values()].sort();
+      const warnings: { message: string; code: string; subject: string }[] = [];
+      for (const { name, destination, members } of targets.values()) {
+         const colliding = membersOnOneTable(members);
+         if (colliding.length < 2) continue;
+         const kinds = new Set(colliding.map((m) => m.kind));
+         const subject = [...colliding.map((m) => m.name)].sort()[0];
          warnings.push({
             // Refused alone under the opt-out: a view's or a query's own
             // not-built code when every member is one, else a source's.
             code: kinds.size === 1 ? [...kinds][0] : PERSIST_NOT_BUILT_CODE,
+            subject,
             message:
-               `#@ persist sources ${names
-                  .map((n) => `"${n}"`)
-                  .join(", ")} all resolve to the same materialized table ` +
-               `"${name}" in destination "${destination}". Distinct sources ` +
-               `must not share a physical target — the second build would ` +
-               `overwrite the first, and a serve binding or GC drop for one ` +
-               `would affect the other, so none is served from it and queries ` +
-               `on them are answered live. Give each a distinct #@ persist name=.`,
+               `#@ persist sources ${describeMembers(colliding)} all resolve ` +
+               `to the same materialized table "${name}" in destination ` +
+               `"${destination}". Distinct sources must not share a physical ` +
+               `target — the second build would overwrite the first, and a ` +
+               `serve binding or GC drop for one would affect the other, so ` +
+               `none is built or served from it and queries on them are ` +
+               `answered live. Give each a distinct #@ persist name=.`,
          });
       }
       return warnings;

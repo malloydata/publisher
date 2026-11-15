@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   tableNamesMeet,
    authorModelPath,
    COMPANION_SUFFIXES,
    fileSegment,
@@ -358,5 +359,16 @@ describe("which source a shared table is named after", () => {
             { modelPath: "a.malloy", label: "a" },
          ),
       ).toBe(false);
+   });
+});
+
+describe("tableNamesMeet", () => {
+   it("meets on one table segment with the same container, or none on either", () => {
+      expect(tableNamesMeet("t", "t")).toBe(true);
+      expect(tableNamesMeet("main.t", "t")).toBe(true);
+      expect(tableNamesMeet("t", "main.t")).toBe(true);
+      expect(tableNamesMeet("a.b.t", "a.b.t")).toBe(true);
+      expect(tableNamesMeet("s1.t", "s2.t")).toBe(false);
+      expect(tableNamesMeet("main.t", "main.u")).toBe(false);
    });
 });

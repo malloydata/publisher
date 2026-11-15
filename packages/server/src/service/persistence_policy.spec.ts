@@ -383,6 +383,41 @@ source: b is duckdb.sql("SELECT 2 as y")
       { timeout: 30000 },
    );
 
+   it.each([
+      ["main.t, then t", "main.t", "t"],
+      ["t, then main.t", "t", "main.t"],
+   ])(
+      "fails the load when a name= with the default schema and one without it are one table: %s",
+      async (_order, first, second) => {
+         const message = await loadError(`##! experimental.persistence
+
+#@ persist name="${first}"
+source: a is duckdb.sql("SELECT 1 as x")
+
+#@ persist name="${second}"
+source: b is duckdb.sql("SELECT 2 as y")
+`);
+         expect(message).toContain("[materialization-table-collision]");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "does not collide two name=s in two named schemas",
+      async () => {
+         const pkg = await loadPackage(`##! experimental.persistence
+
+#@ persist name="s1.t"
+source: a is duckdb.sql("SELECT 1 as x")
+
+#@ persist name="s2.t"
+source: b is duckdb.sql("SELECT 2 as y")
+`);
+         expect(pkg.persistenceCollisionWarnings()).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
    it(
       "with PERSIST_COLLISION_ENFORCE=false, loads and refuses the colliding sources alone, on the package's warnings",
       async () => {

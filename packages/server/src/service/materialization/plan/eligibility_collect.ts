@@ -9,6 +9,7 @@
  */
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";
+import { tableNameParts, tableNamesMeet } from "../domain/table_name";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -165,7 +166,17 @@ export function persistTableTarget(
       /** The source's `sourceID`: the identity its readable name hashes. */
       identity: string;
    },
-): { key: string; name: string; destination: string } {
+): {
+   key: string;
+   name: string;
+   destination: string;
+   /**
+    * The name as compared ({@link tableNamesMeet}): case-folded where the
+    * destination folds case. Undefined for a readable name, whose key is
+    * its identity.
+    */
+   written?: string;
+} {
    const name = (fields.name || sourceName).trim();
    const storage = fields.storage?.trim();
    const destination = storage || connectionName;
@@ -181,11 +192,33 @@ export function persistTableTarget(
    const folded = tableNamesFoldCase(written.dialect, !!storage)
       ? name.toLowerCase()
       : name;
+   // Keyed by the table segment: `main.t` and `t` may be one table, which
+   // the group then decides by tableNamesMeet.
    return {
-      key: `${destination}\u0000named\u0000${folded}`,
+      key: `${destination}\u0000named\u0000${tableNameParts(folded).leaf}`,
       name,
       destination,
+      written: folded,
    };
+}
+
+/**
+ * The members of one key's group that write one table with a member of a
+ * different content address ({@link tableNamesMeet} on their written names;
+ * a readable name's group is one table by its key).
+ */
+export function membersOnOneTable<
+   T extends { address: string; written?: string },
+>(members: readonly T[]): T[] {
+   return members.filter((m) =>
+      members.some(
+         (o) =>
+            o.address !== m.address &&
+            (m.written === undefined ||
+               o.written === undefined ||
+               tableNamesMeet(m.written, o.written)),
+      ),
+   );
 }
 
 function physicalTarget(
@@ -212,6 +245,8 @@ interface SharedTableMember {
    name: string;
    address: string;
    model?: string;
+   /** See {@link persistTableTarget}'s `written`. */
+   written?: string;
 }
 
 /**
@@ -260,15 +295,19 @@ function sharedTableGroups(
          name: source.name,
          address,
          model: compiled.sourceModelPaths?.[sourceID],
+         ...(target.written !== undefined ? { written: target.written } : {}),
       });
       byTarget.set(target.key, group);
    }
-   return [...byTarget.values()].filter(
-      (g) => new Set(g.members.map((m) => m.address)).size > 1,
-   );
+   return [...byTarget.values()]
+      .map((g) => ({ ...g, members: membersOnOneTable(g.members) }))
+      .filter((g) => g.members.length > 1);
 }
 
-function describeMembers(members: readonly SharedTableMember[]): string {
+/** Each member as `"name" (model)`, sorted, for a collision's message. */
+export function describeMembers(
+   members: readonly { name: string; model?: string }[],
+): string {
    return members
       .map((m) => `"${m.name}"${m.model ? ` (${m.model})` : ""}`)
       .sort()
