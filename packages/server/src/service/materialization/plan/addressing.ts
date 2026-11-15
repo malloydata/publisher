@@ -22,11 +22,7 @@ import {
    getPersistAddressIncludesDestination,
    getPersistStorageMode,
 } from "../../../config";
-import { resolvePartitionColumns } from "./persist_partition";
-import {
-   declaredStorage,
-   deriveAnnotationFields,
-} from "./persist_source_fields";
+import { declaredStorage } from "./persist_source_fields";
 
 /**
  * One connection's persist sources in the order they build, from Malloy's
@@ -146,9 +142,9 @@ export function isUnkeyable(source: PersistSource): boolean {
 
 /**
  * Test doubles' chosen addresses, keyed by their TARGET. A fake target names
- * the address its fixture asserts, where a real one is hashed; a partitioned
- * source still folds its layout over it (see {@link computeSourceEntityId}),
- * so a partition regression is not hidden. Set only by
+ * the address its fixture asserts, where a real one is hashed; a source with a
+ * destination folded into its address still folds it over the chosen one (see
+ * {@link computeSourceEntityId}), so a regression there is not hidden. Set only by
  * `test_helpers/materialization_test_fixtures`, never on a real target.
  */
 const testAddresses = new WeakMap<BuildTarget, string>();
@@ -312,9 +308,9 @@ export function computeSourceEntityId(
    // must not move it either (fact 1 in incremental_compiler_contract.spec.ts).
    //
    // Hashed the way the compiler hashes a BuildID (`makeDigest(digest, sql)`)
-   // over `addressText`: the target's `sql`, plus the `partition=` layout and,
-   // with PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION on, the `storage=`
-   // destination. With neither, it equals the target's own `buildId`
+   // over `addressText`: the target's `sql`, plus, with
+   // PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION on, the `storage=`
+   // destination. Without it, it equals the target's own `buildId`
    // (build_targets_address_equality pins that); otherwise the two differ and
    // `manifestForCompiler` carries an entry under both. The digest stays the
    // caller's, so the same SQL on another connection is another table.
@@ -333,8 +329,8 @@ export function computeSourceEntityId(
 /**
  * The key the compiler itself files a source's table under: its target's
  * `buildId`, which the compiler computed and looks tables up by. Like
- * {@link computeSourceEntityId} but without the partition layout, so for a
- * partitioned source the two differ and a manifest handed to the compiler
+ * {@link computeSourceEntityId} but without the folded destination, so for a
+ * source that has one the two differ and a manifest handed to the compiler
  * carries the entry under both (see `manifestForCompiler`).
  *
  * `connectionDigests` is unused: the target's key was computed under the
@@ -365,18 +361,16 @@ export function addressDestination(source: PersistSource): string | undefined {
    try {
       return declaredStorage(source);
    } catch {
-      // An unreadable annotation addresses as colocated, as partition does.
+      // An unreadable annotation addresses as colocated.
       return undefined;
    }
 }
 
 /**
  * Fold what the target's `sql` cannot carry into the text a source's address
- * is computed from: its `partition=` layout, and (P12, behind a switch) the
- * storage destination it builds into. The target's `sql` carries no
- * annotation bytes, so without this a `partition=` change would be skipped as
- * unchanged and the table would keep the old layout, and a source moved to
- * `storage=` would keep its colocated address (#7087).
+ * is computed from: (P12, behind a switch) the storage destination it builds
+ * into. The target's `sql` carries no annotation bytes, so without this a
+ * source moved to `storage=` would keep its colocated address (#7087).
  *
  * Derived here rather than passed in so every caller agrees
  * (`build_targets_address_equality` pins it). Nothing to fold appends
@@ -384,19 +378,7 @@ export function addressDestination(source: PersistSource): string | undefined {
  * which is the rebuild the author asked for.
  */
 export function addressText(source: PersistSource, sql: string): string {
-   let columns: string[] = [];
-   try {
-      const resolved = resolvePartitionColumns(
-         source,
-         deriveAnnotationFields(source),
-      );
-      // A refusal contributes nothing: such a source cannot build at all.
-      if (resolved.ok) columns = resolved.columns;
-   } catch {
-      // An unreadable annotation addresses as unpartitioned.
-   }
    let text = sql;
-   if (columns.length > 0) text += `\n-- partitioned by: ${columns.join(", ")}`;
    const destination = addressDestination(source);
    if (destination !== undefined) text += `\n-- stored in: ${destination}`;
    return text;

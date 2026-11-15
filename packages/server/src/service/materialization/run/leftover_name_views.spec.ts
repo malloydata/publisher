@@ -734,7 +734,6 @@ describe("leftover name= views, in a storage destination", () => {
          session,
          '"lake"."main"."named_t"',
          "SELECT 5 AS x",
-         [],
          { replacesView: stale! },
       ).catch((e: Error) => e);
       expect(String((failed as Error)?.message)).toContain(
@@ -752,7 +751,6 @@ describe("leftover name= views, in a storage destination", () => {
          session,
          '"lake"."main"."named_t"',
          "SELECT 5 AS x",
-         [],
          { replacesView: (await statements())! },
       );
       expect(await views()).toEqual([]);

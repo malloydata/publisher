@@ -5902,7 +5902,7 @@ components:
                   served live (one per annotation, `model` its file; `error`;
                   refused at publish, while a package already published keeps
                   loading). `persist-retired-key`: a `#@ persist` key no longer
-                  read, `sharing=` or `schedule=`, with what to write instead
+                  read, `sharing=`, `schedule=` or `partition=`, with what to write instead
                   (one per key, `subject` the source; `error`; refused at
                   publish). `persist-unknown-key`: a `#@ persist` key Publisher
                   does not read, such as a misspelled `merge_key=` (one per
@@ -10639,9 +10639,7 @@ components:
             appear here — `free_parameter`, `authorize`, the four
             that name where a given the build could not strip sits
             (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
-            `dynamic_joined_where`), the three that name an unusable
-            `partition=` (`partition_without_storage`,
-            `partition_column_unknown`, `partition_column_not_public`),
+            `dynamic_joined_where`),
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns),
             `preaggregate_over_dynamic_source` (a rollup whose base is scoped by
@@ -10679,7 +10677,12 @@ components:
             placement can no longer be raised. `not_duckdb_portable` is
             likewise retained and no longer produced: a `storage=` table no
             column of which Malloy can type is now built, and its source is
-            answered live. `public_surface_unknown` is raised by the build-time
+            answered live. The three `partition_*` reasons
+            (`partition_without_storage`, `partition_column_unknown`,
+            `partition_column_not_public`) are likewise retained and no longer
+            produced: `partition=` is a retired key, refused at publish as
+            `persist-retired-key` or `materialize-retired-key`, never as a plan
+            refusal. `public_surface_unknown` is raised by the build-time
             narrowing of a stored table to the source's public columns; both
             are listed only because they share the enum the runtime
             eligibility metric uses.
@@ -10835,26 +10838,15 @@ components:
             rewrites).
         partition:
           type: array
+          deprecated: true
           items:
             type: string
           description: >-
-            The source's declared `#@ persist partition=` columns, resolved
-            against its public projection and reported in the author's order,
-            which is the order the stored table's directories nest in. Absent or
-            empty means the table is written unpartitioned, which is the default
-            and what every source built before this field existed means.
-
-
-            A layout, not an access control. Every term the build strips from a
-            source is re-applied when the artifact is read whether or not its
-            column is partitioned, so a list omitting the column a caller is
-            scoped by costs a full scan and never widens what that caller sees.
-            Consumers should not infer isolation from it.
-
-
-            `partition=` requires `storage=`; declared without one it is a
-            publish refusal rather than an ignored key, so this is empty for
-            every colocated source.
+            Retired and no longer produced: always absent. It reported a
+            source's `#@ persist partition=` columns; `partition=` is now a
+            retired key, refused at publish, and every stored table is written
+            unpartitioned. Kept so generated clients that read it still
+            compile.
         strippedTerms:
           type: array
           items:

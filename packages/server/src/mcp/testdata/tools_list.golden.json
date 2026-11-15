@@ -1079,7 +1079,7 @@
     },
     {
       "name": "malloy-materialization/storage",
-      "description": "The storage tier: `storage=`, `partition=`, and how a stored table is served. Reference detail for the malloy-materialization skill."
+      "description": "The storage tier: `storage=`, and how a stored table is served. Reference detail for the malloy-materialization skill."
     },
     {
       "name": "malloy-materialization/tuning",
