@@ -2329,8 +2329,9 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
          expect(generatedPlans(apart).map((p) => p.sourceName)).toEqual([
             "orders",
          ]);
-         // In a storage destination (DuckDB, which folds case), Orders and
-         // orders are one table.
+         // Without name=, Orders and orders take readable names hashed over
+         // their own names, so even a destination that folds case holds two
+         // tables.
          const folded = await compiled(`${BASE}
 #(materialize) storage="lake"
 source: Orders is orders_raw extend { where: region = 'east' }
@@ -2338,8 +2339,8 @@ source: Orders is orders_raw extend { where: region = 'east' }
 #(materialize) storage="lake"
 source: orders is orders_raw extend { where: region = 'west' }
 `);
-         expect(notBuilt(folded)).toEqual(["Orders", "orders"]);
-         // Two author names that differ only by case, too.
+         expect(notBuilt(folded)).toEqual([]);
+         // Two author names that differ only by case are one table there.
          const named = await compiled(`${BASE}
 #(materialize) name="T_east" storage="lake"
 source: east is orders_raw extend { where: region = 'east' }

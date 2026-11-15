@@ -47,8 +47,8 @@ interface EligibilityPlan {
    /** The `#(materialize)` plans, by the author's sourceID. */
    /**
     * The package is `scope: "version"`: every table name, `name=` included,
-    * takes the version's suffix, so a defaulted name and an author's name
-    * that are equal write one table.
+    * is a readable name with its source's identity hash, so no two
+    * declarations share one (see {@link persistTableTarget}).
     */
    versionScoped?: boolean;
    materializePlans?: Record<string, unknown>;
@@ -139,16 +139,18 @@ export function collidingRollups(compiled: {
  * serve refusal ({@link sharedTables}), the `#(materialize)` refusal and the
  * publish check (`persistenceCollisionWarnings`), so the three never disagree.
  *
- * The key is the name the run writes. In an unversioned or `scope:
- * "package"` package, a name the author did not choose (`defaulted`: no
- * `name=` on a `#@ persist`, or a `#(materialize)` with none) takes the
- * package's suffix in Publisher's own builds, which no author's name
- * carries, so it never shares a table with one; two such names share one
- * exactly when their bases do. Under `scope: "version"` (`versionScoped`)
- * every name takes the version's suffix, so equal names meet whichever chose
- * them. A destination that folds table names to one case
- * ({@link tableNamesFoldCase}) folds the key too, so `Orders` and `orders`
- * meet.
+ * The key is the table the run writes. An author's `name=` in an
+ * unversioned or `scope: "package"` package is written exactly as given, so
+ * two equal names (folded where the destination folds case,
+ * {@link tableNamesFoldCase}) are one table. Every other name is Publisher's
+ * readable name (domain/table_name.ts): a name the author did not choose
+ * (`defaulted`: no `name=` on a `#@ persist`, or a `#(materialize)` with
+ * none), and under `scope: "version"` (`versionScoped`) every name, `name=`
+ * included, which then sets only the readable prefix. A readable name ends in
+ * a hash of the source's identity (its declaring model and name, and the
+ * version), so two different declarations never share one but by a hash
+ * collision, which the run refuses (`table_name_collision`); its key is that
+ * identity, the source's `sourceID`.
  */
 export function persistTableTarget(
    fields: { name?: string; storage?: string },
@@ -158,18 +160,27 @@ export function persistTableTarget(
       defaulted?: boolean;
       dialect?: string;
       versionScoped?: boolean;
-   } = {},
+      /** The source's `sourceID`: the identity its readable name hashes. */
+      identity: string;
+   },
 ): { key: string; name: string; destination: string } {
    const name = (fields.name || sourceName).trim();
    const storage = fields.storage?.trim();
    const destination = storage || connectionName;
-   const defaulted =
-      !written.versionScoped && (written.defaulted ?? !fields.name?.trim());
+   const readable =
+      written.versionScoped || (written.defaulted ?? !fields.name?.trim());
+   if (readable) {
+      return {
+         key: `${destination}\u0000identity\u0000${written.identity}`,
+         name,
+         destination,
+      };
+   }
    const folded = tableNamesFoldCase(written.dialect, !!storage)
       ? name.toLowerCase()
       : name;
    return {
-      key: `${destination}\u0000${defaulted ? "default" : "named"}\u0000${folded}`,
+      key: `${destination}\u0000named\u0000${folded}`,
       name,
       destination,
    };
@@ -188,6 +199,7 @@ function physicalTarget(
          ...(materialize ? { defaulted: !!materialize.nameDefaulted } : {}),
          dialect: source.dialectName,
          ...(versionScoped ? { versionScoped } : {}),
+         identity: source.sourceID,
       },
    );
 }

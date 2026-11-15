@@ -43,6 +43,7 @@ import { parsePackageName } from "../../service/identity";
 import { QueryPrivileges } from "../../service/model_query_request";
 import type { Package } from "../../service/package";
 import { installSettings } from "../settings_env";
+import { readableTableName } from "../../service/materialization/domain/table_name";
 import { writePackageFiles } from "../temp_package";
 import {
    type BuildCastOptions,
@@ -173,6 +174,8 @@ export interface LoadedFixture {
    verdicts: string[];
    /** The plan's sources that were built, by name and tier. */
    built: { name: string; tier: "storage" | "colocated" }[];
+   /** The table each built content address was written to, by sourceEntityId. */
+   tables: Record<string, string>;
    /** Problems building a planned source, by name. */
    buildErrors: Record<string, string>;
    /** The `storage=` manifest entries the build bound, by sourceEntityId. */
@@ -335,9 +338,17 @@ export async function loadFixture(
             }
          };
          await settle();
+         const tables: Record<string, string> = {};
+         for (const [id, e] of Object.entries(colocated)) {
+            tables[id] = String(e.tableName);
+         }
+         for (const [id, e] of Object.entries(stored)) {
+            tables[id] = String(e.physicalTableName);
+         }
          return {
             pkg,
             built,
+            tables,
             buildErrors,
             stored,
             async rebind() {
@@ -435,12 +446,12 @@ async function buildAll(
       for (const entry of entries) {
          if (seen.has(entry.sourceEntityId)) continue;
          seen.add(entry.sourceEntityId);
-         // The name a build writes: `name=`, else the source's name with a
-         // suffix standing for the package's (`__p<hash>`), which no author's
-         // name carries, so two sources resolving to one name overwrite each
-         // other as they would in a real destination, and a defaulted name
-         // never meets an author's. Quoted in DDL; recorded unquoted, as a
-         // build records it.
+         // The name a self-instructed build writes: an author's `name=` as
+         // written, else Publisher's readable name, hashed over the source's
+         // identity (its declaring model and name), so two sources of one
+         // name in two models write two tables, as in a real destination, and
+         // a defaulted name never meets an author's. Quoted in DDL; recorded
+         // unquoted, as a build records it.
          const plan = (
             materializePlans as Record<string, { nameDefaulted?: true }>
          )[entry.sourceID];
@@ -451,7 +462,17 @@ async function buildAll(
          const table =
             declared || entry.origin === "preaggregate"
                ? base
-               : `${base}__p00000000`;
+               : readableTableName({
+                    identity: {
+                       environmentName: "conform",
+                       packageName: "pkg",
+                       modelPath: entry.modelPath ?? "",
+                       sourceName: entry.name,
+                    },
+                    label: entry.name,
+                    dialect: entry.dialect ?? undefined,
+                    inDestination: !!entry.annotationFields?.storage,
+                 });
          const quoted = `"${table.replace(/"/g, '""')}"`;
          const storage = entry.annotationFields?.storage;
          try {

@@ -377,7 +377,7 @@ export const PERSIST_INVALID_CODE = "persist-invalid";
 export const PREAGGREGATE_INVALID_CODE = "preaggregate-invalid";
 export const PERSIST_VIEW_INVALID_CODE = "persist-view-invalid";
 export const PERSIST_QUERY_INVALID_CODE = "persist-query-invalid";
-/** Two sources an author's names (or same-named sources) put on one table. */
+/** Two sources an author's `name=` puts on one table. */
 export const MATERIALIZATION_TABLE_COLLISION_CODE =
    "materialization-table-collision";
 /** A storage source the deployment's `PERSIST_STORAGE_MODE` does not honour. */

@@ -2295,6 +2295,7 @@ export class PackageMaterialization {
                ...(this.owner.metadata().scope === "version"
                   ? { versionScoped: true }
                   : {}),
+               identity: sourceID,
             },
          );
          const bucket = targets.get(key) ?? {

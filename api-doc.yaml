@@ -5916,8 +5916,8 @@ components:
                   `#@ persist` on a shape Malloy does not plan);
                   `preaggregate-not-a-measure`, `preaggregate-unknown-grain`
                   and `preaggregate-not-mergeable`;
-                  `materialization-table-collision` (two sources an author's
-                  names, or same-named sources, put on one table; under
+                  `materialization-table-collision` (two sources whose
+                  `name=` puts them on one table; under
                   `PERSIST_COLLISION_ENFORCE=false` a refusal instead); and
                   `materialization-near-miss` (a misspelled materialization
                   route or directive, such as `#(materialise)` or

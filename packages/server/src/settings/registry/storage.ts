@@ -157,7 +157,7 @@ export const storage = [
       default: true,
       description:
          "Fail the publish and the load where two persist sources resolve to the same table.",
-      notes: "On by default: a package in which two different persist sources resolve to the same table in the same destination (an author's `name=`, or two same-named sources) fails to publish and to load (`materialization-table-collision`), on every load path, as does a build of such a package, before anything is written. Give each source a distinct `name=` to fix it. Set to `false` to opt out, which relaxes both the publish and the load: the colliding sources are refused alone (`persist-not-built`, `materialize-not-built`), are never built over or served from the shared table, and answer live until each has its own `name=`, while the package loads.",
+      notes: "On by default: a package in which two different persist sources resolve to the same table in the same destination (an author's `name=`; a source without one takes a readable name of its own) fails to publish and to load (`materialization-table-collision`), on every load path, as does a build of such a package, before anything is written. Give each source a distinct `name=` to fix it. Set to `false` to opt out, which relaxes both the publish and the load: the colliding sources are refused alone (`persist-not-built`, `materialize-not-built`), are never built over or served from the shared table, and answer live until each has its own `name=`, while the package loads.",
       aliases: { env: ["PERSIST_COLLISION_ENFORCE"] },
    }),
    setting({

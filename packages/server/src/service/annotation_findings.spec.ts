@@ -425,19 +425,49 @@ describe("an invalid #(materialize) fails the load", () => {
    );
 
    it(
-      "under scope: version, a defaulted name and an equal name= write one table: the load fails; unversioned they are two",
+      "a defaulted name never meets another source's table: readable names, whatever the scope; two equal name=s do, unversioned",
       async () => {
          await withMaterialize(
             async () => {
-               const model = `${RAW}#(materialize) storage="lake"
+               const reload = async (
+                  model: string,
+                  manifest: Record<string, unknown> = {},
+               ) => {
+                  await fs.rm(path.join(envPath, "pkg"), {
+                     recursive: true,
+                     force: true,
+                  });
+                  return loadPackage(model, manifest);
+               };
+               const defaultedAndNamed = `${RAW}#(materialize) storage="lake"
 source: daily is raw extend { where: amount > 0 }
 
 #(materialize) name="daily" storage="lake"
 source: other is raw extend { where: amount < 0 }
 `;
-               const message = await loadError(model, {
+               for (const manifest of [
+                  {},
+                  { materialization: { scope: "version" } },
+               ]) {
+                  const pkg = await reload(defaultedAndNamed, manifest);
+                  expect(coded(pkg, "materialize-not-built")).toEqual([]);
+               }
+               // Under scope: version a name= only starts a readable name, so
+               // two equal name=s are two tables as well.
+               const twoNamed = `${RAW}#(materialize) name="t" storage="lake"
+source: daily is raw extend { where: amount > 0 }
+
+#(materialize) name="t" storage="lake"
+source: other is raw extend { where: amount < 0 }
+`;
+               await reload(twoNamed, {
                   materialization: { scope: "version" },
                });
+               await fs.rm(path.join(envPath, "pkg"), {
+                  recursive: true,
+                  force: true,
+               });
+               const message = await loadError(twoNamed);
                expect(
                   message
                      .split("\n")
@@ -445,13 +475,6 @@ source: other is raw extend { where: amount < 0 }
                         l.includes("[materialization-table-collision]"),
                      ),
                ).toHaveLength(2);
-               // Unversioned, the defaulted one takes the package's suffix.
-               await fs.rm(path.join(envPath, "pkg"), {
-                  recursive: true,
-                  force: true,
-               });
-               const pkg = await loadPackage(model);
-               expect(coded(pkg, "materialize-not-built")).toEqual([]);
             },
             { PERSIST_STORAGE_MODE: "on" },
          );
