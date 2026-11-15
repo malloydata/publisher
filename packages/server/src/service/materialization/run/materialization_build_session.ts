@@ -1,15 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
+   type Runtime,
    type PersistSource,
    MalloyError,
 } from "@malloydata/malloy";
 import { leaveOutDefinitionAt } from "../text/declarations_kept";
+import { inMemoryRuntime } from "../text/generated_files";
 import {
    existsSync,
    mkdirSync,
@@ -1186,10 +1187,7 @@ export async function planChainedDownstream(params: {
    // reads then fails in the downstream's own text, which is never left out.
    let model;
    for (let pass = 0; ; pass++) {
-      runtime = new Runtime({
-         urlReader: new InMemoryURLReader(files),
-         connections: params.connections,
-      });
+      runtime = inMemoryRuntime(files, params.connections);
       try {
          model = await runtime
             .loadModel(new URL(build.entry), {
@@ -1260,7 +1258,7 @@ export async function planChainedDownstream(params: {
    // downstream's own definition. Marked eligible, so the caller recomputes
    // from raw, where author SQL runs in the source warehouse (or a
    // same-catalog source is refused).
-   if (carriesAuthorSql(downstream._sourceDef)) {
+   if (carriesAuthorSql(sourceDefOf(downstream))) {
       throw new MaterializationEligibilityError({
          message:
             `Chained source '${downstreamName}' carries SQL its author wrote ` +

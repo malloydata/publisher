@@ -91,7 +91,7 @@ import {
    type EligibilityRefusalReason,
 } from "../materialization_metrics";
 import { logger } from "../logger";
-import { type SynthesizedRuntimeFactory } from "../service/materialization/plan/preaggregation_compile";
+import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";

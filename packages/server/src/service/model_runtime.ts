@@ -18,7 +18,7 @@ import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
-import type { SerializedNotebookCell } from "../package_load/protocol";
+import type { SerializedNotebookCell } from "../package_load/notebook_cell_wire";
 import { safeJoinUnderRoot } from "../path_safety";
 import { BuildManifest } from "./materialization/domain/types";
 import { URL_READER } from "../utils";

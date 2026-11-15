@@ -10,10 +10,10 @@
  * against the author's edits.
  */
 
+import { modelDefIfAny, modelDefOf } from "../../governance/ir/compiled_model";
 import {
    FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
+   type Runtime,
    type Connection,
    type Model as MalloyModel,
    type ModelMaterializer,
@@ -21,12 +21,11 @@ import {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
+import type { Omission } from "../domain/omitted_sources";
 import {
-   omittedByID,
-   omittedFromFile,
-   type Omission,
-} from "../domain/omitted_sources";
-import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
+   keyCheckCompilerKey,
+   type KeyCheckCompiler,
+} from "../domain/key_check";
 import {
    buildCopyDeclarationAt,
    buildCopyName,
@@ -50,7 +49,12 @@ import {
    type StoredColumnType,
 } from "./build_file_generator";
 import type { TermUse } from "./persist_dynamic_terms";
-import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import {
+   compileInMemory,
+   companionOmissions,
+   GeneratedFiles,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
 import { leftOutWindowTerms } from "./rolling_window";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import {
@@ -80,6 +84,12 @@ interface GeneratedMaterialize {
     * table and is no build of its own.
     */
    generatedURLs: ReadonlySet<string>;
+   /**
+    * Each uniqueness check's compiler over a run's manifest, by
+    * {@link keyCheckCompilerKey}: compiled through the companion, which only
+    * this process holds.
+    */
+   checkCompilers: ReadonlyMap<string, KeyCheckCompiler>;
 }
 
 /** Where the generated companion for `modelPath` lives, as an absolute URL. */
@@ -163,15 +173,10 @@ export async function tryCompileMaterializeCompanion(args: {
       // connections left out) or a worker's file map, not necessarily the
       // file on disk, and the compiled locations the terms are found by are
       // positions in that text. Read once.
+      const files = GeneratedFiles.over(args.getRuntime);
       let modelText: Promise<string> | undefined;
       const readModelText = () =>
-         (modelText ??= (async () => {
-            const { runtime } = await args.getRuntime(new Map());
-            const read = await runtime.urlReader.readURL(
-               pathToFileURL(modelFile),
-            );
-            return typeof read === "string" ? read : read.contents;
-         })());
+         (modelText ??= files.read(pathToFileURL(modelFile)));
       // A build copy compiled on its own, beside the author's model, so its
       // imports resolve as the author's do; never run. P3 reads which hidden
       // fields the copy lets the build select off it.
@@ -179,14 +184,12 @@ export async function tryCompileMaterializeCompanion(args: {
          const url = pathToFileURL(
             path.join(path.dirname(modelFile), fileName),
          );
-         const { runtime, importBaseURL } = await args.getRuntime(
+         const { model } = await files.compile(
+            url,
             new Map([[url.href, text]]),
          );
-         const model = await runtime
-            .loadModel(url, { importBaseURL })
-            .getModel();
          return {
-            contents: model._modelDef.contents as Record<string, unknown>,
+            contents: modelDefOf(model).contents as Record<string, unknown>,
             url: url.href,
          };
       };
@@ -314,18 +317,16 @@ export async function tryCompileMaterializeCompanion(args: {
       );
       return {
          refused,
-         omitted: plannedIDs
-            ? omittedByID(
-                 plannedIDs.filter(
-                    (id) => !refused.some((r) => r.sourceID === id),
-                 ),
-                 "materialize_companion_failed",
-              )
-            : omittedFromFile(
-                 pathToFileURL(modelFile).href,
-                 undefined,
-                 "materialize_companion_failed",
-              ),
+         omitted: companionOmissions(
+            "materialize",
+            plannedIDs
+               ? {
+                    sourceIDs: plannedIDs.filter(
+                       (id) => !refused.some((r) => r.sourceID === id),
+                    ),
+                 }
+               : { file: pathToFileURL(modelFile).href, names: undefined },
+         ),
       };
    }
 }
@@ -341,11 +342,11 @@ export async function tryCompileMaterializeCompanion(args: {
 function withStoredColumns(
    generated: GeneratedMaterialize,
 ): GeneratedMaterialize {
-   const contents = (
+   const contents = modelDefIfAny(
       generated.model as unknown as {
          _modelDef?: { contents?: Record<string, unknown> };
-      }
-   )._modelDef?.contents;
+      },
+   )?.contents;
    return {
       ...generated,
       plans: generated.plans.map((plan) => {
@@ -469,8 +470,9 @@ async function compileCompanion(
    for (const [name, level] of files.levels) {
       overlay.set(pathToFileURL(path.join(dir, name)).href, level);
    }
-   const { runtime, importBaseURL } = await args.getRuntime(overlay);
-   const materializer = runtime.loadModel(url, { importBaseURL });
+   const { runtime, materializer } = await GeneratedFiles.over(
+      args.getRuntime,
+   ).load(url, overlay);
    const copyOwners = new Map(
       [...used].map(
          ([sourceID, c]) =>
@@ -480,6 +482,7 @@ async function compileCompanion(
    const model = await materializer.getModel().catch((error: unknown) => {
       throw new CompanionCompileError(error, overlay, copyOwners);
    });
+   const checkCompilers = new Map<string, KeyCheckCompiler>();
    // The P8 checks' SQL, compiled now (never run here) so a build runs it
    // against the joined source's connection before it writes anything.
    // Each check can also be compiled again over a run's manifest, so a run
@@ -498,8 +501,8 @@ async function compileCompanion(
                   plan.sourceID,
                );
             });
-         registerUniquenessCheckCompiler(
-            check,
+         checkCompilers.set(
+            keyCheckCompilerKey(plan.sourceID, check.queryName),
             (buildManifest, connectionDigests) =>
                materializer
                   .loadQueryByName(check.queryName)
@@ -514,6 +517,7 @@ async function compileCompanion(
       runtime,
       text,
       generatedURLs: new Set(overlay.keys()),
+      checkCompilers,
       ...(used.size > 0
          ? {
               buildCopies: new Map(
@@ -552,27 +556,25 @@ async function storedChainsNotCompiling(
          );
          const handle = "stand_in";
          const url = "file:///materialize-stored-chain/m.malloy";
-         const runtime = new Runtime({
-            urlReader: new InMemoryURLReader(
-               new Map([
-                  [
-                     url,
-                     extensionOverStoredModel({
-                        plan,
-                        chain,
-                        connectionName: destination,
-                        virtualHandle: handle,
-                        columns,
-                     }),
-                  ],
-               ]),
-            ),
-            connections: new FixedConnectionMap(
+         const { runtime, model } = await compileInMemory(
+            new Map([
+               [
+                  url,
+                  extensionOverStoredModel({
+                     plan,
+                     chain,
+                     connectionName: destination,
+                     virtualHandle: handle,
+                     columns,
+                  }),
+               ],
+            ]),
+            url,
+            new FixedConnectionMap(
                new Map([[destination, destinationStandIn(destination)]]),
                destination,
             ),
-         });
-         const model = await runtime.loadModel(new URL(url)).getModel();
+         );
          const targets = await runtime.getBuildTargets(model, {
             virtualMap: new Map([[destination, new Map([[handle, "t"]])]]),
          });

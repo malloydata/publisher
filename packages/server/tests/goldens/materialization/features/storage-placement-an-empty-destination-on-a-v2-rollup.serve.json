@@ -1,0 +1,15 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [],
+    "verdicts": [],
+    "warnings": [
+      {
+        "code": "preaggregate-malformed",
+        "message": "#(preaggregate) on measure \"r_empty\" of source \"rollups\" has a storage= that is not a destination name",
+        "subject": "rollups.r_empty"
+      }
+    ]
+  },
+  "queries": []
+}

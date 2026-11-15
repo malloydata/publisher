@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import {
    getMaterializeEnabled,
@@ -11,6 +12,7 @@ import { recordEligibilityRefused } from "../../../materialization_metrics";
 import type { AnnotationNote } from "../../annotations";
 import { parseAuthorizeAnnotation } from "../../authorize";
 import {
+   declaresEmptyStorage,
    deriveAnnotationFields,
    deriveColumns,
    type PersistSourceGateOutcome,
@@ -22,6 +24,7 @@ import {
    type DynamicTerm,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
+import { EMPTY_STORAGE_REASON } from "./declaration";
 import { resolvePartitionColumns } from "./persist_partition";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 
@@ -458,7 +461,7 @@ export function assertColocatedPersistNotAuthorizeGated(
  * eligibility spec pins that shape.
  */
 function unboundParameterNames(persistSource: PersistSource): string[] {
-   const def = persistSource._sourceDef as unknown;
+   const def = sourceDefOf(persistSource) as unknown;
    if (def === null || typeof def !== "object") {
       throw new Error("compiled source definition is not readable");
    }
@@ -501,7 +504,7 @@ const MAX_AUTHORIZE_WALK_DEPTH = 200;
  */
 function referencesAuthorize(persistSource: PersistSource): boolean {
    try {
-      return walkForAuthorize(persistSource._sourceDef, new WeakSet(), 0);
+      return walkForAuthorize(sourceDefOf(persistSource), new WeakSet(), 0);
    } catch {
       return true;
    }
@@ -586,7 +589,7 @@ export function isAuthorizeAttributedToEntryPoint(persistSource: {
    try {
       const deep = new Set<AnnotationNote>();
       walkForAuthorizeNotes(
-         persistSource._sourceDef,
+         sourceDefOf(persistSource),
          new WeakSet(),
          0,
          deep,
@@ -594,7 +597,7 @@ export function isAuthorizeAttributedToEntryPoint(persistSource: {
       );
       const noJoins = new Set<AnnotationNote>();
       walkForAuthorizeNotes(
-         persistSource._sourceDef,
+         sourceDefOf(persistSource),
          new WeakSet(),
          0,
          noJoins,
@@ -762,6 +765,30 @@ export function assertRollupNameUnshared(
    throw new MaterializationEligibilityError({
       reason: "rollup_name_collision",
       message,
+   });
+}
+
+/**
+ * Refuse a `#@ persist` source whose `storage=` names no destination
+ * (declaration.ts): a destination left blank names no place to build, so it is
+ * refused, never built in the source's own warehouse instead.
+ *
+ * Not part of {@link assertTierEligible}, on purpose. That gate is also read
+ * for every OTHER source on a colocated table's address (the plan's, the
+ * build's and the bind's sibling rule), so that a gated source's rows are
+ * never served past its gate through a table it shares. A blank `storage=` is
+ * one source's own mistake, not a gate: it refuses that source alone, and a
+ * sibling with the same SQL still builds and serves. Called beside
+ * assertTierEligible wherever a source is gated for its own build.
+ *
+ * @throws {MaterializationEligibilityError} when the source is refused.
+ */
+export function assertPlacementNamed(source: PersistSource): void {
+   if (!declaresEmptyStorage(source)) return;
+   recordEligibilityRefused("empty_storage");
+   throw new MaterializationEligibilityError({
+      reason: "empty_storage",
+      message: `'${source.name}' cannot be materialized: ${EMPTY_STORAGE_REASON}.`,
    });
 }
 

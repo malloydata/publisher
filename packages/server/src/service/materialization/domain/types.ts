@@ -149,28 +149,5 @@ export interface KeyUniqueness {
    parentKeys?: Record<string, boolean>;
 }
 
-/**
- * A wire entry's captured `schema` as a bound entry carries it: only columns
- * with both a name and a type, and undefined when none is left.
- */
-export function boundSchemaOf(
-   schema: readonly { name?: string; type?: string }[] | undefined,
-): { schema: { name: string; type: string }[] } | Record<string, never> {
-   const columns = (schema ?? []).flatMap((c) =>
-      typeof c.name === "string" && typeof c.type === "string"
-         ? [{ name: c.name, type: c.type }]
-         : [],
-   );
-   return columns.length > 0 ? { schema: columns } : {};
-}
-
-/** {@link boundSchemaOf} for a wire entry's `nativeSchema`. */
-export function boundNativeSchemaOf(
-   schema: readonly { name?: string; type?: string }[] | undefined,
-): { nativeSchema: { name: string; type: string }[] } | Record<string, never> {
-   const bound = boundSchemaOf(schema);
-   return "schema" in bound ? { nativeSchema: bound.schema } : {};
-}
-
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */
 export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;

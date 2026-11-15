@@ -21,7 +21,10 @@
 import * as path from "path";
 import { pathToFileURL } from "url";
 import type { Model as MalloyModel, Runtime } from "@malloydata/malloy";
-import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import {
+   GeneratedFiles,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
 
 /** The flag line the build copy opens with. */
 export const PERSISTENCE_FLAG_LINE = "##! experimental.persistence";
@@ -69,21 +72,20 @@ export async function compileV1BuildCompanion(args: {
 }): Promise<{ model: MalloyModel; runtime: Runtime } | undefined> {
    const file = path.resolve(args.packagePath, args.modelPath);
    const url = pathToFileURL(file);
+   const files = GeneratedFiles.over(args.getRuntime);
    let text: string;
    try {
-      const { runtime } = await args.getRuntime(new Map());
-      const read = await runtime.urlReader.readURL(url);
-      text = typeof read === "string" ? read : read.contents;
+      text = await files.read(url);
    } catch (error) {
       args.onCompileFailed?.(error);
       return undefined;
    }
    if (!declaresV1Persist(text)) return undefined;
    try {
-      const { runtime, importBaseURL } = await args.getRuntime(
+      const { model, runtime } = await files.compile(
+         url,
          new Map([[url.href, v1BuildCompanionText(text)]]),
       );
-      const model = await runtime.loadModel(url, { importBaseURL }).getModel();
       return { model, runtime };
    } catch (error) {
       args.onCompileFailed?.(error);

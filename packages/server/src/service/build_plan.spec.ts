@@ -228,6 +228,15 @@ describe("deriveAnnotationFields", () => {
                      yield ["name", { text: () => "engaged_events" }];
                      yield ["realization", { text: () => "COPY" }];
                   },
+                  text: (...path: string[]) =>
+                     path.length === 1 && path[0] === "name"
+                        ? "engaged_events"
+                        : path.length === 1 && path[0] === "realization"
+                          ? "COPY"
+                          : undefined,
+                  has: (...path: string[]) =>
+                     path.length === 1 &&
+                     (path[0] === "name" || path[0] === "realization"),
                },
             }),
          },

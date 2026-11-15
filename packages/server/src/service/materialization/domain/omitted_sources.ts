@@ -17,8 +17,8 @@
 
 import { components } from "../../../api";
 
-export type OmittedSource = components["schemas"]["OmittedSource"];
-export type OmittedFile = components["schemas"]["OmittedFile"];
+type OmittedSource = components["schemas"]["OmittedSource"];
+type OmittedFile = components["schemas"]["OmittedFile"];
 
 /**
  * One omission as planning records it: a source by its sourceID, or, when the

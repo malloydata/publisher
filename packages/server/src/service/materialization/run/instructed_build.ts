@@ -1,14 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { keyCheckCompilerKey } from "../domain/key_check";
+import { storedKeyCheckSql } from "../text/key_check_text";
 import {
    assertInlinedJoinsUnique,
    pairLeafKeyChecksOf,
    checkDigest,
    runRollupKeyCheck,
-   storedKeyCheckSql,
    tableIdentityKey,
-   uniquenessCheckCompiler,
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
@@ -52,6 +52,7 @@ import {
 } from "../plan/build_plan";
 import {
    assertMaterializationEligible,
+   assertPlacementNamed,
    assertTierEligible,
 } from "../plan/materialization_eligibility";
 import {
@@ -1060,6 +1061,8 @@ export class InstructedBuild {
          // off) takes the colocated gate however it was instructed, unless
          // auto-run already cleared the source through one of the two gates.
          // Never both: the storage gate already runs the same IR walk.
+         // Its own placement, never a sibling's (assertPlacementNamed).
+         assertPlacementNamed(persistSource);
          if (storage || !run.clearedTiers?.has(persistSource.sourceID)) {
             assertTierEligible(
                persistSource,
@@ -1405,8 +1408,10 @@ async function storedJoinOf(
    check: InlineUniquenessCheck,
 ): Promise<StoredJoin | undefined> {
    try {
-      const compile = uniquenessCheckCompiler(check);
       const { compiled } = run;
+      const compile = compiled.keyCheckCompilers?.get(
+         keyCheckCompilerKey(parent.sourceID, check.queryName),
+      );
       const joined = compiled.sources[check.joinedSourceID];
       if (!compile || !joined || !check.sql) return undefined;
       if (run.incremental?.declarations[check.joinedSourceID]) return undefined;

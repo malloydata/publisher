@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
@@ -16,7 +17,6 @@ import {
    declaredColumnsOf,
    persistSourceDeclaredColumns,
    isCastConversionError,
-   queryTimezoneOf,
    keepsWarehouseType,
    rebuildWouldRecast,
    serveTypePlan,

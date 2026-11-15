@@ -17,6 +17,7 @@
  * rewriter is checked against the same scenarios when it lands (phase 3).
  */
 
+import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect } from "bun:test";
 import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -37,7 +38,6 @@ import { SourceMap } from "../../../src/service/materialization/text/source_map"
 import {
    pairLeafKeyChecksOf,
    runRollupKeyCheck,
-   storedKeyCheckSql,
 } from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";

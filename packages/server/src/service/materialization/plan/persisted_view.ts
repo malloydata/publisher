@@ -49,7 +49,6 @@
  * through `malloy_text`; the author's own `#@` line is copied verbatim.
  */
 
-import { Annotations } from "@malloydata/malloy";
 import { type AnnotationNote, type AnnotationsDef } from "../../annotations";
 import {
    byCodepoint,
@@ -62,7 +61,12 @@ import {
    type SourceScope,
 } from "../../governance/ir/declared_notes";
 import { doubleQuotedString, identifier } from "../../malloy_text";
-import { hasEnvReference, parseRouteTag } from "../../motly";
+import { hasEnvReference } from "../../motly";
+import {
+   EMPTY_STORAGE_REASON,
+   placementOf,
+   readNotesIfAny,
+} from "./declaration";
 import { SourceMap, type SourceNode } from "../text/source_map";
 
 /** Appended to a declaring file's URL to name its persisted-view companion. */
@@ -155,57 +159,6 @@ function persistNotesOf(
    );
 }
 
-/** Whether `#@` notes declare `persist` (not `-persist`), read as Malloy reads them. */
-function declaresPersist(notes: readonly AnnotationNote[]): boolean {
-   try {
-      const { tag } = parseRouteTag(
-         new Annotations({ notes } as ConstructorParameters<
-            typeof Annotations
-         >[0]),
-         "@",
-      );
-      return tag.has("persist");
-   } catch {
-      return false;
-   }
-}
-
-/** The incremental keys the notes set, for the refusal. */
-function incrementalKeys(notes: readonly AnnotationNote[]): string[] {
-   try {
-      const { tag } = parseRouteTag(
-         new Annotations({ notes } as ConstructorParameters<
-            typeof Annotations
-         >[0]),
-         "@",
-      );
-      return INCREMENTAL_KEYS.filter(
-         (k) => tag.has("persist", k) || tag.has(k),
-      );
-   } catch {
-      return [];
-   }
-}
-
-/** The `storage=` the notes set, or undefined. */
-function storageOf(notes: readonly AnnotationNote[]): string | undefined {
-   try {
-      const { tag } = parseRouteTag(
-         new Annotations({ notes } as ConstructorParameters<
-            typeof Annotations
-         >[0]),
-         "@",
-      );
-      // `#@ persist storage="d"` reads `storage` beside `persist`.
-      const value = tag.text("persist", "storage") ?? tag.text("storage");
-      return typeof value === "string" && value.trim() !== ""
-         ? value.trim()
-         : undefined;
-   } catch {
-      return undefined;
-   }
-}
-
 /**
  * The persisted views one source declares itself. `scope` holds every source
  * of the compiled model (see {@link declaredFieldNotes}), which tells a view
@@ -241,8 +194,12 @@ function planSourcePersistedViews(
          refuse("its `#@` line reads `@env.`, which a persist line may not");
          continue;
       }
-      if (!declaresPersist(notes)) continue;
-      const incremental = incrementalKeys(notes);
+      // Read as Malloy reads them: `persist`, not `-persist`.
+      const tag = readNotesIfAny(notes, "@");
+      if (!tag?.has("persist")) continue;
+      const incremental = INCREMENTAL_KEYS.filter(
+         (k) => tag.has("persist", k) || tag.has(k),
+      );
       if (incremental.length > 0) {
          refuse(
             `a view's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
@@ -253,8 +210,16 @@ function planSourcePersistedViews(
          refuse("its `#@` line spans more than one line");
          continue;
       }
+      const placed = placementOf(tag, "persist");
+      if ("refused" in placed) {
+         refuse(EMPTY_STORAGE_REASON);
+         continue;
+      }
+      const storage =
+         placed.placement.tier === "storage"
+            ? placed.placement.destination
+            : undefined;
       const buildSourceName = persistedViewBuildName(declared.name, viewName);
-      const storage = storageOf(notes);
       plans.push({
          sourceID: node.sourceID,
          sourceName: declared.name,
