@@ -64,7 +64,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: null,
          message:
-            "This model's served copy does not compile, so its stored sources serve through the serve shape or live.",
+            "This model's served copy does not compile, so its stored sources answer live.",
       },
    ],
    cross_connection_unbuilt: [
@@ -80,7 +80,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.",
+            "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live.",
       },
    ],
    no_declaration: [
@@ -88,7 +88,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.",
+            "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.",
       },
    ],
    range_not_found: [
@@ -96,7 +96,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.",
+            "This source's declaration could not be re-rooted on its table, so the served copy leaves it as written and it answers live.",
       },
    ],
    definition_not_parsed: [
@@ -104,7 +104,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.",
+            "This source's declaration could not be re-rooted on its table, so the served copy leaves it as written and it answers live.",
       },
    ],
    pair_join_not_found: [

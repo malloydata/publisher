@@ -2488,13 +2488,13 @@ function servedCopyProblemMessage(
    const { reason, join } = problem;
    switch (reason) {
       case "compile_failed":
-         return "This model's served copy does not compile, so its stored sources serve through the serve shape or live.";
+         return "This model's served copy does not compile, so its stored sources answer live.";
       case "cross_connection_unbuilt":
          return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
-         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.";
+         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live.";
       case "no_declaration":
-         return "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.";
+         return "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.";
       case "range_not_found":
       case "definition_not_parsed":
          if (problem.hiddenUnstored?.length) {
@@ -2506,7 +2506,7 @@ function servedCopyProblemMessage(
                "To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`."
             );
          }
-         return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
+         return "This source's declaration could not be re-rooted on its table, so the served copy leaves it as written and it answers live.";
       case "pair_join_not_found":
          return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
       case "pair_not_compiled":

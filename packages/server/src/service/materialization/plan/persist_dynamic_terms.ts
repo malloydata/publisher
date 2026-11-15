@@ -564,7 +564,7 @@ function joinedSourceRefusal(
    if (typeof sourceID !== "string" || sourceID.length === 0) {
       return refuse(
          `and is joined through a refinement (\`… extend { … }\`) rather than ` +
-            `by name, so the serve shape cannot bind the join to that source's ` +
+            `by name, so the served copy cannot bind the join to that source's ` +
             `stored table. Declare the refinement on a named source and join ` +
             `that`,
       );

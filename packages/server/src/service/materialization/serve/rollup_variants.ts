@@ -1495,7 +1495,7 @@ export class RollupVariantServe {
       // (answerJoinInDestination).
       if (use.kind === "join" && table.binding && !use.destination) {
          return {
-            error: "a join leg reads a storage rollup over the served copy only",
+            error: "a join branch reads a storage rollup over the served copy only",
          };
       }
       const packagePath = this.packagePath;
