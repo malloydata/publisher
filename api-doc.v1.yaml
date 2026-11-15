@@ -4838,11 +4838,10 @@ components:
                   type: string
                   enum:
                     - INDEX_COOLDOWN
-                    - TOO_MANY_ENTITIES
                     - PROVIDER_ERROR
-                  description: "`INDEX_COOLDOWN`: the embedding provider is rate-limiting; retry at `retryAt`. `TOO_MANY_ENTITIES`: the
-                    version exceeds `retrieval.indexing.maxEntities`; retrying will not help. `PROVIDER_ERROR`: the
-                    provider failed."
+                  description: "`INDEX_COOLDOWN`: the embedding provider is rate-limiting; retry at `retryAt`. `PROVIDER_ERROR`: the
+                    provider failed. (The index has no entity cap: `retrieval.indexing.maxEntities` no longer does
+                    anything, so there is no reason for exceeding one.)"
                 retryAt:
                   type: string
                   format: date-time
@@ -5109,7 +5108,7 @@ components:
         op:
           type: string
           enum:
-            - =
+            - "="
             - in
           description: "How `fieldPath` is compared with the given: `=` or `in`."
         givenName:
@@ -5289,8 +5288,9 @@ components:
             `InvalidTransitionDetails`. `TABLE_OWNED_ELSEWHERE`: `TableOwnedElsewhereDetails`. `INVALID_REQUEST`:
             `InvalidRequestDetails`, when one field is at fault. `RESULT_TOO_LARGE`: `ResultTooLargeDetails`.
             `CONTENT_CHANGED`: `ContentChangedDetails`. `VERSION_LOAD_FAILED`: `VersionLoadFailedDetails`. Pick the
-            shape by `reason`."
-          oneOf:
+            shape by `reason`; the shapes are not mutually exclusive (`COMPILE_ERROR` and `VERSION_LOAD_FAILED` share
+            one), so the union is `anyOf`."
+          anyOf:
             - $ref: "#/components/schemas/CompileErrorDetails"
             - $ref: "#/components/schemas/RevisionMismatchDetails"
             - $ref: "#/components/schemas/InvalidTransitionDetails"
@@ -6721,6 +6721,7 @@ components:
             type: object
             additionalProperties: true
         metadata:
+          title: QueryResultMetadataWithVersion
           allOf:
             - $ref: "#/components/schemas/QueryResultMetadata"
             - type: object
