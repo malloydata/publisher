@@ -322,13 +322,16 @@ export function deriveColocatedServeBindings(args: {
    return bindings;
 }
 
+/** A captured zoned timestamp's spelling (`storedColumnsOfOutput`). */
+const ZONED_TIMESTAMP = /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i;
+
 /**
  * A colocated `#(materialize)` table's columns: the plan's, typed as Malloy
  * declares them (a truncation's `DATE`, which the warehouse may hold as a
- * timestamp), and each column the build captured that the plan cannot spell
- * (a zoned timestamp), as it captured it, as a `storage=` table's binding
- * reads every column its build wrote. With no capture (a table built before
- * it), the plan's alone.
+ * timestamp), and each zoned timestamp the build captured, which the plan
+ * cannot spell, as it captured it, as a `storage=` binding declares one. No
+ * other captured column is added: one the plan leaves out has no faithful
+ * declaration. With no capture (a table built before it), the plan's alone.
  */
 function plannedWithCaptured(
    planned: StoredColumn[] | undefined,
@@ -336,7 +339,12 @@ function plannedWithCaptured(
 ): StoredColumn[] | undefined {
    if (!planned?.length) return planned;
    const named = new Set(planned.map((c) => c.name));
-   return [...planned, ...(captured ?? []).filter((c) => !named.has(c.name))];
+   return [
+      ...planned,
+      ...(captured ?? []).filter(
+         (c) => !named.has(c.name) && ZONED_TIMESTAMP.test(c.type.trim()),
+      ),
+   ];
 }
 
 /**
