@@ -39,14 +39,12 @@ import {
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import type { DataStyles } from "@malloydata/render";
 import { lazyCounter, lazyHistogram } from "../telemetry";
-import { recordStorageServeRouting } from "../materialization_metrics";
 import { recordVariantRouting, routeQuery } from "./query_router";
 import {
    answerOf,
    queryPathFor,
    type QueryServingHost,
    recordingManifest,
-   recordRoutingDecision,
    variantsOf,
 } from "./query_serving";
 import type { components } from "../api";
@@ -653,7 +651,6 @@ export class ModelServing {
          },
          { recordMetrics: false },
       );
-      recordRoutingDecision(route);
       return answerOf(route);
    }
 
@@ -921,7 +918,6 @@ export class ModelServing {
                error: error instanceof Error ? error.message : String(error),
             },
          );
-         recordStorageServeRouting("runtime_live_fallback");
          // From here the query is the live retry: a retry failure's error
          // metric reads `live_fallback`, not a storage error the tier never
          // answered.

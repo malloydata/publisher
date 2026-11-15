@@ -15,7 +15,10 @@ import {
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
 import { withSpan } from "../telemetry";
-import { recordStoredColumnTypeMismatch } from "../materialization_metrics";
+import {
+   recordSourceDeclined,
+   recordStoredColumnTypeMismatch,
+} from "../materialization_metrics";
 import type { QueryServingHost } from "./query_serving";
 import { makeLegs } from "./materialization/serve/leg";
 import {
@@ -2717,6 +2720,11 @@ export class Model {
       this.storageTables(pinned.snapshot);
       if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare(pinned);
+      // Once per load or rebind: each source the copy leaves unserved, by
+      // the reason its package warning gives.
+      for (const problem of this.servedCopy.problems()) {
+         recordSourceDeclined(problem.reason);
+      }
    }
 
    /**

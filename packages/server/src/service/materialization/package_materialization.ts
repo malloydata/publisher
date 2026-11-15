@@ -26,7 +26,8 @@ import { logger } from "../../logger";
 import {
    recordBuildPlanComputeDuration,
    recordBuildPlanComputeFailed,
-   recordColocatedBindDropped,
+   recordSourceBound,
+   recordSourceDeclined,
    recordConnectionDigestSkipped,
    recordEligibilityRefused,
    type EligibilityRefusalReason,
@@ -851,8 +852,9 @@ export class PackageMaterialization {
          eligibility,
          dialects: this.dialectsByEntityId(),
       });
+      for (const _entry of Object.keys(admitted.entries)) recordSourceBound();
       for (const decline of admitted.declined) {
-         recordColocatedBindDropped(decline.reason);
+         recordSourceDeclined(decline.reason);
          logger.warn(
             "Refusing a colocated serve binding: the source is not eligible to be served from a materialized table",
             {
@@ -901,7 +903,10 @@ export class PackageMaterialization {
                viewBuildSourceIDs: this.persistedViewBuildIDs(),
             }),
       });
+      for (const _binding of admitted.bindings) recordSourceBound();
       for (const sourceName of admitted.otherDefinition) {
+         // Its own table is missing: the one there is another definition's.
+         recordSourceDeclined("missing_table");
          logger.info(
             "Serving a source live: its stored table was built from another definition",
             {
@@ -914,6 +919,7 @@ export class PackageMaterialization {
          );
       }
       for (const decline of admitted.declined) {
+         recordSourceDeclined(decline.reason);
          logger.warn(
             "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
             {

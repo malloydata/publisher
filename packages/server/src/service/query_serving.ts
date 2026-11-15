@@ -26,7 +26,6 @@ import {
    legMayPassGate,
 } from "./materialization/domain/gate_policy";
 import { logger } from "../logger";
-import { recordStorageServeRouting } from "../materialization_metrics";
 import { sourceChain } from "./materialization/text/source_map";
 import {
    type Binding,
@@ -160,34 +159,6 @@ export function answerOf(route: RouteDecision<LegAnswer>): Answer {
       runFailed: false,
       colocatedRead: new Set<string>(),
    });
-}
-
-/**
- * Record the serve-routing metric from the router's decision, once per query:
- * a storage hit (with the origin that answered), a storage miss
- * (`live_fallback`: the transform could not answer, whatever answered next),
- * or `blocked_by_row_level_gate`, a row-level gate that vetoed every applicable
- * candidate (storage, rollup, or both) before any was tried. Otherwise nothing
- * when the storage tier was not a candidate.
- */
-export function recordRoutingDecision(route: RouteDecision<LegAnswer>): void {
-   // The gate vetoes every applicable candidate at once, before any compile,
-   // so it is recorded once per query whichever tiers were candidates: the
-   // label's contract (see recordStorageServeRouting) covers both tiers.
-   // A served copy that keeps the contracts (R3) may still answer past it.
-   if (
-      route.served !== "variant" &&
-      route.considered.some((c) => c.reason === "row_level_gate")
-   ) {
-      recordStorageServeRouting("blocked_by_row_level_gate");
-      return;
-   }
-   // The served copy reads the same stored tables, so its answer counts as
-   // the tier's. Its decline counts nothing: only the retired serve shape's
-   // candidate reported a miss (`live_fallback`).
-   if (route.served === "variant" && route.kind === "served") {
-      recordStorageServeRouting("storage", "persist");
-   }
 }
 
 /**

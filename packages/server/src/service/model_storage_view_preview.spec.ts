@@ -204,10 +204,7 @@ describe("previewing a stored source's views", () => {
          expect(warn).not.toHaveBeenCalled();
          expect(info).not.toHaveBeenCalled();
          expect(
-            await harness.collectCounter(
-               "publisher_storage_bindings_withheld_total",
-               {},
-            ),
+            await harness.collectCounter("publisher_query_route_total", {}),
          ).toBe(0);
       } finally {
          warn.mockRestore();

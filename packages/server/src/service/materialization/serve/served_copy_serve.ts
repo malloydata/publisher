@@ -28,7 +28,6 @@ import {
    queryTimezoneOf,
 } from "../../governance/ir/compiled_model";
 import { readFileSync } from "fs";
-import { lazyCounter } from "../../../telemetry";
 import { fileURLToPath } from "url";
 import {
    MalloyError,
@@ -148,6 +147,7 @@ import {
 } from "../text/cross_connection_text";
 import type { LeftOutDefinition } from "../text/definition_cut";
 import { LegDecline, type ServedCopyDeclineCode } from "../domain/leg_decline";
+import type { ServedCopyProblemReason } from "../domain/source_decline";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -238,21 +238,7 @@ export interface ServedCopyProblem {
    sourceID?: string;
    /** The source, when the problem is one source's. */
    sourceName?: string;
-   reason:
-      | "compile_failed"
-      | "cross_connection_unbuilt"
-      | "column_types"
-      | "no_declaration"
-      | "range_not_found"
-      | "definition_not_parsed"
-      | "pair_join_not_found"
-      | "pair_not_compiled"
-      | "fields_not_carried"
-      | "read_terms_not_kept"
-      | "cross_connection_join"
-      | "inline_join_kept"
-      | "reroot_not_compiled"
-      | "classification_not_kept";
+   reason: ServedCopyProblemReason;
    /**
     * For `cross_connection_join`: the join the served copy leaves out, because
     * it reads a source on another connection than the destination its source
@@ -274,11 +260,6 @@ export interface ServedCopyProblem {
 }
 
 /** What the served copy reads from the model that owns it. */
-const staleBindingsWithheld = lazyCounter(
-   "publisher_storage_bindings_withheld_total",
-   "Storage serve bindings withheld from a routed query because the freshness gate found them stale; each one is read live instead. Until now staleness was visible only as a later live read.",
-);
-
 interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
@@ -739,14 +720,6 @@ export class ServedCopyServe {
        */
       graftScope: GraftScope;
    }> {
-      // A stored table past its freshness window is left out of the copy and
-      // read live: counted per query, since a query succeeds either way and
-      // this is how an operator sees the tier degrade.
-      const usable = pinned.snapshot.bindings.filter((b) => this.usable(b));
-      const withheld = usable.length - this.freshBindings(pinned).length;
-      if (withheld > 0 && !this.host.quiet) {
-         staleBindingsWithheld().add(withheld);
-      }
       return this.answer(
          await this.ensureCompiled(pinned),
          queryString,

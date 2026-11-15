@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — routing and bind metrics: one route counter, one bind counter
+
+The serving metrics are renamed and folded so each counts one thing, in the vocabulary the path report already uses. Every label is a closed set, and none names a package, source, table or connection. What changes for a dashboard or alert:
+
+- **`publisher_query_variant_routing_total{variant, outcome, reason}` is now `publisher_query_route_total{leg, outcome, reason}`.** `leg` is `view`, `rollup`, `served` or `live`. `outcome` is `used`, `skipped`, or `fallback`: a leg that answered and whose stored run then failed, so live answered (was `skipped` with `run_failed`). `reason` is `NONE` when used, `RUN_FAILED` with `fallback`, and otherwise the public `SkipReason` the query's path report gives: `row_level_gate` is now `CONTRACT`, and `does_not_answer` is the decline's own reason (`MISSING_FIELD` when it gives none). A leg that does not apply to the query (`not_applicable`) is no longer counted. `live` is counted `used` when it answered a query the router counted a leg for.
+- **`publisher_storage_serve_routing_total` is removed.** Its outcomes are on the route counter: `storage` is `leg="served", outcome="used"`; `runtime_live_fallback` is `outcome="fallback"`; `blocked_by_row_level_gate` is `outcome="skipped", reason="CONTRACT"`, now counted per leg rather than once per query; its `live_fallback` has no counterpart (the leg's skip says why). Its `origin` label has none either, since `leg` separates a rollup from a stored source.
+- **`publisher_storage_bindings_withheld_total` is removed.** A stale table is left out of the query's pin and read live; the path report names it.
+- **`publisher_materialization_manifest_bind_total{outcome}` and `publisher_materialization_colocated_bind_dropped_total{reason}` are now `publisher_served_copy_bind_total{scope, outcome, reason}`.** A manifest bind is `scope="manifest"` with the same `success`, `failure` and `timeout` outcomes and `reason="none"`. Each source entry a bind decides is `scope="source"`, `bound` or `declined`; a decline's `reason` keeps `build_plan_unavailable` and `refused`, adds `missing_table` (the table bound under the source's name was built from another definition), and adds the served copy's reasons, which until now only its `served-copy-not-served` package warning reported (`compile_failed`, `column_types`, `fields_not_carried`, `read_terms_not_kept`, `classification_not_kept` and the rest). `reason="build_plan_unavailable"` is still the one to alert on.
+
+No API change: `servedFrom` keeps its values, and its description now names the route counter's `fallback` as the same event as its `live_fallback`.
+
 ## [Unreleased] — (BREAKING) materialization v2 is on by default (`PUBLISHER_MATERIALIZE`)
 
 `PUBLISHER_MATERIALIZE` (`materialize.enabled`) now defaults to `true`. Materialization v2 used to need it set explicitly; a server that never set it now runs v2. With it on, Publisher reads `#(materialize)` on a source and `#(preaggregate)` on a measure, plans each in the package's build plan under the author's source name, builds them, and serves them: a `#(materialize)` table through the served copy (the author's own files, with the source re-rooted on its stored table), a `#(preaggregate)` rollup through the rollup leg, including a query that reads its measures through a join, and `#@ persist` on a view through the persisted-view leg, which answers a query that calls that view exactly. A colocated `#(materialize)` (one with `name=`) is served with this switch alone; a `storage=` one still needs `PERSIST_STORAGE_MODE=on`, which is unchanged and off by default. `PUBLISHER_MATERIALIZE_GATED_SOURCES` is a separate setting and stays off: a query through a row-level gate is still never answered from a `storage=` table.
@@ -38,6 +49,7 @@ What an operator sees on a server that did not set the switch before:
 To opt out, set `PUBLISHER_MATERIALIZE=false`: `#(materialize)` and `#(preaggregate)` are ignored again and the build plan is what it was before. Set it the same on every worker, and treat it as one-way in an environment: once on, leave it on rather than switching it off and back on.
 
 The setting is removed one release after this one, together with its off position; from then on materialization v2 is always on. See docs/materialization.md and docs/materialization-migration.md.
+
 
 ## [Unreleased] — the materialization rewriters read Malloy as Malloy reads it
 

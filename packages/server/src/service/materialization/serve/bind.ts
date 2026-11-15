@@ -40,9 +40,10 @@ import {
    primaryKeysOf,
 } from "../domain/binding";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
+import type { BindDeclineReason as SourceBindDecline } from "../domain/source_decline";
 
 /** Why the bind declined an entry: the plan could not be computed, or it refused the source. */
-type BindDeclineReason = "build_plan_unavailable" | "refused";
+type BindDeclineReason = Exclude<SourceBindDecline, "missing_table">;
 
 /** One `storage=` binding the bind declined, for the facade's log and counter. */
 interface StorageBindDecline {

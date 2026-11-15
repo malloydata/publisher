@@ -8479,9 +8479,9 @@ components:
             to degrade to the live warehouse. **The rows are correct and the
             request succeeded**, which is why this needs its own value: it is
             indistinguishable from a storage hit at the call site, and treating it
-            as one would report a healthy hit rate for a broken store. This value
-            is NOT the same event as the `live_fallback` label on
-            `publisher_storage_serve_routing_total` — see the warning below.
+            as one would report a healthy hit rate for a broken store. On
+            `publisher_query_route_total` the same event is the answering leg's
+            `outcome="fallback", reason="RUN_FAILED"`.
 
             **This field describes the `storage=` tier and nothing else.** It
             records how the storage routing decision came out, so it says nothing
@@ -8529,18 +8529,11 @@ components:
             counts colocated entries only, so a package whose sources are all
             `storage=` reports 0 while being fully bound.
 
-            ⚠️ **`live_fallback` names two different things across two surfaces,
-            and correlating them on the token is wrong in both directions.** On
-            this field it means the store failed at run time. On
-            `publisher_storage_serve_routing_total{outcome}` it means the
-            transform was ineligible — this field's null case 3 — and that
-            metric spells the run-time failure `runtime_live_fallback`. So the
-            field's `live_fallback` is the metric's `runtime_live_fallback`, and
-            the metric's `live_fallback` is this field's `null`. A third surface,
-            `manifestBindingStatus`, uses the same token for a third thing: a
-            configured `manifestLocation` whose fetch or bind failed. Each
-            surface is internally consistent; none of them means what the others
-            do.
+            ⚠️ **`live_fallback` here is not `manifestBindingStatus`'s.** On this
+            field it means the store failed at run time; `manifestBindingStatus`
+            uses the same token for a configured `manifestLocation` whose fetch
+            or bind failed. Each surface is internally consistent; neither means
+            what the other does.
         executionTimeMs:
           type: integer
           description: >-
