@@ -2,20 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import * as path from "path";
+import { pathToFileURL } from "url";
 import { declaringFileOf } from "./declaring_file_variant";
 
 describe("declaringFileOf", () => {
    it("redeclares in the source's declaring file, beside its copy", () => {
+      // An absolute path on this platform: `file:///pkg/…` has no drive, so
+      // Windows reads it as no local file at all.
+      const file = path.resolve("/pkg/models/orders.malloy");
       const at = declaringFileOf(
-         "orders@file:///pkg/models/orders.malloy",
+         `orders@${pathToFileURL(file).href}`,
          ".view-author.malloy",
       );
       expect(at).toEqual({
          name: "orders",
-         declaringURL: new URL("file:///pkg/models/orders.malloy"),
-         copyURL: new URL(
-            "file:///pkg/models/orders.malloy.view-author.malloy",
-         ),
+         declaringURL: pathToFileURL(file),
+         copyURL: pathToFileURL(`${file}.view-author.malloy`),
          copyName: "orders.malloy.view-author.malloy",
       });
    });
