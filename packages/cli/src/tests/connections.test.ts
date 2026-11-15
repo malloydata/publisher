@@ -12,20 +12,26 @@ mock.module("fs-extra", () => ({
   readJSON: mock(),
 }));
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { EOL } from "os";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { PublisherClient } from "../api/client";
 import * as connectionCommands from "../commands/connections";
 import * as fs from "fs-extra";
 
 describe("Connection Commands", () => {
-  let consoleLogSpy: any;
+  // logOutput writes through a winston Console transport, which goes straight
+  // to process.stdout.write, not through console.log, so capture stdout.
+  let stdoutSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    consoleLogSpy = mock(() => {});
-    console.log = consoleLogSpy as any;
+    stdoutSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
 
     // Reset fs mock between tests
     (fs.readJSON as any).mockReset();
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
   });
 
   test("listConnections should call listConnections API", async () => {
@@ -60,7 +66,7 @@ describe("Connection Commands", () => {
     await connectionCommands.getConnection(mockClient, "proj", "conn1");
 
     expect(mockClient.getConnection).toHaveBeenCalledWith("proj", "conn1");
-    expect(consoleLogSpy).toHaveBeenCalledWith(JSON.stringify(conn, null, 2));
+    expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(conn, null, 2) + EOL);
   });
 
   test("createConnection should create from JSON string", async () => {

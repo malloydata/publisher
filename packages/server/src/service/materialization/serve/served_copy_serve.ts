@@ -75,6 +75,7 @@ import {
    joinGrainAggregatePaths,
    queryFieldUsagePaths,
    queryTimezones,
+   structRefName,
    type PreparedQueryView,
    readPreparedQuery,
    resolveStructRefSource,
@@ -241,6 +242,10 @@ function readsMissingName(
 const ZONED_TRUNCATION_REASON =
    "the query reads a timestamp truncation stored in another zone than the one it reads it in";
 
+/** Why a query reading a zone-dependent column in a zone it was not built in is declined. */
+const ZONED_COLUMN_REASON =
+   "the query reads a value stored in another time zone than the one it reads it in (a computed dimension or a timestamp truncation)";
+
 /** Malloy's codes for a compile that reads a field the model does not have. */
 const MISSING_FIELD_CODES: ReadonlySet<string> = new Set([
    "field-not-found",
@@ -376,12 +381,20 @@ interface Compiled {
     */
    computedTables?: ReadonlySet<string>;
    /**
-    * Each re-root's restated timestamp truncations, by its `sourceID` (two
-    * sources can share one content-addressed table): built in the default
-    * zone and truncated again at read, in the zone the query reads them in
-    * (`checkTruncationZone`).
+    * Each re-root's zone-dependent stored columns, by its `sourceID` (two
+    * sources can share one content-addressed table): a computed dimension
+    * the probe compiler did not clear of the zone, and a restated timestamp
+    * truncation, each built in the re-root's zone and read in the query's
+    * (`checkZonedColumns`).
     */
-   truncationColumns?: ReadonlyMap<string, ReadonlySet<string>>;
+   zonedColumns?: ReadonlyMap<string, ReadonlySet<string>>;
+   /**
+    * The zone each re-root's table was built in, by its `sourceID`: its own
+    * or one it inherits, read from the author's model ({@link chainZoneOf}).
+    */
+   builtZones?: ReadonlyMap<string, string | undefined>;
+   /** The author's model, whose sources keep the zones they inherit. */
+   authorModelDef?: unknown;
    /**
     * Each re-root's timestamp truncations left out because they were stored
     * in another zone than any read's (`zonedTruncations`), by its
@@ -467,12 +480,18 @@ type AuthorReroot = Reroot & {
    sourceID: string;
    authorDef: unknown;
    /**
-    * For a `#(materialize)` re-root: its table holds something the build
-    * evaluated in the default zone that the probe compiler did not clear of
-    * the query time zone (P9): a stored computed dimension, or its rows (a
-    * `where:` term or base relation whose SQL moves with the zone).
+    * For a `#(materialize)` re-root: its rows depend on the zone it was built
+    * in, which the probe compiler did not clear (P9): a `where:` term or base
+    * relation whose SQL moves with the zone. Any read in another zone is
+    * declined.
     */
-   storesZonedDimension?: true;
+   zonedRows?: true;
+   /**
+    * For a `#(materialize)` re-root: the stored computed dimensions the probe
+    * compiler did not clear of the zone (P9), each as the build evaluated it
+    * in the re-root's zone. Only a read of one in another zone is declined.
+    */
+   zonedDimensions?: string[];
    /**
     * The timestamp truncations its `type:` restates over the stored value,
     * which truncate it again in the reading query's zone
@@ -863,6 +882,7 @@ export class ServedCopyServe {
             "served_copy_not_served",
          );
       }
+      await checkSourceZone(attempt);
       await this.checkResultShape(attempt, tablesRead);
       // A join answered from stored columns is a record, so an aggregate at
       // its grain (`j.x.sum()`, `j.count()`, a measure that reads one) would
@@ -906,7 +926,7 @@ export class ServedCopyServe {
       });
       await checkPairTables(attempt, pairsRead);
       await this.checkTimeZone(attempt, tablesRead);
-      await checkTruncationZone(attempt, tablesRead);
+      await checkZonedColumns(attempt, tablesRead);
       return {
          runnable,
          virtualMap,
@@ -1000,17 +1020,17 @@ export class ServedCopyServe {
    }
 
    /**
-    * A query that reads in another zone than a table was built in
-    * ({@link readsInAnotherZone}: its own `timezone:`, or one the source it
-    * runs on sets or inherits; a materialized source that declares its own
-    * `timezone:` is built in it) is answered live when it reads either of
-    * two tables. A stored computed dimension (`order_ts.day`,
-    * `day_of_week(order_ts)`) was evaluated at build in the default
-    * timezone; live evaluates it in the query's. And a rolling window's
-    * cut-off moves: Malloy takes its offset in the zone's wall time, so
-    * across a daylight-saving change a read at the build's own clock needs
-    * up to an hour older than the build stored. The serve shape never
-    * carries a `#(materialize)` table.
+    * A query that reads a table in another zone than it was built in
+    * ({@link readsInAnotherZone}) is answered live, whatever it reads, when
+    * the table's rows depend on the zone: a `where:` the build evaluated in
+    * its source's zone, a joined source's fields stored as a record (an
+    * inlined join, a pair table's children), each as the build computed it
+    * in its source's zone; or a rolling window, whose cut-off moves: Malloy
+    * takes its offset in the zone's wall time, so across a daylight-saving
+    * change a read at the build's own clock needs up to an hour older than
+    * the build stored. A table's zone-dependent columns alone are decided
+    * per column (`checkZonedColumns`). The serve shape never carries a
+    * `#(materialize)` table.
     */
    private async checkTimeZone(
       attempt: AnswerAttempt,
@@ -1026,11 +1046,12 @@ export class ServedCopyServe {
       const computed = zoned.some((b) =>
          compiled.computedTables?.has(b.tablePath),
       );
-      if (readsInAnotherZone(compiled, await prepared(), zoned)) {
+      const zones = readZonesOf(compiled, await prepared());
+      if (zoned.some((b) => readsInAnotherZone(compiled, zones, b))) {
          decline(
             computed
-               ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
-               : "the query sets a timezone, which moves a rolling window's cut-off past what its table stores",
+               ? "the query reads a table in another time zone than it was built in (its rows, or a joined source's stored fields, depend on it)"
+               : "the query reads a table in another time zone than it was built in, which moves a rolling window's cut-off past what its table stores",
             "served_copy_time_zone",
          );
       }
@@ -1341,7 +1362,12 @@ export class ServedCopyServe {
       });
       if (!declarable) return undefined;
       ({ columns, columnsLeftOut } = declarable);
-      const zoned = zonedTruncations(columns, def, fieldsByName);
+      const zoned = zonedTruncations(
+         columns,
+         def,
+         fieldsByName,
+         chainZoneOf(map, def),
+      );
       if (zoned.leftOut.length > 0) {
          // Left out like any column no read gives exactly, with its own
          // reason when a query reads it (`readsZonedTruncation`).
@@ -1395,6 +1421,10 @@ export class ServedCopyServe {
          connectionAlias: servedConnectionOf(binding),
          virtualHandle: binding.virtualHandle,
          typeName: `${sourceName}__served`,
+         ...(typeof (node.def as { queryTimezone?: unknown }).queryTimezone ===
+         "string"
+            ? { zone: (node.def as { queryTimezone: string }).queryTimezone }
+            : {}),
          columns,
          reservedNames,
          ...(plan
@@ -1409,12 +1439,20 @@ export class ServedCopyServe {
                     .map((c) => c.dimension),
               }
             : {}),
-         ...(plan &&
-         (!plan.zoneFreeRows ||
-            plan.columns.some(
-               (c) => c.computed && c.join === undefined && !c.zoneFree,
-            ))
-            ? { storesZonedDimension: true }
+         ...(plan && !plan.zoneFreeRows ? { zonedRows: true } : {}),
+         ...(plan
+            ? (() => {
+                 const zonedDimensions = plan.columns
+                    .filter(
+                       (c) =>
+                          c.computed &&
+                          c.join === undefined &&
+                          !c.zoneFree &&
+                          !columnsLeftOut.includes(c.dimension),
+                    )
+                    .map((c) => c.dimension);
+                 return zonedDimensions.length > 0 ? { zonedDimensions } : {};
+              })()
             : {}),
          ...(zoned.restated.length > 0
             ? { restatedTruncations: zoned.restated }
@@ -2245,31 +2283,48 @@ export class ServedCopyServe {
          generation,
          over,
          lane,
+         // The zone each table was built in, read from the author's model:
+         // a re-root replaces a source's base with its stored table, which
+         // drops a zone it inherits from that base.
+         authorModelDef: modelDef,
+         builtZones: new Map(
+            candidates.map((c) => [
+               c.reroot.sourceID,
+               chainZoneOf(SourceMap.of(modelDef), c.reroot.authorDef),
+            ]),
+         ),
          // An inlined join's columns are the joined source's fields as the
-         // build computed them, in its time zone. A stored computed
-         // dimension of the source's own is too, unless the probe compiler
-         // found it the same in every zone (P9): one that is not was left
-         // out of the build when the source declares it, and is computed
-         // at read in the query's zone.
+         // build computed them, in its time zone, and a pair table's child
+         // columns too: read only as records, so any read in another zone is
+         // declined, as one of a table whose rows depend on the zone is.
          computedTables: new Set(
             candidates
                .filter(
                   (c) =>
-                     c.reroot.storesZonedDimension === true ||
+                     c.reroot.zonedRows === true ||
                      (c.reroot.inlinedJoins ?? []).length > 0 ||
                      (c.reroot.pair?.childStoredDimensions ?? []).length > 0,
                )
                .map((c) => c.binding.tablePath),
          ),
-         // A restated timestamp truncation is truncated again at read, in
-         // the zone the query reads it in (`checkTruncationZone`).
-         truncationColumns: new Map(
+         // A stored computed dimension of the source's own, unless the probe
+         // compiler found it the same in every zone (P9), holds the value
+         // the build computed in the source's zone; a restated timestamp
+         // truncation is truncated again at read. Each is declined only
+         // where a query reads it in another zone (`checkZonedColumns`).
+         zonedColumns: new Map(
             candidates
-               .filter((c) => c.reroot.restatedTruncations?.length)
-               .map((c) => [
-                  c.reroot.sourceID,
-                  new Set(c.reroot.restatedTruncations),
-               ]),
+               .map(
+                  (c) =>
+                     [
+                        c.reroot.sourceID,
+                        new Set([
+                           ...(c.reroot.zonedDimensions ?? []),
+                           ...(c.reroot.restatedTruncations ?? []),
+                        ]),
+                     ] as const,
+               )
+               .filter(([, names]) => names.size > 0),
          ),
          zonedLeftOut: new Map(
             candidates
@@ -2851,44 +2906,162 @@ function v1ColumnsOf(
 }
 
 /**
- * Whether a query reads any of `tables` in another time zone than the one it
- * was built in: a zone its own text sets (`timezone:` in any stage), or the
- * zone the source it runs on sets or inherits from anything on its chain
- * (`ny is orders extend { timezone: … }`), which its text never names. A
- * table is built in its stored source's own zone, and an explicit `'UTC'` is
- * the default zone ({@link sameZone}). One rule for every zone-dependent
- * stored value: a computed dimension, a rolling window's cut-off, and a
- * restated timestamp truncation. Fails closed: a source that cannot be
- * resolved counts as another zone.
+ * A backstop under every answer: the source the query runs on, and each one
+ * on its chain the author's model declares, must compute in the same zone in
+ * the copy as in the author's model (their `queryTimezone`, which Malloy
+ * gives a query's first stage). A re-root that dropped a zone (one the source
+ * inherits from the base it replaces) would compute every query on it in
+ * another zone than live: declined, never served. Fails closed on a source
+ * that cannot be resolved.
  */
-function readsInAnotherZone(
-   compiled: Compiled,
-   view: Pick<PreparedQueryView, "query" | "structRef">,
-   tables: readonly Binding[],
-): boolean {
+async function checkSourceZone(attempt: AnswerAttempt): Promise<void> {
+   const { compiled, decline, prepared } = attempt;
+   const author = compiled.authorModelDef;
+   if (author === undefined) return;
+   const zoneOf = (def: unknown) => {
+      const z = (def as { queryTimezone?: unknown } | undefined)?.queryTimezone;
+      return typeof z === "string" ? z : undefined;
+   };
+   let differs: boolean;
    try {
-      const map = SourceMap.of(compiled.modelDef);
-      const built = tables.map((b) => {
-         const id = b.sourceIDs?.[0];
-         return id ? queryTimezoneOf(map.node(id)?.def) : undefined;
-      });
-      const another = (zone: string) => built.some((z) => !sameZone(z, zone));
-      if (queryTimezones(view.query).some(another)) return true;
+      const view = await prepared();
       const struct = resolveStructRefSource<unknown>(
          view.structRef as never,
          compiled.modelDef as never,
       );
-      if (struct === undefined) return true;
-      const zone =
-         queryTimezoneOf(struct) ??
-         map
-            .chainOf(struct)
-            .map((id) => queryTimezoneOf(map.node(id)?.def))
-            .find((z) => z !== undefined);
-      return zone !== undefined && another(zone);
+      if (struct === undefined) {
+         differs = true;
+      } else {
+         const served = SourceMap.of(compiled.modelDef);
+         const authored = SourceMap.of(author);
+         const name = structRefName(view.structRef);
+         const authorStruct =
+            name !== undefined
+               ? resolveStructRefSource<unknown>(name as never, author as never)
+               : undefined;
+         differs =
+            (authorStruct !== undefined &&
+               !sameZone(zoneOf(struct), zoneOf(authorStruct))) ||
+            served.chainOf(struct).some((id) => {
+               const a = authored.node(id);
+               return (
+                  a !== undefined &&
+                  !sameZone(zoneOf(served.node(id)?.def), zoneOf(a.def))
+               );
+            });
+      }
    } catch {
+      differs = true;
+   }
+   if (differs) {
+      decline(
+         "the source the query runs on computes in another time zone in the served copy than in the author's model",
+         "served_copy_time_zone",
+      );
+   }
+}
+
+/**
+ * The zones a query reads its stored tables in: `read`, the zone its first
+ * stage computes in (its own `timezone:`, which overrides the source's, else
+ * the zone the source it runs on sets or inherits from anything on its chain,
+ * `ny is orders extend { timezone: … }`, which its text never names, else the
+ * default); `set`, every zone its text sets, a later stage's or a nest's
+ * included; and `chain`, the `sourceID`s the source derives from. A joined
+ * source's own `timezone:` is not applied through the join, so a table read
+ * through one is read in `read` too. Undefined when the source cannot be
+ * resolved.
+ */
+interface ReadZones {
+   read: string | undefined;
+   set: string[];
+   chain: ReadonlySet<string>;
+}
+
+function readZonesOf(
+   compiled: Compiled,
+   view: Pick<PreparedQueryView, "query" | "structRef" | "pipeline">,
+): ReadZones | undefined {
+   try {
+      const struct = resolveStructRefSource<unknown>(
+         view.structRef as never,
+         compiled.modelDef as never,
+      );
+      if (struct === undefined) return undefined;
+      const map = SourceMap.of(compiled.modelDef);
+      const chain = map.chainOf(struct);
+      const first = (
+         Array.isArray(view.pipeline) ? view.pipeline[0] : undefined
+      ) as { queryTimezone?: unknown } | undefined;
+      const own =
+         typeof first?.queryTimezone === "string"
+            ? first.queryTimezone
+            : undefined;
+      // The author's source of the same name keeps a zone it inherits, which
+      // its re-root in the copy can drop.
+      const name = structRefName(view.structRef);
+      const author =
+         name !== undefined && compiled.authorModelDef !== undefined
+            ? resolveStructRefSource<unknown>(
+                 name as never,
+                 compiled.authorModelDef as never,
+              )
+            : undefined;
+      return {
+         read:
+            own ??
+            chainZoneOf(map, struct) ??
+            (author !== undefined
+               ? chainZoneOf(SourceMap.of(compiled.authorModelDef), author)
+               : undefined),
+         set: queryTimezones(view.query),
+         chain: new Set(chain),
+      };
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The zone a source computes in: its own, or the one it inherits from
+ * anything on its chain (`ny is orders extend { timezone: … }`).
+ */
+function chainZoneOf(map: SourceMap, struct: unknown): string | undefined {
+   return (
+      queryTimezoneOf(struct) ??
+      map
+         .chainOf(struct)
+         .map((id) => queryTimezoneOf(map.node(id)?.def))
+         .find((z) => z !== undefined)
+   );
+}
+
+/**
+ * Whether a query whose zones are `zones` ({@link readZonesOf}) reads `table`
+ * in another time zone than the one it was built in (`builtZones`);
+ * an explicit `'UTC'` is the default zone ({@link sameZone}). One rule
+ * for every zone-dependent stored value: a computed dimension, a rolling
+ * window's cut-off, and a restated timestamp truncation. Fails closed on a
+ * source that cannot be resolved, and on a table whose stored source is not
+ * known.
+ */
+function readsInAnotherZone(
+   compiled: Compiled,
+   zones: ReadZones | undefined,
+   table: Binding,
+): boolean {
+   const id = table.sourceIDs?.[0];
+   if (
+      zones === undefined ||
+      id === undefined ||
+      !compiled.builtZones?.has(id)
+   ) {
       return true;
    }
+   const built = compiled.builtZones.get(id);
+   return (
+      !sameZone(zones.read, built) || zones.set.some((z) => !sameZone(z, built))
+   );
 }
 
 /**
@@ -4100,17 +4273,21 @@ export function staleOnChain(
  * The re-root's timestamp truncations, which it restates over the stored
  * value (`d is d__stored.day`) and so truncates again in the zone the reading
  * query runs in: the identity only in the zone the build truncated it in. A
- * source that sets a zone, in its query or on itself, reads in another zone
- * than it was built in (its query's stage zone ends with the query, and its
- * own applies only at read), so each such column is left out (`leftOut`) and
- * a query reading it answers live. Otherwise the columns stay (`restated`),
- * built in the default zone, and a query that reads one in another zone is
- * declined (`checkTruncationZone`).
+ * query-shaped source with a zone (set in its query, on itself, or inherited
+ * from the base its query runs on, `ev_ny -> { … }`) reads in another zone
+ * than it was built in (its query's stage zone ends with the
+ * query, and its own applies only at read, not to the query that built the
+ * table), so each such column is left out (`leftOut`) and a query reading it
+ * answers live. Otherwise the columns stay (`restated`), built in the
+ * source's own zone, and a query that reads one in another zone is declined
+ * (`checkZonedColumns`).
  */
 function zonedTruncations(
    columns: readonly ServedColumn[],
    def: unknown,
    fieldsByName: ReadonlyMap<string, unknown>,
+   /** The zone the source's chain sets, which its query's stage inherits. */
+   chainZone?: string,
 ): { columns: ServedColumn[]; leftOut: string[]; restated: string[] } {
    const truncation = (c: ServedColumn) => {
       const type = (fieldsByName.get(c.name) as { type?: unknown } | undefined)
@@ -4123,7 +4300,8 @@ function zonedTruncations(
       );
    };
    const truncated = columns.filter(truncation).map((c) => c.name);
-   if (!queryTimezoneOf(def)) {
+   const queryShaped = (def as { query?: unknown } | undefined)?.query;
+   if (queryShaped === undefined || !(queryTimezoneOf(def) ?? chainZone)) {
       return { columns: [...columns], leftOut: [], restated: truncated };
    }
    return {
@@ -4134,51 +4312,111 @@ function zonedTruncations(
 }
 
 /**
- * A query that reads a restated timestamp truncation in another zone than
- * the default it was built in is answered live: in a zone its own text sets,
- * or one the source it runs on sets or inherits ({@link readsInAnotherZone}).
- * Decided per column: a query that reads none of the truncations stays on
- * the table, whatever zone it reads in. Fails closed on a query whose field
- * reads cannot be listed.
+ * A query that reads a table's zone-dependent column (a stored computed
+ * dimension, a restated timestamp truncation) in another zone than the table
+ * was built in ({@link readsInAnotherZone}) is answered live. Decided per
+ * column: a query that reads none of them stays on the table, whatever zone it
+ * reads in. A column of the table the query runs on is read by a field path of
+ * one name; a joined table's, by a longer path ending in its name (an
+ * unrelated field of the same name is declined too, never served wrong).
+ * Fails closed on a query whose field reads cannot be listed.
  */
-async function checkTruncationZone(
+async function checkZonedColumns(
    attempt: AnswerAttempt,
    tablesRead: readonly Binding[],
 ): Promise<void> {
    const { compiled, decline, prepared } = attempt;
-   const truncating = tablesRead.filter((b) =>
-      compiled.truncationColumns?.has(b.sourceIDs?.[0] ?? ""),
-   );
-   if (truncating.length === 0) return;
+   const zonedOf = (b: Binding) =>
+      compiled.zonedColumns?.get(b.sourceIDs?.[0] ?? "");
+   const zoned = tablesRead.filter((b) => zonedOf(b) !== undefined);
+   if (zoned.length === 0) return;
    const view = await prepared();
-   if (!readsInAnotherZone(compiled, view, truncating)) return;
-   const names = new Set(
-      truncating.flatMap((b) => [
-         ...(compiled.truncationColumns?.get(b.sourceIDs?.[0] ?? "") ?? []),
-      ]),
+   const zones = readZonesOf(compiled, view);
+   const elsewhere = zoned.filter((b) =>
+      readsInAnotherZone(compiled, zones, b),
    );
-   // A wildcard reads the restated field's stored column, under the internal
-   // name the served copy renames it to (`<name>__stored`, `__stored_2`, …).
-   const reads = (field: string | undefined) =>
-      field !== undefined &&
-      [...names].some((n) => {
-         const internal = `${n}__stored`;
-         return (
-            field === n ||
-            field === internal ||
-            (field.startsWith(`${internal}_`) &&
-               /^\d+$/.test(field.slice(internal.length + 1)))
-         );
-      });
+   if (elsewhere.length === 0) return;
    const usage = queryFieldUsagePaths(view);
-   if (usage === undefined || usage.some((p) => reads(p[p.length - 1]))) {
-      decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
+   if (usage === undefined) {
+      decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
+   }
+   // A table reached only through one of the query's source's joins is read
+   // by a path through that join, never by a field path of one name. Any
+   // other table may be the query's own (an extension of a table-backed or
+   // query-shaped source names no base to tell), so any path may read it.
+   const joinedOnly = joinedOnlyIDs(compiled, view, zones);
+   for (const b of elsewhere) {
+      const names = zonedOf(b) ?? new Set<string>();
+      const joined = joinedOnly.has(b.sourceIDs?.[0] ?? "");
+      if (
+         usage!.some(
+            (p) =>
+               (p.length > 1 || !joined) && readsColumn(names, p[p.length - 1]),
+         )
+      ) {
+         decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
+      }
    }
 }
 
-/** Whether two query time zones are one: unset is UTC, Malloy's default. */
+/**
+ * The `sourceID`s the query's source reaches only through one of its own
+ * joins: on a joined source's chain, and not on its own.
+ */
+function joinedOnlyIDs(
+   compiled: Compiled,
+   view: Pick<PreparedQueryView, "structRef">,
+   zones: ReadZones | undefined,
+): Set<string> {
+   const out = new Set<string>();
+   if (zones === undefined) return out;
+   try {
+      const struct = resolveStructRefSource<{ fields?: unknown[] }>(
+         view.structRef as never,
+         compiled.modelDef as never,
+      );
+      const map = SourceMap.of(compiled.modelDef);
+      for (const f of struct?.fields ?? []) {
+         if ((f as { join?: unknown }).join === undefined) continue;
+         for (const id of map.chainOf(f)) {
+            if (!zones.chain.has(id)) out.add(id);
+         }
+      }
+   } catch {
+      out.clear();
+   }
+   return out;
+}
+
+/**
+ * Whether a field path's last name reads one of `names`: the column itself,
+ * or a restated truncation's stored column under the internal name the
+ * served copy renames it to (`<name>__stored`, `__stored_2`, …), which a
+ * wildcard reads.
+ */
+function readsColumn(
+   names: ReadonlySet<string>,
+   field: string | undefined,
+): boolean {
+   if (field === undefined) return false;
+   return [...names].some((n) => {
+      const internal = `${n}__stored`;
+      return (
+         field === n ||
+         field === internal ||
+         (field.startsWith(`${internal}_`) &&
+            /^\d+$/.test(field.slice(internal.length + 1)))
+      );
+   });
+}
+
+/**
+ * Whether two query time zones are one: unset is `'UTC'`, Malloy's default,
+ * which compiles to the same SQL. Only that spelling: an alias such as
+ * `'Etc/UTC'` is another zone, since a dialect may not know it (MySQL without
+ * its time zone tables converts it to NULL).
+ */
 function sameZone(a: string | undefined, b: string | undefined): boolean {
-   const utc = (z: string | undefined) =>
-      z === undefined || z === "UTC" || z === "Etc/UTC" ? undefined : z;
+   const utc = (z: string | undefined) => (z === "UTC" ? undefined : z);
    return utc(a) === utc(b);
 }
