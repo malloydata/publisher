@@ -35,6 +35,7 @@ import { writeTempPackage } from "../../test_helpers/temp_package";
 import { Package } from "../package";
 import { routeCandidates, type QueryServingHost } from "../query_serving";
 import { routeQuery } from "../query_router";
+import { EMPTY_SNAPSHOT, pin } from "./domain/binding";
 import { gateEnforcedAtRead } from "./plan/materialization_eligibility";
 import { allowGatedStorageRollupsForTests } from "../../config";
 
@@ -686,9 +687,10 @@ const ROUTER: Record<string, Record<string, string>> = {
 
 describe("gate keeping at the router, under an entry-point veto", () => {
    const table = (tier: "colocated" | "storage") => ({
+      kind: "materialize",
+      tier,
       sourceName: `t_${tier}`,
       tablePath: `t_${tier}`,
-      ...(tier === "colocated" ? { colocated: true } : {}),
    });
    const reads: Record<string, ReturnType<typeof table>[]> = {
       "colocated tables": [table("colocated")],
@@ -746,6 +748,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
                      const candidates = routeCandidates(host(tables), {
                         queryString: "run: s -> v",
                         surfaceGivens: undefined,
+                        pinned: pin(EMPTY_SNAPSHOT, new Date(0)),
                         buildManifest: undefined,
                         servedCopyPossible: leg === "served",
                         colocatedKeepsContracts,

@@ -131,8 +131,6 @@ import {
    sourceFieldJoinReads,
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
-import type { BuildManifest } from "../domain/types";
-import { evaluateManifestFreshness } from "../domain/freshness";
 import { packageFiles } from "../text/package_files";
 import {
    packageRelativeSourceID,
@@ -173,7 +171,7 @@ import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
-import { type ServeBinding } from "../domain/serve_binding";
+import { type Binding, type Pinned } from "../domain/binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
 import { isDeclineOf, LegDecline } from "../domain/leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";
@@ -197,7 +195,7 @@ interface RollupVariantHost {
     * destination there, through a joined source's rollup in the same one
     * (known limitation 26).
     */
-   joinRollupBasis?(): Promise<ServedCopyJoinBasis | undefined>;
+   joinRollupBasis?(pinned: Pinned): Promise<ServedCopyJoinBasis | undefined>;
 }
 
 /** A rollup's answer, for the router. */
@@ -208,14 +206,14 @@ interface RollupAnswer {
    /** For a `storage=` rollup: how its `virtual()` handle resolves. */
    virtualMap?: VirtualMap;
    /** For a `storage=` rollup: its binding. */
-   binding?: ServeBinding;
+   binding?: Binding;
    /**
     * Every stored table the answer reads, when that is more than the
     * rollup's: a join leg answered in a storage destination reads the query
     * source's table there too, whose binding decides whether a failed run
     * may be retried live.
     */
-   bindings?: ServeBinding[];
+   bindings?: Binding[];
    /**
     * Where `govern()` grafts the run target's gates on the variant (R3): set
     * for every base variant, and the one an answer past an entry-point gate
@@ -312,9 +310,11 @@ interface VariantTarget {
 export class RollupVariantServe {
    private packagePath?: string;
    private packageConfig?: ModelConnectionInput;
-   private bindings: ServeBinding[] = [];
+   /** Bumped when the context or the destinations change: a graft cache scope. */
    private generation = 0;
    private compiled = new Map<string, Promise<CompiledVariant>>();
+   /** The snapshot bindings {@link compiled} was compiled over. */
+   private compiledFor: readonly Binding[] | undefined;
    private planMemo?: {
       modelDef: unknown;
       /**
@@ -336,33 +336,16 @@ export class RollupVariantServe {
       this.invalidate();
    }
 
-   /** Keep the bindings that store a rollup this model can see. */
-   setBindings(bindings: readonly ServeBinding[]): void {
-      const ids = this.buildSourceIDs(bindings);
-      this.bindings = bindings.filter((b) =>
-         (b.sourceIDs ?? []).some((id) => ids.has(id)),
-      );
-      this.invalidate();
-   }
-
-   /**
-    * The rollups' build `sourceID`s, to keep their bindings off the other
-    * legs (the serve shape and the served copy cannot read a rollup's table).
-    * Plans are read only when `bindings` holds a `preaggregate` one.
-    */
-   buildSourceIDs(bindings: readonly ServeBinding[]): Set<string> {
-      if (!bindings.some((b) => b.origin === "preaggregate")) return new Set();
-      const ids = new Set<string>();
-      for (const plan of [...this.plansByBase().values()].flat()) {
-         const id = rollupSourceID(plan);
-         if (id !== undefined) ids.add(id);
-      }
-      return ids;
-   }
-
    invalidate(): void {
       this.generation++;
       this.compiled.clear();
+   }
+
+   /** Start a new compile cache when the snapshot's bindings changed. */
+   private compiledOver(pinned: Pinned): void {
+      if (this.compiledFor === pinned.snapshot.bindings) return;
+      if (this.compiledFor !== undefined) this.invalidate();
+      this.compiledFor = pinned.snapshot.bindings;
    }
 
    /** Every rollup a source this model can see declares, by base `sourceID`. */
@@ -393,13 +376,13 @@ export class RollupVariantServe {
    }
 
    /**
-    * The `storage=` rollup tables bound to the package, for the path report;
-    * with `now`, only those inside their freshness window.
+    * The `storage=` rollup tables of a pinned snapshot, for the path report:
+    * every one bound, or only those read at the pin.
     */
-   rollupBindings(now?: number): ServeBinding[] {
-      if (now === undefined) return this.bindings;
-      const at = new Date(now);
-      return this.bindings.filter((b) => isFresh(b, at));
+   rollupBindings(pinned: Pinned, which: "bound" | "fresh"): Binding[] {
+      return (
+         which === "bound" ? pinned.snapshot.bindings : pinned.fresh
+      ).filter((b) => b.kind === "rollup" && b.tier === "storage");
    }
 
    /** Whether any source this model can see declares a rollup. */
@@ -431,9 +414,10 @@ export class RollupVariantServe {
       givens: Record<string, unknown> | undefined;
       /** The caller's own compile against the author's model. */
       authorRunnable: QueryMaterializer;
-      /** The fresh build manifest, rollup entries included. */
-      buildManifest: BuildManifest | undefined;
+      /** The query's pinned tables: its rollup tables and build manifest. */
+      pinned: Pinned;
    }): Promise<RollupAnswer> {
+      this.compiledOver(args.pinned);
       const modelDef = this.host.modelDef();
       const prepared = await readPreparedQuery(args.authorRunnable);
       // The run target must be a source this model names, by name: an inline
@@ -686,9 +670,11 @@ export class RollupVariantServe {
       const inDestination =
          plan.storage !== undefined
             ? await this.destinationOf(
-                 this.tableOf(plan)?.binding?.destinationName ?? plan.storage,
+                 this.tableOf(plan, q.args.pinned)?.binding?.destinationName ??
+                    plan.storage,
                  q.struct,
                  name,
+                 q.args.pinned,
               )
             : undefined;
       // The build truncated and filtered times in the joined source's time
@@ -793,7 +779,7 @@ export class RollupVariantServe {
          const verdict: KeyVerdict =
             outside === undefined
                ? "unknown"
-               : this.keyUniqueness(plan, join.keyColumn);
+               : this.keyUniqueness(plan, join.keyColumn, q.args.pinned);
          if (outside !== undefined && !requireUnique(verdict)) {
             throw new LegDecline(
                "rollup_count_semantics",
@@ -812,7 +798,7 @@ export class RollupVariantServe {
          leg,
          inDestination
             ? this.storedKeyUniqueness(inDestination.source, join.baseKey)
-            : this.parentKeyUniqueness(plan, q.struct),
+            : this.parentKeyUniqueness(plan, q.struct, q.args.pinned),
       );
       if (keyProblem !== undefined) {
          throw new LegDecline("rollup_count_semantics", keyProblem);
@@ -821,7 +807,12 @@ export class RollupVariantServe {
       // live's rows repeat through it, and re-pointing this join changes how
       // Malloy aggregates over those repeats, so the answers part (known
       // limitation 29). Unknown is served, as before the check.
-      const repeating = this.nonUniqueJoinOneRead(q.struct, name, q.usage);
+      const repeating = this.nonUniqueJoinOneRead(
+         q.struct,
+         name,
+         q.usage,
+         q.args.pinned,
+      );
       if (repeating !== undefined) {
          throw new LegDecline(
             "rollup_count_semantics",
@@ -887,14 +878,20 @@ export class RollupVariantServe {
          primaryKeyOf(childDef),
          plan.storage !== undefined
             ? verdictOf(
-                 this.tableOf(plan)?.binding?.primaryKeys?.[plan.baseSourceID],
+                 this.tableOf(plan, q.args.pinned)?.binding?.primaryKeys?.[
+                    plan.baseSourceID
+                 ],
               )
-            : this.parentKeyUniqueness(plan, { sourceID: plan.baseSourceID }),
+            : this.parentKeyUniqueness(
+                 plan,
+                 { sourceID: plan.baseSourceID },
+                 q.args.pinned,
+              ),
       );
       if (joinedProblem !== undefined) {
          throw new LegDecline("rollup_count_semantics", joinedProblem);
       }
-      const table = this.tableOf(plan);
+      const table = this.tableOf(plan, q.args.pinned);
       if (!table) {
          throw new LegDecline(
             "rollup_not_built",
@@ -929,7 +926,8 @@ export class RollupVariantServe {
       );
       const colocatedTable =
          table.sourceEntityId !== undefined
-            ? q.args.buildManifest?.entries[table.sourceEntityId]?.tableName
+            ? q.args.pinned.compilerManifest.entries[table.sourceEntityId]
+                 ?.tableName
             : undefined;
       if (!colocatedTable) {
          throw new LegDecline(
@@ -941,7 +939,7 @@ export class RollupVariantServe {
       try {
          result = await runnable.getPreparedResult({
             ...(q.args.givens ? { givens: q.args.givens as never } : {}),
-            buildManifest: q.args.buildManifest ?? EMPTY_BUILD_MANIFEST,
+            buildManifest: q.args.pinned.compilerManifest,
          } as never);
       } catch {
          throw new LegDecline(
@@ -968,7 +966,8 @@ export class RollupVariantServe {
       destination: string,
       struct: unknown,
       join: string,
-   ): Promise<{ basis: ServedCopyJoinBasis; source: ServeBinding }> {
+      pinned: Pinned,
+   ): Promise<{ basis: ServedCopyJoinBasis; source: Binding }> {
       const across = () =>
          new LegDecline(
             "rollup_cross_connection",
@@ -977,7 +976,7 @@ export class RollupVariantServe {
          );
       let basis: ServedCopyJoinBasis | undefined;
       try {
-         basis = await this.host.joinRollupBasis?.();
+         basis = await this.host.joinRollupBasis?.(pinned);
       } catch {
          basis = undefined;
       }
@@ -987,7 +986,7 @@ export class RollupVariantServe {
       );
       const source = basis.rerooted.find(
          (b) =>
-            !b.colocated &&
+            b.tier === "storage" &&
             b.destinationName === destination &&
             (b.sourceIDs ?? []).some((id) => chain.has(id)),
       );
@@ -1007,7 +1006,7 @@ export class RollupVariantServe {
       leg: JoinRollupLeg,
       q: Parameters<RollupVariantServe["attemptJoin"]>[2],
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
-      at: { basis: ServedCopyJoinBasis; source: ServeBinding },
+      at: { basis: ServedCopyJoinBasis; source: Binding },
    ): Promise<RollupAnswer> {
       const { plan, join } = leg;
       const name = join.name;
@@ -1190,7 +1189,7 @@ export class RollupVariantServe {
             { shapeCheck: true },
          );
       }
-      const table = this.tableOf(plan);
+      const table = this.tableOf(plan, args.pinned);
       if (!table) {
          throw new LegDecline(
             "rollup_not_built",
@@ -1228,7 +1227,8 @@ export class RollupVariantServe {
       // fresh only when the manifest holds its entry.
       const colocatedTable =
          table.sourceEntityId !== undefined
-            ? args.buildManifest?.entries[table.sourceEntityId]?.tableName
+            ? args.pinned.compilerManifest.entries[table.sourceEntityId]
+                 ?.tableName
             : undefined;
       if (!table.virtualMap && !colocatedTable) {
          throw new LegDecline(
@@ -1245,7 +1245,7 @@ export class RollupVariantServe {
             // the Runtime's, unfiltered by freshness.
             buildManifest: table.virtualMap
                ? EMPTY_BUILD_MANIFEST
-               : (args.buildManifest ?? EMPTY_BUILD_MANIFEST),
+               : args.pinned.compilerManifest,
          } as never);
       } catch {
          throw new LegDecline(
@@ -1296,6 +1296,7 @@ export class RollupVariantServe {
    private keyUniqueness(
       plan: RollupVariantPlan,
       keyColumn: string | undefined,
+      pinned: Pinned,
    ): KeyVerdict {
       if (
          keyColumn === undefined ||
@@ -1306,11 +1307,11 @@ export class RollupVariantServe {
       }
       // The table's content address fixes its grain, so its check is of
       // this key.
-      const id = this.tableOf(plan)?.sourceEntityId;
+      const id = this.tableOf(plan, pinned)?.sourceEntityId;
       return verdictOf(
          id === undefined
             ? undefined
-            : this.host.catalog()?.bound[id]?.keyUniqueness?.unique,
+            : pinned.snapshot.entries[id]?.keyUniqueness?.unique,
       );
    }
 
@@ -1322,12 +1323,13 @@ export class RollupVariantServe {
    private parentKeyUniqueness(
       plan: RollupVariantPlan,
       struct: unknown,
+      pinned: Pinned,
    ): KeyVerdict {
       const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
-      const id = this.tableOf(plan)?.sourceEntityId;
+      const id = this.tableOf(plan, pinned)?.sourceEntityId;
       if (typeof sourceID !== "string" || id === undefined) return "unknown";
       return verdictOf(
-         this.host.catalog()?.bound[id]?.keyUniqueness?.parentKeys?.[sourceID],
+         pinned.snapshot.entries[id]?.keyUniqueness?.parentKeys?.[sourceID],
       );
    }
 
@@ -1339,7 +1341,7 @@ export class RollupVariantServe {
     * checked, or a binding a host's manifest made.
     */
    private storedKeyUniqueness(
-      binding: ServeBinding,
+      binding: Binding,
       key: string | undefined,
    ): KeyVerdict {
       if (key === undefined || !binding.primaryKeys) return "unknown";
@@ -1364,6 +1366,7 @@ export class RollupVariantServe {
       struct: unknown,
       legJoin: string,
       usage: readonly (readonly string[])[],
+      pinned: Pinned,
    ): string | undefined {
       const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
       if (typeof sourceID !== "string") return undefined;
@@ -1379,7 +1382,7 @@ export class RollupVariantServe {
             continue;
          }
          for (const plan of byBase.get(j.sourceID) ?? []) {
-            if (this.keyUniqueness(plan, j.keyColumn) === "repeated") {
+            if (this.keyUniqueness(plan, j.keyColumn, pinned) === "repeated") {
                return j.name;
             }
          }
@@ -1387,25 +1390,29 @@ export class RollupVariantServe {
       return undefined;
    }
 
-   /** The rollup's fresh table: a storage binding, or a bound colocated entry. */
-   private tableOf(plan: RollupVariantPlan):
+   /** The rollup's table at the pin: a fresh storage binding, or a planned colocated one. */
+   private tableOf(
+      plan: RollupVariantPlan,
+      pinned: Pinned,
+   ):
       | {
            virtualMap?: VirtualMap;
            quotedPath?: string;
-           binding?: ServeBinding;
+           binding?: Binding;
            sourceEntityId?: string;
         }
       | undefined {
       const sourceID = rollupSourceID(plan);
       if (plan.storage !== undefined) {
-         const now = new Date();
          // Keyed by the rollup's own `sourceID`, never by its name.
-         const binding =
+         const lookup =
             sourceID === undefined
                ? undefined
-               : this.bindings.find(
-                    (b) => b.sourceIDs?.includes(sourceID) && isFresh(b, now),
-                 );
+               : pinned.tableFor(sourceID, "rollup");
+         const binding =
+            lookup?.state === "fresh" || lookup?.state === "stale_ok"
+               ? lookup.binding
+               : undefined;
          if (!binding || !this.host.serveDestinationConfig()) return undefined;
          const alias = servedCopyAlias(binding.destinationName);
          return {
@@ -1580,7 +1587,7 @@ ${sourceOverRollup(plan, use, servedName, "")}`;
             Extract<VariantUse, { kind: "join" }>["destination"]
          >;
       },
-      binding: ServeBinding,
+      binding: Binding,
       ctx: {
          packagePath: string;
          modelPath: string;
@@ -1990,21 +1997,6 @@ async function variantAdditions(
    return { text, views: declared };
 }
 
-/** Whether a binding is inside its freshness window at `now`. */
-function isFresh(b: ServeBinding, now: Date): boolean {
-   return (
-      evaluateManifestFreshness(
-         {
-            tableName: b.tablePath,
-            dataAsOf: b.freshAsOf,
-            freshnessWindowSeconds: b.freshnessWindowSeconds,
-            freshnessFallback: b.freshnessFallback,
-         },
-         now,
-      ) === "serve_table"
-   );
-}
-
 /** The rollup's own `sourceID`, as its build companion declares it. */
 function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    const declared = splitSourceID(plan.baseSourceID);
@@ -2021,7 +2013,7 @@ function rollupSourceID(plan: RollupVariantPlan): string | undefined {
  */
 function storedRollupDeclaration(
    plan: RollupVariantPlan,
-   binding: ServeBinding,
+   binding: Binding,
    servedName: string,
    modelDef: unknown,
 ): string {

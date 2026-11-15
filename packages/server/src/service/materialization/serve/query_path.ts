@@ -33,7 +33,7 @@
 import { recordedTimezoneOf } from "../../governance/ir/compiled_model";
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
-import type { KeyUniqueness } from "../domain/types";
+import type { FreshnessManifest } from "../domain/types";
 import { forEachFieldPath } from "../../governance/ir/array_query";
 import { declineOfCode } from "../domain/leg_decline";
 
@@ -63,17 +63,6 @@ export interface PlannedTable {
    modelPath?: string;
 }
 
-/** A colocated table the package has bound, from its manifest. */
-export interface BoundTable {
-   tableName: string;
-   dataAsOf?: string;
-   /**
-    * A rollup's key check, as the run that wrote or carried the table found
-    * it (known limitation 29); absent when unknown.
-    */
-   keyUniqueness?: KeyUniqueness;
-}
-
 /**
  * A table no query can be answered from, by its serve verdict: every planned
  * source sharing its `sourceEntityId` on its tier has a `live` verdict for a
@@ -95,7 +84,7 @@ export interface MaterializedTableCatalog {
    /** Every planned source, keyed by `sourceID`. */
    planned: ReadonlyMap<string, PlannedTable>;
    /** The colocated tables bound now, keyed by `sourceEntityId`. */
-   bound: Readonly<Record<string, BoundTable>>;
+   bound: Readonly<FreshnessManifest>;
    /**
     * The tables whose serve verdict says no query is answered from them,
     * keyed by {@link liveVerdictKey} (tier and `sourceEntityId`: a `storage=`

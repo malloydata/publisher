@@ -4,7 +4,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { buildQueryEnvelope } from "./mcp/query_envelope";
-import type { ServeBinding } from "./service/materialization/domain/serve_binding";
+import {
+   type Binding,
+   makeSnapshot,
+   pin,
+} from "./service/materialization/domain/binding";
 import { ServedCopyServe } from "./service/materialization/serve/served_copy_serve";
 import { resetInstrumentsForTesting } from "./telemetry";
 import {
@@ -44,16 +48,18 @@ describe("silent-degradation counters", () => {
          modelPath: () => "m.malloy",
          modelDef: () => undefined,
          serveDestinationConfig: () => () => ({}) as never,
+         pinned: () => pin(makeSnapshot([stale("a"), stale("b")]), new Date()),
       });
-      const stale = (sourceName: string): ServeBinding =>
+      const stale = (sourceName: string): Binding =>
          ({
+            kind: "persist",
+            tier: "storage",
             sourceName,
             tablePath: `lake.${sourceName}`,
             freshAsOf: "2000-01-01T00:00:00Z",
             freshnessWindowSeconds: 60,
             freshnessFallback: "live",
-         }) as ServeBinding;
-      copy.setBindings([stale("a"), stale("b")]);
+         }) as Binding;
       await expect(copy.loadQuery("run: a -> x")).rejects.toThrow();
       expect(
          await harness.collectCounter(

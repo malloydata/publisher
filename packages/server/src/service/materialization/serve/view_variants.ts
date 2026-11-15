@@ -67,7 +67,6 @@ import {
 import type { ModelConnectionInput } from "../../model_runtime";
 import { extractRunViewCall, type RunViewCall } from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
-import { evaluateManifestFreshness } from "../domain/freshness";
 import type { BuildManifest } from "../domain/types";
 import {
    generatePersistedViewFile,
@@ -79,7 +78,7 @@ import {
 import { viewNoteTexts } from "../plan/persisted_view_compile";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import type { ServeBinding } from "../domain/serve_binding";
+import type { Binding, Pinned } from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes } from "../text/field_notes";
 import {
@@ -110,7 +109,7 @@ interface ViewAnswer {
    /** For a `storage=` view: how its `virtual()` handle resolves. */
    virtualMap?: VirtualMap;
    /** For a `storage=` view: its binding. */
-   binding?: ServeBinding;
+   binding?: Binding;
    /** Where `govern()` grafts the source's gates on the variant (R3). */
    graftScope: GraftScope;
 }
@@ -130,7 +129,7 @@ export interface ViewTable {
 interface ResolvedTable extends ViewTable {
    virtualMap?: VirtualMap;
    quotedPath?: string;
-   binding?: ServeBinding;
+   binding?: Binding;
    /** A colocated table's name as the manifest substitutes it. */
    colocatedTable?: string;
 }
@@ -146,9 +145,11 @@ interface CompiledVariant {
 export class PersistedViewServe {
    private packagePath?: string;
    private packageConfig?: ModelConnectionInput;
-   private bindings: ServeBinding[] = [];
+   /** Bumped when the context, the destinations or the bindings change: a graft cache scope. */
    private generation = 0;
    private compiled = new Map<string, Promise<CompiledVariant>>();
+   /** The snapshot bindings {@link compiled} was compiled over. */
+   private compiledFor: readonly Binding[] | undefined;
    private planMemo?: { modelDef: unknown; plans: PersistedViewPlan[] };
 
    constructor(private readonly host: ViewVariantHost) {}
@@ -159,18 +160,16 @@ export class PersistedViewServe {
       this.invalidate();
    }
 
-   /** Keep the bindings that store a persisted view this model can see. */
-   setBindings(bindings: readonly ServeBinding[]): void {
-      const ids = this.buildSourceIDs();
-      this.bindings = bindings.filter((b) =>
-         (b.sourceIDs ?? []).some((id) => ids.has(id)),
-      );
-      this.invalidate();
-   }
-
    invalidate(): void {
       this.generation++;
       this.compiled.clear();
+   }
+
+   /** Start a new compile cache when the snapshot's bindings changed. */
+   private compiledOver(pinned: Pinned): void {
+      if (this.compiledFor === pinned.snapshot.bindings) return;
+      if (this.compiledFor !== undefined) this.invalidate();
+      this.compiledFor = pinned.snapshot.bindings;
    }
 
    /** Every persisted view a source this model can see declares. */
@@ -187,16 +186,20 @@ export class PersistedViewServe {
       return this.plans().length > 0;
    }
 
-   /** The generated build sources' `sourceID`s, to keep their bindings off the other legs. */
-   buildSourceIDs(): Set<string> {
-      return new Set(this.plans().map((p) => p.buildSourceID));
-   }
-
-   /** The `storage=` view tables bound now; with `now`, only the fresh ones. */
-   viewBindings(now?: number): ServeBinding[] {
-      if (now === undefined) return this.bindings;
-      const at = new Date(now);
-      return this.bindings.filter((b) => isFresh(b, at));
+   /**
+    * The `storage=` view tables of a pinned snapshot that store a view this
+    * model can see: every one bound, or only those read at the pin.
+    */
+   viewBindings(pinned: Pinned, which: "bound" | "fresh"): Binding[] {
+      const ids = new Set(this.plans().map((p) => p.buildSourceID));
+      return (
+         which === "bound" ? pinned.snapshot.bindings : pinned.fresh
+      ).filter(
+         (b) =>
+            b.kind === "view" &&
+            b.tier === "storage" &&
+            (b.sourceIDs ?? []).some((id) => ids.has(id)),
+      );
    }
 
    /** The view the query text calls, when it is a persisted view of this model. */
@@ -217,14 +220,11 @@ export class PersistedViewServe {
    }
 
    /** The table a query calling a persisted view would read, for the path report. */
-   reportedTable(
-      queryString: string,
-      freshManifest: BuildManifest | undefined,
-   ): ViewTable | undefined {
+   reportedTable(queryString: string, pinned: Pinned): ViewTable | undefined {
       const called = this.calledView(queryString);
       if (!called) return undefined;
       const { virtualMap, quotedPath, binding, colocatedTable, ...table } =
-         this.tableOf(called.plan, freshManifest);
+         this.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
       void quotedPath;
       void binding;
@@ -241,9 +241,12 @@ export class PersistedViewServe {
       givens: Record<string, unknown> | undefined;
       /** The caller's own compile against the author's model. */
       authorRunnable: QueryMaterializer;
-      /** The fresh build manifest. */
+      /** The query's pinned tables. */
+      pinned: Pinned;
+      /** The pinned build manifest without the rollups' entries. */
       buildManifest: BuildManifest | undefined;
    }): Promise<ViewAnswer> {
+      this.compiledOver(args.pinned);
       const called = this.calledView(args.queryString);
       if (!called) {
          throw new LegDecline("view_missing_field");
@@ -285,7 +288,7 @@ export class PersistedViewServe {
             );
          }
       }
-      const table = this.tableOf(plan, args.buildManifest);
+      const table = this.tableOf(plan, args.pinned, args.buildManifest);
       if (!table.built) {
          throw new LegDecline("view_not_built");
       }
@@ -347,25 +350,22 @@ export class PersistedViewServe {
    /** The view's table: a `storage=` binding, or a colocated manifest entry. */
    private tableOf(
       plan: PersistedViewPlan,
+      pinned: Pinned,
       freshManifest: BuildManifest | undefined,
    ): ResolvedTable {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
       if (plan.storage !== undefined) {
-         const binding = this.bindings.find((b) =>
-            (b.sourceIDs ?? []).includes(plan.buildSourceID),
-         );
-         if (!binding) {
+         const lookup = pinned.tableFor(plan.buildSourceID, "view");
+         if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
          }
+         const { binding } = lookup;
          const dataAsOf = binding.freshAsOf
             ? { dataAsOf: binding.freshAsOf }
             : {};
-         if (
-            !isFresh(binding, new Date()) ||
-            !this.host.serveDestinationConfig()
-         ) {
+         if (lookup.state === "stale" || !this.host.serveDestinationConfig()) {
             return {
                ...withId,
                ...dataAsOf,
@@ -392,9 +392,7 @@ export class PersistedViewServe {
          };
       }
       const bound =
-         tableId !== undefined
-            ? this.host.catalog()?.bound[tableId]
-            : undefined;
+         tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
       if (!bound || tableId === undefined) {
          return { ...withId, tier: "colocated", built: false, stale: false };
       }
@@ -547,21 +545,6 @@ ${viewBody}
 /** The flags every generated variant file declares. */
 const VARIANT_FLAGS =
    "##! experimental { access_modifiers givens persistence virtual_source }";
-
-/** Whether a binding is inside its freshness window at `now`. */
-function isFresh(b: ServeBinding, now: Date): boolean {
-   return (
-      evaluateManifestFreshness(
-         {
-            tableName: b.tablePath,
-            dataAsOf: b.freshAsOf,
-            freshnessWindowSeconds: b.freshnessWindowSeconds,
-            freshnessFallback: b.freshnessFallback,
-         },
-         now,
-      ) === "serve_table"
-   );
-}
 
 /** What the variant reproduces of the view's result. */
 interface ViewShape {

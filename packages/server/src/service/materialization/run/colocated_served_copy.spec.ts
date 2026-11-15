@@ -238,23 +238,17 @@ for (const tier of TIERS)
                QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
             );
          const served = await runQuery();
-         // Live: the same model with its served copy holding no table, so
-         // no candidate reads one (the live compile reads none).
-         const copy = (
-            model as unknown as {
-               servedCopy: {
-                  bindings: unknown[];
-                  setBindings(b: unknown[]): void;
-               };
-            }
-         ).servedCopy;
-         const kept = copy.bindings;
-         copy.setBindings([]);
+         // Live: the same model serving no binding, so no candidate reads
+         // a table (the live compile reads none).
+         model.setServeBindings([]);
          let live: Awaited<ReturnType<typeof runQuery>>;
          try {
             live = await runQuery();
          } finally {
-            copy.setBindings(kept);
+            // Back to the package's own snapshot.
+            (
+               model as unknown as { bindingsOverride: undefined }
+            ).bindingsOverride = undefined;
          }
          return { served, live };
       }

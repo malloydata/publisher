@@ -20,6 +20,7 @@ import {
    type R4Fixture,
    type R4Query,
 } from "./harness";
+import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 
 const seedSql = [
    `CREATE TABLE ev AS SELECT * FROM (VALUES
@@ -176,8 +177,10 @@ describe("R4: the served copy answers equal to live", () => {
       });
 
       it("compiles once with no fresh binding, not on every query", async () => {
-         const servedCopy = fixture.servedCopy();
-         servedCopy.setBindings([]);
+         fixture.setBindings([]);
+         const servedCopy = (
+            fixture.model as unknown as { servedCopy: ServedCopyServe }
+         ).servedCopy;
          const compile = spyOn(
             servedCopy as unknown as { compile(): Promise<unknown> },
             "compile",

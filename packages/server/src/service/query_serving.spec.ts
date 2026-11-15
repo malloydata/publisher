@@ -3,7 +3,11 @@
 
 import type { QueryMaterializer, VirtualMap } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import type { ServeBinding } from "./materialization/domain/serve_binding";
+import {
+   type Binding,
+   EMPTY_SNAPSHOT,
+   pin,
+} from "./materialization/domain/binding";
 import type { BuildManifest } from "./materialization/domain/types";
 import type { GraftScope } from "./gate_classification";
 import type { RouteDecision } from "./query_router";
@@ -24,25 +28,24 @@ import {
 const runnable = { tag: "routed" } as unknown as QueryMaterializer;
 const virtualMap = new Map() as unknown as VirtualMap;
 
-const binding = (
-   sourceName: string,
-   extra: Partial<ServeBinding> = {},
-): ServeBinding =>
+const binding = (sourceName: string, extra: Partial<Binding> = {}): Binding =>
    ({
+      kind: "persist",
+      tier: "storage",
       sourceName,
       destinationName: "lake",
       virtualHandle: `eid-${sourceName}`,
       tablePath: `lake.t_${sourceName}`,
       schema: [],
       ...extra,
-   }) as unknown as ServeBinding;
+   }) as unknown as Binding;
 
 const manifest = (keys: string[]): BuildManifest =>
    ({
       entries: Object.fromEntries(keys.map((k) => [k, { tableName: k }])),
    }) as unknown as BuildManifest;
 
-function storageRoute(bindings: ServeBinding[]): RouteDecision<RoutedExtra> {
+function storageRoute(bindings: Binding[]): RouteDecision<RoutedExtra> {
    return {
       served: "variant",
       kind: "served",
@@ -102,7 +105,7 @@ describe("Answer", () => {
    });
 
    it("reads a storage= #(preaggregate) rollup route as a storage hit", () => {
-      const b = { ...binding("rollup"), origin: "preaggregate" as const };
+      const b = { ...binding("rollup"), kind: "rollup" as const };
       const answer = routedAnswer({
          ...rollupRoute,
          extra: {
@@ -119,7 +122,7 @@ describe("Answer", () => {
    });
 
    it("lets a join-to-rollup answer's query-source table decide whether a failed run degrades (known limitation 26)", () => {
-      const rollup = { ...binding("rollup"), origin: "preaggregate" as const };
+      const rollup = { ...binding("rollup"), kind: "rollup" as const };
       const source = binding("flights", { freshnessFallback: "fail" });
       const answer = routedAnswer({
          ...rollupRoute,
@@ -173,7 +176,7 @@ describe("canDegradeToLive", () => {
          storageRoute([
             binding("daily", {
                freshnessFallback: fallback,
-            } as Partial<ServeBinding>),
+            } as Partial<Binding>),
          ]),
       );
 
@@ -273,6 +276,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       routeCandidates(host, {
          queryString: "run: orders -> { aggregate: total }",
          surfaceGivens: undefined,
+         pinned: pin(EMPTY_SNAPSHOT, new Date(0)),
          buildManifest: undefined,
          servedCopyPossible: false,
          rollupVariantsFor: runnable,
@@ -295,7 +299,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
    }
 
    it("carries every table a join leg in a storage destination reads into the route", async () => {
-      const rollup = { ...binding("rollup"), origin: "preaggregate" as const };
+      const rollup = { ...binding("rollup"), kind: "rollup" as const };
       const source = binding("flights");
       const reading = {
          ...host,
@@ -312,6 +316,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       const candidate = routeCandidates(reading, {
          queryString: "run: flights -> { aggregate: segments.seg_miles }",
          surfaceGivens: undefined,
+         pinned: pin(EMPTY_SNAPSHOT, new Date(0)),
          buildManifest: undefined,
          servedCopyPossible: false,
          rollupVariantsFor: runnable,

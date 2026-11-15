@@ -65,7 +65,6 @@ import type {
    MaterializePlan,
 } from "../plan/build_file_generator";
 import { rollingWindowsOf } from "../plan/rolling_window";
-import { evaluateManifestFreshness } from "../domain/freshness";
 import {
    bigIntegerReadOf,
    bigIntegerReads,
@@ -101,10 +100,15 @@ import {
    optsOutOfPersist,
 } from "./bindings";
 import {
-   type ServeBinding,
-   deriveServeBindings,
+   type Binding,
    bindingServesModelSource,
-} from "../domain/serve_binding";
+   deriveServeBindings,
+   EMPTY_SNAPSHOT,
+   isColocated,
+   pin,
+   type Pinned,
+   type Snapshot,
+} from "../domain/binding";
 import {
    authorModelLiftContext,
    type DerivedSourceDef,
@@ -153,12 +157,16 @@ type VirtualMap = Map<string, Map<string, string>>;
 /**
  * The connection a binding's table is read through in the served copy: a
  * storage destination under its server-only alias, a colocated table on the
- * source's own connection (colocated_bindings.ts), which the package's
- * connections already hold.
+ * source's own connection, which the package's connections already hold.
  */
-function servedConnectionOf(b: ServeBinding): string {
-   return b.colocated ? b.destinationName : servedCopyAlias(b.destinationName);
+function servedConnectionOf(b: Binding): string {
+   return isColocated(b)
+      ? b.destinationName
+      : servedCopyAlias(b.destinationName);
 }
+
+/** Nothing bound, pinned: what a copy reads with no host tables. */
+const NOTHING_PINNED = pin(EMPTY_SNAPSHOT, new Date(0));
 
 /** No storage destination: a served copy of colocated tables alone. */
 const NO_DESTINATIONS = (): MalloyConfig =>
@@ -311,12 +319,20 @@ interface ServedCopyHost {
     * JavaScript, where the cast keeps every digit.
     */
    readsStoredIntegers?: boolean;
+   /**
+    * The model's tables, pinned now, for a caller outside a query: the
+    * compile at bind, the warnings, a test. A query passes its own pin.
+    * Absent, nothing is bound.
+    */
+   pinned?(): Pinned;
 }
 
 interface Compiled {
    key: string;
    /** The invalidation generation it was compiled under. */
    generation: number;
+   /** The snapshot bindings it was compiled over. */
+   over: readonly Binding[];
    /**
     * The block every multi-path pair table is read for in this copy (see
     * {@link ServedCopyServe.ensureCompiled}); 0 for the copy compiled at bind.
@@ -338,7 +354,7 @@ interface Compiled {
     */
    unsafeIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
-   rerooted: ServeBinding[];
+   rerooted: Binding[];
    /**
     * Extensions of a re-rooted source left as written, which read their
     * base's table by name: each with its chain of ancestor `sourceID`s and the
@@ -377,7 +393,7 @@ interface Compiled {
     * these tables is checked against the author's compile of it.
     */
    leftOutTables?: ReadonlySet<string>;
-   aliased: ServeBinding[];
+   aliased: Binding[];
    problems: ServedCopyProblem[];
    /**
     * Queries this compiled copy declined for their shape (they read no
@@ -469,9 +485,9 @@ export interface ServedCopyJoinBasis {
    /** The copy's compiled model, for reading only. */
    modelDef: unknown;
    /** The bindings the copy re-rooted. */
-   rerooted: readonly ServeBinding[];
+   rerooted: readonly Binding[];
    /** The same, each under the connection the copy reads it through (for the virtual map). */
-   aliased: readonly ServeBinding[];
+   aliased: readonly Binding[];
    /** The definitions the copy left out because a join they read crosses connections. */
    leftOut: readonly LeftOutDefinition[];
    /** The copy's checks on a query a variant over it answers; throws a {@link LegDecline}. */
@@ -481,7 +497,7 @@ export interface ServedCopyJoinBasis {
       runnable: QueryMaterializer;
       queryString: string;
       /** The re-rooted tables the variant's SQL reads. */
-      tablesRead: readonly ServeBinding[];
+      tablesRead: readonly Binding[];
    }): Promise<void>;
 }
 
@@ -508,13 +524,6 @@ export class ServedCopyServe {
    private packagePath?: string;
    private packageConfig?: ModelConnectionInput;
    private materializePlans: Readonly<Record<string, MaterializePlan>> = {};
-   /**
-    * Every binding the package pushed, unfiltered: a `#(materialize)` build
-    * source (`<src>__mat`) is no source of this model's by name, so the serve
-    * shape's own filter drops it. The served copy matches each binding to a
-    * declaration of this model by `sourceID` instead.
-    */
-   private bindings: ServeBinding[] = [];
    /** A declaration's definition from the package model that holds it. */
    private declarationOf?: (sourceID: string) => unknown;
    /**
@@ -527,6 +536,7 @@ export class ServedCopyServe {
       number,
       {
          key: string;
+         over: readonly Binding[];
          generation: number;
          promise: Promise<Compiled>;
       }
@@ -553,43 +563,41 @@ export class ServedCopyServe {
       this.invalidate();
    }
 
-   /** The package's bindings, as pushed to the model. */
-   setBindings(bindings: ServeBinding[]): void {
-      this.bindings = bindings;
-      this.invalidate();
+   /**
+    * The `#(materialize)` tables of a pinned snapshot, which only the served
+    * copy reads, keyed like every binding by the author's sourceID: every
+    * one bound, or only those read at the pin. For the path report, which
+    * places them on the queried source's chain.
+    */
+   materializeBindings(pinned: Pinned, which: "bound" | "fresh"): Binding[] {
+      return (
+         which === "bound" ? pinned.snapshot.bindings : pinned.fresh
+      ).filter((b) => b.kind === "materialize");
    }
 
    /**
-    * The bindings of `#(materialize)` tables, which only the served copy reads
-    * (the serve shape never takes one), keyed like every binding by the
-    * author's sourceID; with `now`, only the fresh ones. For the path report,
-    * which places them on the queried source's chain.
+    * Whether any binding of `snapshot` could re-root a source (before
+    * compiling): a colocated table, or a storage table while the storage
+    * tier serves.
     */
-   materializeBindings(now?: number): ServeBinding[] {
-      const bindings =
-         now === undefined ? this.bindings : this.freshBindings(now);
-      return bindings.filter((b) =>
-         (b.sourceIDs ?? []).some((id) => this.materializePlans[id]),
-      );
+   hasBindings(snapshot: Snapshot = this.current().snapshot): boolean {
+      return snapshot.bindings.some((b) => this.usable(b));
    }
 
    /**
-    * Whether any binding could re-root a source (before compiling): a
-    * colocated table, or a storage table while the storage tier serves.
+    * Whether the served copy may read a binding: a source's own table (never
+    * a rollup's or a persisted view's); a storage table only while the host
+    * has storage destinations to serve from (`PERSIST_STORAGE_MODE=on`); a
+    * colocated table always, on its own connection.
     */
-   hasBindings(): boolean {
-      return this.bindings.some((b) => this.usable(b));
+   private usable(b: Binding): boolean {
+      if (b.kind !== "persist" && b.kind !== "materialize") return false;
+      return isColocated(b) || !!this.host.serveDestinationConfig();
    }
 
-   /**
-    * Whether the served copy may read a binding: never a rollup's; a storage
-    * table only while the host has storage destinations to serve from
-    * (`PERSIST_STORAGE_MODE=on`); a colocated table always, on its own
-    * connection.
-    */
-   private usable(b: ServeBinding): boolean {
-      if (b.origin === "preaggregate") return false;
-      return b.colocated === true || !!this.host.serveDestinationConfig();
+   /** The host's tables, pinned now, for a caller outside a query. */
+   private current(): Pinned {
+      return this.host.pinned?.() ?? NOTHING_PINNED;
    }
 
    /** Drop the compiled copy (bindings, destinations or the model changed). */
@@ -699,14 +707,14 @@ export class ServedCopyServe {
    }
 
    /** The served copy's compiled model, compiling it first; for reading only. */
-   async compiledModelDef(): Promise<unknown> {
-      return (await this.ensureCompiled()).modelDef;
+   async compiledModelDef(pinned: Pinned = this.current()): Promise<unknown> {
+      return (await this.ensureCompiled(pinned)).modelDef;
    }
 
    /** Compile now (at bind), so warnings exist before the first query. */
-   async prepare(): Promise<void> {
+   async prepare(pinned: Pinned = this.current()): Promise<void> {
       try {
-         await this.ensureCompiled();
+         await this.ensureCompiled(pinned);
       } catch {
          // Recorded on the compiled result; serving falls through.
       }
@@ -720,11 +728,13 @@ export class ServedCopyServe {
    async loadQuery(
       queryString: string,
       givens?: Record<string, unknown>,
+      /** The query's pinned tables; a caller outside a query omits it. */
+      pinned: Pinned = this.current(),
    ): Promise<{
       runnable: QueryMaterializer;
       virtualMap: VirtualMap;
-      bindings: ServeBinding[];
-      tablesRead: ServeBinding[];
+      bindings: Binding[];
+      tablesRead: Binding[];
       /**
        * The served copy's compiled model, where a row-level gate is grafted
        * when this answer runs (R3): the gate's text is the author's, kept in
@@ -735,12 +745,17 @@ export class ServedCopyServe {
       // A stored table past its freshness window is left out of the copy and
       // read live: counted per query, since a query succeeds either way and
       // this is how an operator sees the tier degrade.
-      const usable = this.bindings.filter((b) => this.usable(b));
-      const withheld = usable.length - this.freshBindings(Date.now()).length;
+      const usable = pinned.snapshot.bindings.filter((b) => this.usable(b));
+      const withheld = usable.length - this.freshBindings(pinned).length;
       if (withheld > 0 && !this.host.quiet) {
          staleBindingsWithheld().add(withheld);
       }
-      return this.answer(await this.ensureCompiled(), queryString, givens);
+      return this.answer(
+         await this.ensureCompiled(pinned),
+         queryString,
+         givens,
+         pinned,
+      );
    }
 
    /**
@@ -750,7 +765,8 @@ export class ServedCopyServe {
    private async answer(
       compiled: Compiled,
       queryString: string,
-      givens?: Record<string, unknown>,
+      givens: Record<string, unknown> | undefined,
+      pinned: Pinned,
    ): Promise<Awaited<ReturnType<ServedCopyServe["loadQuery"]>>> {
       if (!compiled.materializer || compiled.rerooted.length === 0) {
          throw new LegDecline(
@@ -951,9 +967,10 @@ export class ServedCopyServe {
          }
          if (read.length === 1 && read[0] !== compiled.lane) {
             return this.answer(
-               await this.ensureCompiled(read[0]),
+               await this.ensureCompiled(pinned, read[0]),
                queryString,
                givens,
+               pinned,
             );
          }
       }
@@ -1074,8 +1091,10 @@ export class ServedCopyServe {
     * and the checks this copy runs on a query it answers, for the tables
     * that variant reads. Undefined when the copy re-roots nothing.
     */
-   async joinRollupBasis(): Promise<ServedCopyJoinBasis | undefined> {
-      const compiled = await this.ensureCompiled();
+   async joinRollupBasis(
+      pinned: Pinned,
+   ): Promise<ServedCopyJoinBasis | undefined> {
+      const compiled = await this.ensureCompiled(pinned);
       const { materializer, files, config } = compiled;
       if (
          !materializer ||
@@ -1115,7 +1134,7 @@ export class ServedCopyServe {
          sourceID: string;
          runnable: QueryMaterializer;
          queryString: string;
-         tablesRead: readonly ServeBinding[];
+         tablesRead: readonly Binding[];
       },
    ): Promise<void> {
       const decline = (
@@ -1174,7 +1193,7 @@ export class ServedCopyServe {
    }
 
    /** Whether a binding stores a `#(materialize)` source with a rolling window. */
-   private readsRollingWindow(binding: ServeBinding): boolean {
+   private readsRollingWindow(binding: Binding): boolean {
       return (binding.sourceIDs ?? []).some(
          (id) =>
             rollingWindowsOf(this.materializePlans[id]?.readTimeTerms).length >
@@ -1182,21 +1201,9 @@ export class ServedCopyServe {
       );
    }
 
-   private freshBindings(now: number): ServeBinding[] {
-      const at = new Date(now);
-      return this.bindings.filter(
-         (b) =>
-            this.usable(b) &&
-            evaluateManifestFreshness(
-               {
-                  tableName: b.tablePath,
-                  dataAsOf: b.freshAsOf,
-                  freshnessWindowSeconds: b.freshnessWindowSeconds,
-                  freshnessFallback: b.freshnessFallback,
-               },
-               at,
-            ) === "serve_table",
-      );
+   /** The bindings the copy may read at the pin. */
+   private freshBindings(pinned: Pinned): Binding[] {
+      return pinned.fresh.filter((b) => this.usable(b));
    }
 
    /**
@@ -1206,31 +1213,39 @@ export class ServedCopyServe {
     * query is first compiled in; another is compiled only when a query reads
     * that block, and kept like lane 0 until the next invalidation.
     */
-   private async ensureCompiled(lane = 0): Promise<Compiled> {
-      const bindings = this.freshBindings(Date.now());
+   private async ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
+      const bindings = this.freshBindings(pinned);
+      const over = pinned.snapshot.bindings;
       const key = [
          ...bindings
             .map(
                (b) =>
-                  `${b.sourceName}@${b.colocated ? "colocated:" : ""}${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshnessFallback ?? ""}`,
+                  `${b.sourceName}@${isColocated(b) ? "colocated:" : ""}${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshnessFallback ?? ""}`,
             )
             .sort(),
       ].join("|");
       const generation = this.generation;
       const current = this.compiledLanes.get(lane);
-      if (current && current.key === key && current.generation === generation) {
+      if (
+         current &&
+         current.key === key &&
+         current.over === over &&
+         current.generation === generation
+      ) {
          return current;
       }
       let inFlight = this.inFlightLanes.get(lane);
       if (
          !inFlight ||
          inFlight.key !== key ||
+         inFlight.over !== over ||
          inFlight.generation !== generation
       ) {
          const started = {
             key,
+            over,
             generation,
-            promise: this.compile(key, generation, bindings, lane),
+            promise: this.compile(key, generation, over, bindings, lane),
          };
          this.inFlightLanes.set(lane, started);
          void started.promise.finally(() => {
@@ -1242,7 +1257,8 @@ export class ServedCopyServe {
       }
       const compiled = await inFlight.promise;
       // An invalidation while it compiled makes it stale: keep it only when
-      // it is still the current generation's.
+      // it is still the current generation's. A copy over another snapshot
+      // is kept too: the latest compile is what the warnings report.
       if (compiled.generation === this.generation) {
          this.compiledLanes.set(lane, compiled);
       }
@@ -1254,7 +1270,7 @@ export class ServedCopyServe {
     * declares (directly or through an import), else undefined.
     */
    private rerootFor(
-      binding: ServeBinding,
+      binding: Binding,
       map: SourceMap,
       problems: ServedCopyProblem[],
       reservedNames: readonly string[],
@@ -1288,17 +1304,6 @@ export class ServedCopyServe {
             sourceName,
             sourceID: node.sourceID,
             reason: "no_declaration",
-         });
-         return undefined;
-      }
-      // A table an older build typed reads through a cast in today's serve
-      // shape; the served copy does not carry casts yet, so it leaves the
-      // source to that shape (or live).
-      if (binding.readCasts?.length) {
-         problems.push({
-            sourceName,
-            sourceID: node.sourceID,
-            reason: "column_types",
          });
          return undefined;
       }
@@ -1433,7 +1438,7 @@ export class ServedCopyServe {
          // table's columns are every column it holds, with no access
          // modifier: the author's own text after the query (kept whole,
          // `keepsIncludes`) renames, drops and re-hides them.
-         const named = binding.colocated
+         const named = isColocated(binding)
             ? storedColumnsWithAccess(binding.schema, def.fields).map(
                  ({ name, type }) => ({ name, type }),
               )
@@ -1774,14 +1779,16 @@ export class ServedCopyServe {
     * cannot be read. Compiles nothing: the build compiles the files on its
     * own session.
     */
-   chainBuildFiles(downstreamSourceID: string): ChainBuildText {
+   chainBuildFiles(
+      downstreamSourceID: string,
+      bindings: readonly Binding[],
+   ): ChainBuildText {
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
       const lift = authorModelLiftContext(modelDef, readAuthorText);
       const problems: ServedCopyProblem[] = [];
-      const bindings = this.bindings.filter((b) => b.origin !== "preaggregate");
       const { candidates } = this.rerootCandidates(
-         bindings,
+         bindings.filter((b) => b.kind !== "rollup"),
          map,
          lift,
          problems,
@@ -1923,21 +1930,21 @@ export class ServedCopyServe {
     * chained build's text, so both re-root one way.
     */
    private rerootCandidates(
-      bindings: readonly ServeBinding[],
+      bindings: readonly Binding[],
       map: SourceMap,
       lift: ReturnType<typeof authorModelLiftContext>,
       problems: ServedCopyProblem[],
       lane: number,
    ): {
-      candidates: { binding: ServeBinding; reroot: AuthorReroot }[];
+      candidates: { binding: Binding; reroot: AuthorReroot }[];
       throughBase: NonNullable<Compiled["throughBase"]>[number][];
       withoutKept: Map<
-         { binding: ServeBinding; reroot: AuthorReroot },
-         { binding: ServeBinding; reroot: AuthorReroot } | undefined
+         { binding: Binding; reroot: AuthorReroot },
+         { binding: Binding; reroot: AuthorReroot } | undefined
       >;
    } {
       let candidates: {
-         binding: ServeBinding;
+         binding: Binding;
          reroot: AuthorReroot;
       }[] = [];
       const reservedNames = modelFieldNames(map);
@@ -2028,7 +2035,8 @@ export class ServedCopyServe {
    private async compile(
       key: string,
       generation: number,
-      bindings: ServeBinding[],
+      over: readonly Binding[],
+      bindings: Binding[],
       lane = 0,
    ): Promise<Compiled> {
       const problems: ServedCopyProblem[] = [];
@@ -2037,7 +2045,15 @@ export class ServedCopyServe {
       const destinations =
          this.host.serveDestinationConfig() ?? NO_DESTINATIONS;
       if (!this.packagePath || !this.packageConfig) {
-         return { key, generation, lane, rerooted: [], aliased: [], problems };
+         return {
+            key,
+            generation,
+            over,
+            lane,
+            rerooted: [],
+            aliased: [],
+            problems,
+         };
       }
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
@@ -2090,6 +2106,7 @@ export class ServedCopyServe {
             return {
                key,
                generation,
+               over,
                lane,
                rerooted: [],
                aliased: [],
@@ -2108,7 +2125,7 @@ export class ServedCopyServe {
             destinations(),
             new Set(
                rerooted
-                  .filter((b) => !b.colocated)
+                  .filter((b) => !isColocated(b))
                   .map((b) => b.destinationName),
             ),
          );
@@ -2361,6 +2378,7 @@ export class ServedCopyServe {
                return {
                   key,
                   generation,
+                  over,
                   lane,
                   rerooted: [],
                   aliased: [],
@@ -2385,6 +2403,7 @@ export class ServedCopyServe {
                return {
                   key,
                   generation,
+                  over,
                   lane,
                   rerooted: [],
                   aliased: [],
@@ -2502,6 +2521,7 @@ export class ServedCopyServe {
          return {
             key,
             generation,
+            over,
             lane,
             // An inlined join's columns are the joined source's fields as the
             // build computed them, in its time zone. A stored computed
@@ -2572,7 +2592,15 @@ export class ServedCopyServe {
             config,
          };
       }
-      return { key, generation, lane, rerooted: [], aliased: [], problems };
+      return {
+         key,
+         generation,
+         over,
+         lane,
+         rerooted: [],
+         aliased: [],
+         problems,
+      };
    }
 }
 
@@ -3194,7 +3222,7 @@ function bigIntegerReadsOf(
    columns: readonly { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
    def: unknown,
-   binding: ServeBinding,
+   binding: Binding,
    /** A build reads the stored column in SQL, where no digit is lost. */
    asStored?: boolean,
 ): Map<string, string | undefined> {
@@ -3213,12 +3241,12 @@ function bigIntegerReadsOf(
  */
 function bigIntegerOptionsOf(
    def: unknown,
-   binding: ServeBinding,
+   binding: Binding,
 ): BigIntegerReadOptions {
    return {
       dialect: (def as { dialect?: unknown }).dialect,
-      colocated: binding.colocated === true,
-      ...(binding.colocated
+      colocated: isColocated(binding),
+      ...(isColocated(binding)
          ? { nativeTypeOf: nativeTypeLookup(binding.nativeSchema) }
          : {}),
    };
@@ -3526,7 +3554,7 @@ export function chainBuildText(
    ).filter(
       (b) =>
          b.destinationName === request.destination.name &&
-         b.origin !== "preaggregate" &&
+         b.kind !== "rollup" &&
          bindingServesModelSource(b, lift.contents),
    );
    const copy = new ServedCopyServe({
@@ -3538,6 +3566,5 @@ export function chainBuildText(
       readsStoredIntegers: true,
    });
    copy.setContext(...model.context);
-   copy.setBindings(bindings);
-   return copy.chainBuildFiles(request.downstream.sourceID);
+   return copy.chainBuildFiles(request.downstream.sourceID, bindings);
 }

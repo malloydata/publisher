@@ -42,8 +42,12 @@ import type { GraftScope } from "./gate_classification";
 import { logger } from "../logger";
 import { recordStorageServeRouting } from "../materialization_metrics";
 import { sourceChain } from "./materialization/text/source_map";
-import { type ServeBinding } from "./materialization/domain/serve_binding";
-import type { StorageBindings } from "./materialization/serve/storage_bindings";
+import {
+   type Binding,
+   isColocated,
+   type Pinned,
+   type Snapshot,
+} from "./materialization/domain/binding";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import { explainDecline } from "./materialization/domain/leg_decline";
 import {
@@ -85,8 +89,8 @@ export type RoutedExtra =
    | {
         kind: "served";
         virtualMap: VirtualMap;
-        bindings: ServeBinding[];
-        tablesRead: ServeBinding[];
+        bindings: Binding[];
+        tablesRead: Binding[];
         /** The served copy's graft scope, for `govern()` (see ServedCopyServe.loadQuery). */
         graftScope?: GraftScope;
      }
@@ -97,7 +101,7 @@ export type RoutedExtra =
         /** For a `storage=` view: how its `virtual()` handle resolves. */
         virtualMap?: VirtualMap;
         /** For a `storage=` view: its binding. */
-        binding?: ServeBinding;
+        binding?: Binding;
         /** The variant's graft scope, for `govern()` (R3). */
         graftScope: GraftScope;
      }
@@ -108,14 +112,14 @@ export type RoutedExtra =
         /** A `#(preaggregate) storage=` rollup: how its table resolves. */
         virtualMap?: VirtualMap;
         /** A `#(preaggregate) storage=` rollup: its binding. */
-        binding?: ServeBinding;
+        binding?: Binding;
         /**
          * Every stored table the answer reads, when that is more than the
          * rollup's (a join leg answered in a storage destination reads the
          * query source's table there too): together they decide whether a
          * failed run may be retried live.
          */
-        bindings?: ServeBinding[];
+        bindings?: Binding[];
         /**
          * A `#(preaggregate)` rollup's graft scope, for `govern()` (R3): the
          * variant that redeclares the run target over the rollup, gates
@@ -129,7 +133,7 @@ export type RoutedExtra =
 function tiersRead(extra: RoutedExtra): { tier: "colocated" | "storage" }[] {
    return extra.kind === "served"
       ? extra.tablesRead.map((b) => ({
-           tier: b.colocated === true ? "colocated" : "storage",
+           tier: b.tier,
         }))
       : [];
 }
@@ -151,9 +155,9 @@ export interface Answer {
    /** For a storage answer: how the shape's virtual sources resolve to tables. */
    readonly virtualMap: VirtualMap | undefined;
    /** For a storage answer: the bindings that produced the shape (decide per-binding behaviour from these, never the package-wide set). */
-   readonly serveShapeBindings: readonly ServeBinding[];
+   readonly serveShapeBindings: readonly Binding[];
    /** For a storage answer: the stored tables the query reads. */
-   readonly storageTablesRead: readonly ServeBinding[] | undefined;
+   readonly storageTablesRead: readonly Binding[] | undefined;
    /** For a served-copy, persisted-view or rollup answer: where `govern()` grafts a row-level gate (R3). */
    readonly graftScope: GraftScope | undefined;
    /**
@@ -268,7 +272,7 @@ export function servedFromOf(answer: Answer): ServedFrom | undefined {
       answer.tier === "served" &&
       answer.storageTablesRead !== undefined &&
       answer.storageTablesRead.length > 0 &&
-      answer.storageTablesRead.every((b) => b.colocated)
+      answer.storageTablesRead.every(isColocated)
    ) {
       return undefined;
    }
@@ -293,12 +297,12 @@ export function servedFromOf(answer: Answer): ServedFrom | undefined {
  * rollup-only package could never degrade. Empty is false: nothing routed.
  */
 export function bindingsAllowDegradeToLive(
-   bindings: readonly ServeBinding[],
+   bindings: readonly Binding[],
 ): boolean {
    return (
       bindings.length > 0 &&
       bindings.every(
-         (b) => b.origin === "preaggregate" || b.freshnessFallback === "live",
+         (b) => b.kind === "rollup" || b.freshnessFallback === "live",
       )
    );
 }
@@ -424,8 +428,8 @@ export function recordingManifest(
 /** What serving reads from the model that owns the query. */
 export interface QueryServingHost {
    readonly modelPath: string;
-   /** The model's `storage=` bindings, for the path report. */
-   readonly storageServe: StorageBindings;
+   /** The model's own `#@ persist` `storage=` tables in a snapshot, for the path report. */
+   storageTables(snapshot: Snapshot): readonly Binding[];
    /** The served copy on `virtual` (materialization v2), the `served` candidate. */
    readonly servedCopy: ServedCopyServe;
    modelDef(): ModelDef | undefined;
@@ -454,6 +458,9 @@ export function routeCandidates(
    args: {
       queryString: string;
       surfaceGivens: Record<string, GivenValue> | undefined;
+      /** The query's pinned tables, which every leg reads. */
+      pinned: Pinned;
+      /** The pinned build manifest, or undefined when nothing is bound. */
       buildManifest: BuildManifest | undefined;
       servedCopyPossible: boolean;
       /**
@@ -475,8 +482,13 @@ export function routeCandidates(
       persistedViewsFor?: QueryMaterializer;
    },
 ): Variant<RoutedExtra>[] {
-   const { queryString, surfaceGivens, buildManifest, servedCopyPossible } =
-      args;
+   const {
+      queryString,
+      surfaceGivens,
+      pinned,
+      buildManifest,
+      servedCopyPossible,
+   } = args;
    // Gate keeping, one policy (`domain/gate_policy.ts`), its switches read
    // once for the query.
    const switches = gateSwitches();
@@ -500,6 +512,7 @@ export function routeCandidates(
                queryString,
                givens: surfaceGivens,
                authorRunnable,
+               pinned,
                buildManifest,
             });
             return {
@@ -543,7 +556,7 @@ export function routeCandidates(
                queryString,
                givens: surfaceGivens,
                authorRunnable,
-               buildManifest,
+               pinned,
             });
             return {
                runnable: answer.runnable,
@@ -588,6 +601,7 @@ export function routeCandidates(
             const served = await host.servedCopy.loadQuery(
                queryString,
                surfaceGivens,
+               pinned,
             );
             logger.debug("Serving query from the served copy (virtual)", {
                modelPath: host.modelPath,
@@ -619,7 +633,7 @@ export function routeCandidates(
 /**
  * The path report for one answered query, or undefined when it cannot be
  * assembled (logged at debug). Reads the author's compile, the
- * {@link Answer} and the fresh manifest; changes nothing.
+ * {@link Answer} and the query's pin; changes nothing.
  */
 export async function queryPathFor(
    host: QueryServingHost,
@@ -629,7 +643,8 @@ export async function queryPathFor(
       runnable: QueryMaterializer;
       sourceName: string | undefined;
       viewName: string | undefined;
-      freshManifest: BuildManifest | undefined;
+      /** The query's pinned tables: what it could read, at its instant. */
+      pinned: Pinned;
       includeHidden: boolean;
       /** The text the router saw, to name the persisted view it calls. */
       queryString?: string;
@@ -651,7 +666,13 @@ export async function queryPathFor(
          sourceName,
          viewName: args.viewName,
       });
-      const catalog = host.materializedTables();
+      const { pinned } = args;
+      // The colocated tables bound when the query was pinned.
+      const planned = host.materializedTables();
+      const catalog = planned && {
+         ...planned,
+         bound: pinned.snapshot.entries,
+      };
       const variantRollups = host.rollupVariants.hasRollups()
          ? host.rollupVariants.rollups()
          : [];
@@ -660,17 +681,14 @@ export async function queryPathFor(
       const viewTable =
          answer.viewTable ??
          (args.queryString !== undefined
-            ? host.persistedViews.reportedTable(
-                 args.queryString,
-                 args.freshManifest,
-              )
+            ? host.persistedViews.reportedTable(args.queryString, pinned)
             : undefined);
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
       if (
          (catalog?.planned.size ?? 0) === 0 &&
-         host.storageServe.serveBindings.length === 0 &&
-         host.servedCopy.materializeBindings().length === 0 &&
+         host.storageTables(pinned.snapshot).length === 0 &&
+         host.servedCopy.materializeBindings(pinned, "bound").length === 0 &&
          variantRollups.length === 0 &&
          viewTable === undefined &&
          answer.considered.length === 0
@@ -683,37 +701,37 @@ export async function queryPathFor(
             warnings: [],
          };
       }
-      const now = Date.now();
-      const toTable = (b: ServeBinding): StorageTable => ({
+      const toTable = (b: Binding): StorageTable => ({
          sourceName: b.sourceName,
          sourceIDs: b.sourceIDs,
-         origin: b.origin,
+         origin: b.kind === "rollup" ? "preaggregate" : "persist",
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
-         ...(b.colocated ? { colocated: true as const } : {}),
+         ...(isColocated(b) ? { colocated: true as const } : {}),
       });
+      const storageTables = host.storageTables(pinned.snapshot);
       const published = args.includeHidden ? undefined : host.publishedNames();
       return buildQueryPath({
          shape,
          modelPath: host.modelPath,
          chain: sourceChain(struct, modelDef),
          catalog,
-         freshColocated: args.freshManifest
-            ? new Set(Object.keys(args.freshManifest.entries))
+         freshColocated: pinned.hasEntries
+            ? new Set(Object.keys(pinned.compilerManifest.entries))
             : undefined,
          // The serve shape's tables, and the `#(materialize)` tables only the
          // served copy reads, so a table on the chain is named whichever
          // candidate answered.
          storage: {
             all: [
-               ...host.storageServe.serveBindings,
-               ...host.servedCopy.materializeBindings(),
-               ...host.rollupVariants.rollupBindings(),
+               ...storageTables,
+               ...host.servedCopy.materializeBindings(pinned, "bound"),
+               ...host.rollupVariants.rollupBindings(pinned, "bound"),
             ].map(toTable),
             fresh: [
-               ...host.storageServe.freshServeBindings(now),
-               ...host.servedCopy.materializeBindings(now),
-               ...host.rollupVariants.rollupBindings(now),
+               ...storageTables.filter((b) => pinned.serves(b)),
+               ...host.servedCopy.materializeBindings(pinned, "fresh"),
+               ...host.rollupVariants.rollupBindings(pinned, "fresh"),
             ].map(toTable),
          },
          rollups: variantRollups.map((r) => ({ ...r, variant: true })),
@@ -725,13 +743,15 @@ export async function queryPathFor(
          ...(answer.tier === "rollup"
             ? {
                  rollupTablesRead: answer.serveShapeBindings
-                    .filter((b) => b.origin !== "preaggregate")
+                    .filter((b) => b.kind !== "rollup")
                     .map(toTable),
               }
             : {}),
          ...(answer.tier === "served" ? { via: "served_copy" as const } : {}),
          servedCopyTables: new Set(
-            host.servedCopy.materializeBindings().map((b) => b.tablePath),
+            host.servedCopy
+               .materializeBindings(pinned, "bound")
+               .map((b) => b.tablePath),
          ),
          runFailed: answer.runFailed,
          colocatedRead: answer.colocatedRead,

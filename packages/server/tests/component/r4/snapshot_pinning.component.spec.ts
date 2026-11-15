@@ -92,23 +92,20 @@ source: orders is duckdb.table('orders_raw') extend {
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
-   it.failing(
-      "answers from the tables bound when the query started, though they are unbound mid-query",
-      async () => {
-         fixture.setBindings([]);
-         const live = await fixture.runAsIs(malloy);
-         fixture.setBindings(fixture.bindings);
-         // Unbind every table once the served copy is asked, after the query
-         // started and before it runs.
-         undo = interpose(legOf(fixture, "servedCopy"), "loadQuery", () =>
-            fixture.setBindings([]),
-         );
-         const served = await fixture.runAsIs(malloy);
-         expect(served.servedFrom).toBe("storage");
-         expect(served.path?.servedBy?.kind).not.toBe("live");
-         expect(rowDifference(live.rows, served.rows)).toBeUndefined();
-      },
-   );
+   it("answers from the tables bound when the query started, though they are unbound mid-query", async () => {
+      fixture.setBindings([]);
+      const live = await fixture.runAsIs(malloy);
+      fixture.setBindings(fixture.bindings);
+      // Unbind every table once the served copy is asked, after the query
+      // started and before it runs.
+      undo = interpose(legOf(fixture, "servedCopy"), "loadQuery", () =>
+         fixture.setBindings([]),
+      );
+      const served = await fixture.runAsIs(malloy);
+      expect(served.servedFrom).toBe("storage");
+      expect(served.path?.servedBy?.kind).not.toBe("live");
+      expect(rowDifference(live.rows, served.rows)).toBeUndefined();
+   });
 
    it("reads the new bindings on the next query", async () => {
       fixture.setBindings([]);

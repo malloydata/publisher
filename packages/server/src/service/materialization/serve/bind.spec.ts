@@ -5,10 +5,15 @@ import { describe, expect, it } from "bun:test";
 import type { MaterializePlan } from "../plan/build_file_generator";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import {
+   bindColocatedEntries,
+   bindStorageEntries,
    deriveColocatedServeBindings,
+   kindFromPlan,
    v1StoredColumnsOf,
-} from "./colocated_bindings";
+} from "./bind";
+import type { BuildPlan, ManifestEntry } from "../domain/types";
 import { boundTablePath, buildVirtualMap } from "./bindings";
+import type { Binding } from "../domain/binding";
 
 const ID = "orders@file:///pkg/m.malloy";
 
@@ -63,11 +68,11 @@ describe("deriveColocatedServeBindings", () => {
    it("binds a colocated #(materialize) table on its own connection, keyed by its content address", () => {
       expect(derive()).toEqual([
          {
+            kind: "materialize",
+            tier: "colocated",
             sourceName: "orders",
             sourceIDs: [ID],
-            origin: "persist",
             destinationName: "pg",
-            colocated: true,
             virtualHandle: "addr1",
             // Canonical for Postgres, as Malloy's manifest pastes it.
             tablePath: '"analytics"."orders_all"',
@@ -135,7 +140,9 @@ describe("deriveColocatedServeBindings", () => {
          destinationName: "bq",
          tablePath: "proj.ds.orders_all",
       };
-      const storage = {
+      const storage: Binding = {
+         kind: "persist",
+         tier: "storage",
          sourceName: "s",
          destinationName: "lake",
          virtualHandle: "addr2",
@@ -268,11 +275,11 @@ describe("deriveColocatedServeBindings: v1 colocated #@ persist (the v1 cutover,
       ];
       expect(derive({ schema: captured })).toEqual([
          {
+            kind: "persist",
+            tier: "colocated",
             sourceName: "daily",
             sourceIDs: [V1],
-            origin: "persist",
             destinationName: "duckdb",
-            colocated: true,
             virtualHandle: "addr-v1",
             // Canonical for DuckDB, as Malloy's manifest pastes it.
             tablePath: '"daily"',
@@ -324,5 +331,145 @@ describe("v1StoredColumnsOf", () => {
          v1StoredColumnsOf({ ...def, dialect: "postgres" })?.map((c) => c.name),
       ).toEqual(["region", "total"]);
       expect(v1StoredColumnsOf(undefined)).toBeUndefined();
+   });
+});
+
+describe("bindStorageEntries", () => {
+   const plan = {
+      sources: {
+         "orders@m": {
+            name: "orders",
+            sourceEntityId: "addr_orders",
+            connectionName: "duckdb",
+         },
+         "gated@m": {
+            name: "gated",
+            sourceEntityId: "addr_gated",
+            connectionName: "duckdb",
+         },
+      },
+   } as unknown as BuildPlan;
+   const entry = (sourceName: string, sourceEntityId: string): ManifestEntry =>
+      ({
+         sourceName,
+         sourceEntityId,
+         storageDestinationName: "lake",
+         physicalTableName: `${sourceName}_t`,
+         schema: [{ name: "x", type: "INTEGER" }],
+      }) as ManifestEntry;
+   const entries = {
+      addr_orders: entry("orders", "addr_orders"),
+      addr_gated: entry("gated", "addr_gated"),
+      // Built from another definition of `orders`: another address.
+      addr_old: entry("orders", "addr_old"),
+   };
+   const bind = (
+      eligibility: Parameters<typeof bindStorageEntries>[0]["eligibility"],
+   ) =>
+      bindStorageEntries({
+         entries,
+         plan,
+         eligibility,
+         kindOf: (b) => b.kind,
+      });
+
+   it("binds the eligible sources' tables, at their plan addresses, as storage tables", () => {
+      const bound = bind({
+         eligible: ["orders@m"],
+         refused: { "gated@m": "it reads a given" },
+      });
+      expect(
+         bound.bindings.map((b) => [b.sourceName, b.sourceIDs, b.kind, b.tier]),
+      ).toEqual([["orders", ["orders@m"], "persist", "storage"]]);
+      expect(bound.otherDefinition).toEqual(["orders"]);
+      expect(bound.declined).toEqual([
+         {
+            reason: "refused",
+            sourceName: "gated",
+            rollup: false,
+            detail: "it reads a given",
+         },
+      ]);
+   });
+
+   it("declines everything when the plan's eligibility is unknown", () => {
+      const bound = bind(undefined);
+      expect(bound.bindings).toEqual([]);
+      expect(bound.declined.map((d) => [d.sourceName, d.reason])).toEqual([
+         ["orders", "build_plan_unavailable"],
+         ["gated", "build_plan_unavailable"],
+      ]);
+   });
+
+   it("reads each binding's kind through kindOf", () => {
+      const bound = bindStorageEntries({
+         entries,
+         plan,
+         eligibility: { eligible: ["orders@m"], refused: {} },
+         kindOf: () => "materialize",
+      });
+      expect(bound.bindings.map((b) => b.kind)).toEqual(["materialize"]);
+   });
+});
+
+describe("bindColocatedEntries", () => {
+   it("keeps the eligible entries, quoted for their dialect, and declines the rest", () => {
+      const bound = bindColocatedEntries({
+         entries: {
+            a: { tableName: "order" },
+            b: { tableName: "kept" },
+            c: { tableName: "refused" },
+         },
+         eligibility: {
+            eligibleEntityIds: new Set(["a", "b"]),
+            refused: { c: "a gate the table cannot keep" },
+         },
+         dialects: new Map([["a", "postgres"]]),
+      });
+      expect(bound.entries).toEqual({
+         a: { tableName: '"order"' },
+         b: { tableName: "kept" },
+      });
+      expect(bound.declined).toEqual([
+         {
+            reason: "refused",
+            sourceEntityId: "c",
+            detail: "a gate the table cannot keep",
+         },
+      ]);
+   });
+
+   it("declines every entry when the plan's eligibility is unknown", () => {
+      const bound = bindColocatedEntries({
+         entries: { a: { tableName: "t" } },
+         eligibility: undefined,
+         dialects: new Map(),
+      });
+      expect(bound.entries).toEqual({});
+      expect(bound.declined.map((d) => d.reason)).toEqual([
+         "build_plan_unavailable",
+      ]);
+   });
+});
+
+describe("kindFromPlan", () => {
+   const plan = {
+      materializeSourceIDs: new Set(["m@x"]),
+      viewBuildSourceIDs: new Set(["v@x"]),
+   };
+   it("reads a binding's kind off the plan, never its name", () => {
+      expect(kindFromPlan({ kind: "rollup", sourceIDs: ["m@x"] }, plan)).toBe(
+         "rollup",
+      );
+      expect(kindFromPlan({ kind: "persist", sourceIDs: ["v@x"] }, plan)).toBe(
+         "view",
+      );
+      expect(kindFromPlan({ kind: "persist", sourceIDs: ["m@x"] }, plan)).toBe(
+         "materialize",
+      );
+      expect(kindFromPlan({ kind: "persist", sourceIDs: ["p@x"] }, plan)).toBe(
+         "persist",
+      );
+      expect(kindFromPlan({ kind: "persist" }, plan)).toBe("persist");
    });
 });

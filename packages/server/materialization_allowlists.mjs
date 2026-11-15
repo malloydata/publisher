@@ -72,7 +72,7 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/serve/author_imports.ts -> service/materialization/plan/persisted_view":
       "2g.2",
-   "service/materialization/serve/colocated_bindings.ts -> service/materialization/plan/build_file_generator":
+   "service/materialization/serve/bind.ts -> service/materialization/plan/build_file_generator":
       "2g.2",
    "service/materialization/serve/declaring_file_variant.ts -> service/materialization/plan/persisted_view":
       "2g.2",
@@ -163,8 +163,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.2",
    "service/query_serving.ts -> service/materialization/serve/served_copy_serve":
       "2g.2",
-   "service/query_serving.ts -> service/materialization/serve/storage_bindings":
-      "2g.2",
    "service/query_serving.ts -> service/materialization/serve/view_variants":
       "2g.2",
    "service/query_serving.ts -> service/materialization/text/source_map":
@@ -187,9 +185,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/plan/rollup_compile.ts -> logger": "2g.3",
    "service/materialization/serve/rollup_variants.ts -> logger": "2g.2",
    "service/materialization/serve/served_copy_serve.ts -> logger": "2g.2",
-   "service/materialization/serve/storage_bindings.ts -> logger": "2g.2",
-   "service/materialization/serve/storage_bindings.ts -> materialization_metrics":
-      "2g.2",
    "service/materialization/serve/view_variants.ts -> logger": "2g.2",
 };
 
@@ -306,10 +301,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       step: "5",
    },
    "service/materialization/serve/author_imports.ts": { count: 1, step: "5" },
-   "service/materialization/serve/colocated_bindings.ts": {
-      count: 1,
-      step: "5",
-   },
    "service/materialization/serve/join_rollup.ts": { count: 6, step: "5" },
    "service/materialization/serve/rollup_variants.ts": { count: 3, step: "5" },
    "service/materialization/serve/serve_verdict.ts": { count: 8, step: "5" },
@@ -359,17 +350,7 @@ export const RATCHET_ANNOTATION_READS = {};
 /** Reads of `_modelDef`, `_query`, `_sourceDef` or `_explore` outside governance/ir, per file. */
 export const RATCHET_IR_READS = {};
 /** Clock reads in serve/ and domain/, per file. */
-export const RATCHET_CLOCK_READS = {
-   "service/materialization/serve/rollup_variants.ts": {
-      count: 1,
-      step: "2g.1",
-   },
-   "service/materialization/serve/served_copy_serve.ts": {
-      count: 2,
-      step: "2g.1",
-   },
-   "service/materialization/serve/view_variants.ts": { count: 1, step: "2g.1" },
-};
+export const RATCHET_CLOCK_READS = {};
 /** A dialect compared to a string literal outside the dialect table, per file. */
 export const RATCHET_DIALECT_LITERALS = {
    "service/materialization/plan/materialize_compile.ts": {
@@ -392,7 +373,7 @@ export const RATCHET_DIALECT_LITERALS = {
    "service/materialization/run/name_view.ts": { count: 1, step: "2l" },
    "service/materialization/run/name_view_sql.ts": { count: 8, step: "2l" },
    "service/materialization/run/table_ownership.ts": { count: 4, step: "2l" },
-   "service/materialization/serve/colocated_bindings.ts": {
+   "service/materialization/serve/bind.ts": {
       count: 1,
       step: "2l",
    },

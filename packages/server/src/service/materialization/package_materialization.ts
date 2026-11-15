@@ -53,26 +53,28 @@ import type {
 } from "./plan/preaggregation_validation";
 import { CronEvaluator } from "./run/cron_evaluator";
 import {
-   evaluateManifestFreshness,
-   filterFreshManifest,
-} from "./domain/freshness";
-import {
-   type BoundTable,
    type LiveTableVerdict,
    liveVerdictKey,
    type MaterializedTableCatalog,
    type PlannedTable,
 } from "./serve/query_path";
-import { deriveServeBindings, type ServeBinding } from "./domain/serve_binding";
-import { groupAliasesByName, planSourceIds } from "./domain/source_aliases";
+import {
+   type Binding,
+   makeSnapshot,
+   pin,
+   type Snapshot,
+} from "./domain/binding";
 import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
 import {
+   bindColocatedEntries,
+   bindStorageEntries,
    deriveColocatedServeBindings,
+   kindFromPlan,
    v1StoredColumnsOf,
-} from "./serve/colocated_bindings";
+} from "./serve/bind";
 import { namesServedCopyAlias } from "./serve/served_copy_config";
 import {
    previewNativeSchema,
@@ -86,7 +88,6 @@ import {
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./domain/storage_table_path";
 import { persistTableTarget } from "./plan/eligibility_collect";
-import { quoteManifestTablePath } from "../quoting";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
@@ -206,23 +207,21 @@ export class PackageMaterialization {
    private serveDestinationSchema?: (
       destinationName: string,
    ) => string | undefined;
-   // Bound build manifest (sourceEntityId -> { tableName }): routes persist
-   // sources to their materialized tables for served queries and the /compile
-   // preview alike, so previewed SQL matches executed SQL. Surfaced on /status
-   // so the control plane can confirm a worker bound it.
+   // The colocated manifest entries bound now, freshness fields and key
+   // checks included: the snapshot's `entries`. Undefined when serving live.
+   private colocatedEntries: FreshnessManifest | undefined;
+   // The same entries as table names only, the manifest models hydrate with
+   // and /compile reads. Surfaced on /status so the control plane can
+   // confirm a worker bound it.
    private buildManifestEntries: BuildManifest["entries"] | undefined;
-   // The full wire entries, freshness fields included, so the serve path can
-   // re-evaluate age vs window per query. Undefined when serving live.
-   private freshnessEntries: FreshnessManifest | undefined;
-   // `storage=` serve bindings, pushed onto each Model for the virtual-source
-   // serve transform. A storage source serves cross-connection through these,
-   // not through the same-connection manifest above.
-   private storageServeBindings: ReturnType<typeof deriveServeBindings> = [];
-   // Memoized freshness-filtered manifest, recomputed when an entry crosses its
-   // window (`validUntil`) or a rebind clears it. Infinity: stable until rebind.
-   private freshManifestCache:
-      | { manifest: BuildManifest["entries"]; validUntil: number }
+   // The `storage=` bindings a host's or a run's manifest made.
+   private storageBindings: readonly Binding[] = [];
+   /** {@link snapshot}, keyed on every fact it is made from. */
+   private snapshotMemo:
+      | { key: readonly unknown[]; snapshot: Snapshot; signature: string }
       | undefined;
+   /** The bindings the models last compiled their served copies over. */
+   private publishedBindings: readonly Binding[] | undefined;
    private manifestBindingStatus: "unbound" | "bound" | "live_fallback" =
       "unbound";
    private manifestEntryCount = 0;
@@ -339,8 +338,8 @@ export class PackageMaterialization {
          manifestBindingStatus: this.manifestBindingStatus,
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
-         storageServeBindings: this.storageServeBindings.map((b) => ({
-            origin: b.origin ?? "persist",
+         storageServeBindings: this.storageBindings.map((b) => ({
+            origin: b.kind === "rollup" ? "preaggregate" : "persist",
             sourceName: b.sourceName,
             storageDestinationName: b.destinationName,
             tablePath: b.tablePath,
@@ -505,40 +504,73 @@ export class PackageMaterialization {
     * vanished still clears them.
     */
    hasStorageServeBindings(): boolean {
-      return this.storageServeBindings.length > 0;
+      return this.storageBindings.length > 0;
    }
 
    /**
-    * The freshness-filtered manifest at `now`: a table is used only within its
-    * window, else per its `fallback` (`live`/`fail` drop it, `stale_ok` keeps
-    * it); an entry with no window always routes. Undefined when unbound.
-    * Memoized: fresh→stale is monotonic, so one `validUntil` deadline suffices.
+    * The colocated entries a query may read at `now` (fresh, un-gated, or
+    * stale under `stale_ok`), as table names: what /compile and the serve
+    * verdict read. Undefined when nothing is bound.
     */
    getFreshBuildManifest(
       now: number = Date.now(),
    ): BuildManifest["entries"] | undefined {
-      if (!this.freshnessEntries) return undefined;
-      if (this.freshManifestCache && now < this.freshManifestCache.validUntil) {
-         return this.freshManifestCache.manifest;
-      }
-      const { manifest, nextStaleSince } = filterFreshManifest(
-         this.freshnessEntries,
-         new Date(now),
-      );
-      this.freshManifestCache = {
-         manifest,
-         validUntil: nextStaleSince ?? Infinity,
-      };
-      return manifest;
+      if (!this.colocatedEntries) return undefined;
+      return pin(this.snapshot(), new Date(now)).compilerManifest.entries;
    }
 
-   /** Install the per-query freshness resolvers for every model; idempotent. */
-   wireFreshnessResolvers(): void {
-      this.owner.modelPolicy().setFreshnessResolvers({
-         manifest: () => this.getFreshBuildManifest(),
+   /** Point every model's policy at this package's snapshot; idempotent. */
+   wireServingResolvers(): void {
+      this.owner.modelPolicy().setServingResolvers({
+         snapshot: () => this.snapshot(),
          preaggregateEntityIds: () => this.getPreaggregateEntityIds(),
          materializedTables: () => this.materializedTableCatalog(),
       });
+   }
+
+   /**
+    * Every table this package serves now, as one immutable snapshot: the
+    * `storage=` bindings, each kind read off the current plan, the colocated
+    * tables the served copy reads, and the colocated entries. Memoized on
+    * every fact it is made from, and the bindings array is kept while they
+    * do not change, so caches keyed by it survive an unrelated rebind.
+    */
+   snapshot(): Snapshot {
+      const models = this.owner.models();
+      const key = [
+         this.storageBindings,
+         this.colocatedEntries,
+         this.buildPlan,
+         this.servingPlanWhileUnavailable,
+         this.materializePlans,
+         this.colocatedSourceEligibility,
+         models,
+         getMaterializeEnabled(),
+      ];
+      const memo = this.snapshotMemo;
+      if (memo && memo.key.every((part, i) => part === key[i])) {
+         return memo.snapshot;
+      }
+      const plan = {
+         materializeSourceIDs: new Set(Object.keys(this.materializePlans)),
+         viewBuildSourceIDs: this.persistedViewBuildIDs(),
+      };
+      const bindings = [
+         ...this.storageBindings.map((b) => {
+            const kind = kindFromPlan(b, plan);
+            return kind === b.kind ? b : { ...b, kind };
+         }),
+         ...this.colocatedServeBindings(),
+      ];
+      const signature = JSON.stringify(bindings);
+      const snapshot = makeSnapshot(
+         memo && memo.signature === signature
+            ? memo.snapshot.bindings
+            : Object.freeze(bindings),
+         this.colocatedEntries ?? {},
+      );
+      this.snapshotMemo = { key, snapshot, signature };
+      return snapshot;
    }
 
    /**
@@ -552,7 +584,7 @@ export class PackageMaterialization {
       if (
          cached &&
          cached.plan === this.buildPlan &&
-         cached.bound === this.freshnessEntries &&
+         cached.bound === this.colocatedEntries &&
          cached.liveVerdicts === liveVerdicts
       ) {
          return cached.catalog;
@@ -571,21 +603,9 @@ export class PackageMaterialization {
             ...(source.modelPath ? { modelPath: source.modelPath } : {}),
          });
       }
-      const bound: Record<string, BoundTable> = {};
-      for (const [sourceEntityId, entry] of Object.entries(
-         this.freshnessEntries ?? {},
-      )) {
-         bound[sourceEntityId] = {
-            tableName: entry.tableName,
-            ...(entry.dataAsOf ? { dataAsOf: entry.dataAsOf } : {}),
-            ...(entry.keyUniqueness
-               ? { keyUniqueness: entry.keyUniqueness }
-               : {}),
-         };
-      }
       const catalog: MaterializedTableCatalog = {
          planned,
-         bound,
+         bound: this.colocatedEntries ?? {},
          ...(liveVerdicts
             ? {
                  liveVerdicts: liveVerdicts.byTable,
@@ -595,7 +615,7 @@ export class PackageMaterialization {
       };
       this.tableCatalogCache = {
          plan: this.buildPlan,
-         bound: this.freshnessEntries,
+         bound: this.colocatedEntries,
          liveVerdicts,
          catalog,
       };
@@ -640,9 +660,8 @@ export class PackageMaterialization {
       const models = this.owner.models();
       const key = [
          this.buildPlan,
-         this.freshnessEntries,
-         this.buildManifestEntries,
-         this.storageServeBindings,
+         this.colocatedEntries,
+         this.storageBindings,
          this.sourceEligibility,
          this.colocatedSourceEligibility,
          this.rollupsOverStoredBase,
@@ -740,19 +759,52 @@ export class PackageMaterialization {
       this.manifestBindingStatus = "live_fallback";
    }
 
-   /** Store the latest bind's entries; an empty map reverts to live (unbound). */
-   recordManifestBinding(entries: FreshnessManifest): void {
+   /**
+    * Bind a manifest, either half or both, and swap the snapshot every model
+    * reads by one reference: a query already routing keeps the one it
+    * pinned.
+    *
+    * - `colocated`: the colocated entries, filtered POSITIVELY against the
+    *   colocated eligibility (a miss is dropped, not fatal) and quoted for
+    *   their dialects; an empty map reverts that tier to live. With
+    *   `colocatedAsGiven`, recorded as given: a reload that recompiled every
+    *   model against them (`Package.reloadAllModels`), which relies on the
+    *   per-query `#(authorize)` graft, not on this filter.
+    * - `storage`: the `storage=` entries a host vouches for, minus any this
+    *   package's eligibility gate refuses and any built from another
+    *   definition of their source (see {@link bindStorageEntries}). The host
+    *   knows WHICH table backs a source, not WHETHER a frozen table may serve
+    *   it: only a compile knows that.
+    */
+   bind(update: {
+      colocated?: FreshnessManifest;
+      colocatedAsGiven?: boolean;
+      storage?: Record<string, ManifestEntry>;
+   }): void {
+      if (update.colocated) {
+         this.adoptColocated(
+            update.colocatedAsGiven
+               ? update.colocated
+               : this.admitColocated(update.colocated),
+         );
+      }
+      if (update.storage) {
+         this.storageBindings = this.admitStorage(update.storage);
+      }
+      this.publishSnapshot();
+   }
+
+   /** Store the colocated entries; an empty map reverts to live (unbound). */
+   private adoptColocated(entries: FreshnessManifest): void {
       const count = Object.keys(entries).length;
-      this.freshnessEntries = count > 0 ? entries : undefined;
+      this.colocatedEntries = count > 0 ? entries : undefined;
       this.buildManifestEntries =
          count > 0 ? toTableNameManifest(entries) : undefined;
       this.manifestEntryCount = count;
       this.manifestBindingStatus = count > 0 ? "bound" : "unbound";
-      this.freshManifestCache = undefined;
       if (count === 0) {
          this.boundManifestUri = null;
       }
-      this.refreshColocatedServeBindings();
    }
 
    /**
@@ -766,95 +818,61 @@ export class PackageMaterialization {
       const ids = new Set(sourceEntityIds);
       // A stored table's own primary key check, on its storage binding.
       if (
-         this.storageServeBindings.some(
+         this.storageBindings.some(
             (b) => b.primaryKeys && ids.has(b.virtualHandle),
          )
       ) {
-         this.storageServeBindings = this.storageServeBindings.map((b) => {
+         this.storageBindings = this.storageBindings.map((b) => {
             if (!b.primaryKeys || !ids.has(b.virtualHandle)) return b;
             const { primaryKeys: _forgotten, ...rest } = b;
             return rest;
          });
-         this.pushStorageServeBindingsToModels();
       }
-      const entries = this.freshnessEntries;
-      if (!entries) return;
+      const entries = this.colocatedEntries;
       let next: FreshnessManifest | undefined;
       for (const id of ids) {
-         const entry = entries[id];
+         const entry = entries?.[id];
          if (!entry?.keyUniqueness) continue;
          next ??= { ...entries };
          const { keyUniqueness: _forgotten, ...rest } = entry;
          next[id] = rest;
       }
-      if (!next) return;
-      this.freshnessEntries = next;
-      this.tableCatalogCache = undefined;
-      // A colocated pair table's leaf key check rides on its serve binding
-      // (`primaryKeys`, known limitation 40): push the bindings without it.
-      this.refreshColocatedServeBindings();
+      // A colocated pair table's leaf key check rides on its binding
+      // (`primaryKeys`, known limitation 40): the snapshot drops it too.
+      if (next) this.colocatedEntries = next;
+      this.publishSnapshot();
    }
 
-   /**
-    * Restore colocated (same-connection) serve routing on load WITHOUT
-    * recompiling: routing is a per-query `buildManifest` override, so setting
-    * the entries suffices. An empty map reverts to live.
-    *
-    * Filtered POSITIVELY against {@link colocatedSourceEligibility}; a miss is
-    * dropped, not fatal. This filter covers only this load-time restore path.
-    * The three paths through `Package.reloadAllModels` record entries UNFILTERED
-    * and rely on the per-query `#(authorize)` graft
-    * (`Model.buildGraftedMaterializer`); do not treat this check as a boundary
-    * they pass through.
-    */
-   bindColocatedServeManifest(entries: FreshnessManifest): void {
+   /** The colocated entries the bind admits, logging and counting the rest. */
+   private admitColocated(entries: FreshnessManifest): FreshnessManifest {
       const eligibility = this.colocatedSourceEligibility;
-      const eligibleEntityIds = eligibility?.eligibleEntityIds;
-      const allowed: FreshnessManifest = {};
-      let dropped = 0;
-      const dialects = this.dialectsByEntityId();
-      for (const [sourceEntityId, entry] of Object.entries(entries)) {
-         if (eligibleEntityIds?.has(sourceEntityId)) {
-            // Malloy pastes `tableName` into `FROM` verbatim, so a table named
-            // by a reserved word (`name="order"`) or needing case preserved
-            // reaches the warehouse only quoted, as the builder CREATEd it and
-            // as `Package.reloadAllModels` binds it. The dialect is the plan's
-            // for this content address; a quoted name passes through.
-            const dialect = dialects.get(sourceEntityId);
-            allowed[sourceEntityId] = dialect
-               ? {
-                    ...entry,
-                    tableName: quoteManifestTablePath(entry.tableName, dialect),
-                 }
-               : entry;
-            continue;
-         }
-         dropped++;
-         const reason =
-            eligibility === undefined
-               ? "the package build plan could not be computed, so no source was examined for eligibility"
-               : (eligibility.refused[sourceEntityId] ??
-                 "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)");
-         recordColocatedBindDropped(
-            eligibility === undefined ? "build_plan_unavailable" : "refused",
-         );
+      const admitted = bindColocatedEntries({
+         entries,
+         eligibility,
+         dialects: this.dialectsByEntityId(),
+      });
+      for (const decline of admitted.declined) {
+         recordColocatedBindDropped(decline.reason);
          logger.warn(
             "Refusing a colocated serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),
-               sourceEntityId,
-               reason,
+               sourceEntityId: decline.sourceEntityId,
+               reason: decline.detail,
             },
          );
       }
-      if (eligibility === undefined && dropped > 0) {
+      if (eligibility === undefined && admitted.declined.length > 0) {
          // The whole default tier just reverted to live, not one source.
          logger.warn(
             "Colocated serve bindings dropped package-wide: the build plan never computed, so no source could be examined for eligibility",
-            { packageName: this.owner.packageName(), droppedCount: dropped },
+            {
+               packageName: this.owner.packageName(),
+               droppedCount: admitted.declined.length,
+            },
          );
       }
-      this.recordManifestBinding(allowed);
+      return admitted.entries;
    }
 
    /** Each planned source's dialect, by its content address. */
@@ -868,102 +886,22 @@ export class PackageMaterialization {
       return out;
    }
 
-   /**
-    * Bind the `storage=` serve bindings a host vouches for, minus any this
-    * package's eligibility gate refuses, and push them onto every model.
-    *
-    * The host knows WHICH table backs a source, not WHETHER a frozen table may
-    * serve it: only a compile knows that. A `given`-referencing source binds
-    * per query for row-level access, so one shared table would hand every
-    * caller the builder's rows (a source can gain a `given` after its build).
-    *
-    * Eligibility must be POSITIVE: a failed plan compute or a source missing
-    * from the plan must not read as consent. Refused bindings are dropped, and
-    * that source serves live, which is always correct.
-    *
-    * A package also binds only the tables its own definitions built: an
-    * entry is matched to a plan source by name AND content address
-    * ({@link planSourceIds}), never by name alone. An entry at an address no
-    * same-named plan source has was built from another definition (another
-    * version's, in a `scope: package` package whose versions share tables
-    * under unchanged names, or an earlier edit's, or an older release's), so
-    * it is dropped and that source serves live. (The colocated tier is keyed
-    * by content address already.)
-    */
-   bindStorageServeBindings(entries: Record<string, ManifestEntry>): void {
-      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
-      const sourceIDsFor = planSourceIds(plan?.sources ?? {});
-      const derived = deriveServeBindings(
-         plan ? this.ownEntries(entries, sourceIDsFor) : entries,
-         groupAliasesByName(Object.values(plan?.sources ?? {})),
-         this.serveDestinationSchema,
-         sourceIDsFor,
-      );
-      const eligibility = this.sourceEligibility;
-      // Keyed by sourceID (the source map's keying rule): a binding passes when
-      // one of the plan sources it materializes was examined and found
-      // eligible. A rollup passes under its own synthesized sourceID.
-      const eligible = new Set(eligibility?.eligible ?? []);
-      // A binding is kept for its ELIGIBLE sources only: two models may declare
-      // same-named sources with identical SQL (one table), one gated and
-      // refused. Narrowing the binding's sourceIDs keeps the refused one off
-      // the table in its own model, where admitting the binding whole would
-      // have served it (fails closed).
-      const allowed = derived.flatMap((binding) => {
-         const ids = binding.sourceIDs ?? [];
-         const admitted = ids.filter((id) => eligible.has(id));
-         if (admitted.length > 0) {
-            return [
-               admitted.length === ids.length
-                  ? binding
-                  : { ...binding, sourceIDs: admitted },
-            ];
-         }
-         const refusal = ids
-            .map((id) => eligibility?.refused[id])
-            .find((reason) => reason !== undefined);
-         const reason =
-            eligibility === undefined
-               ? "the package build plan could not be computed, so no source was examined for eligibility"
-               : (refusal ??
-                 (ids.length === 0
-                    ? "the table names no source of this package's build plan, so none was examined"
-                    : "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)"));
-         logger.warn(
-            "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
-            {
-               packageName: this.owner.packageName(),
-               sourceName: binding.sourceName,
-               // A generated rollup name means nothing to an operator alone.
-               ...(binding.origin === "preaggregate"
-                  ? { kind: "pre-aggregation rollup" }
-                  : {}),
-               reason,
-            },
-         );
-         return [];
+   /** The `storage=` bindings the bind admits, logging the rest. */
+   private admitStorage(entries: Record<string, ManifestEntry>): Binding[] {
+      const admitted = bindStorageEntries({
+         entries,
+         plan: this.buildPlan ?? this.servingPlanWhileUnavailable,
+         destinationSchema: this.serveDestinationSchema,
+         eligibility: this.sourceEligibility,
+         kindOf: (b) =>
+            kindFromPlan(b, {
+               materializeSourceIDs: new Set(
+                  Object.keys(this.materializePlans),
+               ),
+               viewBuildSourceIDs: this.persistedViewBuildIDs(),
+            }),
       });
-      this.storageServeBindings = allowed;
-      this.pushStorageServeBindingsToModels();
-   }
-
-   /**
-    * The entries this package's own sources built: a plan source of the
-    * entry's name at its content address. See {@link bindStorageServeBindings}.
-    */
-   private ownEntries(
-      entries: Record<string, ManifestEntry>,
-      sourceIDsFor: (sourceName: string, sourceEntityId: string) => string[],
-   ): Record<string, ManifestEntry> {
-      const kept: Record<string, ManifestEntry> = {};
-      for (const [key, entry] of Object.entries(entries)) {
-         if (
-            !entry.sourceName ||
-            sourceIDsFor(entry.sourceName, entry.sourceEntityId).length > 0
-         ) {
-            kept[key] = entry;
-            continue;
-         }
+      for (const sourceName of admitted.otherDefinition) {
          logger.info(
             "Serving a source live: its stored table was built from another definition",
             {
@@ -971,11 +909,23 @@ export class PackageMaterialization {
                ...(this.owner.versionId() !== undefined
                   ? { versionId: this.owner.versionId() }
                   : {}),
-               sourceName: entry.sourceName,
+               sourceName,
             },
          );
       }
-      return kept;
+      for (const decline of admitted.declined) {
+         logger.warn(
+            "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
+            {
+               packageName: this.owner.packageName(),
+               sourceName: decline.sourceName,
+               // A generated rollup name means nothing to an operator alone.
+               ...(decline.rollup ? { kind: "pre-aggregation rollup" } : {}),
+               reason: decline.detail,
+            },
+         );
+      }
+      return admitted.bindings;
    }
 
    /**
@@ -998,7 +948,7 @@ export class PackageMaterialization {
     * bound manifest holds (colocated_bindings.ts), admitted by the colocated
     * tier's positive eligibility, keyed by content address as that tier is.
     */
-   private colocatedServeBindings(): ServeBinding[] {
+   private colocatedServeBindings(): Binding[] {
       const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
       const sources = plan?.sources ?? {};
       const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
@@ -1006,7 +956,7 @@ export class PackageMaterialization {
       const v1 = true;
       const viewBuilds = this.persistedViewBuildIDs();
       return deriveColocatedServeBindings({
-         entries: this.freshnessEntries,
+         entries: this.colocatedEntries,
          planSources: sources,
          materializePlans: this.materializePlans,
          eligible: (sourceID) =>
@@ -1033,39 +983,21 @@ export class PackageMaterialization {
       return ids;
    }
 
-   /** What {@link pushStorageServeBindingsToModels} last pushed, colocated. */
-   private colocatedBindingsSignature = "";
-
    /**
-    * Push the bindings again when the colocated `#(materialize)` tables the
-    * served copy would read changed (a manifest bind, a re-derived plan).
+    * Recompute the snapshot and, when its bindings changed (or `models` is
+    * set, for models a reload just installed), hand every model its served
+    * copy's context and have it compile its served copy over the snapshot
+    * now, so a copy that does not compile is a package warning before any
+    * query. Never throws. Models read the snapshot itself per query, through
+    * their policy ({@link wireServingResolvers}).
     */
-   private refreshColocatedServeBindings(): void {
-      if (
-         colocatedSignature(this.colocatedServeBindings()) !==
-         this.colocatedBindingsSignature
-      ) {
-         this.pushStorageServeBindingsToModels();
-      }
-   }
-
-   /**
-    * Push the current serve bindings onto every loaded model: the storage
-    * tier's, and the colocated `#(materialize)` tables only the served copy
-    * reads.
-    */
-   pushStorageServeBindingsToModels(): void {
-      const colocated = this.colocatedServeBindings();
-      this.colocatedBindingsSignature = colocatedSignature(colocated);
-      const bindings =
-         colocated.length === 0
-            ? this.storageServeBindings
-            : [...this.storageServeBindings, ...colocated];
+   publishSnapshot(options: { models?: "installed" } = {}): void {
+      const { bindings } = this.snapshot();
+      if (bindings === this.publishedBindings && !options.models) return;
+      this.publishedBindings = bindings;
       for (const model of this.owner.models().values()) {
          this.setServedCopyContextOn(model);
-         model.setServeBindings(bindings);
-         // Compiled at bind so a served copy that does not compile is a
-         // package warning before any query; never throws.
+         // Optional: a model a spec stands in for need not implement it.
          void model.prepareServedCopy?.();
       }
    }
@@ -1244,7 +1176,7 @@ export class PackageMaterialization {
          }
          // The plan's addresses and eligibility decide the colocated tables
          // the served copy reads.
-         this.refreshColocatedServeBindings();
+         this.publishSnapshot();
          return derived;
       });
       this.buildPlanRefreshChain = run.catch(() => false);
@@ -1381,7 +1313,7 @@ export class PackageMaterialization {
          ),
       );
       for (const [sourceEntityId, entry] of Object.entries(
-         this.freshnessEntries ?? {},
+         this.colocatedEntries ?? {},
       )) {
          // The rollup's own key check only: an entry may carry just the
          // query sources' primary key checks (`parentKeys`), which say
@@ -1658,21 +1590,11 @@ export class PackageMaterialization {
       }
       const servedCopy = this.servedCopyState(models);
       const materializeIDs = new Set(Object.keys(this.materializePlans));
-      const now = new Date();
+      // Pinned now: freshness is read once, as a query reads it.
+      const pinned = pin(this.snapshot(), new Date());
       const freshStorageNames = new Set(
-         this.storageServeBindings
-            .filter(
-               (b) =>
-                  evaluateManifestFreshness(
-                     {
-                        tableName: b.tablePath,
-                        dataAsOf: b.freshAsOf,
-                        freshnessWindowSeconds: b.freshnessWindowSeconds,
-                        freshnessFallback: b.freshnessFallback,
-                     },
-                     now,
-                  ) === "serve_table",
-            )
+         pinned.fresh
+            .filter((b) => b.tier === "storage")
             .map((b) => b.sourceName),
       );
       const reads = (
@@ -1705,11 +1627,9 @@ export class PackageMaterialization {
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),
-         freshEntityIds: new Set(
-            Object.keys(this.getFreshBuildManifest(now.getTime()) ?? {}),
-         ),
+         freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
          boundStorageNames: new Set(
-            this.storageServeBindings.map((b) => b.sourceName),
+            this.storageBindings.map((b) => b.sourceName),
          ),
          servedStorageNames,
          freshStorageNames,
@@ -1825,7 +1745,7 @@ export class PackageMaterialization {
     * compile per view, so it runs only where a caller asks for a preview.
     */
    async previewServeVerdicts(): Promise<ServeVerdict[]> {
-      let bindings: ServeBinding[];
+      let bindings: Binding[];
       try {
          bindings = this.previewServeBindings();
       } catch (error) {
@@ -1963,8 +1883,8 @@ export class PackageMaterialization {
     * build stores them as (see stored_column_types.ts). The table it names is
     * never read; a preview only compiles.
     */
-   previewServeBindings(): ServeBinding[] {
-      const out: ServeBinding[] = [];
+   previewServeBindings(): Binding[] {
+      const out: Binding[] = [];
       for (const [sourceID, source] of Object.entries(
          this.buildPlan?.sources ?? {},
       )) {
@@ -1976,9 +1896,10 @@ export class PackageMaterialization {
          });
          if (schema.length === 0) continue;
          out.push({
+            kind: this.materializePlans[sourceID] ? "materialize" : "persist",
+            tier: "storage",
             sourceName: source.name,
             sourceIDs: [sourceID],
-            origin: "persist",
             destinationName,
             virtualHandle: source.sourceEntityId,
             tablePath: storageTablePath(
@@ -2531,23 +2452,4 @@ function servedCopyProblemMessage(
             [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
          );
    }
-}
-
-/** The colocated bindings' identity, to push only when they change. */
-/** A binding's recorded key checks, in a stable order. */
-function primaryKeysSignature(keys: ServeBinding["primaryKeys"]): string {
-   return Object.entries(keys ?? {})
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([id, unique]) => `${id}=${unique}`)
-      .join(",");
-}
-
-function colocatedSignature(bindings: readonly ServeBinding[]): string {
-   return bindings
-      .map(
-         (b) =>
-            `${b.sourceIDs?.join(",")}@${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshAsOf ?? ""}/${b.freshnessWindowSeconds ?? ""}/${b.freshnessFallback ?? ""}/${primaryKeysSignature(b.primaryKeys)}`,
-      )
-      .sort()
-      .join("|");
 }

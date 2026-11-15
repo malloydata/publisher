@@ -17,7 +17,10 @@ import {
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
 import { lazyCounter, lazyHistogram, withSpan } from "../telemetry";
-import { recordStorageServeRouting } from "../materialization_metrics";
+import {
+   recordStorageServeRouting,
+   recordStoredColumnTypeMismatch,
+} from "../materialization_metrics";
 import { recordVariantRouting, routeQuery } from "./query_router";
 import {
    answeredWith,
@@ -76,7 +79,14 @@ import {
    summarizeQueryAccess,
    type QueryAudit,
 } from "./access_record";
-import { type ServeBinding } from "./materialization/domain/serve_binding";
+import {
+   type Binding,
+   EMPTY_SNAPSHOT,
+   makeSnapshot,
+   pin,
+   type Pinned,
+   type Snapshot,
+} from "./materialization/domain/binding";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
@@ -215,8 +225,10 @@ import { quotedIdentifier } from "./malloy_text";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
 import { compileOnlyDestinationConfig } from "./connection";
 import {
-   StorageBindings,
+   modelStorageTables,
+   ownBindings,
    type SourceTypeMismatches,
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
 } from "./materialization/serve/storage_bindings";
 import type { MaterializePlan } from "./materialization/plan/build_file_generator";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
@@ -421,17 +433,34 @@ export class Model {
       | DeprecatedPersistAnnotation[]
       | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
-   private storageServe = new StorageBindings({
-      modelPath: () => this.modelPath,
-      modelDef: () => this.modelDef,
-   });
    /**
-    * The served copy on `virtual` (materialization v2, phase 3): the author's
-    * own files with each stored source re-rooted on its table. A router
-    * candidate only when `materialize.enabled` (`PUBLISHER_MATERIALIZE`) is on.
+    * The connections a stored table resolves against: this environment's
+    * storage destinations, resolved on each use so a list change takes
+    * effect without a reload. Deliberately NOT the config this model itself
+    * compiles against, so a destination is never resolvable from the
+    * author's model, a notebook cell or a query. Absent: nothing serves from
+    * storage.
     */
-   /** The author sourceIDs a `#(materialize)` build stores (see setServeBindings). */
-   private materializeSourceIDs: ReadonlySet<string> = new Set();
+   private serveDestinationConfig?: () => MalloyConfig;
+   /**
+    * Bindings this model serves in place of its package's (see
+    * {@link setServeBindings}): a model driven outside a package.
+    */
+   private bindingsOverride:
+      | { bindings: readonly Binding[]; over?: Snapshot; snapshot?: Snapshot }
+      | undefined;
+   /** {@link storageTables}, for the snapshot bindings it was read from. */
+   private storageTablesMemo:
+      | {
+           bindings: readonly Binding[];
+           modelDef: ModelDef | undefined;
+           tables: ReturnType<typeof modelStorageTables>;
+        }
+      | undefined;
+   /** Tables already reported for a stored column type mismatch. */
+   private readonly typeMismatchesLogged = new Set<string>();
+   /** Sources already reported as served live for a name clash. */
+   private readonly shadowedSourcesLogged = new Set<string>();
    /**
     * The `#@ persist` view leg (materialization v2, phase 4, P14): a router
     * candidate only when `materialize.enabled` is on and a source this model
@@ -441,9 +470,13 @@ export class Model {
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
       modelMaterializer: () => this.modelMaterializer,
-      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      serveDestinationConfig: () => this.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
    });
+   /**
+    * The served copy on `virtual`: the author's own files with each stored
+    * source re-rooted on its table.
+    */
    private servedCopy = this.newServedCopy();
    /** What {@link setServedCopyContext} last set, for a dry-run copy. */
    private servedCopyContext:
@@ -457,13 +490,13 @@ export class Model {
    private rollupVariants = new RollupVariantServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
-      serveDestinationConfig: () => this.storageServe.serveDestinationConfig,
+      serveDestinationConfig: () => this.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
       // A joined source's `storage=` rollup is read through a join only from
       // a query source the served copy reads in the same destination.
-      joinRollupBasis: async () =>
+      joinRollupBasis: async (pinned) =>
          this.servedCopyEnabled()
-            ? this.servedCopy.joinRollupBasis()
+            ? this.servedCopy.joinRollupBasis(pinned)
             : undefined,
    });
    /** {@link sourceChains}, keyed by the model it was read from. */
@@ -1303,13 +1336,14 @@ export class Model {
    }
 
    /**
-    * The freshness-filtered build manifest for this query, or undefined (no
-    * override; serves live). Evaluated per call so a table that crosses its
-    * window is gated on the very next query.
+    * The pinned build manifest, or undefined when no colocated entry is
+    * bound (no override; serves live). Pinned per query, so a table that
+    * crosses its window is gated on the very next query.
     */
-   private resolveFreshBuildManifest(): BuildManifest | undefined {
-      const entries = this.policy.freshBuildManifestEntries();
-      return entries ? { entries, strict: false } : undefined;
+   private resolveFreshBuildManifest(
+      pinned: Pinned = this.pinNow(),
+   ): BuildManifest | undefined {
+      return pinned.hasEntries ? pinned.compilerManifest : undefined;
    }
 
    /**
@@ -2731,14 +2765,36 @@ export class Model {
          // (on the source's own connection) need no destination.
          serveDestinationConfig: () =>
             getPersistStorageMode() === "on"
-               ? this.storageServe.serveDestinationConfig
+               ? this.serveDestinationConfig
                : undefined,
+         pinned: () => this.pinNow(),
       });
    }
 
-   /** See {@link StorageBindings.setServeDestinationConfig}. */
+   /**
+    * Every table this model serves now: its package's snapshot, or the
+    * bindings set on it directly ({@link setServeBindings}) beside the
+    * package's colocated entries. Replaced by reference, never edited.
+    */
+   private servingSnapshot(): Snapshot {
+      const pkg = this.policy.snapshot() ?? EMPTY_SNAPSHOT;
+      const override = this.bindingsOverride;
+      if (!override) return pkg;
+      if (override.over !== pkg || !override.snapshot) {
+         override.over = pkg;
+         override.snapshot = makeSnapshot(override.bindings, pkg.entries);
+      }
+      return override.snapshot;
+   }
+
+   /** This model's tables pinned now, for a caller outside a query. */
+   private pinNow(): Pinned {
+      return pin(this.servingSnapshot(), new Date());
+   }
+
+   /** Set the storage destinations, pushed by the owning package. */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
-      this.storageServe.setServeDestinationConfig(provider);
+      this.serveDestinationConfig = provider;
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
@@ -2754,7 +2810,6 @@ export class Model {
       materializePlans: Readonly<Record<string, MaterializePlan>> = {},
       declarationOf?: (sourceID: string) => unknown,
    ): void {
-      this.materializeSourceIDs = new Set(Object.keys(materializePlans));
       this.servedCopyContext = [
          packagePath,
          malloyConfig,
@@ -2824,10 +2879,16 @@ export class Model {
       );
    }
 
-   /** Compile the served copy now, when it is enabled, so its warnings exist. */
+   /**
+    * Read this model's tables now, so their warnings exist before any query:
+    * the stored columns' types, and, when it is enabled, the served copy's
+    * compile.
+    */
    public async prepareServedCopy(): Promise<void> {
+      const pinned = this.pinNow();
+      this.storageTables(pinned.snapshot);
       if (!this.servedCopyEnabled()) return;
-      await this.servedCopy.prepare();
+      await this.servedCopy.prepare(pinned);
    }
 
    /**
@@ -2861,64 +2922,84 @@ export class Model {
       this.persistedViews.invalidate();
    }
 
-   /** See {@link StorageBindings.setServeBindings}. */
-   public setServeBindings(bindings: ServeBinding[]): void {
-      // A `#(materialize)` table is presented under its author's source name,
-      // and only the served copy reads it, so it is kept off the storage
-      // bindings the path report and the type check read.
-      const materialized = this.materializeSourceIDs;
-      // A persisted view's table holds the view's result, and a
-      // `#(preaggregate)` rollup's its partials, not a source's rows: only
-      // their own legs read them.
-      const views = this.persistedViews.buildSourceIDs();
-      const rollups = this.rollupVariants.buildSourceIDs(bindings);
-      // A colocated `#(materialize)` table is read on its own connection by
-      // the served copy alone; no other leg reads one.
-      const colocated = bindings.filter((b) => b.colocated);
-      const stored =
-         colocated.length === 0
-            ? bindings
-            : bindings.filter((b) => !b.colocated);
-      const others =
-         views.size === 0 && rollups.size === 0
-            ? stored
-            : stored.filter(
-                 (b) =>
-                    !(b.sourceIDs ?? []).some(
-                       (id) => views.has(id) || rollups.has(id),
-                    ),
-              );
-      this.storageServe.setServeBindings(
-         materialized.size === 0
-            ? others
-            : others.filter(
-                 (b) => !(b.sourceIDs ?? []).some((id) => materialized.has(id)),
-              ),
-      );
-      // Colocated tables, v1 `#@ persist` and `#(materialize)` alike, are
-      // read by the served copy alone.
-      this.servedCopy.setBindings(
-         colocated.length === 0 ? others : [...others, ...colocated],
-      );
-      this.rollupVariants.setBindings(stored);
-      this.persistedViews.setBindings(stored);
-   }
-
-   /** See {@link StorageBindings.storedColumnTypeMismatches}. */
-   public storedColumnTypeMismatches(): readonly SourceTypeMismatches[] {
-      return this.storageServe.storedColumnTypeMismatches();
+   /**
+    * Serve this model from `bindings` in place of its package's (the
+    * package's colocated entries still apply): a model driven outside a
+    * package, as a test or a tool drives one. A copy is taken, so a caller
+    * that edits a binding and sets it again compiles over the edit.
+    */
+   public setServeBindings(bindings: readonly Binding[]): void {
+      this.bindingsOverride = { bindings: Object.freeze([...bindings]) };
    }
 
    /**
-    * The source names this model keeps a storage serve binding for: the
-    * package pushes every binding to every model, and a model drops one that
-    * materializes a same-named source declared elsewhere (see
-    * {@link StorageBindings.setServeBindings}).
+    * This model's own `#@ persist` `storage=` tables in `snapshot`, read once
+    * per snapshot: a binding that stores a same-named source declared
+    * elsewhere is dropped (that source serves live here,
+    * malloydata/publisher#1001), and the stored columns whose type does not
+    * serve as declared are found, each logged once per table per model.
+    */
+   private storageTables(
+      snapshot: Snapshot = this.servingSnapshot(),
+   ): ReturnType<typeof modelStorageTables> {
+      const memo = this.storageTablesMemo;
+      if (
+         memo &&
+         memo.bindings === snapshot.bindings &&
+         memo.modelDef === this.modelDef
+      ) {
+         return memo.tables;
+      }
+      const tables = modelStorageTables(snapshot.bindings, this.modelDef);
+      this.storageTablesMemo = {
+         bindings: snapshot.bindings,
+         modelDef: this.modelDef,
+         tables,
+      };
+      for (const source of tables.shadowed) {
+         if (this.shadowedSourcesLogged.has(source)) continue;
+         this.shadowedSourcesLogged.add(source);
+         logger.info(
+            "Serving a source live: its storage table materializes a same-named source declared elsewhere",
+            { modelPath: this.modelPath, source },
+         );
+      }
+      for (const finding of tables.findings) {
+         const key = `${finding.binding.sourceName}\u0000${finding.binding.virtualHandle}`;
+         if (this.typeMismatchesLogged.has(key)) continue;
+         this.typeMismatchesLogged.add(key);
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+         logger.warn(
+            "Stored column types do not match the declared Malloy types; casting where faithful, serving the rest live",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               modelPath: this.modelPath,
+               source: finding.binding.sourceName,
+               cast: finding.casts,
+               live: finding.unservable,
+            },
+         );
+      }
+      return tables;
+   }
+
+   /** The stored columns of this model's tables that do not serve as declared. */
+   public storedColumnTypeMismatches(): readonly SourceTypeMismatches[] {
+      return this.storageTables().mismatches;
+   }
+
+   /**
+    * The source names this model serves a `storage=` table for: its own
+    * `#@ persist` sources' (see {@link storageTables}) and its persisted
+    * views'.
     */
    public servedStorageSourceNames(): string[] {
+      const pinned = this.pinNow();
       return [
-         ...this.storageServe.serveBindings,
-         ...this.persistedViews.viewBindings(),
+         ...this.storageTables(pinned.snapshot).kept,
+         ...this.persistedViews.viewBindings(pinned, "bound"),
       ].map((b) => b.sourceName);
    }
 
@@ -2955,7 +3036,7 @@ export class Model {
     * in a served copy of its own, with the cutover's per-column types, and
     * discarded. Undefined when this model has no served copy to compile.
     */
-   public async previewServedCopy(bindings: ServeBinding[]): Promise<
+   public async previewServedCopy(bindings: Binding[]): Promise<
       | {
            rerooted: ReadonlySet<string>;
            throughBase: ReadonlySet<string>;
@@ -2973,7 +3054,9 @@ export class Model {
       ) {
          return undefined;
       }
-      const destinations = this.storageServe.serveDestinationConfig;
+      const destinations = this.serveDestinationConfig;
+      // Declared from the plan, never read, so no window applies.
+      const pinned = pin(makeSnapshot(bindings), new Date(0));
       const copy = new ServedCopyServe({
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
@@ -2983,9 +3066,9 @@ export class Model {
             destinations && getPersistStorageMode() === "on"
                ? () => compileOnlyDestinationConfig(destinations())
                : undefined,
+         pinned: () => pinned,
       });
       copy.setContext(...this.servedCopyContext);
-      copy.setBindings(bindings);
       await copy.prepare();
       return {
          rerooted: copy.rerootedSourceIDs() ?? new Set<string>(),
@@ -2996,10 +3079,10 @@ export class Model {
    }
 
    public async previewStorageViews(
-      bindings: ServeBinding[],
+      bindings: Binding[],
    ): Promise<Map<string, ViewServeVerdict[]>> {
       const out = new Map<string, ViewServeVerdict[]>();
-      const destinations = this.storageServe.serveDestinationConfig;
+      const destinations = this.serveDestinationConfig;
       if (
          !destinations ||
          bindings.length === 0 ||
@@ -3010,16 +3093,12 @@ export class Model {
          return out;
       }
       // The same identity filter the model's own bindings pass (#1001).
-      const kept = new StorageBindings({
-         modelPath: () => this.modelPath,
-         modelDef: () => this.modelDef,
-         quiet: true,
-      });
-      kept.setServeBindings(bindings);
-      const stored = kept.serveBindings.filter(
-         (b) => b.origin !== "preaggregate",
-      );
+      const stored = ownBindings(
+         bindings.filter((b) => b.kind !== "rollup"),
+         this.modelDef,
+      ).kept;
       if (stored.length === 0) return out;
+      const pinned = pin(makeSnapshot(stored), new Date(0));
       // A throwaway served copy over these bindings, compile-only: before the
       // first build a DuckLake destination's catalog does not exist yet, and
       // the dialect must not depend on reaching it.
@@ -3029,9 +3108,9 @@ export class Model {
          quiet: true,
          serveDestinationConfig: () => () =>
             compileOnlyDestinationConfig(destinations()),
+         pinned: () => pinned,
       });
       copy.setContext(...this.servedCopyContext);
-      copy.setBindings(stored);
       await copy.prepare();
       const problems = copy.problems();
       // A view reading a given with no default serves once the caller
@@ -3181,9 +3260,11 @@ export class Model {
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
-      // Resolved once, before routing, so prepare, the pre-aggregation probe
-      // and run all agree on the same freshness substitution.
-      const buildManifest = this.resolveFreshBuildManifest();
+      // Pinned once, before routing (C1b): every leg, the run and the path
+      // report read the tables bound now, at this instant, so a rebind or a
+      // window crossed mid-query cannot split the query.
+      const pinned = pin(this.servingSnapshot(), new Date());
+      const buildManifest = this.resolveFreshBuildManifest(pinned);
       // Without rollup entries, for the persisted-view leg's variant.
       const viewBuildManifest = this.withoutPreaggregateEntries(buildManifest);
       // Without persisted-view entries too: only the view leg's variant
@@ -3350,11 +3431,12 @@ export class Model {
          // `hasBindings` counts a storage table only while the storage tier
          // serves, and a colocated table always.
          const servedCopyPossible =
-            this.servedCopyEnabled() && servedCopy.hasBindings();
+            this.servedCopyEnabled() && servedCopy.hasBindings(pinned.snapshot);
          const route = await routeQuery<RoutedExtra>(
             routeCandidates(this.servingHost(servedCopy), {
                queryString,
                surfaceGivens: querySurfaceGivens,
+               pinned,
                buildManifest,
                servedCopyPossible,
                // G3: a colocated table is read past a row-level gate (it
@@ -3853,7 +3935,7 @@ export class Model {
          runnable: liveRunnable ?? runnable,
          sourceName: compiledSource ?? sourceName,
          viewName: sourceName && queryName ? queryName : undefined,
-         freshManifest: buildManifest,
+         pinned,
          includeHidden: !!includeHiddenFilesAndSources,
          ...(this.persistedViewsEnabled() ? { queryString } : {}),
       });
@@ -3891,16 +3973,16 @@ export class Model {
    }
 
    /**
-    * What serving (query_serving.ts) reads from this model: its storage serve
-    * shape, rollup plans, catalog and discovery surface. Built per call so it
-    * always reads the current state.
+    * What serving (query_serving.ts) reads from this model: its own storage
+    * tables, its legs, its catalog and discovery surface. Built per call so
+    * it always reads the current state.
     */
    private servingHost(
       servedCopy: ServedCopyServe = this.servedCopy,
    ): QueryServingHost {
       return {
          modelPath: this.modelPath,
-         storageServe: this.storageServe,
+         storageTables: (snapshot) => this.storageTables(snapshot).kept,
          servedCopy,
          rollupVariants: this.rollupVariants,
          persistedViews: this.persistedViews,

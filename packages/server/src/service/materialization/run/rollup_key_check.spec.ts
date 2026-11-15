@@ -44,7 +44,7 @@ import {
 import { InstructedBuild } from "./instructed_build";
 import { ManifestCommitter } from "./manifest_committer";
 import { splitManifestEntries } from "./manifest_loader";
-import { deriveServeBindings } from "../domain/serve_binding";
+import { deriveServeBindings } from "../domain/binding";
 import { storedKeyChecksOf } from "../plan/rollup_plan";
 import type { BuildEnvironment } from "./materialization_run_support";
 import { SourceBuilder } from "./source_build";
@@ -898,9 +898,11 @@ describe("the rollup key record, bound for serving", () => {
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
       const held = materialization as unknown as {
-         storageServeBindings: ReturnType<typeof deriveServeBindings>;
+         storageBindings: ReturnType<typeof deriveServeBindings>;
       };
-      const binding = {
+      const binding: ReturnType<typeof deriveServeBindings>[number] = {
+         kind: "persist",
+         tier: "storage",
          sourceName: "flights",
          destinationName: "lake",
          virtualHandle: "h",
@@ -908,13 +910,13 @@ describe("the rollup key record, bound for serving", () => {
          schema: [],
          primaryKeys: { flights: true },
       };
-      held.storageServeBindings = [
+      held.storageBindings = [
          binding,
          { ...binding, sourceName: "other", virtualHandle: "o" },
       ];
       materialization.forgetKeyUniqueness(["h"]);
-      expect(held.storageServeBindings[0]?.primaryKeys).toBeUndefined();
-      expect(held.storageServeBindings[1]?.primaryKeys).toEqual({
+      expect(held.storageBindings[0]?.primaryKeys).toBeUndefined();
+      expect(held.storageBindings[1]?.primaryKeys).toEqual({
          flights: true,
       });
    });
@@ -1072,14 +1074,17 @@ describe("the rollup key record, bound for serving", () => {
          models: () => new Map(),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      materialization.recordManifestBinding({
-         a: {
-            tableName: "r_t",
-            keyUniqueness: { keyColumn: "k", unique: true },
-         },
-         b: {
-            tableName: "s_t",
-            keyUniqueness: { keyColumn: "k", unique: false },
+      materialization.bind({
+         colocatedAsGiven: true,
+         colocated: {
+            a: {
+               tableName: "r_t",
+               keyUniqueness: { keyColumn: "k", unique: true },
+            },
+            b: {
+               tableName: "s_t",
+               keyUniqueness: { keyColumn: "k", unique: false },
+            },
          },
       });
       expect(
@@ -1114,14 +1119,17 @@ describe("the rollup key record, bound for serving", () => {
          },
       } as never;
       const repeated = { keyColumn: "flight_id", unique: false };
-      materialization.recordManifestBinding({
-         a: { tableName: "r_t", keyUniqueness: repeated },
-         b: {
-            tableName: "s_t",
-            keyUniqueness: { keyColumn: "flight_id", unique: true },
+      materialization.bind({
+         colocatedAsGiven: true,
+         colocated: {
+            a: { tableName: "r_t", keyUniqueness: repeated },
+            b: {
+               tableName: "s_t",
+               keyUniqueness: { keyColumn: "flight_id", unique: true },
+            },
+            // Not a rollup: no warning, whatever it carries.
+            c: { tableName: "p_t", keyUniqueness: repeated },
          },
-         // Not a rollup: no warning, whatever it carries.
-         c: { tableName: "p_t", keyUniqueness: repeated },
       });
       const warnings = materialization.repeatedJoinOneKeyWarnings();
       expect(warnings.map((w) => [w.subject, w.code, w.model])).toEqual([
@@ -1155,10 +1163,13 @@ describe("the rollup key record, bound for serving", () => {
       // No own key check (no join_one reads the rollup through its key):
       // only what each query source's primary key check found.
       for (const unique of [true, false]) {
-         materialization.recordManifestBinding({
-            a: {
-               tableName: "r_t",
-               keyUniqueness: { parentKeys: { "flights@m": unique } },
+         materialization.bind({
+            colocatedAsGiven: true,
+            colocated: {
+               a: {
+                  tableName: "r_t",
+                  keyUniqueness: { parentKeys: { "flights@m": unique } },
+               },
             },
          });
          expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
