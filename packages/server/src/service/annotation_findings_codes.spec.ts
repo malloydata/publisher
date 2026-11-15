@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { PERSIST_SOURCE_REFUSED_CODE } from "./materialization/package_materialization";
+import { PERSIST_NOT_BUILT_CODE } from "./annotation_reader";
 import {
    INCREMENTAL_NO_MERGE_KEY_CODE,
    INCREMENTAL_SHARED_ADDRESS_CODE,
@@ -31,9 +31,7 @@ describe("Package.annotationFindingWarnings", () => {
                warn(INCREMENTAL_NO_MERGE_KEY_CODE),
                warn(INCREMENTAL_SHARED_ADDRESS_CODE),
             ],
-            persistencePolicyWarnings: () => [
-               warn(PERSIST_SOURCE_REFUSED_CODE),
-            ],
+            persistencePolicyWarnings: () => [warn(PERSIST_NOT_BUILT_CODE)],
          },
          preaggregateAccessWarnings: () => [],
          annotationNearMissWarnings: () => [],

@@ -42,13 +42,14 @@ import {
 } from "./build_failure_class";
 import {
    declaredStorage,
-   physicalTargetKey,
    redactConnectionSecrets,
    type BuildEnvironment,
    type BuildQueryMetadata,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
 import type { UniquenessLedger } from "./inline_uniqueness";
+import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
 
 /** The eligibility gate a source was cleared by. */
@@ -277,9 +278,12 @@ export function assertNoTableCollisions(
    connectionDigests: CompiledBuildPlan["connectionDigests"],
    index: InstructionIndex,
 ): void {
+   // Keyed by the table segment on its connection or destination: `main.t`
+   // and `t` may be one table, as the plan's collision check reads them
+   // (tableNamesMeet).
    const claimedBy = new Map<
       string,
-      { sourceName: string; sourceEntityId: string }
+      { sourceName: string; sourceEntityId: string; table: string }[]
    >();
    const collisions: { first: string; second: string; table: string }[] = [];
    for (const build of builds) {
@@ -297,22 +301,37 @@ export function assertNoTableCollisions(
             index.bySourceID.get(persistSource.sourceID) ??
             index.bySourceEntityId.get(address);
          if (!instruction) continue;
-         // Must be the same key as the build loop's write guard, or this
-         // pre-pass and the guard disagree on what a collision is.
-         const target = physicalTargetKey(instruction, build.connectionName);
-         const claim = claimedBy.get(target);
-         if (!claim) {
-            claimedBy.set(target, {
-               sourceName: persistSource.name,
-               sourceEntityId: address,
-            });
-         } else if (claim.sourceEntityId !== address) {
+         // Compared as the plan compares them: folded where the
+         // destination folds table names to one case.
+         const table = tableNamesFoldCase(
+            persistSource.dialectName,
+            !!instruction.destination,
+         )
+            ? instruction.physicalTableName.toLowerCase()
+            : instruction.physicalTableName;
+         const target = JSON.stringify([
+            instruction.destination ? "destination" : "connection",
+            instruction.destination ?? build.connectionName,
+            tableNameParts(table).leaf,
+         ]);
+         const claims = claimedBy.get(target) ?? [];
+         const other = claims.find(
+            (c) =>
+               c.sourceEntityId !== address && tableNamesMeet(c.table, table),
+         );
+         if (other) {
             collisions.push({
-               first: claim.sourceName,
+               first: other.sourceName,
                second: persistSource.name,
                table: instruction.physicalTableName,
             });
          }
+         claims.push({
+            sourceName: persistSource.name,
+            sourceEntityId: address,
+            table,
+         });
+         claimedBy.set(target, claims);
       }
    }
    for (const c of collisions) {

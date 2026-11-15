@@ -47,6 +47,10 @@ import {
    annotationNearMisses,
    authoredNotes,
 } from "./annotation_near_miss";
+import {
+   findingSeverity,
+   MATERIALIZATION_NEAR_MISS_CODE,
+} from "./annotation_reader";
 import { assertNoCallerAuthorizeAnnotation, gateNearMissOf } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
 import { compileDocument, type CompiledDocument } from "./compile_document";
@@ -1361,11 +1365,17 @@ export function nearMissLogMessages(modelDef: ModelDef): LogMessage[] {
               } as LogMessage,
            ];
    });
+   // A near miss of a materialization route fails the load, so the editor
+   // sees it as the error it is; any other near miss is a warning.
    const warnings = annotationNearMisses(notes)
-      .filter((finding) => finding.code === ANNOTATION_NEAR_MISS_CODE)
+      .filter(
+         (finding) =>
+            finding.code === ANNOTATION_NEAR_MISS_CODE ||
+            finding.code === MATERIALIZATION_NEAR_MISS_CODE,
+      )
       .map((finding) => ({
          message: `${finding.message}; ${finding.rewrite}`,
-         severity: "warn" as const,
+         severity: findingSeverity(finding),
          code: finding.code,
          ...(finding.at ? { at: finding.at } : {}),
       }));
