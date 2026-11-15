@@ -328,7 +328,6 @@ source: ext is stored extend {
          [
             plan({
                persist: {
-                  partition: "order_date",
                   storage: "my-lake",
                   name: "orders_all",
                   refresh: "incremental",
@@ -339,7 +338,7 @@ source: ext is stored extend {
          "m.malloy",
       );
       expect(text).toContain(
-         '#@ persist name="orders_all" storage="my-lake" refresh="incremental" watermark="order_date" partition="order_date"',
+         '#@ persist name="orders_all" storage="my-lake" refresh="incremental" watermark="order_date"',
       );
    });
 
@@ -564,10 +563,10 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
    );
 
    it(
-      "carries partition, incremental and storage keys onto the generated #@ persist",
+      "carries incremental and storage keys onto the generated #@ persist",
       async () => {
          const c = await compiled(`${BASE}
-#(materialize) refresh="incremental" watermark="order_date" partition="order_date" storage="lake"
+#(materialize) refresh="incremental" watermark="order_date" storage="lake"
 source: orders is orders_raw
 `);
          const [p] = generatedPlans(c);
@@ -575,7 +574,6 @@ source: orders is orders_raw
             name: "orders",
             refresh: "incremental",
             watermark: "order_date",
-            partition: "order_date",
             storage: "lake",
          });
          expect(Object.values(c.sources).some((s) => s.name === "orders")).toBe(
@@ -2290,6 +2288,27 @@ source: orders is orders_raw
          expect(findings[0].message).toContain("did you mean `name=`?");
          expect(findings[1].message).toContain(
             "a #(materialize) source built into its own warehouse needs name=",
+         );
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses a retired partition= as malformed, and builds nothing for it",
+      async () => {
+         const c = await compiled(`${BASE}
+#(materialize) name="orders_all" storage="lake" partition="order_date"
+source: orders is orders_raw
+`);
+         expect(generatedPlans(c)).toEqual([]);
+         const findings = (c.annotationFindings ?? []).filter(
+            (f) => f.subject === "orders",
+         );
+         expect(findings.map((f) => [f.code, f.tier])).toEqual([
+            ["materialize-retired-key", "malformed"],
+         ]);
+         expect(findings[0].message).toContain(
+            "#(materialize) no longer reads `partition=`; remove it",
          );
       },
       { timeout: 30000 },

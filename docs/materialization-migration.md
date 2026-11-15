@@ -113,6 +113,7 @@ still build and serve.
 | --- | --- | --- |
 | `materialize-not-built` | Publisher cannot build this `#(materialize)` source; the message names why (a colocated source with no `name=`, a refused `inline=`, a name another source's table holds, and so on). It serves live. | Fix what it names, or keep the v1 form. |
 | `materialize-unknown-key`, `materialize-unparseable` | The line cannot be read as written. Severity `error`: a publish is refused. | Fix the key or the quoting. |
+| `materialize-retired-key` | The line carries a key that is no longer read, `partition=`. Severity `error`: a publish is refused. | Remove the key. |
 | `annotation-near-miss` | A misspelled route, such as `#(materialise)`. Nothing is built. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
@@ -153,13 +154,15 @@ unchanged ([the served copy](materialization.md#the-served-copy-materialization-
   declaration that cannot be read as written (below): it is not built either, and a publish is
   refused.
 - **`#(materialize)` takes only these keys:** `name`, `storage`, `refresh`, `watermark`,
-  `merge_key`, `partition`, `freshness.*`, `queryMetadata.*`, and `inline` (v2 only;
+  `merge_key`, `freshness.*`, `queryMetadata.*`, and `inline` (v2 only;
   [joins](#joins-reference-by-default-inline-to-store-them)). Any other key, a misspelled `name=`
   for example, is malformed rather than a default table: the source is not built, the package
   warning is `materialize-unknown-key` at severity `error`, naming the key it was likely meant to
   be, and a publish is refused. A package already published keeps loading with the warning. A
   `#(materialize)` line that does not parse (`name="t` with no closing quote) is malformed the same
-  way, as `materialize-unparseable`. v1's `realization=` has no v2 form. A misspelled route, such as
+  way, as `materialize-unparseable`. `partition=` is retired on both forms: on `#(materialize)` it
+  is `materialize-retired-key` (on `#@ persist`, `persist-retired-key`), at severity `error`, and a
+  publish is refused until it is removed. v1's `realization=` has no v2 form. A misspelled route, such as
   `#(materialise)`, is an `annotation-near-miss` warning.
 
 ## What stays the same
@@ -177,8 +180,7 @@ unchanged ([the served copy](materialization.md#the-served-copy-materialization-
   ([whose table it is](materialization.md#whose-table-it-is)). Without `name=`, Publisher's own
   builds name the table after the source plus a hash of the environment and package
   (`east_orders__p3f9c2a1b`), for v1 and v2 alike.
-- **Freshness, `partition=` and `queryMetadata`** are copied onto the generated build source as
-  written.
+- **Freshness and `queryMetadata`** are copied onto the generated build source as written.
 
 ## Form by form
 
@@ -343,18 +345,21 @@ v2 adds one form v1 has no equivalent for: a source that inlines a join_many (a 
 watermark on each side of the join as a list, `watermark=["updated_at", "lines.updated_at"]`, and
 each refresh replaces whole parents ([joins](#joins-reference-by-default-inline-to-store-them)).
 
-### Freshness, `partition=` and `queryMetadata`
+### Freshness and `queryMetadata`
 
 **Works.** Each is copied onto the generated build source as written. A per-source freshness window
 appears in the build plan, and the served copy drops a stale table per query, as v1 does.
 
 ```malloy
 // v1
-#@ persist name="orders_all" storage="lake" freshness.window="24h" partition="org_id" queryMetadata.team="ops"
+#@ persist name="orders_all" storage="lake" freshness.window="24h" queryMetadata.team="ops"
 
 // v2
-#(materialize) name="orders_all" storage="lake" freshness.window="24h" partition="org_id" queryMetadata.team="ops"
+#(materialize) name="orders_all" storage="lake" freshness.window="24h" queryMetadata.team="ops"
 ```
+
+`partition=` is not migrated: it is retired on both forms and refused at publish. Remove it before
+you move; the table is written unpartitioned, which costs scan time only.
 
 ### A `where:` that reads a given
 
@@ -554,6 +559,7 @@ has the full list.
   ([above](#a-source-with-a-row-level-gate)).
 - **`#@ persist` on a view** and **`#@ -persist`**: these are the v2 spellings already.
 - **`realization=`** has no v2 form; on `#(materialize)` it is `materialize-unknown-key`.
+- **`partition=`** is retired on both forms, refused at publish; remove it.
 - **A gated source** with `storage=`: refused unless `PUBLISHER_MATERIALIZE_GATED_SOURCES` is on,
   as v1 refuses it.
 - **An incremental source on a DuckDB origin**: refused, as in v1. Say `refresh="full"`.
@@ -619,9 +625,10 @@ it. The build plan, the manifest and reuse all key on it.
   different sources or compute different addresses for one source.
 - **Read warning codes as open strings.** This page names `deprecated-preaggregate-annotation`
   (with the switch on), `materialize-not-built`, `materialize-unknown-key`,
-  `materialize-unparseable`, `materialize-pair-full-refresh`, `served-copy-not-served` and
-  `persist-view-not-built`, beside `materialization-destination-missing` and
-  `materialization-connection-cannot-hold-table`. Only the two malformed codes are errors.
+  `materialize-unparseable`, `materialize-retired-key`, `materialize-pair-full-refresh`,
+  `served-copy-not-served` and `persist-view-not-built`, beside
+  `materialization-destination-missing` and `materialization-connection-cannot-hold-table`. Only the
+  three malformed codes are errors.
 - **A rolling window deletes as well as appends.** An incremental refresh of a source with a
   rolling window deletes the rows below the new cut-off in the same transaction.
 - **A `name=` view is a warehouse object Publisher marks.** When a run names a `#(materialize)`

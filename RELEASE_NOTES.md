@@ -50,6 +50,35 @@ To opt out, set `PUBLISHER_MATERIALIZE=false`: `#(materialize)` and `#(preaggreg
 
 The setting is removed one release after this one, together with its off position; from then on materialization v2 is always on. See docs/materialization.md and docs/materialization-migration.md.
 
+## [Unreleased] — (BREAKING) `partition=` is no longer supported, and a publish that carries it is refused
+
+`partition=` laid a `storage=` table out as one directory per value of the named columns. It is
+removed from both `#@ persist` and `#(materialize)`, and a package that declares it is now
+**refused at publish**: a package with `partition=` that published yesterday does not publish today.
+
+**What to do:** remove `partition=` from the annotation and publish again. The table is then written
+unpartitioned. `partition=` was a layout and never isolation, since every term that scopes a caller is
+re-applied at read either way, so the only cost is scan cost: a read filtered to one value of the
+column reads the whole table. No answer changes.
+
+- **The refusal.** On `#@ persist` the package warning is `persist-retired-key` (severity `error`) and
+  the publish refusal says `partition=... which is no longer supported: remove it`. On
+  `#(materialize)` it is the new code `materialize-retired-key` (severity `error`), the source is not
+  built and answers live, and the publish is refused. A package that is already loaded (at startup
+  or on reload) keeps loading with the warning, as for any retired key; its next build writes the
+  table unpartitioned, under a new address, so it rebuilds once. A `#@ persist` on a view that
+  declares `partition=` stays unbuilt (`persist-view-not-built`), now with a message that says to
+  remove it.
+- **API.** `BuildPlan.sources[].partition` is deprecated and always absent. The three refusal
+  reasons `partition_without_storage`, `partition_column_unknown` and
+  `partition_column_not_public` stay in the `RefusedSource.reason` enum, so generated clients keep
+  compiling, and are no longer produced.
+- **Configuration.** `duckdb.partitionedWriteFlushThreshold`
+  (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`) is removed. A config file that still sets it
+  loads with the usual unknown-key warning; the variable is ignored.
+- **Unchanged.** The admin API's table copy still keeps a copied table's partition spec and writes
+  it in partition order, so a table an earlier `partition=` build laid out copies as before. No other
+  source's address, build SQL or stored table changes.
 
 ## [Unreleased] — the materialization rewriters read Malloy as Malloy reads it
 

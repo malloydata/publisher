@@ -44,8 +44,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_plan":
       "2g.3",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_partition":
-      "2g.3",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_source_fields":
       "2g.3",
    "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan":
@@ -171,7 +169,6 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {
    "service/materialization/plan/materialization_eligibility.ts": "5",
    "service/materialization/plan/persist_annotation_validation.ts": "5",
    "service/materialization/plan/persist_dynamic_terms.ts": "5",
-   "service/materialization/plan/persist_partition.ts": "5",
    "service/materialization/run/build_failure_class.ts": "5",
    "service/materialization/run/build_query_tag.ts": "5",
    "service/materialization/run/build_read_cost.ts": "5",

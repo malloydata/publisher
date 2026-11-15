@@ -1,7 +1,17 @@
 {
   "droppedPersistSources": [],
   "internal": {
-    "annotationFindings": [],
+    "annotationFindings": [
+      {
+        "code": "persist-retired-key",
+        "message": "#@ persist source \"orders\": `partition=` is no longer read on `#@`",
+        "model": "pla.malloy",
+        "rewrite": "remove it: partition= is not supported, and the stored table is written unpartitioned. It was a layout choice only, so the cost is scan time; what each caller sees is unchanged",
+        "route": "@",
+        "subject": "orders",
+        "tier": "malformed"
+      }
+    ],
     "builds": [
       {
         "connectionName": "orders_pg",
@@ -72,13 +82,10 @@
         "modelPath": "pla.malloy",
         "name": "orders",
         "origin": "persist",
-        "partition": [
-          "org_id"
-        ],
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "5b4b8f458a0daba28a1c7bd6c14e50cbbb78ae53232cdff8d309a400a4ab9a67",
+        "sourceEntityId": "2dba74c60a5b45dae95c454cee72dc79452b923a0c23ba1d794aa8fb057a8a86",
         "sourceID": "orders@<hammer>/pla/pla.malloy",
         "sql": "sha256:6850ab918f10e4fa",
         "strippedTerms": [

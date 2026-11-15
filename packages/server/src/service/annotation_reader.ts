@@ -244,7 +244,6 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "merge_key",
    "freshness",
    "queryMetadata",
-   "partition",
 ]);
 
 /** The pre-aggregation directive's keys, on the same `#@` route. */
@@ -265,7 +264,6 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
    "refresh",
    "watermark",
    "merge_key",
-   "partition",
    "freshness",
    "queryMetadata",
    "inline",
@@ -281,6 +279,17 @@ export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
    "storage",
    "namespace",
 ]);
+
+/**
+ * The rewrite for a `partition=` on `#@ persist` or `#(materialize)`, both of
+ * which once laid a storage table out by the named columns. Partitioning was a
+ * layout choice only, never isolation, so dropping the key costs scan time and
+ * nothing else.
+ */
+const PARTITION_RETIRED =
+   "remove it: partition= is not supported, and the stored table is written " +
+   "unpartitioned. It was a layout choice only, so the cost is scan time; " +
+   "what each caller sees is unchanged";
 
 /**
  * The materialization v2 routes. Each is read only with the materialize switch
@@ -325,9 +334,14 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
             "set materialization.scope in publisher.json; a source no longer chooses its own sharing",
          schedule:
             "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
+         partition: PARTITION_RETIRED,
       },
    },
-   materialize: { payload: "tag", keys: MATERIALIZE_KEYS },
+   materialize: {
+      payload: "tag",
+      keys: MATERIALIZE_KEYS,
+      retiredKeys: { partition: PARTITION_RETIRED },
+   },
    preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
    "!": { payload: "tag" },
    "": { payload: "tag" },

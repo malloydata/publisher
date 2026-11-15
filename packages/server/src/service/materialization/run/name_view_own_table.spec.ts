@@ -684,7 +684,6 @@ describe("in a DuckLake catalog", () => {
          session,
          '"lake"."main"."summary"',
          "SELECT 3 AS x",
-         [],
          { replacesView: true },
       );
       expect(await probeNameView(site, "summary")).toEqual({
@@ -706,7 +705,6 @@ describe("in a DuckLake catalog", () => {
             session,
             '"lake"."main"."summary"',
             "SELECT * FROM lake.main.no_such_table",
-            [],
             { replacesView: true },
          ),
       ).rejects.toThrow();
@@ -715,15 +713,6 @@ describe("in a DuckLake catalog", () => {
          target: "summary_g1",
          owner: OWNER,
       });
-      // Partitioned: the same, through the create-empty / insert path.
-      await createTableAndDescribe(
-         session,
-         '"lake"."main"."summary"',
-         "SELECT 4 AS x",
-         ["x"],
-         { replacesView: true },
-      );
-      expect(await rows("SELECT x FROM lake.main.summary")).toEqual([{ x: 4 }]);
    });
 });
 

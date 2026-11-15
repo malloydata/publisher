@@ -17,7 +17,7 @@ This file is the core. The details live beside it, one topic per file, and each 
 
 - `reference/annotation.md` - the `#@ persist` tag: what can carry it, the name rules, identity and reuse, readers of a persisted source, and every option with where it is explained.
 - `reference/policy.md` - the `publisher.json` block: `scope`, `queryMetadata`, and where the rules are enforced.
-- `reference/storage.md` - building into a **storage destination** (`storage=`), `partition=`, where a given may sit, which sources that tier refuses, and how a stored table is served.
+- `reference/storage.md` - building into a **storage destination** (`storage=`), where a given may sit, which sources that tier refuses, and how a stored table is served.
 - `reference/chaining.md` - one stored source built **over another stored source**: what makes it reuse the parent's table or recompute from the warehouse, and how to read which happened.
 - `reference/refresh.md` - keeping a table current: `freshness`, `schedule`, and `refresh="incremental"`.
 - `reference/access-filter.md` - persisting a `#(access_filter)`-gated source, and the bound on a stale access decision.
@@ -53,7 +53,7 @@ source: sales is orders_base extend {
 
 What is different about v2, briefly:
 
-- **It stores the source as written** - every dimension (computed, private and internal ones too) with its `where:` applied, not a query's output - so a plain `extend` over a table is fine and needs no `-> { select: * }`. Keys are closed: `name`, `storage`, `refresh`, `watermark`, `merge_key`, `partition`, `freshness.*`, `queryMetadata.*`, `inline`. Any other key refuses the publish (`materialize-unknown-key`).
+- **It stores the source as written** - every dimension (computed, private and internal ones too) with its `where:` applied, not a query's output - so a plain `extend` over a table is fine and needs no `-> { select: * }`. Keys are closed: `name`, `storage`, `refresh`, `watermark`, `merge_key`, `freshness.*`, `queryMetadata.*`, `inline`. Any other key refuses the publish (`materialize-unknown-key`; the retired `partition=` is `materialize-retired-key`).
 - **The base must not declare measures, views or joins**, unless the base is materialized too. A `#(materialize)` source that inherits one is built but never read: `served-copy-not-served` ("This source inherits fields ..."), serve verdict `live` / `served_copy`, every query live. Build over a base with none (as above), or keep the query shape (`orders -> { select: * } extend { ... }`) and declare the measures after it.
 - **Joins are references by default.** `inline=["j"]` stores a join_one as `j__<field>` columns, or a join_many as a pair table; an incremental pair table names a watermark on each side, `watermark=["updated_at", "j.updated_at"]`.
 - **`#@ persist` on a view and `#@ -persist` on a reader are the same in both.** A persisted view is built only with the switch on. `#@ preaggregate` is deprecated (a `deprecated-preaggregate-annotation` warning with the switch on; it still builds).
@@ -76,10 +76,10 @@ What is different about v2, briefly:
    ```
    - **Only `query_source` and `sql_select` sources are persistable** - a `-> { ... }` pipeline or a `conn.sql("...")`, including one refined by a trailing `extend { ... }`. A `#@ persist` on a *plain* `extend` over a bare `conn.table(...)` is **refused, not ignored**: the package warns, and every run that covers it fails naming the source, so a whole-package run builds nothing until you fix it. Persist a query source instead (`source: x is raw -> { where: ...; select: * }`).
    - **Quote the name, once.** A bare `name=my_table` fails the package load with `persist annotation name must be quoted`; a name quoted *inside* the quotes (`name="\"My Table\""`) also fails the load, as not a plain identifier path. Publisher quotes each segment itself, so mixed case and reserved words need no extra quoting. The target's container must already exist and be writable by the connection.
-   - **The name is not the identity.** A persist source is identified by a content address of its connection, SQL and partition layout, so a rebuild with unchanged logic reuses the table and two sources with the same body share one. An `extend` of a persisted source reads the same table and is not a second build target.
+   - **The name is not the identity.** A persist source is identified by a content address of its connection and SQL, so a rebuild with unchanged logic reuses the table and two sources with the same body share one. An `extend` of a persisted source reads the same table and is not a second build target.
    - **A `name=` is one table on its schema, whichever package asks.** Publisher's own builds name a table with no `name=` after the source plus a hash of the environment and package (`orders__p3f9c2a1b`), so packages sharing a schema never collide. A `name=` is used as written and marked as its package's; if another package already holds it, that source's build is refused (`table-owned-elsewhere` in the run's failures) and it answers live. Give it a different `name=`.
 
-   The name rules, bound arguments, `#@ -persist`, and every option (`storage=`, `partition=`, `refresh=`, `freshness.*`, `queryMetadata.*`) are in `reference/annotation.md`.
+   The name rules, bound arguments, `#@ -persist`, and every option (`storage=`, `refresh=`, `freshness.*`, `queryMetadata.*`) are in `reference/annotation.md`.
 
 3. **Package persistence policy in `publisher.json`** (all optional):
    ```jsonc

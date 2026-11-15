@@ -2085,7 +2085,7 @@ export class PackageMaterialization {
       const packageFreshness = materialization?.freshness ?? null;
       const scope = this.owner.metadata().scope ?? "package";
 
-      // Rule 1: per-source sharing/schedule are retired.
+      // Rule 1: per-source sharing/schedule, and partition=, are retired.
       for (const source of sources) {
          const fields = source.annotationFields ?? {};
          if (fields.sharing !== undefined) {
@@ -2102,6 +2102,14 @@ export class PackageMaterialization {
                   `no longer supported: a schedule is package-root-only. Declare ` +
                   `"materialization.schedule" at the ${PACKAGE_MANIFEST_NAME} root ` +
                   `(requires "scope": "version") instead.`,
+            );
+         }
+         if (fields.partition !== undefined) {
+            warnings.push(
+               `#@ persist source "${source.name}" declares partition=... which is ` +
+                  `no longer supported: remove it. The stored table is written ` +
+                  `unpartitioned; partitioning was a layout choice only, so the ` +
+                  `cost is scan time and what each caller sees is unchanged.`,
             );
          }
       }

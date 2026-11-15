@@ -188,6 +188,25 @@ describe("annotation findings on a loaded package", () => {
       { timeout: 30000 },
    );
 
+   it.each([
+      ["colocated", `#@ persist name="t" partition="category"`],
+      ["storage=", `#@ persist name="t" storage="lake" partition="category"`],
+   ])(
+      "refuses a %s #@ persist partition= at publish, saying to remove it",
+      async (_tier, line) => {
+         const pkg = await loadPackage(`${RAW}${line}\n${ROLLUP}\n`);
+         const [warning] = coded(pkg, "persist-retired-key");
+         expect(warning).toMatchObject({ severity: "error", subject: "daily" });
+         expect(warning.message).toContain("`partition=`");
+         expect(warning.message).toContain("partition= is not supported");
+         expect(warning.message).toContain("remove it");
+         // Not the vaguer unknown-key warning, which publish would allow.
+         expect(coded(pkg, "persist-unknown-key")).toEqual([]);
+         expect(formatPublishRejections(pkg)).toContain("partition=");
+      },
+      { timeout: 30000 },
+   );
+
    it(
       "reports an unknown key on a plain persist source as a warning, and publish allows it",
       async () => {
@@ -283,6 +302,35 @@ describe("annotation findings on a loaded package", () => {
             expect(warning.message).toContain("did you mean `name=`?");
             // A package already published keeps loading; publish refuses.
             expect(formatPublishRejections(pkg)).toContain("`nmae=`");
+         } finally {
+            await __setPackageLoadPoolForTests(null);
+            restore();
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "refuses a #(materialize) partition= at publish, saying to remove it",
+      async () => {
+         const { restore } = installSettings({
+            env: { PUBLISHER_MATERIALIZE: "true" },
+         });
+         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+         try {
+            const pkg = await loadPackage(
+               `${RAW}#(materialize) name="t" storage="lake" partition="category"\nsource: orders is raw\n`,
+            );
+            const [warning] = coded(pkg, "materialize-retired-key");
+            expect(warning).toMatchObject({
+               severity: "error",
+               subject: "orders",
+            });
+            expect(warning.message).toContain("`partition=`");
+            expect(warning.message).toContain("partition= is not supported");
+            expect(warning.message).toContain("remove it");
+            expect(coded(pkg, "materialize-unknown-key")).toEqual([]);
+            expect(formatPublishRejections(pkg)).toContain("`partition=`");
          } finally {
             await __setPackageLoadPoolForTests(null);
             restore();
