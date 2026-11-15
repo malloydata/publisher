@@ -273,7 +273,7 @@ for the full contract and how to bound that staleness. `storage=` and `#@ preagg
 unconditionally refused for any `#(access_filter)`-gated source — the relaxation applies to colocated
 persistence only.
 
-**Colocated `#(preaggregate)` rollups (in development).** With `PUBLISHER_MATERIALIZE` and
+**Colocated `#(preaggregate)` rollups.** With `PUBLISHER_MATERIALIZE` (on by default) and
 `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(preaggregate)` rollup over a gated
 source is built in the source's own warehouse and read past the gate, the same way: the queried source
 is redeclared over the rollup with its own gates and keeps its identity, so this section's rules hold

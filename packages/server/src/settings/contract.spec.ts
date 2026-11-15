@@ -1599,11 +1599,11 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
    "materialize.enabled": [
-      { name: "unset", expect: value(false) },
+      { name: "unset", expect: value(true) },
       {
          name: "PUBLISHER_MATERIALIZE",
-         env: { PUBLISHER_MATERIALIZE: "true" },
-         expect: value(true),
+         env: { PUBLISHER_MATERIALIZE: "false" },
+         expect: value(false),
       },
       {
          name: "not a boolean",

@@ -36,7 +36,13 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
 /** One source's inputs to the gate. */
 export interface IncrementalPolicySource {
+   /**
+    * The author's source name: for a persisted view, the source the view is
+    * declared on, never the generated build source's name.
+    */
    sourceName: string;
+   /** For a persisted view, the author's view name on {@link sourceName}. */
+   viewName?: string;
    /** Package-relative model path, for the warning's `model` field. */
    modelPath?: string;
    /** The source's Malloy dialect name (`postgres`, `standardsql`, …). */
@@ -52,6 +58,21 @@ export interface IncrementalPolicySource {
 }
 
 const MODE = `refresh="incremental"`;
+
+/** How a message names the declaration: the author's source, or view. */
+function declaredOn(source: IncrementalPolicySource): string {
+   // malloy-text: names quoted in a rejection message, not generated Malloy
+   return source.viewName === undefined
+      ? `#@ persist source "${source.sourceName}"`
+      : `#@ persist on view "${source.viewName}" of source "${source.sourceName}"`;
+}
+
+/** A warning's `subject`, as a persisted view's other findings write it. */
+function subjectOf(source: IncrementalPolicySource): string {
+   return source.viewName === undefined
+      ? source.sourceName
+      : `${source.sourceName} -> ${source.viewName}`;
+}
 
 /** `"a", "b"` for a message. */
 function quoteList(names: string[]): string {
@@ -73,12 +94,11 @@ function aggregateBacked(names: (ResolvedName | undefined)[]): ResolvedName[] {
 }
 
 function malformedMessage(
-   sourceName: string,
+   where: string,
    key: string,
    problem: string,
    detail: string | undefined,
 ): string {
-   const where = `#@ persist source "${sourceName}"`;
    switch (problem) {
       case "array":
          return (
@@ -129,8 +149,8 @@ export function incrementalPolicyRejections(
 }
 
 function rejectionsForSource(source: IncrementalPolicySource): string[] {
-   const { sourceName, declaration: d } = source;
-   const where = `#@ persist source "${sourceName}"`;
+   const { declaration: d } = source;
+   const where = declaredOn(source);
    const out: string[] = [];
 
    // Rule 4: the mode itself must be one of the two known values. Checked first
@@ -147,7 +167,7 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    // Rule 5: malformed key VALUES, from the raw tag — otherwise the array form
    // would misdiagnose as rule 2's "no watermark declared".
    for (const m of d.malformed) {
-      out.push(malformedMessage(sourceName, m.key, m.problem, m.detail));
+      out.push(malformedMessage(where, m.key, m.problem, m.detail));
    }
 
    // ── The coherence chain: merge_key ⇒ watermark ⇒ incremental ──────────
@@ -349,12 +369,10 @@ function sharedAddressAdvisories(
          new Set(group.map((s) => recordedLineage(s.declaration))).size > 1;
       // Reported on EVERY source in the group: none is the "original".
       for (const source of group) {
-         const others = group
-            .filter((s) => s !== source)
-            .map((s) => s.sourceName);
+         const others = group.filter((s) => s !== source).map(subjectOf);
          warnings.push({
             model: source.modelPath ?? "",
-            subject: source.sourceName,
+            subject: subjectOf(source),
             code: INCREMENTAL_SHARED_ADDRESS_CODE,
             severity: "warn",
             message:
@@ -393,7 +411,7 @@ export function incrementalPolicyAdvisories(
    const warnings: ApiPackageWarning[] = sharedAddressAdvisories(sources);
    for (const source of sources) {
       const { declaration: d } = source;
-      const at = { model: source.modelPath ?? "", subject: source.sourceName };
+      const at = { model: source.modelPath ?? "", subject: subjectOf(source) };
 
       // An unknown key (a misspelled `merge_key=`, which would silently
       // degrade to range replace) is reported for every persist source, coded

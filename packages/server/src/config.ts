@@ -917,9 +917,10 @@ export const getPersistAddressIncludesDestination = (): boolean =>
    settings.get("persist.addressIncludesDestination");
 
 /**
- * Whether `#(materialize)` is read and its generated `#@ persist` sources built
- * (materialization v2, phase 3), from `PUBLISHER_MATERIALIZE` (default
- * `false`). Off, the build plan is exactly what it was without it.
+ * Whether materialization v2 is on: `#(materialize)` and `#(preaggregate)` read,
+ * built and served, from `PUBLISHER_MATERIALIZE` (default `true`). `false`
+ * opts out, and the build plan is exactly what it was without it. The setting
+ * is removed one release after this default ships.
  */
 export const getMaterializeEnabled = (): boolean =>
    settings.get("materialize.enabled");

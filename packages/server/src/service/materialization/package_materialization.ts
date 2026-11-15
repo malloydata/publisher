@@ -426,10 +426,24 @@ export class PackageMaterialization {
          this.colocatedSourceEligibility = colocatedSourceEligibility;
          // `?? []`: an outcome a worker built before this field existed.
          this.buildConnectionNames = new Set(buildConnectionNames ?? []);
+         // A persisted view's plan entry is its generated build source; its
+         // findings name the author's view and the source it is declared on.
+         const persistedViews = new Map<
+            string,
+            { sourceName: string; viewName: string }
+         >();
+         for (const model of this.owner.models().values()) {
+            for (const v of model.persistedViewBuilds?.() ?? []) {
+               persistedViews.set(v.buildSourceID, {
+                  sourceName: v.sourceName,
+                  viewName: v.viewName,
+               });
+            }
+         }
          this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
             .filter(([sourceID]) => incrementalDeclarations[sourceID])
             .map(([sourceID, source]) => ({
-               sourceName: source.name,
+               ...(persistedViews.get(sourceID) ?? { sourceName: source.name }),
                modelPath: source.modelPath,
                dialect: source.dialect,
                storageDestination: source.annotationFields?.storage,
