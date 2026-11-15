@@ -2190,7 +2190,7 @@ export class Environment {
          const { tableNameManifest, storageEntries } = splitManifestEntries(
             rawEntries,
             `local store (package ${packageName})`,
-            true,
+            "store",
          );
          if (Object.keys(tableNameManifest).length > 0) {
             pkg.bindColocatedServeManifest(tableNameManifest);
@@ -2950,6 +2950,9 @@ export class Environment {
                            splitManifestEntries(
                               entries,
                               `local store (package ${packageName} version ${versionId})`,
+                              // From the store, with the key checks its
+                              // newest run stands behind (withRollupKeyRecords).
+                              "store",
                            );
                         if (
                            Object.keys(tableNameManifest).length > 0 ||
@@ -3935,111 +3938,53 @@ export class Environment {
    }
 
    /**
-    * Bind a package's `storage=` serve bindings from a build's full manifest
-    * entries, routing those sources through the virtual-source transform.
-    * Best-effort: logged no-op if the package isn't loaded.
+    * Rebind an unversioned package from the store: `read` answers what the
+    * store says it serves, and is called under the package's lock, which
+    * the bind holds too, so nothing created under the same lock (a load, a
+    * reload, an unversioned run's start) lands between the read and the
+    * bind. The colocated entries recompile the models when there is
+    * something to substitute or clear (a build's auto-load baked the
+    * substitution in); the `storage=` entries, when `read` returns them,
+    * replace the storage bindings, empty reverting to live. Used after a
+    * run and after a delete, so a reclaimed table is not left routed.
+    * Skipped under a `manifestLocation` (the host is authoritative), and a
+    * logged no-op when the package is not loaded.
     */
-   public async bindPackageStorageServeBindings(
+   public async rebindPackageFromStore(
       packageName: string,
-      entries: Record<string, ManifestEntry>,
-      // A published version of the package; undefined, its unversioned slot.
-      versionId?: string,
+      read: () => Promise<{
+         colocated: FreshnessManifest;
+         storage?: Record<string, ManifestEntry>;
+      }>,
    ): Promise<void> {
       assertSafePackageName(packageName);
-      if (versionId !== undefined) {
-         await this.withLoadedVersion(
-            packageName,
-            versionId,
-            "bind storage serve bindings",
-            async (pkg) => {
-               // Host-authoritative, as below.
-               if (pkg.getManifestLocation()) return;
-               pkg.bindStorageServeBindings(entries);
-            },
-         );
-         return;
-      }
-      return this.withPackageLock(packageName, async () => {
-         const pkg = this.packages.get(packageName);
-         if (!pkg) {
-            logger.warn(
-               "Cannot bind storage serve bindings: package not loaded",
-               { packageName },
-            );
-            return;
-         }
-         // With a manifestLocation the host is authoritative; this local-store
-         // path would clobber its bindings with a possibly staler generation.
-         if (pkg.getManifestLocation()) {
-            logger.debug(
-               "Skipping local-store storage serve binding: manifestLocation " +
-                  "is bound (host authoritative)",
-               { packageName },
-            );
-            return;
-         }
-         pkg.bindStorageServeBindings(entries);
-      });
-   }
-
-   /**
-    * The colocated analogue of {@link bindPackageStorageServeBindings}, used by
-    * the post-delete rebind so a reclaimed table is not left routed. An empty
-    * manifest reverts to live; skipped under a `manifestLocation`.
-    *
-    * Unlike the load-time rebind's per-query overlay, these models have the
-    * substitution baked in by a build's auto-load, so this must recompile —
-    * skipped when there is nothing to substitute or clear.
-    */
-   public async bindPackageColocatedServeManifest(
-      packageName: string,
-      entries: FreshnessManifest,
-      // A published version of the package; undefined, its unversioned slot.
-      versionId?: string,
-   ): Promise<void> {
-      assertSafePackageName(packageName);
-      if (versionId !== undefined) {
-         await this.trackPackageLoad(packageName, () =>
-            this.withLoadedVersion(
-               packageName,
-               versionId,
-               "bind a colocated serve manifest",
-               async (pkg) => {
-                  // Host-authoritative, as below.
-                  if (pkg.getManifestLocation()) return;
-                  const hasColocated = Object.keys(entries).length > 0;
-                  if (hasColocated || pkg.hasBoundTableNameManifest()) {
-                     await pkg.reloadAllModels(entries);
-                  }
-               },
-            ),
-         );
-         return;
-      }
       // A recompile, so reported as loading while it runs (see trackPackageLoad).
       return this.trackPackageLoad(packageName, () =>
          this.withPackageLock(packageName, async () => {
             const pkg = this.packages.get(packageName);
             if (!pkg) {
                logger.warn(
-                  "Cannot bind colocated serve manifest: package not loaded",
+                  "Cannot rebind serve bindings from the store: package not loaded",
                   { packageName },
                );
                return;
             }
             if (pkg.getManifestLocation()) {
                logger.debug(
-                  "Skipping local-store colocated serve binding: manifestLocation " +
-                     "is bound (host authoritative)",
+                  "Skipping local-store serve binding: manifestLocation is " +
+                     "bound (host authoritative)",
                   { packageName },
                );
                return;
             }
-            const hasColocated = Object.keys(entries).length > 0;
-            const hadColocated = pkg.hasBoundTableNameManifest();
-            if (hasColocated || hadColocated) {
-               await pkg.reloadAllModels(entries);
+            const { colocated, storage } = await read();
+            if (
+               Object.keys(colocated).length > 0 ||
+               pkg.hasBoundTableNameManifest()
+            ) {
+               await pkg.reloadAllModels(colocated);
             }
+            if (storage) pkg.bindStorageServeBindings(storage);
          }),
       );
    }

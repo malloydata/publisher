@@ -6,7 +6,10 @@ import type {
    Materialization,
    ResourceRepository,
 } from "../../storage/DatabaseInterface";
-import type { ManifestEntry } from "../materialization/domain/types";
+import {
+   isLegacyFailedEntry,
+   type ManifestEntry,
+} from "../materialization/domain/types";
 
 /**
  * Who owns the tables a published version's materializations build, decided
@@ -217,9 +220,28 @@ export function storageBindingResolverFor(
          packageName,
          reader.owned !== undefined ? { version: reader.owned } : undefined,
       );
-      const entries = newestServingEntries(runs, reader);
+      const entries = storedServingEntries(runs, reader);
       return annotate ? annotate(entries, runs) : entries;
    };
+}
+
+/**
+ * The entries `reader` serves from the store: {@link newestServingEntries},
+ * less any that records a failed source. Legacy tolerance, removable with
+ * `ManifestEntry.error`: manifests from 0.0.245-0.0.246 record failed sources
+ * among their entries, naming a table that was never created. Every read of
+ * the store for serving or reuse goes through this one.
+ */
+export function storedServingEntries(
+   runs: Materialization[],
+   reader: ServingReader,
+   excludeId?: string,
+): Record<string, ManifestEntry> {
+   return Object.fromEntries(
+      Object.entries(newestServingEntries(runs, reader, excludeId)).filter(
+         ([, entry]) => !isLegacyFailedEntry(entry),
+      ),
+   );
 }
 
 /*

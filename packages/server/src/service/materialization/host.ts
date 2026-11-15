@@ -145,15 +145,17 @@ export interface MaterializationEnvironment {
       manifest: FreshnessManifest,
       versionId?: string,
    ): Promise<void>;
-   bindPackageColocatedServeManifest(
+   /**
+    * Read an unversioned package's tables from the store and bind them, the
+    * read and the bind under the package's lock (see
+    * Environment.rebindPackageFromStore).
+    */
+   rebindPackageFromStore(
       packageName: string,
-      entries: FreshnessManifest,
-      versionId?: string,
-   ): Promise<void>;
-   bindPackageStorageServeBindings(
-      packageName: string,
-      entries: Record<string, ManifestEntry>,
-      versionId?: string,
+      read: () => Promise<{
+         colocated: FreshnessManifest;
+         storage?: Record<string, ManifestEntry>;
+      }>,
    ): Promise<void>;
    rebindVersionFromStore(
       packageName: string,
