@@ -1,6 +1,29 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The eligibility gates: whether a planned persist source may be built on its
+ * tier, and what an eligible source carries into the build. Decided after
+ * compilation and before any build, so a refusal costs no warehouse work.
+ * Each gate throws a
+ * `MaterializationEligibilityError` (HTTP 422) naming the source and the
+ * reason, and counts the refusal (`recordEligibilityRefused`).
+ *
+ * Surface: `assertTierEligible`, the gate for the tier a source builds into
+ * (the storage gate `assertMaterializationEligible`, or the colocated gate
+ * `assertColocatedPersistNotAuthorizeGated`), and `assertPlacementNamed`
+ * beside it, read by the build plan, eligibility collection, the run's
+ * instructions and the instructed build; `gateEnforcedAtRead`, the one
+ * question the build, the serve bind and the host-instructed build ask of a
+ * gated source; `isAuthorizeAttributedToEntryPoint`, for the build plan's
+ * gate classification; and `READ_ONLY_DIALECTS`, shared with the connection
+ * attributes and the dialect table.
+ *
+ * Fails closed throughout: IR it cannot read is a refusal, since the failure
+ * it guards against is a stored table served past a gate or to the wrong
+ * caller.
+ */
+
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
@@ -30,9 +53,9 @@ import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 
 /**
- * What an eligible source carries into the build and the serve shape. Returned
- * by the gate rather than re-derived, because it is only valid because the
- * gate proved it: where each term sits.
+ * What an eligible source carries into the build. Returned by the gate rather
+ * than re-derived, because it is only valid because the gate proved it: where
+ * each term sits.
  */
 interface PersistDynamicPlan {
    /** Terms absent from the build, re-applied per caller at read. */
@@ -52,10 +75,9 @@ interface PersistDynamicPlan {
  *     left out of the build and re-applied per caller, so it is stripped and
  *     returned; any other position is refused (fail closed). See
  *     {@link admitGivenPositions}. The stripped terms are a promise: the
- *     serve shape must declare their givens and re-emit their text, or the
- *     query must not route.
+ *     served copy must re-apply them, or the query must not route.
  *  3. **No `#(authorize)` / `#(access_filter)` gate.** Both are evaluated per
- *     request and the served shape carries neither, so the table would bypass
+ *     request and a table built once carries neither, so it would bypass
  *     them. Fails closed. The one exception is `gateEnforcedAtRead` (see
  *     {@link gateEnforcedAtRead}): a `#(materialize)` source read only through
  *     the served copy, which keeps the author's gates and has them grafted and
@@ -66,9 +88,9 @@ interface PersistDynamicPlan {
  *     join, where Malloy replaces the target's annotations and only a
  *     `sourceID` into `ModelDef.sourceRegistry` survives (measured:
  *     `join_one: base_locked` refuses, the same join under a `# render_tag` is
- *     eligible). No exposure today, since the serve path gates only the entry
- *     point; do not treat this scan as proof joined-in gated data is safe to
- *     freeze.
+ *     eligible). The serve path gates only the entry point, so this gap
+ *     exposes nothing; do not treat this scan as proof joined-in gated data is
+ *     safe to freeze.
  *
  * DuckDB portability of the served source is checked at build time against
  * the captured schema, not here. This must run after compilation (only the
@@ -243,9 +265,8 @@ function assertNoInheritedGivenWhere(
  * Compile-time eligibility gate for the COLOCATED persist path (`#@ persist`
  * with no `storage=`, a CTAS into the source's own warehouse). Deliberately
  * narrower than {@link assertMaterializationEligible}: the storage tier's
- * free-parameter and positional-given rules exist because its serve shape must
- * re-declare everything, and applying them here would refuse many packages
- * that build and serve correctly.
+ * free-parameter and positional-given rules are its own, and applying them
+ * here would refuse many packages that build and serve correctly.
  *
  * A colocated artifact is not served frozen with respect to the gate: the
  * entry point's `#(authorize)` is grafted onto every query
@@ -684,13 +705,13 @@ export function gateEnforcedAtRead(
    const table = plan?.tables?.[sourceID];
    // A rollup asks its own question: its base gates are grafted and proven on
    // its variant (R3 for rollups), for a `#(preaggregate)` rollup and a v1
-   // `#@ preaggregate` line read as one (the cutover's G4) alike.
+   // `#@ preaggregate` line read as one alike.
    if (table?.rollup !== undefined) {
       return rollupGateEnforcedAtRead(table.rollup);
    }
-   // A `#(materialize)` source is v2's: its gate is admitted only with v2's
-   // switch, not with the v1 cutover that also enables the gated switch, and
-   // only for the entry point's own row-level gate (the gate policy).
+   // A `#(materialize)` source's gate is admitted only with `#(materialize)`'s
+   // own switch on beside the gated-sources switch, and only for the entry
+   // point's own row-level gate (the gate policy).
    const materialized = table?.materialize;
    if (!materialized) return false;
    const outcome = table.gate;
@@ -871,10 +892,10 @@ export function assertTierEligible(
       { gateEnforcedAtRead: !!rollup && rollupGateEnforcedAtRead(rollup) },
    );
    // A colocated `#(materialize)` table is read only through the served copy
-   // (never Malloy's manifest), which answers a gated entry point only while
-   // it keeps the gates (`materialize.gatedSources`), as for `storage=`. A
-   // gated one is built only then, so a table is never built that cannot be
-   // served (phase 3 pull request 6).
+   // (never Malloy's compiler manifest), which answers a gated entry point
+   // only while it keeps the gates (`materialize.gatedSources`), as for
+   // `storage=`. A gated one is built only then, so a table is never built
+   // that cannot be served.
    if (
       table?.materialize &&
       referencesAuthorize(source) &&

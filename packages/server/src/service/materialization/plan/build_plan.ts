@@ -1,6 +1,27 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * A package's build plan: one `TablePlan` per planned table, collected model
+ * by model, with each source's gate classification and eligibility, and a
+ * refusal or omission for each declaration that is not planned.
+ *
+ * Surface: `collectModelBuildPlan` adds one compiled model's tables to a
+ * `BuildPlanParts` (the package-load worker over the models it compiled, and
+ * `build_plan_compile.ts` on the main thread), and `mergeBuildPlanParts`
+ * joins per-model parts in model order. `deriveBuildPlan` projects the plan
+ * into the wire `BuildPlan` (the facade, for REST and the control plane);
+ * `deriveBuildPlanOutcome` projects it into what a package load keeps, which
+ * crosses the load worker as plain data. `collectIncrementalDeclarations`
+ * gives the incremental gate and the run's incremental build each source's
+ * resolved declaration. It also re-exports the addressing, plan-layer and
+ * eligibility helpers its importers read.
+ *
+ * Compiles, never runs: on the load worker its connection refuses SQL, and
+ * `deriveBuildPlanOutcome` reads connection digests, never live connections.
+ * It imports nothing from `service/model.ts`, so the load worker can run it.
+ */
+
 import type { KeyCheckCompiler } from "../domain/key_check";
 import {
    exploreOf,
@@ -122,7 +143,7 @@ import {
 } from "../domain/omitted_sources";
 
 // Addressing, plan layers and eligibility collection live in their own
-// modules; re-exported so every existing import of build_plan keeps working.
+// modules; re-exported here for build_plan's importers.
 export {
    addressSQL,
    addressText,
@@ -728,7 +749,7 @@ async function authorSourceGate(
 }
 
 /**
- * The `#(preaggregate)` rollups (materialization v2, phase 4) a model declares:
+ * The `#(preaggregate)` rollups a model declares:
  * one build source per rollup, planned only in the model that declares its
  * base, so a rollup is listed once however many models import the base. Each
  * keeps its compiled `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`)
@@ -821,7 +842,7 @@ async function collectGeneratedRollups(
 }
 
 /**
- * The `#@ persist` views (materialization v2, phase 4, P14) a model declares:
+ * The `#@ persist` views (P14) a model declares:
  * one generated build source per view, planned only in the model that
  * declares the view's source, so a view is listed once however many models
  * import it. Each keeps its compiled `sourceID`
@@ -1046,7 +1067,7 @@ export async function collectModelBuildPlan(
       getRuntime: SynthesizedRuntimeFactory;
       /**
        * Where each `#(materialize)` uniqueness check's compiler over a run's
-       * manifest is put, on a thread that runs builds; absent on the load
+       * compiler manifest is put, on a thread that runs builds; absent on the load
        * worker, whose plan crosses to the main thread as data.
        */
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
@@ -1107,7 +1128,7 @@ async function collectGeneratedTables(
          materializer,
          keyCheckCompilers,
       });
-      // `#@ persist` on a view (phase 4, P14), under the same switch.
+      // `#@ persist` on a view (P14), under the same switch.
       await collectGeneratedPersistedViews(parts, {
          modelPath,
          packagePath,
@@ -1116,9 +1137,8 @@ async function collectGeneratedTables(
          materializer,
       });
    }
-   // Rollups (phase 4): v1 `#@ preaggregate` lines are read as their
-   // declarations (the v1 cutover's G4), and `#(preaggregate)` with
-   // PUBLISHER_MATERIALIZE. A model declaring only rollups needs no
+   // Rollups: v1 `#@ preaggregate` lines are read as their declarations, and
+   // `#(preaggregate)` with PUBLISHER_MATERIALIZE. A model declaring only rollups needs no
    // persistence flag.
    await collectGeneratedRollups(parts, {
       modelPath,
@@ -1140,10 +1160,9 @@ async function v1PlanModel(
 ): Promise<{ model: MalloyModel; runtime: Runtime } | undefined> {
    const { modelPath, packagePath, malloyModel, runtime, getRuntime } = args;
    // getBuildTargets() THROWS on a model without `##! experimental.persistence`,
-   // which would abort the whole package's plan. Before the v1 cutover such a
-   // model plans no persist source, mirroring Malloy's own guard (guard 1).
-   // Under it, its build copy carries the flag instead (D3), so the author's
-   // file need not. Presence only, decided as Malloy decides it.
+   // which would abort the whole package's plan. Such a model is planned from
+   // a build copy that carries the flag (v1_build_companion.ts), so the
+   // author's file need not. Presence only, decided as Malloy decides it.
    let planModel = malloyModel;
    let planRuntime = runtime;
    if (
@@ -1740,7 +1759,7 @@ export function deriveBuildPlanOutcome(
    scope?: string | null,
 ): BuildPlanOutcome {
    // Before anything reads the plan: a refused source is neither built nor
-   // served, and its warning replaces it (#6644).
+   // served, and its warning replaces it.
    const compiled = refuseCollidingMaterialize({
       ...collected,
       ...(scope === "version" ? { versionScoped: true } : {}),

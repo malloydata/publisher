@@ -1,20 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { components } from "../../../api";
-import {
-   capabilitiesOf,
-   describeDialects,
-   dialectsWith,
-} from "../domain/dialect";
-import type {
-   IncrementalDeclaration,
-   ResolvedName,
-} from "../domain/incremental";
-
-type ApiPackage = components["schemas"]["Package"];
-type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
-
 /**
  * The gate for a source's INCREMENTAL declaration, plus advisory findings.
  *
@@ -32,7 +18,28 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
  * Every rule reads the EFFECTIVE MERGED tag (see resolveIncrementalDeclaration),
  * which is why several messages offer `-watermark`: an inheriting child removes
  * a key by negating it.
+ *
+ * Surface: `incrementalPolicyRejections` (the gate) and
+ * `incrementalPolicyAdvisories` (the warnings), each over one
+ * {@link IncrementalPolicySource} per source, read by the facade; `package.ts`
+ * reads the advisory code `INCREMENTAL_NO_MERGE_KEY_CODE`. Pure: it reads
+ * resolved declarations (`incremental_declaration.ts`) and the dialect
+ * capability table, and runs nothing.
  */
+
+import { components } from "../../../api";
+import {
+   capabilitiesOf,
+   describeDialects,
+   dialectsWith,
+} from "../domain/dialect";
+import type {
+   IncrementalDeclaration,
+   ResolvedName,
+} from "../domain/incremental";
+
+type ApiPackage = components["schemas"]["Package"];
+type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
 /** One source's inputs to the gate. */
 export interface IncrementalPolicySource {
@@ -343,8 +350,8 @@ function recordedLineage(d: IncrementalDeclaration): string {
  * incremental refresh.
  *
  * The address hashes the connection and canonical SQL only (not names or
- * declarations), so a copy-paste shares it, and downstream there is one manifest
- * entry and one covered_through row. For incremental sources this fails
+ * declarations), so a copy-paste shares it, and downstream there is one run
+ * manifest entry and one covered_through row. For incremental sources this fails
  * silently: DIFFERING declarations re-seed each other forever; AGREEING ones
  * collapse so one `name=` table is never built. The build path is safe either
  * way, but neither is visible from the model text.

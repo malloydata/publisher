@@ -1,6 +1,29 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Resolves a persist source's INCREMENTAL declaration — the `refresh=`,
+ * `watermark=` and `merge_key=` keys of its `#@ persist` tag — into a structure
+ * the publish gates and the build path both read: which names are real output
+ * columns, the watermark's type, the implied strategy, and every malformation.
+ * The strategy it implies is the one the ledger records.
+ *
+ * Surface: `resolveIncrementalDeclaration`, read by the build plan's
+ * `collectIncrementalDeclarations`, which feeds the incremental gate
+ * (`incremental_policy.ts`) and the run's incremental build.
+ *
+ * Three compiler facts shape the module (pinned in
+ * incremental_compiler_contract.spec.ts):
+ *
+ *  1. Rules read the EFFECTIVE MERGED tag. A source that `extend`s a persisted
+ *     parent inherits its persist tag; checking only local declarations would let
+ *     an inherited `refresh="incremental"` through ungated.
+ *  2. An array-valued key (`watermark=["a","b"]`) is ABSENT from the scalar map,
+ *     so the raw tag is read too — otherwise it is misreported as undeclared.
+ *  3. On the compiled OUTPUT schema an `aggregate:` column is indistinguishable
+ *     from a dimension, so the aggregate check reads the QUERY DEFINITION.
+ */
+
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
@@ -15,26 +38,6 @@ import type {
 import type { IncrementalStrategy } from "../domain/types";
 import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
-
-// Shared with the store: the strategy a declaration implies is what the ledger records.
-
-/**
- * Resolves a persist source's INCREMENTAL declaration — the `refresh=`,
- * `watermark=` and `merge_key=` keys of its `#@ persist` tag — into a structure
- * the publish gates and the build path both read: which names are real output
- * columns, the watermark's type, the implied strategy, and every malformation.
- *
- * Three compiler facts shape the module (pinned in
- * incremental_compiler_contract.spec.ts):
- *
- *  1. Rules read the EFFECTIVE MERGED tag. A source that `extend`s a persisted
- *     parent inherits its persist tag; checking only local declarations would let
- *     an inherited `refresh="incremental"` through ungated.
- *  2. An array-valued key (`watermark=["a","b"]`) is ABSENT from the scalar map,
- *     so the raw tag is read too — otherwise it is misreported as undeclared.
- *  3. On the compiled OUTPUT schema an `aggregate:` column is indistinguishable
- *     from a dimension, so the aggregate check reads the QUERY DEFINITION.
- */
 
 /** The `refresh=` values the publisher recognizes; unset means "full". */
 const REFRESH_MODES = ["full", "incremental"] as const;
@@ -153,7 +156,7 @@ function readKey(
 /**
  * Turn a source's persist-tag strings into a gate-ready declaration. Pure: runs
  * no query and decides nothing — the gate composes every rejection from the
- * result (see `incrementalPolicyWarnings`).
+ * result (see `incrementalPolicyRejections`).
  */
 export function resolveIncrementalDeclaration(
    source: PersistSource,
