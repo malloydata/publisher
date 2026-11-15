@@ -6,7 +6,11 @@ import type { components } from "../../../api";
 import { assembleEnvironmentConnections } from "../../connection_config";
 import { dropStorageTableSql } from "../run/materialization_build_session";
 import { deriveServeBindings } from "./binding";
-import { destinationSchemaOf, storageTablePath } from "./storage_table_path";
+import {
+   destinationSchemaOf,
+   storageTablePath,
+   tableNamesFoldCase,
+} from "./storage_table_path";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -125,5 +129,26 @@ describe("destinationSchema validation", () => {
             assembleEnvironmentConnections([destination(bad)], "/tmp/env"),
          ).toThrow(/destinationSchema must be a plain identifier/);
       }
+   });
+});
+
+describe("which table names fold case", () => {
+   it("a storage destination, and the dialects that resolve names case-insensitively", () => {
+      expect(tableNamesFoldCase(undefined, true)).toBe(true);
+      for (const dialect of [
+         "duckdb",
+         "trino",
+         "presto",
+         "databricks",
+         "sqlserver",
+      ]) {
+         expect(tableNamesFoldCase(dialect, false)).toBe(true);
+      }
+      // MySQL depends on lower_case_table_names; Postgres, Snowflake and
+      // BigQuery keep the case Publisher quotes.
+      for (const dialect of ["mysql", "postgres", "snowflake", "standardsql"]) {
+         expect(tableNamesFoldCase(dialect, false)).toBe(false);
+      }
+      expect(tableNamesFoldCase(undefined, false)).toBe(false);
    });
 });

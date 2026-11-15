@@ -42,11 +42,6 @@ import {
 import { SourceMap } from "../text/source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { packageFiles } from "../text/package_files";
-import { keyedOverlay } from "../../overlay_key";
-import {
-   compiledFileText,
-   loadLeavingOutCrossConnectionJoins,
-} from "./cross_connection_joins";
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
@@ -91,34 +86,11 @@ export async function compilePackageBuildPlan(
          modelPath,
          pkg.getMalloyConfig(),
       );
-      const load = async (files?: ReadonlyMap<string, string>) => {
-         // Held onto (rather than chained straight into `.getModel()`)
-         // because the gate classification needs the SAME live materializer
-         // that compiled this model — see `classifyPersistSourceGate`'s doc.
-         const { runtime, materializer } = await authorFiles.loadModel(files);
-         return {
-            runtime,
-            materializer,
-            malloyModel: await materializer.getModel(),
-         };
-      };
-      let loaded: Awaited<ReturnType<typeof load>>;
-      // The build view's files, when the model joins sources across
-      // connections (#6982): its builds are planned from them.
-      let buildView: Map<string, string> | undefined;
-      try {
-         loaded = await load();
-      } catch (first) {
-         const view = await loadLeavingOutCrossConnectionJoins({
-            firstError: first,
-            readText: (url) => compiledFileText(url),
-            load: (files) => load(keyedOverlay(files)),
-         });
-         if (!view) throw first;
-         loaded = view.result;
-         buildView = keyedOverlay(view.overlay);
-      }
-      const { runtime, materializer, malloyModel } = loaded;
+      // Held onto (rather than chained straight into `.getModel()`)
+      // because the gate classification needs the SAME live materializer
+      // that compiled this model — see `classifyPersistSourceGate`'s doc.
+      const { runtime, materializer } = await authorFiles.loadModel();
+      const malloyModel = await materializer.getModel();
       const map = SourceMap.of(modelDefOf(malloyModel));
       for (const key of joinOneKeysOf(map)) {
          joinOneKeys.add(key);
@@ -147,13 +119,7 @@ export async function compilePackageBuildPlan(
          materializer,
          malloyModel,
          runtime,
-         getRuntime: (overlay) =>
-            packageFiles(
-               pkg.getPackagePath(),
-               modelPath,
-               pkg.getMalloyConfig(),
-               buildView ?? new Map(),
-            ).runtime(overlay),
+         getRuntime: (overlay) => authorFiles.runtime(overlay),
          keyCheckCompilers,
       });
    }
@@ -212,6 +178,9 @@ export async function compilePackageBuildPlan(
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name must not build here either.
    return refuseCollidingMaterialize({
+      ...(pkg.getPackageMetadata?.()?.scope === "version"
+         ? { versionScoped: true }
+         : {}),
       builds: parts.builds,
       sources: parts.sources,
       targets: parts.targets,
@@ -243,5 +212,6 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
+      pkg.getPackageMetadata?.()?.scope,
    );
 }

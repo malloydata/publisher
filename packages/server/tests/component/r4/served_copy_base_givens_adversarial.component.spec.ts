@@ -755,8 +755,8 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
    });
 
    it("never builds one caller's rows", async () => {
-      // Colocated #(materialize) is not built yet; the incremental one is.
-      expect(built).toEqual(["incremental"]);
+      // Both are built: a colocated #(materialize) needs no name=.
+      expect(built).toEqual(["colocated", "incremental"]);
       for (const source of Object.keys(fixture.physicalTables)) {
          const orgs = await fixture.storedSQL(
             (t) => `SELECT DISTINCT org FROM ${t(source)} ORDER BY org`,
@@ -774,9 +774,7 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
                malloy: `run: ${source} -> { group_by: org, mine; aggregate: total }`,
                givens,
             });
-            expect(run.servedVia).toBe(
-               source === "incremental" ? "served_copy" : undefined,
-            );
+            expect(run.servedVia).toBe("served_copy");
             expect(rowDifference(run.live, run.served)).toBeUndefined();
             for (const row of run.served) expect(row.org).toBe(givens.ORG);
             runs.push(run);
