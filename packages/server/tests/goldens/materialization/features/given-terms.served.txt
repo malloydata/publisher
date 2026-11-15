@@ -3,28 +3,6 @@
 // ==== <pkg>/m.malloy
 ##! experimental { givens access_modifiers }
 ##! experimental { virtual_source }
-type: both__served is {
-   id::number,
-   customer_id::number,
-   region::string,
-   status::string,
-   amount::number,
-   discount::number,
-   order_date::date,
-   created_at::timestamp,
-   order::number
-}
-type: inherited__served is {
-   id::number,
-   customer_id::number,
-   region::string,
-   status::string,
-   amount::number,
-   discount::number,
-   order_date::date,
-   created_at::timestamp,
-   order::number
-}
 type: own__served is {
    id::number,
    customer_id::number,
@@ -67,18 +45,7 @@ source: base is orders_raw extend {
 
 // A where: it inherits from its base.
 #(materialize) storage="lake"
-source: inherited is __served_copy_alias_of_lake.virtual('a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e')::inherited__served extend {
-  internal rename:
-    id__stored is id
-    customer_id__stored is customer_id
-    order__stored is order
-  dimension:
-    id is id__stored::"HUGEINT"
-    customer_id is customer_id__stored::"HUGEINT"
-    order is order__stored::"HUGEINT"
-  where: region = $REGION
-  dimension: at_least is amount >= $MIN_AMT
-} extend {
+source: inherited is base extend {
   measure:
     n is count()
     total is amount.sum()
@@ -93,18 +60,7 @@ source: by_base_dimension is base extend {
 
 // Both: an inherited term and one of its own.
 #(materialize) storage="lake"
-source: both is __served_copy_alias_of_lake.virtual('7f3ca981cd5837467a36b0de530a39e858e03410cc504ddb78d84cb82a51c2ef')::both__served extend {
-  internal rename:
-    id__stored is id
-    customer_id__stored is customer_id
-    order__stored is order
-  dimension:
-    id is id__stored::"HUGEINT"
-    customer_id is customer_id__stored::"HUGEINT"
-    order is order__stored::"HUGEINT"
-  where: region = $REGION
-  dimension: at_least is amount >= $MIN_AMT
-} extend {
+source: both is base extend {
   where: amount >= $MIN_AMT
   measure: n is count()
 }

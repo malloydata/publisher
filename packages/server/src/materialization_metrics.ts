@@ -198,6 +198,7 @@ export type EligibilityRefusalReason =
    | "dynamic_projection"
    | "dynamic_join"
    | "dynamic_joined_where"
+   | "inherited_where_with_given"
    // Retired with `partition=`: kept for records that carry them, never raised.
    | "partition_without_storage"
    | "partition_column_unknown"
@@ -398,7 +399,7 @@ const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
    "materialization-eligibility refusals, both tiers. Label: reason " +
       "('free_parameter'|'given_in_persisted_query'|'dynamic_projection'|" +
-      "'dynamic_join'|'dynamic_joined_where'|" +
+      "'dynamic_join'|'dynamic_joined_where'|'inherited_where_with_given'|" +
       "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
       "'authorize'|'not_duckdb_portable'|" +
       "'public_surface_unknown'|'read_only_dialect'). 'given' is retained on the enum for records " +

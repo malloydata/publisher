@@ -10627,6 +10627,7 @@ components:
               dynamic_projection,
               dynamic_join,
               dynamic_joined_where,
+              inherited_where_with_given,
               partition_without_storage,
               partition_column_unknown,
               partition_column_not_public,
@@ -10645,7 +10646,13 @@ components:
             appear here — `free_parameter`, `authorize`, the four
             that name where a given the build could not strip sits
             (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
-            `dynamic_joined_where`),
+            `dynamic_joined_where`), `inherited_where_with_given` (a
+            given-reading `where:` the source inherits from a source it is
+            built from, in its own file or another, rather than writing it in
+            its own declaration: only the source's own declaration is
+            re-applied over the stored table at read, so it is not built and
+            is answered live, under the term; move the `where:` onto the
+            persisted source to serve it from a table),
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns),
             `preaggregate_over_dynamic_source` (a rollup whose base is scoped by

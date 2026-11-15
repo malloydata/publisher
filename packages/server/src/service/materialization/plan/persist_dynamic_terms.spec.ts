@@ -78,29 +78,40 @@ source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
       });
    });
 
-   it("admits a filter inherited through extend, which is how a shared scope is written", async () => {
+   it("refuses a filter inherited through extend: only the persisted source's own declaration is re-applied at read", async () => {
       const source = await persistSource(
          `#@ persist name="p" storage=lake
 source: p is scoped extend { where: s != 'zzz' }`,
       );
+      // The build still leaves the term out; what refuses is that the read
+      // would not put it back.
       expect(await buildSQL(source)).not.toContain('org_id"=1');
-
       const result = admitGivenPositions(source);
-      expect(result.ok).toBe(true);
-      // `filterList` accumulates through `extend`, so the base's term arrives
-      // here as the source's own and is stripped like one. The source's OWN
-      // static term is not returned: only a term that reads a given has to be
-      // re-applied with a caller's value, and a static one rides the serve
-      // shape's ordinary filter re-emission whether or not this pass names it.
-      if (result.ok) {
-         expect(result.terms).toEqual([
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+         expect(result.reason).toBe("inherited_where_with_given");
+         expect(result.detail).toContain("`where: org_id = $ORG_ID`");
+         expect(result.detail).toContain(
+            "move the given-reading `where:` onto the persisted source itself",
+         );
+      }
+   });
+
+   it("admits the term on the persisted source's own extend", async () => {
+      const source = await persistSource(
+         `#@ persist name="p" storage=lake
+source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
+      );
+      expect(admitGivenPositions(source)).toEqual({
+         ok: true,
+         terms: [
             {
                code: "org_id = $ORG_ID",
                givens: ["ORG_ID"],
                columns: ["org_id"],
             },
-         ]);
-      }
+         ],
+      });
    });
 
    it("reports no terms for a source with only a static where:", async () => {
