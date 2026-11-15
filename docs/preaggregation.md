@@ -310,11 +310,10 @@ from the rollup; one it does not is answered as it was before:
 
 - **A query-shaped base** builds its own stored table as well, which keeps answering every
   query no rollup covers, the base's own measures included.
-- **A table extended with measures** is not a build root, so its `#@ persist` plans
-  nothing: the package carries a `persist-not-materializable` warning, a query no rollup
-  covers is answered live, and a run of the whole package is refused for that source, as
-  it is for any `#@ persist` Malloy cannot build. A run that names the rollups builds them;
-  drop the `#@ persist`, which stores nothing, and every run does.
+- **A table extended with measures** is not a build root, so a `#@ persist` on it is
+  invalid: the publish and the load fail (`persist-not-materializable`), as they do for any
+  `#@ persist` on a shape Malloy does not plan. Drop the `#@ persist`, which could store
+  nothing; the rollups build without it, and a query no rollup covers is answered live.
 
 The refusals are the rollup leg's, for the same reasons as `#(preaggregate)`: a base whose
 rows read a given (`preaggregate-reads-given`) or the current time
