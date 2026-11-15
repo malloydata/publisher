@@ -4040,10 +4040,16 @@ export class Environment {
       await this.bindManifest(pkg, manifestLocation);
    }
 
-   /** Fetch + bind a specific manifest URI onto an already-loaded package. */
+   /**
+    * Fetch + bind a specific manifest URI onto an already-loaded package.
+    * Re-binding the manifest the models were last compiled with recompiles
+    * nothing, unless `recompile` is `always`: a PATCH, whose reload also
+    * re-reads the publisher.json it just wrote.
+    */
    private async bindManifest(
       pkg: Package,
       manifestLocation: string,
+      recompile: "always" | "if-changed" = "if-changed",
    ): Promise<void> {
       const packageName = pkg.getPackageName();
       try {
@@ -4066,9 +4072,11 @@ export class Environment {
          // Recompile first: it is the only step that can throw, and the catch
          // reports "no manifest applied", which would be false if the new
          // storage bindings were already routing.
-         if (hasColocated || hadColocated) {
-            await pkg.reloadAllModels(tableNameManifest);
-         }
+         const recompiled =
+            (hasColocated || hadColocated) &&
+            (await pkg.reloadAllModels(tableNameManifest, {
+               ifChanged: recompile === "if-changed",
+            }));
 
          if (hasStorage || hadStorage) {
             pkg.bindStorageServeBindings(storageEntries);
@@ -4085,7 +4093,7 @@ export class Environment {
             manifestLocation,
             tableNameEntryCount: Object.keys(tableNameManifest).length,
             storageEntryCount: Object.keys(storageEntries).length,
-            recompiled: hasColocated || hadColocated,
+            recompiled,
          });
       } catch (err) {
          pkg.markManifestBindFailed();
@@ -4433,7 +4441,11 @@ export class Environment {
       if (body.manifestLocation) {
          // May recompile, so reported as loading.
          await this.trackPackageLoad(packageName, () =>
-            this.bindManifest(_package, body.manifestLocation as string),
+            this.bindManifest(
+               _package,
+               body.manifestLocation as string,
+               "always",
+            ),
          );
       } else if (revertsBinding) {
          // Drop both tiers so nothing still routes to a materialized table.
