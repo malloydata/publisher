@@ -430,6 +430,23 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   /**
+    * What the last {@link reloadAllModels} compiled against, so a rebind of
+    * the same manifest can skip it. Every part but the
+    * entries is compared by identity: any other reload, colocated bind or
+    * plan change since makes the next rebind recompile.
+    */
+   private reloadedFor:
+      | {
+           entries: string;
+           models: Map<string, Model>;
+           colocated: unknown;
+           buildPlan: unknown;
+           connectionEdits: number;
+        }
+      | undefined;
+   /** Bumped by each connection edit {@link markBuildPlanStale} records. */
+   private connectionEdits = 0;
    /** The annotations the entities extraction left out, as warnings. */
    private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
@@ -1541,6 +1558,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.packageMetadata.versionId ?? undefined;
    }
 
+   /**
+    * The build manifest the package is configured to bind, as
+    * `getPackageMetadata().manifestLocation` reports it, without building the
+    * rest of the metadata.
+    */
+   public getManifestLocation(): string | null | undefined {
+      return this.packageMetadata.manifestLocation;
+   }
+
    public getPackageName(): string {
       return this.packageName;
    }
@@ -2128,6 +2154,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /** See {@link PackageMaterialization.markBuildPlanStale}. */
    public markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      this.connectionEdits++;
       this.materialization.markBuildPlanStale(changedConnections);
    }
 
@@ -2704,7 +2731,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * surface from publisher.json and re-applies serve routing to the new
     * models, which a fresh package has none of yet.
     */
-   public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+   public async reloadAllModels(
+      entries: FreshnessManifest,
+      options: { ifChanged?: boolean } = {},
+   ): Promise<boolean> {
+      const requested = JSON.stringify(entries);
+      if (options.ifChanged && this.isReloadedFor(requested)) {
+         logger.debug("Skipped reloading models: the manifest is unchanged", {
+            packageName: this.packageName,
+         });
+         return false;
+      }
       // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
       const buildManifest = toTableNameManifest(entries);
@@ -2767,10 +2804,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // Applies the query boundary too, against the refreshed explore set.
       this.installReports(discovery);
       // New models read the snapshot through their new policy; compile
-      // their served copies over it now.
+      // their served copies over it now, once: the destinations and the
+      // entries they were compiled with go first, so the one compile the
+      // publish starts is not invalidated and started again.
       this.materialization.wireServingResolvers();
-      this.materialization.publishSnapshot({ models: "installed" });
       this.materialization.pushServeDestinationConfigToModels();
+      this.materialization.bind({
+         colocated: entries,
+         colocatedAsGiven: true,
+         models: "installed",
+      });
+      this.reloadedFor = this.reloadKey(requested);
       // Read against the reports installed above.
       this.renderTagWarnings =
          this.surfacedRenderTagWarnings(renderTagWarnings);
@@ -2782,9 +2826,41 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          discovery,
          discoveryMs + performance.now() - lintStarted,
       );
-      this.materialization.bind({ colocated: entries, colocatedAsGiven: true });
       warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
+      return true;
+   }
+
+   /** What a reload against `entries` (as requested, unquoted) compiles over now. */
+   private reloadKey(entries: string): NonNullable<Package["reloadedFor"]> {
+      return {
+         entries,
+         models: this.models,
+         colocated: this.materialization.boundColocatedEntries(),
+         buildPlan: this.materialization.buildPlan,
+         connectionEdits: this.connectionEdits,
+      };
+   }
+
+   /** Whether the models were last reloaded against `entries`, and nothing has moved since. */
+   private isReloadedFor(entries: string): boolean {
+      const last = this.reloadedFor;
+      if (!last) return false;
+      // A plan a connection edit made stale may not hold the tables its
+      // re-derivation will; recompile, as before, rather than keep them.
+      if (this.materialization.isBuildPlanStale()) return false;
+      // A model a reload left as a placeholder may compile now.
+      for (const model of this.models.values()) {
+         if (model.getCompilationError()) return false;
+      }
+      const now = this.reloadKey(entries);
+      return (
+         last.entries === now.entries &&
+         last.models === now.models &&
+         last.colocated === now.colocated &&
+         last.buildPlan === now.buildPlan &&
+         last.connectionEdits === now.connectionEdits
+      );
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
