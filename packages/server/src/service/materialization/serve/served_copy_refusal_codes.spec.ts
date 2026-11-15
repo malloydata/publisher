@@ -240,6 +240,31 @@ describe("the served copy's refusal codes", () => {
       }
    });
 
+   it("words a compile failure that names a source as that source's kept blocks", () => {
+      // An extension table that does not compile over its kept blocks: the
+      // copy is compiled again with its own blocks only.
+      expect(
+         warningsFor([
+            {
+               reason: "compile_failed",
+               sourceName: "s",
+               detail: "line 1: boom",
+            },
+         ]).map((w) => ({
+            code: w.code,
+            subject: w.subject ?? null,
+            message: w.message,
+         })),
+      ).toEqual([
+         {
+            code: "served-copy-not-served",
+            subject: "s",
+            message:
+               "This source's table does not compile with its kept blocks, so the served copy re-roots it with its own blocks only, or leaves it as written.",
+         },
+      ]);
+   });
+
    it("advises inlining a cross-connection join only when it is not inlined and kept", () => {
       const both = warningsFor([
          PROBLEMS.inline_join_kept,

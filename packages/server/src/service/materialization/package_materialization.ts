@@ -2488,7 +2488,11 @@ function servedCopyProblemMessage(
    const { reason, join } = problem;
    switch (reason) {
       case "compile_failed":
-         return "This model's served copy does not compile, so its stored sources answer live.";
+         // With a source: one extension table that does not compile over
+         // its kept blocks, so the copy is compiled again without them.
+         return problem.sourceName
+            ? "This source's table does not compile with its kept blocks, so the served copy re-roots it with its own blocks only, or leaves it as written."
+            : "This model's served copy does not compile, so its stored sources answer live.";
       case "cross_connection_unbuilt":
          return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
