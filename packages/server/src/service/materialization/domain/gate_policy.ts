@@ -47,11 +47,26 @@ export interface GateSwitches {
    readonly gatedStorageRollupsReviewed: boolean;
 }
 
-/** What a stored table holds. */
-type GateKind = "persist" | "materialize" | "pair" | "rollup" | "view";
+/** Every switch gate keeping reads, one entry per field of {@link GateSwitches}. */
+export const GATE_SWITCH_KEYS = {
+   materialize: true,
+   gatedSources: true,
+   gatedStorageRollupsReviewed: true,
+} as const satisfies Record<keyof GateSwitches, true>;
+
+/** What a stored table holds, every kind the policy has a row for. */
+export const GATE_KINDS = [
+   "persist",
+   "materialize",
+   "pair",
+   "rollup",
+   "view",
+] as const;
+type GateKind = (typeof GATE_KINDS)[number];
 
 /** Where a stored table lives. */
-type GateTier = "colocated" | "storage";
+export const GATE_TIERS = ["colocated", "storage"] as const;
+type GateTier = (typeof GATE_TIERS)[number];
 
 /** A stored table over a gated source, as the policy reads it. */
 export interface GatedTable {
@@ -133,7 +148,8 @@ export function tableKeepsGates(t: GatedTable, s: GateSwitches): boolean {
 }
 
 /** A routed leg. */
-type GateLeg = "view" | "rollup" | "served";
+export const GATE_LEGS = ["view", "rollup", "served"] as const;
+type GateLeg = (typeof GATE_LEGS)[number];
 
 /** What the router's caller adds to the switches. */
 interface LegGateContext {

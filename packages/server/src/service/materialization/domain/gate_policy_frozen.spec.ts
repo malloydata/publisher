@@ -13,9 +13,14 @@
  * edited down is visible in review.
  */
 
+import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "bun:test";
 import {
    answerKeepsGates,
+   GATE_KINDS,
+   GATE_LEGS,
+   GATE_SWITCH_KEYS,
+   GATE_TIERS,
    type GatedTable,
    type GateSwitches,
    legMayPassGate,
@@ -27,20 +32,61 @@ const REVIEW =
    "a leg, tier or kind that keeps its gates, or a row loosened, needs that " +
    "review's sign-off before this list changes.";
 
-const KINDS = ["persist", "materialize", "pair", "rollup", "view"] as const;
-const TIERS = ["colocated", "storage"] as const;
-const LEGS = ["view", "rollup", "served"] as const;
+const KINDS = GATE_KINDS;
+const TIERS = GATE_TIERS;
+const LEGS = GATE_LEGS;
 const BOOLS = [false, true] as const;
 
+// Every input the policy can read is one this spec enumerates: a new kind,
+// tier or leg is a new array value (iterated below), and a new switch or
+// table field fails to compile here until the enumeration covers it.
+type Exactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const TABLE_FIELDS: Exactly<
+   keyof GatedTable,
+   "kind" | "tier" | "v1" | "gate" | "baseGateProven"
+> = true;
+const GATE_FIELDS: Exactly<
+   keyof NonNullable<GatedTable["gate"]>,
+   "rowLevel" | "attributed" | "inheritedRowFilter"
+> = true;
+const KIND_UNION: Exactly<GatedTable["kind"], (typeof GATE_KINDS)[number]> =
+   true;
+const TIER_UNION: Exactly<GatedTable["tier"], (typeof GATE_TIERS)[number]> =
+   true;
+const LEG_UNION: Exactly<
+   Parameters<typeof legMayPassGate>[0],
+   (typeof GATE_LEGS)[number]
+> = true;
+const SWITCH_KEYS: Exactly<keyof GateSwitches, keyof typeof GATE_SWITCH_KEYS> =
+   true;
+void [
+   TABLE_FIELDS,
+   GATE_FIELDS,
+   KIND_UNION,
+   TIER_UNION,
+   LEG_UNION,
+   SWITCH_KEYS,
+];
+
+/** Every setting of every switch, from the switch keys. */
 function* switches(): Generator<GateSwitches> {
-   for (const materialize of BOOLS)
-      for (const gatedSources of BOOLS)
-         for (const gatedStorageRollupsReviewed of BOOLS)
-            yield { materialize, gatedSources, gatedStorageRollupsReviewed };
+   const keys = Object.keys(GATE_SWITCH_KEYS) as (keyof GateSwitches)[];
+   for (let bits = 0; bits < 1 << keys.length; bits++) {
+      yield Object.fromEntries(
+         keys.map((k, i) => [k, ((bits >> i) & 1) === 1]),
+      ) as unknown as GateSwitches;
+   }
 }
 
 const s = (x: GateSwitches) =>
-   `mz=${+x.materialize} gs=${+x.gatedSources} rr=${+x.gatedStorageRollupsReviewed}`;
+   (Object.keys(GATE_SWITCH_KEYS) as (keyof GateSwitches)[])
+      .map((k) => `${SHORT[k] ?? k}=${+x[k]}`)
+      .join(" ");
+const SHORT: Partial<Record<keyof GateSwitches, string>> = {
+   materialize: "mz",
+   gatedSources: "gs",
+   gatedStorageRollupsReviewed: "rr",
+};
 
 /** Every table and switch setting the policy keeps gates for. */
 function tableRows(): string[] {
@@ -113,27 +159,27 @@ function expectFrozen(actual: string[], frozen: readonly string[]): void {
          `${REVIEW}\nAdded: ${JSON.stringify(added, null, 1)}\nDropped: ${JSON.stringify(dropped, null, 1)}`,
       );
    }
-   expect(actual).toEqual([...frozen]);
+   expect([...actual].sort()).toEqual([...frozen].sort());
 }
 
 const DUMP = process.env.GATE_POLICY_FROZEN_DUMP;
 
+/** Writes the rows for a reviewed update, and fails: a dump is never a pass. */
+function dumpAndFail(file: string, rows: string[]): never {
+   writeFileSync(file, JSON.stringify(rows, null, 3));
+   throw new Error(
+      `Wrote ${rows.length} rows to ${file}. ${REVIEW} This run fails so a dump never passes.`,
+   );
+}
+
 describe("the gate policy, frozen until the security review (plan question 14)", () => {
    it("keeps gates for exactly these tables", () => {
-      if (DUMP)
-         return void Bun.write(
-            `${DUMP}.tables.json`,
-            JSON.stringify(tableRows(), null, 3),
-         );
+      if (DUMP) dumpAndFail(`${DUMP}.tables.json`, tableRows());
       expectFrozen(tableRows(), FROZEN_TABLE_ROWS);
    });
 
    it("lets exactly these legs past a gate, and keeps it for exactly these answers", () => {
-      if (DUMP)
-         return void Bun.write(
-            `${DUMP}.legs.json`,
-            JSON.stringify(legRows(), null, 3),
-         );
+      if (DUMP) dumpAndFail(`${DUMP}.legs.json`, legRows());
       expectFrozen(legRows(), FROZEN_LEG_ROWS);
    });
 });
