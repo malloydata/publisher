@@ -1962,10 +1962,9 @@ export class QueryGovernor {
     * served copy answered. When it did, the served copy's own compile (the
     * routed runnable, before any graft, as the live check reads the live
     * compile before any graft), and live as well whenever live compiles: a
-    * live compile that does not compile is a cross-connection model's build
-    * view without the join the query goes through, which has nothing to
-    * read, and is never what answers. A served-copy claim with no separate
-    * routed compile is not one: the live compile is what runs, so it is read.
+    * live compile that does not compile has nothing to read, and is never
+    * what answers. A served-copy claim with no separate routed compile is
+    * not one: the live compile is what runs, so it is read.
     */
    private async ceilingTargets(
       ceiling: NonNullable<GovernRequest["ceiling"]>,
