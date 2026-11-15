@@ -16,17 +16,11 @@
       }
     ],
     "verdicts": [
-      "注文:live:served_copy",
+      "注文:serves",
       "café:serves",
       "via_sql:serves"
     ],
-    "warnings": [
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
-        "subject": "注文"
-      }
-    ]
+    "warnings": []
   },
   "queries": [
     {
@@ -149,10 +143,8 @@
       "path": {
         "considered": [
           {
-            "code": "served_copy",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
           }
         ],
@@ -176,20 +168,15 @@
           "sourceName": "注文"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "served_copy",
-            "message": "Only the served copy reads this table, and it does not answer from it here, so its queries are answered live.",
-            "sourceName": "注文",
-            "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
-          }
-        ]
+        "warnings": []
       },
       "query": "a CJK source, dimension and measure",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -380,10 +367,8 @@
       "path": {
         "considered": [
           {
-            "code": "served_copy",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
           }
         ],
@@ -407,20 +392,15 @@
           "sourceName": "注文"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "served_copy",
-            "message": "Only the served copy reads this table, and it does not answer from it here, so its queries are answered live.",
-            "sourceName": "注文",
-            "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
-          }
-        ]
+        "warnings": []
       },
       "query": "a CJK source, dimension and measure",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {

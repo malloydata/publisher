@@ -21,6 +21,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — the materialization rewriters read Malloy as Malloy reads it
+
+The served copy, a build's copy of the author's files and the build view that leaves joins across connections out all rewrite the author's text, and read it with their own small lexer. That lexer now shares one core with the reader of a caller's query text, which follows Malloy's own lexer exactly. What changes:
+
+- **Names in any script are read as names.** A source, field or join named outside ASCII (`café`, `größe`, `注文`) was split by the old lexer at its first non-ASCII letter, so its re-root on a stored table did not compile and the source answered live, with the package warning `served-copy-not-served` (`reroot_not_compiled`) and a serve verdict of `live`. Such a source is now served from its table, with the same answers. To tell whether you were affected: a stored source with a non-ASCII name whose serve verdict was `live` with that warning.
+- **A string or quoted name ends at its line, a `#|` block annotation is skipped whole, and a `"""` block is one unit with the Malloy in its `%{ … }`.** None of these can be written differently in a model that compiles, so no compiled source's answers change. A text the rewriters read that holds a string crossing a line (which only a file edited since its last compile can) is now unreadable to them, and its source answers live rather than being rewritten around the break.
+
+No API change. The reader of a caller's query text is unchanged: it accepts and rejects exactly what it did.
+
 ## [Unreleased] — `storage=` is read one way on every annotation, and an empty one refuses only its source
 
 Every annotation that asks for a table now reads its destination by one rule: `#@ persist`, `#@ persist` on a view, `#@ preaggregate`, `#(materialize)` and `#(preaggregate)`. Two things change.

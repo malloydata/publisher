@@ -24,8 +24,7 @@
     "tokens": [
       "word@0:source",
       "other@0::",
-      "word@0:caf",
-      "other@0:é",
+      "word@0:café",
       "word@0:is",
       "word@0:t",
       "word@0:extend",
@@ -55,10 +54,7 @@
       "open@0:{",
       "word@1:dimension",
       "other@1::",
-      "word@1:gr",
-      "other@1:ö",
-      "other@1:ß",
-      "word@1:e",
+      "word@1:größe",
       "word@1:is",
       "word@1:size",
       "close@0:}",
@@ -85,8 +81,7 @@
       "open@0:{",
       "word@1:dimension",
       "other@1::",
-      "word@1:a",
-      "other@1:é",
+      "word@1:aé",
       "other@1::",
       "word@1:is",
       "other@1:1",
@@ -94,23 +89,22 @@
     ],
     "statements": [
       "source source",
-      "dimension dimension"
+      "dimension dimension",
+      "aé aé"
     ]
   },
   "CJK name": {
     "tokens": [
       "word@0:source",
       "other@0::",
-      "other@0:注",
-      "other@0:文",
+      "word@0:注文",
       "word@0:is",
       "word@0:t",
       "word@0:extend",
       "open@0:{",
       "word@1:measure",
       "other@1::",
-      "other@1:件",
-      "other@1:数",
+      "word@1:件数",
       "word@1:is",
       "word@1:count",
       "open@1:(",
@@ -122,60 +116,8 @@
       "measure measure"
     ]
   },
-  "string crossing a line": {
-    "tokens": [
-      "word@0:source",
-      "other@0::",
-      "word@0:s",
-      "word@0:is",
-      "word@0:t",
-      "word@0:extend",
-      "open@0:{",
-      "word@1:where",
-      "other@1::",
-      "word@1:x",
-      "other@1:=",
-      "other@1:'a\nb'",
-      "close@0:}",
-      "word@0:source",
-      "other@0::",
-      "word@0:u",
-      "word@0:is",
-      "word@0:s"
-    ],
-    "statements": [
-      "source source",
-      "where where",
-      "source source"
-    ]
-  },
-  "double-quoted string crossing a line": {
-    "tokens": [
-      "word@0:source",
-      "other@0::",
-      "word@0:s",
-      "word@0:is",
-      "word@0:t",
-      "word@0:extend",
-      "open@0:{",
-      "word@1:where",
-      "other@1::",
-      "word@1:x",
-      "other@1:=",
-      "other@1:\"a\nb\"",
-      "close@0:}",
-      "word@0:source",
-      "other@0::",
-      "word@0:u",
-      "word@0:is",
-      "word@0:s"
-    ],
-    "statements": [
-      "source source",
-      "where where",
-      "source source"
-    ]
-  },
+  "string crossing a line": "unreadable",
+  "double-quoted string crossing a line": "unreadable",
   "sql block": {
     "tokens": [
       "word@0:source",
@@ -293,24 +235,7 @@
       "source source"
     ]
   },
-  "backtick crossing a line": {
-    "tokens": [
-      "word@0:source",
-      "other@0::",
-      "other@0:`a\nb`",
-      "word@0:is",
-      "word@0:t",
-      "word@0:source",
-      "other@0::",
-      "word@0:u",
-      "word@0:is",
-      "word@0:t"
-    ],
-    "statements": [
-      "source source",
-      "source source"
-    ]
-  },
+  "backtick crossing a line": "unreadable",
   "filter literal": {
     "tokens": [
       "word@0:source",
@@ -403,7 +328,18 @@
       "source source"
     ]
   },
-  "unclosed block comment": "unreadable",
+  "unclosed block comment": {
+    "tokens": [
+      "word@0:source",
+      "other@0::",
+      "word@0:s",
+      "word@0:is",
+      "word@0:t"
+    ],
+    "statements": [
+      "source source"
+    ]
+  },
   "annotations": {
     "tokens": [
       "word@0:source",

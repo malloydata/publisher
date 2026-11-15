@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A small lexer over Malloy text for the materialization rewriters: the
- * re-root rewriter (serve/served_copy.ts) and the build view that leaves out
- * joins across connections (plan/cross_connection_joins.ts). It knows only
- * brackets, words, strings and comments, which is all a statement-level edit
+ * The statement lexer the materialization rewriters read the author's files
+ * with: the re-root rewriter (serve/served_copy.ts), the build view that
+ * leaves out joins across connections (plan/cross_connection_joins.ts) and
+ * the text readers here. A thin layer over the one Malloy lexer core
+ * (`service/malloy_lexer_core.ts`), which the caller-text reader shares: it
+ * adds only brackets and their depth, which is all a statement-level edit
  * needs; it never parses Malloy.
  *
  * Its token API is internal to text/ and the module's text readers; a lexer
@@ -13,6 +15,14 @@
  *
  * Pure.
  */
+
+import {
+   isNameCode,
+   isSpaceCode,
+   StringScan,
+   stripMalloyCommentsAndLiterals,
+   unitsAt,
+} from "../../malloy_lexer_core";
 
 /** One lexical token, at the bracket depth it sits at. */
 export interface Token {
@@ -25,88 +35,103 @@ export interface Token {
 }
 
 /**
- * Every token of `s` with its depth. Comments and `#` annotation lines are
- * skipped; a string or quoted identifier is one "other" token. Undefined when
- * brackets do not balance or a string or comment does not close.
+ * Every token of `s` with its depth, read as Malloy's own lexer reads it
+ * (`service/malloy_lexer_core.ts`): comments and annotations (a `#|` block
+ * one included) are skipped; a string or quoted identifier is one "other"
+ * token, and so is a `"""` block, Malloy inside its `%{ … }` and all; a word
+ * starts with a letter or `_` and continues with letters, digits and `_`, a
+ * letter being any Unicode letter. Undefined when brackets do not balance or
+ * a string or quoted identifier does not close where Malloy closes it.
  */
 export function lexAll(s: string): Token[] | undefined {
+   // Comments, annotations and string bodies blanked in place: every offset
+   // and every quote, bracket and name is where it is in `s`.
+   const code = stripMalloyCommentsAndLiterals(s);
+   const scan = new StringScan(s);
    const out: Token[] = [];
    let depth = 0;
    let i = 0;
-   const n = s.length;
+   const n = code.length;
    const push = (kind: Token["kind"], start: number, end: number, d = depth) =>
       out.push({ kind, text: s.slice(start, end), start, end, depth: d });
    while (i < n) {
-      const c = s[i];
-      const next = s[i + 1];
-      // Comments, and annotations (`#` to the end of the line).
-      if (
-         (c === "-" && next === "-") ||
-         (c === "/" && next === "/") ||
-         c === "#"
-      ) {
-         const nl = s.indexOf("\n", i);
-         i = nl < 0 ? n : nl + 1;
+      const c = code.charCodeAt(i);
+      if (isSpaceCode(c, code, i)) {
+         i += unitsAt(code, i);
          continue;
       }
-      if (c === "/" && next === "*") {
-         const close = s.indexOf("*/", i + 2);
-         if (close < 0) return undefined;
-         i = close + 2;
-         continue;
-      }
-      // Strings and quoted identifiers.
-      if (c === '"' && s.startsWith('"""', i)) {
-         const close = s.indexOf('"""', i + 3);
-         if (close < 0) return undefined;
-         push("other", i, close + 3);
-         i = close + 3;
-         continue;
-      }
-      if (c === "'" || c === '"' || c === "`") {
-         const end = quotedEnd(s, i, c);
+      // A SQL block, Malloy in its `%{ … }` included, as one token.
+      if (code.startsWith('"""', i)) {
+         const end = sqlBlockEnd(code, i);
          if (end < 0) return undefined;
          push("other", i, end);
          i = end;
          continue;
       }
-      if (c === "{" || c === "(" || c === "[") {
+      // Strings and quoted identifiers, closed where Malloy closes them.
+      if (c === 39 || c === 34 || c === 96) {
+         const close = scan.stringClose(i);
+         if (close < 0) return undefined;
+         push("other", i, close + 1);
+         i = close + 1;
+         continue;
+      }
+      if (c === 123 || c === 40 || c === 91) {
          push("open", i, i + 1);
          depth++;
          i++;
          continue;
       }
-      if (c === "}" || c === ")" || c === "]") {
+      if (c === 125 || c === 41 || c === 93) {
          depth--;
          if (depth < 0) return undefined;
          push("close", i, i + 1);
          i++;
          continue;
       }
-      if (/[A-Za-z_]/.test(c)) {
-         let j = i + 1;
-         while (j < n && /[A-Za-z0-9_]/.test(s[j])) j++;
+      if (startsWord(c, code, i)) {
+         let j = i + unitsAt(code, i);
+         while (j < n && isNameCode(code.charCodeAt(j), code, j)) {
+            j += unitsAt(code, j);
+         }
          push("word", i, j);
          i = j;
          continue;
       }
-      if (!/\s/.test(c)) push("other", i, i + 1);
-      i++;
+      const units = unitsAt(code, i);
+      push("other", i, i + units);
+      i += units;
    }
    return depth === 0 ? out : undefined;
 }
 
-/** The index just past the closing `quote` of a string starting at `start`. */
-function quotedEnd(s: string, start: number, quote: string): number {
-   let i = start + 1;
-   while (i < s.length) {
-      const c = s[i];
-      if (c === "\\") {
-         i += 2;
+/** Whether a word starts at `at`: a letter or `_`, never a digit. */
+function startsWord(c: number, text: string, at: number): boolean {
+   return c === 95 || (!(c >= 48 && c <= 57) && isNameCode(c, text, at));
+}
+
+/**
+ * The index just past the `"""` closing the SQL block opening at `i` in
+ * blanked text, stepping over the Malloy in each `%{ … }`; -1 when it never
+ * closes. The block's SQL is blank there, so only its delimiters, its
+ * interpolations and their brackets remain.
+ */
+function sqlBlockEnd(code: string, i: number): number {
+   let at = i + 3;
+   while (at < code.length) {
+      if (code.startsWith('"""', at)) return at + 3;
+      if (code.startsWith("%{", at)) {
+         let depth = 1;
+         at += 2;
+         while (at < code.length && depth > 0) {
+            const c = code.charCodeAt(at);
+            if (c === 123) depth++;
+            else if (c === 125) depth--;
+            at++;
+         }
          continue;
       }
-      if (c === quote) return i + 1;
-      i++;
+      at++;
    }
    return -1;
 }

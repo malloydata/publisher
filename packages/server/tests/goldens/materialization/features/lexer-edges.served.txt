@@ -1,6 +1,6 @@
 // feature: lexer edges: files generated while serving
 
-// ==== <pkg>/m.malloy (text 1 of 2)
+// ==== <pkg>/m.malloy
 ##! experimental { persistence }
 ##! experimental { virtual_source }
 type: via_sql__served is {
@@ -41,35 +41,6 @@ source: 注文 is __served_copy_alias_of_lake.virtual('f82b7a7c65d7a942ab50f90ce
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
-  dimension: 地域 is region
-  measure: 件数 is count()
-}
-
-#@ persist storage="lake"
-source: via_sql is __served_copy_alias_of_lake.virtual('2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede')::via_sql__served
-
-// ==== <pkg>/m.malloy (text 2 of 2)
-##! experimental { persistence }
-##! experimental { virtual_source }
-type: via_sql__served is {
-   region::string,
-   total::number
-}
-type: `café__served` is {
-   region::string,
-   `größe`::number
-}
-
-import "raw.malloy"
-
-#@ persist storage="lake"
-source: café is __served_copy_alias_of_lake.virtual('906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe')::`café__served` extend {
-  measure: summe is größe.sum()
-}
-
-#(materialize) storage="lake" name="orders_cjk"
-source: 注文 is orders_raw extend {
-  dimension: 地域 is region
   measure: 件数 is count()
 }
 
