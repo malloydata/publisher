@@ -21,6 +21,13 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — re-binding the same build manifest no longer recompiles the package
+
+Workers in Credible's dev fleet on 0.13.1 looped reloads: the control plane re-binds a version's build manifest whenever a heartbeat does not show it bound, and every such bind, even of the manifest the package was already serving, recompiled every model in the load pool and then every model's served copy on the main thread. With the main thread busy, `/status` heartbeats timed out, which made the control plane re-bind and reload again.
+
+Binding a version (or a package loaded with a `manifestLocation`) to the manifest its models were last compiled against now fetches it and recompiles nothing; the binding is reported `bound` as before. A manifest that changed, a reload since, or another bind in between still recompiles. A `PATCH` that names a `manifestLocation` always reloads, as before, since it also applies the `publisher.json` it writes. When a package does recompile against a manifest, each model's served copy compiles once instead of starting, being discarded and starting again; a served copy with no table to read compiles nothing; and a source whose re-root does not compile is not recompiled or warned about again for the same model and tables (for ten minutes) — it keeps answering live, as it did. The served copy hands the event loop a turn between its compile passes.
+
+Answers are unchanged: the same sources are served from the same tables. No API, enum or metric value changes.
 ## [Unreleased] — less main-thread work per package load
 
 0.13.1 added a check to every package load that walked each model's whole compiled definition for joins inside array queries. That walk ran on the main thread, and it remembered every node it visited in a table that outlived the walk. The check now asks first whether a model governs access at all. A model that governs nothing is not walked for joins. A model that does is walked once, and the walk keeps nothing afterwards. A load that refused such a join still refuses it, with the same message.
