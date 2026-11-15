@@ -18,7 +18,7 @@ function call(over: Partial<RunViewCall> = {}): RunViewCall {
       view: "by_carrier",
       refined: false,
       laterStages: 0,
-      shape: { alone: true, laterStageExtends: false },
+      otherNames: new Set(["run"]),
       ...over,
    };
 }
@@ -81,20 +81,20 @@ describe("exactCallDecline", () => {
 });
 
 describe("callerTextDecline", () => {
-   it("passes a call that is the whole text and never extends", () => {
+   it("passes a text that names none of the redeclared names", () => {
       expect(
-         callerTextDecline({ alone: true, laterStageExtends: false }, "v"),
+         callerTextDecline(new Set(["run", "mine", "fl2"]), ["fl", "q"], "q"),
       ).toBeUndefined();
    });
 
-   it("declines a text with another statement, or a later stage that extends", () => {
-      for (const shape of [
-         { alone: false, laterStageExtends: false },
-         { alone: true, laterStageExtends: true },
-      ]) {
-         const decline = callerTextDecline(shape, "v");
-         expect(decline?.code).toBe("view_missing_field");
-         expect(decline?.reason).toBe("MISSING_FIELD");
-      }
+   it("declines a text that names a redeclared name, saying which", () => {
+      const decline = callerTextDecline(
+         new Set(["run", "join_many", "fl"]),
+         ["q", undefined, "fl"],
+         "q",
+      );
+      expect(decline?.code).toBe("view_missing_field");
+      expect(decline?.reason).toBe("MISSING_FIELD");
+      expect(decline?.callerDetail).toContain("`fl`");
    });
 });

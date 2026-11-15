@@ -116,6 +116,8 @@ query: null_flag is fl -> { group_by: carrier; aggregate: big is d.sum() { where
 
 query: over_by_carrier is by_carrier -> { aggregate: total is dist.sum() }
 
+source: carrier_counts is fl -> { group_by: carrier; aggregate: c is count() }
+
 #(access_filter) tenant = $TENANT
 source: ops is ${GATED_TABLE} extend { measure: n is count() }
 
@@ -151,8 +153,12 @@ query: inline_target is ${TABLE} -> { group_by: tenant; aggregate: c is count();
 source: vs is ${TABLE} extend {
   measure: c is count()
   #@ persist
-  view: by_tenant is { group_by: tenant; aggregate: c }
+  view: by_tenant is { group_by: tenant; aggregate: c; order_by: tenant desc }
 }
+
+// Each result differs from the others, so no two share a table address.
+#@ persist
+query: vq is vs -> { group_by: tenant; aggregate: c; order_by: c desc, tenant }
 `;
 
 /** A model that imports the persisted view's file whole. */
@@ -293,26 +299,6 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "MISSING_FIELD",
       ],
       ["an aggregate-only query", "m.malloy", "run: totals", "MISSING_FIELD"],
-      // The variant gives the run target's name to the stored result, so a
-      // caller's text that names the source again is declined (fails closed).
-      [
-         "a later stage that joins the run target",
-         "m.malloy",
-         "run: by_carrier -> { extend: { join_many: f is fl on carrier = f.carrier }; group_by: carrier; aggregate: c is f.count(); order_by: carrier }",
-         "MISSING_FIELD",
-      ],
-      [
-         "a caller's source over the run target, joined after the call",
-         "m.malloy",
-         "source: mine is fl -> { group_by: carrier; aggregate: rows is count() }\nrun: by_carrier -> { extend: { join_one: m is mine on carrier = m.carrier }; select: carrier, m.rows; order_by: carrier }",
-         "MISSING_FIELD",
-      ],
-      [
-         "a later stage that joins the run target, from another file",
-         "other.malloy",
-         "run: elsewhere -> { extend: { join_many: f is fl on tenant = f.tenant }; group_by: tenant; aggregate: c is f.count(); order_by: tenant }",
-         "MISSING_FIELD",
-      ],
       [
          "a query over a gated source in another file (refused)",
          "other.malloy",
@@ -365,6 +351,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
             "null_flag__query:colocated",
             "top__query:colocated",
             "two_stage__query:colocated",
+            "vq__query:colocated",
             "vs__by_tenant__view:colocated",
          ].sort(),
       );
@@ -503,42 +490,119 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
       });
    }
 
-   /** The same shapes over a persisted view: declined by the view leg, answered live. */
-   const viewDeclined: [label: string, model: string, malloy: string][] = [
+   /**
+    * The variant gives the run target's name (and a named query's own) to the
+    * stored result, so a text that names one again outside the call is
+    * declined on either leg, and answered live (fails closed).
+    */
+   const namedAgain: [
+      label: string,
+      leg: "view" | "query",
+      model: string,
+      malloy: string,
+      named: string,
+   ][] = [
+      [
+         "a later stage that joins the run target",
+         "query",
+         "m.malloy",
+         "run: by_carrier -> { extend: { join_many: f is fl on carrier = f.carrier }; group_by: carrier; aggregate: c is f.count(); order_by: carrier }",
+         "fl",
+      ],
+      [
+         "a caller's source over the run target, joined after the call",
+         "query",
+         "m.malloy",
+         "source: mine is fl -> { group_by: carrier; aggregate: rows is count() }\nrun: by_carrier -> { extend: { join_one: m is mine on carrier = m.carrier }; select: carrier, m.rows; order_by: carrier }",
+         "fl",
+      ],
+      [
+         "a later stage that joins the run target, from an importing model",
+         "query",
+         "viewer.malloy",
+         "run: vq -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+         "vs",
+      ],
       [
          "a later stage that joins the view's source",
+         "view",
          "inline.malloy",
          "run: vs -> by_tenant -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+         "vs",
       ],
       [
          "a caller's source over the view's source, joined after the call",
+         "view",
          "inline.malloy",
          "source: mine is vs -> { group_by: tenant; aggregate: rows is count() }\nrun: vs -> by_tenant -> { extend: { join_one: m is mine on tenant = m.tenant }; select: tenant, m.rows; order_by: tenant }",
-      ],
-      [
-         "a later stage that joins the view's source, from an importing model",
-         "viewer.malloy",
-         "run: vs -> by_tenant -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+         "vs",
       ],
    ];
 
-   for (const [label, model, malloy] of viewDeclined) {
-      it(`declines ${label} on the view leg, equal to live`, async () => {
+   const pathOf = (model: string, malloy: string) =>
+      fixture.pkg
+         .getModel(model)!
+         .runQuery(
+            unrecordedAudit(),
+            { query: malloy } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+
+   for (const [label, leg, model, malloy, named] of namedAgain) {
+      it(`declines ${label} on the ${leg} leg, equal to live`, async () => {
          const before = answerOf(await loaded.run(model, malloy));
-         const result = await fixture.pkg
-            .getModel(model)!
-            .runQuery(
-               unrecordedAudit(),
-               { query: malloy } as never,
-               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
-            );
+         const result = await pathOf(model, malloy);
          expect(result.path?.servedBy.kind).toBe("live");
          expect(result.compactResult as unknown).toEqual(before.rows);
          const considered = result.path?.considered.find(
-            (c) => c.kind === "view",
+            (c) => (c.kind as string) === leg,
          );
          expect(considered?.outcome).toBe("skipped");
          expect(considered?.reason).toBe("MISSING_FIELD");
+         expect(considered?.detail).toContain(`names \`${named}\` beside`);
+      });
+   }
+
+   /** Texts beside the call that name nothing the variant redeclares: served. */
+   const servedBeside: [
+      label: string,
+      leg: "view" | "query",
+      model: string,
+      malloy: string,
+   ][] = [
+      [
+         "a report's preamble of unrelated definitions",
+         "view",
+         "inline.malloy",
+         "query: tenants_seen is inline_target -> { select: tenant }\nsource: seen is tenants_seen\nrun: vs -> by_tenant",
+      ],
+      [
+         "a dimension-only extend: after the view",
+         "view",
+         "inline.malloy",
+         "run: vs -> by_tenant -> { extend: { dimension: x is concat(tenant, '!') }; select: tenant, x, c; order_by: tenant }",
+      ],
+      [
+         "a report's preamble of unrelated definitions",
+         "query",
+         "m.malloy",
+         "source: other is carrier_counts extend {}\nrun: by_carrier",
+      ],
+      [
+         "a join to another model source after the query",
+         "query",
+         "m.malloy",
+         // A colocated table: a storage= one cannot join a warehouse source.
+         "run: by_carrier_colocated -> { extend: { join_one: cc is carrier_counts on carrier = cc.carrier }; select: carrier, n, cc.c; order_by: carrier }",
+      ],
+   ];
+
+   for (const [label, leg, model, malloy] of servedBeside) {
+      it(`serves ${label} from the ${leg} leg, equal to live`, async () => {
+         const before = answerOf(await loaded.run(model, malloy));
+         const result = await pathOf(model, malloy);
+         expect(result.path?.servedBy.kind).toBe(leg);
+         expect(result.compactResult as unknown).toEqual(before.rows);
       });
    }
 

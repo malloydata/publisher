@@ -243,7 +243,17 @@ export class PersistedQueryServe {
             `the query refines \`${call.query}\` (\`+ { … }\`), and the stored result holds only the query as written`,
          );
       }
-      const unfollowed = callerTextDecline(call.shape, call.query);
+      const unfollowed = callerTextDecline(
+         call.otherNames,
+         [
+            call.query,
+            plan.queryName,
+            plan.sourceName,
+            plan.importedSource,
+            inlineTargetOf(plan),
+         ],
+         call.query,
+      );
       if (unfollowed) throw unfollowed;
       const prepared = await readPreparedQuery(args.authorRunnable);
       const compiledModel = (prepared.modelDef ?? this.host.modelDef()) as
@@ -345,8 +355,7 @@ export class PersistedQueryServe {
          return { error: "no context" };
       }
       const shape = await queryShape(author, modelDef, plan);
-      const inlineTarget =
-         plan.importedSource ?? `${plan.buildSourceName}__run`;
+      const inlineTarget = plan.importedSource ?? inlineTargetOf(plan);
       // The run target's name in its declaring file (the plan read it there),
       // or the inline one's.
       const target = plan.sourceName ?? inlineTarget;
@@ -466,6 +475,11 @@ ${queryText}`;
          },
       });
    }
+}
+
+/** The generated name a run target written inline is redeclared under. */
+function inlineTargetOf(plan: PersistedQueryPlan): string {
+   return `${plan.buildSourceName}__run`;
 }
 
 /**

@@ -105,53 +105,32 @@ export interface RunViewCall {
    refined: boolean;
    /** How many `-> …` stages follow the view's own. */
    laterStages: number;
-   /** {@link CallerTextShape} of the text around the call. */
-   shape: CallerTextShape;
+   /**
+    * Every name the text spells outside the call's head, backticks removed
+    * (a preamble's, a refinement's, a later stage's).
+    */
+   otherNames: ReadonlySet<string>;
 }
 
 /**
- * What the caller's text writes besides the call, which a stored result's
- * variant cannot follow: the variant redeclares the run target's name over
- * the stored result, so any other reference to that name in the caller's text
- * (a statement before the `run:`, or a source a later stage joins or extends
- * with) would read the stored result where live reads the source.
+ * Every name the caller's text spells outside the call's own head (the
+ * source and view of `src -> v`, or the query of `run: q`), backticks
+ * removed: a preamble statement's, a refinement's and a later stage's. A
+ * stored result's variant redeclares the run target's name over the stored
+ * result, so the leg reads this to decline a text that names it again (a
+ * join back to the source, a preamble source built over it).
  */
-export interface CallerTextShape {
-   /** The text is the one run statement and nothing else. */
-   alone: boolean;
-   /** A later stage writes `extend:` or a join (`join_one:`, `join_many:`, `join_cross:`). */
-   laterStageExtends: boolean;
-}
-
-/** The run statement's first token: its `run`, or the bare form's name at `start`. */
-function firstOf(tokens: Tokens, start: number): number {
-   return start >= 2 &&
-      isWord(tokens, start - 2, "run") &&
-      textIs(tokens, start - 1, ":")
-      ? start - 2
-      : start;
-}
-
-const EXTENDING_WORDS = ["extend", "join_one", "join_many", "join_cross"];
-
-/** {@link CallerTextShape} for a call spanning tokens `[first, end)` whose later stages start at `stagesFrom`. */
-function callerTextShape(
+function namesOutside(
    tokens: Tokens,
-   first: number,
-   stagesFrom: number,
-   end: number,
-): CallerTextShape {
-   let laterStageExtends = false;
-   for (let k = stagesFrom; k + 1 < end; k++) {
-      if (
-         EXTENDING_WORDS.some((w) => isWord(tokens, k, w)) &&
-         textIs(tokens, k + 1, ":")
-      ) {
-         laterStageExtends = true;
-         break;
-      }
+   headFrom: number,
+   headTo: number,
+): ReadonlySet<string> {
+   const names = new Set<string>();
+   for (let k = 0; k < tokens.count; k++) {
+      if (k >= headFrom && k <= headTo) continue;
+      if (isName(tokens, k)) names.add(textOf(tokens, k));
    }
-   return { alone: first === 0 && end === tokens.count, laterStageExtends };
+   return names;
 }
 
 /**
@@ -199,7 +178,6 @@ export function extractRunViewCall(query?: string): RunViewCall | undefined {
       refined = true;
       k = tokens.partner[k + 1] + 1;
    }
-   const stagesFrom = k;
    let laterStages = 0;
    while (arrowAt(tokens, k)) {
       const stage = k + 2;
@@ -221,7 +199,7 @@ export function extractRunViewCall(query?: string): RunViewCall | undefined {
       view: textOf(tokens, viewAt),
       refined,
       laterStages,
-      shape: callerTextShape(tokens, firstOf(tokens, start), stagesFrom, k),
+      otherNames: namesOutside(tokens, start, viewAt),
    };
 }
 
@@ -236,8 +214,11 @@ export interface RunQueryCall {
    refined: boolean;
    /** How many `-> …` stages follow the query's own. */
    laterStages: number;
-   /** {@link CallerTextShape} of the text around the call. */
-   shape: CallerTextShape;
+   /**
+    * Every name the text spells outside the call's head, backticks removed
+    * (a preamble's, a refinement's, a later stage's).
+    */
+   otherNames: ReadonlySet<string>;
 }
 
 /**
@@ -283,7 +264,6 @@ export function extractRunQueryCall(query?: string): RunQueryCall | undefined {
       refined = true;
       k = tokens.partner[k + 1] + 1;
    }
-   const stagesFrom = k;
    let laterStages = 0;
    while (arrowAt(tokens, k)) {
       const stage = k + 2;
@@ -304,7 +284,7 @@ export function extractRunQueryCall(query?: string): RunQueryCall | undefined {
       query: textOf(tokens, start),
       refined,
       laterStages,
-      shape: callerTextShape(tokens, firstOf(tokens, start), stagesFrom, k),
+      otherNames: namesOutside(tokens, start, start),
    };
 }
 

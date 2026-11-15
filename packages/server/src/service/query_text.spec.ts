@@ -1057,39 +1057,31 @@ describe("extractRunQueryCall", () => {
       }
    });
 
-   it("says whether the call is the whole text, and whether a later stage extends", () => {
-      const shape = (text: string) => extractRunQueryCall(text)?.shape;
-      expect(shape("run: q")).toEqual({
-         alone: true,
-         laterStageExtends: false,
-      });
-      expect(shape("\nrun: `q`")).toEqual({
-         alone: true,
-         laterStageExtends: false,
-      });
-      expect(shape("q -> { select: * }")?.alone).toBe(true);
-      expect(shape("source: s is t\nrun: q")?.alone).toBe(false);
-      expect(shape("run: q -> { select: * }\nsource: s is t")?.alone).toBe(
-         false,
-      );
-      for (const stage of [
-         "extend: { join_many: f is fl on a = f.a }; group_by: a",
-         "extend: { dimension: x is 1 }; group_by: x",
-         "join_one: f is fl on a = f.a; select: a",
-      ]) {
-         expect(shape(`run: q -> { ${stage} }`)?.laterStageExtends).toBe(true);
-         expect(
-            extractRunViewCall(`run: s -> v -> { ${stage} }`)?.shape
-               .laterStageExtends,
-         ).toBe(true);
-      }
+   it("lists the names the text spells outside the call's head", () => {
+      const names = (text: string) => [
+         ...(extractRunQueryCall(text)?.otherNames ?? []),
+      ];
+      expect(names("run: q")).toEqual(["run"]);
+      expect(names("\nrun: `q`")).toEqual(["run"]);
       expect(
-         shape("run: q -> { where: s = 'extend: x'; select: * }")
-            ?.laterStageExtends,
-      ).toBe(false);
-      expect(
-         extractRunViewCall("query: x is y\nrun: s -> v")?.shape.alone,
-      ).toBe(false);
+         names(
+            "source: `my src` is fl -> { select: a }\nrun: q -> { select: b }",
+         ),
+      ).toEqual(["source", "my src", "is", "fl", "select", "a", "run", "b"]);
+      // Strings and comments name nothing.
+      expect(names("run: q -> { where: s = 'fl' } // fl")).toEqual([
+         "run",
+         "where",
+         "s",
+      ]);
+      expect([
+         ...(extractRunViewCall(
+            "run: vs -> v -> { extend: { join_many: f is vs on t = f.t } }",
+         )?.otherNames ?? []),
+      ]).toContain("vs");
+      expect([
+         ...(extractRunViewCall("run: vs -> v")?.otherNames ?? []),
+      ]).toEqual(["run"]);
    });
 });
 

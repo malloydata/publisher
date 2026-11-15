@@ -66,11 +66,7 @@ import {
 } from "../../malloy_text";
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import type { ModelConnectionInput } from "../../model_runtime";
-import {
-   type CallerTextShape,
-   extractRunViewCall,
-   type RunViewCall,
-} from "../../query_text";
+import { extractRunViewCall, type RunViewCall } from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
 import type { BuildManifest } from "../domain/types";
 import {
@@ -271,7 +267,12 @@ export class PersistedViewServe {
       }
       const { call, plan } = called;
       const refined =
-         refinedCallDecline(call) ?? callerTextDecline(call.shape, call.view);
+         refinedCallDecline(call) ??
+         callerTextDecline(
+            call.otherNames,
+            [call.source, plan.sourceName],
+            call.view,
+         );
       if (refined) throw refined;
       // The run target must be the view's own source, by sourceID: not an
       // extension, and not a caller's redefinition of the name.
@@ -1019,29 +1020,25 @@ export function refinedCallDecline(call: RunViewCall): LegDecline | undefined {
 }
 
 /**
- * A caller's text the variant cannot follow (see {@link CallerTextShape}): a
- * statement besides the call, or a later stage that extends or joins. The
- * variant gives the run target's name to the stored result, so a source the
- * caller's text names there (a join back to it, a source built over it)
- * would read the stored rows where live reads the source: fails closed.
+ * A caller's text that names, outside the call's head, a name the variant
+ * redeclares (`redeclared`: the run target's, and for a named query its own).
+ * The variant gives that name to the stored result, so a join back to the
+ * source, or a preamble source built over it, would read the stored rows
+ * where live reads the source: fails closed. Any other preamble (a report's
+ * definition cells), a dimension-only `extend:` and a join to another source
+ * read as live does.
  */
 export function callerTextDecline(
-   shape: CallerTextShape,
+   otherNames: ReadonlySet<string>,
+   redeclared: readonly (string | undefined)[],
    name: string,
 ): LegDecline | undefined {
-   if (!shape.alone) {
-      return new LegDecline(
-         "view_missing_field",
-         `the query text declares more than the call of \`${name}\`, which the stored result's variant does not read as live does`,
-      );
-   }
-   if (shape.laterStageExtends) {
-      return new LegDecline(
-         "view_missing_field",
-         `a stage after \`${name}\` extends or joins, which the stored result's variant does not read as live does`,
-      );
-   }
-   return undefined;
+   const named = redeclared.find((n) => n !== undefined && otherNames.has(n));
+   if (named === undefined) return undefined;
+   return new LegDecline(
+      "view_missing_field",
+      `the query text names \`${named}\` beside the call of \`${name}\`, a name the stored result's variant gives to the stored rows`,
+   );
 }
 
 /**
