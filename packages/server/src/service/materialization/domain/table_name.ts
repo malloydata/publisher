@@ -320,3 +320,56 @@ export function readableTableName(args: {
            );
    return `${args.container ? `${args.container}.` : ""}${readable}${tail}`;
 }
+
+/**
+ * The table-segment endings Publisher gives the names it chooses: every
+ * readable name (`__p<8 hex>`, above, a `scope: version`
+ * one's included), and the names from before readable names, a package's
+ * own (`__p<8 hex>`) and a version's own (`__v<version>_<8 hex>`), which
+ * tables built then still carry until their next build. Those tables carry no mark
+ * and are built without a probe, since no other package's name ends that
+ * way. An author's `name=` spelled with one could be another package's
+ * default name, which that package would then build over (and the other way
+ * round), so it is refused: at load (an invalid `name=`), and again at build
+ * (run/table_ownership.ts). Case-insensitive, as DuckDB, MySQL and SQL
+ * Server resolve names.
+ */
+const RESERVED_TABLE_SUFFIX = /__(?:p[0-9a-f]{8}|v[a-z0-9_]*_[0-9a-f]{8})$/i;
+
+/** Whether `name`'s table segment ends the way Publisher's own names do. */
+export function hasReservedTableSuffix(name: string): boolean {
+   return RESERVED_TABLE_SUFFIX.test(name.slice(name.lastIndexOf(".") + 1));
+}
+
+/**
+ * A written table name split for comparison: its last segment, the table,
+ * and the container before it, if any (`main.t` → `main`, `t`).
+ */
+export function tableNameParts(name: string): {
+   container?: string;
+   leaf: string;
+} {
+   const dot = name.lastIndexOf(".");
+   return dot < 0
+      ? { leaf: name }
+      : { container: name.slice(0, dot), leaf: name.slice(dot + 1) };
+}
+
+/**
+ * Whether two written table names, on one connection or destination, may be
+ * one table: the same table segment, and containers of which the shorter is
+ * a segment-wise suffix of the longer. A name written with fewer containers
+ * is placed in the connection's defaults, which cannot be told from here
+ * (`main.t` and `t` are one table on DuckDB, `proj.ds.t` and `ds.t` on
+ * BigQuery, `DB.S.T` and `S.T` on Snowflake), so it meets any name that
+ * ends the same way: the conservative answer, since a missed one serves one
+ * source the other's rows. Compared as given; the caller folds case where
+ * the destination does.
+ */
+export function tableNamesMeet(a: string, b: string): boolean {
+   const x = a.split(".");
+   const y = b.split(".");
+   const [shorter, longer] = x.length <= y.length ? [x, y] : [y, x];
+   const offset = longer.length - shorter.length;
+   return shorter.every((segment, i) => segment === longer[offset + i]);
+}

@@ -43,4 +43,11 @@ export interface BuildPlanPackage {
     * as unversioned.
     */
    getPackageMetadata?(): { scope?: string | null };
+   /**
+    * The published version this package is, if any. Only a published
+    * version of a `scope: "version"` package names its tables per version;
+    * an unversioned package writes an author's `name=` as given whatever its
+    * scope. Optional: callers without it plan as unversioned.
+    */
+   getVersionId?(): string | undefined;
 }

@@ -12,10 +12,7 @@ import {
    readableVersion,
    sourceLabel,
 } from "../domain/table_name";
-import {
-   getPersistCollisionEnforce,
-   getPersistStorageMode,
-} from "../../../config";
+import { getPersistStorageMode } from "../../../config";
 import {
    BadRequestError,
    MaterializationEligibilityError,
@@ -131,11 +128,8 @@ function gateSources(
    // here, over every source.
    const tableFolds = compiled.tableFolds ?? foldDistinctTableNames(compiled);
    // Two definitions writing one table (sharedTables): neither is built,
-   // whether or not the other is rebuilt this run, so neither writes the
-   // other's rows or columns into it (PERSIST_COLLISION_ENFORCE opts out).
-   const shared = getPersistCollisionEnforce()
-      ? sharedTables({ ...compiled, tableFolds })
-      : new Map<string, string>();
+   // whether or not the other is rebuilt this run or carried.
+   const shared = sharedTables({ ...compiled, tableFolds });
    for (const build of compiled.builds) {
       for (const persistSource of sourcesInBuildOrder(
          build,
@@ -176,12 +170,15 @@ function gateSources(
                !!destination,
                tierGateInputs(compiled),
             );
+            // Two sources an author's name= puts on one table: refused
+            // alone, never built, so neither overwrites the other (only
+            // reachable under PERSIST_COLLISION_ENFORCE=false; otherwise the
+            // package does not load).
             const sharing = shared.get(persistSource.sourceID);
             if (sharing !== undefined) {
-               recordEligibilityRefused("table_name_collision");
                throw new MaterializationEligibilityError({
-                  message: `'${persistSource.name}' is not built: ${sharing}`,
                   reason: "table_name_collision",
+                  message: sharing,
                });
             }
          } catch (err) {

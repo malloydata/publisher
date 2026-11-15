@@ -105,6 +105,13 @@ source: a_drops2 is orders_raw -> { where: id > 0; select: id, region, status } 
 source: b_hides2 is orders_raw -> { where: id > 0; select: id, region, status } include { public: id, region; private: status }
 `;
 
+/** The suite's settings. */
+const SUITE_ENV = {
+   PERSIST_STORAGE_MODE: "on",
+   PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+   PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+};
+
 const QUERY = (source: string) =>
    source === "solo"
       ? "run: solo -> { group_by: cat }"
@@ -241,9 +248,7 @@ describe.skipIf(process.platform === "win32")(
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+               ...SUITE_ENV,
             },
          }).restore;
          // The package-load worker plans under the settings it was spawned
@@ -669,9 +674,11 @@ describe.skipIf(process.platform === "win32")(
       /**
        * A source that drops `status` (`except:`) and one that keeps it
        * (`private:`) on one build and one `name=`: two definitions of one
-       * table, whichever was built first and is carried. Neither is built
-       * once both are declared, the table keeps what was written before,
-       * no manifest puts both on it, and both answer live.
+       * table, the author's collision. Enforced (the default), the package
+       * does not load. Under the opt-out, neither is built once both are
+       * declared, though the first is unchanged and would be carried: the
+       * table keeps what was written before, no manifest puts both on it,
+       * and both answer live.
        */
       for (const [label, first, second, where] of [
          ["the dropping source first", "drops", "hides", "id > 0"],
@@ -697,16 +704,46 @@ describe.skipIf(process.platform === "win32")(
             const columns = await columnsOf(table);
             expect(columns.includes("status")).toBe(first === "hides");
 
-            // Phase 1: the second arrives; the first is unchanged.
-            await reload(
-               [sibling, declare(first), declare(second)].join("\n\n"),
+            // Phase 1: the second arrives; the first is unchanged. Enforced,
+            // the load fails, naming the collision last on its line.
+            // An unrelated source arrives with it: refused collisions are
+            // refused per source, so it still builds in that run.
+            const unrelated = `#@ persist storage="lake"\nsource: ${table}_new is orders_raw -> { where: id > 1; select: id, region }`;
+            const both = [
+               sibling,
+               declare(first),
+               declare(second),
+               unrelated,
+            ].join("\n\n");
+            const refusal = await reload(both).then(
+               () => undefined,
+               (err: unknown) => (err as Error).message,
             );
-            const after = await run();
+            expect(refusal).toContain(
+               "the package does not load until each has a distinct #@ persist name=",
+            );
+            expect(refusal?.trimEnd()).toEndWith(
+               "[materialization-table-collision]",
+            );
+            // The opt-out loads it, each colliding source refused alone.
+            const optOut = installSettings({
+               env: { ...SUITE_ENV, PERSIST_COLLISION_ENFORCE: "false" },
+            }).restore;
+            let after: Materialization;
+            try {
+               await freshLoadPool();
+               await reload(both);
+               after = await run();
+            } finally {
+               optOut();
+               await freshLoadPool();
+            }
             expect([after.status, after.error]).toEqual([
                "MANIFEST_FILE_READY",
                null,
             ]);
             expect(entriesOn(after, table)).toEqual([]);
+            expect(outcome(after).built).toContain(`${table}_new`);
             expect(await columnsOf(table)).toEqual(columns);
             for (const kind of ["drops", "hides"]) {
                expect(

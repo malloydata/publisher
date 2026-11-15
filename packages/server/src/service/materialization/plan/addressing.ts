@@ -22,7 +22,8 @@ import {
    getPersistAddressIncludesDestination,
    getPersistStorageMode,
 } from "../../../config";
-import { tableIdentity } from "../../versions/materialization_scope";
+import { tableNamesFoldCase } from "../domain/storage_table_path";
+import { tableNamesMeet } from "../domain/table_name";
 import {
    declaredStorage,
    deriveAnnotationFields,
@@ -488,11 +489,10 @@ export type TableFolds = Readonly<Record<string, string>>;
  * a same-build source naming another table is added or removed, so its table
  * is rebuilt once then.
  *
- * A name is its {@link tableIdentity}, so two names a warehouse may read as
- * one table (`T` and `t`, `s.t` and `t`) are never split onto two addresses
- * writing it. Under `scope: "version"` (`versionScoped`) a defaulted name
- * that equals an author's is that author's table, as persistTableTarget
- * keys it.
+ * Names are compared as persistTableTarget compares them: case folded where
+ * the destination folds it, and two names that may be one table
+ * ({@link tableNamesMeet}: `main.t` and `t`) are one, so they are never
+ * split onto two addresses writing it; `s1.t` and `s2.t` are two.
  *
  * Decided over the package's whole plan, before any source is refused, and
  * carried on the plan, so a plan less its refused sources keeps the
@@ -504,7 +504,6 @@ export function foldDistinctTableNames(plan: {
    connectionDigests: Record<string, string>;
    preaggregatePlans?: Record<string, unknown>;
    materializePlans?: Record<string, { nameDefaulted?: true }>;
-   versionScoped?: boolean;
 }): TableFolds {
    const groups = new Map<
       string,
@@ -536,7 +535,14 @@ export function foldDistinctTableNames(plan: {
       const group = groups.get(address) ?? [];
       group.push({
          sourceID,
-         name: tableIdentity(declared || source.name),
+         // As persistTableTarget compares names: case folded where the
+         // destination folds it, so `T` and `t` are one table there.
+         name: tableNamesFoldCase(
+            source.dialectName,
+            !!deriveAnnotationFields(source).storage?.trim(),
+         )
+            ? (declared ?? "").toLowerCase()
+            : (declared ?? ""),
          defaulted,
          stores: rollup ? "" : storedProjection(source),
          declaration: declarationOf(source),
@@ -546,13 +552,11 @@ export function foldDistinctTableNames(plan: {
    }
    const folds: Record<string, string> = {};
    for (const group of groups.values()) {
-      const authored = new Set(
+      const tables = tableClusters(
          group.filter((m) => !m.defaulted).map((m) => m.name),
       );
       const nameOf = (m: (typeof group)[number]) =>
-         !m.defaulted || (plan.versionScoped && authored.has(m.name))
-            ? m.name
-            : "";
+         m.defaulted ? "" : tables.get(m.name)!;
       // A colocated build stores its whole query, so only `storage=`
       // sources are told apart by what they store, and only one declaration
       // from another: an extension that inherits its base's `#@ persist` is
@@ -587,6 +591,29 @@ export function foldDistinctTableNames(plan: {
       }
    }
    return folds;
+}
+
+/**
+ * Each written name's table, as the smallest name of the names that may be
+ * one table with it ({@link tableNamesMeet}, taken transitively): `main.t`
+ * and `t` are one table, and `s1.t` and `s2.t` two, unless a bare `t`
+ * beside them may be either.
+ */
+function tableClusters(names: string[]): Map<string, string> {
+   const distinct = [...new Set(names)].sort();
+   const root = new Map(distinct.map((n) => [n, n]));
+   const find = (n: string): string => {
+      const r = root.get(n)!;
+      return r === n ? n : find(r);
+   };
+   for (let i = 0; i < distinct.length; i++) {
+      for (let j = i + 1; j < distinct.length; j++) {
+         if (!tableNamesMeet(distinct[i], distinct[j])) continue;
+         const [a, b] = [find(distinct[i]), find(distinct[j])];
+         if (a !== b) root.set(a < b ? b : a, a < b ? a : b);
+      }
+   }
+   return new Map(distinct.map((n) => [n, find(n)]));
 }
 
 /**

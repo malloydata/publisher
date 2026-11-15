@@ -116,15 +116,60 @@ describe("one table per name=", () => {
    });
 
    it("keeps two name=s a warehouse may read as one table on one table", () => {
-      expect(
-         tables(
-            derive(
-               { annotationFields: { name: "T" } },
-               { annotationFields: { name: '"t"' } },
-               [["a"], ["b"]],
-            ),
-         ).map(([a]) => a),
-      ).toEqual([ADDRESS]);
+      // Folded where the destination folds case (DuckDB), and a name with
+      // fewer containers meets one that ends the same way (tableNamesMeet).
+      for (const [x, y] of [
+         ["T", "t"],
+         ['"T"', '"t"'],
+         ["main.t", "t"],
+      ]) {
+         expect(
+            tables(
+               derive(
+                  { annotationFields: { name: x } },
+                  { annotationFields: { name: y } },
+                  [["a"], ["b"]],
+               ),
+            ).map(([a]) => a),
+         ).toEqual([ADDRESS]);
+      }
+   });
+
+   it("splits two name=s in different schemas, and quoted names in two cases where the warehouse keeps case", () => {
+      for (const [x, y, dialectName] of [
+         ["s1.t", "s2.t", "duckdb"],
+         ['"T"', '"t"', "postgres"],
+      ]) {
+         const sources = {
+            a: fakeSource({
+               name: "a",
+               sourceEntityId: ADDRESS,
+               dialectName,
+               annotationFields: { name: x },
+            }),
+            b: fakeSource({
+               name: "b",
+               sourceEntityId: ADDRESS,
+               dialectName,
+               annotationFields: { name: y },
+            }),
+         };
+         for (const order of ORDERS) {
+            const built = tables(
+               deriveSelfInstructions(
+                  compiledWith(sources, order, CONNECTIONS),
+                  undefined,
+                  {},
+                  undefined,
+                  NAMING,
+               ).instructions,
+            );
+            expect(built.map(([, t]) => t)).toEqual(
+               [x, y].sort((p, q) => p.localeCompare(q)),
+            );
+            expect(new Set(built.map(([a]) => a)).size).toBe(2);
+         }
+      }
    });
 
    it("keeps sources with no name= on one table, at the address they had", () => {
@@ -250,7 +295,6 @@ describe("one table per stored projection", () => {
          // projection is written over the other's.
          expect(new Set(addresses).size).toBe(2);
          expect(addresses).not.toContain(ADDRESS);
-         expect(autoRun).toContain("is not built");
          expect(autoRun).toContain('all write the table "t"');
          expect(hostRun).toContain(
             "compile to the same query but store different columns, yet both materialize into table 't'",

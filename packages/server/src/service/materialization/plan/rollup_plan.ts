@@ -75,6 +75,7 @@ import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
+import { hasFanoutJoin } from "./preaggregation_validation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
 import { collectEntryPointGates } from "../../gate_classification";
 import { createHash } from "node:crypto";
@@ -89,6 +90,7 @@ import {
    type SourceScope,
 } from "../../governance/ir/declared_notes";
 import {
+   PREAGGREGATE_INVALID_CODE,
    PREAGGREGATE_ROUTE_KEYS,
    routeOfNote,
    type PackageAnnotationFinding,
@@ -310,9 +312,9 @@ interface Declaration {
 
 /**
  * Read one note as a declaration, or a refusal. Unknown keys are malformed on
- * this route (a new route's key set is closed); so is a grain that is not a
- * list of names, a namespace beside a storage destination, and an `@env.`
- * reference, which is never read from a route Publisher owns.
+ * this route (the key set is closed); so is a grain that is not a list of
+ * names, a namespace beside a storage destination, and an `@env.` reference,
+ * which is never read from a route Publisher owns. Each fails the load.
  */
 function readDeclaration(
    note: AnnotationNote,
@@ -328,7 +330,7 @@ function readDeclaration(
    });
    if (/@env\./.test(note.text)) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          "reads the environment (`@env.`); write the value itself",
       );
    }
@@ -336,7 +338,7 @@ function readDeclaration(
    const errors = log.filter((m) => m.severity === "error");
    if (errors.length > 0) {
       return refuse(
-         "preaggregate-malformed",
+         "preaggregate-unparseable",
          `does not parse (${errors.map((e) => e.message).join("; ")})`,
       );
    }
@@ -351,7 +353,7 @@ function readDeclaration(
    const items = tag.array("grain");
    if (!items) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          'needs grain=[…], a list of the dimensions to store it at, such as grain=["category"]',
       );
    }
@@ -361,7 +363,7 @@ function readDeclaration(
       grain.some((g) => typeof g !== "string" || g.trim() === "")
    ) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          "has a grain=[…] that names nothing, or holds something other than quoted dimension names",
       );
    }
@@ -371,13 +373,13 @@ function readDeclaration(
       : undefined;
    if ("refused" in placed) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          "has a storage= that is not a destination name",
       );
    }
    if (keys.includes("namespace") && !namespace?.trim()) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          "has a namespace= that is not a name",
       );
    }
@@ -387,13 +389,13 @@ function readDeclaration(
          : undefined;
    if (storage !== undefined && namespace !== undefined) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          "names both storage= and namespace=; a destination places its own tables",
       );
    }
    if (namespace !== undefined && !isSpliceableNamespace(namespace)) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          `has namespace="${namespace}", which is not plain dot-separated names`,
       );
    }
@@ -523,7 +525,10 @@ export function planSourceRollups(
    // rollup's table name, so it rebuilds once) and served here, and the v1
    // composite is not. A line v1 reports as unusable is left to v1's own
    // validation.
-   if (ctx.readsV1 ?? true) {
+   // A source with a fan-out join has its v1 rollups refused alone
+   // (`base_source_has_fanout_join`, which v1's validation reports): none is
+   // planned, so its measures answer live.
+   if ((ctx.readsV1 ?? true) && !hasFanoutJoin({ fields })) {
       // As v1 places it: a grain naming no namespace (and no storage=) is
       // created beside its base's own `#@ persist name=`.
       const inheritedNamespace = basePersistNamespace({
@@ -681,6 +686,8 @@ export function planSourceRollups(
          })
          .find((p) => p !== undefined);
       if (grainProblem) {
+         // v1's validation fails the load for its own line, in its words.
+         if (decl.v1) continue;
          refused.push({
             tier: "malformed",
             code: "preaggregate-unknown-grain",
@@ -803,6 +810,8 @@ export function planSourceRollups(
          decomposed.set(decl.measure, d);
       }
       if (isMeasureRefusal(d)) {
+         // v1's validation fails the load for its own non-additive measure.
+         if (decl.v1 && d.kind === "not_mergeable") continue;
          refused.push(
             d.kind === "not_mergeable"
                ? {

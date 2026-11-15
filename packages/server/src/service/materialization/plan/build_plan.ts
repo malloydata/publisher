@@ -20,12 +20,23 @@ import type {
 } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
+import { incrementalUnbuildableReason } from "./incremental_policy";
+import { nearMissGateLines, preaggregateGateLines } from "./load_gate_text";
+import { validateModelPreaggregation } from "./preaggregation_validation";
 import {
+   annotationNearMisses,
+   authoredNotes,
+} from "../../annotation_near_miss";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
+import {
+   PERSIST_INVALID_CODE,
+   PERSIST_NOT_BUILT_CODE,
    persistAnnotationFindings,
    persistUnparseableFinding,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
 import { declares } from "./declaration";
+import { persistDeclarationProblems } from "./persist_annotation_validation";
 import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -74,6 +85,7 @@ import {
 } from "./persisted_view";
 import {
    declaredPersistQueries,
+   persistQueryInvalidFindings,
    persistQueryKeyFindings,
    persistQueryNotBuiltFinding,
    type DeclaredPersistQuery,
@@ -113,6 +125,8 @@ import {
    collectSourceEligibility,
    collidingRollups,
    refuseCollidingMaterialize,
+   sharedTables,
+   withoutSources,
    type ColocatedSourceEligibility,
    type SourceEligibility,
 } from "./eligibility_collect";
@@ -143,6 +157,7 @@ export {
    type SourceBuild,
    type TableFolds,
 } from "./addressing";
+export { loadGateText } from "./load_gate_text";
 export {
    collidingRollups,
    sharedTables,
@@ -212,6 +227,8 @@ export interface CompiledBuildPlan {
    droppedPersistSources?: { name: string; modelPath: string }[];
    /** Findings on the authored `#@` annotations (see annotation_reader). */
    annotationFindings?: PackageAnnotationFinding[];
+   /** See {@link BuildPlanParts.modelGateLines}. */
+   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
    /**
     * sourceID -> the rollup it was synthesized from; absent for an authored
     * `#@ persist` source. The provenance behind the wire plan's
@@ -569,6 +586,12 @@ export interface BuildPlanParts {
    sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
    /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
    annotationFindings: PackageAnnotationFinding[];
+   /**
+    * Each model's invalid `#@ preaggregate` declarations and misspelled
+    * materialization routes, as load-failure lines (plan/load_gate_text.ts),
+    * so a run over the files reads them as the load does.
+    */
+   modelGateLines: { preaggregate: string[]; nearMiss: string[] };
    /** See {@link CompiledBuildPlan.omittedSources}. */
    omittedSources: Omission[];
 }
@@ -584,6 +607,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       materializePlans: {},
       sourceGateOutcomes: {},
       annotationFindings: [],
+      modelGateLines: { preaggregate: [], nearMiss: [] },
       omittedSources: [],
    };
 }
@@ -610,6 +634,11 @@ export function mergeBuildPlanParts(
    for (const finding of from.annotationFindings) {
       addAnnotationFinding(into, finding);
    }
+   // `?? …`: parts a worker built before this field existed.
+   into.modelGateLines.preaggregate.push(
+      ...(from.modelGateLines?.preaggregate ?? []),
+   );
+   into.modelGateLines.nearMiss.push(...(from.modelGateLines?.nearMiss ?? []));
 }
 
 /**
@@ -1075,7 +1104,9 @@ function collectPersistQueryFindings(
       for (const finding of persistQueryKeyFindings(query, args.modelPath)) {
          addAnnotationFinding(parts, finding);
       }
-      if (args.notBuilt) {
+      const invalid = persistQueryInvalidFindings(query, args.modelPath);
+      for (const finding of invalid) addAnnotationFinding(parts, finding);
+      if (args.notBuilt && invalid.length === 0) {
          addAnnotationFinding(
             parts,
             persistQueryNotBuiltFinding(query.name, args.modelPath),
@@ -1135,6 +1166,26 @@ export async function collectModelBuildPlan(
       getRuntime,
       keyCheckCompilers,
    } = args;
+   // The model's own load-failure lines, read off the author's model as the
+   // load reads them (Model.preaggregateViolations, annotationNearMisses).
+   {
+      const authorDef = modelDefOf(malloyModel);
+      parts.modelGateLines.preaggregate.push(
+         ...preaggregateGateLines(
+            modelPath,
+            validateModelPreaggregation(
+               authorDef.contents as Record<string, unknown>,
+               authorDef.modelID,
+            ),
+         ),
+      );
+      parts.modelGateLines.nearMiss.push(
+         ...nearMissGateLines(
+            modelPath,
+            annotationNearMisses(authoredNotes(authorDef)),
+         ),
+      );
+   }
    // `#@ persist` on a named query: its key findings always, and, with
    // PUBLISHER_MATERIALIZE off, the warning that it is not built. Before
    // the early `return`s below, since a query needs no persistence flag.
@@ -1289,6 +1340,22 @@ export async function collectModelBuildPlan(
       recognizedNames,
    )) {
       parts.droppedPersistSources.push({ name, modelPath });
+      // A `#@ persist` on a shape Malloy does not plan is a misplaced
+      // annotation: it fails the load, as a misplaced `#@ preaggregate` does.
+      addAnnotationFinding(parts, {
+         route: "@",
+         tier: "malformed",
+         code: "persist-not-materializable",
+         message:
+            `#@ persist source "${name}" is not a source Malloy can ` +
+            `materialize: only a query or aggregate source builds, and a ` +
+            `filtered pass-through, a table with only added fields, or an ` +
+            `unbound parameterized source does not. Persist a query source ` +
+            `over it, invoke a parameterized source with a bound argument, or ` +
+            `remove the annotation`,
+         subject: name,
+         model: modelPath,
+      });
    }
 
    if (planned.length === 0) return;
@@ -1326,6 +1393,16 @@ export async function collectModelBuildPlan(
             { incremental: isIncrementalSource(source) },
          )) {
             addAnnotationFinding(parts, finding);
+         }
+         for (const problem of persistDeclarationProblems(source.annotations)) {
+            addAnnotationFinding(parts, {
+               route: "@",
+               tier: "malformed",
+               code: PERSIST_INVALID_CODE,
+               message: `#@ persist source "${source.name}" is invalid: ${problem}`,
+               subject: source.name,
+               model: declaredIn,
+            });
          }
       } catch {
          // No findings for a source whose annotations cannot be read.
@@ -1673,6 +1750,8 @@ export interface BuildPlanOutcome {
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
    annotationFindings: PackageAnnotationFinding[];
+   /** See {@link BuildPlanParts.modelGateLines}. Optional: an older worker sends none. */
+   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
@@ -1732,14 +1811,11 @@ export function deriveBuildPlanOutcome(
 ): BuildPlanOutcome {
    // Before anything addresses a source: each author `name=` its own table,
    // decided over the whole package unless the compile already decided it.
-   const tableFolds =
-      collected.tableFolds ??
-      foldDistinctTableNames({
-         ...collected,
-         ...(scope === "version" ? { versionScoped: true } : {}),
-      });
+   const tableFolds = collected.tableFolds ?? foldDistinctTableNames(collected);
    // Before anything reads the plan: a refused source is neither built nor
-   // served, and its warning replaces it (#6644).
+   // served, and its warning replaces it (#6644). A valid incremental
+   // declaration this deployment cannot honour was refused alone where the
+   // plan was compiled (compilePackageBuildPlan, or the load worker).
    const compiled = refuseCollidingMaterialize({
       ...collected,
       tableFolds,
@@ -1774,6 +1850,9 @@ export function deriveBuildPlanOutcome(
       plan,
       droppedPersistSources,
       annotationFindings: compiled.annotationFindings ?? [],
+      ...(compiled.modelGateLines
+         ? { modelGateLines: compiled.modelGateLines }
+         : {}),
       sourceEligibility: collectSourceEligibility(compiled),
       colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,
@@ -1818,6 +1897,93 @@ function compilerKeysOf(
       }
    }
    return keys;
+}
+
+/**
+ * The sources a plan refuses alone before anything reads it, in the one
+ * order every path applies (compilePackageBuildPlan, the load worker): an
+ * author collision first ({@link refuseCollidingMaterialize}, invalid
+ * whatever else is wrong with the source), then a valid incremental
+ * declaration this deployment cannot honour.
+ */
+export function refuseAloneInPlan<
+   T extends Omit<CompiledBuildPlan, "connections">,
+>(compiled: T): T {
+   // Each author `name=` its own table first, decided over every source.
+   const folded =
+      compiled.tableFolds !== undefined
+         ? compiled
+         : { ...compiled, tableFolds: foldDistinctTableNames(compiled) };
+   return refuseIncrementalUnbuildable(refuseCollidingMaterialize(folded));
+}
+
+/**
+ * The compiled plan less each source whose VALID incremental declaration this
+ * deployment cannot honour (incremental_policy's rules 6, 7 and 12), each
+ * reported as its route's `*-not-built` warning: not built, answered live,
+ * and the rest of the package loads. An invalid declaration is left in, for
+ * the load's incremental gate to fail.
+ */
+function refuseIncrementalUnbuildable<
+   T extends Omit<CompiledBuildPlan, "connections">,
+>(compiled: T): T {
+   const declarations = collectIncrementalDeclarations(
+      compiled.sources,
+      compiled.materializePlans,
+   );
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   // An author collision is invalid whatever else is wrong with the source:
+   // a source sharing a table is left in for the collision check to judge.
+   const shared = sharedTables(compiled);
+   for (const [sourceID, declaration] of Object.entries(declarations)) {
+      const source = compiled.sources[sourceID];
+      if (!source || shared.has(sourceID)) continue;
+      const view = persistedViewOf(source);
+      const reason = incrementalUnbuildableReason({
+         sourceName: view?.sourceName ?? source.name,
+         ...(view ? { viewName: view.viewName } : {}),
+         dialect: source.dialectName,
+         declaration,
+      });
+      if (reason === undefined) continue;
+      dropped.add(sourceID);
+      const model = compiled.sourceModelPaths?.[sourceID] ?? "";
+      const plan = compiled.materializePlans?.[sourceID];
+      findings.push(
+         plan
+            ? materializeRefusalFinding(
+                 { sourceName: plan.sourceName, sourceID, reason },
+                 model,
+              )
+            : view
+              ? persistedViewRefusalFinding({ ...view, reason }, model)
+              : {
+                   route: "@",
+                   tier: "unservable",
+                   code: PERSIST_NOT_BUILT_CODE,
+                   message: `#@ persist source "${source.name}" is not built, so it is answered live: ${reason}.`,
+                   subject: source.name,
+                   model,
+                },
+      );
+   }
+   return withoutSources(compiled, findings, dropped);
+}
+
+/** A persisted view's generated build source, read back to the author's names. */
+function persistedViewOf(
+   source: PersistSource,
+): { sourceName: string; viewName: string } | undefined {
+   if (
+      !sourceIDFileURL(source.sourceID)?.endsWith(
+         PERSISTED_VIEW_COMPANION_SUFFIX,
+      )
+   ) {
+      return undefined;
+   }
+   const match = /^(.+)__(.+)__view$/.exec(source.name);
+   return match ? { sourceName: match[1], viewName: match[2] } : undefined;
 }
 
 /** {@link BuildPlanOutcome.refusedRollups}. */

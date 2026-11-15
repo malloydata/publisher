@@ -1493,7 +1493,11 @@ source: t is base -> { group_by: a }
       const logSpy = spyOn(logger, "log");
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
-         await Package.create("env", "pkg", tempDir, malloyConfig);
+         // The tag is invalid, so the load fails; the worker's log still
+         // reaches this thread first.
+         await expect(
+            Package.create("env", "pkg", tempDir, malloyConfig),
+         ).rejects.toThrow("[persist-unparseable]");
          expect(
             logSpy.mock.calls.some(([entry]) => {
                const { message, modelPath } = entry as unknown as Record<

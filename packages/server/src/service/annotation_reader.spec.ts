@@ -120,7 +120,29 @@ describe("the #@ route's keys", () => {
       }
    });
 
-   it("finds an unknown key (a warning) and a retired one (refused), and nothing else", () => {
+   it("finds an unknown key written inside persist, or in a freshness group", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([
+            `#@ persist { nmae="t" storage="lake" } freshness.windw="1h"`,
+         ]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.tier, f.message])).toEqual([
+         [
+            "persist-unknown-key",
+            "malformed",
+            "`nmae=` is not a key `#@ persist { … }` reads, so it does nothing (did you mean `name=`?)",
+         ],
+         [
+            "persist-unknown-key",
+            "malformed",
+            "`freshness.windw=` is not a key `#@` reads, so it does nothing (did you mean `freshness.window=`?)",
+         ],
+      ]);
+   });
+
+   it("finds an unknown key and a retired one, both malformed, and nothing else", () => {
       const { tag, findings } = readRouteTag(
          annotationsOf([
             `#@ persist name="orders" merge_keys="id" schedule="0 * * * *"`,
@@ -131,7 +153,7 @@ describe("the #@ route's keys", () => {
       expect(
          findings.map((f) => [f.code, f.tier, f.message.split("`")[1]]),
       ).toEqual([
-         ["persist-unknown-key", "unservable", "merge_keys="],
+         ["persist-unknown-key", "malformed", "merge_keys="],
          ["persist-retired-key", "malformed", "schedule="],
       ]);
       expect(findings[1]?.rewrite).toContain("materialization.schedule");
@@ -262,14 +284,16 @@ describe("persist annotation findings", () => {
          "m.malloy",
          { subject: "daily", line: '#@ refresh="incremental" watermark="x' },
       );
-      expect(planned.message).toContain("built from its other #@ lines");
-      expect(planned.message).not.toContain("served live");
+      expect(planned.message).toContain('#@ persist source "daily"');
+      expect(planned.message).toContain("does not parse");
+      expect(planned.tier).toBe("malformed");
       expect(planned.subject).toBe("daily");
       const dropped = persistUnparseableFinding(
          { message: "unterminated string" },
          "m.malloy",
       );
-      expect(dropped.message).toContain("served live");
+      expect(dropped.message).toContain("Fix the annotation's syntax");
+      expect(dropped.tier).toBe("malformed");
    });
 
    it("checks a persist source against the persist keys, not the preaggregate ones", () => {
@@ -281,12 +305,13 @@ describe("persist annotation findings", () => {
       expect(findings).toEqual([
          expect.objectContaining({
             code: "persist-unknown-key",
-            tier: "unservable",
+            tier: "malformed",
             subject: "daily",
             model: "m.malloy",
          }),
       ]);
-      expect(findingSeverity(findings[0])).toBe("warn");
+      // It fails the load, so it is never a warning on a serving package.
+      expect(findingSeverity(findings[0])).toBe("error");
    });
 
    it("builds the unparseable finding Malloy's build log reports, naming the line", () => {

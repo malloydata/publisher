@@ -17,6 +17,7 @@ import { recordConnectionDigestSkipped } from "../../../materialization_metrics"
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
+   refuseAloneInPlan,
    emptyBuildPlanParts,
    foldDistinctTableNames,
    resolveConnectionDigests,
@@ -47,6 +48,17 @@ import { packageFiles } from "../text/package_files";
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
+   {
+      keepIncrementalUnbuildable = false,
+   }: {
+      /**
+       * Keep a source whose valid incremental declaration this deployment
+       * cannot honour (incremental_policy's rules 6, 7 and 12), rather than
+       * refuse it alone. For a spec that plans incremental machinery on
+       * DuckDB, which no load or run does.
+       */
+      keepIncrementalUnbuildable?: boolean;
+   } = {},
 ): Promise<CompiledBuildPlan> {
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
@@ -176,17 +188,14 @@ export async function compilePackageBuildPlan(
       },
    );
 
-   const versionScoped = pkg.getPackageMetadata?.()?.scope === "version";
+   const versionScoped = versionOwnsTables(pkg);
    // Before anything addresses a source: each author `name=` its own table,
    // decided over every source before any is refused.
-   const tableFolds = foldDistinctTableNames({
-      ...parts,
-      connectionDigests,
-      versionScoped,
-   });
+   const tableFolds = foldDistinctTableNames({ ...parts, connectionDigests });
    // The build path reads this plan directly: a `#(materialize)` source
-   // refused for its table name must not build here either.
-   return refuseCollidingMaterialize({
+   // refused for its table name, or a source whose incremental declaration
+   // this deployment cannot honour, must not build here either.
+   const compiled = refuseCollidingMaterialize({
       ...(versionScoped ? { versionScoped: true } : {}),
       builds: parts.builds,
       sources: parts.sources,
@@ -197,6 +206,7 @@ export async function compilePackageBuildPlan(
       sourceModelPaths: parts.sourceModelPaths,
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
+      modelGateLines: parts.modelGateLines,
       preaggregatePlans: parts.preaggregatePlans,
       ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
       materializePlans: parts.materializePlans,
@@ -204,6 +214,7 @@ export async function compilePackageBuildPlan(
       sourceGateOutcomes: parts.sourceGateOutcomes,
       omittedSources: parts.omittedSources,
    });
+   return keepIncrementalUnbuildable ? compiled : refuseAloneInPlan(compiled);
 }
 
 /**
@@ -220,6 +231,18 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
-      pkg.getPackageMetadata?.()?.scope,
+      versionOwnsTables(pkg) ? "version" : undefined,
+   );
+}
+
+/**
+ * Whether the package's tables are named per version: a published version
+ * of a `scope: "version"` package (the run's `ownedVersionOf`). An
+ * unversioned package writes an author's `name=` as given whatever its scope.
+ */
+function versionOwnsTables(pkg: BuildPlanPackage): boolean {
+   return (
+      pkg.getPackageMetadata?.()?.scope === "version" &&
+      pkg.getVersionId?.() !== undefined
    );
 }

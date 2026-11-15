@@ -174,6 +174,11 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    return {
       plan: normalizer.json({
          wirePlan,
+         // A source refused alone as the plan is derived, which the wire plan
+         // then leaves out: an incremental declaration the corpus's DuckDB
+         // stand-in cannot honour (incremental_policy's rule 6), say. The
+         // compiled internals below still show what it would have planned.
+         ...refusedAloneOf(compiled, outcome),
          droppedPersistSources: outcome.droppedPersistSources,
          rollupsKeepingGates: outcome.rollupsKeepingGates,
          internal: internalPlans(compiled),
@@ -256,3 +261,17 @@ describe("materialization goldens: the hammer persist corpus", () => {
       expect(stale).toEqual([]);
    });
 });
+
+/** The findings deriving the plan added: the sources it refused alone. */
+function refusedAloneOf(
+   compiled: { annotationFindings?: { message: string }[] },
+   outcome: { annotationFindings: { message: string }[] },
+): { refusedAlone?: unknown[] } {
+   const before = new Set(
+      (compiled.annotationFindings ?? []).map((f) => f.message),
+   );
+   const added = outcome.annotationFindings.filter(
+      (f) => !before.has(f.message),
+   );
+   return added.length > 0 ? { refusedAlone: added } : {};
+}

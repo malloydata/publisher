@@ -20,12 +20,14 @@
 import { Annotations } from "@malloydata/malloy";
 import {
    byCodepoint,
+   PERSIST_QUERY_INVALID_CODE,
    persistAnnotationFindings,
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
 import { ownLevelNotes, type AnnotationNote } from "../../annotations";
-import { declares } from "./declaration";
+import { declares, readNotes, readNotesIfAny } from "./declaration";
+import { persistDeclarationProblems } from "./persist_annotation_validation";
 
 /** The package warning for a persisted query that is not built, or not served. */
 export const PERSIST_QUERY_NOT_BUILT = "persist-query-not-built";
@@ -40,6 +42,33 @@ export interface DeclaredPersistQuery {
    def: NamedQueryLike;
    /** The `#@` notes the `query:` statement wrote, in order. */
    notes: AnnotationNote[];
+   /** Why its `#@ persist` line does not parse, when it does not. */
+   unparseable?: string;
+}
+
+/** A `#@ persist` line, told from its text when it cannot be parsed. */
+const PERSIST_LINE = /^\s*#@\s*persist\b/;
+
+/**
+ * Why `#@` notes do not parse, or undefined when they do. A line that reads
+ * the environment is dropped before parsing, so it is not reported here.
+ */
+export function unparseableNotes(
+   notes: readonly unknown[],
+): string | undefined {
+   try {
+      const errors = readNotes(notes, "@")
+         .log.filter((entry) => entry.severity === "error")
+         .map((entry) => entry.message);
+      return errors.length > 0 ? errors.join("; ") : undefined;
+   } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+   }
+}
+
+/** Whether any of `notes` is written as a `#@ persist` line. */
+export function writesPersistLine(notes: readonly { text: string }[]): boolean {
+   return notes.some((n) => PERSIST_LINE.test(n.text));
 }
 
 /** What the readers use of a compiled `NamedQueryDef`. */
@@ -77,19 +106,34 @@ export function declaredPersistQueries(
          (n) => routeOfNote(n.text) === "@",
       );
       if (notes.length === 0) continue;
-      let persisted = false;
-      try {
-         persisted = declares(
-            new Annotations({ blockNotes: notes }),
-            "@",
-            "persist",
-         );
-      } catch {
-         continue;
+      // A `#@ persist` line that does not parse is an invalid declaration,
+      // reported by the planner, never dropped silently.
+      const unparseable = writesPersistLine(notes)
+         ? unparseableNotes(notes)
+         : undefined;
+      let persisted = unparseable !== undefined;
+      if (!persisted) {
+         try {
+            persisted = declares(
+               new Annotations({ blockNotes: notes }),
+               "@",
+               "persist",
+            );
+         } catch {
+            continue;
+         }
       }
       if (!persisted) continue;
       const id = `${name}@${url}`;
-      if (!out.has(id)) out.set(id, { name, declaringURL: url, def, notes });
+      if (!out.has(id)) {
+         out.set(id, {
+            name,
+            declaringURL: url,
+            def,
+            notes,
+            ...(unparseable !== undefined ? { unparseable } : {}),
+         });
+      }
    }
    return [...out.values()].sort((a, b) => byCodepoint(a.name, b.name));
 }
@@ -102,6 +146,8 @@ export function persistQueryKeyFindings(
    query: DeclaredPersistQuery,
    model: string,
 ): PackageAnnotationFinding[] {
+   // A line that does not parse has no keys to read; the planner reports it.
+   if (query.unparseable !== undefined) return [];
    try {
       return persistAnnotationFindings(
          new Annotations({ blockNotes: query.notes }),
@@ -112,6 +158,49 @@ export function persistQueryKeyFindings(
    } catch {
       return [];
    }
+}
+
+/** `#@ persist` keys that make a build incremental: a result rebuilds whole. */
+export const INCREMENTAL_KEYS = ["watermark", "merge_key"] as const;
+
+/**
+ * Why a persisted query's `#@ persist` declaration is invalid, beyond its
+ * keys ({@link persistQueryKeyFindings}): a line that does not parse or reads
+ * `@env.`, an incremental key (a query's result is rebuilt whole), a
+ * `storage=` that names nothing, or an unusable `name=`. Empty when valid.
+ */
+export function persistQueryProblems(query: DeclaredPersistQuery): string[] {
+   if (query.unparseable !== undefined) {
+      return [`its \`#@\` line does not parse (${query.unparseable})`];
+   }
+   const problems = persistDeclarationProblems(
+      new Annotations({ blockNotes: query.notes }),
+   );
+   if (problems.length > 0) return problems;
+   const tag = readNotesIfAny(query.notes, "@");
+   const incremental = INCREMENTAL_KEYS.filter(
+      (k) => tag?.has("persist", k) || tag?.has(k),
+   );
+   return incremental.length > 0
+      ? [
+           `a query's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
+        ]
+      : [];
+}
+
+/** {@link persistQueryProblems} as findings, which fail the publish and the load. */
+export function persistQueryInvalidFindings(
+   query: DeclaredPersistQuery,
+   model: string,
+): PackageAnnotationFinding[] {
+   return persistQueryProblems(query).map((problem) => ({
+      route: "@",
+      tier: "malformed",
+      code: PERSIST_QUERY_INVALID_CODE,
+      message: `#@ persist on query "${query.name}" is invalid: ${problem}`,
+      subject: query.name,
+      model,
+   }));
 }
 
 /** The workaround a not-built persisted query's warning names. */
