@@ -33,6 +33,24 @@ A colocated source bound with no recorded type for a big-integer column, on any 
 
 API addition: the package warning code `stored-native-schema-missing`. No field or enum value is added.
 
+## [Unreleased] — a stored table built in another zone, read through a join, answers live
+
+A `#(materialize)` table holds its zone-dependent values (a computed dimension such as `hour(ts)`, a truncation) as its build computed them, in its source's zone, its own or one it inherits. Read through a join, Malloy does not apply the joined source's `timezone:`, so a query that set no zone read the table in UTC while the table held, say, New York's values. The served copy answered it from the table and returned wrong rows: hours 16 to 21 where live gives 21 to 23 and 0 to 2. Such a query now answers live, with the `TIME_ZONE` reason.
+
+The rule, for every value a table stores that depends on the zone:
+- **The read zone.** A query reads its tables in the zone its first stage computes in: its own `timezone:`, else the zone its source sets or inherits, else the default. Every other zone it sets, in a later stage or a nest, is compared too. A table reached through a join is read in that same zone.
+- **The build zone.** Each table was built in its stored source's zone, read from the author's model, where a zone the source inherits is kept.
+- **Decided per column.** A query is answered live only when it reads one of the table's zone-dependent columns (a computed dimension the probe compiler did not clear, or a restated truncation) in another zone. A query that reads none, such as a measure of `amt` through the join, stays on the table.
+- **Decided per table.** Only when the rows themselves depend on the zone does any read in another zone answer live: a zone-dependent `where:`, a rolling window, or a joined source stored as a record.
+- **Same-zone reads stay served.** For example, a join read under the query's own `timezone:` that matches the zone the table was built in.
+- **`'UTC'` and its aliases.** Only the spelling `'UTC'` counts as the default zone. An alias such as `'Etc/UTC'` is another zone, and answers live, because a dialect may not know it (MySQL without its time zone tables converts it to NULL).
+- **An unknown stored source** is treated as built in an unknown zone, so a query that reads its zone-dependent values answers live.
+- **A `#(materialize)` source with its own zone now keeps its timestamp truncations.** They are judged by the same rule, so `mzny -> { group_by: ts_day }` stays served. A query-shaped source that sets a zone still leaves them out, because its query's zone does not reach a query over it.
+
+**A source that inherits its zone now computes in it.** A `#(materialize)` source that inherits its zone from its base (`inh is ny_base extend { … }`, with the base in the same file or another) was answered by the served copy in UTC. The re-root replaced that base with the stored table and dropped the zone, so an `hour(ts)`, a truncation and a time-literal filter came back in UTC where live answers in New York. This was wrong on main for a base in the same file. The re-root now writes the author's zone again. As a backstop, any query whose source computes in another zone in the served copy than in the author's model answers live. The same holds for a query-shaped source whose query inherits its base's zone (`ny_base -> { group_by: d is ts.day }`). It stored the truncation in New York and the served copy re-truncated it in UTC, which was also wrong on main. Such a truncation is now left out of the table, so a query that reads it answers live, and any other query stays served.
+
+The decline messages now say the query reads a table, or a value, "in another time zone than it was built in". No table is rebuilt or re-addressed, and no API change.
+
 ## [Unreleased] — the remaining lookups through a package author's links stay inside the package
 
 Every lookup Publisher makes through a path a package author controls now resolves it with the walk that confines model imports, which never looks at a path outside the package. A link that leads out, or out and back through another directory, gets the same answer whether or not what it passes through exists:
@@ -90,7 +108,6 @@ Off, nothing changes from the entry below: the query is warned `persist-query-no
 - **A build run is no longer refused.** A persisted query is not a dropped persist source, so it no longer fails a whole-package run.
 
 No API change beyond the new warning code.
-
 
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 

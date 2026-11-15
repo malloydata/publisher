@@ -17,6 +17,7 @@ import path from "path";
 import { BadRequestError, InvalidModelPathError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { linkTextKeptVerbatim } from "../../src/test_helpers/link_text";
 
 const roots: string[] = [];
 afterAll(() => {
@@ -166,10 +167,22 @@ describe("a report write through a directory link that goes out of the package a
          } catch (e) {
             error = e;
          }
-         expect(error).toBeInstanceOf(InvalidModelPathError);
-         answers.push((error as Error).message);
+         const written = path.join(served, "sub", "r.malloy");
+         if (linkTextKeptVerbatim()) {
+            // The link keeps its text: the walk refuses at the outside
+            // directory, before looking at it, and nothing is written.
+            expect(error).toBeInstanceOf(InvalidModelPathError);
+            expect(fs.existsSync(written)).toBe(false);
+            answers.push((error as Error).message);
+         } else {
+            // Normalized when made (Windows): the link never spells a step
+            // out and leads to the package's own sub/, where the write lands.
+            expect(error).toBeUndefined();
+            expect(fs.existsSync(written)).toBe(true);
+            fs.rmSync(written);
+            answers.push("written");
+         }
       }
       expect(answers[0]).toBe(answers[1]);
-      expect(fs.existsSync(path.join(served, "sub", "r.malloy"))).toBe(false);
    });
 });

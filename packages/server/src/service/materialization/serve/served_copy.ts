@@ -104,6 +104,14 @@ export interface Reroot {
    /** The `type:` the virtual source is declared as; unique in the file. */
    typeName: string;
    /**
+    * The zone the author's source computes in, its own or one it inherits
+    * from a base (its `queryTimezone`). The re-root replaces that base with
+    * the stored table, so it writes the zone again, ahead of the source's own
+    * blocks, which can still set theirs; without it the copy would compute
+    * every query on the source in the default zone.
+    */
+   zone?: string;
+   /**
     * The stored table's columns, under the author's spelling (a hidden one
     * with its access modifier, P3), each with
     * the annotation lines its field carries (`#(doc) "…"`, `#(classification)
@@ -912,6 +920,7 @@ export function rerootDeclaration(
       | "computedAtRead"
       | "keepsIncludes"
       | "dropsUnstoredExcepts"
+      | "zone"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration, {
@@ -920,7 +929,8 @@ export function rerootDeclaration(
    if (!spans) return undefined;
    const virtual =
       `${identifier(r.connectionAlias)}.virtual(${stringLiteral(r.virtualHandle)})` +
-      `::${identifier(r.typeName)}`;
+      `::${identifier(r.typeName)}` +
+      (r.zone ? ` extend { timezone: ${stringLiteral(r.zone)} }` : "");
    const name = declaration.slice(0, spans.nameEnd).trimEnd();
    const inlined = r.inlinedJoins ?? [];
    // No stored timeframe column is renamed to an inlined join's column.
