@@ -2048,7 +2048,10 @@ function storedRollupDeclaration(
       };
    });
    // malloy-text: the served copy's timeframe emitter, names through identifier
-   const timeframes = timeframeRestatements(grain);
+   const timeframes = timeframeRestatements(
+      grain,
+      binding.schema.map((c) => c.name),
+   );
    // malloy-text: the served copy's type emitter; rollupStatements re-emits the grammar's parse through malloy_text
    return `${typeDeclaration({ typeName, columns })}
 source: ${identifier(servedName)} is ${identifier(servedCopyAlias(binding.destinationName))}.virtual(${stringLiteral(binding.virtualHandle)})::${identifier(typeName)} extend {${timeframes}${rollupStatements(plan, modelDef)}

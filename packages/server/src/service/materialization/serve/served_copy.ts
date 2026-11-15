@@ -479,8 +479,19 @@ function timeframeKeyword(timeframe: string | undefined): string {
  * persisted view's result, a rollup's grain): each column with a timeframe,
  * which the table's type cannot carry, renamed internally and redefined as
  * that column truncated again (the identity on a truncated value), so the
- * field keeps its timeframe. Text that opens an `extend { … }` block; empty
- * when no column has a timeframe in {@link TIMEFRAMES}.
+ * field keeps its timeframe; and each column read through a faithful cast
+ * (`castTo`, `serveTypePlan`'s: a date truncation a build stored as a
+ * TIMESTAMP, an integer flag), redefined as it cast, then truncated:
+ *
+ *    internal rename: order_month__tf is order_month
+ *    dimension: order_month is (order_month__tf::"DATE").month
+ *
+ * A date is cast with the SQL type, a plain `CAST(… AS DATE)`, never Malloy's
+ * `::date`, which would convert it to a query's time zone first (as
+ * `timeframeExpression` does). Each internal name is `<column>__tf`, or
+ * `__tf_2`, … when a column of the table (`taken`, by default the columns
+ * given) already has it. Text that opens an `extend { … }` block; empty when
+ * no column is redefined.
  */
 export function timeframeRestatements(
    columns: readonly {
@@ -488,24 +499,54 @@ export function timeframeRestatements(
       timeframe?: string;
       /** The author's annotation lines, written again on the redefined field. */
       notes?: readonly string[];
+      /** The faithful cast the stored column is read through. */
+      castTo?: "DATE" | "BOOLEAN";
    }[],
+   taken: readonly string[] = columns.map((c) => c.name),
 ): string {
-   const truncated = columns.filter(
-      (c) => c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe),
-   );
-   if (truncated.length === 0) return "";
-   const renames = truncated
-      .map((c) => `    ${identifier(`${c.name}__tf`)} is ${identifier(c.name)}`)
+   const redefined = columns.flatMap((c) => {
+      const timeframe =
+         c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe)
+            ? c.timeframe
+            : undefined;
+      return timeframe || c.castTo ? [{ ...c, timeframe }] : [];
+   });
+   if (redefined.length === 0) return "";
+   const used = new Set([...taken, ...columns.map((c) => c.name)]);
+   const internal = redefined.map((c) => freeInternalName(c.name, used));
+   const renames = redefined
+      .map((c, i) => `    ${identifier(internal[i])} is ${identifier(c.name)}`)
       .join("\n");
-   // malloy-text: the author's own notes, then names through identifier and a timeframe from TIMEFRAMES
-   const dims = truncated
-      .map(
-         (c) =>
+   // malloy-text: the author's own notes, then names through identifier, a cast to DATE or boolean and a timeframe from TIMEFRAMES
+   const dims = redefined
+      .map((c, i) => {
+         const stored = identifier(internal[i]);
+         const read =
+            c.castTo === "DATE"
+               ? `${stored}::"DATE"`
+               : c.castTo === "BOOLEAN"
+                 ? `${stored}::boolean`
+                 : stored;
+         const value = !c.timeframe
+            ? read
+            : c.castTo
+              ? `(${read}).${timeframeKeyword(c.timeframe)}`
+              : `${read}.${timeframeKeyword(c.timeframe)}`;
+         return (
             (c.notes ?? []).map((n) => noteSource(n, "    ")).join("") +
-            `    ${identifier(c.name)} is ${identifier(`${c.name}__tf`)}.${timeframeKeyword(c.timeframe)}`,
-      )
+            `    ${identifier(c.name)} is ${value}`
+         );
+      })
       .join("\n");
    return `\n  internal rename:\n${renames}\n  dimension:\n${dims}`;
+}
+
+/** `<name>__tf`, or `<name>__tf_<n>`, the first that is none of `used`; added to it. */
+function freeInternalName(name: string, used: Set<string>): string {
+   let internal = `${name}__tf`;
+   for (let n = 2; used.has(internal); n++) internal = `${name}__tf_${n}`;
+   used.add(internal);
+   return internal;
 }
 
 /** Why a declaration could not be re-rooted; the source then serves live. */

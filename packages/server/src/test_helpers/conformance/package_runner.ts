@@ -45,10 +45,14 @@ import type { Package } from "../../service/package";
 import { installSettings } from "../settings_env";
 import { writePackageFiles } from "../temp_package";
 import {
+   type BuildCastOptions,
    castToDeclaredTypes,
    type DeclaredColumn,
    declaredColumnsOf,
 } from "../../service/materialization/stored_column_types";
+import { queryTimezoneOf } from "../../service/governance/ir/compiled_model";
+import { planModelPersistedViews } from "../../service/materialization/plan/persisted_view";
+import { SourceMap } from "../../service/materialization/text/source_map";
 /** A result row, as `compactResult` carries it. */
 export type Row = Record<string, unknown>;
 
@@ -187,6 +191,13 @@ export interface BindOptions {
     * false: most callers serve no rollup, so they build none).
     */
    includeRollups?: boolean;
+   /**
+    * Store each `storage=` table as the warehouse returned it, uncast, as a
+    * build stores it when it declines a cast (a `date` under a query time
+    * zone) or a cast fails and it retries without them (default false: cast
+    * to the declared types, as a build does).
+    */
+   storeUncast?: boolean;
 }
 
 /**
@@ -459,9 +470,12 @@ async function buildAll(
                await lake.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${castToDeclaredTypes(
                      select,
-                     declaredColumnsFor(pkg, entry).filter((c) =>
-                        present.has(c.name),
-                     ),
+                     options.storeUncast
+                        ? []
+                        : declaredColumnsFor(pkg, entry).filter((c) =>
+                             present.has(c.name),
+                          ),
+                     castOptionsFor(pkg, entry),
                   )}`,
                );
                const described = await lake.runSQL(`DESCRIBE ${quoted}`, {
@@ -519,14 +533,64 @@ async function buildAll(
 }
 
 /**
+ * What decides the planned source's build casts beyond its declared types:
+ * the query time zone its rows are computed in, under which a build leaves a
+ * `date` uncast (`storageBuildCasts`). An author source's own; for a
+ * generated build source (a persisted view's), its source's and the view's
+ * stages'.
+ */
+function castOptionsFor(
+   pkg: Package,
+   entry: { name: string; modelPath?: string },
+): BuildCastOptions {
+   const def = entry.modelPath
+      ? pkg.getModel(entry.modelPath)?.getModelDef()
+      : undefined;
+   if (!def) return {};
+   const struct = def.contents?.[entry.name];
+   let queryTimezone: string | undefined;
+   if (struct) {
+      queryTimezone = queryTimezoneOf(struct);
+   } else {
+      const plan = planModelPersistedViews(def).plans.find(
+         (p) => p.buildSourceName === entry.name,
+      );
+      const source = plan
+         ? (SourceMap.of(def).node(plan.sourceID)?.def as
+              | {
+                   queryTimezone?: unknown;
+                   fields?: {
+                      type?: unknown;
+                      name?: unknown;
+                      as?: unknown;
+                      pipeline?: unknown;
+                   }[];
+                }
+              | undefined)
+         : undefined;
+      const view = source?.fields?.find(
+         (f) => f.type === "turtle" && (f.as ?? f.name) === plan?.viewName,
+      );
+      queryTimezone = queryTimezoneOf({
+         queryTimezone: source?.queryTimezone,
+         query: {
+            pipeline: Array.isArray(view?.pipeline) ? view.pipeline : [],
+         },
+      });
+   }
+   return queryTimezone ? { queryTimezone } : {};
+}
+
+/**
  * The scalar dimensions the planned source declares, read from its model's
- * compiled definition: what a storage build casts its columns to. None when
- * the definition cannot be found (the build then runs uncast, as a build does
- * when it cannot read the field list).
+ * compiled definition, or for a generated build source its plan entry's
+ * columns: what a storage build casts its columns to. None when neither can
+ * be read (the build then runs uncast, as a build does when it cannot read
+ * the field list).
  */
 function declaredColumnsFor(
    pkg: Package,
-   entry: { name: string; modelPath?: string },
+   entry: { name: string; modelPath?: string; columns?: unknown[] },
 ): DeclaredColumn[] {
    const def = entry.modelPath
       ? pkg.getModel(entry.modelPath)?.getModelDef()
@@ -534,6 +598,10 @@ function declaredColumnsFor(
    const struct = def?.contents?.[entry.name] as
       | { fields?: { expressionType?: string }[] }
       | undefined;
+   // A generated build source (a persisted view's) is no name of the author's
+   // model: its plan entry's columns are the ones a build casts to
+   // (`storageBuildCasts`, from the same field list).
+   if (!struct) return declaredColumnsOf(entry.columns);
    return declaredColumnsOf(
       (struct?.fields ?? []).filter(
          (f) => f.expressionType === undefined || f.expressionType === "scalar",

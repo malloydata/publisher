@@ -82,6 +82,10 @@ To opt out, set `PUBLISHER_MATERIALIZE=false`: `#(materialize)` and `#(preaggreg
 
 The setting is removed one release after this one, together with its off position; from then on materialization v2 is always on. See docs/materialization.md and docs/materialization-migration.md.
 
+## [Unreleased] — a persisted view's date truncation reads back as a date
+
+A query answered from a `storage=` persisted view's table (`#@ persist storage=…` on a `view:`, with `PUBLISHER_MATERIALIZE` on) declared each column as the type the table stored. A build stores each column as its declared type where it can, but one that declines that cast (a view or source with a query time zone) or retries without casts after one fails stores a date truncation such as `order_date.month` as a TIMESTAMP, and the answer then typed it `timestamp` where live types it `date`. The view leg now reads such a column through the served copy's faithful cast (`::"DATE"`, truncated again to its timeframe; an integer flag as `boolean`), so the column's type matches live; a column no faithful cast reads as live's type answers live. No table is rebuilt or re-addressed, and no API change.
+
 ## [Unreleased] — (BREAKING) `partition=` is no longer supported, and a publish that carries it is refused
 
 `partition=` laid a `storage=` table out as one directory per value of the named columns. It is
