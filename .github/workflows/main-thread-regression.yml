@@ -1,0 +1,164 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# The main-thread regression check (packages/server/tests/perf/main-thread/
+# README.md): a storm-lite A/B of a baseline and a candidate server build on
+# one runner, judged on main-thread CPU per operation, /status latency, the
+# longest event-loop block, served-copy compiles on an identical re-bind and
+# loads started by /status. Added after Publisher 0.13.1 pinned the worker's
+# main thread (https://github.com/ms2data/service/issues/7795).
+#
+# - pull_request: the PR's head against its merge base, when it touches the
+#   server or the lockfile. Not a required check yet.
+# - schedule: main against the anchor release (anchor.json), nightly.
+# - workflow_call: release.yml's gate before `prepare`, main against the
+#   anchor release.
+# - workflow_dispatch: any two refs, for calibration or a bisect.
+
+name: main-thread-regression
+
+on:
+  pull_request:
+    paths:
+      - "packages/server/**"
+      - "bun.lock"
+      - ".github/workflows/main-thread-regression.yml"
+  schedule:
+    # 06:41 UTC: off the hour, and clear of hammer-nightly at 07:17.
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "Baseline ref (empty: the anchor release in anchor.json)"
+        required: false
+        default: ""
+      candidate:
+        description: "Candidate ref (empty: the ref this run is on)"
+        required: false
+        default: ""
+      rounds:
+        description: "Rounds per side, alternated"
+        required: false
+        default: "2"
+  workflow_call:
+    inputs:
+      baseline:
+        description: "Baseline ref (empty: the anchor release in anchor.json)"
+        type: string
+        required: false
+        default: ""
+      rounds:
+        type: string
+        required: false
+        default: "2"
+      skip:
+        description: "Report the check as skipped and pass (release.yml's escape hatch)"
+        type: boolean
+        required: false
+        default: false
+
+env:
+  BUN_VERSION: 1.4.4
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  main-thread:
+    name: main-thread regression
+    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Skipped by the caller
+        if: ${{ inputs.skip }}
+        run: |
+          echo "::warning title=Main-thread check skipped::release.yml was dispatched with skip_main_thread_check"
+          echo "## Main-thread regression: skipped by the release dispatch" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v4
+        if: ${{ !inputs.skip }}
+        with:
+          # The PR's own head (not the merge commit), so the baseline is its merge base.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Bun
+        if: ${{ !inputs.skip }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        if: ${{ !inputs.skip }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
+
+      - name: Install dependencies
+        if: ${{ !inputs.skip }}
+        run: bun install --frozen-lockfile
+
+      - name: Unit-test the verdict
+        if: ${{ !inputs.skip }}
+        working-directory: packages/server
+        run: bun test tests/perf/main-thread
+
+      - name: Choose the baseline and candidate
+        if: ${{ !inputs.skip }}
+        id: sides
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          IN_BASELINE: ${{ inputs.baseline }}
+          IN_CANDIDATE: ${{ inputs.candidate }}
+          IN_ROUNDS: ${{ inputs.rounds }}
+        run: |
+          anchor=$(jq -r .release packages/server/tests/perf/main-thread/anchor.json)
+          if [ "$EVENT" = "pull_request" ]; then
+            baseline="git:$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          else
+            baseline="git:${IN_BASELINE:-$anchor}"
+          fi
+          # The candidate is this checkout unless a dispatch names a ref.
+          candidate="${IN_CANDIDATE:+git:$IN_CANDIDATE}"
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+          echo "candidate=${candidate:-.}" >> "$GITHUB_OUTPUT"
+          echo "rounds=${IN_ROUNDS:-2}" >> "$GITHUB_OUTPUT"
+          echo "baseline=$baseline candidate=${candidate:-. ($(git rev-parse --short HEAD))}"
+
+      - name: Run the A/B
+        if: ${{ !inputs.skip }}
+        working-directory: packages/server
+        env:
+          BASELINE: ${{ steps.sides.outputs.baseline }}
+          CANDIDATE: ${{ steps.sides.outputs.candidate }}
+          ROUNDS: ${{ steps.sides.outputs.rounds }}
+          OUT: ${{ runner.temp }}/mtr
+        run: |
+          # The candidate "." is the checkout root, which run.ts builds in place.
+          [ "$CANDIDATE" = "." ] && CANDIDATE="$GITHUB_WORKSPACE"
+          bun tests/perf/main-thread/run.ts \
+            --baseline "$BASELINE" --candidate "$CANDIDATE" \
+            --rounds "$ROUNDS" --out "$OUT"
+
+      - name: Upload results
+        if: ${{ always() && !inputs.skip }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-thread-regression-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mtr/*.json
+            ${{ runner.temp }}/mtr/*.md
+            ${{ runner.temp }}/mtr/mtr_*
+          if-no-files-found: ignore
+          retention-days: 14

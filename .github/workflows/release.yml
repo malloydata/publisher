@@ -30,12 +30,33 @@ on:
         options:
           - patch
           - minor
+      # The escape hatch for the main-thread gate below, for a release that
+      # must ship while the check is known to be wrong. It still runs the job,
+      # which passes with a warning, so nothing downstream of it is skipped.
+      skip_main_thread_check:
+        description: "Skip the main-thread regression gate (only when the check
+          itself is known to be wrong; the run records that it was skipped)"
+        required: false
+        default: false
+        type: boolean
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # The main-thread regression gate: main against the anchor release
+  # (packages/server/tests/perf/main-thread/anchor.json), before anything is
+  # cut or published. It runs first so a failure leaves no release branch
+  # behind. See main-thread-regression.yml and CONTEXT.md.
+  main-thread-check:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/main-thread-regression.yml
+    with:
+      skip: ${{ inputs.skip_main_thread_check == true }}
+
   prepare:
+    needs: main-thread-check
     runs-on: ubuntu-latest
     permissions:
       contents: write

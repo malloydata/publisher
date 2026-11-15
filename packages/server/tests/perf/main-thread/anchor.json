@@ -1,0 +1,4 @@
+{
+   "release": "v0.12.6",
+   "why": "The last release the Credible fleet ran without heartbeat failures (ms2data/service#7795). Nightly and release runs compare against this fixed point, not the release before, so a regression that arrives in steps under 1.5x each still adds up to a failure. Move it forward only after a release has run in the fleet without main-thread trouble, in a PR of its own."
+}
