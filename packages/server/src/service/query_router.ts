@@ -36,7 +36,7 @@ import { recordQueryRoute, type RouteReason } from "../materialization_metrics";
  * a persisted view's table (`#@ persist` on a view, phase 4), tried first: it
  * answers only an exact call of its view (R1).
  */
-export type VariantKind = "view" | "served" | "rollup";
+export type VariantKind = "view" | "query" | "served" | "rollup";
 
 /**
  * Why a candidate did not answer. Internal for now; the path report maps
