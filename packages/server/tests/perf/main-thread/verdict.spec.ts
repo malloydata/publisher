@@ -194,7 +194,7 @@ describe("judge at the limits", () => {
          cpuPerOpRatio: 1.5,
          statusP90Ratio: 2,
          statusP90RatioFloorMs: 150,
-         statusP90BudgetMs: 1000,
+         statusP90BudgetMs: 1600,
          maxBlockBudgetMs: 3000,
          rebindCompiles: 0,
          statusLoads: 0,
@@ -211,13 +211,13 @@ describe("judge at the limits", () => {
       );
    });
 
-   it("passes exactly 1000 ms p90 and 3000 ms block, fails just over", () => {
-      const at = judge([run()], [run({ status: p90(1000), maxBlockMs: 3000 })]);
+   it("passes exactly 1600 ms p90 and 3000 ms block, fails just over", () => {
+      const at = judge([run()], [run({ status: p90(1600), maxBlockMs: 3000 })]);
       expect(outcomeOf(at, "/status p90 under the storm")).toBe("pass");
       expect(outcomeOf(at, "longest event-loop block")).toBe("pass");
       const over = judge(
          [run()],
-         [run({ status: p90(1001), maxBlockMs: 3001 })],
+         [run({ status: p90(1601), maxBlockMs: 3001 })],
       );
       expect(outcomeOf(over, "/status p90 under the storm")).toBe("fail");
       expect(outcomeOf(over, "longest event-loop block")).toBe("fail");
@@ -314,7 +314,7 @@ describe("judge at the limits", () => {
          judge([run()], [run()], DEFAULT_LIMITS, { cpus: 4, expectCpus: 4 })
             .outcome,
       ).toBe("pass");
-      expect(judge([run({ status: p90(3500) })], [run()]).outcome).toBe(
+      expect(judge([run({ status: p90(5000) })], [run()]).outcome).toBe(
          "invalid",
       );
       expect(judge([run({ maxBlockMs: 3500 })], [run()]).outcome).toBe(

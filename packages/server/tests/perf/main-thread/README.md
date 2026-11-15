@@ -82,11 +82,16 @@ as two versions.
    an unload or reload may name a version that is not loaded at that moment
    (a 404); choosing only loaded ones would make the script depend on timing,
    and then the two sides would not run the same one.
-3. Three quiet checks follow, each in its own probe window:
+3. Quiet checks, each in its own probe window, after waiting for two seconds
+   with no compile, QueryModel build or load (a run that never gets there is
+   invalid). Two run before the storm, because the storm starts background work
+   (a `get_context` index build reading `#(index)` values) that translates
+   queries on the main thread for minutes afterwards:
    - one ad-hoc query against `mat-mini` (a positive control: it must count at
      least one compile), then three identical re-binds of the same version;
-   - twenty `/status` polls after unloading three versions;
-   - one load of an unloaded `gen-index` version, then three `/entities` reads.
+   - the first load of a `gen-index` version, then three `/entities` reads.
+
+   One runs after it: twenty `/status` polls after unloading three versions.
 
 `run.ts` preflights every package against both builds and keeps the A/B to the
 ones both load, so an example an old baseline cannot read narrows the set
@@ -123,14 +128,15 @@ storm), is invalid rather than a pass.
 
 Each side's figure is the median over its rounds. The two counts fail if any
 round is over. On `ubuntu-latest` (`verdict.ts` has the ranges): 0.12.6's
-`/status` p90 is 370 to 660 ms, which is why the budget is 1000 ms rather than
-the 500 ms a laptop suggests; 0.13.1's is 1.5 to 2 s.
+`/status` p90 under this storm is 0.8 to 1.3 s, which is why the budget is
+1600 ms rather than the 500 ms a laptop suggests; 0.13.1's is 2 to 2.7 s, and
+`main` with the #7795 fixes 0.17 to 0.24 s.
 
 | check | kind | limit | catches |
 |---|---|---|---|
 | main-thread CPU per op vs baseline | relative | 1.5x | more synchronous work per load, bind or poll (0.13.1's `formatArrayQueryJoins`, its governor tick, its served-copy compiles) |
 | `/status` p90 vs baseline | relative | 2x, once the candidate's p90 is over 150 ms | a heartbeat that does more per poll or waits behind more main-thread work |
-| `/status` p90 under the storm | absolute | 1000 ms | the same, when the baseline is as bad |
+| `/status` p90 under the storm | absolute | 1600 ms | the same, when the baseline is as bad |
 | longest event-loop block | absolute | 3000 ms | a gross stall: one synchronous section of seconds (0.12.5's storm went silent for 47 s). It does not separate 0.13.1 from 0.12.6, whose longest blocks overlap at 1 to 2 s on a CI runner |
 | main-thread Malloy compiles on an identical re-bind | absolute | 0 | re-binding the manifest a version already holds and translating Malloy on the main thread for it: 0.13.1's served-copy recompile, and 0.12.0 to 0.12.5's `compileErrorOf` |
 | loads started by `/status` | absolute | 0 | a heartbeat that starts a package load |
@@ -149,8 +155,9 @@ A run is **invalid** (exit 2), not a pass or a fail, when:
 - an op type succeeded more than 10% (or 3) more often on one side. An op one
   side never serves, like `/entities` before 0.12.1, is noted and not compared;
 - the runner is not the calibrated kind (`--expect-cpus 4` in CI);
-- the baseline itself is far over budget (`/status` p90 over 2000 ms, or a
-  block over 3000 ms): an overloaded runner or a bad baseline.
+- a quiet check never got quiet;
+- the baseline itself is far over budget (`/status` p90 over three times its
+  budget, or a block over 3000 ms): an overloaded runner or a bad baseline.
 
 A harness error (a failed install, a server that never booted, a fixture one
 side cannot load) exits 2 too, with an `::error` titled *Main-thread harness

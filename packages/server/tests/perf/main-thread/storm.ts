@@ -28,9 +28,12 @@
  *     throughout, as the control plane's heartbeat does.
  *  3. Reads the probe: main-thread CPU, the longest event-loop block, load
  *     dispatches.
- *  4. Two quiet checks, each in its own probe window: three identical
- *     re-binds of a bound version (expect no main-thread Malloy compile), and
- *     ten `/status` polls after unloading versions (expect no load dispatch).
+ *  4. Quiet checks, each in its own probe window. Before the storm: an
+ *     ad-hoc query (a positive control), then three identical re-binds of a
+ *     bound version (expect no main-thread Malloy compile), and the first load
+ *     of the indexed package (expect no QueryModel build per #(index)
+ *     dimension). After it: `/status` polls after unloading versions (expect
+ *     no load dispatch).
  *
  * `--preflight` instead publishes each fixture's first version once and
  * reports which ones this build loads, so `run.ts` can keep the A/B to the
@@ -621,6 +624,98 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
       };
       const pkgUrl = (p: Placed) =>
          `${s.api}/environments/${p.env}/packages/${p.pkg}`;
+
+      // Two quiet checks run before the storm, while nothing else is running:
+      // background work the storm starts (a get_context index build reading
+      // #(index) values) translates queries on the main thread for minutes
+      // afterwards, and would land in their windows.
+      //
+      // Quiet check: identical re-binds of a bound version.
+      const target =
+         placement.find((x) => x.rebindProbe) ??
+         placement.find((x) => x.materializing)!;
+      const m = target.manifests!;
+      await call("POST", `${s.api}/environments/${target.env}/packages`, {
+         name: target.pkg,
+         location: target.dir,
+         manifestLocation: m[m.bound],
+      });
+      const first = await call(
+         "PUT",
+         `${pkgUrl(target)}/versions/${target.version}/manifest`,
+         { manifestLocation: m[m.bound] },
+      );
+      const quietMs: number[] = [await waitQuiet(s)];
+      // Positive control first: one ad-hoc query must count as a compile, or
+      // a zero in the re-bind window means nothing.
+      await readProbe(s, true);
+      const q = await call(
+         "POST",
+         `${pkgUrl(target)}/models/mat.malloy/query`,
+         {
+            query: "run: orders -> { aggregate: order_count }",
+            versionId: target.version,
+         },
+      );
+      const control = await readProbe(s, true);
+      const REBINDS = 3;
+      let rebindOk = first.status === 200;
+      for (let i = 0; i < REBINDS; i++) {
+         const a = await call(
+            "PUT",
+            `${pkgUrl(target)}/versions/${target.version}/manifest`,
+            { manifestLocation: m[m.bound] },
+         );
+         rebindOk &&= a.status === 200;
+      }
+      await Bun.sleep(2000);
+      const rebind = await readProbe(s);
+
+      // Quiet check: the first load of the indexed package, then
+      // three reads of its entities, each in its own probe window.
+      const indexed = fixtures.find((f) => f.kind === "indexed");
+      const ip = indexed
+         ? placement.find((x) => x.pkg === indexed.name)
+         : undefined;
+      let indexedLoad: StormResult["indexedLoad"] = {
+         ok: false,
+         indexedDimensions: indexed?.indexedDimensions ?? 0,
+         builds: 0,
+         ms: 0,
+         byCaller: {},
+         entitiesOk: false,
+         entitiesBuilds: 0,
+         entitiesMs: 0,
+      };
+      if (ip) {
+         await call("DELETE", `${pkgUrl(ip)}/versions/${ip.version}`);
+         quietMs.push(await waitQuiet(s));
+         await readProbe(s, true);
+         const a = await call(
+            "POST",
+            `${s.api}/environments/${ip.env}/packages`,
+            { name: ip.pkg, location: ip.dir },
+         );
+         await Bun.sleep(1000);
+         const loaded = await readProbe(s, true);
+         let entitiesOk = true;
+         for (let i = 0; i < 3; i++) {
+            const e = await call("GET", `${pkgUrl(ip)}/entities`);
+            entitiesOk &&= e.status === 200;
+         }
+         const read = await readProbe(s);
+         indexedLoad = {
+            ...indexedLoad,
+            ok: a.status >= 200 && a.status < 300,
+            entitiesOk,
+            builds: loaded.queryModelBuilds,
+            ms: loaded.queryModelMs,
+            byCaller: loaded.queryModelByCaller,
+            entitiesBuilds: read.queryModelBuilds,
+            entitiesMs: read.queryModelMs,
+         };
+      }
+
       const random = rng(o.seed);
       // The whole script is drawn up front, so it never depends on timing.
       const script = Array.from({ length: o.ops }, () => {
@@ -732,48 +827,7 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
       const after = await readProbe(s);
       maxRss = Math.max(maxRss, after.rssBytes);
 
-      // 3. Quiet check: identical re-binds of a bound version.
-      const target =
-         placement.find((x) => x.rebindProbe) ??
-         placement.find((x) => x.materializing)!;
-      const m = target.manifests!;
-      await call("POST", `${s.api}/environments/${target.env}/packages`, {
-         name: target.pkg,
-         location: target.dir,
-         manifestLocation: m[m.bound],
-      });
-      const first = await call(
-         "PUT",
-         `${pkgUrl(target)}/versions/${target.version}/manifest`,
-         { manifestLocation: m[m.bound] },
-      );
-      const quietMs: number[] = [await waitQuiet(s)];
-      // Positive control first: one ad-hoc query must count as a compile, or
-      // a zero in the re-bind window means nothing.
-      await readProbe(s, true);
-      const q = await call(
-         "POST",
-         `${pkgUrl(target)}/models/mat.malloy/query`,
-         {
-            query: "run: orders -> { aggregate: order_count }",
-            versionId: target.version,
-         },
-      );
-      const control = await readProbe(s, true);
-      const REBINDS = 3;
-      let rebindOk = first.status === 200;
-      for (let i = 0; i < REBINDS; i++) {
-         const a = await call(
-            "PUT",
-            `${pkgUrl(target)}/versions/${target.version}/manifest`,
-            { manifestLocation: m[m.bound] },
-         );
-         rebindOk &&= a.status === 200;
-      }
-      await Bun.sleep(2000);
-      const rebind = await readProbe(s);
-
-      // 4. Quiet check: /status after unloads starts no load.
+      // Quiet check after the storm: /status after unloads starts no load.
       const toUnload = envs
          .map((env) => placement.find((x) => x.env === env)!)
          .slice(0, 3);
@@ -793,51 +847,6 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
       }
       await Bun.sleep(1000);
       const statusLoads = await readProbe(s);
-
-      // 5. Quiet check: one load of the indexed package from unloaded, then
-      // three reads of its entities, each in its own probe window.
-      const indexed = fixtures.find((f) => f.kind === "indexed");
-      const ip = indexed
-         ? placement.find((x) => x.pkg === indexed.name)
-         : undefined;
-      let indexedLoad: StormResult["indexedLoad"] = {
-         ok: false,
-         indexedDimensions: indexed?.indexedDimensions ?? 0,
-         builds: 0,
-         ms: 0,
-         byCaller: {},
-         entitiesOk: false,
-         entitiesBuilds: 0,
-         entitiesMs: 0,
-      };
-      if (ip) {
-         await call("DELETE", `${pkgUrl(ip)}/versions/${ip.version}`);
-         quietMs.push(await waitQuiet(s));
-         await readProbe(s, true);
-         const a = await call(
-            "POST",
-            `${s.api}/environments/${ip.env}/packages`,
-            { name: ip.pkg, location: ip.dir },
-         );
-         await Bun.sleep(1000);
-         const loaded = await readProbe(s, true);
-         let entitiesOk = true;
-         for (let i = 0; i < 3; i++) {
-            const e = await call("GET", `${pkgUrl(ip)}/entities`);
-            entitiesOk &&= e.status === 200;
-         }
-         const read = await readProbe(s);
-         indexedLoad = {
-            ...indexedLoad,
-            ok: a.status >= 200 && a.status < 300,
-            entitiesOk,
-            builds: loaded.queryModelBuilds,
-            ms: loaded.queryModelMs,
-            byCaller: loaded.queryModelByCaller,
-            entitiesBuilds: read.queryModelBuilds,
-            entitiesMs: read.queryModelMs,
-         };
-      }
 
       const loadsIn = (d: Record<string, number>) =>
          (d["load-package"] ?? 0) + (d["load-package+manifest"] ?? 0);
