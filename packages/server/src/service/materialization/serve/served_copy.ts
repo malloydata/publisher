@@ -50,6 +50,7 @@ import {
    declaredBaseName,
    dropDimensions,
    dropExceptItems,
+   hiddenIncludeNames,
    inverseRenameBlocks,
    inverselyRenamedColumns,
    rewriteDimensions,
@@ -102,6 +103,14 @@ export interface Reroot {
    virtualHandle: string;
    /** The `type:` the virtual source is declared as; unique in the file. */
    typeName: string;
+   /**
+    * The zone the author's source computes in, its own or one it inherits
+    * from a base (its `queryTimezone`). The re-root replaces that base with
+    * the stored table, so it writes the zone again, ahead of the source's own
+    * blocks, which can still set theirs; without it the copy would compute
+    * every query on the source in the default zone.
+    */
+   zone?: string;
    /**
     * The stored table's columns, under the author's spelling (a hidden one
     * with its access modifier, P3), each with
@@ -570,12 +579,22 @@ interface RerootRefusal {
     * the serve side re-applies the whole chain's filters, so re-rooting it
     * would drop its base's `where:`. It is left as written; it still inherits
     * a re-rooted base by name.
+    *
+    * `definition_not_parsed`: the declaration could not be read, its base
+    * is a connection's table or SQL followed by something the re-root does
+    * not keep, or the `include { … }` it keeps hides a column its table does
+    * not store ({@link hiddenUnstored}).
     */
    reason:
       | "range_not_found"
       | "definition_not_parsed"
       | "not_query_shaped"
       | "pair_join_not_found";
+   /**
+    * With `definition_not_parsed`: the columns the declaration's kept
+    * `include { … }` hides that its table does not store.
+    */
+   hiddenUnstored?: string[];
 }
 
 /**
@@ -675,7 +694,13 @@ export function buildServedCopy(
             continue;
          }
          const declaration = out.slice(start, end);
-         const spans = declarationSpans(declaration);
+         // Read as the re-root reads it: a run that keeps the author's
+         // `include { … }` blocks walks back over them too, so a connection's
+         // SQL curated by one (`conn.sql("…") include { … } extend { … }`) is
+         // connection-rooted.
+         const spans = declarationSpans(declaration, {
+            throughIncludes: r.keepsIncludes === true,
+         });
          if (
             spans &&
             !spans.queryShaped &&
@@ -686,7 +711,31 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "not_query_shaped",
+               // A refinement is left as written by design; a connection's
+               // table or SQL the re-root cannot place is a declaration it
+               // could not read, and is warned of.
+               reason: spans.connectionBased
+                  ? "definition_not_parsed"
+                  : "not_query_shaped",
+            });
+            continue;
+         }
+         // A kept `include { … }` that hides a column the table does not
+         // store (a v1 `storage=` table stores public columns only) cannot
+         // compile on it: refused before the re-root, saying why.
+         const hiddenUnstored =
+            r.keepsIncludes && spans?.extendStart !== undefined
+               ? (
+                    hiddenIncludeNames(declaration.slice(spans.extendStart)) ??
+                    []
+                 ).filter((n) => !r.columns.some((c) => c.name === n))
+               : [];
+         if (hiddenUnstored.length > 0) {
+            refused.push({
+               sourceName: r.sourceName,
+               url,
+               reason: "definition_not_parsed",
+               hiddenUnstored,
             });
             continue;
          }
@@ -871,6 +920,7 @@ export function rerootDeclaration(
       | "computedAtRead"
       | "keepsIncludes"
       | "dropsUnstoredExcepts"
+      | "zone"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration, {
@@ -879,7 +929,8 @@ export function rerootDeclaration(
    if (!spans) return undefined;
    const virtual =
       `${identifier(r.connectionAlias)}.virtual(${stringLiteral(r.virtualHandle)})` +
-      `::${identifier(r.typeName)}`;
+      `::${identifier(r.typeName)}` +
+      (r.zone ? ` extend { timezone: ${stringLiteral(r.zone)} }` : "");
    const name = declaration.slice(0, spans.nameEnd).trimEnd();
    const inlined = r.inlinedJoins ?? [];
    // No stored timeframe column is renamed to an inlined join's column.

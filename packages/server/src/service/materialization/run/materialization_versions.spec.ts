@@ -31,8 +31,8 @@ import {
    ServingReader,
    WRITES_TABLES_KEY,
    storageBindingResolverFor,
-   versionTableSuffix,
 } from "../../versions/materialization_scope";
+import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { parsePackageName, VersionRef } from "../../identity";
 
@@ -49,7 +49,11 @@ const PKG = "sales";
 
 /** The table a `scope: version` version builds `summary` into. */
 const versionTable = (version: string, packageName = PKG) =>
-   `summary${versionTableSuffix({ environmentName: ENV, packageName, version })}`;
+   autoRunTableName(ENV, packageName, "summary", {
+      modelPath: "model.malloy",
+      version,
+      prefix: "summary",
+   });
 const TABLE_V1 = versionTable("1.0.0");
 const TABLE_V2 = versionTable("2.0.0");
 

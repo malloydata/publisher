@@ -1292,7 +1292,13 @@ export async function collectModelBuildPlan(
       const sourceID = source.sourceID;
       parts.sources[sourceID] = source;
       recordTarget(parts, sourceID, source);
-      parts.sourceModelPaths[sourceID] = modelPath;
+      // The DECLARING model, never this one: a model that imports the source
+      // walks it again, and the last walk would otherwise decide its path.
+      parts.sourceModelPaths[sourceID] = declaringModelPath(
+         sourceIDFileURL(sourceID),
+         packagePath,
+         modelPath,
+      );
       // Unknown and retired keys, on the lines that parsed (a line that did
       // not is reported above). Attributed to the declaring model, so a model
       // importing this source repeats nothing. Never lets the reader break the

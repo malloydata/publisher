@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { linkTextKeptVerbatim } from "../../test_helpers/link_text";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
@@ -95,18 +96,29 @@ describe("readPackageAgents", () => {
             `${through}/${path.relative(through, path.join(pkg, "agents", "analyst", "real"))}`,
             path.join(pkg, "agents", "analyst", "skills"),
          );
-         answers.push(
-            dropped({
-               analyst: {
-                  description: "d",
-                  instructions: "agents/analyst/instructions.md",
-                  skills: ["agents/analyst/skills"],
-               },
-            }),
-         );
+         const agents = {
+            analyst: {
+               description: "d",
+               instructions: "agents/analyst/instructions.md",
+               skills: ["agents/analyst/skills"],
+            },
+         };
+         if (linkTextKeptVerbatim()) {
+            answers.push(dropped(agents));
+         } else {
+            // Normalized when made (Windows), the link leads to the agent's
+            // own real/ inside the package, and the agent is served.
+            const result = read(agents);
+            expect(result.agents.has("analyst")).toBe(true);
+            answers.push(JSON.stringify(result.warnings));
+         }
       }
       expect(answers[0]).toBe(answers[1]);
-      expect(answers[0]).toContain("resolves outside the package");
+      if (linkTextKeptVerbatim()) {
+         expect(answers[0]).toContain("resolves outside the package");
+      } else {
+         expect(answers[0]).not.toContain("resolves outside the package");
+      }
    });
 
    it("returns nothing and no warning when the manifest declares no agents", () => {

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { linkTextKeptVerbatim } from "../../test_helpers/link_text";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "child_process";
 import fs from "fs";
@@ -67,7 +68,13 @@ describe("readSkillsDir", () => {
             results.push(JSON.stringify(readSkillsDir(pkg)));
          }
          expect(results[0]).toBe(results[1]);
-         expect(results[0]).toContain("resolves outside the package");
+         // Kept text: refused as leading out. Normalized when made (Windows):
+         // the link leads to the package's own skills/real and is served.
+         if (linkTextKeptVerbatim()) {
+            expect(results[0]).toContain("resolves outside the package");
+         } else {
+            expect(results[0]).not.toContain("resolves outside the package");
+         }
 
          // skills/ itself, out and back into a directory of the package.
          const skills: string[] = [];
@@ -82,7 +89,11 @@ describe("readSkillsDir", () => {
             skills.push(JSON.stringify(readSkillsDir(pkg)));
          }
          expect(skills[0]).toBe(skills[1]);
-         expect(skills[0]).toContain("resolves outside the package");
+         if (linkTextKeptVerbatim()) {
+            expect(skills[0]).toContain("resolves outside the package");
+         } else {
+            expect(skills[0]).not.toContain("resolves outside the package");
+         }
       } finally {
          fs.rmSync(outside, { recursive: true, force: true });
       }

@@ -58,6 +58,12 @@ export function declarationSpans(
          * under it.
          */
         connectionRooted: boolean;
+        /**
+         * The base begins with a connection's table or SQL, whatever follows
+         * it before the trailing run: with {@link connectionRooted} false, a
+         * block the run does not walk back over stands between them.
+         */
+        connectionBased: boolean;
      }
    | undefined {
    const tokens = topLevelTokens(declaration);
@@ -103,9 +109,9 @@ export function declarationSpans(
    const base = tokens.filter(
       (t, k) => k > isIndex && t.end <= baseEnd && t.kind !== "close",
    );
-   const connectionRooted =
+   const connectionBased =
       !queryShaped &&
-      base.length === 3 &&
+      base.length >= 3 &&
       base[0].kind === "word" &&
       base[1].text === "." &&
       base[1].start === base[0].end &&
@@ -115,7 +121,8 @@ export function declarationSpans(
       nameEnd,
       ...(extendStart !== undefined ? { extendStart } : {}),
       queryShaped,
-      connectionRooted,
+      connectionRooted: connectionBased && base.length === 3,
+      connectionBased,
    };
 }
 
@@ -533,6 +540,76 @@ export function documentFlagLines(text: string): string[] {
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.startsWith("##!"));
+}
+
+/** The statements of a source's blocks that define fields by name. */
+const DEFINING_STATEMENTS: ReadonlySet<string> = new Set([
+   "dimension",
+   "measure",
+   "join_one",
+   "join_many",
+   "join_cross",
+   "view",
+   "rename",
+]);
+
+/**
+ * The names a run of trailing blocks (`include { … } extend { … }`, a
+ * declaration's text after its base) hides in a top-level `include { … }`,
+ * under `private:` or `internal:`, that the run does not define: a column
+ * the stored table must hold for the kept block to compile. A definition is
+ * a `rename:` target, or a dimension, measure, join or view name, written
+ * `<name> is|with|on` where a definition starts (after its statement's
+ * colon, a comma, or at the start of a line); a mere use (`length(s)`,
+ * `where: s is not null`) defines nothing. Undefined when the text does not
+ * lex.
+ */
+export function hiddenIncludeNames(run: string): string[] | undefined {
+   const tokens = lexAll(run);
+   if (!tokens) return undefined;
+   const nameOf = (t: Token) =>
+      t.text.startsWith("`") ? t.text.slice(1, -1) : t.text;
+   const hidden: string[] = [];
+   const defined = new Set<string>();
+   let block: string | undefined;
+   let label: string | undefined;
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.depth === 0) {
+         if (t.kind === "word") block = t.text;
+         label = undefined;
+         continue;
+      }
+      if (t.depth !== 1 || !isName(t)) continue;
+      const next = tokens[k + 1];
+      if (next?.text === ":" && next.start === t.end) {
+         label = t.text;
+         k++;
+         continue;
+      }
+      if (
+         block === "include" &&
+         (label === "private" || label === "internal")
+      ) {
+         hidden.push(nameOf(t));
+         continue;
+      }
+      const prev = tokens[k - 1];
+      const startsDefinition =
+         prev?.text === ":" ||
+         prev?.text === "," ||
+         run.slice(prev?.end ?? 0, t.start).includes("\n");
+      if (
+         label !== undefined &&
+         DEFINING_STATEMENTS.has(label) &&
+         startsDefinition &&
+         next?.kind === "word" &&
+         (next.text === "is" || next.text === "with" || next.text === "on")
+      ) {
+         defined.add(nameOf(t));
+      }
+   }
+   return hidden.filter((n) => !defined.has(n));
 }
 
 /**

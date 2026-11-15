@@ -6,6 +6,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
+import { linkTextKeptVerbatim, slashed } from "./test_helpers/link_text";
 import {
    confinedPackagePath,
    linkTextSteps,
@@ -233,7 +234,7 @@ describe("readPackageURLSync and packageTextReader", () => {
 describe("listPackageTree", () => {
    it("lists the package's files, every link out as itself, and nothing behind one", async () => {
       const listed = (await listPackageTree(pkg))
-         .map((p) => path.relative(pkg, p))
+         .map((p) => slashed(path.relative(pkg, p)))
          .sort();
       expect(listed).toEqual([
          "alias/a.malloy",
@@ -358,6 +359,11 @@ describe("a path that goes out of the package and comes back", () => {
    afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
 
    it("refuses both, relative or absolute, without looking at what it passes through", async () => {
+      // Where a link keeps its text (POSIX) the walk refuses at the outside
+      // directory; where the text was normalized when the link was made
+      // (Windows) it never spells a step outside, and reads the package's
+      // own file. Either way, present and absent answer alike.
+      const kept = linkTextKeptVerbatim();
       const lstat = spyOn(fs.promises, "lstat");
       try {
          for (const form of ["rel", "abs"]) {
@@ -365,11 +371,15 @@ describe("a path that goes out of the package and comes back", () => {
                lstat.mockClear();
                const target = url(path.join(pkg3, `${form}-${which}`));
                expect(await outcome(pkg3, target)).toBe(
-                  IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+                  kept ? IMPORT_OUTSIDE_PACKAGE_MESSAGE : "READ:real",
                );
-               expect(() => readPackageURLSync(pkg3, target)).toThrow(
-                  IMPORT_OUTSIDE_PACKAGE_MESSAGE,
-               );
+               if (kept) {
+                  expect(() => readPackageURLSync(pkg3, target)).toThrow(
+                     IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+                  );
+               } else {
+                  expect(readPackageURLSync(pkg3, target)).toBe("real");
+               }
                const outside = path.join(base, "outside");
                expect(
                   lstat.mock.calls.some((c) =>
@@ -443,7 +453,7 @@ describe("listPackageTree on a directory link that goes out and comes back", () 
                stat.mockClear();
                realpath.mockClear();
                const listed = (await listPackageTree(pkg4))
-                  .map((p) => path.relative(pkg4, p))
+                  .map((p) => slashed(path.relative(pkg4, p)))
                   .sort();
                listings.push(`${form}:${listed.join(",")}`.replace(which, ""));
                const looked = [...stat.mock.calls, ...realpath.mock.calls].map(
@@ -460,7 +470,13 @@ describe("listPackageTree on a directory link that goes out and comes back", () 
          }
          expect(listings[0]).toBe(listings[1]);
          expect(listings[2]).toBe(listings[3]);
-         expect(listings[0]).toBe("abs:d,sub/a.malloy");
+         // Kept text: `d` is a link out, listed as itself. Normalized text
+         // (Windows): `d` leads into the package's own sub/ and is walked.
+         expect(listings[0]).toBe(
+            linkTextKeptVerbatim()
+               ? "abs:d,sub/a.malloy"
+               : "abs:d/a.malloy,sub/a.malloy",
+         );
       } finally {
          stat.mockRestore();
          realpath.mockRestore();
@@ -508,10 +524,23 @@ describe("a link whose text steps .. past a file, or through a missing name", ()
          fs.symlinkSync("missing/..", path.join(pkg6, "after-missing"));
          const afterFile = url(path.join(pkg6, "after-file"));
          const afterMissing = url(path.join(pkg6, "after-missing"));
-         expect(await outcome(pkg6, afterFile)).toContain("ENOTDIR");
-         expect(() => readPackageURLSync(pkg6, afterFile)).toThrow("ENOTDIR");
-         expect(await outcome(pkg6, afterMissing)).toContain("ENOENT");
-         expect(() => readPackageURLSync(pkg6, afterMissing)).toThrow("ENOENT");
+         if (linkTextKeptVerbatim()) {
+            expect(await outcome(pkg6, afterFile)).toContain("ENOTDIR");
+            expect(() => readPackageURLSync(pkg6, afterFile)).toThrow(
+               "ENOTDIR",
+            );
+            expect(await outcome(pkg6, afterMissing)).toContain("ENOENT");
+            expect(() => readPackageURLSync(pkg6, afterMissing)).toThrow(
+               "ENOENT",
+            );
+         } else {
+            // Normalized when made (Windows), both texts are `.`: the package
+            // directory itself, which is not read as a file.
+            for (const target of [afterFile, afterMissing]) {
+               expect(await outcome(pkg6, target)).toContain("EISDIR");
+               expect(() => readPackageURLSync(pkg6, target)).toThrow("EISDIR");
+            }
+         }
       } finally {
          fs.rmSync(base, { recursive: true, force: true });
       }

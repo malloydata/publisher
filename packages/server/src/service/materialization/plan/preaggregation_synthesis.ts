@@ -62,9 +62,10 @@ export function rollupSourceName(
    baseSourceName: string,
    grainDimensions: string[],
 ): string {
-   // Dots are folded out so the name, which IS the rollup's self-assigned
-   // physical table name, stays one unqualified identifier; a consumer reading
-   // a dotted name as schema-qualified would address the wrong thing. Dotted
+   // Dots are folded out so the name, which the rollup's build source and
+   // manifest entry carry (its table takes a readable name of its own,
+   // domain/table_name.ts), stays one unqualified identifier; a consumer
+   // reading a dotted name as schema-qualified would address the wrong thing. Dotted
    // grains are refused at publish anyway; this makes it a property of the
    // name. The digest is over the RAW dimensions, so `a.b` and `a_b` differ.
    const slug = grainDimensions

@@ -28,6 +28,10 @@ import {
 } from "../../../src/service/identity";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
+import {
+   linkTextKeptVerbatim,
+   slashed,
+} from "../../../src/test_helpers/link_text";
 import { IMPORT_OUTSIDE_PACKAGE_MESSAGE } from "../../../src/utils";
 import { pollFor, TERMINAL_STATUSES } from "../materialization/polling";
 
@@ -276,7 +280,11 @@ describe("versioning off: a sibling package", () => {
          });
          expect(text).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
          expect(text).not.toContain("ENOENT");
-         texts.push(withoutPaths(text, there, absent));
+         // Both spellings masked, and the names (as long as each other) too:
+         // a Windows answer spells the path its own way.
+         texts.push(
+            withoutPaths(text, there, absent).replace(/[xy]\.malloy/g, "<f>"),
+         );
       }
       expect(texts[0]).toBe(texts[1]);
    });
@@ -605,9 +613,9 @@ describe("a copy-installed package's relative in-package links", () => {
       fs.symlinkSync("../shared", path.join(dir, "models", "sh"));
       expect(await publish("rellinks", dir)).toBe(200);
       const served = await packagePath("rellinks");
-      expect(fs.readlinkSync(path.join(served, "models", "s.malloy"))).toBe(
-         "../shared/s.malloy",
-      );
+      expect(
+         slashed(fs.readlinkSync(path.join(served, "models", "s.malloy"))),
+      ).toBe("../shared/s.malloy");
       expect(
          await answerOf(
             "rellinks",
@@ -837,7 +845,13 @@ describe("a path that goes out of the package and comes back", () => {
             );
          });
          expect(imp[0]).toBe(imp[1]);
-         expect(imp[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+         // Where a link keeps its text the walk refuses at the sibling;
+         // where it was normalized when made (Windows) it never spells a
+         // step out, and leads to the package's own file. The pairs match
+         // either way.
+         const kept = linkTextKeptVerbatim();
+         if (kept) expect(imp[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+         else expect(imp[0]).toStartWith("200");
 
          const model = await pair(`m${form}`, (dir, folder, via) => {
             fs.symlinkSync(
@@ -846,7 +860,8 @@ describe("a path that goes out of the package and comes back", () => {
             );
          });
          expect(model[0]).toBe(model[1]);
-         expect(model[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+         if (kept) expect(model[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+         else expect(model[0]).toStartWith("200");
 
          const manifest = await pair(`j${form}`, (dir, folder, via) => {
             fs.rmSync(path.join(dir, "publisher.json"));
@@ -856,7 +871,8 @@ describe("a path that goes out of the package and comes back", () => {
             );
          });
          expect(manifest[0]).toBe(manifest[1]);
-         expect(manifest[0]).not.toStartWith("200");
+         if (kept) expect(manifest[0]).not.toStartWith("200");
+         else expect(manifest[0]).toStartWith("200");
 
          const probe = await pair(`d${form}`, (dir, folder, via) => {
             fs.symlinkSync(
@@ -867,7 +883,8 @@ describe("a path that goes out of the package and comes back", () => {
          expect(probe[0]).toBe(probe[1]);
          expect(probe[0]).toStartWith("200");
          expect(probe[0]).toContain("real.csv");
-         expect(probe[0]).not.toContain("d.csv");
+         if (kept) expect(probe[0]).not.toContain("d.csv");
+         else expect(probe[0]).toContain("d.csv");
       });
    }
 });
@@ -1070,7 +1087,10 @@ describe("a public/ that is itself a link", () => {
          answers.push(await answer(folder, "index.html"));
       }
       expect(answers[0]).toBe(answers[1]);
-      expect(answers[0]).toStartWith("403");
+      // Normalized when made (Windows), the link leads to the package's own
+      // web/ and serves; kept (POSIX), it is refused. Alike either way.
+      if (linkTextKeptVerbatim()) expect(answers[0]).toStartWith("403");
+      else expect(answers[0]).toStartWith("200");
    });
 
    it("serves nothing for a public/ that links to the filesystem root", async () => {

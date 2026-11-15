@@ -19,7 +19,10 @@ import {
    type Reroot,
    replacePairJoin,
 } from "./served_copy";
-import { inverseRenameBlocks } from "../text/declaration_text";
+import {
+   hiddenIncludeNames,
+   inverseRenameBlocks,
+} from "../text/declaration_text";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
 function rangeOf(text: string, name: string): Reroot["range"] {
@@ -408,6 +411,90 @@ source: raw is duckdb.sql("""SELECT region, amount FROM t""") extend {
          declarationSpans("t is duckdb.virtual('t')::x extend { }")
             ?.connectionRooted,
       ).toBe(false);
+   });
+
+   it("re-roots a connection's SQL curated by an include ahead of its extend, keeping both", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT region, amount FROM t""") include {
+  public: region, amount
+} extend {
+  measure: total is amount.sum()
+}
+`;
+      const copy = buildServedCopy(
+         [reroot(raw, "raw", { keepsIncludes: true })],
+         () => raw,
+      );
+      expect(copy.refused).toEqual([]);
+      expect(copy.files.get("file:///m.malloy")).toContain(
+         "source: raw is __publisher_storage_t_0.virtual('h1')::raw__served include {\n  public: region, amount\n} extend {",
+      );
+      // A re-root that keeps no include cannot place it: refused, and warned
+      // of, unlike a refinement left as written by design.
+      expect(buildServedCopy([reroot(raw, "raw")], () => raw).refused).toEqual([
+         {
+            sourceName: "raw",
+            url: "file:///m.malloy",
+            reason: "definition_not_parsed",
+         },
+      ]);
+      expect(
+         declarationSpans(`t is duckdb.sql("x") include { } extend { }`),
+      ).toMatchObject({ connectionRooted: false, connectionBased: true });
+      expect(
+         declarationSpans(`t is duckdb.sql("x") include { } extend { }`, {
+            throughIncludes: true,
+         }),
+      ).toMatchObject({ connectionRooted: true, connectionBased: true });
+   });
+
+   it("refuses a kept include that hides a column the table does not store, naming it", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT r, total, id FROM t""") include {
+  public: r, total
+  #(doc) "kept out of the table"
+  private: id
+  internal: \`r\`
+}
+`;
+      expect(
+         buildServedCopy(
+            [reroot(raw, "raw", { keepsIncludes: true })],
+            () => raw,
+         ).refused,
+      ).toEqual([
+         {
+            sourceName: "raw",
+            url: "file:///m.malloy",
+            reason: "definition_not_parsed",
+            hiddenUnstored: ["id"],
+         },
+      ]);
+   });
+
+   it("counts a hidden name as stored-or-defined only where the run defines it", () => {
+      const run = (extend: string) =>
+         `include {\n  public: r\n  private: s\n} extend {\n  ${extend}\n}`;
+      // A use is not a definition.
+      expect(hiddenIncludeNames(run("dimension: s_len is length(s)"))).toEqual([
+         "s",
+      ]);
+      expect(hiddenIncludeNames(run("where: s is not null"))).toEqual(["s"]);
+      expect(
+         hiddenIncludeNames(
+            run("dimension: f is pick 1 when s is null else 0"),
+         ),
+      ).toEqual(["s"]);
+      // A rename target or a field the run defines is.
+      expect(
+         hiddenIncludeNames(
+            "extend { rename: s is r } include { internal: s; public: * }",
+         ),
+      ).toEqual([]);
+      expect(hiddenIncludeNames(run("dimension: s is upper(r)"))).toEqual([]);
+      expect(
+         hiddenIncludeNames(run("dimension:\n    a is 1\n    s is 2")),
+      ).toEqual([]);
    });
 
    it("refuses every re-root of a file it cannot read", () => {

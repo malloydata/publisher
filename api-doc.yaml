@@ -5938,6 +5938,16 @@ components:
                   column, `model` the first model binding it, `subject` the
                   source, the message naming the column, both types and which
                   of the two applies; `warn`; see docs/materialization.md).
+                  `stored-native-schema-missing`: a colocated table is bound
+                  with no captured warehouse type (its manifest entry's
+                  `nativeSchema`) for a column whose field Malloy types as a big
+                  integer. On BigQuery the column is read as `INT64`, its only
+                  integer type, and still serves; on any other dialect it is
+                  left out, so a query that reads it is answered live. The next
+                  full rebuild captures the types (one per source, `model` the
+                  first model binding it, `subject` the source, the message
+                  naming the columns and which applies; `warn`; see
+                  docs/materialization.md).
                   `entities-…` (`entities-not-a-dimension`,
                   `entities-parameterized-source`,
                   `entities-multiple-required-filters`,
@@ -10663,6 +10673,7 @@ components:
               env_reference,
               rollup_name_collision,
               empty_storage,
+              table_name_collision,
             ]
           description: >-
             The bounded refusal reason. Only the compile-time reasons can
@@ -10694,7 +10705,14 @@ components:
             a name, such as a list; it is not built and is answered live) —
             those being the only reasons the two
             compile-time eligibility asserts this collection is computed from
-            produce.
+            produce. One more appears only in a run's
+            `metadata.refusedSources`, never in a build plan:
+            `table_name_collision` (a source whose readable table name, the
+            name a standalone run gives a table it names itself, is a name
+            another source's table already takes in that run: two sources of
+            one model that share a name, such as a `#@ persist` source named
+            like a persisted view's generated build source beside it, or a
+            hash collision; it is not built and is answered live).
 
 
             `given_in_persisted_query` is raised by BOTH gates, for one

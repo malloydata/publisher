@@ -116,6 +116,7 @@ still build and serve.
 | `materialize-retired-key` | The line carries a key that is no longer read, `partition=`. Severity `error`: a publish is refused. | Remove the key. |
 | `annotation-near-miss` | A misspelled route, such as `#(materialise)`. Nothing is built. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
+| `stored-native-schema-missing` | A colocated table is bound with no recorded warehouse type for a big-integer column (a table built before Publisher recorded them). On BigQuery the column is read as `INT64` and serves; elsewhere a query that reads it is answered live. | Run a full rebuild of the source; it records the types. |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
 | `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize). |
 | `deprecated-preaggregate-annotation` | A measure still uses `#@ preaggregate`. | Rewrite it as `#(preaggregate)`. |
@@ -180,8 +181,9 @@ unchanged ([the served copy](materialization.md#the-served-copy-materialization-
   ([whose table it is](materialization.md#whose-table-it-is)). Under `scope: "version"` the table
   keeps the name's schema or dataset and its last segment takes the version's suffix, and a
   host-orchestrated run writes the name the host assigns in that container, for v1 and v2 alike; no
-  view is made at `name=`. Without `name=`, Publisher's own builds name the table after the source
-  plus a hash of the environment and package (`east_orders__p3f9c2a1b`), for v1 and v2 alike. A
+  view is made at `name=`. Without `name=`, Publisher's own builds give the table its readable name
+  (`sales__orders__east_orders__p<8 hex>`, [readable table names](materialization.md#readable-table-names)),
+  for v1 and v2 alike. A
   source whose table name changes (a `name=` added, removed or changed) is rebuilt under the new
   name, never carried forward at the old one.
 - **Freshness and `queryMetadata`** are copied onto the generated build source as written.
@@ -208,8 +210,8 @@ source: east_orders is orders extend {
 }
 ```
 
-`name=` is optional with `storage=`. Without one, the table takes the source's name, with its
-package's suffix in Publisher's own builds ([whose table it is](materialization.md#whose-table-it-is)).
+`name=` is optional with `storage=`. Without one, the table takes its readable name in
+Publisher's own builds ([whose table it is](materialization.md#whose-table-it-is)).
 The destination is Publisher's, and the existing checks refuse two sources that land on one table.
 
 A v1 `#@ persist` on a source declared only by refinement (`source: x is orders extend { … }`)
@@ -283,7 +285,7 @@ source: order_summary is orders -> {
 `name=` is optional on a colocated `#(materialize)`. With it, the build writes only where nothing
 else stands: a `name=` that holds a table no run of the package wrote (one of your own tables, or the
 one the source reads) fails that source's build before anything is written. Without it, the table is
-`order_summary__p<hash>` (the source's name and its package's suffix), a name no table of yours
+its readable name (`<package>__<file>__order_summary__p<hash>`), a name no table of yours
 carries. On BigQuery a table needs a dataset, so a colocated `#(materialize)` there with no
 dataset-qualified `name=` is not built (`materialize-not-built`).
 
@@ -297,7 +299,7 @@ this package's own runs wrote it. Under `scope: "version"`, the table keeps the 
 dataset and its last segment takes the version's suffix, as in v1; a host-orchestrated build writes
 the name the host assigns, in that container. In neither case is a view made at `name=`, so a reader
 outside Malloy that needs one stable name reads it from an unversioned or `scope: "package"`
-package. Dropping `name=` instead moves the source to `<source>__p<hash>`: it is rebuilt there, and
+package. Dropping `name=` instead moves the source to its readable name: it is rebuilt there, and
 the old table stays with the runs that built it until they are deleted with their tables
 (`dropTables=true`).
 
@@ -634,7 +636,7 @@ it. The build plan, the manifest and reuse all key on it.
   report. Anchors keyed on (version, source name, model path) stay put.
 - **Expect one rebuild per migrated source.** Its `sourceEntityId` changes, so reuse misses and an
   incremental source re-seeds. A table at a `name=` is rebuilt in place, and so is a default-named
-  table (`<source>__p<hash>` in Publisher's own builds). Host-orchestrated builds are not checked or
+  table (its readable name in Publisher's own builds). Host-orchestrated builds are not checked or
   renamed: a table the host instructed under a generational name is the host's to reclaim.
 - **Set the switch the same on every worker.** `PUBLISHER_MATERIALIZE` and
   `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` are read at startup. Workers that disagree plan

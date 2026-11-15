@@ -5,7 +5,7 @@
  * A fleet mid-rollout of the v1 cutover's retirement (6g) has older workers
  * that served a v1 `#@ preaggregate` rollup through the composite, from a
  * `__preagg__` table, beside workers that serve it through the rollup leg,
- * from a `__rollup__` table, under a different `sourceEntityId`. A host may
+ * from a rollup table of its own, under a different `sourceEntityId`. A host may
  * bind a manifest an older worker built to a new one. The new worker must
  * match a manifest entry only against its own plan, so the older entry costs
  * a rebuild (the query answers live) and never an answer read from its
@@ -213,7 +213,7 @@ describe("a host manifest from an older worker of the v1 cutover (mixed fleet)",
       expect(built.status).toBe("MANIFEST_FILE_READY");
       const ownEntries = built.manifest?.entries ?? {};
       const [[ownID, own]] = Object.entries(ownEntries);
-      expect(own.physicalTableName).toContain("__rollup__");
+      expect(own.physicalTableName).toContain("__orders_by_category__p");
 
       // The older worker's table and entry: the composite's name, under a
       // content address no plan of this worker names.
@@ -233,7 +233,7 @@ describe("a host manifest from an older worker of the v1 cutover (mixed fleet)",
       };
 
       await tamper("__preagg__", 1000);
-      await tamper("__rollup__", 2000);
+      await tamper("__orders_by_category__p", 2000);
 
       // Handed only the older entry: live.
       await bindHostManifest(olderEntries);

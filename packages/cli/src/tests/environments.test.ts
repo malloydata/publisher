@@ -1,16 +1,30 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { EOL } from "os";
+import {
+  describe,
+  test,
+  expect,
+  mock,
+  beforeEach,
+  afterEach,
+  spyOn,
+} from "bun:test";
 import { PublisherClient } from "../api/client";
 import * as environmentCommands from "../commands/environments";
 
 describe("Environment Commands", () => {
-  let consoleLogSpy: any;
+  // logOutput writes through a winston Console transport, which goes straight
+  // to process.stdout.write, not through console.log, so capture stdout.
+  let stdoutSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    consoleLogSpy = mock(() => {});
-    console.log = consoleLogSpy as any;
+    stdoutSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
   });
 
   test("listEnvironments should call listEnvironments API", async () => {
@@ -49,8 +63,8 @@ describe("Environment Commands", () => {
     await environmentCommands.getEnvironment(mockClient, "my-environment");
 
     expect(mockClient.getEnvironment).toHaveBeenCalledWith("my-environment");
-    expect(consoleLogSpy).toHaveBeenCalledWith(
-      JSON.stringify(environment, null, 2),
+    expect(stdoutSpy).toHaveBeenCalledWith(
+      JSON.stringify(environment, null, 2) + EOL,
     );
   });
 

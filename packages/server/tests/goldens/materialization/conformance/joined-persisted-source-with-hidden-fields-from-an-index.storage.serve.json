@@ -18,27 +18,27 @@
     "warnings": [
       {
         "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "message": "This source's `include` hides `home_region` (private or internal), which its v1 `storage=` table does not store: such a table stores public columns only. The served copy leaves the source as written, so it answers live. To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`.",
         "subject": "customer_dim"
       },
       {
         "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "message": "This source's `include` hides `home_region` (private or internal), which its v1 `storage=` table does not store: such a table stores public columns only. The served copy leaves the source as written, so it answers live. To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`.",
         "subject": "customer_dim"
       },
       {
         "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
         "subject": "order_facts"
       },
       {
         "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "message": "This source's `include` hides `home_region` (private or internal), which its v1 `storage=` table does not store: such a table stores public columns only. The served copy leaves the source as written, so it answers live. To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`.",
         "subject": "customer_dim"
       },
       {
         "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
+        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
         "subject": "order_facts"
       }
     ]
@@ -91,10 +91,10 @@
       "path": {
         "considered": [
           {
-            "code": "served-copy-not-served",
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "CROSS_CONNECTION",
             "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
           }
         ],
@@ -237,10 +237,10 @@
       "path": {
         "considered": [
           {
-            "code": "served-copy-not-served",
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "CROSS_CONNECTION",
             "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
           }
         ],
