@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import {
    NAME_VIEW_MARK,
    nameViewComment,
+   viewDefinitionReadsOnly,
    nameViewDialectSupported,
    nameViewDropSql,
    nameViewOwner,
@@ -166,7 +167,9 @@ describe("pointing the view, per dialect", () => {
       const was = `'${nameViewComment({ target: "s.t_g1", owner: OWNER })}'`;
       expect(ddl.fallback).toBe(
          [
-            `DO $guard$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c ` +
+            `DO $guard$ BEGIN IF to_regclass('"s"."v"') IS NOT NULL THEN ` +
+               `EXECUTE 'LOCK TABLE ' || '"s"."v"' || ' IN ACCESS EXCLUSIVE MODE'; END IF; ` +
+               `IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c ` +
                `WHERE c.oid = to_regclass('"s"."v"') AND c.relkind = 'v' ` +
                `AND obj_description(c.oid, 'pg_class') = ${was}) ` +
                `THEN RAISE EXCEPTION 'the name= view % is not as this package left it', '"s"."v"'; ` +
@@ -188,7 +191,9 @@ describe("pointing the view, per dialect", () => {
          "postgres",
       );
       expect(fresh.fallback!.split("\n")[0]).toBe(
-         `DO $guard$ BEGIN IF to_regclass('"s"."v"') IS NOT NULL ` +
+         `DO $guard$ BEGIN IF to_regclass('"s"."v"') IS NOT NULL THEN ` +
+            `EXECUTE 'LOCK TABLE ' || '"s"."v"' || ' IN ACCESS EXCLUSIVE MODE'; END IF; ` +
+            `IF to_regclass('"s"."v"') IS NOT NULL ` +
             `THEN RAISE EXCEPTION 'the name= view % is not as this package left it', '"s"."v"'; ` +
             `END IF; END $guard$;`,
       );
@@ -404,5 +409,37 @@ describe("reading what holds a name", () => {
             { kind: "TABLE", comment: markOf("t") },
          ]),
       ).toEqual({ state: "taken", kind: "TABLE" });
+   });
+});
+
+describe("whether an unmarked view's definition is the one Publisher writes", () => {
+   it("reads exactly the target, however the warehouse spells it back", () => {
+      for (const definition of [
+         'CREATE VIEW mz.flights_all AS SELECT * FROM "mz"."flights_g1";',
+         " SELECT flights_g1.x,\n    flights_g1.y\n   FROM mz.flights_g1;",
+         'create or replace view MZ.FLIGHTS_ALL comment=\'x\' as SELECT * FROM "DB"."MZ"."FLIGHTS_G1"',
+         "SELECT * FROM `proj`.`mz`.`flights_g1`",
+         "SELECT * FROM [mz].[flights_g1]",
+      ]) {
+         expect(viewDefinitionReadsOnly(definition, "mz.flights_g1")).toBe(
+            true,
+         );
+      }
+   });
+
+   it("never one reading another table, more than one, or nothing", () => {
+      for (const definition of [
+         "SELECT * FROM mz.flights_g2",
+         "SELECT * FROM other.flights_g1",
+         "SELECT * FROM mz.flights_g1 JOIN mz.t ON true",
+         "SELECT * FROM mz.flights_g1, mz.t",
+         "SELECT * FROM (SELECT * FROM mz.flights_g1) s",
+         "SELECT 42 AS x",
+         null,
+      ]) {
+         expect(viewDefinitionReadsOnly(definition, "mz.flights_g1")).toBe(
+            false,
+         );
+      }
    });
 });

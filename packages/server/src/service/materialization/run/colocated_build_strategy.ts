@@ -328,6 +328,9 @@ export async function swapIntoPlace(args: SwapArgs): Promise<void> {
       // The swap left the name as it found it (empty): put back what
       // `before` removed.
       try {
+         // The name was left empty, so the view is put back only into an
+         // empty name: another writer that took it meanwhile keeps it.
+         await aside.checkRestore?.(run);
          for (const sql of aside.restore) await run(sql);
       } catch (restoreErr) {
          logger.error(

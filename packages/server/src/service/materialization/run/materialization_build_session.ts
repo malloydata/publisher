@@ -2037,12 +2037,6 @@ export async function writePartitionedTable<T>(
 }
 
 /**
- * Run a build's statements as one transaction: COMMIT when `body` returns,
- * ROLLBACK when it throws, which restores the previous generation of the
- * table. A failed rollback is logged, never raised over the error that caused
- * it.
- */
-/**
  * In a storage build's transaction, before it drops this package's own
  * `name=` view to put the table in its place: the name must still hold the
  * view carrying `expected`, the mark preflight found before the build.
@@ -2062,6 +2056,12 @@ async function assertOwnViewStill(
    );
 }
 
+/**
+ * Run a build's statements as one transaction: COMMIT when `body` returns,
+ * ROLLBACK when it throws, which restores the previous generation of the
+ * table. A failed rollback is logged, never raised over the error that caused
+ * it.
+ */
 async function inTransaction<T>(
    session: DuckDBConnection,
    quotedTablePath: string,

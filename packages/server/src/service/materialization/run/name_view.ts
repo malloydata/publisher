@@ -31,6 +31,8 @@ import {
 import {
    assertNameViewHolds,
    nameViewComment,
+   nameViewDefinitionSql,
+   nameViewDropIfDefinitionSql,
    nameViewGuardSql,
    nameViewDialectSupported,
    nameViewDropSql,
@@ -42,6 +44,7 @@ import {
    NameViewUnsupportedError,
    pathSegments,
    sqlString,
+   viewDefinitionReadsOnly,
    type NameViewMark,
    type NameViewSlot,
    type NameViewTableReplaceDdl,
@@ -646,6 +649,60 @@ export async function replaceOwnTableWithView(
 }
 
 /**
+ * When the view at `viewName` carries no mark Publisher can read (a
+ * warehouse that drops or rewrites a view's comment) but its definition is
+ * the one this package wrote, reading exactly `target`: drop it, and say so.
+ * On DuckDB and Postgres the drop's own transaction checks the definition is
+ * still the one read; elsewhere it follows the read. False, nothing dropped,
+ * for any other view, or when the definition cannot be read.
+ */
+async function dropOwnUnmarkedView(
+   site: NameViewSite,
+   viewName: string,
+   target: string,
+): Promise<boolean> {
+   const segments = site.segments(viewName);
+   let definition: unknown;
+   try {
+      const raw = await probeNameView(site, viewName);
+      if (raw.state !== "taken" || raw.kind !== "VIEW") return false;
+      definition = (
+         await site.run(nameViewDefinitionSql(segments, site.dialect))
+      )[0]?.definition;
+   } catch {
+      return false;
+   }
+   if (
+      typeof definition !== "string" ||
+      !viewDefinitionReadsOnly(definition, target)
+   ) {
+      return false;
+   }
+   const guarded = nameViewDropIfDefinitionSql(
+      segments,
+      definition,
+      site.dialect,
+   );
+   if (!guarded) {
+      await site.run(nameViewDropSql(segments, site.dialect));
+      return true;
+   }
+   try {
+      await site.run(guarded.sql);
+   } catch (err) {
+      if (guarded.rollback) {
+         try {
+            await site.run(guarded.rollback);
+         } catch {
+            // Usually no transaction was left open.
+         }
+      }
+      throw err;
+   }
+   return true;
+}
+
+/**
  * Drop the view at `intent`'s name and rename the aside table back, provided
  * a fresh probe finds the name empty or holding this package's view of
  * `intent.physicalTableName`. Anything else there (a view another package or
@@ -669,6 +726,22 @@ async function putTableBack(
       );
       const viewIsOurs =
          slot.state === "ours" && slot.target === intent.physicalTableName;
+      // A view whose mark did not read back but which reads exactly the
+      // generation this replacement pointed it at is the one it made, on a
+      // warehouse that drops or rewrites a view's comment: dropped (only
+      // while its definition is unchanged) and the table renamed back.
+      if (!viewIsOurs && slot.state === "taken") {
+         if (
+            await dropOwnUnmarkedView(
+               site,
+               intent.viewName,
+               intent.physicalTableName,
+            )
+         ) {
+            await site.run(renameBack(site, intent, aside));
+            return true;
+         }
+      }
       if (!viewIsOurs && slot.state !== "empty") {
          logger.error(
             "A name= view's name no longer holds this package's view; it is left as it is, and the table it replaced is kept under its aside name",
@@ -678,7 +751,13 @@ async function putTableBack(
       }
       if (ddl.transactional) {
          try {
-            await site.run(ddl.restore);
+            await site.run(
+               ddl.restore(
+                  viewIsOurs
+                     ? { target: intent.physicalTableName, owner: intent.owner }
+                     : undefined,
+               ),
+            );
          } catch (err) {
             if (ddl.rollback) {
                try {
@@ -816,11 +895,12 @@ export interface SwapDependents {
     * For a swap that is not one transaction (it renames the served table
     * aside): `check` runs first and throws when the name no longer holds the
     * view probed before the build, then `before`, and `restore`
-    * (best-effort) when the swap then fails. Only {@link viewToTableSwap}
-    * sets it.
+    * (best-effort) when the swap then fails, once `checkRestore` finds the
+    * name still empty. Only {@link viewToTableSwap} sets it.
     */
    aside?: {
       check?: (run: (sql: string) => Promise<unknown>) => Promise<void>;
+      checkRestore?: (run: (sql: string) => Promise<unknown>) => Promise<void>;
       before: string[];
       restore: string[];
    };
@@ -1057,6 +1137,8 @@ export function viewToTableSwap(
       ],
       aside: {
          check: (run) => assertNameViewHolds(run, segments, expected, dialect),
+         checkRestore: (run) =>
+            assertNameViewHolds(run, segments, undefined, dialect),
          before: [drop],
          restore: [
             nameViewReplaceDdl(
@@ -1348,6 +1430,27 @@ async function publishNameView(
                after.state !== "ours" ||
                after.target !== intent.physicalTableName
             ) {
+               // The view this call wrote, on a warehouse that drops or
+               // rewrites a view's comment: no later probe could recognize
+               // it, so the next build would find its own view taken and
+               // refuse the source. Dropped again, while its definition is
+               // still exactly the one that reads this run's table.
+               if (
+                  after.state === "taken" &&
+                  (await dropOwnUnmarkedView(
+                     site,
+                     intent.viewName,
+                     intent.physicalTableName,
+                  ))
+               ) {
+                  return {
+                     ...intent,
+                     outcome: "failed",
+                     message:
+                        `the view's mark did not read back from ` +
+                        `'${intent.viewName}', so the view was dropped again`,
+                  };
+               }
                return {
                   ...intent,
                   outcome: "failed",

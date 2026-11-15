@@ -4,6 +4,7 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { PostgresConnection } from "@malloydata/db-postgres";
+import { Client as PgClient } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import {
    preflightNameView,
    probeNameView,
    publishNameViews,
+   restoreNameViews,
    swapDependentsFor,
    viewToTableSwap,
    type NameViewContext,
@@ -50,20 +52,27 @@ type Conn = Pick<MalloyConnection, "dialectName" | "runSQL">;
 /**
  * `conn`, but once a statement matching `after` has run, `act` runs before
  * the next statement (or, given `fail`, the next statement throws instead of
- * running). Statements are recorded.
+ * running). With `before`, `act` runs instead right before the first
+ * statement matching it. Statements are recorded.
  */
 function seam(
    conn: Conn,
    after: RegExp,
-   hook: { act?: () => Promise<void>; fail?: boolean } = {},
+   hook: { act?: () => Promise<void>; fail?: boolean; before?: RegExp } = {},
 ) {
    const statements: string[] = [];
    let armed = false;
+   let fired = false;
    const wrapped = {
       name: "wh",
       dialectName: conn.dialectName,
       runSQL: async (sql: string, options?: unknown) => {
-         if (armed) {
+         if (hook.before) {
+            if (!fired && hook.before.test(sql)) {
+               fired = true;
+               await hook.act?.();
+            }
+         } else if (armed) {
             armed = false;
             if (hook.fail) {
                statements.push(`(refused) ${sql}`);
@@ -73,7 +82,10 @@ function seam(
          }
          statements.push(sql);
          const result = await conn.runSQL(sql, options as never);
-         if (after.test(sql)) armed = true;
+         if (!fired && after.test(sql)) {
+            armed = true;
+            fired = true;
+         }
          return result;
       },
    };
@@ -412,7 +424,143 @@ for (const engine of engines) {
             });
          }
 
+         it("a view whose mark the warehouse drops, but that reads this run's table, is dropped again", async () => {
+            // The warehouse keeps the view and loses its comment.
+            const { wrapped } = seam(conn, /CREATE OR REPLACE VIEW/, {
+               act: async () => {
+                  await run(`COMMENT ON VIEW ${VIEW} IS NULL`);
+               },
+            });
+            const records = await publishNameViews(
+               [intentFor(G1)],
+               contextFor(wrapped),
+            );
+            expect(records[0].outcome).toBe("failed");
+            expect(records[0].message).toMatch(/dropped again/);
+            // Nothing is left that the next build would find taken.
+            expect(await probe()).toEqual({ state: "empty" });
+         });
+
+         it("an unmarked view that reads another table is never taken for this run's", async () => {
+            const { wrapped } = seam(conn, /CREATE OR REPLACE VIEW/, {
+               act: async () => {
+                  await run(`DROP VIEW IF EXISTS ${VIEW}`);
+                  await run(`CREATE VIEW ${VIEW} AS SELECT * FROM ${G2}`);
+               },
+            });
+            const records = await publishNameViews(
+               [intentFor(G1)],
+               contextFor(wrapped),
+            );
+            expect(records[0].outcome).toBe("failed");
+            expect(records[0].message).toMatch(/left as it is/);
+            expect(await xs(VIEW)).toEqual([2]);
+         });
+
+         it("a replacement whose view loses its mark puts this package's table back", async () => {
+            await run(`CREATE TABLE ${VIEW} AS SELECT 0 AS x`);
+            const own = { materializationId: "m1", sourceEntityId: "old" };
+            const { wrapped } = seam(conn, /RENAME TO/, {
+               act: async () => {
+                  await run(`COMMENT ON VIEW ${VIEW} IS NULL`);
+               },
+            });
+            const records = await publishNameViews(
+               [intentFor(G1)],
+               contextFor(wrapped),
+               new Map([[nameViewKey(intentFor(G1)), own]]),
+            );
+            expect(records[0].outcome).toBe("failed");
+            // The table is at the name again, not stranded aside.
+            expect(await probe()).toEqual({ state: "taken", kind: "TABLE" });
+            expect(await xs(VIEW)).toEqual([0]);
+         });
+
+         it("a failed commit's restore never drops a view another package put at the name after its probe", async () => {
+            await run(`CREATE TABLE ${VIEW} AS SELECT 0 AS x`);
+            const own = { materializationId: "m1", sourceEntityId: "old" };
+            const records = await publishNameViews(
+               [intentFor(G1)],
+               contextFor(conn),
+               new Map([[nameViewKey(intentFor(G1)), own]]),
+            );
+            expect(records[0].outcome).toBe("replaced_own_table");
+            // Right before the restore's own transaction, after every probe.
+            const { wrapped } = seam(conn, /^$/, {
+               before: /RENAME TO/,
+               act: () => replaceView(OTHER),
+            });
+            const restored = await restoreNameViews(
+               records,
+               contextFor(wrapped),
+            );
+            expect(restored.map((r) => r.outcome)).toEqual(["restore_failed"]);
+            expect(await probe()).toMatchObject({ owner: OTHER });
+            const aside = `${VIEW}${backupSuffix(own.sourceEntityId)}`;
+            expect(await xs(aside)).toEqual([0]);
+         });
+
          if (engine.dialect === "postgres") {
+            it("the guard waits for another session's change in flight, then sees it", async () => {
+               await publishNameViews([intentFor(G1)], contextFor(conn));
+               const atName = { ...intentFor(VIEW), physicalTableName: VIEW };
+               const own = await ownViewAtTable(atName, contextFor(conn));
+               await run(`CREATE TABLE ${VIEW}_s AS SELECT 10 AS x`);
+               // Another session repoints the view at the name, mark and
+               // all, and has not committed yet: it holds the view's lock.
+               const other = new PgClient({ connectionString: pgUrl! });
+               await other.connect();
+               const watcher = new PgClient({ connectionString: pgUrl! });
+               await watcher.connect();
+               try {
+                  await other.query("BEGIN");
+                  await other.query(
+                     `CREATE OR REPLACE VIEW ${VIEW} AS SELECT 42 AS x`,
+                  );
+                  await other.query(
+                     `COMMENT ON VIEW ${VIEW} IS ${lit(
+                        nameViewComment({
+                           target: "elsewhere.t",
+                           owner: OTHER,
+                        }),
+                     )}`,
+                  );
+                  const swap = swapIntoPlace({
+                     connection: conn as never,
+                     runOptions: {},
+                     dialect: "postgres",
+                     physicalTableName: VIEW,
+                     stagingTableName: `${VIEW}_s`,
+                     backupTableName: `${VIEW}_o`,
+                     connectionName: "wh",
+                     swapDependents: viewToTableSwap(
+                        atName,
+                        own!.target,
+                        own!.dialect,
+                     ),
+                  }).then(
+                     () => "swapped",
+                     (err: Error) => err.message,
+                  );
+                  // Commit only once the swap is waiting on the view's lock.
+                  for (let i = 0; i < 200; i++) {
+                     const { rows } = await watcher.query(
+                        "SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted",
+                     );
+                     if (rows[0].n > 0) break;
+                     await Bun.sleep(25);
+                  }
+                  await other.query("COMMIT");
+                  expect(await swap).toMatch(/not as this package left it/);
+               } finally {
+                  await other.end();
+                  await watcher.end();
+               }
+               // The other session's view stands, as it committed it.
+               expect(await probe()).toMatchObject({ owner: OTHER });
+               expect(await xs(VIEW)).toEqual([42]);
+            });
+
             it("a rebuild of the table the view reads never replaces a view another package put at the name after preflight", async () => {
                await publishNameViews([intentFor(G1)], contextFor(conn));
                const probed = await preflightNameView(

@@ -41,6 +41,7 @@ import { ownedTableComment } from "./table_ownership";
 import {
    NameViewChangedError,
    nameViewComment,
+   nameViewGuardSql,
    nameViewReplaceTableDdl,
    renameTableSql,
 } from "./name_view_sql";
@@ -206,7 +207,23 @@ describe("the DDL that puts a view in place of a table", () => {
       );
 
    it("is one transaction on DuckDB and Postgres, and keeps the old table aside", () => {
-      expect(ddl("duckdb")).toEqual({
+      const ours = { target: "mz.summary_g1", owner: OWNER };
+      const duck = ddl("duckdb");
+      if (!duck.transactional) throw new Error("not transactional");
+      // The restore confirms, in its transaction, what the probe found.
+      expect(duck.restore(ours)).toBe(
+         [
+            "BEGIN TRANSACTION;",
+            `${nameViewGuardSql(["mz", "summary"], ours, "duckdb")};`,
+            'DROP VIEW IF EXISTS "mz"."summary";',
+            'ALTER TABLE "mz"."summary_o1" RENAME TO "summary";',
+            "COMMIT;",
+         ].join("\n"),
+      );
+      expect(duck.restore(undefined)).toContain(
+         nameViewGuardSql(["mz", "summary"], undefined, "duckdb"),
+      );
+      expect({ ...duck, restore: undefined }).toEqual({
          transactional: true,
          replace: [
             "BEGIN TRANSACTION;",
@@ -215,12 +232,7 @@ describe("the DDL that puts a view in place of a table", () => {
             `COMMENT ON VIEW "mz"."summary" IS '${mark("mz.summary_g1")}';`,
             "COMMIT;",
          ].join("\n"),
-         restore: [
-            "BEGIN TRANSACTION;",
-            'DROP VIEW IF EXISTS "mz"."summary";',
-            'ALTER TABLE "mz"."summary_o1" RENAME TO "summary";',
-            "COMMIT;",
-         ].join("\n"),
+         restore: undefined,
          rollback: "ROLLBACK",
          dropAside: 'DROP TABLE IF EXISTS "mz"."summary_o1"',
       });
@@ -234,8 +246,9 @@ describe("the DDL that puts a view in place of a table", () => {
          'CREATE VIEW "mz"."summary" AS SELECT * FROM "mz"."summary_g1";',
          `COMMENT ON VIEW "mz"."summary" IS '${mark("mz.summary_g1")}';`,
       ]);
-      expect(postgres.restore).toBe(
+      expect(postgres.restore(ours)).toBe(
          [
+            `${nameViewGuardSql(["mz", "summary"], ours, "postgres")};`,
             'DROP VIEW IF EXISTS "mz"."summary";',
             'ALTER TABLE "mz"."summary_o1" RENAME TO "summary";',
          ].join("\n"),
@@ -966,6 +979,54 @@ describe("where DDL is not transactional", () => {
       );
       expect(records[0].outcome).toBe("failed");
       expect(held.get("mz.summary")).toEqual({ kind: "BASE TABLE" });
+   });
+
+   it("a failed swap never puts its view back over one another package put at the emptied name", async () => {
+      const { connection, held, statements } = warehouse();
+      held.set("mz.summary", {
+         kind: "VIEW",
+         comment: mark("mz.summary_g1"),
+      });
+      held.set("mz.summary_s", { kind: "BASE TABLE" });
+      // The swap's rename fails, and in that moment another package's view
+      // takes the name the swap's DROP emptied.
+      const racing = {
+         ...connection,
+         runSQL: async (sql: string) => {
+            if (/^ALTER TABLE "mz"."summary_s" RENAME/.test(sql)) {
+               held.set("mz.summary", {
+                  kind: "VIEW",
+                  comment: nameViewComment({
+                     target: "elsewhere.t",
+                     owner: "env/other",
+                  }),
+               });
+               throw new Error("refused: the rename");
+            }
+            return connection.runSQL(sql);
+         },
+      };
+      const swap = viewToTableSwap(
+         { ...intent, physicalTableName: "mz.summary" },
+         "mz.summary_g1",
+         "snowflake",
+      );
+      await expect(
+         swapIntoPlace({
+            connection: racing as never,
+            runOptions: {},
+            dialect: "snowflake",
+            physicalTableName: "mz.summary",
+            stagingTableName: "mz.summary_s",
+            backupTableName: "mz.summary_o",
+            connectionName: "wh",
+            swapDependents: swap,
+         }),
+      ).rejects.toThrow(/refused/);
+      expect(held.get("mz.summary")?.comment).toContain("env%2Fother");
+      expect(
+         statements.some((s) => s.startsWith("CREATE OR REPLACE VIEW")),
+      ).toBe(false);
    });
 
    it("a table's swap re-probes the name just before the drop, and never drops a view another package put there", async () => {

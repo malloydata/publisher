@@ -199,26 +199,7 @@ export function nameViewProbeSql(segments: string[], dialect: string): string {
    const name = segments[segments.length - 1];
    switch (dialect) {
       case "duckdb": {
-         // DuckDB resolves names case-insensitively, and a two-part name as a
-         // catalog's `main` schema or a schema of the current catalog: both
-         // are matched, so either holder is seen.
-         const match = (column: string) => {
-            const n = `lower(${column}) = lower(${lit(name)})`;
-            if (segments.length === 1) {
-               return `${n} AND database_name = current_database() AND schema_name = current_schema()`;
-            }
-            if (segments.length === 2) {
-               const a = lit(segments[0]);
-               return (
-                  `${n} AND ((lower(database_name) = lower(${a}) AND schema_name = 'main') ` +
-                  `OR (database_name = current_database() AND lower(schema_name) = lower(${a})))`
-               );
-            }
-            return (
-               `${n} AND lower(database_name) = lower(${lit(segments[0])}) ` +
-               `AND lower(schema_name) = lower(${lit(segments[1])})`
-            );
-         };
+         const match = (column: string) => duckdbNameMatch(segments, column);
          return (
             `SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND ${match("view_name")} ` +
             `UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE ${match("table_name")}`
@@ -305,6 +286,185 @@ export function nameViewProbeSql(segments: string[], dialect: string): string {
    }
 }
 
+/**
+ * DuckDB: the relation `column` names is the one `segments` names. DuckDB
+ * resolves names case-insensitively, and a two-part name as a catalog's
+ * `main` schema or a schema of the current catalog: both are matched, so
+ * either holder is seen.
+ */
+function duckdbNameMatch(segments: string[], column: string): string {
+   const lit = (v: string) => sqlString(v, "duckdb");
+   const n = `lower(${column}) = lower(${lit(segments[segments.length - 1])})`;
+   if (segments.length === 1) {
+      return `${n} AND database_name = current_database() AND schema_name = current_schema()`;
+   }
+   if (segments.length === 2) {
+      const a = lit(segments[0]);
+      return (
+         `${n} AND ((lower(database_name) = lower(${a}) AND schema_name = 'main') ` +
+         `OR (database_name = current_database() AND lower(schema_name) = lower(${a})))`
+      );
+   }
+   return (
+      `${n} AND lower(database_name) = lower(${lit(segments[0])}) ` +
+      `AND lower(schema_name) = lower(${lit(segments[1])})`
+   );
+}
+
+/**
+ * A query answering the definition of the view `segments` names, as one row
+ * with `definition` (no row when no view holds the name). Read with
+ * {@link viewDefinitionReadsOnly}, for a view whose mark did not read back:
+ * a warehouse that drops or rewrites a view's comment leaves a view this
+ * package made unrecognizable by its mark, but not by what it reads.
+ */
+export function nameViewDefinitionSql(
+   segments: string[],
+   dialect: string,
+): string {
+   const lit = (v: string) => sqlString(v, dialect);
+   const name = segments[segments.length - 1];
+   switch (dialect) {
+      case "duckdb":
+         return (
+            `SELECT sql AS definition FROM duckdb_views() ` +
+            `WHERE NOT internal AND ${duckdbNameMatch(segments, "view_name")}`
+         );
+      case "postgres": {
+         const path = lit(quotedPath(segments, dialect));
+         return (
+            `SELECT row_to_json(p) AS "row" FROM (` +
+            `SELECT pg_get_viewdef(c.oid) AS definition FROM pg_class c ` +
+            `WHERE c.oid = to_regclass(${path}) AND c.relkind = 'v') AS p`
+         );
+      }
+      case "standardsql": {
+         if (segments.length < 2) {
+            throw new NameViewUnsupportedError(
+               `a BigQuery name= view needs a dataset-qualified name, not '${name}'`,
+            );
+         }
+         const schema = `${quotedPath(segments.slice(0, -1), dialect)}.INFORMATION_SCHEMA`;
+         return (
+            `SELECT view_definition AS definition FROM ${schema}.VIEWS ` +
+            `WHERE table_name = ${lit(name)}`
+         );
+      }
+      case "snowflake": {
+         const from =
+            segments.length === 3
+               ? `${quoteIdentifier(segments[0], dialect)}.INFORMATION_SCHEMA.VIEWS`
+               : "INFORMATION_SCHEMA.VIEWS";
+         const schema =
+            segments.length === 1
+               ? "CURRENT_SCHEMA()"
+               : lit(segments[segments.length - 2]);
+         return (
+            `SELECT VIEW_DEFINITION AS "definition" FROM ${from} ` +
+            `WHERE TABLE_SCHEMA = ${schema} AND TABLE_NAME = ${lit(name)}`
+         );
+      }
+      case "databricks":
+      case "trino": {
+         const from =
+            segments.length === 3
+               ? `${quoteIdentifier(segments[0], dialect)}.information_schema.views`
+               : "information_schema.views";
+         const schema =
+            segments.length > 1
+               ? `lower(${lit(segments[segments.length - 2])})`
+               : dialect === "databricks"
+                 ? "current_schema()"
+                 : "current_schema";
+         return (
+            `SELECT view_definition AS definition FROM ${from} ` +
+            `WHERE table_schema = ${schema} AND table_name = lower(${lit(name)})`
+         );
+      }
+      case "sqlserver":
+         assertSqlServerShape(segments);
+         return (
+            `SELECT OBJECT_DEFINITION(o.object_id) AS definition FROM sys.objects o ` +
+            `WHERE o.type = 'V' AND o.object_id = OBJECT_ID(${lit(quotedPath(segments, dialect))})`
+         );
+      default:
+         throw unsupportedDialect(dialect);
+   }
+}
+
+/**
+ * Whether a view's definition is the one this package writes for a view
+ * reading `target` (`SELECT * FROM <target>`, as the warehouse may spell it
+ * back: columns expanded, identifiers unquoted or re-cased, the target more
+ * or less qualified): one FROM, no join, reading exactly that table. A view
+ * reading anything else, or more than one relation, is not.
+ */
+export function viewDefinitionReadsOnly(
+   definition: unknown,
+   target: string,
+): boolean {
+   if (typeof definition !== "string") return false;
+   const text = definition
+      .toLowerCase()
+      .replace(/["`[\]]/g, "")
+      .replace(/\s+/g, " ");
+   // A comma after the FROM target is a second relation.
+   const froms = [...text.matchAll(/\bfrom ([^\s;),]+)\s*(,?)/g)];
+   if (froms.length !== 1 || froms[0][2] || /\bjoin\b/.test(text)) {
+      return false;
+   }
+   const read = froms[0][1].split(".");
+   const want = target.toLowerCase().split(".");
+   const [shorter, longer] =
+      read.length <= want.length ? [read, want] : [want, read];
+   return shorter.every(
+      (segment, i) => segment === longer[longer.length - shorter.length + i],
+   );
+}
+
+/**
+ * Drop the view `segments` names only while its definition is still exactly
+ * `definition` (as {@link nameViewDefinitionSql} read it), checked in the
+ * drop's own transaction on DuckDB and Postgres. Undefined elsewhere: the
+ * caller drops right after its probe, the one window those dialects leave.
+ */
+export function nameViewDropIfDefinitionSql(
+   segments: string[],
+   definition: string,
+   dialect: string,
+): { sql: string; rollback?: string } | undefined {
+   const drop = nameViewDropSql(segments, dialect);
+   switch (dialect) {
+      case "postgres": {
+         const path = sqlString(quotedPath(segments, dialect), dialect);
+         const guard =
+            `DO $guard$ BEGIN IF to_regclass(${path}) IS NOT NULL THEN ` +
+            `EXECUTE 'LOCK TABLE ' || ${path} || ' IN ACCESS EXCLUSIVE MODE'; END IF; ` +
+            `IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c ` +
+            `WHERE c.oid = to_regclass(${path}) AND c.relkind = 'v' ` +
+            `AND pg_get_viewdef(c.oid) = ${sqlString(definition, dialect)}) ` +
+            `THEN RAISE EXCEPTION 'the name= view % is not as this package left it', ${path}; ` +
+            `END IF; END $guard$`;
+         return { sql: `${guard};\n${drop};` };
+      }
+      case "duckdb": {
+         const guard =
+            `SELECT error(${sqlString(viewChangedMessage(segments, dialect), dialect)}) ` +
+            `FROM (SELECT 1 FROM duckdb_views() WHERE NOT internal ` +
+            `AND ${duckdbNameMatch(segments, "view_name")} ` +
+            `AND sql = ${sqlString(definition, dialect)} HAVING count(*) = 0) g`;
+         return {
+            sql: ["BEGIN TRANSACTION", guard, drop, "COMMIT"]
+               .map((x) => `${x};`)
+               .join("\n"),
+            rollback: "ROLLBACK",
+         };
+      }
+      default:
+         return undefined;
+   }
+}
+
 /** What holds a `name=`: nothing, a Publisher view (and the table it reads), or something else. */
 export type NameViewSlot =
    | { state: "empty" }
@@ -373,8 +533,17 @@ function postgresExpectedViewGuard(
         `AND obj_description(c.oid, 'pg_class') = ` +
         `${sqlString(nameViewComment(expected), "postgres")})`
       : `to_regclass(${path}) IS NOT NULL`;
+   // The view is locked before it is checked, so a change another session
+   // has in flight (an uncommitted CREATE OR REPLACE and COMMENT) is waited
+   // for and then seen, rather than passed and overwritten once it commits:
+   // the check runs with a fresh snapshot after the lock is granted, and the
+   // lock is held until this transaction ends. Nothing at the name: nothing
+   // to lock, and a creator in flight then makes this transaction's own
+   // CREATE fail instead.
    return (
-      `DO $guard$ BEGIN IF ${holds} ` +
+      `DO $guard$ BEGIN IF to_regclass(${path}) IS NOT NULL THEN ` +
+      `EXECUTE 'LOCK TABLE ' || ${path} || ' IN ACCESS EXCLUSIVE MODE'; END IF; ` +
+      `IF ${holds} ` +
       `THEN RAISE EXCEPTION 'the name= view % is not as this package left it', ${path}; ` +
       `END IF; END $guard$`
    );
@@ -606,7 +775,9 @@ function nameViewReplaceIsTransactional(dialect: string): boolean {
  *
  * - `transactional` (DuckDB, Postgres): `replace` renames the table aside,
  *   makes the view and comments it, as one transaction in one call, and
- *   `restore` drops the view and renames the table back the same way;
+ *   `restore` drops the view and renames the table back the same way, once
+ *   its transaction confirms the name holds `expected` (this package's view
+ *   carrying that mark, or nothing);
  *   `rollback` (when given) closes a transaction a failed call left open. A
  *   reader sees the old table or the view, never neither. On Postgres a
  *   view a reader built over the old table refuses the replacement (it
@@ -621,7 +792,7 @@ export type NameViewTableReplaceDdl =
    | {
         transactional: true;
         replace: string;
-        restore: string;
+        restore: (expected: NameViewMark | undefined) => string;
         rollback?: string;
         dropAside: string;
      }
@@ -696,7 +867,14 @@ export function nameViewReplaceTableDdl(
          `CREATE VIEW ${view} AS SELECT * FROM ${targetSql}`,
          `COMMENT ON VIEW ${view} IS ${sqlString(nameViewComment(mark), dialect)}`,
       ];
-      const restore = [`DROP VIEW IF EXISTS ${view}`, moveBack];
+      // The view a restore drops is checked again in its transaction: this
+      // package's view of the new generation, or nothing, as the caller's
+      // probe found the name.
+      const restore = (expected: NameViewMark | undefined) => [
+         nameViewGuardSql(segments, expected, dialect),
+         `DROP VIEW IF EXISTS ${view}`,
+         moveBack,
+      ];
       // DuckDB autocommits each statement of a string: bracketed. Postgres
       // runs a multi-statement string as one implicit transaction (an
       // explicit BEGIN would leave an aborted one open on failure).
@@ -710,7 +888,7 @@ export function nameViewReplaceTableDdl(
       return {
          transactional: true,
          replace: oneCall(replace),
-         restore: oneCall(restore),
+         restore: (expected) => oneCall(restore(expected)),
          ...(dialect === "duckdb" ? { rollback: "ROLLBACK" } : {}),
          dropAside,
       };

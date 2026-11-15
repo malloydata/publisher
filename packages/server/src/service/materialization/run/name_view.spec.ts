@@ -615,10 +615,14 @@ describe("on a colocated DuckDB connection", () => {
 });
 
 describe("a view whose mark does not read back", () => {
-   it("is left as it is and reported: nothing unverified is dropped", async () => {
+   /**
+    * A warehouse that keeps the view but loses its comment. Its definition
+    * reads `reads`: the run's own table, or another (an author's view that
+    * replaced it since).
+    */
+   function warehouse(reads: string) {
       const statements: string[] = [];
       let made = false;
-      // A warehouse that keeps the view but loses its comment.
       const connection = {
          name: "wh",
          dialectName: "duckdb",
@@ -627,12 +631,26 @@ describe("a view whose mark does not read back", () => {
             if (sql.startsWith("SELECT 'VIEW'")) {
                return { rows: made ? [{ kind: "VIEW", comment: null }] : [] };
             }
+            if (sql.startsWith("SELECT sql AS definition")) {
+               return {
+                  rows: made
+                     ? [
+                          {
+                             definition: `CREATE VIEW mz.flights_all AS SELECT * FROM ${reads};`,
+                          },
+                       ]
+                     : [],
+               };
+            }
             if (sql.includes("CREATE OR REPLACE VIEW")) made = true;
-            if (sql.startsWith("DROP VIEW")) made = false;
+            if (sql.includes("DROP VIEW")) made = false;
             return { rows: [] };
          },
       };
-      const records = await publishNameViews(
+      return { connection, statements, isMade: () => made };
+   }
+   const publish = (connection: unknown) =>
+      publishNameViews(
          [
             {
                sourceEntityId: "addr",
@@ -649,12 +667,21 @@ describe("a view whose mark does not read back", () => {
             environmentPath: "",
          },
       );
+
+   it("is dropped again when it reads exactly this run's table, so the next build does not find it taken", async () => {
+      const { connection, isMade } = warehouse('"mz"."flights_all_g1"');
+      const records = await publish(connection);
       expect(records[0].outcome).toBe("failed");
-      expect(records[0].message).toMatch(/did not read back/);
+      expect(records[0].message).toMatch(/dropped again/);
+      expect(isMade()).toBe(false);
+   });
+
+   it("is left as it is and reported when it reads anything else", async () => {
+      const { connection, statements, isMade } = warehouse("mz.elsewhere");
+      const records = await publish(connection);
+      expect(records[0].outcome).toBe("failed");
       expect(records[0].message).toMatch(/left as it is/);
-      // The unmarked view may be this call's own, or another writer's that
-      // replaced it since: either way it is not dropped.
-      expect(made).toBe(true);
-      expect(statements.some((s) => s.startsWith("DROP VIEW"))).toBe(false);
+      expect(isMade()).toBe(true);
+      expect(statements.some((s) => s.includes("DROP VIEW"))).toBe(false);
    });
 });
