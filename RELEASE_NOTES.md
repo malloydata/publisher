@@ -21,6 +21,26 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — an auto-run reports `MANIFEST_FILE_READY` only once its package serves the new tables
+
+A materialization auto-run used to report `MANIFEST_FILE_READY` and then load its manifest into the package. A caller that waited for `MANIFEST_FILE_READY` (the REST `GET …/materializations/{id}`, `malloy-pub materialize --wait`, the Console) and queried at once could be answered live, or from the previous table, until the load finished.
+
+Now the run records its manifest when it reaches `MANIFEST_ROWS_READY`, loads it into its package, and only then reports `MANIFEST_FILE_READY`, so a query sent after it is answered from the new tables. The load and that last move happen under the package's lock, so a reload or publish that lands meanwhile waits for them and binds the new manifest, not the one before it.
+
+The run's `metadata` says how the load went: `autoLoad: "loaded"`, or `autoLoad: "failed"` with `autoLoadStep` (`reload`, `bind` or `timeout`) and `autoLoadError`. A failed load also sets the run's `error` ("Built, but not served …"). Such a run still settles at `MANIFEST_FILE_READY`, since its tables were built:
+
+- `malloy-pub materialize --wait` prints "built but not served" and exits **2** for it, where it used to print "ready" and exit 0. A script that treats any non-zero exit as a failed build should treat 2 as "built, not yet served".
+- The Console shows it as a warning, "Built, not served", not as done.
+- What the package serves meanwhile depends on the step: after `reload` it keeps the models it had; after `bind` the run's colocated tables are served and its `storage=` ones are not. The package's next reload or restart binds the run's manifest either way.
+
+Also:
+
+- A load that has not finished after ten minutes settles the run as `autoLoad: "failed"`, `autoLoadStep: "timeout"`, so a hung load no longer holds the package's build slot until a restart.
+- A stop that lands while the manifest loads does not cut the load short; the run settles at `MANIFEST_FILE_READY` with `stopIgnored: true`.
+- A run's `manifest` is now present from `MANIFEST_ROWS_READY`, not only from `MANIFEST_FILE_READY`.
+- Other loaded versions that share the run's tables (`scope: "package"`) are rebound just after the run reports `MANIFEST_FILE_READY`, as before.
+- An orchestrated run never loads its manifest (the host distributes it), so for it nothing changes.
+- No status is added. `MANIFEST_ROWS_READY` now also spans the load, so a run can be seen there a little longer.
 ## [Unreleased] — `#@ persist` on a named query stores its result (`PUBLISHER_MATERIALIZE`)
 
 With `PUBLISHER_MATERIALIZE` on (the default), `#@ persist` on a top-level `query:` builds the query's result as a generated source, `<query>__query`, in the same companion as the file's persisted views, colocated or with `storage=`. Its table answers exactly the calls of the query, and answers them equal to live:

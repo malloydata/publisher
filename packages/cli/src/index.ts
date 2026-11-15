@@ -451,7 +451,10 @@ program
     "--reseed",
     "Rebuild incremental sources from scratch, discarding their covered_through boundary (--force-refresh does NOT do this)",
   )
-  .option("--wait", "Poll until the run settles (build complete or failed)")
+  .option(
+    "--wait",
+    "Poll until the run settles (built and served, built but not served (exit 2), or failed)",
+  )
   .option(
     "--timeout <seconds>",
     "With --wait, seconds to wait before giving up (default 120)",
