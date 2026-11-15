@@ -99,8 +99,12 @@ import {
    renameBuildSourceIDs,
    withoutSourceIDs,
    sourceBuildsOf,
-   type SourceBuild,
 } from "./addressing";
+import {
+   materializePlansOf,
+   type CompiledBuildPlan as PlannedBuild,
+   type SourceBuild,
+} from "../domain/compiled_build_plan";
 import {
    collectColocatedSourceEligibility,
    collectSourceEligibility,
@@ -130,9 +134,12 @@ export {
    resolveConnectionDigests,
    setTestAddressForTarget,
    sourceBuildsOf,
+} from "./addressing";
+export {
+   materializePlansOf,
    sourcesInBuildOrder,
    type SourceBuild,
-} from "./addressing";
+} from "../domain/compiled_build_plan";
 export {
    tierGateInputs,
    type ColocatedSourceEligibility,
@@ -160,42 +167,10 @@ export type { WirePackageMaterialization };
 export type { BuildPlanPackage };
 
 /**
- * Result of compiling a package's persist sources. The wire {@link BuildPlan} is
- * a projection of this (see {@link deriveBuildPlan}); the build engine consumes
- * the full structure.
+ * A package's compiled build plan (`domain/compiled_build_plan.ts`), its
+ * annotation findings typed as the planner reports them.
  */
-export interface CompiledBuildPlan {
-   builds: SourceBuild[];
-   /**
-    * sourceID -> the table planned for it, one per planned source, with its
-    * kind fixed here: an authored `#@ persist` source, a generated
-    * `#(materialize)` build source (under the author's sourceID), a rollup
-    * or a persisted view.
-    */
-   tables: Record<string, TablePlan>;
-   connectionDigests: Record<string, string>;
-   connections: Map<string, MalloyConnection>;
-   /**
-    * `#@ persist` sources Malloy's build walk did NOT recognize as persistable
-    * (see {@link detectDroppedPersistSources}). Callers surface these as a
-    * load-time warning and a hard build failure so the annotation is never a
-    * silent no-op.
-    */
-   droppedPersistSources?: { name: string; modelPath: string }[];
-   /** Findings on the authored `#@` annotations (see annotation_reader). */
-   annotationFindings?: PackageAnnotationFinding[];
-   /**
-    * Each `#(materialize)` uniqueness check's compiler over a run's manifest,
-    * by `keyCheckCompilerKey`; set only on a plan compiled on the thread
-    * that builds (`build_plan_compile.ts`).
-    */
-   keyCheckCompilers?: ReadonlyMap<string, KeyCheckCompiler>;
-   /**
-    * Sources planning left out because it FAILED (a companion that did not
-    * compile), for the wire plan's `omittedSources`. Absent: none.
-    */
-   omittedSources?: Omission[];
-}
+export type CompiledBuildPlan = PlannedBuild<PackageAnnotationFinding>;
 
 function wireTerm(term: DynamicTerm): WireStrippedTerm {
    return { code: term.code, givens: term.givens };
@@ -1801,17 +1776,6 @@ export function deriveBuildPlanOutcome(
          .sort(),
       refusedRollups: refusedRollupsOf(plan, compiled.tables),
    };
-}
-
-/** The `#(materialize)` plans of `tables`, by the author's sourceID. */
-export function materializePlansOf(
-   tables: Readonly<Record<string, Pick<TablePlan, "materialize">>>,
-): Record<string, MaterializePlan> {
-   return Object.fromEntries(
-      Object.entries(tables).flatMap(([sourceID, table]) =>
-         table.materialize ? [[sourceID, table.materialize]] : [],
-      ),
-   );
 }
 
 /** {@link BuildPlanOutcome.refusedRollups}. */

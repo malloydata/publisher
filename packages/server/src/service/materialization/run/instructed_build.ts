@@ -10,7 +10,7 @@ import {
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
-import type { ParentKeyCheck, RollupKeyCheck } from "../plan/rollup_plan";
+import type { ParentKeyCheck, RollupKeyCheck } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
 import { buildSQLOf } from "../plan/addressing";
 import type {
@@ -35,13 +35,15 @@ import { quoteManifestTablePath } from "../../quoting";
 import { ColocatedTier } from "./colocated_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
-   CompiledBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
-   materializePlansOf,
-   sourcesInBuildOrder,
    tierGateInputs,
 } from "../plan/build_plan";
+import {
+   type CompiledBuildPlan,
+   materializePlansOf,
+   sourcesInBuildOrder,
+} from "../domain/compiled_build_plan";
 import {
    assertMaterializationEligible,
    assertPlacementNamed,

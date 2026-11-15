@@ -62,7 +62,7 @@ import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
-import type { CompiledBuildPlan } from "../plan/build_plan";
+import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
 import { deriveAnnotationFields } from "../plan/persist_source_fields";
 import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
 import { capabilitiesOf } from "../domain/dialect";

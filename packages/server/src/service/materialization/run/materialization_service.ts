@@ -34,7 +34,7 @@ import {
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationHost } from "../host";
-import { CompiledBuildPlan } from "../plan/build_plan";
+import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import {
    BuildInstruction,

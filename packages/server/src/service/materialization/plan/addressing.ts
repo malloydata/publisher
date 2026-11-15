@@ -23,28 +23,7 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { declaredStorage } from "./persist_source_fields";
-
-/**
- * One connection's persist sources in the order they build, from Malloy's
- * `Runtime.getBuildTargets`: every source on every table, the tables a source
- * reads before it. Sources whose SQL does not compile on their own come last;
- * they have no table, and are refused per source like any other.
- *
- * Holds sourceIDs, resolved against a plan's `sources` when walked, so a
- * pre-aggregation companion that reaches an author's persisted source walks
- * the author's own `PersistSource` for it.
- */
-export interface SourceBuild {
-   connectionName: string;
-   /** sourceIDs, dependencies first; the sources of one table are adjacent */
-   order: string[];
-   /**
-    * sourceID -> the sourceIDs on the tables it reads. Sources on one table
-    * read none of each other: an extension is its base's table, not a reader
-    * of it. An unbuildable source lists none.
-    */
-   dependsOn: Record<string, string[]>;
-}
+import type { SourceBuild } from "../domain/compiled_build_plan";
 
 /** Project Malloy's targets for one connection into a {@link SourceBuild}. */
 function sourceBuildOf(
@@ -272,17 +251,6 @@ export function plannedTargetOf(
    source: PersistSource,
 ): BuildTarget | undefined {
    return buildTargets.get(source);
-}
-
-/** The planned sources of `build` in build order, skipping any not in `tables`. */
-export function* sourcesInBuildOrder(
-   build: SourceBuild,
-   tables: Readonly<Record<string, { source: PersistSource }>>,
-): Iterable<PersistSource> {
-   for (const sourceID of build.order) {
-      const source = tables[sourceID]?.source;
-      if (source) yield source;
-   }
 }
 
 /**

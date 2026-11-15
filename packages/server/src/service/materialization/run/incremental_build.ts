@@ -24,9 +24,9 @@ import type {
 } from "../domain/types";
 import {
    collectIncrementalDeclarations,
-   CompiledBuildPlan,
    deriveColumns,
 } from "../plan/build_plan";
+import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
 import { capabilitiesOf } from "../domain/dialect";
 import { storageDeltaTarget } from "./incremental_storage";
 import {

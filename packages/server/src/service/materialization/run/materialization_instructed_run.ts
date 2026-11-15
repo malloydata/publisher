@@ -29,11 +29,11 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets } from "../../../pg_helpers";
+import { computeSourceEntityId } from "../plan/build_plan";
 import {
-   computeSourceEntityId,
    sourcesInBuildOrder,
    type CompiledBuildPlan,
-} from "../plan/build_plan";
+} from "../domain/compiled_build_plan";
 import type { IncrementalRunContext } from "./incremental_build";
 import {
    classifySourceFailure,

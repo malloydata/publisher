@@ -21,7 +21,7 @@ import {
    type TierGateInputs,
 } from "./materialization_eligibility";
 import type { PackageAnnotationFinding } from "../../annotation_reader";
-import type { SourceBuild } from "./addressing";
+import type { SourceBuild } from "../domain/compiled_build_plan";
 import { materializeRefusalFinding } from "./materialize_plan";
 import type { TablePlan } from "../domain/table_plans";
 import { deriveAnnotationFields } from "./persist_source_fields";

@@ -21,8 +21,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/instructed_build.ts -> service/materialization/plan/materialization_eligibility":
       "2g.3",
-   "service/materialization/run/instructed_build.ts -> service/materialization/plan/rollup_plan":
-      "2g.3",
    "service/materialization/run/materialization_build_session.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/materialization_instructed_run.ts -> service/materialization/plan/build_plan":
@@ -33,21 +31,15 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_source_fields":
       "2g.3",
-   "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan":
-      "2g.3",
    "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan_compile":
       "2g.3",
    "service/materialization/run/run_instructions.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/run_instructions.ts -> service/materialization/plan/materialization_eligibility":
       "2g.3",
-   "service/materialization/run/run_telemetry.ts -> service/materialization/plan/build_plan":
-      "2g.3",
    "service/materialization/run/source_build.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/storage_build_strategy.ts -> service/materialization/plan/materialize_stored_chain":
-      "2g.3",
-   "service/materialization/run/table_ownership.ts -> service/materialization/plan/build_plan":
       "2g.3",
    "service/materialization/run/table_ownership.ts -> service/materialization/plan/persist_source_fields":
       "2g.3",

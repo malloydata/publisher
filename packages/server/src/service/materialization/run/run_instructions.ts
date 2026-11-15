@@ -27,12 +27,11 @@ import {
    versionTableSuffix,
    type WriteTarget,
 } from "../../versions/materialization_scope";
+import { computeSourceEntityId, tierGateInputs } from "../plan/build_plan";
 import {
-   CompiledBuildPlan,
-   computeSourceEntityId,
+   type CompiledBuildPlan,
    sourcesInBuildOrder,
-   tierGateInputs,
-} from "../plan/build_plan";
+} from "../domain/compiled_build_plan";
 import {
    assertPlacementNamed,
    assertTierEligible,
