@@ -32,6 +32,7 @@
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import { exploreOf } from "../governance/ir/compiled_model";
 import { getDialect } from "@malloydata/malloy";
+import { capabilitiesOf } from "./domain/dialect";
 import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
@@ -565,7 +566,12 @@ function structOf(
  * every digit too, or leaves the column live.
  */
 export function liveKeepsBigIntegers(dialect: unknown): boolean {
-   if (typeof dialect !== "string" || dialect === "duckdb") return true;
+   if (
+      typeof dialect !== "string" ||
+      capabilitiesOf(dialect).driverKeepsBigIntegers
+   ) {
+      return true;
+   }
    try {
       return (
          (getDialect(dialect) as { supportsBigIntPrecision?: boolean })
@@ -709,7 +715,10 @@ function exactWarehouseCast(
    // MySQL's CAST names no integer type (`CAST(x AS bigint)` is a syntax
    // error; its SIGNED and UNSIGNED are not numbers to Malloy), so only a
    // DECIMAL is a type the column can be read through.
-   if (dialect === "mysql" && !/^decimal\b/i.test(nativeType.trim())) {
+   if (
+      !capabilitiesOf(dialect).castsToIntegerType &&
+      !/^decimal\b/i.test(nativeType.trim())
+   ) {
       return undefined;
    }
    try {

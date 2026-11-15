@@ -26,6 +26,7 @@
 
 import { quoteManifestTablePath } from "../../quoting";
 import type { MaterializePlan, StoredColumn } from "../domain/table_plans";
+import { capabilitiesOf } from "../domain/dialect";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import type {
    BuildPlan,
@@ -380,7 +381,7 @@ export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
          return rest;
       });
    return storedColumnsOfOutput(outputs, {
-      nested: d?.dialect === "duckdb",
+      nested: capabilitiesOf(d?.dialect).nestedColumns,
       bigint: true,
       timestamptz: true,
    });

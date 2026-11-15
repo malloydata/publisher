@@ -34,6 +34,7 @@
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
 import type { ManifestEntry } from "../domain/types";
+import { capabilitiesOf } from "../domain/dialect";
 import { quoteTablePath } from "../../quoting";
 import {
    dropViewSql,
@@ -197,12 +198,6 @@ export async function dropOwnNameView(
    return true;
 }
 
-/** The dialects whose DDL a build's swap runs as one transaction. */
-const TRANSACTIONAL_DDL: ReadonlySet<string> = new Set(["duckdb", "postgres"]);
-
-/** The dialects whose guard reads the view's dependencies, not its text. */
-const DEPENDENCY_GUARD: ReadonlySet<string> = new Set(["postgres"]);
-
 /**
  * The statements that drop `view` inside a build's own transaction, before
  * the table takes its name, on DuckDB and Postgres: a guard that fails the
@@ -215,12 +210,12 @@ export function replaceOwnViewStatements(
    view: ProvenOwnView,
    site: Pick<TableSite, "dialect" | "segments">,
 ): string[] | undefined {
-   if (!TRANSACTIONAL_DDL.has(site.dialect)) return undefined;
+   if (!capabilitiesOf(site.dialect).transactionalSwap) return undefined;
    const segments = site.segments(view.name);
    const lit = (v: string) => sqlString(v, site.dialect);
    const path = quoteTablePath(segments.join("."), site.dialect);
    const drop = dropViewSql(segments, site.dialect);
-   if (DEPENDENCY_GUARD.has(site.dialect)) {
+   if (capabilitiesOf(site.dialect).dependencyGuard) {
       const viewPath = lit(path);
       const targetPath = lit(
          quoteTablePath(site.segments(view.target).join("."), site.dialect),

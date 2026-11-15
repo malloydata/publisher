@@ -11,12 +11,12 @@ import { quoteTablePath } from "../../quoting";
 import type { CompiledBuildPlan } from "../plan/build_plan";
 import { deriveAnnotationFields } from "../plan/persist_source_fields";
 import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
+import { capabilitiesOf } from "../domain/dialect";
 import {
    OWNED_TABLE_MARK,
    parseNameViewComment,
    parseOwnedTableComment,
    relationProbeSql,
-   relationProbeSupported,
    sqlString,
 } from "./table_mark_sql";
 import {
@@ -183,11 +183,7 @@ export function ownedTableComment(owner: string): string {
 
 /** The dialects whose tables' holders can be read (and marked). */
 function tableOwnershipDialectSupported(dialect: string): boolean {
-   return (
-      relationProbeSupported(dialect) ||
-      dialect === "mysql" ||
-      dialect === "presto"
-   );
+   return capabilitiesOf(dialect).tableOwnership;
 }
 
 /**

@@ -27,6 +27,7 @@ import {
    CompiledBuildPlan,
    deriveColumns,
 } from "../plan/build_plan";
+import { capabilitiesOf } from "../domain/dialect";
 import { storageDeltaTarget } from "./incremental_storage";
 import {
    STORAGE_TARGET_DIALECT,
@@ -37,8 +38,6 @@ import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
    isPairGuardFailure,
-   INCREMENTAL_SOURCE_RANGE_DIALECTS,
-   INCREMENTAL_TARGET_DML_DIALECTS,
    isRenderableWatermarkType,
    planIncrementalStep,
    probePostgresVersion,
@@ -232,11 +231,11 @@ export function incrementalLineage(params: {
    ) {
       return undefined;
    }
-   if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(params.dialect)) return undefined;
+   if (!capabilitiesOf(params.dialect).incrementalSourceRange) return undefined;
    // The DML engine must be one whose transactional apply is proven. A legal
    // `storage=` destination is always DuckDB-family; this states the invariant
    // where it is relied on.
-   if (!INCREMENTAL_TARGET_DML_DIALECTS.has(params.targetDialect)) {
+   if (!capabilitiesOf(params.targetDialect).incrementalTargetDml) {
       return undefined;
    }
    const mergeKeys = d.mergeKeys
@@ -253,7 +252,7 @@ export function incrementalLineage(params: {
    // key, which was planned wrong.
    if (
       d.pair &&
-      (params.targetDialect !== "duckdb" ||
+      (!capabilitiesOf(params.targetDialect).pairDelta ||
          mergeKeys.length !== 1 ||
          mergeKeys[0] !== d.pair.parentKey)
    ) {
@@ -339,7 +338,7 @@ export async function planSourceRefresh(params: {
    // recorded boundary the source seeds regardless.
    const postgresVersionNum =
       lineage.strategy === "merge" &&
-      target.dialect === "postgres" &&
+      capabilitiesOf(target.dialect).mergeGatedByServerVersion &&
       ledgerEntry !== null
          ? await probePostgresVersion(target.runner)
          : undefined;

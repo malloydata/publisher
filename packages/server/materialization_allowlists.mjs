@@ -10,9 +10,6 @@
 
 /** Import-direction pairs (R5 to R10, H5), "<importer> -> <module>": step. */
 export const MATERIALIZATION_IMPORT_ALLOWLIST = {
-   // R7: plan/ never imports run/, serve/ or service/model.ts.
-   "service/materialization/plan/incremental_policy.ts -> service/materialization/run/incremental_apply":
-      "2l",
    // R8: plan/, run/ and serve/ never import one another.
    "service/materialization/run/incremental_apply.ts -> service/materialization/plan/incremental_declaration":
       "2g.3",
@@ -278,12 +275,8 @@ export const RATCHET_IR_READS = {};
 export const RATCHET_CLOCK_READS = {};
 /** A dialect compared to a string literal outside the dialect table, per file. */
 export const RATCHET_DIALECT_LITERALS = {
-   "service/materialization/plan/materialize_compile.ts": {
-      count: 1,
-      step: "2l",
-   },
    "service/materialization/run/colocated_build_strategy.ts": {
-      count: 2,
+      count: 1,
       step: "2l",
    },
    "service/materialization/run/colocated_native_types.ts": {
@@ -291,17 +284,12 @@ export const RATCHET_DIALECT_LITERALS = {
       step: "2l",
    },
    "service/materialization/run/incremental_apply.ts": {
-      count: 12,
+      count: 10,
       step: "2l",
    },
-   "service/materialization/run/incremental_build.ts": { count: 2, step: "2l" },
    "service/materialization/run/table_mark_sql.ts": { count: 3, step: "2l" },
-   "service/materialization/run/table_ownership.ts": { count: 4, step: "2l" },
-   "service/materialization/serve/bind.ts": {
-      count: 1,
-      step: "2l",
-   },
-   "service/materialization/stored_column_types.ts": { count: 4, step: "2l" },
+   "service/materialization/run/table_ownership.ts": { count: 2, step: "2l" },
+   "service/materialization/stored_column_types.ts": { count: 2, step: "2l" },
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {

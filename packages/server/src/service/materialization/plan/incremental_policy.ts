@@ -3,10 +3,10 @@
 
 import { components } from "../../../api";
 import {
+   capabilitiesOf,
    describeDialects,
-   INCREMENTAL_SOURCE_RANGE_DIALECTS,
-   MERGE_CAPABLE_DIALECTS,
-} from "../run/incremental_apply";
+   dialectsWith,
+} from "../domain/dialect";
 import type {
    IncrementalDeclaration,
    ResolvedName,
@@ -224,18 +224,18 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    // a capability probe: a delta writes into a serving table, so an unproven
    // engine must read as no. The source's dialect, not the table's — the
    // warehouse expresses the range; where the DML lands is checked separately
-   // (see INCREMENTAL_TARGET_DML_DIALECTS).
+   // (see the `incrementalTargetDml` capability).
    const dialect = source.dialect ?? "";
-   if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(dialect)) {
+   if (!capabilitiesOf(dialect).incrementalSourceRange) {
       out.push(
          `${where} declares ${MODE}, which is not supported on dialect ` +
             `"${dialect || "unknown"}". Incremental refresh reads a bounded ` +
             `watermark range out of the source and applies it transactionally, ` +
             `so it is enabled only where the publisher has proven both: ` +
-            `${describeDialects(INCREMENTAL_SOURCE_RANGE_DIALECTS)}. Use ` +
+            `${describeDialects(dialectsWith("incrementalSourceRange"))}. Use ` +
             `refresh="full" here; the supported set widens in a later release.`,
       );
-   } else if (d.declaredMergeKey && !MERGE_CAPABLE_DIALECTS.has(dialect)) {
+   } else if (d.declaredMergeKey && !capabilitiesOf(dialect).merge) {
       // Rule 7: distinct from rule 6 though currently subsumed by it, so the
       // two can widen independently.
       out.push(

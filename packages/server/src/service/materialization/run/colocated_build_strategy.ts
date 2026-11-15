@@ -9,6 +9,7 @@ import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import { capturedNativeSchema } from "./colocated_native_types";
 import { ManifestEntry } from "../domain/types";
+import { capabilitiesOf } from "../domain/dialect";
 import type { ColocatedBuildRequest, TierAdapter } from "./tier";
 import { buildColocatedDelta } from "./incremental_delta_strategy";
 import {
@@ -216,7 +217,7 @@ export async function capturedColocatedSchema(args: {
          return undefined;
       }
       const columns = storedColumnsOfOutput(fields, {
-         nested: args.dialect === "duckdb",
+         nested: capabilitiesOf(args.dialect).nestedColumns,
          bigint: true,
          timestamptz: true,
       });
@@ -269,19 +270,6 @@ async function dropStagingAfterFailure({
    }
 }
 
-/**
- * Dialects whose swap is one transaction: DDL is transactional there, and the
- * swap reaches one database session (see {@link swapInTransaction}).
- *
- * Not the others: Snowflake, MySQL, Databricks and Trino commit DDL as it
- * runs, and BigQuery refuses DROP and RENAME inside a transaction. SQL Server
- * has transactional DDL, but not this rename, so it gains nothing here.
- */
-const TRANSACTIONAL_SWAP_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "duckdb",
-]);
-
 interface SwapArgs {
    connection: Pick<MalloyConnection, "runSQL">;
    runOptions: ColocatedBuildRequest["runOptions"];
@@ -304,7 +292,7 @@ interface SwapArgs {
  * back the staging table once the served one is intact.
  */
 export async function swapIntoPlace(args: SwapArgs): Promise<void> {
-   if (TRANSACTIONAL_SWAP_DIALECTS.has(args.dialect)) {
+   if (capabilitiesOf(args.dialect).transactionalSwap) {
       await swapInTransaction(args);
       return;
    }

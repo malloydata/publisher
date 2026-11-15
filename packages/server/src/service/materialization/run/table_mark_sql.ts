@@ -14,31 +14,21 @@
  */
 
 import { quoteIdentifier, quoteTablePath } from "../../quoting";
+import { capabilitiesOf } from "../domain/dialect";
 
 /** The prefix of the comment on a `name=` view an earlier release made. */
 const NAME_VIEW_MARK = "malloy-publisher:name-view";
 
-/**
- * The dialects (Malloy `dialectName`) whose relations' comments can be read
- * back by {@link relationProbeSql}. MySQL and Presto are probed by
- * table_ownership.ts's own queries.
- */
-const PROBE_DIALECTS: ReadonlySet<string> = new Set([
-   "duckdb",
-   "postgres",
-   "standardsql",
-   "snowflake",
-   "databricks",
-   "trino",
-   "sqlserver",
-]);
-
 /** Thrown when a dialect or a name shape cannot be probed. */
 class RelationProbeUnsupportedError extends Error {}
 
-/** Whether {@link relationProbeSql} can probe a dialect. */
+/**
+ * Whether {@link relationProbeSql} can probe a dialect (Malloy `dialectName`):
+ * its `relationProbe` capability. MySQL and Presto are probed by
+ * table_ownership.ts's own queries.
+ */
 export function relationProbeSupported(dialect: string): boolean {
-   return PROBE_DIALECTS.has(dialect);
+   return capabilitiesOf(dialect).relationProbe;
 }
 
 /**

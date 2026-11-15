@@ -8,6 +8,11 @@ import { errorCodeOf } from "./error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
 import type { IncrementalStrategy } from "../domain/types";
+import {
+   capabilitiesOf,
+   describeDialects,
+   dialectsWith,
+} from "../domain/dialect";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
 import type { PairDelta } from "../plan/incremental_declaration";
@@ -30,65 +35,24 @@ import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
  */
 
 /**
- * The two dialect sets below differ only for a `storage=` source, whose rows are
- * computed by the SOURCE warehouse and whose DML runs in the DESTINATION engine.
- *
- * Both are keyed by Malloy's `dialectName`, so BigQuery is `standardsql` (as in
- * `quoting.ts`). No source's `dialectName` is ever "bigquery", so keying by the
- * friendly name would silently reject every BigQuery source.
- */
-
-/**
- * Dialects a bounded watermark range can be rendered and probed FOR — the source
- * side. A dialect here has literal spellings for every watermark type
- * ({@link renderSqlBound}) and a decodable table path
- * ({@link decodeTablePathSegments}).
- */
-export const INCREMENTAL_SOURCE_RANGE_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-]);
-
-/**
- * Dialects whose transactional delta apply is proven: the target side, where the
- * DML lands.
+ * The incremental refresh's dialect sets, from the dialect table
+ * (`domain/dialect.ts`), for message text. The source and target sets differ
+ * only for a `storage=` source, whose rows are computed by the SOURCE warehouse
+ * and whose DML runs in the DESTINATION engine.
  *
  * Postgres, BigQuery and DuckDB take the range replace as one multi-statement
- * script. Snowflake's driver runs one statement per call, on a possibly different
- * pooled session each time, so it gets a Snowflake Scripting block instead (see
- * {@link deltaStatements}).
- *
- * `duckdb` is here only as a `storage=` destination; a DuckDB source is never
- * materialized.
+ * script. Snowflake's driver runs one statement per call, on a possibly
+ * different pooled session each time, so it gets a Snowflake Scripting block
+ * instead (see {@link deltaStatements}).
  */
-export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-   "duckdb",
-]);
+export const INCREMENTAL_SOURCE_RANGE_DIALECTS: ReadonlySet<string> =
+   dialectsWith("incrementalSourceRange");
+export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> =
+   dialectsWith("incrementalTargetDml");
+export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> =
+   dialectsWith("merge");
 
-/** Dialects with a `MERGE INTO` statement, required by `merge_key=`. */
-export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-   "duckdb",
-]);
-
-/** Malloy `dialectName` -> the name an author would recognize, for a message. */
-const DIALECT_DISPLAY_NAMES: Record<string, string> = {
-   standardsql: "standardsql (BigQuery)",
-};
-
-/** A dialect set as message text, e.g. `postgres, standardsql (BigQuery)`. */
-export function describeDialects(dialects: ReadonlySet<string>): string {
-   return [...dialects]
-      .sort()
-      .map((d) => DIALECT_DISPLAY_NAMES[d] ?? d)
-      .join(", ");
-}
+export { describeDialects };
 
 /**
  * A watermark boundary, held as CANONICAL SCALAR TEXT plus the watermark's Malloy
@@ -795,7 +759,7 @@ export function pairDeltaStatements(params: {
    windowDeletes?: readonly { column: string; before: WatermarkBound }[];
 }): string[] {
    const { dialect, quotedTablePath, pair } = params;
-   if (dialect !== "duckdb") {
+   if (!capabilitiesOf(dialect).pairDelta) {
       throw new Error(
          `a pair table's delta is applied in DuckDB only, not ${dialect}`,
       );
@@ -1280,7 +1244,7 @@ export async function planIncrementalStep(inputs: {
 
    if (
       lineage.strategy === "merge" &&
-      dialect === "postgres" &&
+      capabilitiesOf(dialect).mergeGatedByServerVersion &&
       (inputs.postgresVersionNum ?? 0) < POSTGRES_MERGE_MIN_VERSION_NUM
    ) {
       // Not a silent fallback to range replace: merge_key= asks for the

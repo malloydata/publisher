@@ -26,6 +26,7 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import type { Omission } from "../domain/omitted_sources";
+import { capabilitiesOf } from "../domain/dialect";
 import {
    keyCheckCompilerKey,
    type KeyCheckCompiler,
@@ -406,7 +407,7 @@ function withStoredColumns(
          return {
             ...plan,
             storedColumns: storedColumnsOfOutput(def.fields, {
-               nested: def.dialect === "duckdb",
+               nested: capabilitiesOf(def.dialect).nestedColumns,
             }),
          };
       }),

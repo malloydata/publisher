@@ -76,6 +76,7 @@ import {
    withDeclaration,
 } from "./materialize_read_time";
 import type { MalloyRange, TermUse } from "../domain/read_time_terms";
+import { capabilitiesOf } from "../domain/dialect";
 import {
    rollingWindowTerms,
    leftOutTermReadElsewhere,
@@ -93,12 +94,6 @@ const PLAIN_PROPERTY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** A table name `#@ persist name=` accepts (see persist_annotation_validation.ts). */
 const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
-
-/**
- * The dialects whose table needs a container its connection does not give it
- * (BigQuery: a dataset), which only a `name=` can supply.
- */
-const NEEDS_QUALIFIED_TABLE: ReadonlySet<string> = new Set(["standardsql"]);
 
 /**
  * The table name a `#(materialize)` source's build takes: the source's own
@@ -1632,7 +1627,7 @@ function placedPersistOf(
    // would fail on BigQuery's own error, so the source is not built.
    if (
       persist.storage === undefined &&
-      NEEDS_QUALIFIED_TABLE.has(String(def.dialect)) &&
+      capabilitiesOf(def.dialect).needsQualifiedTable &&
       !persist.name?.includes(".")
    ) {
       return new Declined(
