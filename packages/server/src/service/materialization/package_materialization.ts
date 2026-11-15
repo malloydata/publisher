@@ -283,8 +283,6 @@ export class PackageMaterialization {
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
    /** Rollups over a gated base whose gates are grafted at read (row 1). */
    private rollupsKeepingGates = new Set<string>();
-   private rollupsOverStoredBase: { baseName: string; modelPath?: string }[] =
-      [];
    private annotationFindings: PackageAnnotationFinding[] = [];
    // Which sources may be served from a materialized table, decided at compile
    // where the compiled sources exist; binding does not recompile. `undefined`
@@ -410,7 +408,6 @@ export class PackageMaterialization {
          const {
             plan,
             droppedPersistSources,
-            rollupsOverStoredBase,
             annotationFindings,
             sourceEligibility,
             colocatedSourceEligibility,
@@ -427,7 +424,6 @@ export class PackageMaterialization {
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
          this.droppedPersistSources = droppedPersistSources;
-         this.rollupsOverStoredBase = rollupsOverStoredBase ?? [];
          // `?? []`: an outcome a worker built before this field existed.
          this.annotationFindings = annotationFindings ?? [];
          this.sourceEligibility = sourceEligibility;
@@ -479,7 +475,6 @@ export class PackageMaterialization {
          this.sourceEligibility = undefined;
          this.colocatedSourceEligibility = undefined;
          this.incrementalPolicySources = [];
-         this.rollupsOverStoredBase = [];
          this.rollupsKeepingGates = new Set();
          recordBuildPlanComputeFailed();
          logger.warn(
@@ -674,7 +669,6 @@ export class PackageMaterialization {
          this.storageBindings,
          this.sourceEligibility,
          this.colocatedSourceEligibility,
-         this.rollupsOverStoredBase,
          getPersistStorageMode(),
          models,
          // The deployment facts are read live, not replaced wholesale, so
@@ -1159,7 +1153,6 @@ export class PackageMaterialization {
             sourceEligibility: this.sourceEligibility,
             colocatedSourceEligibility: this.colocatedSourceEligibility,
             incrementalPolicySources: this.incrementalPolicySources,
-            rollupsOverStoredBase: this.rollupsOverStoredBase,
             buildConnectionNames: this.buildConnectionNames,
          };
          let workerPlan: LoadPackageOutcome["buildPlan"];
@@ -1250,33 +1243,6 @@ export class PackageMaterialization {
          // refused: creating or fixing that connection must re-derive.
          ...this.buildConnectionNames,
       ]);
-   }
-
-   /**
-    * One warning per `storage=` base whose `#@ preaggregate storage=` rollups
-    * were left out: they can neither build nor serve over a stored base yet
-    * (#6293), so the base serves from its stored table and the rollups do not
-    * exist.
-    */
-   rollupsOverStoredBaseWarnings(): ApiPackageWarning[] {
-      // With the storage tier off the base itself serves live, which
-      // storageWarnings already says; "reads the stored table" would be false.
-      if (getPersistStorageMode() === "off") return [];
-      return this.rollupsOverStoredBase.map((r) => ({
-         ...(r.modelPath ? { model: r.modelPath } : {}),
-         subject: r.baseName,
-         code: "preaggregate-over-stored-base",
-         severity: "warn" as const,
-         message:
-            `declares '#@ preaggregate storage=' rollups, but is itself ` +
-            `persisted with 'storage=', so the rollups are not built: a rollup ` +
-            `over a stored base cannot build or serve yet, and queries read the ` +
-            `base's stored table instead.` +
-            (getMaterializeEnabled()
-               ? ` Write the rollup as '#(preaggregate) grain=[…] storage=…' ` +
-                 `on the measure, which builds and serves over a stored base.`
-               : ""),
-      }));
    }
 
    /**
@@ -1573,7 +1539,7 @@ export class PackageMaterialization {
    serveVerdicts(
       views?: ReadonlyMap<string, ViewServeVerdict[]>,
    ): ServeVerdict[] {
-      if (!this.buildPlan && this.rollupsOverStoredBase.length === 0) return [];
+      if (!this.buildPlan) return [];
       try {
          return this.computeVerdicts(views);
       } catch (error) {
@@ -1649,7 +1615,6 @@ export class PackageMaterialization {
          ),
          servedStorageNames,
          freshStorageNames,
-         rollupsOverStoredBase: this.rollupsOverStoredBase,
          materialize: (sourceID) => {
             if (!materializeIDs.has(sourceID)) return undefined;
             if (!servedCopy.on) return "off";

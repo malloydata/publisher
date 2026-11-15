@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a `#@ preaggregate` rollup over a stored base builds and serves, as documented now
+
+A `#@ preaggregate` on a measure of a source that is itself `#@ persist storage=` builds and serves, with no change to the model. It has since 0.13.0, when the v1 cutover began reading each `#@ preaggregate` line as the `#(preaggregate)` it spells: that rollup is built from the author's rows, never from the base's stored table, so neither reason such rollups were once left out holds. The documentation still said they were left out with a `preaggregate-over-stored-base` warning; it now says what happens, and the code that would have left them out, which nothing reached any more, is removed.
+
+What happens: each grain is planned, built and served exactly as the `#(preaggregate)` would be, with the same build and the same content address, one table per grain under the rollup's readable name (`<package>__<file>__<base>_by_<grain>__p<hash>`, never the base's), in the destination its own `storage=` names or alongside the base without one. A query a rollup covers is answered from it, equal to live; a query-shaped base keeps building and answering everything else from its own stored table. The refusals are the rollup leg's, for the same reasons as `#(preaggregate)`: a base whose rows read a given or the current time, or a gated base the gated-sources switch does not cover, builds no rollup and warns. A table extended with measures still cannot carry `#@ persist` (`persist-not-materializable`, and a whole-package run refuses for it, as before); its rollups build in a run that names them, and in every run once that `#@ persist` is removed.
+
+Nothing that is built or served changes, and no rollup's address or table moves. The `preaggregate-over-stored-base` warning code and the `rollup_over_stored_base` serve verdict reason were already never reported, and still are not; a client may stop handling them.
+
 ## [Unreleased] — tables built in Credible now serve in three shapes that answered live
 
 Three shapes of stored source had their tables built but were answered live, with a warning or none. Each now reads its table, with answers equal to live:

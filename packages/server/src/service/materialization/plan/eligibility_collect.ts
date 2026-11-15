@@ -3,9 +3,8 @@
 
 /**
  * Which planned sources may build and serve, decided where the compiled
- * sources exist: rollups over a stored base, rollups that would share a
- * table, the tier gate's inputs, and the per-tier eligibility records the
- * serve side requires. Split out of build_plan.ts; behaviour unchanged.
+ * sources exist: rollups that would share a table, the tier gate's inputs,
+ * and the per-tier eligibility records the serve side requires. Split out of build_plan.ts; behaviour unchanged.
  */
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";
@@ -28,7 +27,6 @@ import {
 } from "./build_file_generator";
 import type { RollupPlan } from "../domain/rollup_measures";
 import {
-   declaredStorage,
    deriveAnnotationFields,
    type PersistSourceGateOutcome,
 } from "./persist_source_fields";
@@ -52,38 +50,6 @@ interface EligibilityPlan {
    materializePlans?: Record<string, unknown>;
    sourceModelPaths?: Record<string, string>;
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
-}
-
-/**
- * The base a `storage=` rollup is declared over, when that base is itself
- * persisted with `storage=`; undefined for every other source. Such a rollup
- * can neither build nor serve today (#6293): the chained storage build lifts a
- * downstream's definition from its file, and a rollup lives in the
- * synthesized companion, which is never written; and the base's own stored
- * binding claims the name the rollup would be served under. So it is left out
- * of the plan and every run, with a package warning, and the base still builds
- * and serves from storage. A `#(preaggregate)` rollup over a stored base
- * builds and serves (materialization v2 phase 4), so it is never named here.
- */
-export function storedBaseOfRollup(
-   compiled: {
-      sources: Record<string, PersistSource>;
-      preaggregatePlans?: Record<string, RollupPlan>;
-   },
-   sourceID: string,
-): PersistSource | undefined {
-   const plan = compiled.preaggregatePlans?.[sourceID];
-   const rollup = compiled.sources[sourceID];
-   // A `#(preaggregate)` rollup builds over the author's rows, not its base's
-   // table, and serves as its own router variant: the real fix (#6293).
-   if ((plan as { variant?: unknown } | undefined)?.variant === true) {
-      return undefined;
-   }
-   if (!plan?.baseSourceID || !rollup || !declaredStorage(rollup)) {
-      return undefined;
-   }
-   const base = compiled.sources[plan.baseSourceID];
-   return base && declaredStorage(base) ? base : undefined;
 }
 
 /** Memo for {@link collidingRollups}, per compiled `sources` record. */
@@ -116,8 +82,6 @@ export function collidingRollups(compiled: {
    >();
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
       if (!compiled.preaggregatePlans?.[sourceID]) continue;
-      // Left out of the plan entirely, so it shares no table with anyone.
-      if (storedBaseOfRollup(compiled, sourceID)) continue;
       let address: string;
       try {
          address = computeSourceEntityId(

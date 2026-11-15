@@ -171,7 +171,6 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
       plan: normalizer.json({
          wirePlan,
          droppedPersistSources: outcome.droppedPersistSources,
-         rollupsOverStoredBase: outcome.rollupsOverStoredBase,
          rollupsKeepingGates: outcome.rollupsKeepingGates,
          internal: internalPlans(compiled),
       }),
