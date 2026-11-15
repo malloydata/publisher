@@ -1,0 +1,24 @@
+// conformance: a classified persisted source [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: classified__served is {
+   customer_id::number,
+   #(classification) "none"
+   region::string,
+   #(classification) "none"
+   total::number
+}
+
+import "raw.malloy"
+
+#(carries) ["pii", "none"]
+#@ persist name="classified"
+source: classified is duckdb.virtual('7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2')::classified__served extend {
+  internal rename:
+    customer_id__stored is customer_id
+  dimension:
+    #(classification) "pii"
+    customer_id is customer_id__stored::"BIGINT"
+}

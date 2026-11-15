@@ -1,0 +1,334 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "recent_body",
+        "tier": "storage"
+      },
+      {
+        "name": "recent_read",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "recent_body:serves",
+      "recent_read:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "eef28b83601f6089",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "recent_body",
+          "stages": 1
+        },
+        "source": "recent_body"
+      },
+      "equalToLive": true,
+      "malloy": "run: recent_body -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "recent_read",
+            "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "recent_body"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a window in the persisted query",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "04d2a98201e089a9",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "recent_read",
+          "stages": 1
+        },
+        "source": "recent_read"
+      },
+      "equalToLive": true,
+      "malloy": "run: recent_read -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "recent_body",
+            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "recent_read"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a window in the extend block",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "eef28b83601f6089",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "recent_body",
+          "stages": 1
+        },
+        "source": "recent_body"
+      },
+      "equalToLive": true,
+      "malloy": "run: recent_body -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "recent_read",
+            "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "recent_body"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a window in the persisted query",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "04d2a98201e089a9",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "recent_read",
+          "stages": 1
+        },
+        "source": "recent_read"
+      },
+      "equalToLive": true,
+      "malloy": "run: recent_read -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "recent_body",
+            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "recent_read"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a window in the extend block",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

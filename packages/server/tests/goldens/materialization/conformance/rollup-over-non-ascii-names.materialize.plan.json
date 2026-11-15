@@ -1,0 +1,173 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {
+      "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "bestellungen",
+        "baseGated": false,
+        "baseSourceID": "bestellungen@<pkg>/m.malloy",
+        "baseSourceName": "bestellungen",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "地域"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "summe",
+            "partialName": "summe__partial",
+            "reaggregate": "sum"
+          },
+          {
+            "name": "件数",
+            "partialName": "件数__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "summe__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "summe",
+            "partials": [
+              {
+                "column": "summe__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "件数__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "件数",
+            "partials": [
+              {
+                "column": "件数__partial",
+                "leaf": {
+                  "aggregate": "count",
+                  "expr": {
+                    "args": [],
+                    "kind": "call",
+                    "name": "count"
+                  },
+                  "joinPath": [],
+                  "reads": []
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "bestellungen__rollup______278821ac",
+        "storage": "lake",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "地域",
+            "type": "string"
+          },
+          {
+            "name": "summe__partial",
+            "type": "number"
+          },
+          {
+            "name": "件数__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "bestellungen__rollup______278821ac",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "bestellungen",
+          "grainDimensions": [
+            "地域"
+          ],
+          "measures": [
+            "summe",
+            "件数"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323",
+        "sourceID": "bestellungen__rollup______278821ac@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:330e271fc1f45b37"
+      }
+    }
+  }
+}
