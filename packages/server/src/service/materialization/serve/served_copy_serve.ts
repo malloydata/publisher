@@ -947,9 +947,11 @@ export class ServedCopyServe {
    }
 
    /**
-    * A query that sets a timezone, in its own text or through the source it
-    * runs on (a `timezone:` on that source or anything on its chain), is
-    * answered live when it reads either of two tables. A stored computed dimension (`order_ts.day`,
+    * A query that sets a timezone is answered live when it reads either of
+    * two tables: in its own text, or through the source it runs on (a
+    * `timezone:` on that source or anything on its chain) when that zone is
+    * not the one the table was built in (a materialized source that declares
+    * its own `timezone:` is built in it). A stored computed dimension (`order_ts.day`,
     * `day_of_week(order_ts)`) was evaluated at build in the default
     * timezone; live evaluates it in the query's. And a rolling window's
     * cut-off moves: Malloy takes its offset in the zone's wall time, so
@@ -962,13 +964,20 @@ export class ServedCopyServe {
       tablesRead: readonly Binding[],
    ): Promise<void> {
       const { compiled, decline, prepared } = attempt;
-      const computed = tablesRead.some((b) =>
+      const zoned = tablesRead.filter(
+         (b) =>
+            compiled.computedTables?.has(b.tablePath) ||
+            this.readsRollingWindow(b),
+      );
+      if (zoned.length === 0) return;
+      const computed = zoned.some((b) =>
          compiled.computedTables?.has(b.tablePath),
       );
-      const windowed = tablesRead.some((b) => this.readsRollingWindow(b));
-      if (!computed && !windowed) return;
       const { query, structRef } = await prepared();
-      if (setsTimezone(query) || sourceSetsTimezone(compiled, structRef)) {
+      if (
+         setsTimezone(query) ||
+         readsInAnotherZone(compiled, structRef, zoned)
+      ) {
          decline(
             computed
                ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
@@ -2758,23 +2767,37 @@ function v1ColumnsOf(
  * {@link ServedCopyServe}'s answer checks reads it.
  */
 /**
- * Whether the source a query runs on sets a time zone itself, or inherits one
- * from anything on its chain (`ny is orders extend { timezone: … }`): the
- * query is then computed in that zone, though its own text names none.
- * Fails closed: a source that cannot be resolved counts as zoned.
+ * Whether the source a query runs on computes it in a time zone other than
+ * the one any of `tables` was built in: the zone it sets itself, or inherits
+ * from anything on its chain (`ny is orders extend { timezone: … }`), which
+ * its query text never names; a table is built in its stored source's own
+ * zone. Fails closed: a source that cannot be resolved counts as another
+ * zone.
  */
-function sourceSetsTimezone(compiled: Compiled, structRef: unknown): boolean {
+function readsInAnotherZone(
+   compiled: Compiled,
+   structRef: unknown,
+   tables: readonly Binding[],
+): boolean {
    try {
       const struct = resolveStructRefSource<unknown>(
          structRef as never,
          compiled.modelDef as never,
       );
       if (struct === undefined) return true;
-      if (queryTimezoneOf(struct) !== undefined) return true;
       const map = SourceMap.of(compiled.modelDef);
-      return map
-         .chainOf(struct)
-         .some((id) => queryTimezoneOf(map.node(id)?.def) !== undefined);
+      const zone =
+         queryTimezoneOf(struct) ??
+         map
+            .chainOf(struct)
+            .map((id) => queryTimezoneOf(map.node(id)?.def))
+            .find((z) => z !== undefined);
+      if (zone === undefined) return false;
+      return tables.some((b) => {
+         const id = b.sourceIDs?.[0];
+         const built = id ? queryTimezoneOf(map.node(id)?.def) : undefined;
+         return built !== zone;
+      });
    } catch {
       return true;
    }
