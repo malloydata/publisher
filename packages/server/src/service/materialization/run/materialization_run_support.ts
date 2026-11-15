@@ -40,8 +40,6 @@ import { escapeSQL } from "../../connection";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 
 import type { ApiConnection } from "../../model";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
 import { redactPgSecrets } from "../../../pg_helpers";
 import { packageRelativeText } from "../../../package_relative_text";
 
@@ -602,15 +600,6 @@ export function noteWrongTierRecompute(params: {
    );
 }
 
-/** An author model file's text by `file:` URL, or undefined when unreadable. */
-export function readAuthorFile(url: string): string | undefined {
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
-}
-
 /**
  * The narrow environment surface the build path needs, plus the environment
  * root (for a plain-DuckDB destination's file path).
@@ -632,6 +621,12 @@ export interface BuildEnvironment {
     * and recomputes, or under strict upstreams refuses.
     */
    chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The root of the package being built, which the build's reads of author
+    * files stay inside. Absent in test doubles: those reads are then confined
+    * to the files the model compiled from alone.
+    */
+   getPackagePath?(): string;
 }
 
 /**
@@ -640,7 +635,10 @@ export interface BuildEnvironment {
  */
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
-   pkg: { chainBuildText?(request: ChainBuildRequest): ChainBuildText },
+   pkg: {
+      chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+      getPackagePath?(): string;
+   },
    /**
     * Whether the package serves a model older than its files (a reload that
     * did not compile), asked at each build: its files are not what the plan's
@@ -648,8 +646,13 @@ export function withChainBuildText<E extends BuildEnvironment>(
     */
    isStale: () => boolean = () => false,
 ): E {
-   if (!pkg.chainBuildText) return environment;
+   if (!pkg.chainBuildText && !pkg.getPackagePath) return environment;
    const scoped = Object.create(environment) as E;
+   if (pkg.getPackagePath) {
+      const packagePath = pkg.getPackagePath();
+      scoped.getPackagePath = () => packagePath;
+   }
+   if (!pkg.chainBuildText) return scoped;
    scoped.chainBuildText = (request) =>
       isStale()
          ? {

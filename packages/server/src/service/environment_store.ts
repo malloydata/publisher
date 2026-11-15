@@ -2442,6 +2442,9 @@ export class EnvironmentStore
                         });
                         await fs.promises.cp(sourcePath, absolutePackagePath, {
                            recursive: true,
+                           // A relative link stays relative, so an in-package link still
+                           // leads inside the copy rather than back into the source.
+                           verbatimSymlinks: true,
                         });
                         logger.info(
                            `Copied package "${packageDir}" (${++mountedCount}/${totalPackages})`,
@@ -2471,6 +2474,9 @@ export class EnvironmentStore
                      });
                      await fs.promises.cp(sourcePath, absolutePackagePath, {
                         recursive: true,
+                        // A relative link stays relative, so an in-package link still
+                        // leads inside the copy rather than back into the source.
+                        verbatimSymlinks: true,
                      });
                      logger.info(
                         `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"} (${++mountedCount}/${totalPackages})`,
@@ -2484,6 +2490,9 @@ export class EnvironmentStore
                   });
                   await fs.promises.cp(tempDownloadPath, absolutePackagePath, {
                      recursive: true,
+                     // A relative link stays relative, so an in-package link still
+                     // leads inside the copy rather than back into the source.
+                     verbatimSymlinks: true,
                   });
                   logger.info(
                      `Copied entire download as package "${packageDir}" (${++mountedCount}/${totalPackages})`,

@@ -14,6 +14,8 @@ import {
 } from "../../path_safety";
 import { hashPackageTree } from "./package_content_hash";
 import { isSemver, versionDirName } from "./semver";
+import { pathToFileURL } from "url";
+import { readPackageURL } from "../../utils";
 
 /** Downloads in progress, shared with the unversioned install path. */
 const STAGING_DIR_NAME = ".staging";
@@ -385,7 +387,9 @@ export async function readManifestVersion(
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    let text: string;
    try {
-      text = await fs.promises.readFile(manifestPath, "utf8");
+      // Inside the package only: a manifest that links out, to anything or
+      // nothing, reads as no manifest at all.
+      text = await readPackageURL(packagePath, pathToFileURL(manifestPath));
    } catch {
       throw new PackageVersionError(
          "MANIFEST_VERSION_MISSING",

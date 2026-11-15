@@ -60,7 +60,14 @@ import {
    FreshnessManifest,
    ManifestEntry,
 } from "./materialization/domain/types";
-import { errMessage } from "../utils";
+import {
+   confinedPackagePath,
+   errMessage,
+   ImportOutsidePackageError,
+   readPackageURL,
+} from "../utils";
+import { isDeepStrictEqual } from "util";
+import { pathToFileURL } from "url";
 import {
    buildEnvironmentMalloyConfig,
    deleteDuckLakeConnectionFile,
@@ -1598,6 +1605,19 @@ export class Environment {
       packageRoot: string,
       target: string,
    ): Promise<string[]> {
+      // A link planted at the file, or a dangling link on the way to it, is
+      // refused before anything about where it leads is looked at, with the
+      // answer a link out of the package gets, so a write cannot tell a
+      // target that exists from one that does not.
+      const outside = () =>
+         new InvalidModelPathError(
+            `Invalid model path: it resolves outside the package.`,
+         );
+      const isLink = async (p: string) =>
+         (
+            await fs.promises.lstat(p).catch(() => undefined)
+         )?.isSymbolicLink() === true;
+      if (await isLink(target)) throw outside();
       const missing: string[] = [];
       let dir = path.dirname(target);
       while (dir.startsWith(packageRoot)) {
@@ -1608,6 +1628,7 @@ export class Environment {
             throw error;
          });
          if (stat === undefined) {
+            if (await isLink(dir)) throw outside();
             missing.push(dir);
             dir = path.dirname(dir);
             continue;
@@ -3287,11 +3308,26 @@ export class Environment {
 
          // Same lock hold: as a separate step, a delete queued behind the
          // swap could run first and the update would 404 for completed work.
+         // The install has committed and is serving, so a metadata update
+         // that fails now (a read-only manifest, a full disk) is logged, not
+         // answered as a failure of the publish that already took effect.
          if (update !== undefined) {
-            await this._updatePackageLocked(packageName, update, {
-               recordLocation: true,
-               regated: true,
-            });
+            try {
+               await this._updatePackageLocked(packageName, update, {
+                  recordLocation: true,
+                  regated: true,
+               });
+            } catch (error) {
+               logger.error(
+                  "The package installed and is serving, but its metadata " +
+                     "update after the install failed",
+                  {
+                     environmentName: this.environmentName,
+                     packageName,
+                     error,
+                  },
+               );
+            }
          }
 
          return newPackage;
@@ -3675,12 +3711,28 @@ export class Environment {
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
+      // Where the write lands, settled before anything is written: inside
+      // the package. A manifest that is a link out of it is not written; one
+      // that is a link inside it is replaced by the file itself (the rename
+      // below replaces the link, never writes through it).
+      try {
+         await confinedPackagePath(packagePath, pathToFileURL(manifestPath));
+      } catch (error) {
+         if (!(error instanceof ImportOutsidePackageError)) throw error;
+         throw new BadRequestError(
+            `The package's publisher.json leads outside the package, so ` +
+               `Publisher does not write it. Replace it with the file itself.`,
+         );
+      }
 
       try {
          let existingManifest: Record<string, unknown> = {};
+         let existingRead = false;
          try {
-            const content = await fs.promises.readFile(manifestPath, "utf-8");
-            existingManifest = JSON.parse(content);
+            existingManifest = JSON.parse(
+               await readPackageURL(packagePath, pathToFileURL(manifestPath)),
+            );
+            existingRead = true;
          } catch (_err) {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
@@ -3690,14 +3742,10 @@ export class Environment {
             metadata,
          );
 
-         await fs.promises.writeFile(
-            manifestPath,
-            JSON.stringify(updatedManifest, null, 2),
-            "utf-8",
-         );
          // Recorded outside the package directory so nothing the package's
          // content carries is ever read as its install location. Never
-         // cleared from here.
+         // cleared from here. Written before the manifest, so a manifest that
+         // cannot be written does not lose it.
          if (metadata.location !== undefined && metadata.location !== "") {
             const recordPath = this.installRecordPath(packageName);
             await fs.promises.mkdir(path.dirname(recordPath), {
@@ -3710,6 +3758,39 @@ export class Environment {
             );
          }
 
+         // An update that changes nothing in the manifest (an install that
+         // only records its location) leaves the file alone, so it cannot
+         // fail after the install has committed.
+         if (
+            !existingRead ||
+            !isDeepStrictEqual(existingManifest, updatedManifest)
+         ) {
+            // The rename below would replace a file its mode says not to
+            // write; a read-only manifest is refused with its errno.
+            await fs.promises
+               .access(manifestPath, fs.constants.W_OK)
+               .catch((error: NodeJS.ErrnoException) => {
+                  if (error.code !== "ENOENT") throw error;
+               });
+            // A temporary file beside it, renamed over it: the rename
+            // replaces whatever is at the path, a link included, rather than
+            // writing through it.
+            const temporary = path.join(
+               packagePath,
+               `.publisher.json.${crypto.randomUUID()}.tmp`,
+            );
+            try {
+               await fs.promises.writeFile(
+                  temporary,
+                  JSON.stringify(updatedManifest, null, 2),
+                  { encoding: "utf-8", flag: "wx" },
+               );
+               await fs.promises.rename(temporary, manifestPath);
+            } catch (error) {
+               await fs.promises.rm(temporary, { force: true }).catch(() => {});
+               throw error;
+            }
+         }
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
          logger.error(`Failed to update publisher.json`, { error });

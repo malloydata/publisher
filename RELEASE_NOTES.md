@@ -54,6 +54,18 @@ Materialization v2 (`PUBLISHER_MATERIALIZE`, now on by default) no longer makes 
 
 No API change: no field or enum value is added or removed.
 
+## [Unreleased] — a package's Malloy imports stay inside the package
+
+A package's models can no longer read files outside the package. Every file the compiler reads for a model (an `import`, a `.malloynb`, a data-styles file) must resolve, through `realpath`, to the package root or inside it; for a versioned package that root is the version's own directory. Before, `import "../other/x.malloy"` read a sibling package's model (with versioning off) or a file beside the version directory (with versioning on), and `import "/etc/..."` told the author whether an arbitrary path existed. Both are now refused with one fixed message, `imports must stay inside the package`, which names no path and reads the same whether or not the target exists. The rule holds on every compile: the load and its worker, a reload, `/compile` and MCP `compile_model` at each scope, the build plan, and the generated build and served-copy models.
+
+A model or notebook file that is itself a symlink out of the package is refused with the same message, as a compile error (424), whether or not its target exists; before, a notebook link out was read and its text served, and a dangling link failed the load with a 500. The text Publisher reads back from a compiled model (served copy, chained `storage=` build, entity code) is read only from the files that model compiled from.
+
+A package's `publisher.json` is read only as a file inside the package, and never written through a link: a manifest that links out of the package (to anything or to nothing), a directory or an unreadable file answers that the manifest does not exist, and an invalid manifest's error no longer quotes its content. A PATCH of a package whose `publisher.json` leads outside the package answers 400; one that links inside the package is replaced by the file itself. A report write onto a planted link is refused the same way whatever it leads to.
+
+Copying a package (an install from a local location, an environment's packages at boot) now keeps symlinks as written, so a relative link inside the package keeps working in the copy. Before, the copy rewrote it to an absolute path into the source directory. A local install that relied on a relative link pointing *out* of the package (which the copy used to turn into an absolute path into the source tree) now gets a link that dangles in the copy, and the file it named is not served: copy that file into the package instead.
+
+What keeps working: imports between a package's own directories, `../` included (`import "../orders.malloy"` from a subfolder); a symlink inside the package that points inside it; a package mounted as a symlink under `--watch-env`; and virtual files such as a request's overlay and the generated companions. A model that imported a file from outside its package now fails to load with that message: copy the file into the package. SQL a model runs through DuckDB (`read_csv`, `read_parquet`, `read_text`) is not covered by this rule ([security-posture.md](docs/security-posture.md#known-gaps), gap 6).
+
 ## [Unreleased] — routing and bind metrics: one route counter, one bind counter
 
 The serving metrics are renamed and folded so each counts one thing, in the vocabulary the path report already uses. Every label is a closed set, and none names a package, source, table or connection. What changes for a dashboard or alert:

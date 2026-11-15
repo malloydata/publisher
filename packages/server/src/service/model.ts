@@ -26,10 +26,9 @@ import {
    type ModelQueryResults,
    type ModelServingHost,
 } from "./model_serving";
-import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { components } from "../api";
 import { getQueryMetadataMode } from "../config";
 import {
@@ -49,6 +48,7 @@ import { getMaterializeEnabled, getPersistStorageMode } from "../config";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
+import { readPackageURL } from "../utils";
 import { type QueryAudit } from "./access_record";
 import {
    type Binding,
@@ -957,7 +957,11 @@ export class Model {
          });
       }
 
-      const runtime = makeHydrationRuntime(malloyConfig, options.buildManifest);
+      const runtime = makeHydrationRuntime(
+         packagePath,
+         malloyConfig,
+         options.buildManifest,
+      );
       const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
       const runnableNotebookCells =
          data.modelType === "notebook"
@@ -2727,7 +2731,11 @@ export class Model {
       ) {
          return memo.tables;
       }
-      const tables = modelStorageTables(snapshot.bindings, this.modelDef);
+      const tables = modelStorageTables(
+         snapshot.bindings,
+         this.modelDef,
+         this.servedCopyContext?.[0],
+      );
       this.storageTablesMemo = {
          bindings: snapshot.bindings,
          modelDef: this.modelDef,
@@ -2880,6 +2888,7 @@ export class Model {
       const stored = ownBindings(
          bindings.filter((b) => b.kind !== "rollup"),
          this.modelDef,
+         this.servedCopyContext[0],
       ).kept;
       if (stored.length === 0) return out;
       const pinned = pin(makeSnapshot(stored), new Date(0));
@@ -3662,7 +3671,7 @@ export class Model {
    public async getFileText(packagePath: string): Promise<string> {
       const fullPath = path.join(packagePath, this.modelPath);
       try {
-         return await fs.readFile(fullPath, "utf8");
+         return await readPackageURL(packagePath, pathToFileURL(fullPath));
       } catch {
          throw new ModelNotFoundError(
             `Model file not found: ${this.modelPath}`,

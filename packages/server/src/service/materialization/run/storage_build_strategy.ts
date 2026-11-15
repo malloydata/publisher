@@ -70,7 +70,6 @@ import {
    BuildEnvironment,
    ChainedPlanFacts,
    NO_PLAN_FACTS,
-   readAuthorFile,
    redactConnectionSecrets,
    currentUpstreamEntries,
    noteWrongTierRecompute,
@@ -81,6 +80,7 @@ import {
    wrongTierDetail,
 } from "./materialization_run_support";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { compiledTextReader } from "../../../utils";
 import {
    destinationSchemaOf,
    storageTablePath,
@@ -167,7 +167,10 @@ export class StorageBuildStrategy
          baseReuse = {},
          lift = authorModelLiftContext(
             plannedModelDefOf(params.persistSource),
-            readAuthorFile,
+            compiledTextReader(
+               plannedModelDefOf(params.persistSource),
+               params.environment.getPackagePath?.(),
+            ),
          ),
       } = params;
       const sourceEntityId = instruction.sourceEntityId;

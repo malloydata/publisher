@@ -85,6 +85,9 @@ export class LocalPackageSource implements PackageSource {
          await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
          await fs.promises.cp(environmentPath, absoluteTargetPath, {
             recursive: true,
+            // A relative link stays relative, so an in-package link still
+            // leads inside the copy rather than back into the source.
+            verbatimSymlinks: true,
          });
       } else {
          throw notFound();

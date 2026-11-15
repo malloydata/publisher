@@ -40,7 +40,7 @@ import {
    packageRelativeText,
    withPackageRelativeErrors,
 } from "../package_relative_text";
-import { URL_READER } from "../utils";
+import { packageURLReader, readPackageURL } from "../utils";
 import {
    ANNOTATION_GATE_NEAR_MISS_CODE,
    ANNOTATION_NEAR_MISS_CODE,
@@ -433,7 +433,7 @@ async function openCompileContext(
 
    const { fullSource, callerRegion } =
       scope === "append"
-         ? await appendToSavedModel(modelPath, source, virtualUri)
+         ? await appendToSavedModel(packagePath, modelPath, source, virtualUri)
          : { fullSource: source ?? "", callerRegion: undefined };
 
    // Serve the source for the virtual file, then the request's overlay, and
@@ -441,12 +441,13 @@ async function openCompileContext(
    // file is not substituted.
    const substitute = scope !== "package" || source !== undefined;
    const overlaid = overlayByUrl(packagePath, overlay);
+   const diskReader = packageURLReader(packagePath);
    const interceptingReader = {
       readURL: async (url: URL) => {
          if (substitute && url.toString() === virtualUri) {
             return fullSource;
          }
-         return overlaid.get(overlayKey(url)) ?? URL_READER.readURL(url);
+         return overlaid.get(overlayKey(url)) ?? diskReader.readURL(url);
       },
    };
 
@@ -561,13 +562,18 @@ async function openCompileContext(
  * after it, and where that text starts.
  */
 async function appendToSavedModel(
+   packagePath: string,
    modelPath: string,
    source: string | undefined,
    virtualUri: string,
 ): Promise<{ fullSource: string; callerRegion: CallerRegion }> {
    let modelContent = "";
    try {
-      modelContent = await fs.promises.readFile(modelPath, "utf8");
+      // Confined: a saved model that links out of the package is not read.
+      modelContent = await readPackageURL(
+         packagePath,
+         pathToFileURL(modelPath),
+      );
    } catch {
       // Empty content; a missing model is refused by `loadAppendBase`.
    }
@@ -1148,9 +1154,10 @@ async function compilePackageDryRun(
            (compiled.modelPath === modelName && source !== undefined
               ? source
               : (overlaidText(ctx.overlay, compiled.modelPath) ??
-                (await fs.promises
-                   .readFile(path.join(packagePath, compiled.modelPath), "utf8")
-                   .catch(() => undefined)))));
+                (await readPackageURL(
+                   packagePath,
+                   pathToFileURL(path.join(packagePath, compiled.modelPath)),
+                ).catch(() => undefined)))));
       if (lintText !== undefined) {
          collect(
             notebookLintProblems(
