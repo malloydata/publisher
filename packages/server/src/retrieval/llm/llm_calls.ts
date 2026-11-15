@@ -197,6 +197,7 @@ export class LlmMeter {
       return {
          provider: chat.provider,
          model: chat.model,
+         maxOutputTokens: chat.maxOutputTokens,
          complete: async (req) => {
             const result = await chat.complete({
                ...req,

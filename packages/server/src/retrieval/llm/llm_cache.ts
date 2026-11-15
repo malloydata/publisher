@@ -14,12 +14,18 @@
  * what it stored, and reports the failure, and the caller answers without the
  * missing output: the output only adds search text, and a catalog without it
  * still answers every question it could answer before.
+ *
+ * Except a batch whose reply was cut off at the model's output limit, or was
+ * not usable JSON: it is sent again as two halves, each with the whole limit
+ * to itself, down to single items. An item that still fails is left without
+ * output and the step goes on; the sync's request budget bounds the cost.
  */
 
 import { createHash } from "crypto";
 import type { ChatModel } from "./types";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { publicMessage } from "../../service/http_retry";
+import { LlmJsonError } from "./json";
 import {
    runPooled,
    SyncBudgetReached,
@@ -27,6 +33,13 @@ import {
 } from "./llm_calls";
 
 type LlmCacheTable = "doc_parts" | "node_questions";
+
+/**
+ * Output tokens a request asks for when the operator has not declared the
+ * model's maximum: a limit nearly every chat model allows, small self-hosted
+ * ones included.
+ */
+const DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
 
 export function sha256(text: string): string {
    return createHash("sha256").update(text).digest("hex");
@@ -49,7 +62,10 @@ export interface CachedRun<T> {
    generated: number;
    /** Items left without output: a failure, or the call budget ran out. */
    missing: number;
-   /** The first batch failure, worded for a log or a status page. */
+   /**
+    * What stopped the step, else the first item left without output, worded
+    * for a log or a status page.
+    */
    failure?: string;
    /** True when the call budget stopped the step before the end. */
    capped: boolean;
@@ -82,7 +98,6 @@ export async function generateCached<T>(args: {
    validate: (value: unknown, count: number) => Map<number, T>;
    batchSize: number;
    concurrency: number;
-   maxTokensPerItem: number;
    budget: SyncRequestBudget;
    shouldStop?: () => boolean;
 }): Promise<CachedRun<T>> {
@@ -127,59 +142,83 @@ export async function generateCached<T>(args: {
    }
 
    let failure: unknown;
+   let fatal = false;
    let capped = false;
    let generated = 0;
+   const stopped = () => fatal || capped || args.shouldStop?.() === true;
+   const send = async (batch: CacheItem[]): Promise<void> => {
+      try {
+         const reply = await args.budget.spend((onRequest) =>
+            args.chat.completeJson({
+               system: args.instructions,
+               prompt: args.render(batch.map((b) => b.line)),
+               maxTokens:
+                  args.chat.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+               validate: (v) => args.validate(v, batch.length),
+               onRequest,
+            }),
+         );
+         const now = new Date().toISOString();
+         const params: unknown[] = [];
+         const values: string[] = [];
+         batch.forEach((item, i) => {
+            const out = reply.value.get(i + 1);
+            if (out === undefined) return;
+            output.set(item.key, out);
+            generated += 1;
+            values.push("(?, ?, ?, ?, ?, ?, ?, ?)");
+            params.push(
+               environmentName,
+               packageName,
+               item.key,
+               item.inputHash,
+               promptHash,
+               model,
+               JSON.stringify(out),
+               now,
+            );
+         });
+         if (values.length > 0) {
+            await db.run(
+               `INSERT INTO ${table} (environment_name, package_name, item_key, input_hash, prompt_hash, model, output, created_at)
+                VALUES ${values.join(", ")}
+                ON CONFLICT (environment_name, package_name, item_key) DO UPDATE SET
+                  input_hash = EXCLUDED.input_hash, prompt_hash = EXCLUDED.prompt_hash,
+                  model = EXCLUDED.model, output = EXCLUDED.output, created_at = EXCLUDED.created_at`,
+               params,
+            );
+         }
+      } catch (error) {
+         if (!(error instanceof LlmJsonError)) throw error;
+         if (batch.length === 1) {
+            failure ??= error;
+            return;
+         }
+         // Each half gets the whole limit to itself: twice the room per item.
+         const half = Math.ceil(batch.length / 2);
+         for (const part of [batch.slice(0, half), batch.slice(half)]) {
+            if (stopped()) return;
+            await send(part);
+         }
+      }
+   };
    // Each batch settles its own failure, so the pool never sees one.
    await runPooled(
       batches,
       args.concurrency,
       async (batch) => {
          try {
-            const reply = await args.budget.spend((onRequest) =>
-               args.chat.completeJson({
-                  system: args.instructions,
-                  prompt: args.render(batch.map((b) => b.line)),
-                  maxTokens: args.maxTokensPerItem * batch.length + 100,
-                  validate: (v) => args.validate(v, batch.length),
-                  onRequest,
-               }),
-            );
-            const now = new Date().toISOString();
-            const params: unknown[] = [];
-            const values: string[] = [];
-            batch.forEach((item, i) => {
-               const out = reply.value.get(i + 1);
-               if (out === undefined) return;
-               output.set(item.key, out);
-               generated += 1;
-               values.push("(?, ?, ?, ?, ?, ?, ?, ?)");
-               params.push(
-                  environmentName,
-                  packageName,
-                  item.key,
-                  item.inputHash,
-                  promptHash,
-                  model,
-                  JSON.stringify(out),
-                  now,
-               );
-            });
-            if (values.length > 0) {
-               await db.run(
-                  `INSERT INTO ${table} (environment_name, package_name, item_key, input_hash, prompt_hash, model, output, created_at)
-                   VALUES ${values.join(", ")}
-                   ON CONFLICT (environment_name, package_name, item_key) DO UPDATE SET
-                     input_hash = EXCLUDED.input_hash, prompt_hash = EXCLUDED.prompt_hash,
-                     model = EXCLUDED.model, output = EXCLUDED.output, created_at = EXCLUDED.created_at`,
-                  params,
-               );
-            }
+            await send(batch);
          } catch (error) {
             if (error instanceof SyncBudgetReached) capped = true;
-            else failure ??= error;
+            else if (!fatal) {
+               // What stopped the step outranks an item left behind.
+               failure = error;
+               fatal = true;
+            }
          }
       },
-      () => failure !== undefined || capped || args.shouldStop?.() === true,
+      stopped,
    );
    return {
       output,

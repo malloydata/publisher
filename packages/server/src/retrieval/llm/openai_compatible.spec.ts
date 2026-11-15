@@ -122,6 +122,24 @@ describe("openai-compatible chat adapter", () => {
       expect(requests[0].body.messages[0].role).toBe("system");
    });
 
+   it("never asks for more than a declared maxOutputTokens, reasoning headroom included", async () => {
+      const sent = async (provider: "openai" | "openai-compatible") => {
+         const { fetchFn, requests } = stubFetch([() => reply("ok")]);
+         const chat = createChatModel(
+            settings({ provider, maxOutputTokens: 5_000 }),
+            { fetchFn, retry: instantRetry() },
+         );
+         for (const maxTokens of [100, 3_000, 8_000]) {
+            await chat.complete({ prompt: "p", maxTokens });
+         }
+         return requests.map(
+            (r) => r.body.max_completion_tokens ?? r.body.max_tokens,
+         );
+      };
+      expect(await sent("openai")).toEqual([4_100, 5_000, 5_000]);
+      expect(await sent("openai-compatible")).toEqual([100, 3_000, 5_000]);
+   });
+
    it("leaves temperature out for the OpenAI models that reject it, and keeps 0 for the rest", async () => {
       const sent = async (provider: "openai" | "ollama", model: string) => {
          const { fetchFn, requests } = stubFetch([() => reply("ok")]);
@@ -304,6 +322,29 @@ describe("openai-compatible chat adapter", () => {
          chat.completeJson({ prompt: "p", validate: (v) => v }),
       ).rejects.toBeInstanceOf(LlmJsonError);
       expect(requests).toHaveLength(2);
+   });
+
+   it("gives up at once on a reply cut off at its limit, whatever its content", async () => {
+      for (const content of ['{"results": [', null, '{"results": []}']) {
+         const { fetchFn, requests } = stubFetch([
+            () =>
+               jsonResponse({
+                  choices: [{ message: { content }, finish_reason: "length" }],
+               }),
+         ]);
+         const chat = createChatModel(settings(), {
+            fetchFn,
+            retry: instantRetry(),
+         });
+         await expect(
+            chat.completeJson({
+               prompt: "p",
+               maxTokens: 40,
+               validate: (v) => v,
+            }),
+         ).rejects.toThrow("stopped at a token limit");
+         expect(requests).toHaveLength(1);
+      }
    });
 
    it("cools down after three outage-shaped failures and refuses the fourth without a request", async () => {

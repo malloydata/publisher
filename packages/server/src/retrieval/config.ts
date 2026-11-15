@@ -30,6 +30,8 @@ export type RetrievalLlmConfig = {
    /** Vertex only. */
    projectId?: string;
    location?: string;
+   /** The most output tokens one request may ask for, thinking included. */
+   maxOutputTokens?: number;
    timeoutMs: number;
    concurrency: number;
    /** Most chat calls one index build may make; the spend ceiling. */
@@ -227,6 +229,7 @@ function parseLlm(raw: unknown): RetrievalLlmConfig | undefined {
       "baseUrl",
       "projectId",
       "location",
+      "maxOutputTokens",
       "timeoutMs",
       "concurrency",
       "maxCallsPerSync",
@@ -279,6 +282,11 @@ function parseLlm(raw: unknown): RetrievalLlmConfig | undefined {
       "retrieval.llm.location",
       `"location": "us-central1"`,
    );
+   const maxOutputTokens = positiveInt(
+      obj.maxOutputTokens,
+      "retrieval.llm.maxOutputTokens",
+      "set it to the most output tokens your model may write in one reply, e.g. 16384",
+   );
    if (provider === "vertex" && (!projectId || !location)) {
       throw new Error(
          `Invalid retrieval.llm: provider "vertex" needs projectId and location. ` +
@@ -291,6 +299,7 @@ function parseLlm(raw: unknown): RetrievalLlmConfig | undefined {
       ...(baseUrl ? { baseUrl } : {}),
       ...(projectId ? { projectId } : {}),
       ...(location ? { location } : {}),
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
       timeoutMs:
          positiveInt(
             obj.timeoutMs,

@@ -32,6 +32,8 @@ export interface RawChatRequest {
    system?: string;
    prompt: string;
    maxTokens?: number;
+   /** The model's declared maximum output; nothing an adapter adds may pass it. */
+   maxOutputTokens?: number;
    /** Ask the vendor for JSON output where it has a mode for that. */
    json: boolean;
    signal: AbortSignal;
@@ -70,6 +72,7 @@ function addUsage(a: ChatUsage, b: ChatUsage): ChatUsage {
 }
 
 interface ChatModelOptions {
+   maxOutputTokens?: number;
    timeoutMs: number;
    retry?: RetryPolicy;
    cooldown?: FailureCooldown;
@@ -81,6 +84,7 @@ interface ChatModelOptions {
  * accounting and metrics. A vendor adapter supplies only {@link RawChat}.
  */
 export class ChatModelImpl implements ChatModel {
+   readonly maxOutputTokens?: number;
    private readonly retry: RetryPolicy;
    private readonly cooldown: FailureCooldown;
 
@@ -90,6 +94,7 @@ export class ChatModelImpl implements ChatModel {
       private readonly raw: RawChat,
       private readonly options: ChatModelOptions,
    ) {
+      this.maxOutputTokens = options.maxOutputTokens;
       this.retry = options.retry ?? DEFAULT_RETRY;
       this.cooldown = options.cooldown ?? new FailureCooldown(provider);
    }
@@ -100,6 +105,7 @@ export class ChatModelImpl implements ChatModel {
 
    async completeJson<T>(req: JsonChatRequest<T>): Promise<JsonChatResult<T>> {
       const first = await this.call(req, true);
+      this.throwIfCutOff(first);
       let problem: string;
       try {
          return {
@@ -121,6 +127,7 @@ export class ChatModelImpl implements ChatModel {
          },
          true,
       );
+      this.throwIfCutOff(second);
       const usage = addUsage(first.usage, second.usage);
       try {
          return {
@@ -133,6 +140,23 @@ export class ChatModelImpl implements ChatModel {
             `${this.provider} ${this.model} did not return usable JSON after one repair: ${(error as Error).message}`,
          );
       }
+   }
+
+   /**
+    * A reply cut off at its output limit is never used, and not re-asked:
+    * the repair would ask for the same JSON in the same room.
+    */
+   private throwIfCutOff(result: ChatResult): void {
+      if (!result.truncated) return;
+      throw new LlmJsonError(
+         `${this.provider} ${this.model} stopped at a token limit; its JSON reply may be incomplete`,
+      );
+   }
+
+   /** What a request may ask for: never more than the declared maximum. */
+   private allowance(maxTokens?: number): number | undefined {
+      const most = this.maxOutputTokens;
+      return most === undefined ? maxTokens : Math.min(maxTokens ?? most, most);
    }
 
    private async call(req: ChatRequest, json: boolean): Promise<ChatResult> {
@@ -157,7 +181,8 @@ export class ChatModelImpl implements ChatModel {
                return this.raw.send({
                   system,
                   prompt: req.prompt,
-                  maxTokens: req.maxTokens,
+                  maxTokens: this.allowance(req.maxTokens),
+                  maxOutputTokens: this.maxOutputTokens,
                   json,
                   timeoutMs: this.options.timeoutMs,
                   signal: req.signal

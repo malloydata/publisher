@@ -185,6 +185,34 @@ describe("anthropic adapter", () => {
       });
    });
 
+   it("reports a reply cut off at its limit, even one that thinking left without text, and does not re-ask it", async () => {
+      for (const stop_reason of [
+         "max_tokens",
+         "model_context_window_exceeded",
+      ]) {
+         const { fetchFn, requests } = stubFetch([
+            () =>
+               jsonResponse({
+                  content: [{ type: "thinking", thinking: "..." }],
+                  stop_reason,
+                  usage: { input_tokens: 7, output_tokens: 40 },
+               }),
+         ]);
+         const chat = createChatModel(llm({}), {
+            fetchFn,
+            retry: instantRetry(),
+         });
+         await expect(
+            chat.completeJson({
+               prompt: "p",
+               maxTokens: 40,
+               validate: (v) => v,
+            }),
+         ).rejects.toThrow("stopped at a token limit");
+         expect(requests).toHaveLength(1);
+      }
+   });
+
    it("has no embeddings and says so", () => {
       expect(() =>
          createEmbeddingModel(emb({ provider: "anthropic" })),
@@ -265,6 +293,33 @@ describe("google (Gemini API) adapter", () => {
          inputTokens: 9,
          outputTokens: 34,
       });
+   });
+
+   it("reports a reply cut off at its limit, even one that thinking left without text, and does not re-ask it", async () => {
+      for (const finishReason of ["MAX_TOKENS", "CONTINUATION"]) {
+         const { fetchFn, requests } = stubFetch([
+            () =>
+               jsonResponse({
+                  candidates: [{ content: { role: "model" }, finishReason }],
+                  usageMetadata: {
+                     promptTokenCount: 9,
+                     thoughtsTokenCount: 40,
+                  },
+               }),
+         ]);
+         const chat = createChatModel(llm({ provider: "google" }), {
+            fetchFn,
+            retry: instantRetry(),
+         });
+         await expect(
+            chat.completeJson({
+               prompt: "p",
+               maxTokens: 40,
+               validate: (v) => v,
+            }),
+         ).rejects.toThrow("stopped at a token limit");
+         expect(requests).toHaveLength(1);
+      }
    });
 
    it("does not retry a 403", async () => {

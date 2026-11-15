@@ -138,7 +138,6 @@ export async function resolveQuestions(args: {
       validate: (value, count) => validateQuestions(value, count, perNode),
       batchSize: QUESTIONS_BATCH_SIZE,
       concurrency: args.concurrency,
-      maxTokensPerItem: 30 * perNode,
       budget: args.budget,
       ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
    });

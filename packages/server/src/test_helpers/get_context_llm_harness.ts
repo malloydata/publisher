@@ -54,10 +54,16 @@ export interface ScriptedChat {
 /**
  * A chat model whose replies come from `reply(prompt, n)` (n counts from 1).
  * A thrown error is the vendor failing; a returned string is the model's text.
+ * With `charsPerToken`, the model stops at its allowance as a real one does:
+ * a reply longer than `maxTokens` tokens is cut there and reported as cut off.
  */
 export function scriptedChat(
    reply: (prompt: string, n: number) => string | Promise<string>,
-   options: { delayMs?: number } = {},
+   options: {
+      delayMs?: number;
+      maxOutputTokens?: number;
+      charsPerToken?: number;
+   } = {},
 ): ScriptedChat {
    const prompts: string[] = [];
    const maxTokens: Array<number | undefined> = [];
@@ -74,7 +80,15 @@ export function scriptedChat(
                await new Promise((r) => setTimeout(r, options.delayMs));
             }
             const text = await reply(req.prompt, prompts.length);
-            return { text, usage: { inputTokens: 11, outputTokens: 5 } };
+            const room =
+               options.charsPerToken && req.maxTokens !== undefined
+                  ? req.maxTokens * options.charsPerToken
+                  : Infinity;
+            return {
+               text: text.slice(0, room),
+               usage: { inputTokens: 11, outputTokens: 5 },
+               ...(text.length > room ? { truncated: true } : {}),
+            };
          } finally {
             inFlight -= 1;
          }
@@ -82,6 +96,7 @@ export function scriptedChat(
    };
    return {
       model: new ChatModelImpl("openai-compatible", "scripted", raw, {
+         maxOutputTokens: options.maxOutputTokens,
          timeoutMs: 5_000,
          retry: NO_WAIT_RETRY,
       }),
