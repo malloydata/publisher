@@ -6,13 +6,10 @@ import {
    sourcesIn,
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
+import { planPackages } from "../../../test_helpers/materialization_fixture";
 import { makeDigest, Runtime } from "@malloydata/malloy";
-import {
-   duckdbTestConnections,
-   tempBuildPlanPackages,
-} from "../../../test_helpers/incremental_test_harness";
-import { installSettings } from "../../../test_helpers/settings_env";
+import { duckdbTestConnections } from "../../../test_helpers/incremental_test_harness";
 import { addressSQL, buildSQLOf, computeSourceEntityId } from "./build_plan";
 import {
    compilePackageBuildPlan,
@@ -45,26 +42,8 @@ source: raw is duckdb.sql("""
 """)
 `;
 
-const packages = tempBuildPlanPackages();
-let restore: () => void;
-
-function settings(env: Record<string, string> = {}) {
-   restore?.();
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", ...env },
-   }).restore;
-}
-
-beforeEach(() => settings());
-afterEach(async () => {
-   restore?.();
-   await packages.cleanup();
-});
-
-async function compiled(text: string) {
-   const pkg = await packages.create(text);
-   return { pkg, c: await compilePackageBuildPlan(pkg) };
-}
+const packages = planPackages();
+const settings = packages.settings;
 
 /** The generated build source, presented under the author's sourceID. */
 function generated(c: Awaited<ReturnType<typeof compilePackageBuildPlan>>) {
@@ -86,7 +65,7 @@ describe("P2: a given-reading where: is left out of the build", () => {
    it(
       "builds every caller's rows, applies the fixed terms, and keeps the given term for the read",
       async () => {
-         const { pkg, c } = await compiled(ORDERS);
+         const { pkg, c } = await packages.plan(ORDERS);
          const plan = Object.values(materializePlansIn(c) ?? {})[0];
          expect(plan.readTimeTerms?.map((t) => t.code)).toEqual([
             "org_id = $ORG_ID",
@@ -149,7 +128,7 @@ describe("P2: a given-reading where: is left out of the build", () => {
    it(
       "writes the build copy and the generated where: from the author's text",
       async () => {
-         const { c } = await compiled(ORDERS);
+         const { c } = await packages.plan(ORDERS);
          const plan = Object.values(materializePlansIn(c) ?? {})[0];
          // The text the package's model file holds.
          const result = buildCopyText(ORDERS, plan);
@@ -210,7 +189,7 @@ source: orders is raw extend { where: org_id = $ORG_ID }
    it(
       "leaves a source with no given-reading where: exactly as it was",
       async () => {
-         const { c } = await compiled(`${HEAD}
+         const { c } = await packages.plan(`${HEAD}
 #(materialize) storage="lake"
 source: orders is raw extend { where: s != 'zz' }
 `);
@@ -226,7 +205,7 @@ source: orders is raw extend { where: s != 'zz' }
 
 describe("P2: what is refused rather than left out", () => {
    async function refusal(text: string): Promise<string> {
-      const { c } = await compiled(text);
+      const { c } = await packages.plan(text);
       // Nothing is planned for it, and so nothing is built.
       expect(Object.keys(materializePlansIn(c) ?? {})).toEqual([]);
       expect(Object.values(sourcesIn(c)).some((s) => s.name === "orders")).toBe(
@@ -368,7 +347,7 @@ source: b is raw -> { select: id, org_id } extend {
   dimension: a_s is aa.s
 }
 `;
-         const { pkg, c } = await compiled(text);
+         const { pkg, c } = await packages.plan(text);
          const ids = Object.fromEntries(
             Object.entries(sourcesIn(c)).map(([id, s]) => [s.name, id]),
          );
@@ -393,7 +372,8 @@ source: b is raw -> { select: id, org_id } extend {
    it(
       "refuses a source whose build reads a #@ persist source, rather than plan that source twice",
       async () => {
-         const { c } = await compiled(`##! experimental { givens persistence }
+         const { c } =
+            await packages.plan(`##! experimental { givens persistence }
 given: ORG_ID :: number is 1
 source: raw is duckdb.sql("select 1 as org_id, 'a' as s")
 #@ persist name="base_t"
@@ -415,7 +395,7 @@ source: orders is base -> { select: org_id, s } extend { where: org_id = $ORG_ID
    it(
       "refuses a term the served copy would not keep (a parenthesised head), so no table is built for nothing",
       async () => {
-         const { c } = await compiled(`${HEAD}
+         const { c } = await packages.plan(`${HEAD}
 #(materialize) storage="lake"
 source: orders is (raw extend { where: org_id = $ORG_ID }) extend {
   dimension: big is amount > 10
@@ -438,7 +418,7 @@ source: dated is duckdb.sql("""
    it(
       "plans a given term and a rolling window on one list, and leaves only the given term out of the build",
       async () => {
-         const { c } = await compiled(`${DATED}
+         const { c } = await packages.plan(`${DATED}
 #(materialize) storage="lake"
 source: orders is dated extend {
   where: t >= now - 30 days
@@ -465,7 +445,7 @@ source: orders is dated extend {
    it(
       "refuses a term that reads both a given and the current time",
       async () => {
-         const { c } = await compiled(`${DATED}
+         const { c } = await packages.plan(`${DATED}
 #(materialize) storage="lake"
 source: orders is dated extend {
   where: org_id = $ORG_ID and t >= now - 30 days
@@ -490,11 +470,11 @@ source: dated is duckdb.sql("""select 1 as id, timestamp '2026-01-01' as t""")
 #(materialize) storage="lake"
 source: orders is dated extend { where: t >= now - 30 days }
 `;
-         const first = generated((await compiled(text)).c);
+         const first = generated((await packages.plan(text)).c);
          const sql = addressSQL(first.source, first.target);
          expect(sql).toMatch(/LOCALTIMESTAMP|CURRENT_TIMESTAMP/);
          expect(sql).not.toMatch(/20\d\d-\d\d-\d\d \d\d:\d\d/);
-         const second = generated((await compiled(text)).c);
+         const second = generated((await packages.plan(text)).c);
          expect(addressSQL(second.source, second.target)).toBe(sql);
       },
       { timeout: 30000 },
@@ -507,7 +487,7 @@ source: orders is dated extend { where: t >= now - 30 days }
          // computed under its own setting.
          const addressUnder = async (env: Record<string, string>) => {
             settings({ PERSIST_STORAGE_MODE: "on", ...env });
-            const { c } = await compiled(ORDERS);
+            const { c } = await packages.plan(ORDERS);
             const g = generated(c);
             return {
                sql: addressSQL(g.source, g.target),

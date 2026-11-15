@@ -8,10 +8,8 @@
  */
 
 import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { installSettings } from "../../../test_helpers/settings_env";
-import { compilePackageBuildPlan } from "./build_plan_compile";
+import { describe, expect, it } from "bun:test";
+import { planPackages } from "../../../test_helpers/materialization_fixture";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -29,35 +27,21 @@ const TABLE = `duckdb.sql("""
   ) as t(id, carrier, tenant, d, ts)
 """)`;
 
-const packages = tempBuildPlanPackages();
-let restore: (() => void) | undefined;
-
-function enable(on: boolean, gated = false) {
-   restore?.();
-   restore = installSettings({
-      env: {
-         PUBLISHER_MATERIALIZE: on ? "true" : "false",
-         PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
-      },
-   }).restore;
-}
-
-beforeEach(() => enable(true));
-afterEach(async () => {
-   restore?.();
-   restore = undefined;
-   await packages.cleanup();
+const packages = planPackages({
+   PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
 });
 
-async function compiled(text: string) {
-   const pkg = await packages.create({ "m.malloy": text });
-   return compilePackageBuildPlan(pkg);
+function enable(on: boolean, gated = false) {
+   packages.settings({
+      PUBLISHER_MATERIALIZE: on ? "true" : "false",
+      PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
+   });
 }
 
-async function compiledFiles(files: Record<string, string>) {
-   const pkg = await packages.create(files);
-   return compilePackageBuildPlan(pkg);
-}
+const compiled = async (text: string) =>
+   (await packages.plan({ "m.malloy": text })).c;
+const compiledFiles = async (files: Record<string, string>) =>
+   (await packages.plan(files)).c;
 
 function viewSources(c: Awaited<ReturnType<typeof compiled>>): string[] {
    return Object.values(sourcesIn(c))

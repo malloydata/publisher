@@ -8,9 +8,11 @@ import {
    sourcesIn,
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { installSettings } from "../../../test_helpers/settings_env";
+import { describe, expect, it } from "bun:test";
+import {
+   type ModelFiles,
+   planPackages,
+} from "../../../test_helpers/materialization_fixture";
 import {
    addressSQL,
    buildSQLOf,
@@ -57,21 +59,9 @@ const BASE = `source: orders_raw is duckdb.sql("""
 """)
 `;
 
-const packages = tempBuildPlanPackages();
-let restore: () => void;
-
-function enable(on: boolean) {
-   restore?.();
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: on ? "true" : "false" },
-   }).restore;
-}
-
-beforeEach(() => enable(true));
-afterEach(async () => {
-   restore?.();
-   await packages.cleanup();
-});
+const packages = planPackages();
+const enable = (on: boolean) =>
+   packages.settings({ PUBLISHER_MATERIALIZE: on ? "true" : "false" });
 
 async function contentsOf(
    pkg: Awaited<ReturnType<typeof packages.create>>,
@@ -86,10 +76,7 @@ async function contentsOf(
    return m._modelDef.contents as Record<string, unknown>;
 }
 
-async function compiled(files: string | Record<string, string>) {
-   const pkg = await packages.create(files);
-   return compilePackageBuildPlan(pkg);
-}
+const compiled = async (files: ModelFiles) => (await packages.plan(files)).c;
 
 function generatedPlans(
    c: Awaited<ReturnType<typeof compiled>>,
@@ -2776,14 +2763,10 @@ source: orders is orders_raw
 `;
 
    async function outcome(gatedSources: boolean, text = GATED) {
-      restore?.();
-      restore = installSettings({
-         env: {
-            PUBLISHER_MATERIALIZE: "true",
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
-         },
-      }).restore;
+      packages.settings({
+         PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+      });
       const c = await compiled(text);
       const [sourceID] = Object.keys(materializePlansIn(c) ?? {});
       return { c, sourceID, outcome: deriveBuildPlanOutcome(c, null) };

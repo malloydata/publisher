@@ -6,9 +6,8 @@ import {
    sourcesIn,
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { installSettings } from "../../../test_helpers/settings_env";
+import { describe, expect, it } from "bun:test";
+import { planPackages } from "../../../test_helpers/materialization_fixture";
 import { accessLiftEdits, applyEdits } from "../text/declaration_text";
 import { addressSQL, buildSQLOf, deriveBuildPlanOutcome } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
@@ -82,21 +81,8 @@ source: raw is duckdb.sql("""
 """)
 `;
 
-const packages = tempBuildPlanPackages();
-let restore: () => void;
-
-function settings(env: Record<string, string> = {}) {
-   restore?.();
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", ...env },
-   }).restore;
-}
-
-beforeEach(() => settings());
-afterEach(async () => {
-   restore?.();
-   await packages.cleanup();
-});
+const packages = planPackages();
+const settings = packages.settings;
 
 async function planOf(text: string | Record<string, string>) {
    const pkg = await packages.create(text);

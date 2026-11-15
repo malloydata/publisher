@@ -2,20 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   materializePlansIn,
    sourcesIn,
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { installSettings } from "../../../test_helpers/settings_env";
+import { describe, expect, it } from "bun:test";
+import {
+   materializePlanNamed,
+   notBuiltMessage,
+   planPackages,
+} from "../../../test_helpers/materialization_fixture";
 import { addressSQL } from "./build_plan";
 import {
    compilePackageBuildPlan,
    computePackageBuildPlan,
 } from "./build_plan_compile";
 import { planModelMaterialize } from "./materialize_plan";
-import { type MaterializePlan } from "../domain/table_plans";
 
 /**
  * P9 on the `#(materialize)` build side: a dimension whose value depends on
@@ -36,40 +37,7 @@ source: raw is duckdb.sql("""
 """)
 `;
 
-const packages = tempBuildPlanPackages();
-let restore: () => void;
-beforeEach(() => {
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true" },
-   }).restore;
-});
-afterEach(async () => {
-   restore?.();
-   await packages.cleanup();
-});
-
-async function compiled(text: string) {
-   const pkg = await packages.create(text);
-   return { pkg, c: await compilePackageBuildPlan(pkg) };
-}
-
-function planOf(
-   c: Awaited<ReturnType<typeof compilePackageBuildPlan>>,
-   name: string,
-): MaterializePlan | undefined {
-   return Object.values(materializePlansIn(c) ?? {}).find(
-      (p) => p.sourceName === name,
-   );
-}
-
-function notBuilt(
-   c: Awaited<ReturnType<typeof compilePackageBuildPlan>>,
-   source: string,
-): string | undefined {
-   return (c.annotationFindings ?? []).find(
-      (f) => f.code === "materialize-not-built" && f.subject === source,
-   )?.message;
-}
+const packages = planPackages();
 
 const ORDERS = `${HEAD}
 source: base is raw extend { dimension: base_hour is hour(ts) }
@@ -91,8 +59,8 @@ describe("P9: caller-dependent dimensions are left out of the build", () => {
    it(
       "leaves out what reads a given, the current time or the zone, and stores the rest",
       async () => {
-         const { pkg, c } = await compiled(ORDERS);
-         const p = planOf(c, "orders");
+         const { pkg, c } = await packages.plan(ORDERS);
+         const p = materializePlanNamed(c, "orders");
          expect(p).toBeDefined();
          expect(
             p?.leftOut?.map(({ dimension, reads }) => ({ dimension, reads })),
@@ -141,14 +109,14 @@ describe("P9: caller-dependent dimensions are left out of the build", () => {
    it(
       "refuses a given-reading dimension declared on a base in the same file",
       async () => {
-         const { c } = await compiled(`${HEAD}
+         const { c } = await packages.plan(`${HEAD}
 source: base is raw extend { dimension: mine is org_id = $ORG_ID }
 source: mid is base extend { dimension: big is amount > 10 }
 #(materialize) storage="lake"
 source: orders is mid extend { measure: n is count() }
 `);
-         expect(planOf(c, "orders")).toBeUndefined();
-         expect(notBuilt(c, "orders")).toContain(
+         expect(materializePlanNamed(c, "orders")).toBeUndefined();
+         expect(notBuiltMessage(c, "orders")).toContain(
             "declare the given-reading dimension on the materialized source itself",
          );
       },
@@ -169,8 +137,8 @@ source: orders is base extend { measure: n is count() }
 `,
          });
          const c = await compilePackageBuildPlan(pkg);
-         expect(planOf(c, "orders")).toBeUndefined();
-         expect(notBuilt(c, "orders")).toContain(
+         expect(materializePlanNamed(c, "orders")).toBeUndefined();
+         expect(notBuiltMessage(c, "orders")).toContain(
             "the dimension `mine` reads a given and is not declared on this source",
          );
       },
@@ -180,7 +148,7 @@ source: orders is base extend { measure: n is count() }
    it(
       "leaves out a dimension reading the given its own where: reads (the IR walk finds it)",
       async () => {
-         const { c } = await compiled(`${HEAD}
+         const { c } = await packages.plan(`${HEAD}
 #(materialize) storage="lake"
 source: scoped is raw extend {
   where: org_id = $ORG_ID
@@ -188,7 +156,7 @@ source: scoped is raw extend {
   dimension: big is amount > 10
 }
 `);
-         const p = planOf(c, "scoped");
+         const p = materializePlanNamed(c, "scoped");
          expect(p?.leftOut).toEqual([{ dimension: "mine", reads: ["given"] }]);
          expect(p?.columns.map((col) => col.column)).not.toContain("mine");
          // P2 still leaves the term out of the build.
@@ -267,7 +235,7 @@ source: scoped is raw extend {
    it(
       "refuses an inlined join through which a given is read",
       async () => {
-         const { c } = await compiled(`${HEAD}
+         const { c } = await packages.plan(`${HEAD}
 source: orgs is duckdb.sql("select 1 as org_id, 'x' as name") extend {
   primary_key: org_id
   dimension: is_mine is org_id = $ORG_ID
@@ -277,8 +245,8 @@ source: orders is raw extend {
   join_one: orgs with org_id
 }
 `);
-         expect(planOf(c, "orders")).toBeUndefined();
-         expect(notBuilt(c, "orders")).toContain(
+         expect(materializePlanNamed(c, "orders")).toBeUndefined();
+         expect(notBuiltMessage(c, "orders")).toContain(
             "inline= names `orgs`, through which a given is read",
          );
       },

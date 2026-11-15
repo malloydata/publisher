@@ -7,9 +7,8 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { installSettings } from "../../../test_helpers/settings_env";
+import { describe, expect, it } from "bun:test";
+import { planPackages } from "../../../test_helpers/materialization_fixture";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import { buildCopyText } from "./materialize_build_copy";
 import { type MaterializePlan } from "../domain/table_plans";
@@ -31,17 +30,7 @@ source: raw is duckdb.sql("""
 """)
 `;
 
-const packages = tempBuildPlanPackages();
-let restore: () => void;
-beforeEach(() => {
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true" },
-   }).restore;
-});
-afterEach(async () => {
-   restore?.();
-   await packages.cleanup();
-});
+const packages = planPackages();
 
 type Field = Record<string, unknown>;
 
