@@ -6,9 +6,9 @@
  *
  * Malloy plans persisted sources only in a file that carries
  * `##! experimental.persistence`, and refuses a non-empty build manifest on
- * one that does not. An author's file needs the flag only for that: the
- * served copy reads every table, and the live compile takes no build
- * manifest. So for a model file that declares `#@ persist` without the
+ * one that does not. An author's file needs the flag only for that: a
+ * query reads every stored table through the served copy, and its live
+ * compile takes no compiler manifest. So for a model file that declares `#@ persist` without the
  * flag, the planner compiles a build copy of the file with the flag as its
  * first line, served over the file's own URL (an overlay, like the
  * `#(materialize)` build copy's), and asks it for build targets: every

@@ -49,8 +49,11 @@
  * `storage=`) is built into its own warehouse and needs a `name=`
  * ({@link COLOCATED_NEEDS_NAME}): its default could be the very table it
  * reads. The served copy re-roots it on that table, on its own connection,
- * as it re-roots a `storage=` source on its destination; v1's colocated
- * `#@ persist` is still served through Malloy's build manifest.
+ * as it re-roots a `storage=` source on its destination, and a v1 colocated
+ * `#@ persist` table the same way
+ * (`tests/component/r4/served_copy_colocated.component.spec.ts`). Only a
+ * legacy `.malloynb` cell still reads a table through Malloy's compiler
+ * manifest (`ModelServing.manifestIfPersistent`).
  *
  * Joins. A join is a reference by default: it is not stored,
  * the served copy keeps it as written, and it reads the joined source (its own
