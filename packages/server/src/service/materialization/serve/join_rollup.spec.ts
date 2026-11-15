@@ -217,16 +217,16 @@ describe("parentKeyProblem", () => {
          legOf("many", "many"),
          legOf("many", "one"),
       ]) {
-         expect(parentKeyProblem(leg, true)).toBeUndefined();
-         expect(parentKeyProblem(leg, false)).toContain(
+         expect(parentKeyProblem(leg, "unique")).toBeUndefined();
+         expect(parentKeyProblem(leg, "repeated")).toContain(
             "more than once or NULL",
          );
-         expect(parentKeyProblem(leg, undefined)).toContain("was not checked");
+         expect(parentKeyProblem(leg, "unknown")).toContain("was not checked");
       }
    });
 
    it("asks nothing of a join_one read at its key", () => {
-      expect(parentKeyProblem(legOf("one", "one"), undefined)).toBeUndefined();
+      expect(parentKeyProblem(legOf("one", "one"), "unknown")).toBeUndefined();
    });
 });
 
@@ -534,14 +534,14 @@ describe("joinedKeyProblem", () => {
    it("declines a count or sum of the joined source's own rows unless its key was checked unique and never NULL", () => {
       for (const m of ["seg_miles", "seg_count"]) {
          const read = new Set([m]);
-         expect(joinedKeyProblem(legOf(), read, "seg_id", false)).toContain(
-            "more than once or NULL",
-         );
-         expect(joinedKeyProblem(legOf(), read, "seg_id", undefined)).toContain(
+         expect(
+            joinedKeyProblem(legOf(), read, "seg_id", "repeated"),
+         ).toContain("more than once or NULL");
+         expect(joinedKeyProblem(legOf(), read, "seg_id", "unknown")).toContain(
             "was not checked unique and never NULL",
          );
          expect(
-            joinedKeyProblem(legOf(), read, "seg_id", true),
+            joinedKeyProblem(legOf(), read, "seg_id", "unique"),
          ).toBeUndefined();
       }
    });
@@ -549,10 +549,10 @@ describe("joinedKeyProblem", () => {
    it("asks nothing of a join keyed on the joined source's primary key, or of one with none", () => {
       const read = new Set(["seg_miles"]);
       expect(
-         joinedKeyProblem(legOf(), read, "flight_id", undefined),
+         joinedKeyProblem(legOf(), read, "flight_id", "unknown"),
       ).toBeUndefined();
       expect(
-         joinedKeyProblem(legOf(), read, undefined, undefined),
+         joinedKeyProblem(legOf(), read, undefined, "unknown"),
       ).toBeUndefined();
    });
 
@@ -572,7 +572,12 @@ describe("joinedKeyProblem", () => {
          },
       ] as RollupVariantPlan["rollupMeasures"][number]["partials"];
       expect(
-         joinedKeyProblem(legOf(p), new Set(["seg_miles"]), "seg_id", false),
+         joinedKeyProblem(
+            legOf(p),
+            new Set(["seg_miles"]),
+            "seg_id",
+            "repeated",
+         ),
       ).toBeUndefined();
    });
 });

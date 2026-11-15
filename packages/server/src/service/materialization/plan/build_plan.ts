@@ -1,6 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { KeyCheckCompiler } from "../domain/key_check";
+import {
+   exploreOf,
+   modelDefIfAny,
+   modelDefOf,
+   sourceDefOf,
+} from "../../governance/ir/compiled_model";
 import type {
    BuildTarget,
    Connection as MalloyConnection,
@@ -18,7 +25,7 @@ import {
    persistUnparseableFinding,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
-import { routeHasKey } from "../../motly";
+import { declares } from "./declaration";
 import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -42,12 +49,16 @@ import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
    assertRollupNameUnshared,
+   assertPlacementNamed,
    assertTierEligible,
    isAuthorizeAttributedToEntryPoint,
    type TierGateInputs,
 } from "./materialization_eligibility";
 
-import { type SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import {
+   companionOmissions,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    materializeRefusalFinding,
@@ -214,6 +225,12 @@ export interface CompiledBuildPlan {
     */
    materializePlans?: Record<string, MaterializePlan>;
    /**
+    * Each `#(materialize)` uniqueness check's compiler over a run's manifest,
+    * by `keyCheckCompilerKey`; set only on a plan compiled on the thread
+    * that builds (`build_plan_compile.ts`).
+    */
+   keyCheckCompilers?: ReadonlyMap<string, KeyCheckCompiler>;
+   /**
     * Sources planning left out because it FAILED (a companion that did not
     * compile), for the wire plan's `omittedSources`. Absent: none.
     */
@@ -269,8 +286,8 @@ function planDynamicFields(
 export function publicColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
    try {
-      names = persistSource._explore.intrinsicFields
-         .filter((f) => f.isAtomicField())
+      names = exploreOf(persistSource)
+         .intrinsicFields.filter((f) => f.isAtomicField())
          .map((f) => f.name)
          .filter((n): n is string => typeof n === "string" && n.length > 0);
    } catch (err) {
@@ -371,7 +388,7 @@ function detectDroppedPersistSources(
 ): string[] {
    const dropped: string[] = [];
    try {
-      const contents = malloyModel?._modelDef?.contents as
+      const contents = modelDefIfAny(malloyModel)?.contents as
          | Record<string, { type?: string; annotations?: unknown }>
          | undefined;
       if (!contents) return dropped;
@@ -382,7 +399,7 @@ function detectDroppedPersistSources(
          try {
             // Presence only, read over every line as Malloy reads it, so a
             // `#@ persist` line carrying an `@env.` reference is still caught.
-            isPersist = routeHasKey(
+            isPersist = declares(
                new Annotations(def.annotations),
                "@",
                "persist",
@@ -407,10 +424,12 @@ function detectDroppedPersistSources(
 function declaredPersistSourceIDs(malloyModel: MalloyModel): string[] {
    const ids: string[] = [];
    try {
-      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+      for (const def of Object.values(
+         modelDefOf(malloyModel)?.contents ?? {},
+      )) {
          if (!isSourceDef(def) || !def.annotations) continue;
          try {
-            if (routeHasKey(new Annotations(def.annotations), "@", "persist")) {
+            if (declares(new Annotations(def.annotations), "@", "persist")) {
                if (def.sourceID) ids.push(def.sourceID);
             }
          } catch {
@@ -434,7 +453,9 @@ function sourceIDsWithNoteAt(
 ): string[] {
    const ids: string[] = [];
    try {
-      for (const def of Object.values(malloyModel._modelDef?.contents ?? {})) {
+      for (const def of Object.values(
+         modelDefOf(malloyModel)?.contents ?? {},
+      )) {
          if (!isSourceDef(def) || !def.annotations || !def.sourceID) continue;
          try {
             const notes = new Annotations(def.annotations).forRoute("@");
@@ -477,7 +498,7 @@ export async function classifyPersistSourceGate(
    cacheScope: string,
 ): Promise<PersistSourceGateOutcome> {
    try {
-      const entryStruct = persistSource._sourceDef as SourceDef;
+      const entryStruct = sourceDefOf(persistSource) as SourceDef;
       const groups = collectEntryPointGates(
          entryStruct,
          modelDef,
@@ -665,9 +686,10 @@ async function collectGeneratedMaterialize(
       /** The author's compiled model, and the materializer that compiled it. */
       malloyModel: MalloyModel;
       materializer: ModelMaterializer;
+      keyCheckCompilers?: Map<string, KeyCheckCompiler>;
    },
 ): Promise<void> {
-   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, omitted } = await tryCompileMaterializeCompanion(
       {
          ...args,
@@ -685,6 +707,9 @@ async function collectGeneratedMaterialize(
    }
    parts.omittedSources.push(...(omitted ?? []));
    if (!generated) return;
+   for (const [key, compile] of generated.checkCompilers) {
+      args.keyCheckCompilers?.set(key, compile);
+   }
    for (const plan of generated.plans) {
       if (plan.pairFullRefresh) {
          addAnnotationFinding(
@@ -844,7 +869,7 @@ async function collectGeneratedRollups(
       parts.sourceGateOutcomes[source.sourceID] =
          await classifyPersistSourceGate(
             source,
-            generated.model._modelDef,
+            modelDefOf(generated.model),
             generated.materializer,
             deps,
             `${args.modelPath}#preaggregate`,
@@ -874,7 +899,7 @@ async function collectGeneratedPersistedViews(
       materializer: ModelMaterializer;
    },
 ): Promise<void> {
-   const authorDef: ModelDef = args.malloyModel._modelDef;
+   const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, omitted } =
       await tryCompilePersistedViewCompanion({
          packagePath: args.packagePath,
@@ -974,6 +999,12 @@ export async function collectModelBuildPlan(
       malloyModel: MalloyModel;
       runtime: Runtime;
       getRuntime: SynthesizedRuntimeFactory;
+      /**
+       * Where each `#(materialize)` uniqueness check's compiler over a run's
+       * manifest is put, on a thread that runs builds; absent on the load
+       * worker, whose plan crosses to the main thread as data.
+       */
+      keyCheckCompilers?: Map<string, KeyCheckCompiler>;
    },
 ): Promise<void> {
    const {
@@ -983,6 +1014,7 @@ export async function collectModelBuildPlan(
       malloyModel,
       runtime,
       getRuntime,
+      keyCheckCompilers,
    } = args;
    // `#(materialize)` (materialization v2, phase 3), behind
    // PUBLISHER_MATERIALIZE: off, nothing here runs and the plan is exactly what
@@ -996,6 +1028,7 @@ export async function collectModelBuildPlan(
          getRuntime,
          malloyModel,
          materializer,
+         keyCheckCompilers,
       });
       // `#@ persist` on a view (phase 4, P14), under the same switch.
       await collectGeneratedPersistedViews(parts, {
@@ -1015,7 +1048,7 @@ export async function collectModelBuildPlan(
          modelPath,
          packagePath,
          getRuntime,
-         modelDef: malloyModel._modelDef,
+         modelDef: modelDefOf(malloyModel),
       });
    }
 
@@ -1027,7 +1060,7 @@ export async function collectModelBuildPlan(
    let planModel = malloyModel;
    let planRuntime = runtime;
    if (
-      !routeHasKey(
+      !declares(
          malloyModel.modelAnnotations,
          "!",
          "experimental",
@@ -1044,10 +1077,9 @@ export async function collectModelBuildPlan(
                { modelPath, error: errMessage(error) },
             );
             parts.omittedSources.push(
-               ...omittedByID(
-                  declaredPersistSourceIDs(malloyModel),
-                  "v1_build_companion_failed",
-               ),
+               ...companionOmissions("v1_build", {
+                  sourceIDs: declaredPersistSourceIDs(malloyModel),
+               }),
             );
          },
       });
@@ -1169,7 +1201,7 @@ export async function collectModelBuildPlan(
             malloyModel.givens.values(),
          ) as unknown as MalloyGiven[];
          classificationCtx = {
-            modelDef: malloyModel._modelDef,
+            modelDef: modelDefOf(malloyModel),
             deps: createGateClassificationDeps(
                givens.map(malloyGivenToApi),
                modelPath,
@@ -1261,6 +1293,7 @@ export function deriveBuildPlan(
          // docs/materialization.md.
          if (!rollup) {
             try {
+               assertPlacementNamed(source);
                assertTierEligible(
                   source,
                   declaresStorage,

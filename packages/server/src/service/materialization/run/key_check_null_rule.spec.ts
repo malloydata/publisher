@@ -41,7 +41,7 @@ import {
    rollupKeyCheckQuery,
    type RollupVariantPlan,
 } from "../plan/rollup_plan";
-import { storedKeyCheckSql } from "./inline_uniqueness";
+import { storedKeyCheckSql } from "../text/key_check_text";
 
 const duckdb = new DuckDBConnection("key_checks", ":memory:");
 afterAll(() => duckdb.close());

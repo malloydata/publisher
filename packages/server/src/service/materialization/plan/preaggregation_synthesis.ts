@@ -20,7 +20,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import { placementOf, readRouteIfAny } from "./declaration";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -213,17 +213,18 @@ export function basePersistNamespace(
 ): string | undefined {
    if (!source.annotations) return undefined;
    try {
-      const tag = parseRouteTag(
+      const tag = readRouteIfAny(
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          new Annotations(source.annotations as any),
          "@",
-      ).tag;
-      if (!tag.has("persist")) return undefined;
-      // `#@ persist name="x"` parses as SIBLING keys; nested form first, sibling
-      // as the documented fallback (as `readPreaggregateAnnotation` does).
-      const storage = tag.text("persist", "storage") ?? tag.text("storage");
-      if (storage !== undefined && storage.trim() !== "") return undefined;
-      return persistNamespace(tag.text("persist", "name") ?? tag.text("name"));
+      );
+      if (!tag?.has("persist")) return undefined;
+      const read = placementOf(tag, "persist");
+      // A base built in a destination, or refused, lends no namespace.
+      if (!("placement" in read) || read.placement.tier !== "colocated") {
+         return undefined;
+      }
+      return persistNamespace(read.placement.name);
    } catch {
       return undefined;
    }

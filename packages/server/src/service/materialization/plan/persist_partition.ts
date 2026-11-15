@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 
 /**
@@ -116,7 +117,7 @@ function columnSurface(persistSource: PersistSource): {
    const publicNames = new Set<string>();
    const declaredNames = new Set<string>();
    try {
-      const def = persistSource._sourceDef as unknown as {
+      const def = sourceDefOf(persistSource) as unknown as {
          fields?: unknown[];
       };
       for (const field of def?.fields ?? []) {

@@ -22,10 +22,7 @@
 
 import { createHash } from "node:crypto";
 import { tableIdentity } from "../../versions/materialization_scope";
-import type {
-   BuildManifest,
-   Connection as MalloyConnection,
-} from "@malloydata/malloy";
+import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import type { KeyUniqueness, ManifestEntry } from "../domain/types";
 import type {
    InlineUniquenessCheck,
@@ -449,35 +446,6 @@ export function withoutUniquenessPasses(
 }
 
 /**
- * Compiles a check against a build manifest, so it reads the persisted
- * tables the manifest names. Registered per check at plan time, where the
- * companion's materializer is (materialize_compile.ts); a check without one
- * (a plan from elsewhere) is never compiled over a stored table.
- */
-type UniquenessCheckCompiler = (
-   buildManifest: BuildManifest,
-   connectionDigests: Record<string, string>,
-) => Promise<string>;
-
-const checkCompilers = new WeakMap<
-   InlineUniquenessCheck,
-   UniquenessCheckCompiler
->();
-
-export function registerUniquenessCheckCompiler(
-   check: InlineUniquenessCheck,
-   compile: UniquenessCheckCompiler,
-): void {
-   checkCompilers.set(check, compile);
-}
-
-export function uniquenessCheckCompiler(
-   check: InlineUniquenessCheck,
-): UniquenessCheckCompiler | undefined {
-   return checkCompilers.get(check);
-}
-
-/**
  * Run every uniqueness check `plan` carries on `connection`, throwing
  * {@link InlinedJoinNotUniqueError} for the first join whose key repeats. A
  * plan with no inlined join checks nothing.
@@ -574,19 +542,6 @@ export function pairLeafKeyChecksOf(
            ]
          : [],
    );
-}
-
-/**
- * The SQL of a stored table's primary key check, over `quotedTable` (a
- * DuckDB path, as the destination's session reads it): one row when a value
- * of `keyColumn` repeats or is NULL.
- */
-export function storedKeyCheckSql(
-   quotedTable: string,
-   keyColumn: string,
-): string {
-   const k = `"${keyColumn.replace(/"/g, '""')}"`;
-   return `SELECT ${k} FROM ${quotedTable} GROUP BY ${k} HAVING COUNT(*) > 1 OR ${k} IS NULL LIMIT 1`;
 }
 
 /**

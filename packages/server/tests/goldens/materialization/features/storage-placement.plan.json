@@ -1,0 +1,790 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "m_storage@<pkg>/m.malloy": []
+        },
+        "order": [
+          "m_storage@<pkg>/m.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy": [],
+          "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy": []
+        },
+        "order": [
+          "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy",
+          "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy": [],
+          "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy": [],
+          "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy",
+          "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy",
+          "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "p_named_nested@<pkg>/m.malloy": [],
+          "p_named_sibling@<pkg>/m.malloy": [],
+          "p_nested@<pkg>/m.malloy": [],
+          "p_sibling@<pkg>/m.malloy": []
+        },
+        "order": [
+          "p_sibling@<pkg>/m.malloy",
+          "p_nested@<pkg>/m.malloy",
+          "p_named_sibling@<pkg>/m.malloy",
+          "p_named_nested@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "m_storage@<pkg>/m.malloy": {
+        "buildSourceName": "m_storage__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "m_storage",
+          "storage": "lake"
+        },
+        "sourceID": "m_storage@<pkg>/m.malloy",
+        "sourceName": "m_storage",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {
+      "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "rollups",
+        "baseGated": false,
+        "baseSourceID": "rollups@<pkg>/m.malloy",
+        "baseSourceName": "rollups",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "region"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "r_storage",
+            "partialName": "r_storage__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "r_storage__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "r_storage",
+            "partials": [
+              {
+                "column": "r_storage__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "rollups__rollup__region__495e6697",
+        "storage": "lake",
+        "variant": true
+      },
+      "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "v1_rollups",
+        "baseGated": false,
+        "baseSourceID": "v1_rollups@<pkg>/m.malloy",
+        "baseSourceName": "v1_rollups",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "region"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "v1_sibling",
+            "partialName": "v1_sibling__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "v1_sibling__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "v1_sibling",
+            "partials": [
+              {
+                "column": "v1_sibling__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "v1_rollups__rollup__region__cbe05f06",
+        "storage": "lake",
+        "variant": true
+      },
+      "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "v1_rollups",
+        "baseGated": false,
+        "baseSourceID": "v1_rollups@<pkg>/m.malloy",
+        "baseSourceName": "v1_rollups",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "status"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "v1_nested",
+            "partialName": "v1_nested__partial",
+            "reaggregate": "max"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "v1_nested__partial",
+              "kind": "partial",
+              "reaggregate": "max"
+            },
+            "name": "v1_nested",
+            "partials": [
+              {
+                "column": "v1_nested__partial",
+                "leaf": {
+                  "aggregate": "max",
+                  "expr": {
+                    "args": [],
+                    "fn": "max",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "v1_rollups__rollup__status__1425197f",
+        "storage": "lake",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "m_storage@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "p_named_nested@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "p_named_sibling@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "p_nested@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "p_sibling@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "m_storage@<pkg>/m.malloy": "m.malloy",
+      "p_named_nested@<pkg>/m.malloy": "m.malloy",
+      "p_named_sibling@<pkg>/m.malloy": "m.malloy",
+      "p_nested@<pkg>/m.malloy": "m.malloy",
+      "p_sibling@<pkg>/m.malloy": "m.malloy",
+      "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy": "m.malloy",
+      "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "deprecated-preaggregate-annotation",
+      "message": "Measure v1_sibling on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "v1_rollups"
+    },
+    {
+      "code": "deprecated-preaggregate-annotation",
+      "message": "Measure v1_nested on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "v1_rollups"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "m_storage@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "p_sibling@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "p_nested@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "p_named_sibling@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "p_named_nested@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "m_storage@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "m_storage",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "m_storage",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+        "sourceID": "m_storage@<pkg>/m.malloy",
+        "sql": "sha256:d7205aaa5763e7e3"
+      },
+      "p_named_nested@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "p_named_nested",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "p_named_nested",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+        "sourceID": "p_named_nested@<pkg>/m.malloy",
+        "sql": "sha256:8b0c58a474b6c64b"
+      },
+      "p_named_sibling@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "p_named",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "p_named_sibling",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+        "sourceID": "p_named_sibling@<pkg>/m.malloy",
+        "sql": "sha256:8b0c58a474b6c64b"
+      },
+      "p_nested@<pkg>/m.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "p_nested",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6",
+        "sourceID": "p_nested@<pkg>/m.malloy",
+        "sql": "sha256:239a2edba096b668"
+      },
+      "p_sibling@<pkg>/m.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "p_sibling",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6",
+        "sourceID": "p_sibling@<pkg>/m.malloy",
+        "sql": "sha256:239a2edba096b668"
+      },
+      "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "r_storage__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "rollups__rollup__region__495e6697",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "rollups",
+          "grainDimensions": [
+            "region"
+          ],
+          "measures": [
+            "r_storage"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed",
+        "sourceID": "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:1155f8026b36bb8d"
+      },
+      "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "v1_sibling__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "v1_rollups__rollup__region__cbe05f06",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "v1_rollups",
+          "grainDimensions": [
+            "region"
+          ],
+          "measures": [
+            "v1_sibling"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722",
+        "sourceID": "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:3eb9a72c253f1676"
+      },
+      "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "v1_nested__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "v1_rollups__rollup__status__1425197f",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "v1_rollups",
+          "grainDimensions": [
+            "status"
+          ],
+          "measures": [
+            "v1_nested"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1",
+        "sourceID": "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:d0afc282344820b6"
+      },
+      "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "views__v_nested__view",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+        "sourceID": "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy",
+        "sql": "sha256:8b0c58a474b6c64b"
+      },
+      "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "views__v_sibling__view",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6",
+        "sourceID": "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy",
+        "sql": "sha256:239a2edba096b668"
+      }
+    }
+  }
+}

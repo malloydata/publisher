@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { storedTypeText } from "../stored_column_types";
 import { describe, expect, it } from "bun:test";
 import {
    buildServedCopy,
@@ -14,7 +15,6 @@ import {
    rewriteDimensions,
    SERVED_COPY_FLAG,
    storedMalloyType,
-   storedTypeText,
    typeDeclaration,
    type Reroot,
    replacePairJoin,
