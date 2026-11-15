@@ -16,11 +16,17 @@
  *  - `storage=` names the destination, written beside the route's key
  *    (`#@ persist storage="lake"`) or inside it (`#@ persist { storage="lake" }`);
  *    the form inside the key wins when both are written, as it is the more
- *    specific;
+ *    specific, and it wins even when it is unusable: a nested `storage=` that
+ *    names nothing refuses the source, never falling through to a flat one;
  *  - `name=` is read the same two ways;
- *  - a `storage=` that names nothing (`storage=""`, or a value that is not
- *    a name) is refused, for that source alone: a destination left blank is a mistake to report, never a
- *    reason to build in the source's own warehouse or to fail the package;
+ *  - a `storage=` that names nothing refuses that source alone: one that is
+ *    empty or only whitespace (`storage=""`), or not text at all (a list,
+ *    `storage=["lake"]`, or a block, `storage { … }`). A destination left
+ *    blank is a mistake to report, never a reason to build in the source's
+ *    own warehouse or to fail the package. Any other text is a destination
+ *    name, trimmed, and is looked up exactly: one no destination is
+ *    configured under is not built, and the package warns that the source
+ *    serves live;
  *  - no `storage=` builds colocated, in the source's own warehouse.
  *
  * Pure: reads only the annotations it is handed.
@@ -124,13 +130,17 @@ export function declares(
 export function placementOf(tag: RouteTag, key?: string): PlacementRead {
    const inside = (k: string) =>
       key === undefined ? undefined : tag.text(key, k);
-   const written =
-      (key !== undefined && tag.has(key, "storage")) || tag.has("storage");
-   const storage = inside("storage") ?? tag.text("storage");
+   const nested = key !== undefined && tag.has(key, "storage");
    const name = inside("name") ?? tag.text("name");
    const named = name !== undefined ? { name } : {};
-   if (!written) return { placement: { tier: "colocated", ...named } };
-   // Written, but empty or not a name (a list, a block): names nothing.
+   if (!nested && !tag.has("storage")) {
+      return { placement: { tier: "colocated", ...named } };
+   }
+   // The nested form wins whenever it is written, even when it is unusable:
+   // a nested list or block never falls through to the flat value.
+   const storage = nested ? inside("storage") : tag.text("storage");
+   // Written, but empty, whitespace, or not text (a list, a block): names
+   // nothing.
    const destination = storage?.trim() ?? "";
    if (destination === "") return { refused: EMPTY_STORAGE_REFUSAL };
    return { placement: { tier: "storage", destination, ...named } };
@@ -169,6 +179,10 @@ export function persistAnnotationFields(
       const { placement } = read;
       if (placement.tier === "storage") out.storage = placement.destination;
       if (placement.name !== undefined) out.name = placement.name;
+   } else {
+      // Refused: no destination, not even a flat one a nested `storage=`
+      // overrides.
+      delete out.storage;
    }
    return out;
 }

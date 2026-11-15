@@ -193,14 +193,26 @@ source: bad is orders_raw extend { measure: n is count() }`,
    const SOUND = `#(materialize) storage="lake"
 source: good is orders_raw extend { measure: n is count() }`;
 
-   for (const [label, storage] of [
-      ["empty", '""'],
-      ["not a name", '["lake"]'],
+   // A nested `storage=` wins whenever it is written: one that names nothing
+   // refuses the source, never falling through to a flat destination beside it.
+   for (const [label, persist] of [
+      ["empty", '#@ persist storage=""'],
+      ["whitespace", '#@ persist storage="  "'],
+      ["a list", '#@ persist storage=["lake"]'],
+      ["a block", '#@ persist storage { at="lake" }'],
+      [
+         "a nested list over a flat name",
+         '#@ persist { storage=["x"] } storage="lake"',
+      ],
+      [
+         "a nested block over a flat name",
+         '#@ persist { storage { at="lake" } } storage="lake"',
+      ],
    ] as const) {
       it(`#@ persist, storage ${label}: refused as empty_storage, not built`, async () => {
          const { plan, served } = await run(
             `persist-${label}`,
-            `#@ persist storage=${storage}
+            `${persist}
 source: bad is orders_raw -> { group_by: region; aggregate: n is count() }
 
 ${SOUND}`,
@@ -238,6 +250,89 @@ ${SOUND}`,
          });
       }, 120_000);
    }
+
+   // The colocated sibling rule keeps a gated source's rows from being served
+   // past its gate through a table it shares. A blank `storage=` is an
+   // author's mistake on one source, not a gate: it refuses that source and
+   // leaves the table its sibling shares to build and serve.
+   it("#@ persist, storage empty: a colocated sibling with the same SQL still builds and serves", async () => {
+      const { plan, served } = await run(
+         "persist-empty-sibling",
+         `#@ persist storage="" name="a_tbl"
+source: a is orders_raw -> { group_by: region; aggregate: n is count() }
+#@ persist name="b_tbl"
+source: b is orders_raw -> { group_by: region; aggregate: n is count() }`,
+         [
+            { name: "a", malloy: "run: a -> { select: * }" },
+            { name: "b", malloy: "run: b -> { select: * }" },
+         ],
+      );
+      expect(plan.loadError).toBeUndefined();
+      const refused = Object.values(
+         (plan.wirePlan?.refusedSources ?? {}) as Record<
+            string,
+            { name?: string; reason?: string }
+         >,
+      );
+      expect(refused.map((r) => [r.name, r.reason])).toEqual([
+         ["a", "empty_storage"],
+      ]);
+      const ids = Object.keys(plan.wirePlan?.sources ?? {});
+      expect(ids.filter((id) => /^[ab]@/.test(id)).map((id) => id[0])).toEqual([
+         "b",
+      ]);
+      const byName = new Map(served.map((q) => [q.query, q]));
+      expect(byName.get("a")).toMatchObject({
+         servedBy: "live",
+         equalToLive: true,
+      });
+      expect(byName.get("b")).toMatchObject({
+         servedBy: expect.not.stringMatching(/^live$/),
+         equalToLive: true,
+      });
+   }, 120_000);
+
+   // `#(materialize)` refuses a blank `storage=` as it generates its builds,
+   // before any sibling rule reads it; held to the same outcome.
+   it("#(materialize), storage empty: a colocated sibling with the same SQL still builds and serves", async () => {
+      const { plan, served } = await run(
+         "materialize-empty-sibling",
+         `#(materialize) storage="" name="a_tbl"
+source: a is orders_raw extend { measure: n is count() }
+#(materialize) name="b_tbl"
+source: b is orders_raw extend { measure: n is count() }`,
+         [
+            {
+               name: "a",
+               malloy: "run: a -> { group_by: region; aggregate: n }",
+            },
+            {
+               name: "b",
+               malloy: "run: b -> { group_by: region; aggregate: n }",
+            },
+         ],
+      );
+      expect(plan.loadError).toBeUndefined();
+      const ids = Object.keys(plan.wirePlan?.sources ?? {});
+      expect(ids.filter((id) => /^[ab]@/.test(id)).map((id) => id[0])).toEqual([
+         "b",
+      ]);
+      expect(
+         plan.loadWarnings.some(
+            (w) =>
+               /storage=/.test(w.message ?? "") && /"a"/.test(w.message ?? ""),
+         ),
+      ).toBe(true);
+      const byName = new Map(served.map((q) => [q.query, q]));
+      expect(byName.get("a")).toMatchObject({
+         servedBy: "live",
+         equalToLive: true,
+      });
+      expect(byName.get("b")).toMatchObject({
+         servedBy: expect.not.stringMatching(/^live$/),
+         equalToLive: true,
+      });
+   }, 120_000);
 
    for (const e of EMPTY) {
       for (const [label, storage] of [

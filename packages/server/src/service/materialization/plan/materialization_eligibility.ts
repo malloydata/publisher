@@ -769,6 +769,30 @@ export function assertRollupNameUnshared(
 }
 
 /**
+ * Refuse a `#@ persist` source whose `storage=` names no destination
+ * (declaration.ts): a destination left blank names no place to build, so it is
+ * refused, never built in the source's own warehouse instead.
+ *
+ * Not part of {@link assertTierEligible}, on purpose. That gate is also read
+ * for every OTHER source on a colocated table's address (the plan's, the
+ * build's and the bind's sibling rule), so that a gated source's rows are
+ * never served past its gate through a table it shares. A blank `storage=` is
+ * one source's own mistake, not a gate: it refuses that source alone, and a
+ * sibling with the same SQL still builds and serves. Called beside
+ * assertTierEligible wherever a source is gated for its own build.
+ *
+ * @throws {MaterializationEligibilityError} when the source is refused.
+ */
+export function assertPlacementNamed(source: PersistSource): void {
+   if (!declaresEmptyStorage(source)) return;
+   recordEligibilityRefused("empty_storage");
+   throw new MaterializationEligibilityError({
+      reason: "empty_storage",
+      message: `'${source.name}' cannot be materialized: ${EMPTY_STORAGE_REASON}.`,
+   });
+}
+
+/**
  * The eligibility gate for the tier a source builds into: the storage-destination
  * gate ({@link assertMaterializationEligible}) when it is written to a storage
  * destination, else the colocated authorize gate
@@ -798,15 +822,6 @@ export function assertTierEligible(
             `of its '#@' directives (name=, storage=, queryMetadata) and serves ` +
             `it live rather than build a table where its author did not say. ` +
             `Move the value out of the model.`,
-      });
-   }
-   // A destination left blank names no place to build: refused, never
-   // built in the source's own warehouse instead (declaration.ts).
-   if (declaresEmptyStorage(source)) {
-      recordEligibilityRefused("empty_storage");
-      throw new MaterializationEligibilityError({
-         reason: "empty_storage",
-         message: `'${source.name}' cannot be materialized: ${EMPTY_STORAGE_REASON}.`,
       });
    }
    assertRollupNameUnshared(source, plan);

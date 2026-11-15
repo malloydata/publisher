@@ -52,6 +52,7 @@ import {
 } from "../plan/build_plan";
 import {
    assertMaterializationEligible,
+   assertPlacementNamed,
    assertTierEligible,
 } from "../plan/materialization_eligibility";
 import {
@@ -1060,6 +1061,8 @@ export class InstructedBuild {
          // off) takes the colocated gate however it was instructed, unless
          // auto-run already cleared the source through one of the two gates.
          // Never both: the storage gate already runs the same IR walk.
+         // Its own placement, never a sibling's (assertPlacementNamed).
+         assertPlacementNamed(persistSource);
          if (storage || !run.clearedTiers?.has(persistSource.sourceID)) {
             assertTierEligible(
                persistSource,

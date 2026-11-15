@@ -49,6 +49,7 @@ import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
    assertRollupNameUnshared,
+   assertPlacementNamed,
    assertTierEligible,
    isAuthorizeAttributedToEntryPoint,
    type TierGateInputs,
@@ -1292,6 +1293,7 @@ export function deriveBuildPlan(
          // docs/materialization.md.
          if (!rollup) {
             try {
+               assertPlacementNamed(source);
                assertTierEligible(
                   source,
                   declaresStorage,
