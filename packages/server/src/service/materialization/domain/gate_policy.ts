@@ -23,6 +23,12 @@
  *
  * Pure: the switches are read once by the caller's shell (`gateSwitches()`
  * in `config.ts`) and passed in.
+ *
+ * Frozen until the security review (plan question 14): gated sources stay
+ * behind `PUBLISHER_MATERIALIZE_GATED_SOURCES`, and no new leg, tier or kind
+ * may keep its gates, nor a row be loosened, without that review's sign-off.
+ * `gate_policy_frozen.spec.ts` enumerates every row this file allows and
+ * fails on any change, naming the review.
  */
 
 /** The deployment switches gate keeping reads, as one value. */
