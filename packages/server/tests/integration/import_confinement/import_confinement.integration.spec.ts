@@ -759,6 +759,10 @@ describe("the data probe of a package's files", () => {
       expect(text).not.toContain("leak.csv");
       expect(text).not.toContain("dir.csv");
       expect(text).toContain("bad.parquet");
+      // Named by its package-relative path, with the connection's reason,
+      // never the SQL the probe compiled.
+      expect(text).toContain("Cannot read bad.parquet: ");
+      expect(text).not.toContain("duckdb.table");
       expect(text).not.toContain("publisher_data");
    });
 });
@@ -891,5 +895,206 @@ describe("a publish whose manifest update fails after the install committed", ()
          location?: string;
       };
       expect(pkg.location).toBe(dir);
+   });
+});
+
+describe("the remaining lookups through an author's link answer the same whatever it leads to", () => {
+   // <root>/rest/present exists, <root>/rest/absent does not.
+   let rest = "";
+   beforeAll(() => {
+      rest = path.join(root, "rest");
+      fs.mkdirSync(path.join(rest, "present"), { recursive: true });
+      fs.writeFileSync(
+         path.join(rest, "present", "page.html"),
+         "<p>SECRETPAGE</p>",
+      );
+      fs.writeFileSync(path.join(rest, "present", "prompt.md"), "SECRETPROMPT");
+   });
+
+   it("a public/ link out answers 403 whether or not its target exists", async () => {
+      const answers: string[] = [];
+      for (const [folder, which] of [
+         ["pubp", "present"],
+         ["puba", "absent_"],
+      ]) {
+         const dir = writePackage(folder, {
+            "ok.malloy": BASE,
+            "public/index.html": "<p>own</p>",
+         });
+         fs.symlinkSync(
+            path.join(rest, which, "page.html"),
+            path.join(dir, "public", "leak.html"),
+         );
+         expect(await publish(folder, dir)).toBe(200);
+         const res = await fetch(
+            `${baseUrl}/environments/${ENV_NAME}/packages/${folder}/leak.html`,
+         );
+         const body = await res.text();
+         expect(body).not.toContain("SECRETPAGE");
+         answers.push(`${res.status} ${body.replaceAll(folder, "<pkg>")}`);
+         const list = await (await fetch(api(`/${folder}/data-apps`))).text();
+         expect(list).not.toContain("leak.html");
+      }
+      expect(answers[0]).toBe(answers[1]);
+      expect(answers[0]).toStartWith("403");
+   });
+
+   it("a retrieval prompt that links out is refused the same whether or not its target exists", async () => {
+      const answers: string[] = [];
+      for (const [folder, which] of [
+         ["prmp", "present"],
+         ["prma", "absent_"],
+      ]) {
+         const dir = writePackage(
+            folder,
+            { "ok.malloy": BASE },
+            {
+               name: folder,
+               retrieval: { prompts: { judge: "prompts/judge.md" } },
+            },
+         );
+         fs.mkdirSync(path.join(dir, "prompts"));
+         fs.symlinkSync(
+            path.join(rest, which, "prompt.md"),
+            path.join(dir, "prompts", "judge.md"),
+         );
+         const res = await publishing(folder, dir);
+         expect(res.text).not.toContain("SECRETPROMPT");
+         answers.push(`${res.status} ${res.text.replaceAll(folder, "<pkg>")}`);
+      }
+      expect(answers[0]).toBe(answers[1]);
+      expect(answers[0]).not.toStartWith("200");
+   });
+
+   it("a directory link that goes out and back lists, hashes and loads the same", async () => {
+      const outcomes: string[] = [];
+      for (const [folder, which] of [
+         ["tlsp", "present"],
+         ["tlsa", "absent_"],
+      ]) {
+         const dir = writePackage(folder, {
+            "ok.malloy": BASE,
+            "sub/a.malloy": BASE,
+         });
+         // Through <root>/rest/<which>, then back up and down to the served
+         // copy's own sub/: absolute, as the copy keeps it verbatim.
+         const { bootMainServer } = await import("../../harness/main_server");
+         const { environmentStore } = await bootMainServer();
+         const servedSub = path.join(
+            (
+               await environmentStore.getEnvironment(
+                  parseEnvironmentName(ENV_NAME),
+               )
+            ).getEnvironmentPath(),
+            folder,
+            "sub",
+         );
+         const through = path.join(rest, which);
+         fs.symlinkSync(
+            `${through}/${path.relative(through, servedSub)}`,
+            path.join(dir, "d"),
+         );
+         const res = await publishing(folder, dir);
+         expect(res.status).toBe(200);
+         const models =
+            res.status === 200
+               ? await (await fetch(api(`/${folder}/models`))).text()
+               : "";
+         outcomes.push(`${res.status} ${models}`.replaceAll(folder, "<pkg>"));
+      }
+      expect(outcomes[0]).toBe(outcomes[1]);
+   });
+});
+
+describe("a public/ that is itself a link", () => {
+   // <root>/pubout/present holds secret.html; <root>/pubout/absent_ does not exist.
+   let pubout = "";
+   beforeAll(() => {
+      pubout = path.join(root, "pubout");
+      fs.mkdirSync(path.join(pubout, "present"), { recursive: true });
+      fs.writeFileSync(
+         path.join(pubout, "present", "secret.html"),
+         "<p>SECRETPUBLIC</p>",
+      );
+   });
+
+   const page = (folder: string, file: string) =>
+      fetch(`${baseUrl}/environments/${ENV_NAME}/packages/${folder}/${file}`);
+
+   /** What serving `file` and listing the data apps answer, masked. */
+   async function answer(folder: string, file: string): Promise<string> {
+      const res = await page(folder, file);
+      const body = await res.text();
+      const list = await (await fetch(api(`/${folder}/data-apps`))).text();
+      expect(body).not.toContain("SECRETPUBLIC");
+      expect(list).not.toContain("secret.html");
+      return `${res.status} ${body} | ${list}`.replaceAll(folder, "<pkg>");
+   }
+
+   it("serves nothing and lists nothing for a public/ that links out, whether or not its target exists", async () => {
+      const answers: string[] = [];
+      for (const [folder, which] of [
+         ["plkp", "present"],
+         ["plka", "absent_"],
+      ]) {
+         const dir = writePackage(folder, { "ok.malloy": BASE });
+         fs.symlinkSync(path.join(pubout, which), path.join(dir, "public"));
+         expect(await publish(folder, dir)).toBe(200);
+         answers.push(await answer(folder, "secret.html"));
+      }
+      expect(answers[0]).toBe(answers[1]);
+      expect(answers[0]).toStartWith("403");
+   });
+
+   it("does the same for a public/ that goes out and comes back", async () => {
+      const { bootMainServer } = await import("../../harness/main_server");
+      const { environmentStore } = await bootMainServer();
+      const envPath = (
+         await environmentStore.getEnvironment(parseEnvironmentName(ENV_NAME))
+      ).getEnvironmentPath();
+      const answers: string[] = [];
+      for (const [folder, which] of [
+         ["pbkp", "present"],
+         ["pbka", "absent_"],
+      ]) {
+         const dir = writePackage(folder, {
+            "ok.malloy": BASE,
+            "web/index.html": "<p>own</p>",
+         });
+         const through = path.join(pubout, which);
+         fs.symlinkSync(
+            `${through}/${path.relative(through, path.join(envPath, folder, "web"))}`,
+            path.join(dir, "public"),
+         );
+         expect(await publish(folder, dir)).toBe(200);
+         answers.push(await answer(folder, "index.html"));
+      }
+      expect(answers[0]).toBe(answers[1]);
+      expect(answers[0]).toStartWith("403");
+   });
+
+   it("serves nothing for a public/ that links to the filesystem root", async () => {
+      const dir = writePackage("plroot", { "ok.malloy": BASE });
+      fs.symlinkSync("/", path.join(dir, "public"));
+      expect(await publish("plroot", dir)).toBe(200);
+      const res = await page("plroot", "etc/hosts");
+      const body = await res.text();
+      expect(res.status).toBe(403);
+      expect(body).not.toContain("localhost");
+   });
+
+   it("still serves and lists a public/ that links inside the package", async () => {
+      const dir = writePackage("plweb", {
+         "ok.malloy": BASE,
+         "web/index.html": "<title>Own app</title><p>own</p>",
+      });
+      fs.symlinkSync("web", path.join(dir, "public"));
+      expect(await publish("plweb", dir)).toBe(200);
+      const res = await page("plweb", "index.html");
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("own");
+      expect(await (await fetch(api("/plweb/data-apps"))).text()).toContain(
+         "index.html",
+      );
    });
 });

@@ -1619,6 +1619,16 @@ export class Environment {
             await fs.promises.lstat(p).catch(() => undefined)
          )?.isSymbolicLink() === true;
       if (await isLink(target)) throw outside();
+      // Where the target leads, settled by the package's own walk, which
+      // never looks outside the package: a directory link on the way that
+      // passes out (and back, or not) is refused here, the same whatever
+      // lies outside, before the stats below would follow it.
+      try {
+         await confinedPackagePath(packageRoot, pathToFileURL(target));
+      } catch (error) {
+         if (error instanceof ImportOutsidePackageError) throw outside();
+         throw error;
+      }
       const missing: string[] = [];
       let dir = path.dirname(target);
       while (dir.startsWith(packageRoot)) {

@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — the remaining lookups through a package author's links stay inside the package
+
+Every lookup Publisher makes through a path a package author controls now resolves it with the walk that confines model imports, which never looks at a path outside the package. A link that leads out, or out and back through another directory, gets the same answer whether or not what it passes through exists:
+
+- **HTML data apps.** `public/` itself is now confined to the package: a `public/` that is a symlink out of the package serves and lists nothing (403), whatever it leads to. Before, its target was treated as the package's own, so `public -> /` served any file the server could read. A `public/` that links inside the package (`public -> web`) still serves. A link in `public/` that leads out answers 403 whether or not its target exists (before, 403 when it existed and 404 when it did not), and is left out of the data-app listing, which no longer opens such a page for its title.
+- **Package listing.** A directory link that passes out of the package and back is listed as itself, so whether the outside directory exists no longer decides whether the package loads.
+- **Retrieval prompts** (`retrieval.prompts.*` in `publisher.json`), **package and agent skills** (the skills directory, a skill directory, `reference/`, an agent's skills root and its assets), and **the report write path** (`PUT …/models/{path}`) refuse a link out the same way whatever it leads to. One visible change: a `skills/` that is a dangling link out of the package (`skills -> /absent`) is now reported as leading outside the package, which blocks the package's skills, where it used to be skipped silently; a dangling link inside the package is still skipped.
+- **A walk that stops at a missing directory** opens only that point and the next name, so a directory appearing there afterwards cannot carry the open out of the package. Its error reads as the kernel's would (`f.md/..` fails with ENOTDIR).
+- **Data probe errors** (`GET …/databases`) name the file by its package-relative path with the connection's reason, rather than echoing the SQL the probe compiled; a path inside Malloy's escaped quotes is no longer mangled (`'bad.parquet/'`).
+
+No API change.
 ## [Unreleased] — an auto-run reports `MANIFEST_FILE_READY` only once its package serves the new tables
 
 A materialization auto-run used to report `MANIFEST_FILE_READY` and then load its manifest into the package. A caller that waited for `MANIFEST_FILE_READY` (the REST `GET …/materializations/{id}`, `malloy-pub materialize --wait`, the Console) and queried at once could be answered live, or from the previous table, until the load finished.
