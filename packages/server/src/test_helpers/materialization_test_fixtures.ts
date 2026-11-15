@@ -7,7 +7,10 @@ import type {
    PersistSource,
 } from "@malloydata/malloy";
 import { Materialization } from "../storage/DatabaseInterface";
-import { BuildInstruction, BuildPlan } from "../service/materialization/types";
+import {
+   BuildInstruction,
+   BuildPlan,
+} from "../service/materialization/domain/types";
 import {
    CompiledBuildPlan,
    setTestAddressForTarget,
@@ -120,6 +123,9 @@ function fakeTagFromTree(tree: FakeTagTree) {
       text(...at: string[]): string | undefined {
          const node = walk(at);
          return typeof node === "string" ? node : undefined;
+      },
+      has(...at: string[]): boolean {
+         return walk(at) !== undefined;
       },
       tag(...at: string[]) {
          const node = walk(at);

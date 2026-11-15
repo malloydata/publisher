@@ -22,7 +22,7 @@ import type {
    ManifestEntry,
    RefusedSource,
    SourceFailure,
-} from "../types";
+} from "../domain/types";
 import { errMessage } from "../../../utils";
 import {
    getPersistCollisionEnforce,
@@ -42,14 +42,14 @@ import {
 } from "./build_failure_class";
 import {
    declaredStorage,
-   physicalTargetKey,
    redactConnectionSecrets,
    type BuildEnvironment,
    type BuildQueryMetadata,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
-import type { NameViewIntent, NameViewRecord, OwnNameTable } from "./name_view";
 import type { UniquenessLedger } from "./inline_uniqueness";
+import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
 
 /** The eligibility gate a source was cleared by. */
@@ -129,28 +129,13 @@ export interface InstructedRun {
     * second route to one takes that failure instead of building it again.
     */
    failedTargets?: Map<string, { sourceEntityId: string; err: unknown }>;
-   /** The `name=` views the sources this run built call for (name_view.ts). */
-   nameViewIntents?: NameViewIntent[];
    /**
     * Auto-run's inline uniqueness passes: the run before's, and this run's
     * own (inline_uniqueness.ts). Absent: every check runs as compiled.
     */
    uniqueness?: UniquenessLedger;
-   /**
-    * By view key: the `name=` views whose name preflight found held by a
-    * table this package's own run wrote, which the view replaces.
-    */
-   nameViewOwnTables?: Map<string, OwnNameTable>;
    /** The run's cancellation: a source failing after it is `cancelled`. */
    signal?: AbortSignal;
-   /** This package's own views a built table replaced at its name. */
-   replacedNameViews?: NameViewRecord[];
-   /** Whether this package's records say it wrote a table at a view's name. */
-   ownNameTableAt?: (
-      intent: NameViewIntent,
-   ) => Promise<OwnNameTable | undefined>;
-   /** Whether another run of this package is building now. */
-   otherRunActive?: () => Promise<boolean>;
 }
 
 /** One source the colocated gate refuses, as colocatedRefusalOn reports it. */
@@ -185,7 +170,7 @@ export interface PendingRefusal {
 }
 
 /** A run's instructions, indexed both ways a source can find its own. */
-export interface InstructionIndex {
+interface InstructionIndex {
    bySourceID: Map<string, BuildInstruction>;
    bySourceEntityId: Map<string, BuildInstruction>;
 }
@@ -293,9 +278,12 @@ export function assertNoTableCollisions(
    connectionDigests: CompiledBuildPlan["connectionDigests"],
    index: InstructionIndex,
 ): void {
+   // Keyed by the table segment on its connection or destination: `main.t`
+   // and `t` may be one table, as the plan's collision check reads them
+   // (tableNamesMeet).
    const claimedBy = new Map<
       string,
-      { sourceName: string; sourceEntityId: string }
+      { sourceName: string; sourceEntityId: string; table: string }[]
    >();
    const collisions: { first: string; second: string; table: string }[] = [];
    for (const build of builds) {
@@ -313,22 +301,37 @@ export function assertNoTableCollisions(
             index.bySourceID.get(persistSource.sourceID) ??
             index.bySourceEntityId.get(address);
          if (!instruction) continue;
-         // Must be the same key as the build loop's write guard, or this
-         // pre-pass and the guard disagree on what a collision is.
-         const target = physicalTargetKey(instruction, build.connectionName);
-         const claim = claimedBy.get(target);
-         if (!claim) {
-            claimedBy.set(target, {
-               sourceName: persistSource.name,
-               sourceEntityId: address,
-            });
-         } else if (claim.sourceEntityId !== address) {
+         // Compared as the plan compares them: folded where the
+         // destination folds table names to one case.
+         const table = tableNamesFoldCase(
+            persistSource.dialectName,
+            !!instruction.destination,
+         )
+            ? instruction.physicalTableName.toLowerCase()
+            : instruction.physicalTableName;
+         const target = JSON.stringify([
+            instruction.destination ? "destination" : "connection",
+            instruction.destination ?? build.connectionName,
+            tableNameParts(table).leaf,
+         ]);
+         const claims = claimedBy.get(target) ?? [];
+         const other = claims.find(
+            (c) =>
+               c.sourceEntityId !== address && tableNamesMeet(c.table, table),
+         );
+         if (other) {
             collisions.push({
-               first: claim.sourceName,
+               first: other.sourceName,
                second: persistSource.name,
                table: instruction.physicalTableName,
             });
          }
+         claims.push({
+            sourceName: persistSource.name,
+            sourceEntityId: address,
+            table,
+         });
+         claimedBy.set(target, claims);
       }
    }
    for (const c of collisions) {

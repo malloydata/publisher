@@ -10,7 +10,11 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../../../errors";
-import { BuildInstruction, LedgerEntry, MaterializationStatus } from "../types";
+import {
+   BuildInstruction,
+   LedgerEntry,
+   MaterializationStatus,
+} from "../domain/types";
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
 import {
    makeBuildPlan,
@@ -612,6 +616,8 @@ describe("runBuild (branch behavior)", () => {
          sourcesBuilt: 1,
          sourcesReused: 1,
       });
+      // The host distributes an orchestrated manifest: nothing is loaded.
+      expect(svc.commitManifest.firstCall.args[4]).toBeUndefined();
    });
 
    // ms2data/service#6756: the host's warehouseReach reaches the run, last.
@@ -655,8 +661,51 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "auto",
       });
-      // Auto-run owns distribution: it loads the fresh manifest into the models.
+      // Auto-run owns distribution: it loads the fresh manifest into the
+      // models, inside the commit, before the run reports MANIFEST_FILE_READY.
+      expect(svc.autoLoadManifest.called).toBe(false);
+      const serve = svc.commitManifest.firstCall.args[4] as (
+         finish: () => Promise<void>,
+      ) => unknown;
+      expect(typeof serve).toBe("function");
+      await serve(async () => {});
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
+   });
+
+   it("auto-run: a stop that lands while the manifest loads does not cut it short, and the run says so", async () => {
+      const svc = stubEngine();
+      svc.autoLoadManifest = sinon
+         .stub()
+         .callsFake(async (...args: unknown[]) => {
+            const finish = args[5] as (s: {
+               metadata: Record<string, unknown>;
+            }) => Promise<void>;
+            await finish({ metadata: { autoLoad: "loaded" } });
+         });
+      const controller = new AbortController();
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: true,
+            buildInstructions: undefined,
+         },
+         controller.signal,
+      );
+      const serve = svc.commitManifest.firstCall.args[4] as (
+         finish: (s: { metadata: Record<string, unknown> }) => Promise<void>,
+      ) => Promise<void>;
+      // The stop lands during the load.
+      controller.abort();
+      const finished: { metadata: Record<string, unknown> }[] = [];
+      await serve(async (served) => {
+         finished.push(served);
+      });
+      expect(finished).toEqual([
+         { metadata: { autoLoad: "loaded", stopIgnored: true } },
+      ]);
    });
 
    it("records auto-run's refused sources in the run metadata, not on the manifest", async () => {
@@ -903,6 +952,95 @@ describe("runBuild (branch behavior)", () => {
       });
       expect(svc.commitManifest.firstCall.args[3]).not.toHaveProperty(
          "refusedSources",
+      );
+   });
+
+   it("names the package's files package-relative in every message the run records", async () => {
+      // The harness's package lives at /test; a compile error names its file
+      // by the URL the compiler loaded it from.
+      const svc = stubEngine();
+      const where =
+         "FILE: file:///test/sub/m.malloy\nline 3: 'x' is not defined";
+      svc.executeInstructedBuild.resolves({
+         entries: {
+            "build-orders": {
+               sourceEntityId: "build-orders",
+               physicalTableName: '"orders_v1"',
+               connectionName: "duckdb",
+               upstreamReuse: "recomputed",
+               upstreamRecomputeReason: `could not stack: ${where}`,
+            },
+         },
+         failures: {
+            other: {
+               sourceEntityId: "other",
+               reason: "Failed to materialize source 'other': /test/m.malloy",
+            },
+         },
+         sourcesRefused: 1,
+         refusalsInFailures: 0,
+         refusedBesideBuilt: {
+            gated: {
+               name: "gated",
+               sourceID: "gated",
+               tier: "storage",
+               reason: "authorize",
+               message:
+                  "Source 'gated' in /test/m.malloy cannot be materialized",
+            },
+         },
+      });
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: [makeInstruction()],
+         },
+         new AbortController().signal,
+      );
+
+      const [, entries, failures, metadata] = svc.commitManifest.firstCall
+         .args as [
+         string,
+         Record<string, { upstreamRecomputeReason?: string }>,
+         Record<string, { reason: string }>,
+         { refusedSources: Record<string, { message: string }> },
+      ];
+      expect(entries["build-orders"].upstreamRecomputeReason).toBe(
+         "could not stack: FILE: sub/m.malloy\nline 3: 'x' is not defined",
+      );
+      expect(failures.other.reason).toBe(
+         "Failed to materialize source 'other': m.malloy",
+      );
+      expect(metadata.refusedSources.gated.message).toBe(
+         "Source 'gated' in m.malloy cannot be materialized",
+      );
+   });
+
+   it("names the package's files package-relative in a whole run's failure", async () => {
+      const svc = stubEngine();
+      svc.executeInstructedBuild.rejects(
+         new Error("did not compile: FILE: /test/m.malloy line 1"),
+      );
+      const err = await svc
+         .runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: false,
+               buildInstructions: [makeInstruction()],
+            },
+            new AbortController().signal,
+         )
+         .catch((e: unknown) => e);
+      expect((err as Error).message).toBe(
+         "did not compile: FILE: m.malloy line 1",
       );
    });
 

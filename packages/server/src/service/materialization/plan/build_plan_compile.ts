@@ -4,17 +4,20 @@
 /**
  * Compiling a package's build plan on the main thread, against the package's
  * live connections: the build path (MaterializationService) and a load whose
- * plan the package-load worker left at its soft deadline. Kept apart from
- * `build_plan.ts` because it compiles through `Model.getModelRuntime`, and the
- * worker, which imports `build_plan.ts`, must not load `./model`.
+ * plan the package-load worker left at its soft deadline. It compiles each
+ * model through `GeneratedFiles` over the package's files on disk, where the
+ * worker compiles from its own file map.
  */
 
+import type { KeyCheckCompiler } from "../domain/key_check";
+import { modelDefOf, primaryKeyOf } from "../../governance/ir/compiled_model";
 import { MODEL_FILE_SUFFIX } from "../../../constants";
 import { logger } from "../../../logger";
 import { recordConnectionDigestSkipped } from "../../../materialization_metrics";
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
+   refuseAloneInPlan,
    emptyBuildPlanParts,
    resolveConnectionDigests,
    resolvePackageConnections,
@@ -31,24 +34,30 @@ import {
    storedKeyChecksOf,
    type JoinedKeyNeed,
    type ParentKeyNeed,
-   type RollupVariantPlan,
 } from "./rollup_plan";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import {
    compileParentKeyChecks,
    parentKeyCheckCompiler,
 } from "./rollup_compile";
-import { SourceMap } from "./source_map";
+import { SourceMap } from "../text/source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
-import { Model } from "../../model";
-import { keyedOverlay } from "../../overlay_key";
-import {
-   compiledFileText,
-   loadLeavingOutCrossConnectionJoins,
-} from "./cross_connection_joins";
+import { packageFiles } from "../text/package_files";
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
+   {
+      keepIncrementalUnbuildable = false,
+   }: {
+      /**
+       * Keep a source whose valid incremental declaration this deployment
+       * cannot honour (incremental_policy's rules 6, 7 and 12), rather than
+       * refuse it alone. For a spec that plans incremental machinery on
+       * DuckDB, which no load or run does.
+       */
+      keepIncrementalUnbuildable?: boolean;
+   } = {},
 ): Promise<CompiledBuildPlan> {
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
@@ -67,6 +76,9 @@ export async function compilePackageBuildPlan(
    }[] = [];
    // Every declared primary key, by sourceID, for the stored-table key checks.
    const primaryKeys = new Map<string, string>();
+   // Each `#(materialize)` uniqueness check's compiler over a run's
+   // manifest: this plan is built on the thread that runs builds.
+   const keyCheckCompilers = new Map<string, KeyCheckCompiler>();
    const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -81,48 +93,23 @@ export async function compilePackageBuildPlan(
       await yielder.maybeYield();
       if (signal?.aborted) throw new Error("Build cancelled");
 
-      const load = async (files?: ReadonlyMap<string, string>) => {
-         const { runtime, modelURL, importBaseURL } =
-            await Model.getModelRuntime(
-               pkg.getPackagePath(),
-               modelPath,
-               pkg.getMalloyConfig(),
-               files ? { overlay: files } : undefined,
-            );
-         // Held onto (rather than chained straight into `.getModel()`)
-         // because the gate classification needs the SAME live materializer
-         // that compiled this model — see `classifyPersistSourceGate`'s doc.
-         const materializer = runtime.loadModel(modelURL, { importBaseURL });
-         return {
-            runtime,
-            materializer,
-            malloyModel: await materializer.getModel(),
-         };
-      };
-      let loaded: Awaited<ReturnType<typeof load>>;
-      // The build view's files, when the model joins sources across
-      // connections (#6982): its builds are planned from them.
-      let buildView: Map<string, string> | undefined;
-      try {
-         loaded = await load();
-      } catch (first) {
-         const view = await loadLeavingOutCrossConnectionJoins({
-            firstError: first,
-            readText: (url) => compiledFileText(url),
-            load: (files) => load(keyedOverlay(files)),
-         });
-         if (!view) throw first;
-         loaded = view.result;
-         buildView = keyedOverlay(view.overlay);
-      }
-      const { runtime, materializer, malloyModel } = loaded;
-      const map = SourceMap.of(malloyModel._modelDef);
+      const authorFiles = packageFiles(
+         pkg.getPackagePath(),
+         modelPath,
+         pkg.getMalloyConfig(),
+      );
+      // Held onto (rather than chained straight into `.getModel()`)
+      // because the gate classification needs the SAME live materializer
+      // that compiled this model — see `classifyPersistSourceGate`'s doc.
+      const { runtime, materializer } = await authorFiles.loadModel();
+      const malloyModel = await materializer.getModel();
+      const map = SourceMap.of(modelDefOf(malloyModel));
       for (const key of joinOneKeysOf(map)) {
          joinOneKeys.add(key);
       }
       for (const node of map.nodes()) {
-         const key = (node.def as { primaryKey?: unknown }).primaryKey;
-         if (typeof key === "string" && !primaryKeys.has(node.sourceID)) {
+         const key = primaryKeyOf(node.def);
+         if (key !== undefined && !primaryKeys.has(node.sourceID)) {
             primaryKeys.set(node.sourceID, key);
          }
       }
@@ -144,13 +131,8 @@ export async function compilePackageBuildPlan(
          materializer,
          malloyModel,
          runtime,
-         getRuntime: (overlay) =>
-            Model.getModelRuntime(
-               pkg.getPackagePath(),
-               modelPath,
-               pkg.getMalloyConfig(),
-               { overlay: new Map([...(buildView ?? []), ...overlay]) },
-            ),
+         getRuntime: (overlay) => authorFiles.runtime(overlay),
+         keyCheckCompilers,
       });
    }
 
@@ -206,8 +188,10 @@ export async function compilePackageBuildPlan(
    );
 
    // The build path reads this plan directly: a `#(materialize)` source
-   // refused for its table name must not build here either.
-   return refuseCollidingMaterialize({
+   // refused for its table name, or a source whose incremental declaration
+   // this deployment cannot honour, must not build here either.
+   const compiled = refuseCollidingMaterialize({
+      ...(versionOwnsTables(pkg) ? { versionScoped: true } : {}),
       builds: parts.builds,
       sources: parts.sources,
       targets: parts.targets,
@@ -216,12 +200,15 @@ export async function compilePackageBuildPlan(
       sourceModelPaths: parts.sourceModelPaths,
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
+      modelGateLines: parts.modelGateLines,
       preaggregatePlans: parts.preaggregatePlans,
       ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
       materializePlans: parts.materializePlans,
+      ...(keyCheckCompilers.size > 0 ? { keyCheckCompilers } : {}),
       sourceGateOutcomes: parts.sourceGateOutcomes,
       omittedSources: parts.omittedSources,
    });
+   return keepIncrementalUnbuildable ? compiled : refuseAloneInPlan(compiled);
 }
 
 /**
@@ -238,5 +225,18 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
+      versionOwnsTables(pkg) ? "version" : undefined,
+   );
+}
+
+/**
+ * Whether the package's tables are named per version: a published version
+ * of a `scope: "version"` package (the run's `ownedVersionOf`). An
+ * unversioned package writes an author's `name=` as given whatever its scope.
+ */
+function versionOwnsTables(pkg: BuildPlanPackage): boolean {
+   return (
+      pkg.getPackageMetadata?.()?.scope === "version" &&
+      pkg.getVersionId?.() !== undefined
    );
 }

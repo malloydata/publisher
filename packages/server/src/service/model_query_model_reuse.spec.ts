@@ -400,6 +400,8 @@ source: X is duckdb.sql("SELECT 'org1' AS org_id, 1 AS id UNION ALL SELECT 'org2
             model.setServedCopyContext(dir, connMap);
             model.setServeBindings([
                {
+                  kind: "persist",
+                  tier: "storage",
                   sourceName: "qm_orders",
                   destinationName: "duckdb",
                   virtualHandle: "qm_orders_h",

@@ -1,0 +1,136 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": []
+        },
+        "order": [
+          "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "pv_base@<pkg>/m.malloy": []
+        },
+        "order": [
+          "pv_base@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "pv_base@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "pv_base@<pkg>/m.malloy": "m.malloy",
+      "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "pv_base@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "pv_base@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "pv_base"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "pv_base",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+        "sourceID": "pv_base@<pkg>/m.malloy",
+        "sql": "sha256:1c11c4f32b8df464"
+      },
+      "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
+        "annotationFields": {
+          "name": "pv_base_by_region"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "pv_base__by_region__view",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b",
+        "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy",
+        "sql": "sha256:f27d084b1f69793b"
+      }
+    }
+  }
+}

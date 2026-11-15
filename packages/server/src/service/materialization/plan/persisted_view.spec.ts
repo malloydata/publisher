@@ -17,12 +17,9 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { viewNoteTexts } from "./persisted_view_compile";
-import {
-   generatePersistedViewFile,
-   PERSIST_VIEW_NOT_BUILT,
-   type PersistedViewPlan,
-} from "./persisted_view";
+import { generatePersistedViewFile, viewNoteTexts } from "../text/read_text";
+import { PERSIST_VIEW_NOT_BUILT } from "./persisted_view";
+import type { PersistedViewPlan } from "../domain/table_plans";
 
 const TABLE = `duckdb.sql("""
   select * from (values
@@ -72,6 +69,15 @@ function viewFindings(c: Awaited<ReturnType<typeof compiled>>): string[] {
    return (c.annotationFindings ?? [])
       .filter((f) => f.code === PERSIST_VIEW_NOT_BUILT)
       .map((f) => f.message);
+}
+
+/** The findings that fail the load, as `[code, message]`. */
+function invalidFindings(
+   c: Awaited<ReturnType<typeof compiled>>,
+): [string, string][] {
+   return (c.annotationFindings ?? [])
+      .filter((f) => f.tier === "malformed")
+      .map((f) => [f.code, f.message]);
 }
 
 describe("generatePersistedViewFile", () => {
@@ -162,7 +168,53 @@ source: ops is ${TABLE} extend {
       expect(findings.some((m) => m.includes("current time"))).toBe(true);
    });
 
-   it("refuses an incremental key and an @env. reference", async () => {
+   it("leaves out a view whose select: * reads a current-time dimension, and keeps its twin", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="star"
+  view: star is { select: * }
+}
+source: ops2 is ${TABLE} extend {
+  dimension: plain is carrier
+  #@ persist name="star2"
+  view: star2 is { select: * }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops2__star2__view"]);
+      expect(viewFindings(c).some((m) => m.includes("current time"))).toBe(
+         true,
+      );
+   });
+
+   it("plans a view whose later stage names a field like a current-time dimension", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="later"
+  view: later is { group_by: carrier, past is ts > @2000-01-01 } -> { select: carrier, past }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops__later__view"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
+   it("leaves out a view on a query-shaped source whose query reads now", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: qb is ${TABLE} -> { where: ts < now; select: * }
+source: ops is qb extend {
+  measure: n is count()
+  #@ persist name="by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c).some((m) => m.includes("current time"))).toBe(
+         true,
+      );
+   });
+
+   it("finds an incremental key and an @env. reference invalid", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {
   measure: n is count()
@@ -173,9 +225,51 @@ source: ops is ${TABLE} extend {
 }
 `);
       expect(viewSources(c)).toEqual([]);
-      const findings = viewFindings(c);
-      expect(findings.some((m) => m.includes("incremental"))).toBe(true);
-      expect(findings.some((m) => m.includes("@env."))).toBe(true);
+      expect(viewFindings(c)).toEqual([]);
+      const findings = invalidFindings(c);
+      expect(findings.map(([code]) => code)).toEqual([
+         "persist-view-invalid",
+         "persist-view-invalid",
+      ]);
+      expect(findings.some(([, m]) => m.includes("incremental"))).toBe(true);
+      expect(findings.some(([, m]) => m.includes("@env."))).toBe(true);
+   });
+
+   it("finds the retired partition= invalid, saying to remove it", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="p" partition="carrier"
+  view: p is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(invalidFindings(c)).toEqual([
+         [
+            "persist-retired-key",
+            expect.stringContaining("partition= is not supported"),
+         ],
+      ]);
+   });
+
+   it.each([
+      ["an unknown key", '#@ persist nmae="x"', "persist-unknown-key"],
+      ["an empty storage=", '#@ persist storage=""', "persist-view-invalid"],
+      [
+         "a line that does not parse",
+         '#@ persist name="x',
+         "persist-view-invalid",
+      ],
+   ])("finds %s invalid", async (_case, line, code) => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  ${line}
+  view: v is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(invalidFindings(c).map(([c]) => c)).toEqual([code]);
    });
 
    it("refuses a nested view stored with storage=, and builds it colocated", async () => {

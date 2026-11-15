@@ -30,12 +30,15 @@
  * on real compiled queries.
  */
 
+import { recordedTimezoneOf } from "../../governance/ir/compiled_model";
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
-import type { KeyUniqueness } from "../types";
+import type { FreshnessManifest } from "../domain/types";
+import { forEachFieldPath } from "../../governance/ir/array_query";
+import { declineOfCode } from "../domain/leg_decline";
 
 export type ApiQueryPath = components["schemas"]["QueryPath"];
-export type ApiQueryShape = components["schemas"]["QueryShape"];
+type ApiQueryShape = components["schemas"]["QueryShape"];
 type ApiCandidate = components["schemas"]["QueryPathCandidate"];
 type ApiNearby = components["schemas"]["QueryPathNearby"];
 type ApiServer = components["schemas"]["QueryPathServer"];
@@ -60,17 +63,6 @@ export interface PlannedTable {
    modelPath?: string;
 }
 
-/** A colocated table the package has bound, from its manifest. */
-export interface BoundTable {
-   tableName: string;
-   dataAsOf?: string;
-   /**
-    * A rollup's key check, as the run that wrote or carried the table found
-    * it (known limitation 29); absent when unknown.
-    */
-   keyUniqueness?: KeyUniqueness;
-}
-
 /**
  * A table no query can be answered from, by its serve verdict: every planned
  * source sharing its `sourceEntityId` on its tier has a `live` verdict for a
@@ -92,7 +84,7 @@ export interface MaterializedTableCatalog {
    /** Every planned source, keyed by `sourceID`. */
    planned: ReadonlyMap<string, PlannedTable>;
    /** The colocated tables bound now, keyed by `sourceEntityId`. */
-   bound: Readonly<Record<string, BoundTable>>;
+   bound: Readonly<FreshnessManifest>;
    /**
     * The tables whose serve verdict says no query is answered from them,
     * keyed by {@link liveVerdictKey} (tier and `sourceEntityId`: a `storage=`
@@ -135,7 +127,7 @@ export interface StorageTable {
 }
 
 /** A rollup this model's pre-aggregation plans. */
-export interface ModelRollup {
+interface ModelRollup {
    rollupSourceName: string;
    baseSourceName: string;
    baseSourceID?: string;
@@ -156,7 +148,7 @@ interface TableState {
     * since its only other name is a physical storage path.
     */
    tableId?: string;
-   kind: "materialized" | "rollup" | "view";
+   kind: "materialized" | "rollup" | "view" | "query";
    tier: "storage" | "colocated";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
@@ -242,9 +234,11 @@ export interface QueryPathInput {
    rollupMember?: string;
    /**
     * The table of the persisted view the query calls (`#@ persist` on a view,
-    * P14), when it calls one: tried before every other table (R1).
+    * P14), or of the persisted named query it calls (`kind: "query"`), when
+    * it calls one: tried before every other table (R1).
     */
    view?: {
+      kind?: "query";
       tableId?: string;
       tier: "storage" | "colocated";
       built: boolean;
@@ -274,208 +268,35 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    for (const c of input.considered) {
       if (!decided.has(c.kind) || c.outcome === "used") decided.set(c.kind, c);
    }
-   // The served copy on `virtual` reads the same stored tables as the serve
-   // shape; when it answered, its decision is the storage tier's.
+   // The served copy's decision is the stored tables' decision.
    const servedCopyAnswered = input.via === "served_copy";
-   // Otherwise the serve shape's decision, or, when only the served copy was
-   // tried (a `#(materialize)` table), the served copy's. A served copy that
-   // declined a query through a join it leaves out across connections says
-   // why the table did not answer better than the serve shape's compile
-   // failure behind it, unless the serve shape answered.
-   const servedDecision = decided.get("served");
-   const shapeDecision = decided.get("storage");
-   const storageDecision =
-      servedCopyAnswered ||
-      (servedDecision?.code === "served_copy_cross_connection" &&
-         shapeDecision?.outcome !== "used")
-         ? servedDecision
-         : (shapeDecision ?? servedDecision);
+   const storageDecision = decided.get("served");
    const rollupDecision = decided.get("rollup");
    // Computed once per report.
    const freshStorage = new Set(input.storage.fresh.map((b) => b.tablePath));
    const tables = tablesFor(input, onChain, freshStorage, !!storageDecision);
-   const considered: ApiCandidate[] = [];
-   // Each skipped candidate's tier, which the wire does not carry, so a serve
-   // verdict is read for the table that was skipped, not its twin.
-   const tierOf = new Map<ApiCandidate, TableState["tier"]>();
-   let servedBy: ApiServer = { kind: "live" };
-   const markUsed = (t: TableState) => {
-      if (t.tableId) {
-         considered.push({ tableId: t.tableId, kind: t.kind, outcome: "used" });
-      }
-      servedBy = {
-         kind: t.kind,
-         ...(t.tableId ? { tableId: t.tableId } : {}),
-         ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
-      };
-   };
-   const skip = (
-      t: TableState,
-      reason: SkipReason,
-      detail?: string,
-      code?: string,
-   ) => {
-      if (!t.tableId) return;
-      const candidate: ApiCandidate = {
-         tableId: t.tableId,
-         kind: t.kind,
-         outcome: "skipped",
-         reason,
-         ...(code ? { code } : {}),
-         ...(detail ? { detail } : {}),
-      };
-      tierOf.set(candidate, t.tier);
-      considered.push(candidate);
-   };
+   const tally = pathTally();
 
-   // A persisted view's table, first (R1). When it answered, nothing after
-   // it was tried, so nothing after it is named.
-   const viewDecision = decided.get("view");
-   if (input.view) {
-      const t: TableState = {
-         key: `persisted-view/${input.view.tableId ?? ""}`,
-         ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
-         kind: "view",
-         tier: input.view.tier,
-         stale: input.view.stale,
-         unbuilt: !input.view.built,
-         ...(input.view.dataAsOf ? { dataAsOf: input.view.dataAsOf } : {}),
-      };
-      if (viewDecision?.outcome === "used") {
-         if (input.runFailed) {
-            skip(t, "RUN_FAILED");
-         } else {
-            markUsed(t);
-            return {
-               query: input.shape,
-               servedBy,
-               considered,
-               notConsidered: nearbyTables(
-                  input,
-                  onChain,
-                  new Set([t.tableId]),
-               ),
-               warnings: [],
-            };
-         }
-      } else if (!input.view.built) {
-         skip(t, "NOT_BUILT");
-      } else if (input.view.stale) {
-         skip(t, "STALE");
-      } else if (viewDecision?.reason === "row_level_gate") {
-         skip(t, "CONTRACT");
-      } else if (viewDecision && viewDecision.reason !== "not_applicable") {
-         skip(t, skipReasonOf(viewDecision), viewDecision.callerDetail);
-      }
-   }
+   const viewAnswer = viewTableDecision(input, tally, decided, onChain);
+   if (viewAnswer) return viewAnswer;
 
-   // `storage=`: tried only when the tier was a candidate at all (mode on,
-   // bindings and a destination present).
-   // A colocated `#(materialize)` table is the served copy's, decided here
-   // with the storage tier's tables.
-   const storageTables = tables.filter((t) => t.binding && !t.variant);
-   let storageAnswered = false;
-   if (storageDecision) {
-      const read = new Set(
-         (input.storageTablesRead ?? []).map((b) => b.tablePath),
-      );
-      for (const t of storageTables) {
-         if (t.stale) {
-            skip(t, "STALE");
-         } else if (storageDecision.reason === "row_level_gate") {
-            skip(t, "CONTRACT");
-         } else if (storageDecision.outcome === "used") {
-            if (!t.binding || !read.has(t.binding.tablePath)) continue;
-            if (input.runFailed) {
-               skip(t, "RUN_FAILED");
-            } else {
-               markUsed(t);
-               storageAnswered = true;
-            }
-         } else {
-            // A table only the served copy reads skipped for the served
-            // copy's reason, whichever candidate the tier reported.
-            const served = decided.get("served");
-            const decision =
-               served && input.servedCopyTables?.has(t.binding?.tablePath ?? "")
-                  ? served
-                  : storageDecision;
-            skip(
-               t,
-               skipReasonOf(decision),
-               decision.callerDetail,
-               VARIANT_WARNED_CODES[
-                  decision.code as keyof typeof VARIANT_SKIP_CODES
-               ],
-            );
-         }
-      }
-      // The shape answered from a table the chain walk did not place (an IR
-      // shape it does not follow): still name it, so `servedBy` never says
-      // `live` for a storage answer.
-      // The queried source's own table when it is among them (nearest on
-      // its chain first), not whichever the served copy read first: a fact
-      // read through a persisted join is not served from the join's table.
-      const tablesRead = input.storageTablesRead ?? [];
-      const first =
-         input.chain
-            .map((id) => tablesRead.find((b) => b.sourceIDs?.includes(id)))
-            .find((b) => b !== undefined) ?? tablesRead[0];
-      const placed =
-         storageAnswered ||
-         considered.some(
-            (c) => c.outcome === "used" || c.reason === "RUN_FAILED",
-         );
-      if (storageDecision.outcome === "used" && first && !placed) {
-         const t = stateOfBinding(input, first, freshStorage);
-         if (input.runFailed) {
-            skip(t, "RUN_FAILED");
-         } else {
-            markUsed(t);
-            storageAnswered = true;
-         }
-      }
-   } else {
-      // Not routed at all (the tier is off or write-only): every storage table
-      // carries the package's warning, and the query reads its own warehouse.
-      for (const t of storageTables) if (t.warned) skip(t, "WARNED");
-   }
-
-   // Colocated rollups, through the pre-aggregation companion.
-   const colocatedRollups = tables.filter(
-      (t) =>
-         (t.tier === "colocated" || t.variant) &&
-         t.kind === "rollup" &&
-         !t.unbuilt,
+   const storageAnswered = storageTableDecisions(
+      input,
+      tally,
+      tables,
+      decided,
+      storageDecision,
+      freshStorage,
    );
-   let rollupAnswered = false;
-   if (rollupDecision && !storageAnswered) {
-      const used =
-         rollupDecision.outcome === "used"
-            ? colocatedRollups.find(
-                 (t) => !t.stale && t.rollupName === input.rollupMember,
-              )
-            : undefined;
-      for (const t of colocatedRollups) {
-         if (t.stale) {
-            skip(t, "STALE");
-         } else if (rollupDecision.reason === "row_level_gate") {
-            skip(t, "CONTRACT");
-         } else if (rollupDecision.reason === "not_applicable") {
-            continue;
-         } else if (rollupDecision.outcome === "used") {
-            if (t === used) {
-               markUsed(t);
-               rollupAnswered = true;
-            } else if (!used && input.rollupMember !== undefined) {
-               // The companion compiled, but Malloy's composite chose the base.
-               skip(t, "GRAIN_TOO_COARSE");
-            }
-         } else {
-            skip(t, skipReasonOf(rollupDecision), rollupDecision.callerDetail);
-         }
-      }
-   }
+
+   const rollupAnswered = colocatedRollupDecisions(
+      input,
+      tally,
+      tables,
+      rollupDecision,
+      storageAnswered,
+   );
+   const { considered, tierOf, markUsed, skip } = tally;
 
    // A join leg answered in a storage destination reads the query source's
    // stored table there as well as the rollup's: named as used beside it,
@@ -524,9 +345,9 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    return {
       query: input.shape,
       servedBy:
-         servedCopyAnswered && servedBy.kind === "materialized"
-            ? { ...servedBy, via: "served_copy" }
-            : servedBy,
+         servedCopyAnswered && tally.servedBy.kind === "materialized"
+            ? { ...tally.servedBy, via: "served_copy" }
+            : tally.servedBy,
       considered,
       notConsidered: nearbyTables(
          input,
@@ -535,6 +356,255 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       ),
       warnings: applyServeVerdicts(considered, tierOf, input),
    };
+}
+
+/**
+ * The candidates a path report names, in the order they were tried, and the
+ * table that answered: what each tier's decisions add to.
+ */
+interface PathTally {
+   considered: ApiCandidate[];
+   tierOf: Map<ApiCandidate, TableState["tier"]>;
+   readonly servedBy: ApiServer;
+   markUsed(t: TableState): void;
+   skip(
+      t: TableState,
+      reason: SkipReason,
+      detail?: string,
+      code?: string,
+   ): void;
+}
+
+/** An empty tally: nothing considered, the query answered live. */
+function pathTally(): PathTally {
+   const considered: ApiCandidate[] = [];
+   // Each skipped candidate's tier, which the wire does not carry, so a serve
+   // verdict is read for the table that was skipped, not its twin.
+   const tierOf = new Map<ApiCandidate, TableState["tier"]>();
+   let servedBy: ApiServer = { kind: "live" };
+   const markUsed = (t: TableState) => {
+      if (t.tableId) {
+         considered.push({ tableId: t.tableId, kind: t.kind, outcome: "used" });
+      }
+      servedBy = {
+         kind: t.kind,
+         ...(t.tableId ? { tableId: t.tableId } : {}),
+         ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
+      };
+   };
+   const skip = (
+      t: TableState,
+      reason: SkipReason,
+      detail?: string,
+      code?: string,
+   ) => {
+      if (!t.tableId) return;
+      const candidate: ApiCandidate = {
+         tableId: t.tableId,
+         kind: t.kind,
+         outcome: "skipped",
+         reason,
+         ...(code ? { code } : {}),
+         ...(detail ? { detail } : {}),
+      };
+      tierOf.set(candidate, t.tier);
+      considered.push(candidate);
+   };
+   return {
+      considered,
+      tierOf,
+      get servedBy() {
+         return servedBy;
+      },
+      markUsed,
+      skip,
+   };
+}
+
+/**
+ * A persisted view's table, first (R1). When it answered, nothing after
+ * it was tried, so nothing after it is named: the report is returned.
+ */
+function viewTableDecision(
+   input: QueryPathInput,
+   tally: PathTally,
+   decided: ReadonlyMap<ConsideredVariant["kind"], ConsideredVariant>,
+   onChain: ReadonlySet<string>,
+): ApiQueryPath | undefined {
+   const { considered, markUsed, skip } = tally;
+   const viewDecision = decided.get(
+      input.view?.kind === "query" ? "query" : "view",
+   );
+   if (input.view) {
+      const t: TableState = {
+         key: `persisted-view/${input.view.tableId ?? ""}`,
+         ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
+         kind: input.view.kind ?? "view",
+         tier: input.view.tier,
+         stale: input.view.stale,
+         unbuilt: !input.view.built,
+         ...(input.view.dataAsOf ? { dataAsOf: input.view.dataAsOf } : {}),
+      };
+      if (viewDecision?.outcome === "used") {
+         if (input.runFailed) {
+            skip(t, "RUN_FAILED");
+         } else {
+            markUsed(t);
+            return {
+               query: input.shape,
+               servedBy: tally.servedBy,
+               considered,
+               notConsidered: nearbyTables(
+                  input,
+                  onChain,
+                  new Set([t.tableId]),
+               ),
+               warnings: [],
+            };
+         }
+      } else if (!input.view.built) {
+         skip(t, "NOT_BUILT");
+      } else if (input.view.stale) {
+         skip(t, "STALE");
+      } else if (viewDecision?.reason === "row_level_gate") {
+         skip(t, "CONTRACT");
+      } else if (viewDecision && viewDecision.reason !== "not_applicable") {
+         skip(t, skipReasonOf(viewDecision), viewDecision.callerDetail);
+      }
+   }
+   return undefined;
+}
+
+/**
+ * `storage=`: tried only when the tier was a candidate at all (mode on,
+ * bindings and a destination present).
+ * A colocated `#(materialize)` table is the served copy's, decided here
+ * with the storage tier's tables. Returns whether a stored table answered.
+ */
+function storageTableDecisions(
+   input: QueryPathInput,
+   tally: PathTally,
+   tables: readonly TableState[],
+   decided: ReadonlyMap<ConsideredVariant["kind"], ConsideredVariant>,
+   storageDecision: ConsideredVariant | undefined,
+   freshStorage: ReadonlySet<string>,
+): boolean {
+   const { considered, markUsed, skip } = tally;
+   const storageTables = tables.filter((t) => t.binding && !t.variant);
+   let storageAnswered = false;
+   if (storageDecision) {
+      const read = new Set(
+         (input.storageTablesRead ?? []).map((b) => b.tablePath),
+      );
+      for (const t of storageTables) {
+         if (t.stale) {
+            skip(t, "STALE");
+         } else if (storageDecision.reason === "row_level_gate") {
+            skip(t, "CONTRACT");
+         } else if (storageDecision.outcome === "used") {
+            if (!t.binding || !read.has(t.binding.tablePath)) continue;
+            if (input.runFailed) {
+               skip(t, "RUN_FAILED");
+            } else {
+               markUsed(t);
+               storageAnswered = true;
+            }
+         } else {
+            // A table only the served copy reads skipped for the served
+            // copy's reason, whichever candidate the tier reported.
+            const served = decided.get("served");
+            const decision =
+               served && input.servedCopyTables?.has(t.binding?.tablePath ?? "")
+                  ? served
+                  : storageDecision;
+            skip(
+               t,
+               skipReasonOf(decision),
+               decision.callerDetail,
+               declineOfCode(decision.code)?.warnedCode,
+            );
+         }
+      }
+      // The shape answered from a table the chain walk did not place (an IR
+      // shape it does not follow): still name it, so `servedBy` never says
+      // `live` for a storage answer.
+      // The queried source's own table when it is among them (nearest on
+      // its chain first), not whichever the served copy read first: a fact
+      // read through a persisted join is not served from the join's table.
+      const tablesRead = input.storageTablesRead ?? [];
+      const first =
+         input.chain
+            .map((id) => tablesRead.find((b) => b.sourceIDs?.includes(id)))
+            .find((b) => b !== undefined) ?? tablesRead[0];
+      const placed =
+         storageAnswered ||
+         considered.some(
+            (c) => c.outcome === "used" || c.reason === "RUN_FAILED",
+         );
+      if (storageDecision.outcome === "used" && first && !placed) {
+         const t = stateOfBinding(input, first, freshStorage);
+         if (input.runFailed) {
+            skip(t, "RUN_FAILED");
+         } else {
+            markUsed(t);
+            storageAnswered = true;
+         }
+      }
+   } else {
+      // Not routed at all (the tier is off or write-only): every storage table
+      // carries the package's warning, and the query reads its own warehouse.
+      for (const t of storageTables) if (t.warned) skip(t, "WARNED");
+   }
+   return storageAnswered;
+}
+
+/**
+ * Colocated rollups, through the pre-aggregation companion. Returns whether
+ * a rollup answered.
+ */
+function colocatedRollupDecisions(
+   input: QueryPathInput,
+   tally: PathTally,
+   tables: readonly TableState[],
+   rollupDecision: ConsideredVariant | undefined,
+   storageAnswered: boolean,
+): boolean {
+   const { markUsed, skip } = tally;
+   const colocatedRollups = tables.filter(
+      (t) =>
+         (t.tier === "colocated" || t.variant) &&
+         t.kind === "rollup" &&
+         !t.unbuilt,
+   );
+   let rollupAnswered = false;
+   if (rollupDecision && !storageAnswered) {
+      const used =
+         rollupDecision.outcome === "used"
+            ? colocatedRollups.find(
+                 (t) => !t.stale && t.rollupName === input.rollupMember,
+              )
+            : undefined;
+      for (const t of colocatedRollups) {
+         if (t.stale) {
+            skip(t, "STALE");
+         } else if (rollupDecision.reason === "row_level_gate") {
+            skip(t, "CONTRACT");
+         } else if (rollupDecision.reason === "not_applicable") {
+            continue;
+         } else if (rollupDecision.outcome === "used") {
+            if (t === used) {
+               markUsed(t);
+               rollupAnswered = true;
+            } else if (!used && input.rollupMember !== undefined) {
+               // The companion compiled, but Malloy's composite chose the base.
+               skip(t, "GRAIN_TOO_COARSE");
+            }
+         } else {
+            skip(t, skipReasonOf(rollupDecision), rollupDecision.callerDetail);
+         }
+      }
+   }
+   return rollupAnswered;
 }
 
 /**
@@ -670,7 +740,7 @@ function ownVerdictExplains(
  * text, which can carry a refusal's detail; that stays on the package's
  * warnings and its status.
  */
-export function verdictWarningMessage(reason: string): string {
+function verdictWarningMessage(reason: string): string {
    switch (reason) {
       case "storage_mode":
          return "Built into storage, but the server's storage mode routes no query to it, so its queries are answered live.";
@@ -690,53 +760,12 @@ export function verdictWarningMessage(reason: string): string {
 }
 
 /**
- * The codes a variant's {@link Variant.explain} gives, mapped to skip reasons.
+ * The reason for a variant the router skipped because it did not answer.
  * Anything unexplained is a compile failure against the stored form: almost
  * always a field or refinement the stored form does not carry.
  */
-export const VARIANT_SKIP_CODES = {
-   rollup_missing_field: "MISSING_FIELD",
-   rollup_count_semantics: "COUNT_SEMANTICS",
-   rollup_grain_too_coarse: "GRAIN_TOO_COARSE",
-   rollup_time_zone: "TIME_ZONE",
-   rollup_not_built: "NOT_BUILT",
-   // A7: a joined source's gate, which the rollup read through the join does
-   // not carry; a rollup in a storage destination, across from the source.
-   rollup_contract: "CONTRACT",
-   rollup_cross_connection: "CROSS_CONNECTION",
-   view_missing_field: "MISSING_FIELD",
-   view_not_built: "NOT_BUILT",
-   view_stale: "STALE",
-   served_copy_time_zone: "TIME_ZONE",
-   served_copy_cross_connection: "CROSS_CONNECTION",
-   served_copy_not_served: "WARNED",
-   served_copy_opt_out: "WARNED",
-   served_copy_count_semantics: "COUNT_SEMANTICS",
-   // The table lacks the field as live returns it: with its annotations.
-   served_copy_joined_annotations: "MISSING_FIELD",
-   served_copy_pair_shape: "COUNT_SEMANTICS",
-   // Exact or not, a query that reads nothing through the inlined join_many
-   // reads each parent off a flag over every pair row: the table's rows are
-   // not the parents the query counts, so it is not the table to count them
-   // from (see pair_flat_query.ts).
-   served_copy_pair_parent_only: "COUNT_SEMANTICS",
-} as const satisfies Record<string, SkipReason>;
-
-/**
- * The `code` a `WARNED` skip carries: the package warning that explains it,
- * or, for a reader whose own `#@ -persist` sends it live, that annotation.
- */
-const VARIANT_WARNED_CODES: Partial<
-   Record<keyof typeof VARIANT_SKIP_CODES, string>
-> = {
-   served_copy_not_served: "served-copy-not-served",
-   served_copy_opt_out: "persist-opt-out",
-};
-
-/** The reason for a variant the router skipped because it did not answer. */
 function skipReasonOf(decision: ConsideredVariant): SkipReason {
-   const code = decision.code as keyof typeof VARIANT_SKIP_CODES | undefined;
-   return (code && VARIANT_SKIP_CODES[code]) ?? "MISSING_FIELD";
+   return declineOfCode(decision.code)?.reason ?? "MISSING_FIELD";
 }
 
 /** Whether the run that answered read this colocated table from the manifest. */
@@ -1129,7 +1158,7 @@ export function queryShapeOf(
       }
    };
    visitStage(stage, source, []);
-   const tz = stage?.queryTimezone;
+   const tz = recordedTimezoneOf(stage);
    return {
       sourceName: names.sourceName,
       ...(names.viewName ? { viewName: names.viewName } : {}),
@@ -1168,27 +1197,22 @@ function resolvePath(
    return found;
 }
 
-/** Every `{ node: "field", path }` reference in an expression, as a dotted path. */
+/**
+ * Every `{ node: "field", path }` reference in an expression, as a dotted
+ * path; one inside an array query is re-rooted under its array.
+ */
 function fieldPathsIn(e: unknown): string[] {
    const out: string[] = [];
-   const walk = (n: unknown) => {
-      if (!n || typeof n !== "object") return;
-      if (Array.isArray(n)) {
-         for (const item of n) walk(item);
-         return;
-      }
-      const node = n as { node?: unknown; path?: unknown };
-      if (node.node === "field" && Array.isArray(node.path)) {
-         const path = (node.path as unknown[]).join(".");
-         if (!out.includes(path)) out.push(path);
-         return;
-      }
-      for (const [key, value] of Object.entries(n)) {
-         // A function's per-dialect templates, not this call's arguments.
-         if (key === "overload" || key === "at") continue;
-         walk(value);
-      }
-   };
-   walk(e);
+   forEachFieldPath(
+      e,
+      (path) => {
+         const dotted = path.join(".");
+         if (!out.includes(dotted)) out.push(dotted);
+      },
+      // A function's per-dialect templates, not this call's arguments.
+      { skipKeys: FIELD_PATH_SKIPPED_KEYS },
+   );
    return out;
 }
+
+const FIELD_PATH_SKIPPED_KEYS = new Set(["overload", "at"]);

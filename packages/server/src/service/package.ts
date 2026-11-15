@@ -3,6 +3,7 @@
 
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
+import { nearMissGateLines } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -34,7 +35,6 @@ import type { SourceAddress } from "./entities/internal_types";
 import { toApiEntities } from "./entities/to_api";
 import { isUnconditionalDenyAuthorize } from "./entities/access_gates";
 import { splitSourcePath } from "./entities/explore_walk";
-import recursive from "recursive-readdir";
 import { components } from "../api";
 import {
    getPackageLoadPool,
@@ -98,8 +98,17 @@ import {
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
-} from "./materialization/types";
-import { errMessage, ignoreDotfiles } from "../utils";
+} from "./materialization/domain/types";
+import type {
+   ChainBuildRequest,
+   ChainBuildText,
+} from "./materialization/domain/chain_build";
+import {
+   confinedPackagePath,
+   errMessage,
+   listPackageTree,
+   readPackageURL,
+} from "../utils";
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
@@ -122,6 +131,11 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
+import {
+   arrayQueryJoinRefusal,
+   arrayQueryJoins,
+   governsAccess,
+} from "./governance/ir/array_query";
 import {
    carriesCeilingLeaks,
    classificationLeaks,
@@ -177,6 +191,11 @@ import {
 import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
+import {
+   callerVisibleText,
+   rewriteErrorMessage,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import {
    PackageModelPolicy,
    type OffSurfaceContext,
@@ -411,6 +430,23 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   /**
+    * What the last {@link reloadAllModels} compiled against, so a rebind of
+    * the same manifest can skip it. Every part but the
+    * entries is compared by identity: any other reload, colocated bind or
+    * plan change since makes the next rebind recompile.
+    */
+   private reloadedFor:
+      | {
+           entries: string;
+           models: Map<string, Model>;
+           colocated: unknown;
+           buildPlan: unknown;
+           connectionEdits: number;
+        }
+      | undefined;
+   /** Bumped by each connection edit {@link markBuildPlanStale} records. */
+   private connectionEdits = 0;
    /** The annotations the entities extraction left out, as warnings. */
    private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
@@ -879,7 +915,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
        * entities-findings counts, and logs a failure as the caller's answer
        * rather than as an error, since nothing served is affected.
        */
-      options: { dryRun?: boolean } = {},
+      options: {
+         dryRun?: boolean;
+         /**
+          * The published version this load is, which names its tables per
+          * version under `scope: "version"`: set before the load is judged, so
+          * the collision check keys the names the version's runs write.
+          */
+         versionId?: string;
+      } = {},
    ): Promise<Package> {
       return withSpan(
          "publisher.package.load",
@@ -889,13 +933,18 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             "publisher.package.dry_run": options.dryRun === true,
          },
          () =>
-            Package.load(
-               environmentName,
-               packageName,
-               packagePath,
-               environmentMalloyConfig,
-               cleanupDirectoryOnFailure,
-               options.dryRun === true,
+            // A failed load's message names the package's files
+            // package-relative, whichever path loaded it.
+            withPackageRelativeErrors(packagePath, () =>
+               Package.load(
+                  environmentName,
+                  packageName,
+                  packagePath,
+                  environmentMalloyConfig,
+                  cleanupDirectoryOnFailure,
+                  options.dryRun === true,
+                  options.versionId,
+               ),
             ),
       );
    }
@@ -907,6 +956,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       environmentMalloyConfig: PackageConnectionInput,
       cleanupDirectoryOnFailure: boolean,
       dryRun: boolean,
+      versionId?: string,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -938,6 +988,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             startTime,
             manifestValidationTime,
             dryRun,
+            versionId,
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
@@ -1079,6 +1130,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
       const timings = { hydrateMs: 0, renderValidationMs: 0 };
+      // A model's compile error is read by every caller of the package (a
+      // query's 424, get_context, the package's warnings): it names the
+      // package's files package-relative and no other server path, whether
+      // it is thrown or kept on a placeholder.
+      const callerVisible = (err: Error): Error => {
+         rewriteErrorMessage(err, (message) =>
+            callerVisibleText(message, packagePath),
+         );
+         return err;
+      };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -1087,7 +1148,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             packageName,
             sm.modelPath,
             sm.modelType,
-            err,
+            callerVisible(err),
             {
                policy: ctx.modelPolicy.forModel(sm.modelPath),
                sourceText:
@@ -1102,7 +1163,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       for (const sm of outcome.models) {
          await yielder.maybeYield();
          if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
+            const err = callerVisible(
+               Model.deserializeCompilationError(sm.compilationError),
+            );
             if (onCompileError === "throw") {
                logger.error("Model compilation failed", {
                   packageName,
@@ -1317,6 +1380,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       startTime: number,
       manifestValidationTime: number,
       dryRun: boolean,
+      versionId?: string,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
@@ -1331,6 +1395,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
             withEntities: true,
+            ...(versionId !== undefined ? { publishedVersion: true } : {}),
          }),
       );
       const [outcome, databases] = await Promise.all([
@@ -1383,9 +1448,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                // because `#@ persist` cannot appear in a `.malloynb`; widen this
                // if that changes, to keep the identifier-injection check.
                if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-                  const modelSource = await fs.readFile(
-                     path.join(packagePath, sm.modelPath),
-                     "utf-8",
+                  const modelSource = await readPackageURL(
+                     packagePath,
+                     pathToFileURL(path.join(packagePath, sm.modelPath)),
                   );
                   assertPersistNamesQuoted(modelSource, sm.modelPath);
                }
@@ -1427,8 +1492,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          pkg.renderTagWarnings =
             pkg.surfacedRenderTagWarnings(renderTagWarnings);
          pkg.adoptOutcomeMetadata(outcome);
+         // Before the gates judge it: a version names its tables per version.
+         if (versionId !== undefined) {
+            pkg.setPackageMetadata({ ...pkg.getPackageMetadata(), versionId });
+         }
          // No manifest is bound yet, so this serves live until a bind.
-         pkg.materialization.wireFreshnessResolvers();
+         pkg.materialization.wireServingResolvers();
          pkg.refreshServingIdentity();
 
          buildPlanMs = await pkg.materialization.applyLoadBuildPlan(
@@ -1489,8 +1558,22 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.packageMetadata.versionId ?? undefined;
    }
 
+   /**
+    * The build manifest the package is configured to bind, as
+    * `getPackageMetadata().manifestLocation` reports it, without building the
+    * rest of the metadata.
+    */
+   public getManifestLocation(): string | null | undefined {
+      return this.packageMetadata.manifestLocation;
+   }
+
    public getPackageName(): string {
       return this.packageName;
+   }
+
+   /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
+   public chainBuildText(request: ChainBuildRequest): ChainBuildText {
+      return this.materialization.chainBuildText(request);
    }
 
    /** The persist build plan, or null when the package declares no persist source. */
@@ -1803,7 +1886,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             // from the revision its range describes.
             text:
                model.getCompiledSourceText() ??
-               (await fs.readFile(absolutePath, "utf-8")),
+               (await readPackageURL(
+                  this.packagePath,
+                  pathToFileURL(absolutePath),
+               )),
          });
       }
       return modelFiles;
@@ -1924,9 +2010,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          })),
          ...this.materialization.storageWarnings(),
          ...this.materialization.storedColumnTypeWarnings(),
+         ...this.materialization.nativeSchemaWarnings(),
          ...this.materialization.servedCopyWarnings(),
-         ...this.materialization.droppedPersistWarnings(),
-         ...this.materialization.rollupsOverStoredBaseWarnings(),
          ...this.materialization.repeatedJoinOneKeyWarnings(),
          ...this.materialization.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
@@ -1944,8 +2029,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...(this.surfaceWidenedWarning !== undefined
             ? [{ message: this.surfaceWidenedWarning }]
             : []),
-         // A collision spans sources, so it has no subject; the message names them.
-         ...this.persistenceCollisionWarnings().map((message) => ({ message })),
+         // A collision spans sources, so it has no subject; the message names
+         // them. Only under PERSIST_COLLISION_ENFORCE=false: otherwise it
+         // fails the load (formatInvalidAnnotations).
+         ...this.materialization.persistenceCollisionRefusals(),
          ...this.preaggregateAccessWarnings(),
          // Legal but probably unintended, e.g. a typo'd merge_key=.
          ...this.materialization.incrementalPolicyAdvisories(),
@@ -2026,9 +2113,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.markManifestBindFailed();
    }
 
-   /** See {@link PackageMaterialization.bindColocatedServeManifest}. */
+   /** The colocated half of {@link PackageMaterialization.bind}. */
    public bindColocatedServeManifest(entries: FreshnessManifest): void {
-      this.materialization.bindColocatedServeManifest(entries);
+      this.materialization.bind({ colocated: entries });
    }
 
    /** See {@link PackageMaterialization.forgetKeyUniqueness}. */
@@ -2036,11 +2123,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.forgetKeyUniqueness(sourceEntityIds);
    }
 
-   /** See {@link PackageMaterialization.bindStorageServeBindings}. */
+   /** The `storage=` half of {@link PackageMaterialization.bind}. */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
-      this.materialization.bindStorageServeBindings(entries);
+      this.materialization.bind({ storage: entries });
    }
 
    /** See {@link PackageMaterialization.setServeDestinationSchema}. */
@@ -2060,13 +2147,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.setServeDestinationConfig(provider);
    }
 
-   /** See {@link PackageMaterialization.invalidateServeShapes}. */
-   public invalidateServeShapes(): void {
-      this.materialization.invalidateServeShapes();
+   /** See {@link PackageMaterialization.invalidateCompiledLegs}. */
+   public invalidateCompiledLegs(): void {
+      this.materialization.invalidateCompiledLegs();
    }
 
    /** See {@link PackageMaterialization.markBuildPlanStale}. */
    public markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      this.connectionEdits++;
       this.materialization.markBuildPlanStale(changedConnections);
    }
 
@@ -2093,7 +2181,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * Resolves true when it was derived.
     */
    public refreshBuildPlan(
-      options: { retryFailed?: boolean } = {},
+      options: { retryFailed?: boolean; isStale?: () => boolean } = {},
    ): Promise<boolean> {
       return this.materialization.refreshBuildPlan(async () => {
          const outcome = await loadOutcomeOrThrow(
@@ -2104,6 +2192,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                malloyConfig: this.malloyConfig,
                defaultConnectionName: "duckdb",
                computeBuildPlan: true,
+               ...(this.getVersionId() !== undefined
+                  ? { publishedVersion: true }
+                  : {}),
                // Behind publishes, reloads and compiles: a connection edit's
                // re-derivations never hold a user's load up for more than
                // the one already running.
@@ -2225,6 +2316,26 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       );
    }
 
+   /**
+    * REJECTION messages, one per model, for a join written inside a query on
+    * an array in a model that governs access ({@link governsAccess}): no
+    * check of Publisher's can follow what that join reads. Every model is
+    * read, listed or not, since a published source can import a hidden one.
+    */
+   public formatArrayQueryJoins(): string {
+      const messages: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         const modelDef = model.getModelDef();
+         // Governance first: it stops at the first governing note, where the
+         // join walk reads every node, and most models govern nothing.
+         if (!governsAccess(modelDef)) continue;
+         const joins = arrayQueryJoins(modelDef);
+         const refusal = arrayQueryJoinRefusal(`Model ${modelPath}`, joins);
+         if (refusal) messages.push(refusal);
+      }
+      return messages.join("\n");
+   }
+
    /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */
    public prepareCeilingQueries(): Promise<PreparedCeilingQueries> {
       return prepareCeilingQueries(this.models);
@@ -2287,9 +2398,41 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.materialization.formatInvalidPreaggregatePolicy();
    }
 
-   /** See {@link PackageMaterialization.formatUnparseableAnnotations}. */
-   public formatUnparseableAnnotations(): string {
-      return this.materialization.formatUnparseableAnnotations();
+   /**
+    * Every invalid materialization annotation, one per line, or "": the
+    * package's own ({@link PackageMaterialization.formatInvalidAnnotations})
+    * and a misspelled materialization route or directive. Fails the publish
+    * and the load.
+    */
+   public formatInvalidAnnotations(): string {
+      return [
+         this.materialization.formatInvalidAnnotations(),
+         ...this.materializationNearMissLines(),
+      ]
+         .filter(Boolean)
+         .join("\n");
+   }
+
+   /** A misspelled materialization route or directive, one line each. */
+   private materializationNearMissLines(): string[] {
+      return [...this.models].flatMap(([modelPath, model]) =>
+         nearMissGateLines(modelPath, model.annotationNearMisses?.() ?? []),
+      );
+   }
+
+   /**
+    * The load gate's text: every invalid materialization annotation in the
+    * package, one line each with its code, or "" when it is valid. The load
+    * fails with it; a run over the package's files and a re-derivation read
+    * the same text off the plan they derive (plan/load_gate_text.ts).
+    */
+   public formatLoadGateText(): string {
+      return [
+         this.materialization.formatLoadGateText(),
+         ...this.materializationNearMissLines(),
+      ]
+         .filter(Boolean)
+         .join("\n");
    }
 
    /**
@@ -2299,9 +2442,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    public annotationFindingWarnings(): ApiPackageWarning[] {
       return [
-         ...this.materialization.droppedPersistWarnings(),
          ...this.materialization.annotationFindingWarnings(),
-         ...this.materialization.rollupsOverStoredBaseWarnings(),
          // Not materialization-unreachable: it reports what the surface
          // curates, not an annotation finding.
          ...this.preaggregateAccessWarnings(),
@@ -2317,11 +2458,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * Annotations the package's model files wrote that do nothing: a near miss
     * of a route Publisher owns (`annotation-near-miss`), or a prefix Malloy
-    * cannot route (`annotation-malformed-route`). Warnings, never refusals.
-    * Each model reports only the notes in its own file, so a shared import
-    * is reported once.
+    * cannot route (`annotation-malformed-route`). Warnings, never refusals; a
+    * near miss of a materialization route (`materialization-near-miss`) fails
+    * the load instead (see {@link formatInvalidAnnotations}). Each model
+    * reports only the notes in its own file, so a shared import is reported
+    * once.
     */
    public annotationNearMissWarnings(): ApiPackageWarning[] {
+      return this.nearMissWarnings().filter((w) => w.severity !== "error");
+   }
+
+   private nearMissWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of this.models) {
          // Optional: a model a spec stands in for need not implement it.
@@ -2368,11 +2515,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** See {@link PackageMaterialization.persistenceCollisionWarnings}. */
    public persistenceCollisionWarnings(): string[] {
       return this.materialization.persistenceCollisionWarnings();
-   }
-
-   /** See {@link PackageMaterialization.formatPersistenceCollisionRejections}. */
-   public formatPersistenceCollisionRejections(): string {
-      return this.materialization.formatPersistenceCollisionRejections();
    }
 
    /**
@@ -2589,7 +2731,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * surface from publisher.json and re-applies serve routing to the new
     * models, which a fresh package has none of yet.
     */
-   public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+   public async reloadAllModels(
+      entries: FreshnessManifest,
+      options: { ifChanged?: boolean } = {},
+   ): Promise<boolean> {
+      const requested = JSON.stringify(entries);
+      if (options.ifChanged && this.isReloadedFor(requested)) {
+         logger.debug("Skipped reloading models: the manifest is unchanged", {
+            packageName: this.packageName,
+         });
+         return false;
+      }
       // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
       const buildManifest = toTableNameManifest(entries);
@@ -2651,9 +2803,18 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.applySiblingModelResolverToModels();
       // Applies the query boundary too, against the refreshed explore set.
       this.installReports(discovery);
-      // New models start with no serve routing; re-apply it.
-      this.materialization.pushStorageServeBindingsToModels();
+      // New models read the snapshot through their new policy; compile
+      // their served copies over it now, once: the destinations and the
+      // entries they were compiled with go first, so the one compile the
+      // publish starts is not invalidated and started again.
+      this.materialization.wireServingResolvers();
       this.materialization.pushServeDestinationConfigToModels();
+      this.materialization.bind({
+         colocated: entries,
+         colocatedAsGiven: true,
+         models: "installed",
+      });
+      this.reloadedFor = this.reloadKey(requested);
       // Read against the reports installed above.
       this.renderTagWarnings =
          this.surfacedRenderTagWarnings(renderTagWarnings);
@@ -2665,10 +2826,41 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          discovery,
          discoveryMs + performance.now() - lintStarted,
       );
-      this.materialization.recordManifestBinding(entries);
-      this.materialization.wireFreshnessResolvers();
       warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
+      return true;
+   }
+
+   /** What a reload against `entries` (as requested, unquoted) compiles over now. */
+   private reloadKey(entries: string): NonNullable<Package["reloadedFor"]> {
+      return {
+         entries,
+         models: this.models,
+         colocated: this.materialization.boundColocatedEntries(),
+         buildPlan: this.materialization.buildPlan,
+         connectionEdits: this.connectionEdits,
+      };
+   }
+
+   /** Whether the models were last reloaded against `entries`, and nothing has moved since. */
+   private isReloadedFor(entries: string): boolean {
+      const last = this.reloadedFor;
+      if (!last) return false;
+      // A plan a connection edit made stale may not hold the tables its
+      // re-derivation will; recompile, as before, rather than keep them.
+      if (this.materialization.isBuildPlanStale()) return false;
+      // A model a reload left as a placeholder may compile now.
+      for (const model of this.models.values()) {
+         if (model.getCompilationError()) return false;
+      }
+      const now = this.reloadKey(entries);
+      return (
+         last.entries === now.entries &&
+         last.models === now.models &&
+         last.colocated === now.colocated &&
+         last.buildPlan === now.buildPlan &&
+         last.connectionEdits === now.connectionEdits
+      );
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
@@ -2758,9 +2950,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       try {
          return (
             model.getCompiledSourceText() ??
-            (await fs.readFile(
-               safeJoinUnderRoot(this.packagePath, modelPath),
-               "utf8",
+            (await readPackageURL(
+               this.packagePath,
+               pathToFileURL(safeJoinUnderRoot(this.packagePath, modelPath)),
             ))
          );
       } catch {
@@ -3565,17 +3757,46 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          packagePath,
          PACKAGE_MANIFEST_NAME,
       );
+      // One answer for every manifest Publisher will not read: missing, a
+      // link out of the package (whatever it leads to, or nothing), or not a
+      // file. So the manifest cannot tell what lies outside the package.
+      const notThere = () => {
+         logger.error(`Can't find ${packageConfigPath}`);
+         return new PackageNotFoundError(
+            callerVisibleText(
+               `Package manifest for ${packagePath} does not exist.`,
+               packagePath,
+            ),
+         );
+      };
+      // A package directory Publisher may not open is reported as such (its
+      // errno), not as a missing manifest: that is the operator's own tree.
       try {
-         await fs.stat(packageConfigPath);
+         await fs.realpath(packagePath);
+      } catch (error) {
+         const code = (error as NodeJS.ErrnoException).code;
+         if (code === "ENOENT" || code === "ENOTDIR") throw notThere();
+         throw error;
+      }
+      let real: string;
+      try {
+         real = await confinedPackagePath(
+            packagePath,
+            pathToFileURL(packageConfigPath),
+         );
+      } catch {
+         throw notThere();
+      }
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+         stat = await fs.stat(real);
       } catch (error) {
          // Only ENOENT/ENOTDIR mean "does not exist"; an EACCES is rethrown as itself.
          const code = (error as NodeJS.ErrnoException).code;
          if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-         logger.error(`Can't find ${packageConfigPath}`);
-         throw new PackageNotFoundError(
-            `Package manifest for ${packagePath} does not exist.`,
-         );
+         throw notThere();
       }
+      if (!stat.isFile()) throw notThere();
    }
 
    private static async readDatabases(
@@ -3611,10 +3832,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   databasePath,
                   error: message,
                });
+               // Named by the file's package-relative path, with the
+               // connection's own reason, never the SQL the probe compiled;
+               // that reason names the package's files package-relative and
+               // no other path.
+               const reason =
+                  error instanceof MalloyError && error.problems.length > 0
+                     ? error.problems.map((p) => p.message).join("; ")
+                     : message;
+               const readable = callerVisibleText(reason, packagePath);
                return {
                   path: databasePath,
                   type: "embedded" as const,
-                  error: message,
+                  error: readable.startsWith(`Cannot read ${databasePath}`)
+                     ? readable
+                     : `Cannot read ${databasePath}: ${readable}`,
                };
             }
          }),
@@ -3624,8 +3856,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private static async getDatabasePaths(
       packagePath: string,
    ): Promise<string[]> {
-      const files = await recursive(packagePath, [ignoreDotfiles]);
-      return files
+      const files = await listPackageTree(packagePath);
+      const candidates = files
          .map((fullPath: string) => {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");
          })
@@ -3640,6 +3872,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                modelPath.endsWith(".xlsx")
             );
          });
+      // Only a regular file inside the package is probed: a link out of it,
+      // to a file or a directory, is not read through the connection.
+      const probed: string[] = [];
+      for (const relativePath of candidates) {
+         try {
+            const real = await confinedPackagePath(
+               packagePath,
+               pathToFileURL(path.join(packagePath, relativePath)),
+            );
+            if ((await fs.stat(real)).isFile()) probed.push(relativePath);
+         } catch {
+            // Outside the package, missing or unreadable: not probed.
+         }
+      }
+      return probed;
    }
 
    private static async getDatabaseInfo(

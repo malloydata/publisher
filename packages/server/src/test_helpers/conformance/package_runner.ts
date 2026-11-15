@@ -17,6 +17,10 @@
  */
 
 import { capturedNativeSchema } from "../../service/materialization/run/colocated_native_types";
+import {
+   pairLeafKeyChecksOf,
+   runRollupKeyCheck,
+} from "../../service/materialization/run/inline_uniqueness";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -39,12 +43,19 @@ import { parsePackageName } from "../../service/identity";
 import { QueryPrivileges } from "../../service/model_query_request";
 import type { Package } from "../../service/package";
 import { installSettings } from "../settings_env";
+import { readableTableName } from "../../service/materialization/domain/table_name";
 import { writePackageFiles } from "../temp_package";
+import { sharedTables } from "../../service/materialization/plan/eligibility_collect";
+import { compilePackageBuildPlan } from "../../service/materialization/plan/build_plan_compile";
 import {
+   type BuildCastOptions,
    castToDeclaredTypes,
    type DeclaredColumn,
    declaredColumnsOf,
 } from "../../service/materialization/stored_column_types";
+import { queryTimezoneOf } from "../../service/governance/ir/compiled_model";
+import { planModelPersistedViews } from "../../service/materialization/plan/persisted_view";
+import { SourceMap } from "../../service/materialization/text/source_map";
 /** A result row, as `compactResult` carries it. */
 export type Row = Record<string, unknown>;
 
@@ -59,9 +70,11 @@ function withoutReferenceIds(value: unknown): unknown {
 /** The storage destination every `storage=` source in the fixture names. */
 export const LAKE = "lake";
 
-/** A served field as the wire carries it: name, type (timeframe included) and annotations. */
+/** A served field as the wire carries it: name, kind, type (timeframe included) and annotations. */
 export interface WireField {
    name: string;
+   /** `dimension` or `measure`, as Malloy's result schema reports it. */
+   kind?: string;
    type: unknown;
    annotations: string[];
 }
@@ -75,6 +88,10 @@ export interface Answer {
    servedBy: string;
    /** `served_copy` when the served copy on `virtual` answered. */
    via?: string;
+   /** The view leg's skip, when it considered the query and declined it. */
+   viewSkip?: { reason?: string; detail?: string };
+   /** The served copy's skip, when it considered the query and declined it. */
+   servedSkip?: { reason?: string; detail?: string };
 }
 
 /** What querying a package produced: an answer, or the error it threw. */
@@ -82,18 +99,19 @@ export type Outcome = { answer: Answer } | { error: string };
 
 /**
  * The switches a served run is taken under: `off` (`PUBLISHER_MATERIALIZE`
- * unset, the shipped default) and `on` or `cutover` (`PUBLISHER_MATERIALIZE`
- * on). Since the v1 cutover's retirement every one serves through the served
+ * set `false`) and `on` or `cutover` (`PUBLISHER_MATERIALIZE` on, the shipped
+ * default). Since the v1 cutover's retirement every one serves through the served
  * copy, the rollup and view legs, or live; `cutover` is kept as a name for
  * the column the fixture declares its expectations under.
  */
 export type Switch = "off" | "on" | "cutover";
 
-function settingsFor(materialize: Switch) {
+function settingsFor(materialize: Switch, env: Record<string, string> = {}) {
    return {
       env: {
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_MATERIALIZE: materialize === "off" ? "false" : "true",
+         ...env,
       },
    };
 }
@@ -104,15 +122,20 @@ function settingsFor(materialize: Switch) {
  * cutover's bindings are pushed at bind, so a fixture queried under
  * `cutover` is rebound first ({@link LoadedFixture.rebind}).
  */
-export function withSwitch(materialize: Switch): () => void {
-   return installSettings(settingsFor(materialize)).restore;
+export function withSwitch(
+   materialize: Switch,
+   /** Settings of the fixture's own, over the switch's. */
+   env: Record<string, string> = {},
+): () => void {
+   return installSettings(settingsFor(materialize, env)).restore;
 }
 
 /**
  * Pools kept for the rest of the run, one per set of settings a pool was made
  * under. Reusing them, rather than spawning a worker per case, keeps a run's
- * worker count down: Bun 1.3 keeps most of a stopped worker's memory, which
- * ran Windows CI out of memory.
+ * worker count down, which makes the run faster. Under Bun 1.3, which kept most
+ * of a stopped worker's memory, it also kept Windows CI from running out of
+ * memory; Bun 1.4.4 returns that memory.
  */
 const poolsBySettings = new Map<string, PackageLoadPool>();
 
@@ -153,6 +176,8 @@ export interface LoadedFixture {
    verdicts: string[];
    /** The plan's sources that were built, by name and tier. */
    built: { name: string; tier: "storage" | "colocated" }[];
+   /** The table each built content address was written to, by sourceEntityId. */
+   tables: Record<string, string>;
    /** Problems building a planned source, by name. */
    buildErrors: Record<string, string>;
    /** The `storage=` manifest entries the build bound, by sourceEntityId. */
@@ -178,6 +203,13 @@ export interface BindOptions {
     * false: most callers serve no rollup, so they build none).
     */
    includeRollups?: boolean;
+   /**
+    * Store each `storage=` table as the warehouse returned it, uncast, as a
+    * build stores it when it declines a cast (a `date` under a query time
+    * zone) or a cast fails and it retries without them (default false: cast
+    * to the declared types, as a build does).
+    */
+   storeUncast?: boolean;
 }
 
 /**
@@ -260,6 +292,7 @@ export async function loadFixture(
                rows: result.compactResult as unknown as Row[],
                fields: (result.result?.schema?.fields ?? []).map((f) => ({
                   name: f.name,
+                  kind: (f as { kind?: string }).kind,
                   // A nest's fields carry annotations too, with the same
                   // per-compile reference id.
                   type: withoutReferenceIds((f as { type?: unknown }).type),
@@ -276,6 +309,8 @@ export async function loadFixture(
                ...(result.path?.servedBy?.via
                   ? { via: result.path.servedBy.via }
                   : {}),
+               ...skipOf("view", result.path?.considered),
+               ...skipOf("materialized", result.path?.considered),
             },
          };
       } catch (error) {
@@ -305,9 +340,17 @@ export async function loadFixture(
             }
          };
          await settle();
+         const tables: Record<string, string> = {};
+         for (const [id, e] of Object.entries(colocated)) {
+            tables[id] = String(e.tableName);
+         }
+         for (const [id, e] of Object.entries(stored)) {
+            tables[id] = String(e.physicalTableName);
+         }
          return {
             pkg,
             built,
+            tables,
             buildErrors,
             stored,
             async rebind() {
@@ -368,22 +411,82 @@ async function buildAll(
    // an extension that inherits its annotation.
    // Rollups only when asked (`#@ preaggregate`, `#(preaggregate)`), each
    // recorded with its origin, as a build records it.
-   const entries = Object.values(pkg.getBuildPlan()?.sources ?? {})
+   const entries = Object.entries(pkg.getBuildPlan()?.sources ?? {})
+      .map(([sourceID, e]) => ({ ...e, sourceID }))
       .filter((e) => options.includeRollups || e.origin !== "preaggregate")
       .sort(
          (a, b) =>
             Number(b.annotationFields?.name === b.name) -
             Number(a.annotationFields?.name === a.name),
       );
+   // A pair table's leaf key check, run on the source's connection once its
+   // table is written and bound beside it, as an auto-run records it (known
+   // limitation 40). The package's own plans hold the check's compiled SQL.
+   const materializePlans =
+      (
+         pkg as unknown as {
+            materialization?: { materializePlans?: Record<string, unknown> };
+         }
+      ).materialization?.materializePlans ?? {};
+   const leafKeys = async (
+      sourceID: string,
+      warehouse: DuckDBConnection,
+   ): Promise<{ keyUniqueness?: { parentKeys: Record<string, boolean> } }> => {
+      const checks = pairLeafKeyChecksOf(
+         (materializePlans as Record<string, never>)[sourceID],
+      );
+      const parentKeys: Record<string, boolean> = {};
+      for (const check of checks) {
+         const record = await runRollupKeyCheck(check, warehouse, "pair");
+         if (record) parentKeys[check.sourceID] = record.unique;
+      }
+      return Object.keys(parentKeys).length > 0
+         ? { keyUniqueness: { parentKeys } }
+         : {};
+   };
    try {
+      // Sources an author's name= puts on one table are refused by a
+      // self-instructed run (only reachable under the collision opt-out), so
+      // neither is built: read off the plan the run compiles.
+      const shared =
+         pkg.persistenceCollisionWarnings().length > 0
+            ? sharedTables(
+                 await compilePackageBuildPlan(pkg, undefined, {
+                    keepIncrementalUnbuildable: true,
+                 }),
+              )
+            : new Map<string, string>();
       for (const entry of entries) {
          if (seen.has(entry.sourceEntityId)) continue;
          seen.add(entry.sourceEntityId);
-         // The name a build writes: `name=`, else the source's name, so two
-         // sources resolving to one name overwrite each other as they would
-         // in a real destination. Quoted in DDL; recorded unquoted, as a
-         // build records it.
-         const table = (entry.annotationFields?.name || entry.name).trim();
+         if (shared.has(entry.sourceID)) continue;
+         // The name a self-instructed build writes: an author's `name=` as
+         // written, else Publisher's readable name, hashed over the source's
+         // identity (its declaring model and name), so two sources of one
+         // name in two models write two tables, as in a real destination, and
+         // a defaulted name never meets an author's. Quoted in DDL; recorded
+         // unquoted, as a build records it.
+         const plan = (
+            materializePlans as Record<string, { nameDefaulted?: true }>
+         )[entry.sourceID];
+         const declared = plan
+            ? !plan.nameDefaulted
+            : !!entry.annotationFields?.name?.trim();
+         const base = (entry.annotationFields?.name || entry.name).trim();
+         const table =
+            declared || entry.origin === "preaggregate"
+               ? base
+               : readableTableName({
+                    identity: {
+                       environmentName: "conform",
+                       packageName: "pkg",
+                       modelPath: entry.modelPath ?? "",
+                       sourceName: entry.name,
+                    },
+                    label: entry.name,
+                    dialect: entry.dialect ?? undefined,
+                    inDestination: !!entry.annotationFields?.storage,
+                 });
          const quoted = `"${table.replace(/"/g, '""')}"`;
          const storage = entry.annotationFields?.storage;
          try {
@@ -410,9 +513,12 @@ async function buildAll(
                await lake.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${castToDeclaredTypes(
                      select,
-                     declaredColumnsFor(pkg, entry).filter((c) =>
-                        present.has(c.name),
-                     ),
+                     options.storeUncast
+                        ? []
+                        : declaredColumnsFor(pkg, entry).filter((c) =>
+                             present.has(c.name),
+                          ),
+                     castOptionsFor(pkg, entry),
                   )}`,
                );
                const described = await lake.runSQL(`DESCRIBE ${quoted}`, {
@@ -433,6 +539,7 @@ async function buildAll(
                         column_type: string;
                      }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
+                  ...(await leafKeys(entry.sourceID, warehouse)),
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
@@ -451,6 +558,7 @@ async function buildAll(
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
                   ...(nativeSchema ? { nativeSchema } : {}),
+                  ...(await leafKeys(entry.sourceID, warehouse)),
                };
                built.push({ name: entry.name, tier: "colocated" });
             }
@@ -468,14 +576,64 @@ async function buildAll(
 }
 
 /**
+ * What decides the planned source's build casts beyond its declared types:
+ * the query time zone its rows are computed in, under which a build leaves a
+ * `date` uncast (`storageBuildCasts`). An author source's own; for a
+ * generated build source (a persisted view's), its source's and the view's
+ * stages'.
+ */
+function castOptionsFor(
+   pkg: Package,
+   entry: { name: string; modelPath?: string },
+): BuildCastOptions {
+   const def = entry.modelPath
+      ? pkg.getModel(entry.modelPath)?.getModelDef()
+      : undefined;
+   if (!def) return {};
+   const struct = def.contents?.[entry.name];
+   let queryTimezone: string | undefined;
+   if (struct) {
+      queryTimezone = queryTimezoneOf(struct);
+   } else {
+      const plan = planModelPersistedViews(def).plans.find(
+         (p) => p.buildSourceName === entry.name,
+      );
+      const source = plan
+         ? (SourceMap.of(def).node(plan.sourceID)?.def as
+              | {
+                   queryTimezone?: unknown;
+                   fields?: {
+                      type?: unknown;
+                      name?: unknown;
+                      as?: unknown;
+                      pipeline?: unknown;
+                   }[];
+                }
+              | undefined)
+         : undefined;
+      const view = source?.fields?.find(
+         (f) => f.type === "turtle" && (f.as ?? f.name) === plan?.viewName,
+      );
+      queryTimezone = queryTimezoneOf({
+         queryTimezone: source?.queryTimezone,
+         query: {
+            pipeline: Array.isArray(view?.pipeline) ? view.pipeline : [],
+         },
+      });
+   }
+   return queryTimezone ? { queryTimezone } : {};
+}
+
+/**
  * The scalar dimensions the planned source declares, read from its model's
- * compiled definition: what a storage build casts its columns to. None when
- * the definition cannot be found (the build then runs uncast, as a build does
- * when it cannot read the field list).
+ * compiled definition, or for a generated build source its plan entry's
+ * columns: what a storage build casts its columns to. None when neither can
+ * be read (the build then runs uncast, as a build does when it cannot read
+ * the field list).
  */
 function declaredColumnsFor(
    pkg: Package,
-   entry: { name: string; modelPath?: string },
+   entry: { name: string; modelPath?: string; columns?: unknown[] },
 ): DeclaredColumn[] {
    const def = entry.modelPath
       ? pkg.getModel(entry.modelPath)?.getModelDef()
@@ -483,9 +641,32 @@ function declaredColumnsFor(
    const struct = def?.contents?.[entry.name] as
       | { fields?: { expressionType?: string }[] }
       | undefined;
+   // A generated build source (a persisted view's) is no name of the author's
+   // model: its plan entry's columns are the ones a build casts to
+   // (`storageBuildCasts`, from the same field list).
+   if (!struct) return declaredColumnsOf(entry.columns);
    return declaredColumnsOf(
       (struct?.fields ?? []).filter(
          (f) => f.expressionType === undefined || f.expressionType === "scalar",
       ),
    );
+}
+
+/** A leg's entry in a path report's `considered`, when it skipped. */
+function skipOf(
+   kind: "view" | "materialized",
+   considered: readonly unknown[] | undefined,
+): Pick<Answer, "viewSkip" | "servedSkip"> {
+   const skip = (considered ?? []).find(
+      (c) =>
+         (c as { kind?: unknown }).kind === kind &&
+         (c as { outcome?: unknown }).outcome === "skipped",
+   ) as { reason?: unknown; detail?: unknown } | undefined;
+   if (!skip) return {};
+   return {
+      [kind === "view" ? "viewSkip" : "servedSkip"]: {
+         ...(typeof skip.reason === "string" ? { reason: skip.reason } : {}),
+         ...(typeof skip.detail === "string" ? { detail: skip.detail } : {}),
+      },
+   };
 }

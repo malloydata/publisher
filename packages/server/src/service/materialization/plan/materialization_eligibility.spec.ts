@@ -14,7 +14,8 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it, spyOn } from "bun:test";
+import * as gatePolicy from "../domain/gate_policy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { deriveAnnotationFields, plannedSources } from "./build_plan";
 import {
@@ -24,6 +25,7 @@ import {
    gateEnforcedAtRead,
    READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
+import { collectSourceEligibility } from "./eligibility_collect";
 import { installSettings } from "../../../test_helpers/settings_env";
 import type { PersistSourceGateOutcome } from "./persist_source_fields";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
@@ -159,19 +161,6 @@ source: mz_given_outside is base -> { select: * } extend { where: tenant = $tena
       expect(plan.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
-      expect(plan.partitionColumns).toEqual([]);
-   });
-
-   it("resolves partition= into the plan the build lays the table out with", async () => {
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#@ persist name="mz_part" storage=lake partition="region"
-source: mz_part is base -> { select: * }`);
-      const plan = assertMaterializationEligible(
-         sources.mz_part,
-         deriveAnnotationFields(sources.mz_part),
-      );
-      expect(plan.partitionColumns).toEqual(["region"]);
    });
 
    it("refuses a source protected by its own #(authorize) gate", async () => {
@@ -730,6 +719,97 @@ source: by_category is orders -> {
          }
       });
 
+      it("admits a colocated #(materialize) source's own row-level gate with the gated-sources switch off (G3), and nothing more", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const G3_ONLY = {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         };
+         expect(
+            withEnv(G3_ONLY, () => gateEnforcedAtRead(id, inputs(id))),
+         ).toBe(true);
+         withEnv(G3_ONLY, () => assertTierEligible(source, false, inputs(id)));
+         // Asked as storage, by the caller or by the plan, it is refused.
+         expect(
+            withEnv(G3_ONLY, () => gateEnforcedAtRead(id, inputs(id), true)),
+         ).toBe(false);
+         expect(
+            withEnv(G3_ONLY, () =>
+               gateEnforcedAtRead(id, {
+                  ...inputs(id),
+                  materializePlans: { [id]: { persist: { storage: "lake" } } },
+               } as never),
+            ),
+         ).toBe(false);
+         // G3's other conditions hold as for v1: an inherited, unproven or
+         // joined gate, a #@ persist source, and v2's switch off.
+         for (const plan of [
+            inputs(id, {
+               classification: "row_level",
+               attributed: true,
+               inheritedRowFilter: true,
+            }),
+            inputs(id, { classification: "rejected", attributed: true }),
+            inputs(id, { classification: "row_level", attributed: false }),
+            inputs(id, undefined, false),
+         ]) {
+            expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
+               false,
+            );
+         }
+         expect(
+            withEnv({ ...G3_ONLY, PUBLISHER_MATERIALIZE: "false" }, () =>
+               gateEnforcedAtRead(id, inputs(id)),
+            ),
+         ).toBe(false);
+      });
+
+      it("collectSourceEligibility asks as storage: a colocated-planned gated #(materialize) table is refused for a storage= bind under G3", async () => {
+         // The storage bind (admitStorage / refusedAtBind) reads this record,
+         // so a table G3 admits only colocated must not land in `eligible`.
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const G3_ONLY = {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         };
+         const plan = {
+            sources: { [id]: source },
+            connectionDigests: {},
+            ...inputs(id),
+         };
+         // Colocated, the plan admits it (the precondition for the guard).
+         expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
+            true,
+         );
+         const { eligible, refused } = withEnv(G3_ONLY, () =>
+            collectSourceEligibility(plan),
+         );
+         expect(eligible).toEqual([]);
+         expect(Object.keys(refused)).toEqual([id]);
+         expect(refused[id]).toMatch(/authorize|access_filter/i);
+      });
+
+      it("never admits a row filter the source inherits: the served copy cannot graft it", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const plan = inputs(id, {
+            classification: "row_level",
+            attributed: true,
+            inheritedRowFilter: true,
+         });
+         // Asked by the build, the serve bind and the host-instructed build.
+         expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(false);
+         const refused = withEnv(R3_ON, () =>
+            refusal(() => assertTierEligible(source, true, plan)),
+         );
+         expect(refused.reason).toBe("authorize");
+         expect(refused.message).toContain(
+            "reads an #(access_filter) row-level gate from a source it derives from",
+         );
+      });
+
       it("lifts only the gate refusal: every other storage check still runs", async () => {
          const source = (
             await persistSources(`##! experimental { persistence givens }
@@ -1126,19 +1206,64 @@ source: reads_measure is offers_measure -> {
          MaterializationEligibilityError,
       );
 
-      // And the same shape with the given only where it is applied at read stays
-      // admitted, so the fallback is not a blanket refusal.
-      const readTimeOnly = {
-         name: "read_time_only",
-         _sourceDef: {
-            query: { pipeline: [{}] },
-            filterList: [{ node: "filterCondition", e: { node: "given" } }],
-            fields: [{ name: "d", e: { node: "given" } }],
+      // And the same shape with the given only where it is applied at read
+      // (a term the source's own statement writes) stays admitted, so the
+      // fallback is not a blanket refusal.
+      const url = "file:///m.malloy";
+      const at = (line: number) => ({
+         url,
+         range: {
+            start: { line, character: 0 },
+            end: { line, character: 5 },
          },
-      } as unknown as PersistSource;
+      });
+      const readTimeOnly = (located: boolean) =>
+         ({
+            name: "read_time_only",
+            _sourceDef: {
+               ...(located
+                  ? {
+                       location: {
+                          url,
+                          range: {
+                             start: { line: 0, character: 0 },
+                             end: { line: 5, character: 0 },
+                          },
+                       },
+                    }
+                  : {}),
+               query: { pipeline: [{}] },
+               filterList: [
+                  {
+                     node: "filterCondition",
+                     e: { node: "given" },
+                     ...(located
+                        ? {
+                             refSummary: {
+                                givenUsage: [{ id: "G", at: at(2) }],
+                             },
+                          }
+                        : {}),
+                  },
+               ],
+               fields: [{ name: "d", e: { node: "given" } }],
+            },
+         }) as unknown as PersistSource;
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(readTimeOnly),
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly(true)),
       ).not.toThrow();
+      // A read-time term that cannot be placed in the source's own statement
+      // fails closed: it may be inherited, which the read would not re-apply.
+      let refusal: unknown;
+      try {
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly(false));
+      } catch (error) {
+         refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(MaterializationEligibilityError);
+      expect((refusal as { reason?: string }).reason).toBe(
+         "inherited_where_with_given",
+      );
    });
 
    it("refuses when the compiled definition cannot be read at all", () => {
@@ -1342,5 +1467,35 @@ describe("read-only dialect (colocated persist)", () => {
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(source),
       ).not.toThrow();
+   });
+});
+
+describe("gateEnforcedAtRead's tier", () => {
+   // The policy's materialize row does not read the tier today, so a wrong
+   // tier would pass every table test; this pins what the predicate asks.
+   it("asks the gate policy for a #(materialize) table's own tier", () => {
+      const spy = spyOn(gatePolicy, "tableKeepsGates");
+      try {
+         const id = "s@m.malloy";
+         const gate = { classification: "row_level", attributed: true };
+         for (const [persist, tier] of [
+            [{ storage: "lake" }, "storage"],
+            [{}, "colocated"],
+            [undefined, "colocated"],
+         ] as const) {
+            spy.mockClear();
+            gateEnforcedAtRead(id, {
+               materializePlans: { [id]: { persist } },
+               sourceGateOutcomes: { [id]: gate },
+            } as never);
+            expect(spy).toHaveBeenCalledTimes(1);
+            expect(spy.mock.calls[0][0]).toMatchObject({
+               kind: "materialize",
+               tier,
+            });
+         }
+      } finally {
+         spy.mockRestore();
+      }
    });
 });

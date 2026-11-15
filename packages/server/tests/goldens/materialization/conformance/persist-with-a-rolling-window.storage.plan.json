@@ -1,0 +1,120 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "recent_body@<pkg>/m.malloy": [],
+          "recent_read@<pkg>/m.malloy": []
+        },
+        "order": [
+          "recent_body@<pkg>/m.malloy",
+          "recent_read@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "recent_body@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "recent_read@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "recent_body@<pkg>/m.malloy": "m.malloy",
+      "recent_read@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "persist-not-built",
+      "message": "Source 'recent_body' cannot be materialized: the relation it persists reads the current time (`now`), in its query, a view it runs, the `where:`, a field or a join of the source that query reads, or the query of a query-shaped source it is built from or joins. Its table would hold the rows as of the build and serve them until the next rebuild, while a live query reads `now` again every time, so it is not built and is answered live. To serve it from a table, move the `now` into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), or stop persisting this source.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "recent_body"
+    },
+    {
+      "code": "persist-source-refused",
+      "message": "Source 'recent_body' cannot be materialized: the relation it persists reads the current time (`now`), in its query, a view it runs, the `where:`, a field or a join of the source that query reads, or the query of a query-shaped source it is built from or joins. Its table would hold the rows as of the build and serve them until the next rebuild, while a live query reads `now` again every time, so it is not built and is answered live. To serve it from a table, move the `now` into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), or stop persisting this source.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "recent_body"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "recent_body@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "recent_read@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {
+      "recent_body@<pkg>/m.malloy": {
+        "message": "Source 'recent_body' cannot be materialized: the relation it persists reads the current time (`now`), in its query, a view it runs, the `where:`, a field or a join of the source that query reads, or the query of a query-shaped source it is built from or joins. Its table would hold the rows as of the build and serve them until the next rebuild, while a live query reads `now` again every time, so it is not built and is answered live. To serve it from a table, move the `now` into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), or stop persisting this source.",
+        "modelPath": "m.malloy",
+        "name": "recent_body",
+        "reason": "current_time",
+        "sourceID": "recent_body@<pkg>/m.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {
+      "recent_read@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "recent_read",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "recent_read",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3",
+        "sourceID": "recent_read@<pkg>/m.malloy",
+        "sql": "sha256:8abac9b75b117861"
+      }
+    }
+  }
+}

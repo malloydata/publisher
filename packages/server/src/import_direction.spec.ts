@@ -10,8 +10,9 @@ import * as path from "path";
  * defined in eslint.config.mjs) two ways:
  *
  *  1. Fixtures: deliberately violating (and deliberately allowed) imports,
- *     linted as if they lived at a path under src/, prove each of R1-R4
- *     fires, and that type-only, non-relative and look-alike imports do not.
+ *     linted as if they lived at a path under src/, prove each of R1-R10
+ *     and H5 fires, and that type-only, non-relative and look-alike imports
+ *     do not where the rule allows them.
  *  2. The allowlist is exact: linting the real tree with an EMPTY allowlist
  *     reports precisely the pairs IMPORT_DIRECTION_ALLOWLIST names. A new
  *     violation fails here (fix the import), and so does a stale entry whose
@@ -93,7 +94,9 @@ function lint(
 }
 
 function ruleIds(messages: string[]): string[] {
-   return messages.map((m) => /Import direction (R\d)/.exec(m)?.[1] ?? m);
+   return messages.map(
+      (m) => /Import direction ((?:R|H)\d+)/.exec(m)?.[1] ?? m,
+   );
 }
 
 beforeAll(async () => {
@@ -275,6 +278,151 @@ describe("import-direction rule: fixtures", () => {
       ).toEqual([]);
    });
 
+   it("R5: materialization/domain/ imports only itself and api.ts", () => {
+      const at = "service/materialization/domain/x.ts";
+      expect(
+         ruleIds(lint(at, `import { a } from "../plan/build_plan";`)),
+      ).toEqual(["R5"]);
+      expect(
+         ruleIds(lint(at, `import type { M } from "../../model";`)),
+      ).toEqual(["R5"]);
+      expect(
+         lint(
+            at,
+            `import { b } from "./freshness";\nimport type { components } from "../../../api";\nimport { Tag } from "@malloydata/malloy";`,
+         ),
+      ).toEqual([]);
+   });
+
+   it("R6: materialization/text/ imports only domain/, governance/ir and the text leaves", () => {
+      const at = "service/materialization/text/x.ts";
+      expect(
+         ruleIds(lint(at, `import { s } from "../plan/source_map";`)),
+      ).toEqual(["R6"]);
+      expect(ruleIds(lint(at, `import { l } from "../../../logger";`))).toEqual(
+         ["R6", "H5"],
+      );
+      expect(
+         lint(
+            at,
+            [
+               `import { a } from "./malloy_lexer";`,
+               `import { b } from "../domain/types";`,
+               `import { c } from "../../governance/ir/source_graph";`,
+               `import { d } from "../../malloy_text";`,
+               `import { e } from "../../overlay_key";`,
+               `import { f } from "../../annotation_reader";`,
+            ].join("\n"),
+         ),
+      ).toEqual([]);
+   });
+
+   it("R7 and R8: plan/, run/ and serve/ never import one another, by value or by type", () => {
+      expect(
+         ruleIds(
+            lint(
+               "service/materialization/plan/x.ts",
+               `import type { T } from "../run/source_build";\nimport { m } from "../../model";`,
+            ),
+         ),
+      ).toEqual(["R7", "R7"]);
+      expect(
+         ruleIds(
+            lint(
+               "service/materialization/run/x.ts",
+               `import type { P } from "../plan/build_plan";\nimport { s } from "../serve/query_path";`,
+            ),
+         ),
+      ).toEqual(["R8", "R8"]);
+      expect(
+         ruleIds(
+            lint(
+               "service/materialization/serve/x.ts",
+               `import { r } from "../run/reclaimer";`,
+            ),
+         ),
+      ).toEqual(["R8"]);
+      // What they share may not reach a sibling either.
+      expect(
+         ruleIds(
+            lint(
+               "service/materialization/host.ts",
+               `import type { P } from "./plan/build_plan";`,
+            ),
+         ),
+      ).toEqual(["R8"]);
+      // Within a layer, and down to the leaves, is the intended direction.
+      expect(
+         lint(
+            "service/materialization/serve/x.ts",
+            `import { a } from "./query_path";\nimport { b } from "../domain/types";\nimport { c } from "../text/source_map";`,
+         ),
+      ).toEqual([]);
+   });
+
+   it("R9: governance imports nothing of materialization but domain/", () => {
+      expect(
+         ruleIds(
+            lint(
+               "service/governance/x.ts",
+               `import { s } from "../materialization/serve/query_path";`,
+            ),
+         ),
+      ).toEqual(["R9", "R10"]);
+      expect(
+         lint(
+            "service/governance/x.ts",
+            `import type { T } from "../materialization/domain/types";`,
+         ),
+      ).toEqual([]);
+   });
+
+   it("R10: outside the module, only materialization/index.ts and domain/", () => {
+      expect(
+         ruleIds(
+            lint(
+               "service/x.ts",
+               `import { P } from "./materialization/package_materialization";`,
+            ),
+         ),
+      ).toEqual(["R10"]);
+      expect(
+         lint(
+            "service/x.ts",
+            `import { P } from "./materialization";\nimport { Q } from "./materialization/index";\nimport type { T } from "./materialization/domain/types";`,
+         ),
+      ).toEqual([]);
+   });
+
+   it("H5: logger and metrics only in run/, the facade and the query pipeline", () => {
+      expect(
+         ruleIds(
+            lint(
+               "service/materialization/serve/x.ts",
+               `import { logger } from "../../../logger";\nimport { r } from "../../../materialization_metrics";`,
+            ),
+         ),
+      ).toEqual(["H5", "H5"]);
+      expect(
+         lint(
+            "service/materialization/run/x.ts",
+            `import { logger } from "../../../logger";`,
+         ),
+      ).toEqual([]);
+      expect(
+         lint(
+            "service/materialization/package_materialization.ts",
+            `import { logger } from "../../logger";`,
+         ),
+      ).toEqual([]);
+      expect(
+         lint(
+            "service/query_serving.ts",
+            `import { logger } from "../logger";`,
+         ),
+      ).toEqual([]);
+   });
+
    it("leaves look-alikes, packages and other layers alone", () => {
       expect(
          lint(
@@ -355,7 +503,10 @@ describe("import-direction allowlist", () => {
       // Stale: the import is gone. Delete the entry.
       expect(listed.filter((k) => !actual.includes(k))).toEqual([]);
       for (const slice of Object.values(allowlist)) {
-         expect(slice).toMatch(/^(U[1-4]|D[1-6]|V[1-5]|C[1-4])$/);
+         // An architecture-plan slice, or a materialization phase 5 step.
+         expect(slice).toMatch(
+            /^(U[1-4]|D[1-6]|V[1-5]|C[1-4]|L|R|2[a-l]|2g\.[1-4]|5)$/,
+         );
       }
    });
 });

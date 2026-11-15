@@ -5,11 +5,11 @@ import {
    BadRequestError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
-   MaterializationEligibilityError,
    MaterializationNotFoundError,
    PackageVersionError,
 } from "../../../errors";
 import { logger } from "../../../logger";
+import { getPersistCollisionEnforce } from "../../../config";
 import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
@@ -31,13 +31,12 @@ import {
    ServingReader,
    tableIdentity,
    tableNamesIn,
-   packageTableSuffix,
-   versionTableSuffix,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { CompiledBuildPlan } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
+import { deriveBuildPlanOutcome, loadGateText } from "../plan/build_plan";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -45,7 +44,7 @@ import {
    ManifestReference,
    MaterializationStatus,
    RefusedSource,
-} from "../types";
+} from "../domain/types";
 import {
    incrementalRunContext,
    type IncrementalRunContext,
@@ -58,26 +57,23 @@ import {
    uniquenessPassesIn,
    withoutUniquenessPasses,
 } from "./inline_uniqueness";
-import { InstructedBuild, nameViewContext } from "./instructed_build";
+import { InstructedBuild, tableSiteContext } from "./instructed_build";
 import {
    ManifestCommitter,
+   rebindsOwnVersionAfter,
    referenceManifestToEntries,
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
 import {
    BuildEnvironment,
    outcomeFor,
+   packageRelativeRun,
    tallySources,
    type WarehouseReach,
+   withChainBuildText,
 } from "./materialization_run_support";
-import {
-   dropReplacedTablesAside,
-   NAME_VIEWS_KEY,
-   restoreNameViews,
-   type NameViewRecord,
-} from "./name_view";
-import { nameViewOwner } from "./name_view_sql";
-import { Reclaimer } from "./reclaimer";
+import { packageOwner } from "./table_mark_sql";
+import { Reclaimer, RENAMED_TABLES_KEY } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
 import {
    buildKindOf,
@@ -91,9 +87,11 @@ import {
 } from "./run_telemetry";
 import {
    deriveSelfInstructions,
+   type RenamedTable,
    validateInstructions,
    writeTargetsFor,
 } from "./run_instructions";
+import { packageRelativeText } from "../../../package_relative_text";
 import { SourceBuilder } from "./source_build";
 import {
    StorageBuildStrategy,
@@ -139,6 +137,8 @@ export class MaterializationService {
          repository,
          host,
          lifecycle: this.lifecycle,
+         tableLock: (environmentId, packageName) =>
+            this.claims.lockFor(environmentId, packageName),
       });
       this.reclaimer = new Reclaimer({
          repository,
@@ -384,6 +384,18 @@ export class MaterializationService {
          false,
          version !== null ? { versionId: VersionRef.parse(version) } : {},
       );
+      // A package that serves an older model than its files (its last reload
+      // refused them) is not run: the run would build the files the reload
+      // refused. Refused here, a 409, so a schedule does not pile up failed
+      // runs; the run itself checks again.
+      if (
+         version === null &&
+         (environment.getStaleCompileErrors?.().has(packageName) ?? false)
+      ) {
+         throw new BuildPlanUnavailableError(
+            `Package ${packageName} serves an older model than its files: its last reload refused them. Fix the files and reload the package, then run again.`,
+         );
+      }
       // Whose tables a version's run builds (see materialization_scope).
       const scope =
          version !== null
@@ -656,6 +668,9 @@ export class MaterializationService {
       let markedShared = false;
       const mode: MaterializationMode = telemetry.mode;
       const startedAt = Date.now();
+      // Where the package is on this server, once known: a whole-run failure
+      // names its files package-relative too (see packageRelativeRun).
+      let packagePath: string | undefined;
 
       try {
          // Persisted so the UI can compute a duration.
@@ -676,6 +691,7 @@ export class MaterializationService {
                ? { versionId: VersionRef.parse(versionId) }
                : {},
          );
+         packagePath = pkg.getPackagePath();
          // The version whose own runs this run reuses from and builds into
          // (`scope: version`); undefined, the package's shared ones.
          const owned =
@@ -694,24 +710,52 @@ export class MaterializationService {
                     compilePackageBuildPlan(pkg, signal),
                  );
 
-         // Refuse a `#@ persist` source that Malloy's build walk silently
-         // dropped (see detectDroppedPersistSources); otherwise the build
-         // succeeds with an empty manifest and the source serves live. Scoped to
-         // this build's targets so a dropped sibling does not block it.
-         const relevantDropped = (compiled.droppedPersistSources ?? []).filter(
-            (d) => !opts.sourceNames || opts.sourceNames.includes(d.name),
+         // A `#@ persist` source Malloy's build walk did not plan fails the
+         // package's load (`persist-not-materializable`), so a package that
+         // reaches a run has none: one source's mistake never refuses the
+         // whole run. What can reach one is the files on disk changed since
+         // the load: a save the load refused (the package serves its last
+         // good model, stale). The run builds from those files, so it is
+         // refused until they are fixed, rather than build what the load
+         // refused.
+         // A version's files never change; only the unversioned package a
+         // reload replaces can be stale.
+         const stale =
+            versionId === undefined &&
+            (environment.getStaleCompileErrors?.().has(packageName) ?? false);
+         // The load gate's own text, read off the plan this run derives
+         // (plan/load_gate_text.ts), so the run and the load agree.
+         const derived = deriveBuildPlanOutcome(
+            compiled,
+            pkg.getMaterializationConfig?.() ?? null,
+            owned !== undefined ? "version" : undefined,
          );
-         if (relevantDropped.length > 0) {
-            const names = relevantDropped.map((d) => `'${d.name}'`).join(", ");
-            throw new MaterializationEligibilityError({
-               message:
-                  `Source(s) ${names} are annotated '#@ persist' but were not ` +
-                  `recognized as a materializable source, so nothing would be ` +
-                  `built (they would be served live). Only query/aggregate ` +
-                  `sources materialize; a filtered pass-through does not. Persist ` +
-                  `a query source, or invoke a parameterized source with a bound ` +
-                  `argument, or drop the annotation to serve live.`,
-            });
+         const invalid = loadGateText(
+            {
+               plan: derived.plan,
+               annotationFindings: derived.annotationFindings,
+               incrementalDeclarations: derived.incrementalDeclarations,
+               ...(derived.materializePlans
+                  ? { materializePlans: derived.materializePlans }
+                  : {}),
+               ...(derived.modelGateLines
+                  ? { modelGateLines: derived.modelGateLines }
+                  : {}),
+            },
+            {
+               enforceCollisions: getPersistCollisionEnforce(),
+               versionScoped: owned !== undefined,
+            },
+         );
+         if (stale || invalid) {
+            throw new BadRequestError(
+               `Package ${packageName} is not built: ` +
+                  (invalid
+                     ? `its files carry an invalid materialization annotation, which its load refuses:\n${invalid}`
+                     : "its files changed and its last reload refused them, " +
+                       "so it serves an older model") +
+                  `\nFix the files and reload the package, then run again.`,
+            );
          }
 
          // Assembled BEFORE the instructions because skip-if-unchanged consults
@@ -728,6 +772,9 @@ export class MaterializationService {
          });
 
          let instructions: BuildInstruction[];
+         // Tables built under readable names in place of an earlier run's,
+         // reclaimed once this run commits (Reclaimer.reclaimRenamedTables).
+         let renamed: RenamedTable[] = [];
          let carried: Record<string, ManifestEntry>;
          let derivedRefused: Record<string, RefusedSource> = {};
          let clearedTiers: ReadonlyMap<string, EligibilityTier> | undefined;
@@ -762,15 +809,16 @@ export class MaterializationService {
             }
          } else {
             // Skip-if-unchanged: reuse tables from the most recent manifest for
-            // sources whose sourceEntityId is unchanged.
-            const priorEntries = opts.forceRefresh
-               ? {}
-               : await this.getMostRecentManifestEntries(
-                    environmentId,
-                    packageName,
-                    id,
-                    reader,
-                 );
+            // sources whose sourceEntityId is unchanged. Read under
+            // `forceRefresh` too, where nothing is carried: the entries still
+            // decide each table's name (an incremental source keeps the name
+            // its ledger is keyed by, a readable name stays put).
+            const priorEntries = await this.getMostRecentManifestEntries(
+               environmentId,
+               packageName,
+               id,
+               reader,
+            );
             let recheck: Record<string, BuildInstruction>;
             ({
                instructions,
@@ -778,25 +826,19 @@ export class MaterializationService {
                refused: derivedRefused,
                cleared: clearedTiers,
                recheck = {},
+               renamed = [],
             } = this.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
                priorEntries,
                incremental,
-               owned !== undefined
-                  ? {
-                       versionSuffix: versionTableSuffix({
-                          environmentName,
-                          packageName,
-                          version: owned,
-                       }),
-                    }
-                  : {
-                       packageSuffix: packageTableSuffix({
-                          environmentName,
-                          packageName,
-                       }),
-                    },
+               {
+                  environmentName,
+                  packageName,
+                  packagePath: pkg.getPackagePath(),
+                  ...(owned !== undefined ? { ownedVersion: owned } : {}),
+               },
+               { forceRefresh: opts.forceRefresh ?? false },
             ));
             // A carried table at the author's `name=` is reused only while
             // it is still marked as this package's (table_ownership.ts).
@@ -805,8 +847,8 @@ export class MaterializationService {
                   recheck,
                   carried,
                   instructions,
-                  nameViewOwner(environmentName, packageName),
-                  nameViewContext({ compiled, environment }),
+                  packageOwner(environmentName, packageName),
+                  tableSiteContext({ compiled, environment }),
                );
             }
          }
@@ -899,15 +941,23 @@ export class MaterializationService {
          );
 
          const {
-            entries,
-            failures,
+            entries: builtEntries,
+            failures: builtFailures,
             sourcesRefused: instructedRefused,
-            refusedBesideBuilt = {},
-            nameViews = [],
+            refusedBesideBuilt: builtRefusedBeside = {},
             uniquenessChecks,
          } = await this.executeInstructedBuild(
             compiled,
-            environment,
+            withChainBuildText(
+               environment,
+               pkg,
+               // A version's files never change; only the unversioned package
+               // a reload replaces can be stale.
+               () =>
+                  versionId === undefined &&
+                  (environment.getStaleCompileErrors?.().has(packageName) ??
+                     false),
+            ),
             instructions,
             carried,
             signal,
@@ -955,6 +1005,26 @@ export class MaterializationService {
                  })(),
          );
 
+         // What the run records names the package's files package-relative:
+         // a compile error in a reason names its file by where the server
+         // keeps it.
+         const {
+            entries,
+            failures,
+            refused: refusedBesideBuilt,
+         } = packageRelativeRun(
+            {
+               entries: builtEntries,
+               failures: builtFailures,
+               refused: builtRefusedBeside,
+            },
+            pkg.getPackagePath(),
+         );
+         derivedRefused = packageRelativeRun(
+            { entries: {}, failures: {}, refused: derivedRefused },
+            pkg.getPackagePath(),
+         ).refused;
+
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
             entries,
             failures,
@@ -967,8 +1037,14 @@ export class MaterializationService {
          const sourcesRefused =
             Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
-         try {
-            await this.commitManifest(id, entries, failures, {
+         const served = await this.commitManifest(
+            id,
+            entries,
+            failures,
+            {
+               // Recorded before any is dropped, so a crash between this
+               // commit and the drops leaves them for the next run to finish.
+               ...(renamed.length > 0 ? { [RENAMED_TABLES_KEY]: renamed } : {}),
                forceRefresh: opts.forceRefresh,
                sourceNames: opts.sourceNames ?? null,
                mode,
@@ -990,9 +1066,6 @@ export class MaterializationService {
                     }
                   : {}),
                durationMs,
-               // The `name=` views this run pointed, for the dropper and the
-               // reclaimers to find (name_view.ts).
-               ...(nameViews.length > 0 ? { [NAME_VIEWS_KEY]: nameViews } : {}),
                // The inline uniqueness checks: the passes the next run may
                // rely on, and whether each ran or was skipped.
                ...(uniquenessChecks
@@ -1005,80 +1078,51 @@ export class MaterializationService {
                        scope: pkg.getPackageMetadata().scope ?? "package",
                     }
                   : {}),
-            });
-         } catch (err) {
-            // The views were pointed at this run's tables just before the
-            // commit; a run that did not commit must not leave them there.
-            if (nameViews.length > 0) {
-               const restored = await restoreNameViews(
-                  nameViews,
-                  nameViewContext({ compiled, environment }),
-               );
-               // What became of each table a view had replaced, on the
-               // failed run's record (the failure keeps its metadata), beside
-               // the run's other views.
-               if (restored.length > 0) {
-                  await this.recordRestoredNameViews(id, nameViews, restored);
-               }
-            }
-            throw err;
-         }
-
-         // A view that replaced a table this package's own run wrote at its
-         // name: the table kept aside until this commit goes, and the older
-         // entries for it are retired.
-         const replacedTables = nameViews.filter(
-            (v) => v.outcome === "replaced_own_table",
+            },
+            // Auto-run owns distribution, and loads the manifest into its own
+            // package before the run reports MANIFEST_FILE_READY, so "done"
+            // means served. Orchestrated leaves it to the caller
+            // (manifestLocation). Other loaded versions are rebound after,
+            // below: they read the run from the store, which counts it only
+            // once it is MANIFEST_FILE_READY.
+            orchestrated
+               ? undefined
+               : (finish) =>
+                    this.autoLoadManifest(
+                       environment,
+                       packageName,
+                       entries,
+                       versionId,
+                       uniquenessChecks?.rollupKeys,
+                       // A stop that landed during the load did not cut it
+                       // short; the run says so.
+                       (served) =>
+                          finish(
+                             signal.aborted
+                                ? {
+                                     ...served,
+                                     metadata: {
+                                        ...served.metadata,
+                                        stopIgnored: true,
+                                     },
+                                  }
+                                : served,
+                          ),
+                    ),
          );
-         if (replacedTables.length > 0) {
-            await dropReplacedTablesAside(
-               replacedTables,
-               nameViewContext({ compiled, environment }),
-            );
-            try {
-               await this.claims.markReplacedByView(
-                  environmentId,
-                  packageName,
-                  id,
-                  replacedTables.map((v) => ({
-                     physicalTableName: v.viewName,
-                     connectionName: v.connectionName,
-                     ...(v.storageDestinationName
-                        ? { storageDestinationName: v.storageDestinationName }
-                        : {}),
-                  })),
-               );
-            } catch (err) {
-               logger.warn(
-                  "Could not retire the entries of a table a name= view replaced",
-                  { materializationId: id, error: errMessage(err) },
-               );
-            }
-            // Another loaded version may serve the replaced table (a shared
-            // run's entry, read through the name that is now this run's
-            // view): rebound, it reads its entries less the ones just
-            // retired, as after a shared table's rebuild, instead of this
-            // run's generation through the view. A run that marked shared
-            // tables rebinds them below anyway; this run's own version is
-            // its caller's to load (orchestrated) or already loaded.
-            if (versionId !== undefined && !markedShared) {
-               await this.committer.rebindLoadedVersions(
-                  environmentName,
-                  packageName,
-                  versionId,
-               );
-            }
-         }
 
-         // Auto-run owns distribution; orchestrated leaves it to the caller
-         // (manifestLocation).
-         if (!orchestrated) {
-            await this.autoLoadManifest(
-               environment,
+         // Whether every loaded copy of the package now reads this run: its
+         // own load, then the other versions' rebinds below.
+         let bound = !orchestrated && served?.autoLoad === "loaded";
+         if (
+            !orchestrated &&
+            versionId !== undefined &&
+            rebindsOwnVersionAfter(served)
+         ) {
+            await this.committer.rebindOwnVersionIfMoved(
+               environmentName,
                packageName,
-               entries,
                versionId,
-               uniquenessChecks?.rollupKeys,
             );
          }
          if (markedShared && versionId !== undefined) {
@@ -1086,11 +1130,38 @@ export class MaterializationService {
             // binds only what its own definition built, and serves live what
             // this run rebuilt from a different one (see
             // Package.bindStorageServeBindings).
-            await this.committer.rebindLoadedVersions(
-               environmentName,
-               packageName,
-               versionId,
-            );
+            bound =
+               (await this.committer.rebindLoadedVersions(
+                  environmentName,
+                  packageName,
+                  versionId,
+               )) && bound;
+         }
+         // Once nothing loaded reads them, the tables readable names replaced
+         // (this run's, and any an earlier run could not finish). Only after
+         // this run's own load took, and, before any drop, once every loaded
+         // copy of the package has rebound from the store: one that did not
+         // (a version an earlier run's failed load left on the old table)
+         // still reads it.
+         if (!orchestrated) {
+            if (bound) {
+               await this.reclaimer.reclaimRenamedTables(
+                  environmentName,
+                  packageName,
+                  id,
+                  reader,
+                  () =>
+                     this.committer.rebindLoadedVersions(
+                        environmentName,
+                        packageName,
+                     ),
+               );
+            } else if (renamed.length > 0) {
+               logger.warn(
+                  "Keeping the tables readable names replaced: the package did not bind to this run",
+                  { packageName, tables: renamed.map((t) => t.previousName) },
+               );
+            }
          }
 
          // Carried forward, so never in the build loop: counted once the run
@@ -1125,6 +1196,9 @@ export class MaterializationService {
          this.lifecycle.recordRun(mode, outcome, startedAt);
          telemetry.finished(outcome, Date.now() - startedAt, err);
          markRunFailureReported(err);
+         if (packagePath !== undefined && err instanceof Error) {
+            err.message = packageRelativeText(err.message, packagePath);
+         }
          if (markedShared && opts.version !== null) {
             // The run may have rebuilt some shared tables before it failed.
             // Its record stays, so rebinding now leaves those tables unbound
@@ -1136,42 +1210,6 @@ export class MaterializationService {
             );
          }
          throw err;
-      }
-   }
-
-   /**
-    * Best-effort: record on a run whose commit failed what became of each
-    * table one of its `name=` views had replaced ({@link restoreNameViews}).
-    */
-   private async recordRestoredNameViews(
-      id: string,
-      nameViews: NameViewRecord[],
-      restored: NameViewRecord[],
-   ): Promise<void> {
-      // Each replacement's record gives way to what became of it; the run's
-      // other views keep theirs.
-      const pending = [...restored];
-      const records = nameViews.map((record) =>
-         record.outcome === "replaced_own_table"
-            ? (pending.shift() ?? record)
-            : record,
-      );
-      try {
-         const current = await this.repository.getMaterializationById(id);
-         await this.repository.updateMaterialization(id, {
-            metadata: {
-               ...(current?.metadata ?? {}),
-               [NAME_VIEWS_KEY]: records,
-            },
-         });
-      } catch (err) {
-         logger.warn(
-            "Could not record the name= tables a failed run put back",
-            {
-               materializationId: id,
-               error: errMessage(err),
-            },
-         );
       }
    }
 
@@ -1275,14 +1313,14 @@ export class MaterializationService {
    /** See {@link ManifestCommitter.commit}. */
    private commitManifest(
       ...args: Parameters<ManifestCommitter["commit"]>
-   ): Promise<void> {
+   ): ReturnType<ManifestCommitter["commit"]> {
       return this.committer.commit(...args);
    }
 
    /** See {@link ManifestCommitter.autoLoad}. */
    private autoLoadManifest(
       ...args: Parameters<ManifestCommitter["autoLoad"]>
-   ): Promise<void> {
+   ): ReturnType<ManifestCommitter["autoLoad"]> {
       return this.committer.autoLoad(...args);
    }
 

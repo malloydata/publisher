@@ -736,13 +736,13 @@ describe("service/package", () => {
          const bound = (
             pkg as unknown as {
                materialization: {
-                  storageServeBindings: {
+                  storageBindings: {
                      sourceName: string;
                      sourceIDs?: string[];
                   }[];
                };
             }
-         ).materialization.storageServeBindings;
+         ).materialization.storageBindings;
          expect(bound.map((b) => b.sourceName)).toEqual(["orders"]);
          expect(bound[0].sourceIDs).toEqual([open]);
       });

@@ -20,6 +20,12 @@ import {
    lazyHistogram,
    resetInstrumentsForTesting,
 } from "./telemetry";
+import type { components } from "./api";
+import type {
+   BindDeclineReason,
+   ServedCopyProblemReason,
+   SourceDeclineReason,
+} from "./service/materialization/domain/source_decline";
 
 /**
  * Every label below is a closed union whose values are listed in a const array
@@ -66,7 +72,7 @@ export const BUILD_OUTCOMES = [
    "failed",
    "cancelled",
 ] as const;
-export type BuildOutcome = (typeof BUILD_OUTCOMES)[number];
+type BuildOutcome = (typeof BUILD_OUTCOMES)[number];
 
 /**
  * Why a build failed, for whoever decides on a retry: `deterministic`,
@@ -110,9 +116,7 @@ export const BUILD_DURATION_BUCKETS_MS = [
    100, 500, 1_000, 5_000, 15_000, 60_000, 300_000, 900_000, 3_600_000,
 ];
 /** Bucket boundaries of the build-read histogram, in bytes: 1 MB to 10 TB by decades. */
-export const BUILD_READ_BYTES_BUCKETS = [
-   1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13,
-];
+const BUILD_READ_BYTES_BUCKETS = [1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13];
 /**
  * `partial` is a run that committed a manifest while some of its sources failed:
  * distinct from `success` because the manifest is missing tables a consumer
@@ -126,7 +130,60 @@ export const MATERIALIZATION_OUTCOMES = [
 ] as const;
 export type MaterializationOutcome = (typeof MATERIALIZATION_OUTCOMES)[number];
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
-export type ManifestBindOutcome = "success" | "failure" | "timeout";
+type ManifestBindOutcome = "success" | "failure" | "timeout";
+
+/** `publisher_query_route_total{leg}`: the legs, and `live`. */
+export const ROUTE_LEGS = [
+   "view",
+   "query",
+   "rollup",
+   "served",
+   "live",
+] as const;
+export type RouteLeg = (typeof ROUTE_LEGS)[number];
+/** `publisher_query_route_total{outcome}`. */
+export const ROUTE_OUTCOMES = ["used", "skipped", "fallback"] as const;
+export type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
+type SkipReason = components["schemas"]["SkipReason"];
+/**
+ * `publisher_query_route_total{reason}`: `NONE` when used, else the public
+ * `SkipReason` the path report shows (2h's one vocabulary).
+ */
+export const ROUTE_REASONS = [
+   "NONE",
+   "NOT_BUILT",
+   "WARNED",
+   "MISSING_FIELD",
+   "CONTRACT",
+   "GRAIN_TOO_COARSE",
+   "TIME_ZONE",
+   "CROSS_CONNECTION",
+   "COUNT_SEMANTICS",
+   "STALE",
+   "RUN_FAILED",
+] as const satisfies readonly ("NONE" | SkipReason)[];
+export type RouteReason = (typeof ROUTE_REASONS)[number];
+// Every public SkipReason is a route reason (the array above lists no other).
+const ROUTE_REASONS_COVER_SKIP_REASONS: SkipReason extends RouteReason
+   ? true
+   : never = true;
+void ROUTE_REASONS_COVER_SKIP_REASONS;
+
+/** `publisher_served_copy_bind_total{scope}`. */
+export const BIND_SCOPES = ["manifest", "source"] as const;
+export type BindScope = (typeof BIND_SCOPES)[number];
+/** `publisher_served_copy_bind_total{outcome}`, by scope. */
+export const BIND_OUTCOMES = [
+   "success",
+   "failure",
+   "timeout",
+   "bound",
+   "partial",
+   "declined",
+] as const;
+export type BindOutcome = (typeof BIND_OUTCOMES)[number];
+/** `publisher_served_copy_bind_total{reason}`: `none`, or a source decline (`domain/source_decline.ts`). */
+export type BindReason = "none" | SourceDeclineReason;
 /**
  * Which engine a table drop ran against (`publisher_materialization_drop_tables_total`):
  * the source's own warehouse (`in_warehouse`) or a DuckDB/DuckLake `storage=`
@@ -134,7 +191,7 @@ export type ManifestBindOutcome = "success" | "failure" | "timeout";
  * for the label's history; a build's tier and method are labels of their own
  * on the build instruments ({@link BuildTier}, {@link BuildMethod}).
  */
-export type StorageBuildEngine =
+type StorageBuildEngine =
    | "storage"
    | "in_warehouse"
    | "delta"
@@ -147,6 +204,8 @@ export type EligibilityRefusalReason =
    | "dynamic_projection"
    | "dynamic_join"
    | "dynamic_joined_where"
+   | "inherited_where_with_given"
+   // Retired with `partition=`: kept for records that carry them, never raised.
    | "partition_without_storage"
    | "partition_column_unknown"
    | "partition_column_not_public"
@@ -157,7 +216,10 @@ export type EligibilityRefusalReason =
    | "public_surface_unknown"
    | "read_only_dialect"
    | "env_reference"
-   | "rollup_name_collision";
+   | "rollup_name_collision"
+   | "empty_storage"
+   | "table_name_collision"
+   | "current_time";
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
@@ -173,7 +235,7 @@ export type EligibilityRefusalReason =
  * built over them, so the build failed loudly rather than recomputing a table
  * the orchestrator meant to pin.
  */
-export type ChainedStorageBuildOutcome =
+type ChainedStorageBuildOutcome =
    | "parent_reuse"
    | "inline_fallback"
    | "strict_shape_fallback"
@@ -234,8 +296,8 @@ const buildPlanComputeDuration = lazyHistogram(
 const buildPlanComputeFailedCounter = lazyCounter(
    "publisher_materialization_build_plan_compute_failed_total",
    "Package loads whose build plan failed to compute. The ROOT-CAUSE signal for " +
-      "colocated_bind_dropped{reason='build_plan_unavailable'}, which fires only " +
-      "per dropped entry per load -- a package that loads once and is never " +
+      "served_copy_bind{reason='build_plan_unavailable'}, which fires only " +
+      "per declined entry per load -- a package that loads once and is never " +
       "reloaded ticks that counter once and then sits with its colocated tier " +
       "off and a flat total, indistinguishable from healthy.",
 );
@@ -247,9 +309,24 @@ const connectionDigestSkipCounter = lazyCounter(
    "publisher_materialization_connection_digest_skipped_total",
    "Connection digests skipped during build-plan compile because the connection did not resolve.",
 );
-const manifestBindCounter = lazyCounter(
-   "publisher_materialization_manifest_bind_total",
-   "Manifest bind attempts. Label: outcome ('success'|'failure'|'timeout').",
+const servedCopyBindCounter = lazyCounter(
+   "publisher_served_copy_bind_total",
+   "Serving's binds. Labels: scope ('manifest': one manifest bind, from REST, " +
+      "auto-load or a rebind; 'source': one source deciding whether it " +
+      "serves), outcome ('success'|'failure'|'timeout' for a manifest; " +
+      "'bound'|'partial'|'declined' for a source: 'partial' is a source that " +
+      "serves with a join read as written or left out), reason ('none' when " +
+      "bound, else why: 'build_plan_unavailable' when the package's build " +
+      "plan failed to compute, so every colocated source reverts to live; " +
+      "'refused'; 'missing_table'; or the served copy's reason, as its " +
+      "package warning, 'inline_join_kept' and 'cross_connection_join' being " +
+      "the partial ones). Units differ by who counts: 'bound' and the bind's " +
+      "declines count once per stored table per bind; the served copy counts " +
+      "once per source per model per snapshot it compiles, 'declined' beating " +
+      "'partial'. So a source two models read is counted by each, and the " +
+      "outcomes do not sum to a number of sources. An extension table that " +
+      "falls back to its own blocks ('compile_failed', 'reroot_not_compiled') " +
+      "may still serve, and is counted 'declined'.",
 );
 const manifestBindDegradedCounter = lazyCounter(
    "publisher_materialization_manifest_bind_degraded_total",
@@ -293,23 +370,16 @@ const scheduledFireCounter = lazyCounter(
    "Standalone-scheduler attempts to fire a package's materialization.schedule. " +
       "Label: outcome ('fired'|'conflict'|'error').",
 );
-const storageServeRoutingCounter = lazyCounter(
-   "publisher_storage_serve_routing_total",
-   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|" +
-      "'runtime_live_fallback'|'blocked_by_row_level_gate'). Covers the storage= " +
-      "tier only; a colocated #@ persist hit is in neither the numerator nor the " +
-      "denominator. NOTE 'live_fallback' here means the transform was INELIGIBLE, " +
-      "which QueryResult.servedFrom reports as null - that field's " +
-      "'live_fallback' is this counter's 'runtime_live_fallback'.",
-);
-const queryVariantRoutingCounter = lazyCounter(
-   "publisher_query_variant_routing_total",
-   "The variant router's decision on each candidate it considered for a query, " +
-      "one count per candidate (materialization v2, #6272). Labels: variant " +
-      "('storage'|'rollup'), outcome ('used'|'skipped'), reason ('none' when used; " +
-      "'row_level_gate'|'not_applicable'|'does_not_answer' when skipped, and " +
-      "'run_failed' for a chosen variant whose run failed and fell back live). " +
-      "Counted once the query is answered. A query with no candidate records nothing.",
+const queryRouteCounter = lazyCounter(
+   "publisher_query_route_total",
+   "The router's decision on each leg it considered for a query, counted once " +
+      "the query is answered. Labels: leg ('view'|'query'|'rollup'|'served'|'live'; " +
+      "'query' is a persisted named query), " +
+      "outcome ('used'|'skipped'|'fallback': a chosen leg whose run failed and " +
+      "was answered live), reason ('NONE' when used, else the path report's " +
+      "SkipReason; 'RUN_FAILED' with 'fallback'). A leg that does not apply to " +
+      "the query is not counted; 'live' is counted 'used' when it answered a " +
+      "query the router counted a leg for.",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -338,13 +408,15 @@ const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
    "materialization-eligibility refusals, both tiers. Label: reason " +
       "('free_parameter'|'given_in_persisted_query'|'dynamic_projection'|" +
-      "'dynamic_join'|'dynamic_joined_where'|'partition_without_storage'|" +
-      "'partition_column_unknown'|'partition_column_not_public'|" +
+      "'dynamic_join'|'dynamic_joined_where'|'inherited_where_with_given'|" +
       "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
-      "'authorize'|'partition'|'not_duckdb_portable'|" +
-      "'public_surface_unknown'|'read_only_dialect'). 'given' is retained on the enum for records " +
+      "'authorize'|'not_duckdb_portable'|" +
+      "'public_surface_unknown'|'read_only_dialect'|'table_name_collision'|" +
+      "'current_time'). 'given' is retained on the enum for records " +
       "that carry it and is no longer produced: where a given sits decides the " +
-      "outcome, so one reason covering every placement cannot be raised.",
+      "outcome, so one reason covering every placement cannot be raised. The " +
+      "three 'partition_*' reasons are likewise retained and no longer produced: " +
+      "'partition=' is a retired key, refused at publish.",
 );
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
@@ -377,16 +449,6 @@ const staleUpstreamEntryCounter = lazyCounter(
       "Label: build ('colocated'|'storage'), the tier of the build that " +
       "recomputed.",
 );
-const colocatedBindDroppedCounter = lazyCounter(
-   "publisher_materialization_colocated_bind_dropped_total",
-   "Colocated serve-manifest entries dropped by bindColocatedServeManifest. " +
-      "Label: reason ('build_plan_unavailable' when the package's build plan " +
-      "failed to compute, so no source was examined at all; 'refused' when the " +
-      "source itself was examined and found ineligible). 'build_plan_unavailable' " +
-      "is a whole-package regression -- colocated is the default tier and is NOT " +
-      "gated by PERSIST_STORAGE_MODE, so every colocated binding for the package " +
-      "reverts to live recompute until a load succeeds.",
-);
 
 /**
  * Record a standalone-scheduler fire attempt. `fired` = a SCHEDULER run started;
@@ -414,7 +476,7 @@ export function recordMaterializationRun(
  * `failed` and absent otherwise, so the counter's `failure_class` is `none`
  * exactly when the outcome is not `failed`.
  */
-export type BuildOutcomeLabels =
+type BuildOutcomeLabels =
    | {
         kind: BuildKind;
         tier: BuildTier;
@@ -535,9 +597,10 @@ export function recordBuildPlanComputeFailed(): void {
 }
 
 /**
- * Record an auto-run manifest auto-load attempt. Auto-load is best-effort (a
- * failure does not fail the run), so a failure here is otherwise invisible:
- * the run is MANIFEST_FILE_READY but queries still resolve to the old tables.
+ * Record an auto-run manifest auto-load attempt. A failure does not fail the
+ * run, whose tables were built: the run reaches MANIFEST_FILE_READY with
+ * `autoLoad: "failed"` on its metadata and its `error` set, and queries are
+ * not answered from the new tables until the package's next reload or restart.
  */
 export function recordAutoLoadOutcome(outcome: "success" | "failure"): void {
    autoLoadCounter().add(1, { outcome });
@@ -586,7 +649,48 @@ export function recordTableCollision(): void {
  * tell an unreachable/slow manifest store from a malformed manifest.
  */
 export function recordManifestBind(outcome: ManifestBindOutcome): void {
-   manifestBindCounter().add(1, { outcome });
+   servedCopyBindCounter().add(1, {
+      scope: "manifest",
+      outcome,
+      reason: "none",
+   });
+}
+
+/** Record one source entry a bind admitted to serve. */
+export function recordSourceBound(): void {
+   servedCopyBindCounter().add(1, {
+      scope: "source",
+      outcome: "bound",
+      reason: "none",
+   });
+}
+
+/**
+ * Record one source entry declined: by the bind (the plan, its refusal, a
+ * table built from another definition) or by the served copy's compile (the
+ * reason its package warning gives). `build_plan_unavailable` is the one to
+ * alert on: colocated is the default tier and is not gated by
+ * PERSIST_STORAGE_MODE, so every colocated source of the package reverts to
+ * live until a load succeeds.
+ */
+export function recordSourceDeclined(reason: BindDeclineReason): void {
+   servedCopyBindCounter().add(1, {
+      scope: "source",
+      outcome: "declined",
+      reason,
+   });
+}
+
+/**
+ * Record one source the served copy's compile did not serve whole, with the
+ * outcome `servedCopyOutcomes` resolved for it: `partial` when it still
+ * serves with part of its copy read as written or left out, else `declined`.
+ */
+export function recordServedCopyOutcome(
+   outcome: "partial" | "declined",
+   reason: ServedCopyProblemReason,
+): void {
+   servedCopyBindCounter().add(1, { scope: "source", outcome, reason });
 }
 
 /**
@@ -691,72 +795,15 @@ export function recordStoredColumnTypeMismatch(
 }
 
 /**
- * Record a `storage=` serve-routing decision, once per query, from the router's
- * decision: `storage` = the query was served from the materialized table via
- * the virtual-source transform; `live_fallback` = the transform was ineligible
- * for this query (a refinement it can't reproduce, a stale or unbound source),
- * so the next candidate (a colocated rollup) or the live warehouse answered;
- * `runtime_live_fallback` = the query DID route to storage and the store then
- * failed underneath it, and every binding's `freshnessFallback=live` allowed it
- * to degrade. That last one is the operationally interesting label: it means the
- * tier is broken while queries still succeed, which is invisible in the hit rate
- * alone. `blocked_by_row_level_gate` = a row-level-gated entry point vetoed
- * BOTH the storage and pre-aggregation tiers before either was attempted — the
- * one outcome with no compile attempt behind it, so without this label a
- * blocked query would record nothing. The fallback side also logs its reason
- * per query at INFO (the compile error, the sources the shape offered, and the
- * ones the freshness gate withheld), which separates "never materialized" from
- * "materialized but stale".
- *
- * ⚠️ `live_fallback` here is NOT `QueryResult.servedFrom`'s `live_fallback`, and
- * joining a dashboard across the two on that token is wrong in both directions.
- * This label means the transform was ineligible, which that field reports as
- * `null`; the run-time store failure that field calls `live_fallback` is
- * `runtime_live_fallback` here. (`manifestBindingStatus` spends the same token on
- * a third thing again — a configured `manifestLocation` whose fetch or bind
- * failed.) Each surface is internally consistent and none means what the others
- * do.
- *
- * This counter covers the `storage=` tier only: a COLOCATED `#@ persist` hit
- * never reaches the routing decision, so it is absent from numerator AND
- * denominator, not counted as a miss.
- *
- * `origin` splits storage hits: `persist` is an authored `storage=` source,
- * `preaggregate` a query answered by a lake-served rollup (both count as
- * storage hits in the total). Absent
- * when nothing routed. An attribute rather than a new `outcome` value because
- * consumers generate strict clients from the outcome enum, where an unexpected
- * value throws; an added attribute breaks no consumer.
+ * One leg of a routed query: what the router did with it, and why
+ * (`publisher_query_route_total`).
  */
-export function recordStorageServeRouting(
-   outcome:
-      | "storage"
-      | "live_fallback"
-      | "runtime_live_fallback"
-      | "blocked_by_row_level_gate",
-   origin?: "persist" | "preaggregate",
+export function recordQueryRoute(
+   leg: RouteLeg,
+   outcome: RouteOutcome,
+   reason: RouteReason,
 ): void {
-   storageServeRoutingCounter().add(1, {
-      outcome,
-      ...(origin ? { origin } : {}),
-   });
-}
-
-/**
- * One candidate of a routed query: what the router did with it, and why.
- * `run_failed` is a chosen variant whose run failed and fell back live.
- */
-export function recordQueryVariantRouting(
-   variant: "view" | "served" | "storage" | "rollup",
-   outcome: "used" | "skipped",
-   reason:
-      | "none"
-      | "row_level_gate"
-      | "not_applicable"
-      | "does_not_answer"
-      | "run_failed",
-): void {
-   queryVariantRoutingCounter().add(1, { variant, outcome, reason });
+   queryRouteCounter().add(1, { leg, outcome, reason });
 }
 
 /**
@@ -779,17 +826,6 @@ export function recordChainedStorageBuild(
  */
 export function recordStaleUpstreamEntry(build: "colocated" | "storage"): void {
    staleUpstreamEntryCounter().add(1, { build });
-}
-
-/**
- * Record one colocated serve-manifest entry dropped by
- * `Package.bindColocatedServeManifest`. See {@link colocatedBindDroppedCounter}
- * for why `build_plan_unavailable` is the label worth alerting on.
- */
-export function recordColocatedBindDropped(
-   reason: "build_plan_unavailable" | "refused",
-): void {
-   colocatedBindDroppedCounter().add(1, { reason });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

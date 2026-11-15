@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../../../errors";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import {
    compiledWith,
    fakeSource,
@@ -41,7 +41,8 @@ describe("deriveSelfInstructions", () => {
       const priorEntries = {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
-            physicalTableName: "s1_prev",
+            // At the name this run writes: carried only there.
+            physicalTableName: "s1",
             connectionName: "duckdb",
          },
       };
@@ -81,7 +82,8 @@ describe("deriveSelfInstructions", () => {
       const priorEntries = {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
-            physicalTableName: "s1_prev",
+            // At the name this run writes: carried only there.
+            physicalTableName: "s1",
             connectionName: "duckdb",
          },
       };
@@ -106,7 +108,7 @@ describe("deriveSelfInstructions", () => {
       ).toBeDefined();
    });
 
-   it("never instructs a storage rollup over a storage= base, and still builds the base (#6293)", () => {
+   it("instructs a storage rollup over a storage= base beside the base, each to its own table", () => {
       const { restore } = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },
       });
@@ -132,6 +134,7 @@ describe("deriveSelfInstructions", () => {
             }
          ).preaggregatePlans = {
             rollup: {
+               variant: true,
                baseSourceName: "orders",
                baseSourceID: "orders",
                grainDimensions: ["category"],
@@ -152,8 +155,10 @@ describe("deriveSelfInstructions", () => {
          ).deriveSelfInstructions(compiled, undefined, {});
          expect(instructions.map((i) => i.sourceEntityId)).toEqual([
             "aa11aa11aa11aa11aa11",
+            "cc33cc33cc33cc33cc33",
          ]);
-         // Left out, not refused: the package warning reports it.
+         const [base, rolled] = instructions;
+         expect(rolled.physicalTableName).not.toBe(base.physicalTableName);
          expect(refused).toEqual({});
       } finally {
          restore();

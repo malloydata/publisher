@@ -5,7 +5,7 @@
  * Upgrading straight to the release that retires the v1 cutover's switch
  * (6g) from one that ran it `off`: a v1 `#@ preaggregate` rollup that release
  * built as `__preagg__` is not this release's, so this release answers live
- * until its first build makes the `__rollup__` table, and the old table is
+ * until its first build makes its rollup table, and the old table is
  * reclaimed by the general run reclaim (deleting the old run with its
  * tables), which replaced the cutover's own rebuild-and-GC spec.
  *
@@ -202,7 +202,7 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
       });
    }
 
-   it("answers live until its first build, then from its own __rollup__ table, and drops the old table with the old run", async () => {
+   it("answers live until its first build, then from its own rollup table, and drops the old table with the old run", async () => {
       const before = await olderRelease();
       // Its manifest bound, as a restart or a host binds it: not this
       // release's table, so live.
@@ -217,7 +217,9 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
 
       const after = await build();
       expect(after.status).toBe("MANIFEST_FILE_READY");
-      const rollup = (await tables()).filter((t) => t.includes("__rollup__"));
+      const rollup = (await tables()).filter((t) =>
+         t.includes("__orders_by_category__p"),
+      );
       expect(rollup).toHaveLength(1);
       expect(
          Object.values(after.manifest?.entries ?? {}).map(

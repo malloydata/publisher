@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { plannedModelDefOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
    Manifest,
@@ -13,12 +14,12 @@ import { getPersistStorageMode } from "../../../config";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
 import {
    buildSQLOf,
-   projectToPublicColumns,
+   projectToStoredColumns,
    resolveQueryMetadata,
 } from "../plan/build_plan";
-import { authorModelLiftContext } from "../serve/materialization_serve_transform";
-import { reachPersisted } from "../plan/source_map";
-import { BuildInstruction, ManifestEntry } from "../types";
+import { authorModelLiftContext } from "../text/author_model";
+import { reachPersisted } from "../text/source_map";
+import { BuildInstruction, ManifestEntry } from "../domain/types";
 import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
 import { ColocatedCtasStrategy } from "./colocated_build_strategy";
 import {
@@ -37,15 +38,14 @@ import {
    NO_PLAN_FACTS,
    noteWrongTierRecompute,
    presentedSourceName,
-   readAuthorFile,
    strictMissSourceId,
    HostSuppliedWrongTierError,
    upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
    wrongTierDetail,
 } from "./materialization_run_support";
-import type { SwapDependents } from "./name_view";
 import type { StorageBuildRequest } from "./storage_build_strategy";
+import { compiledTextReader } from "../../../utils";
 
 /** The colocated tier, in the order it is tried: a delta, else a full rebuild. */
 const COLOCATED_STRATEGIES: readonly BuildStrategy<ColocatedBuildRequest>[] = [
@@ -90,8 +90,10 @@ export class SourceBuilder {
       contentSourceEntityId?: string,
       // The default knows nothing; only test seams rely on it.
       planFacts: ChainedPlanFacts = NO_PLAN_FACTS,
-      // A `name=` view the colocated swap must carry (see SwapDependents).
-      swapDependents?: SwapDependents,
+      // Statements that drop this package's own leftover `name=` view at the
+      // table's name, run first in the build's own transaction (DuckDB,
+      // Postgres; leftover_name_views.ts).
+      replacesView?: string[],
    ): Promise<ManifestEntry> {
       const physicalTableName = instruction.physicalTableName;
       const isStorageBuild =
@@ -194,9 +196,10 @@ export class SourceBuilder {
       // `_model._modelDef` is compiler-internal. If a compiler bump removes it,
       // the walk below finds nothing and the entry carries no
       // `upstreamReuse`: a visible gap, not a wrong answer.
+      const plannedDef = plannedModelDefOf(persistSource);
       const lift = authorModelLiftContext(
-         persistSource._model?._modelDef,
-         readAuthorFile,
+         plannedDef,
+         compiledTextReader(plannedDef, environment.getPackagePath?.()),
       );
       // A strict miss as a reason names it: a name only the generated files
       // declare by the author's source it stands for, read from the
@@ -389,18 +392,16 @@ export class SourceBuilder {
          // table (the two renders differ). The walk alone must not decide: a
          // declared join the query never reads needs no chained attempt.
          const dependsOnStorageUpstream = sqlInlinesStored;
-         // Materialize ONLY the source's PUBLIC columns. The build SQL projects
-         // hidden ones too (`except:`, access modifiers); serving is already
-         // bounded by the shape, so this keeps hidden VALUES from sitting at
-         // rest in the destination, reachable by direct catalog access. Refuses
-         // the build (422) if the public surface can't be determined.
-         const publicBuildSQL = projectToPublicColumns(persistSource, buildSQL);
+         // Materialize every column the source declares, hidden ones
+         // included (`private:`, `internal:`), which the served copy hides
+         // again; a column `except:` drops is left out. Refuses the build
+         // (422) if the column surface can't be determined.
          return this.storage({
             persistSource,
             instruction,
             manifest,
             environment,
-            publicBuildSQL,
+            storedBuildSQL: projectToStoredColumns(persistSource, buildSQL),
             // Unprojected, for a delta: it projects outermost, around its range
             // predicate, since the projection may not carry the watermark.
             buildSQL,
@@ -414,7 +415,7 @@ export class SourceBuilder {
             contentSourceEntityId,
             planFacts,
             lift,
-            ...(swapDependents?.replacesView ? { replacesNameView: true } : {}),
+            ...(replacesView ? { replacesView } : {}),
          });
       }
 
@@ -435,7 +436,7 @@ export class SourceBuilder {
             persistSource,
             { physicalTableName, sourceEntityId: contentSourceEntityId },
          ),
-         ...(swapDependents ? { swapDependents } : {}),
+         ...(replacesView ? { replacesView } : {}),
       };
       for (const strategy of COLOCATED_STRATEGIES) {
          const entry = await strategy.build(request);

@@ -20,7 +20,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import type { Binding } from "./materialization/domain/binding";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import { startMetricsHarness } from "../test_helpers/metrics_harness";
@@ -37,7 +37,9 @@ const MODEL = `source: X is duckdb.sql("SELECT 1 AS id, 'east' AS region, 10 AS 
 `;
 
 /** Declares every column but `region`, as a table built without it would. */
-const BINDING: ServeBinding = {
+const BINDING: Binding = {
+   kind: "persist",
+   tier: "storage",
    sourceName: "X",
    destinationName: "duckdb",
    virtualHandle: "h",
@@ -102,7 +104,7 @@ async function buildModel(
 describe("previewing a stored source's views", () => {
    it("serves the views of a shape that reproduces them", async () => {
       const model = await buildModel(true);
-      const full: ServeBinding = {
+      const full: Binding = {
          ...BINDING,
          schema: [...BINDING.schema, { name: "region", type: "VARCHAR" }],
       };
@@ -145,7 +147,7 @@ describe("previewing a stored source's views", () => {
          },
       }));
       model.setServeDestinationConfig(() => unattachable);
-      const full: ServeBinding = {
+      const full: Binding = {
          ...BINDING,
          schema: [...BINDING.schema, { name: "region", type: "VARCHAR" }],
       };
@@ -177,7 +179,7 @@ describe("previewing a stored source's views", () => {
             { name: "REGIONS", type: "filter<string>" },
          ],
       );
-      const full: ServeBinding = {
+      const full: Binding = {
          ...BINDING,
          schema: [...BINDING.schema, { name: "region", type: "VARCHAR" }],
       };
@@ -202,10 +204,7 @@ describe("previewing a stored source's views", () => {
          expect(warn).not.toHaveBeenCalled();
          expect(info).not.toHaveBeenCalled();
          expect(
-            await harness.collectCounter(
-               "publisher_storage_bindings_withheld_total",
-               {},
-            ),
+            await harness.collectCounter("publisher_query_route_total", {}),
          ).toBe(0);
       } finally {
          warn.mockRestore();

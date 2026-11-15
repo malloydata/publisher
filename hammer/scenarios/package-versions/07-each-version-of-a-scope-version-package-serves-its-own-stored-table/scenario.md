@@ -59,23 +59,23 @@ expect binding: summary -> lake
 
 ## Operator lake
 
-One table per version, each named for it: the version's numbers, then 8 hex
-of a hash of the environment, the package and the version, so another package
-at the same version never builds the same table. The hex depends on the
+One table per version, each named for it: the version's numbers, then `__p`
+and 8 hex of a hash over the environment, the package, the model, the source and
+the version, so another package at the same version never builds the same table. The hex depends on the
 scenario's environment name, so it is shown as `<hash>`.
 
 ```sql
-SELECT regexp_replace(table_name, '_[0-9a-f]{8}$', '_<hash>') AS table_name
+SELECT regexp_replace(table_name, '__p[0-9a-f]{8}$', '__p<hash>') AS table_name
 FROM information_schema.tables
 WHERE table_name LIKE 'summary%' ORDER BY table_name
 ```
 
 Expect:
 
-| table_name             |
-| ---------------------- |
-| summary__v1_0_0_<hash> |
-| summary__v1_1_0_<hash> |
+| table_name               |
+| ------------------------ |
+| summary__v1_0_0__p<hash> |
+| summary__v1_1_0__p<hash> |
 
 ## Query older (version=1.0.0)
 

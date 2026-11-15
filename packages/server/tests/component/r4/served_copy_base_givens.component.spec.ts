@@ -6,21 +6,22 @@
  * that scopes its rows by a given (`where: org = $ORG`) or declares a
  * given-reading dimension, and `#(materialize)` extensions over it.
  *
- * The build leaves the base's given-reading `where:` out (its build copy
- * takes the term out of the base) and leaves the base's given-reading
- * dimensions out of its `select:`, so the stored table holds every caller's
- * rows and no caller's value. The served copy keeps the base's trailing
- * `extend` blocks over the stored table, so the term and the dimension are
- * re-applied and computed at read, per caller. This is the shape of #1637's
- * cross-tenant leak (a re-root dropped a given-reading `where:` and a second
- * caller saw the first caller's rows), so every case runs two callers with
- * different givens, interleaved and repeated, each answered from the stored
- * table, each equal to live, each holding only its own rows.
+ * Only a materialized source's own given-reading `where:` (and its own
+ * given-reading dimensions) is left out of the build and applied at read:
+ * the served copy keeps only that source's declaration. So every extension
+ * here that inherits its term or dimension from a base is refused at plan,
+ * is not built, and answers live, under the term. This is the shape of
+ * #1637's cross-tenant leak (a re-root dropped a given-reading `where:` and a
+ * second caller saw the first caller's rows), so every case runs two callers
+ * with different givens, interleaved and repeated, each equal to live, each
+ * holding only its own rows. The fix the refusal names (the term moved onto
+ * the materialized source, and extensions of it that declare no
+ * `#(materialize)`) is served from its table, per caller.
  *
  * The harness builds each generated source with its SQL as compiled and does
- * not run the eligibility gates, so a term or dimension the build kept would
- * be built with the given's value at build and answered wrong: the guard
- * under test is the generator's and the served copy's, not the gate's.
+ * not run the eligibility gates, so a source the generator wrongly planned
+ * would be built and could be answered from its table: the guard under test
+ * is the generator's and the served copy's, not the gate's.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -122,6 +123,21 @@ source: renames is renaming_base extend {
   dimension: org is 'x'
   measure: total is amt.sum()
 }
+
+// The fix the refusals name: the term and the dimension on the materialized
+// source itself, and an extension of it that declares no #(materialize).
+#(materialize) storage="lake"
+source: own_scoped is ev extend {
+  where: org = $ORG
+  dimension: mine is org = $ORG
+  dimension: label is pick 'mine' when mine else 'theirs'
+  measure: total is amt.sum()
+}
+
+source: own_ext is own_scoped extend {
+  dimension: big is amt > 6
+  view: by_label is { group_by: label; aggregate: total }
+}
 `;
 
 const CALLERS = [{ ORG: "acme" }, { ORG: "globex" }];
@@ -188,40 +204,21 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
       await disposeScenarios();
    });
 
-   it("builds every source but the one that renames the base's field, each holding every caller's rows and no caller's value", async () => {
+   it("builds no source that inherits a given-reading where: or dimension, and builds the source that writes its own", async () => {
       const built = fixture.bindings
          .flatMap((b) => b.sourceIDs ?? [])
          .map((id) => id.split("@")[0])
          .sort();
-      expect(built).toEqual(
-         ["both", "by_dimension", "by_join", "deep", "orders", "tiers"].sort(),
+      expect(built).toEqual(["own_scoped", "tiers"]);
+      const orgs = await fixture.storedSQL(
+         (t) => `SELECT DISTINCT org FROM ${t("own_scoped")} ORDER BY org`,
       );
-      for (const source of built.filter((b) => b !== "tiers")) {
-         const orgs = await fixture.storedSQL(
-            (t) => `SELECT DISTINCT org FROM ${t(source)} ORDER BY org`,
-         );
-         expect(orgs.map((r) => r.org)).toEqual(ORGS);
-      }
+      expect(orgs.map((r) => r.org)).toEqual(ORGS);
       const [row] = await fixture.storedSQL(
-         (t) => `SELECT * FROM ${t("orders")} LIMIT 1`,
+         (t) => `SELECT * FROM ${t("own_scoped")} LIMIT 1`,
       );
-      expect(Object.keys(row).sort()).toEqual(
-         ["amt", "id", "org", "tier", "up"].sort(),
-      );
-      const [joinedRow] = await fixture.storedSQL(
-         (t) => `SELECT * FROM ${t("by_join")} LIMIT 1`,
-      );
-      expect(Object.keys(joinedRow)).not.toContain("tier_label");
-      const [dimRow] = await fixture.storedSQL(
-         (t) => `SELECT * FROM ${t("by_dimension")} LIMIT 1`,
-      );
-      expect(Object.keys(dimRow)).toContain("org_key");
-      expect(Object.keys(dimRow)).not.toContain("is_mine");
-      expect(
-         (await fixture.servedCopyProblems()).filter((p) =>
-            built.includes(p.sourceName ?? ""),
-         ),
-      ).toEqual([]);
+      expect(Object.keys(row)).not.toContain("mine");
+      expect(Object.keys(row)).not.toContain("label");
    });
 
    describe("an inherited where: term and a base's given-reading dimension", () => {
@@ -248,8 +245,9 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
             "run: orders -> { group_by: up, org; aggregate: total }",
          ],
       ] as const) {
-         it(`answers each caller with its own rows, equal to live: ${name}`, async () => {
+         it(`answers each caller live, with its own rows: ${name}`, async () => {
             await asEachCaller(fixture, name, malloy, {
+               served: false,
                orgsOf:
                   malloy.includes("org;") || malloy.includes("org,")
                      ? (r) => r.org
@@ -258,33 +256,34 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
          });
       }
 
-      it("answers an extension of an extension per caller", async () => {
+      it("answers an extension of an extension live, per caller", async () => {
          await asEachCaller(
             fixture,
             "deep",
             "run: deep -> { group_by: org, big, label; aggregate: total; order_by: big, label }",
-            { orgsOf: (r) => r.org },
+            { served: false, orgsOf: (r) => r.org },
          );
       });
 
-      it("answers a term and a dimension that reach the tenant column through another dimension, per caller", async () => {
+      it("answers a term and a dimension that reach the tenant column through another dimension live, per caller", async () => {
          await asEachCaller(
             fixture,
             "by_dimension",
             "run: by_dimension -> { group_by: org, org_key, is_mine; aggregate: total, n is count() }",
-            { orgsOf: (r) => r.org },
+            { served: false, orgsOf: (r) => r.org },
          );
       });
 
-      it("answers a dimension that reads its given through a join condition, per caller", async () => {
+      it("answers a dimension that reads its given through a join condition live, per caller", async () => {
          await asEachCaller(
             fixture,
             "by_join",
             "run: by_join -> { group_by: tier_label; aggregate: total; order_by: tier_label }",
+            { served: false },
          );
       });
 
-      it("answers a base's term and the source's own term together, per caller and per threshold", async () => {
+      it("answers a base's term and the source's own term together live, per caller and per threshold", async () => {
          await asEachCaller(
             fixture,
             "both",
@@ -296,11 +295,11 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
                   { ORG: "acme", MIN_AMT: 15 },
                   { ORG: "globex", MIN_AMT: 6 },
                ],
+               served: false,
                orgsOf: (r) => r.org,
             },
          );
-         // The source's own term is re-applied too: a lower threshold answers
-         // differently, from the same table.
+         // A lower threshold answers differently, live.
          const low = await fixture.run({
             name: "both low",
             malloy: "run: both -> { aggregate: n is count() }",
@@ -312,7 +311,7 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
             givens: { ORG: "globex", MIN_AMT: 8 },
          });
          for (const run of [low, high]) {
-            expect(run.servedVia).toBe("served_copy");
+            expect(run.servedVia).toBeUndefined();
             expect(rowDifference(run.live, run.served)).toBeUndefined();
          }
          expect(low.served).toEqual([{ n: 3 }]);
@@ -320,10 +319,10 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
       });
 
       it("does not build a source that renames the base's field, and denies it as live does", async () => {
-         // The base's `where: org = $ORG` would read the source's own `org`
-         // (a new dimension) over a stored table, not the base's column. The
-         // generator refuses it (the source is not built, above), and live's
-         // bind guard denies the source, so the served path must too.
+         // The base's `where: org = $ORG` is inherited, so the generator
+         // refuses the source (not built, above); live's bind guard denies it
+         // (the base's term would read the source's own new `org`), and so
+         // does the served path.
          for (const givens of CALLERS) {
             let refusal: unknown;
             try {
@@ -347,7 +346,7 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
                return {
                   rows: (
                      await fixture.runAsIs(
-                        "run: orders -> { group_by: org, mine; aggregate: total }",
+                        "run: own_scoped -> { group_by: org, mine; aggregate: total }",
                      )
                   ).rows,
                };
@@ -364,12 +363,28 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
          if ("rows" in live) expect(live.rows).toEqual([]);
       });
 
+      it("serves the source that writes its own term, and an extension of it, from its table, per caller", async () => {
+         for (const malloy of [
+            "run: own_scoped -> { group_by: org, label; aggregate: total }",
+            "run: own_ext -> { group_by: org, big, label; aggregate: total; order_by: big, label }",
+         ]) {
+            await asEachCaller(fixture, malloy, malloy, {
+               orgsOf: (r) => r.org,
+            });
+         }
+         await asEachCaller(
+            fixture,
+            "own_ext view",
+            "run: own_ext -> by_label",
+         );
+      });
+
       // Last: it empties the origin, so only the stored table can answer.
       it("answers from the stored table once the origin is emptied, each caller its own rows", async () => {
          const truth = async (org: string) =>
             fixture.storedSQL(
                (t) =>
-                  `SELECT org, sum(amt)::DOUBLE AS total FROM ${t("orders")}
+                  `SELECT org, sum(amt)::DOUBLE AS total FROM ${t("own_scoped")}
                    WHERE org = '${org}' GROUP BY 1`,
             );
          const expected = {
@@ -380,7 +395,7 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
          for (const givens of INTERLEAVED) {
             const run = await fixture.run({
                name: `after the origin emptied as ${givens.ORG}`,
-               malloy: "run: orders -> { group_by: org; aggregate: total }",
+               malloy: "run: own_ext -> { group_by: org; aggregate: total }",
                givens,
             });
             expect(run.live).toEqual([]);
@@ -411,9 +426,18 @@ source: gated is base extend {
   dimension: mine is org = $ORG
   measure: total is amt.sum()
 }
+
+// The same gate over the term written on the materialized source itself.
+#(access_filter) tier in $TIERS
+#(materialize) storage="lake"
+source: gated_own is duckdb.table('ev') extend {
+  where: org = $ORG
+  dimension: mine is org = $ORG
+  measure: total is amt.sum()
+}
 `;
 
-describe("R4: a gated source with an inherited given term (gated serving on)", () => {
+describe("R4: a gated source with an inherited given term (gated serving on): not built, live", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
@@ -435,14 +459,15 @@ describe("R4: a gated source with an inherited given term (gated serving on)", (
       await disposeScenarios();
    });
 
-   it("stores every caller's rows", async () => {
-      const orgs = await fixture.storedSQL(
-         (t) => `SELECT DISTINCT org FROM ${t("gated")} ORDER BY org`,
-      );
-      expect(orgs.map((r) => r.org)).toEqual(ORGS);
+   it("builds only the source that writes its own term", () => {
+      expect(
+         fixture.bindings
+            .flatMap((b) => b.sourceIDs ?? [])
+            .map((id) => id.split("@")[0]),
+      ).toEqual(["gated_own"]);
    });
 
-   it("answers each caller with its own rows inside its gate, equal to live", async () => {
+   it("answers each caller live with its own rows inside its gate", async () => {
       const callers = [
          { ORG: "acme", TIERS: ["gold"] },
          { ORG: "globex", TIERS: ["gold", "tin"] },
@@ -455,6 +480,34 @@ describe("R4: a gated source with an inherited given term (gated serving on)", (
             name: `gated as ${JSON.stringify(givens)}`,
             malloy:
                "run: gated -> { group_by: org, tier, mine; aggregate: total; order_by: tier }",
+            givens,
+         });
+         expect(run.servedVia).toBeUndefined();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         for (const row of run.served) {
+            expect(row.org).toBe(givens.ORG);
+            expect(givens.TIERS).toContain(row.tier as string);
+         }
+         runs.push(run);
+      }
+      expect(runs[0].live).not.toEqual(runs[1].live);
+      expect(runs[2].served).toEqual(runs[0].served);
+      expect(runs[3].served).toEqual(runs[1].served);
+   });
+
+   it("serves the one that writes its own term from its table, each caller its own rows inside its gate", async () => {
+      const callers = [
+         { ORG: "acme", TIERS: ["gold"] },
+         { ORG: "globex", TIERS: ["gold", "tin"] },
+         { ORG: "acme", TIERS: ["gold"] },
+         { ORG: "globex", TIERS: ["gold", "tin"] },
+      ];
+      const runs: R4Run[] = [];
+      for (const givens of callers) {
+         const run = await fixture.run({
+            name: `gated_own as ${JSON.stringify(givens)}`,
+            malloy:
+               "run: gated_own -> { group_by: org, tier, mine; aggregate: total; order_by: tier }",
             givens,
          });
          expect(run.servedVia).toBe("served_copy");

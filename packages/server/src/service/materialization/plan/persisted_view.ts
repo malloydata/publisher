@@ -37,8 +37,9 @@
  *
  * What is refused here, from the declaration alone (each a publish warning,
  * `persist-view-not-built`, and the view serves live): an `@env.` reference on
- * the line, an incremental key (`watermark`, `merge_key`, `partition`; a view's
- * result is rebuilt whole), and two views whose generated names collide. The
+ * the line, the unsupported `partition=`, an incremental key (`watermark`,
+ * `merge_key`; a view's result is rebuilt whole), and two views whose
+ * generated names collide. The
  * build plan refuses the rest once it has compiled them (`build_plan.ts`): a
  * view that reads a given or the current time (its result differs per caller
  * or per read), a nested result stored with `storage=` (a destination's
@@ -47,12 +48,37 @@
  *
  * Behind `PUBLISHER_MATERIALIZE`. Every name in the generated text goes
  * through `malloy_text`; the author's own `#@` line is copied verbatim.
+ *
+ * `#@ persist` on a top-level `query:` (read in `persisted_query.ts`) is
+ * planned here too, and built in the same companion, one per declaring file
+ * (`generatePersistedResultFile` in `text/read_text.ts`):
+ *
+ *     ##! experimental.persistence
+ *     import { top_carriers, flights } from "flights.malloy"
+ *     #@ persist                               // the author's line, verbatim
+ *     source: top_carriers__query is top_carriers
+ *
+ * The `__query` segment is the query marker in the build source's name, and
+ * so in its default table name (`<query>__query__p<8 hex>`), so no existing
+ * table name moves and a source of the query's name never shares its table.
+ *
+ * Refused here, from the declaration alone (each a `persist-query-not-built`
+ * warning; the query is answered live): an `@env.` reference on the line, an
+ * incremental key (a result is rebuilt whole), a line spanning several lines,
+ * an empty `storage=`, a run target named in the query's file but declared in
+ * another (the overlay that serves it reads one file), and a generated name
+ * that collides with a name the file already has. A run target imported from
+ * another file compiles into the query whole, as an inline one does. What
+ * needs a compile, a gate the query reaches among it, is judged in
+ * `persisted_view_compile.ts`.
  */
 
-import { Annotations } from "@malloydata/malloy";
 import { type AnnotationNote, type AnnotationsDef } from "../../annotations";
 import {
    byCodepoint,
+   PERSIST_VIEW_INVALID_CODE,
+   RECOGNIZED_PERSIST_KEYS,
+   readRouteTag,
    routeOfNote,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -61,38 +87,32 @@ import {
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
-import { doubleQuotedString, identifier } from "../../malloy_text";
-import { hasEnvReference, parseRouteTag } from "../../motly";
-import { SourceMap, type SourceNode } from "./source_map";
+import { Annotations } from "@malloydata/malloy";
+import { placementOf, readNotesIfAny } from "./declaration";
+import { persistDeclarationProblems } from "./persist_annotation_validation";
+import { SourceMap, type SourceNode } from "../text/source_map";
+import {
+   PERSISTED_VIEW_COMPANION_SUFFIX,
+   persistedViewCompanionHref,
+} from "../text/read_text";
+import {
+   splitSourceID,
+   type PersistedQueryPlan,
+   type PersistedViewPlan,
+} from "../domain/table_plans";
+import {
+   declaredPersistQueries,
+   INCREMENTAL_KEYS,
+   persistQueryNotBuiltFinding,
+   persistQueryProblems,
+   unparseableNotes,
+   writesPersistLine,
+} from "./persisted_query";
 
-/** Appended to a declaring file's URL to name its persisted-view companion. */
-export const PERSISTED_VIEW_COMPANION_SUFFIX = ".persist-view.malloy";
+export { PERSISTED_VIEW_COMPANION_SUFFIX };
 
 /** The package warning for a persisted view that is not built, or not served. */
 export const PERSIST_VIEW_NOT_BUILT = "persist-view-not-built";
-
-/** `#@ persist` keys that make a build incremental: a view rebuilds whole. */
-const INCREMENTAL_KEYS = ["watermark", "merge_key", "partition"] as const;
-
-/** One `#@ persist` view, as planned. */
-export interface PersistedViewPlan {
-   /** The declaring source's `sourceID` (`<name>@<declaring file URL>`). */
-   sourceID: string;
-   /** The source's name in its declaring file. */
-   sourceName: string;
-   /** The view's name on the source. */
-   viewName: string;
-   /** The generated build source's name, inside the companion. */
-   buildSourceName: string;
-   /** The generated build source's `sourceID`, as the companion compiles it. */
-   buildSourceID: string;
-   /** The author's `#@` lines on the view, verbatim, trimmed. */
-   persistLines: string[];
-   /** The `storage=` destination, when the view declares one. */
-   storage?: string;
-   /** The declaring file's URL. */
-   declaringURL: string;
-}
 
 /** A declaration the planner would not build. */
 export interface PersistedViewRefusal {
@@ -100,29 +120,18 @@ export interface PersistedViewRefusal {
    sourceName: string;
    viewName: string;
    reason: string;
-}
-
-/** `<name>@<url>` split, or undefined for any other shape. */
-export function splitSourceID(
-   sourceID: string,
-): { name: string; url: string } | undefined {
-   const match = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID);
-   return match ? { name: match[1], url: match[2] } : undefined;
-}
-
-/** The companion URL for a declaring file, as an `href`. */
-export function persistedViewCompanionHref(declaringURL: string): string {
-   return `${declaringURL}${PERSISTED_VIEW_COMPANION_SUFFIX}`;
+   /**
+    * Set when the declaration is invalid (it cannot be read as written, or
+    * says something no view can mean): the finding is `malformed` under this
+    * code and fails the load, rather than the `persist-view-not-built`
+    * refusal of a valid one.
+    */
+   code?: string;
 }
 
 /** The generated build source's name for `source -> view`. */
-export function persistedViewBuildName(source: string, view: string): string {
+function persistedViewBuildName(source: string, view: string): string {
    return `${source}__${view}__view`;
-}
-
-/** The alias the companion imports a declaring source under. */
-function baseAlias(source: string): string {
-   return `${source}__pv_base`;
 }
 
 interface FieldLike {
@@ -155,63 +164,12 @@ function persistNotesOf(
    );
 }
 
-/** Whether `#@` notes declare `persist` (not `-persist`), read as Malloy reads them. */
-function declaresPersist(notes: readonly AnnotationNote[]): boolean {
-   try {
-      const { tag } = parseRouteTag(
-         new Annotations({ notes } as ConstructorParameters<
-            typeof Annotations
-         >[0]),
-         "@",
-      );
-      return tag.has("persist");
-   } catch {
-      return false;
-   }
-}
-
-/** The incremental keys the notes set, for the refusal. */
-function incrementalKeys(notes: readonly AnnotationNote[]): string[] {
-   try {
-      const { tag } = parseRouteTag(
-         new Annotations({ notes } as ConstructorParameters<
-            typeof Annotations
-         >[0]),
-         "@",
-      );
-      return INCREMENTAL_KEYS.filter(
-         (k) => tag.has("persist", k) || tag.has(k),
-      );
-   } catch {
-      return [];
-   }
-}
-
-/** The `storage=` the notes set, or undefined. */
-function storageOf(notes: readonly AnnotationNote[]): string | undefined {
-   try {
-      const { tag } = parseRouteTag(
-         new Annotations({ notes } as ConstructorParameters<
-            typeof Annotations
-         >[0]),
-         "@",
-      );
-      // `#@ persist storage="d"` reads `storage` beside `persist`.
-      const value = tag.text("persist", "storage") ?? tag.text("storage");
-      return typeof value === "string" && value.trim() !== ""
-         ? value.trim()
-         : undefined;
-   } catch {
-      return undefined;
-   }
-}
-
 /**
  * The persisted views one source declares itself. `scope` holds every source
  * of the compiled model (see {@link declaredFieldNotes}), which tells a view
  * the source's statement annotated from one it inherited.
  */
-export function planSourcePersistedViews(
+function planSourcePersistedViews(
    node: SourceNode,
    scope: SourceScope,
 ): {
@@ -230,31 +188,76 @@ export function planSourcePersistedViews(
       // that inherits it.
       const notes = persistNotesOf(node.def, f, scope);
       if (notes.length === 0) continue;
-      const refuse = (reason: string) =>
+      const refuse = (reason: string, code?: string) =>
          refused.push({
             sourceID: node.sourceID,
             sourceName: declared.name,
             viewName,
             reason,
+            ...(code !== undefined ? { code } : {}),
          });
-      if (notes.some((n) => hasEnvReference(n.text))) {
-         refuse("its `#@` line reads `@env.`, which a persist line may not");
-         continue;
-      }
-      if (!declaresPersist(notes)) continue;
-      const incremental = incrementalKeys(notes);
-      if (incremental.length > 0) {
+      // A `#@ persist` line that does not parse is invalid, never dropped.
+      const unparseable = writesPersistLine(notes)
+         ? unparseableNotes(notes)
+         : undefined;
+      if (unparseable !== undefined) {
          refuse(
-            `a view's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
+            `its \`#@\` line does not parse (${unparseable})`,
+            PERSIST_VIEW_INVALID_CODE,
          );
          continue;
       }
+      const annotations = new Annotations({ notes } as ConstructorParameters<
+         typeof Annotations
+      >[0]);
+      // A line reading `@env.`, a `storage=` naming nothing, a bad `name=`.
+      const problems = persistDeclarationProblems(annotations);
+      if (problems.length > 0) {
+         refuse(problems.join("; "), PERSIST_VIEW_INVALID_CODE);
+         continue;
+      }
+      // Read as Malloy reads them: `persist`, not `-persist`.
+      const tag = readNotesIfAny(notes, "@");
+      if (!tag?.has("persist")) continue;
+      // The key set is closed, as on a source: an unknown or retired key
+      // (`partition=`) is invalid.
+      const keyFindings = readRouteTag(
+         annotations,
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      ).findings;
+      if (keyFindings.length > 0) {
+         for (const finding of keyFindings) {
+            refuse(
+               finding.message +
+                  (finding.rewrite ? `; ${finding.rewrite}` : ""),
+               finding.code,
+            );
+         }
+         continue;
+      }
+      const incremental = INCREMENTAL_KEYS.filter(
+         (k) => tag.has("persist", k) || tag.has(k),
+      );
+      if (incremental.length > 0) {
+         refuse(
+            `a view's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
+            PERSIST_VIEW_INVALID_CODE,
+         );
+         continue;
+      }
+      // Valid, but a copy limit of Publisher's: refused alone.
       if (notes.some((n) => n.text.trim().includes("\n"))) {
          refuse("its `#@` line spans more than one line");
          continue;
       }
+      const placed = placementOf(tag, "persist");
+      if ("refused" in placed) continue;
+      const storage =
+         placed.placement.tier === "storage"
+            ? placed.placement.destination
+            : undefined;
       const buildSourceName = persistedViewBuildName(declared.name, viewName);
-      const storage = storageOf(notes);
       plans.push({
          sourceID: node.sourceID,
          sourceName: declared.name,
@@ -314,53 +317,149 @@ export function planModelPersistedViews(
    return { plans: kept, refused };
 }
 
-/** A refusal as a package finding (unservable: the view serves live). */
+/**
+ * A refusal as a package finding: `unservable` for a valid view Publisher
+ * refuses alone (it serves live), `malformed` for an invalid declaration,
+ * which fails the load.
+ */
 export function persistedViewRefusalFinding(
-   refusal: Pick<PersistedViewRefusal, "sourceName" | "viewName" | "reason">,
+   refusal: Pick<
+      PersistedViewRefusal,
+      "sourceName" | "viewName" | "reason" | "code"
+   >,
    model: string,
 ): PackageAnnotationFinding {
+   // malloy-text: names quoted in a finding's message, not generated Malloy
+   const on = `#@ persist on view "${refusal.viewName}" of source "${refusal.sourceName}"`;
+   if (refusal.code !== undefined) {
+      return {
+         route: "@",
+         tier: "malformed",
+         code: refusal.code,
+         message: `${on} is invalid: ${refusal.reason}.`,
+         subject: `${refusal.sourceName} -> ${refusal.viewName}`,
+         model,
+      };
+   }
    return {
       route: "@",
       tier: "unservable",
       code: PERSIST_VIEW_NOT_BUILT,
-      message:
-         `#@ persist on view "${refusal.viewName}" of source ` +
-         `"${refusal.sourceName}" is not built, so the view is served live: ` +
-         `${refusal.reason}.`,
+      message: `${on} is not built, so the view is served live: ${refusal.reason}.`,
       subject: `${refusal.sourceName} -> ${refusal.viewName}`,
       model,
    };
 }
 
-/**
- * The companion's text for the views `plans` declares, all in the file
- * imported as `importPath`, or undefined when there are none.
- */
-export function generatePersistedViewFile(
-   plans: readonly PersistedViewPlan[],
-   importPath: string,
-): string | undefined {
-   if (plans.length === 0) return undefined;
-   const sources = [...new Set(plans.map((p) => p.sourceName))].sort(
-      byCodepoint,
-   );
-   const imports = sources
-      .map(
-         (s) =>
-            `import { ${identifier(baseAlias(s))} is ${identifier(s)} } from ${doubleQuotedString(importPath)}`,
-      )
-      .join("\n");
-   const sourcesText = plans
-      .map(
-         (p) =>
-            // malloy-text: the author's own `#@` lines, verbatim (single lines, no `@env.`; see planSourcePersistedViews)
-            `${p.persistLines.join("\n")}
-source: ${identifier(p.buildSourceName)} is ${identifier(baseAlias(p.sourceName))} -> ${identifier(p.viewName)}`,
-      )
-      .join("\n\n");
-   return `##! experimental.persistence
-${imports}
+/** A persisted query the planner would not build. */
+export interface PersistedQueryRefusal {
+   queryName: string;
+   reason: string;
+}
 
-${sourcesText}
-`;
+/** The generated build source's name for query `q`. */
+function persistedQueryBuildName(query: string): string {
+   return `${query}__query`;
+}
+
+/**
+ * Plan every persisted query a compiled model can see, or, with
+ * `declaredHere`, only those its admitted files DECLARE (the build plan's
+ * view: one build source per query).
+ */
+export function planModelPersistedQueries(
+   modelDef: unknown,
+   declaredHere?: (declaringURL: string) => boolean,
+): { plans: PersistedQueryPlan[]; refused: PersistedQueryRefusal[] } {
+   const plans: PersistedQueryPlan[] = [];
+   const refused: PersistedQueryRefusal[] = [];
+   const contents =
+      (modelDef as { contents?: Record<string, unknown> })?.contents ?? {};
+   for (const query of declaredPersistQueries(modelDef, declaredHere)) {
+      const refuse = (reason: string) =>
+         refused.push({ queryName: query.name, reason });
+      // An invalid declaration is reported as one (persistQueryInvalidFindings,
+      // which fails the load), never planned.
+      if (persistQueryProblems(query).length > 0) continue;
+      const notes = query.notes;
+      const tag = readNotesIfAny(notes, "@");
+      if (!tag?.has("persist")) continue;
+      // Valid, but a copy limit of Publisher's: refused alone.
+      if (notes.some((n) => n.text.trim().includes("\n"))) {
+         refuse("its `#@` line spans more than one line");
+         continue;
+      }
+      const placed = placementOf(tag, "persist");
+      if ("refused" in placed) continue;
+      const storage =
+         placed.placement.tier === "storage"
+            ? placed.placement.destination
+            : undefined;
+      // The run target: a source declared by name in the query's own file, or
+      // one written inline. A name declared in another file needs an overlay
+      // of two files to serve, which comes later.
+      let runTarget: { sourceID: string; sourceName: string } | undefined;
+      const ref = query.def.structRef;
+      if (typeof ref === "string") {
+         const entry = contents[ref] as { sourceID?: unknown } | undefined;
+         const declared =
+            typeof entry?.sourceID === "string"
+               ? splitSourceID(entry.sourceID)
+               : undefined;
+         if (!declared) {
+            refuse(
+               `its source \`${ref}\` is not in this model's namespace; import the file that declares the query whole`,
+            );
+            continue;
+         }
+         if (declared.url !== query.declaringURL || declared.name !== ref) {
+            refuse(
+               `its source \`${ref}\` is declared in another file, and a persisted query is built only over a source its own file declares (declare the query beside its source)`,
+            );
+            continue;
+         }
+         runTarget = { sourceID: entry!.sourceID as string, sourceName: ref };
+      } else if (!ref || typeof ref !== "object") {
+         refuse("its source cannot be read");
+         continue;
+      }
+      const importedID =
+         typeof ref === "object"
+            ? (ref as { sourceID?: unknown }).sourceID
+            : undefined;
+      const importedSource =
+         typeof importedID === "string"
+            ? Object.entries(contents).find(
+                 ([, e]) =>
+                    (e as { sourceID?: unknown })?.sourceID === importedID,
+              )?.[0]
+            : undefined;
+      const buildSourceName = persistedQueryBuildName(query.name);
+      if (buildSourceName in contents) {
+         refuse(
+            `its generated build source \`${buildSourceName}\` collides with a name the model already declares; rename one of them`,
+         );
+         continue;
+      }
+      plans.push({
+         kind: "query",
+         queryName: query.name,
+         ...(runTarget ?? {}),
+         ...(importedSource !== undefined ? { importedSource } : {}),
+         buildSourceName,
+         buildSourceID: `${buildSourceName}@${persistedViewCompanionHref(query.declaringURL)}`,
+         persistLines: notes.map((n) => n.text.trim()),
+         ...(storage !== undefined ? { storage } : {}),
+         declaringURL: query.declaringURL,
+      });
+   }
+   return { plans, refused };
+}
+
+/** A refusal as a package finding (unservable: the query is answered live). */
+export function persistedQueryRefusalFinding(
+   refusal: PersistedQueryRefusal,
+   model: string,
+): PackageAnnotationFinding {
+   return persistQueryNotBuiltFinding(refusal.queryName, model, refusal.reason);
 }

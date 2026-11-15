@@ -3,12 +3,27 @@
 
 import { PublisherClient } from "../api/client.js";
 import Table from "cli-table3";
-import { logSuccess, logInfo, logOutput, truncate } from "../utils/logger.js";
+import {
+  logSuccess,
+  logInfo,
+  logOutput,
+  logWarning,
+  truncate,
+} from "../utils/logger.js";
 
-// A build settles at MANIFEST_FILE_READY (the full build + load completed) or
-// a failure/cancellation.
+// A build settles at MANIFEST_FILE_READY or a failure/cancellation. For an
+// auto-run, MANIFEST_FILE_READY means the tables are built and the package
+// serves them: the manifest was loaded into it before the status moved (its
+// metadata says `autoLoad: "failed"` when that load did not take).
 const SETTLED_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 const SUCCESS_STATUSES = ["MANIFEST_FILE_READY"];
+
+/**
+ * The exit code of `--wait` for a run that built but whose manifest did not
+ * load into the package (`metadata.autoLoad: "failed"`): not 0, since queries
+ * are not answered from the new tables, and not 1, which is a failed build.
+ */
+export const BUILT_NOT_SERVED_EXIT_CODE = 2;
 
 // Each run records metadata.trigger (SCHEDULER | ON_DEMAND) so a scheduled
 // rebuild is distinguishable from a manual one; it lives in the free-form
@@ -123,6 +138,19 @@ export async function materialize(
   logOutput(JSON.stringify(current, null, 2));
 
   if (successStatuses.includes(current.status)) {
+    // Built, but its manifest did not load into the package: queries are not
+    // answered from the new tables. Not a failure of the build, so its own
+    // exit code, distinct from 1.
+    const metadata = (current.metadata ?? {}) as Record<string, unknown>;
+    if (metadata.autoLoad === "failed") {
+      logWarning(
+        `Materialization ${id} built but not served: ${String(
+          metadata.autoLoadError ?? current.error ?? "the manifest load failed",
+        )}`,
+      );
+      process.exitCode = BUILT_NOT_SERVED_EXIT_CODE;
+      return;
+    }
     logSuccess(`Materialization ${id} ready: ${current.status}`);
     return;
   }

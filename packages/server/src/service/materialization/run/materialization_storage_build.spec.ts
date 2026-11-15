@@ -11,7 +11,7 @@ import {
    DestinationNotFoundError,
    internalErrorToHttpError,
 } from "../../../errors";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
    buildEnvironmentStub,
@@ -94,7 +94,7 @@ describe("buildOneSourceIntoStorage (failure redaction)", () => {
             // strict: throw instead of falling through to recompute-from-raw.
             manifest: { strict: true, update: () => {} },
             environment,
-            publicBuildSQL: "SELECT 1",
+            storedBuildSQL: "SELECT 1",
             buildSQL: "SELECT 1",
             builtEntries: {},
             dependsOnStorageUpstream: true, // take the chained path
@@ -146,7 +146,8 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          | "missing"
          | "infra"
          | "wrongTier"
-         | "wrongTierAndMissing";
+         | "wrongTierAndMissing"
+         | "withUndeclarable";
       /** The host instructed the run (orchestrated). */
       hostInstructed?: boolean;
       /** The host's `warehouseReach` (ms2data/service#6756). */
@@ -182,7 +183,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             instruction: BuildInstruction;
             manifest: Manifest;
             environment: unknown;
-            publicBuildSQL: string;
+            storedBuildSQL: string;
             buildSQL: string;
             builtEntries: Record<string, unknown>;
             dependsOnStorageUpstream: boolean;
@@ -201,6 +202,16 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             schema: [
                { name: "order_month", type: "DATE" },
                { name: "monthly_total", type: "DOUBLE" },
+            ],
+            upstreamReuse: "reused",
+         }),
+         // Builds a table with two columns no Malloy type declares.
+         withUndeclarable: sinon.stub().resolves({
+            storageDestinationName: "lake",
+            schema: [
+               { name: "order_month", type: "DATE" },
+               { name: "tags", type: "MAP(VARCHAR, INTEGER)" },
+               { name: "span", type: "INTERVAL" },
             ],
             upstreamReuse: "reused",
          }),
@@ -272,7 +283,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          instruction,
          manifest,
          environment,
-         publicBuildSQL: "SELECT should_not_run",
+         storedBuildSQL: "SELECT should_not_run",
          buildSQL: "SELECT should_not_run",
          builtEntries: {
             up: {
@@ -519,6 +530,21 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             expect(await harness.collectCounter(COUNTER, { outcome })).toBe(n);
          }
       });
+
+      it("counts each column the table holds that no type declares, once per build", async () => {
+         const result = await callInto({
+            strict: false,
+            stackOnParent: "withUndeclarable",
+         });
+         // Built, not refused: the served copy leaves the columns out at bind.
+         expect(result.storageDestinationName).toBe("lake");
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_shape_type_fallback_total",
+               { kind: "unrecognized" },
+            ),
+         ).toBe(2);
+      });
    });
 });
 
@@ -575,7 +601,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
                   instruction: BuildInstruction;
                   manifest: unknown;
                   environment: unknown;
-                  publicBuildSQL: string;
+                  storedBuildSQL: string;
                   buildSQL: string;
                   builtEntries: Record<string, unknown>;
                   dependsOnStorageUpstream: boolean;
@@ -596,7 +622,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
             },
             manifest: new Manifest(),
             environment,
-            publicBuildSQL: "SELECT should_not_run",
+            storedBuildSQL: "SELECT should_not_run",
             buildSQL: "SELECT should_not_run",
             builtEntries: {
                up: {

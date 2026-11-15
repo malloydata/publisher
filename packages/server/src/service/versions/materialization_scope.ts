@@ -6,15 +6,15 @@ import type {
    Materialization,
    ResourceRepository,
 } from "../../storage/DatabaseInterface";
-import type { ManifestEntry } from "../materialization/types";
+import type { ManifestEntry } from "../materialization/domain/types";
 
 /**
  * Who owns the tables a published version's materializations build, decided
  * by the package's `materialization.scope`:
  *
  *  - `scope: "version"`: each version owns its tables. A self-assigned name
- *    gains the version as a suffix, reuse and the serve binding read only that
- *    version's runs, and archiving the version reclaims them.
+ *    shows the version (domain/table_name.ts), reuse and the serve binding
+ *    read only that version's runs, and archiving the version reclaims them.
  *  - `scope: "package"` (the default): the versions share the package's
  *    tables, under unchanged names. Each version binds only the tables its own
  *    definition built (the serve binding checks the content address).
@@ -132,7 +132,7 @@ export function tableNamesIn(
 }
 
 /** Whether `reader` serves from what run `m` built. */
-function readsRun(m: Materialization, reader: ServingReader): boolean {
+export function readsRun(m: Materialization, reader: ServingReader): boolean {
    if (reader.owned !== undefined) return m.version === reader.owned;
    if (isVersionOwnedRun(m)) return false;
    // A run with instructions built the tables its caller named for its own
@@ -221,6 +221,14 @@ export function storageBindingResolverFor(
       return annotate ? annotate(entries, runs) : entries;
    };
 }
+
+/*
+ * The names auto-run gave the tables it named before readable names
+ * (domain/table_name.ts). Kept only to re-derive them exactly, so a run can
+ * tell a table this package built under its old name from anything else, and
+ * reclaim it once its readable replacement has committed
+ * (Reclaimer.reclaimRenamedTables).
+ */
 
 /**
  * The longest table segment a version-owned name may have: Postgres truncates

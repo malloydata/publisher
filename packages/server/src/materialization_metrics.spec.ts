@@ -24,9 +24,22 @@ import {
    recordEligibilityRefused,
    recordMaterializationRun,
    recordServeShapeTypeFallback,
-   recordStorageServeRouting,
+   recordManifestBind,
+   recordSourceBound,
+   recordServedCopyOutcome,
+   recordSourceDeclined,
+   ROUTE_LEGS,
+   ROUTE_OUTCOMES,
+   ROUTE_REASONS,
+   BIND_SCOPES,
+   BIND_OUTCOMES,
    resetMaterializationTelemetryForTesting,
 } from "./materialization_metrics";
+import {
+   SOURCE_DECLINE_REASONS,
+   servedCopyOutcomes,
+   servesInPart,
+} from "./service/materialization/domain/source_decline";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -249,19 +262,57 @@ describe("materialization_metrics", () => {
       ).toBe(1);
    });
 
-   it("counts storage= serve-routing decisions labeled by outcome", async () => {
-      recordStorageServeRouting("storage");
-      recordStorageServeRouting("storage");
-      recordStorageServeRouting("live_fallback");
-
+   it("counts a served-copy source by the outcome resolved for it", async () => {
+      recordServedCopyOutcome("partial", "inline_join_kept");
+      recordServedCopyOutcome("declined", "column_types");
+      const bind = (labels: Record<string, string>) =>
+         harness.collectCounter("publisher_served_copy_bind_total", labels);
       expect(
-         await harness.collectCounter("publisher_storage_serve_routing_total", {
-            outcome: "storage",
+         await bind({
+            scope: "source",
+            outcome: "partial",
+            reason: "inline_join_kept",
          }),
+      ).toBe(1);
+      expect(
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "column_types",
+         }),
+      ).toBe(1);
+   });
+
+   it("counts serving's binds by scope, outcome and reason", async () => {
+      recordManifestBind("success");
+      recordManifestBind("timeout");
+      recordSourceBound();
+      recordSourceBound();
+      recordSourceDeclined("build_plan_unavailable");
+      recordServedCopyOutcome("declined", "classification_not_kept");
+      const bind = (labels: Record<string, string>) =>
+         harness.collectCounter("publisher_served_copy_bind_total", labels);
+      expect(
+         await bind({ scope: "manifest", outcome: "success", reason: "none" }),
+      ).toBe(1);
+      expect(
+         await bind({ scope: "manifest", outcome: "timeout", reason: "none" }),
+      ).toBe(1);
+      expect(
+         await bind({ scope: "source", outcome: "bound", reason: "none" }),
       ).toBe(2);
       expect(
-         await harness.collectCounter("publisher_storage_serve_routing_total", {
-            outcome: "live_fallback",
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "build_plan_unavailable",
+         }),
+      ).toBe(1);
+      expect(
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "classification_not_kept",
          }),
       ).toBe(1);
    });
@@ -312,5 +363,128 @@ describe("materialization_metrics", () => {
             { kind: "array" },
          ),
       ).toBe(1);
+   });
+});
+
+// Each label of the routing and bind counters is a closed union; adding a
+// value is a reviewed change to these lists (Step 4 specification).
+describe("the routing and bind label vocabularies", () => {
+   it("names exactly the route counter's legs, outcomes and reasons", () => {
+      expect([...ROUTE_LEGS]).toEqual([
+         "view",
+         "query",
+         "rollup",
+         "served",
+         "live",
+      ]);
+      expect([...ROUTE_OUTCOMES]).toEqual(["used", "skipped", "fallback"]);
+      expect([...ROUTE_REASONS]).toEqual([
+         "NONE",
+         "NOT_BUILT",
+         "WARNED",
+         "MISSING_FIELD",
+         "CONTRACT",
+         "GRAIN_TOO_COARSE",
+         "TIME_ZONE",
+         "CROSS_CONNECTION",
+         "COUNT_SEMANTICS",
+         "STALE",
+         "RUN_FAILED",
+      ]);
+   });
+
+   it("names exactly the bind counter's scopes, outcomes and reasons", () => {
+      expect([...BIND_SCOPES]).toEqual(["manifest", "source"]);
+      expect([...BIND_OUTCOMES]).toEqual([
+         "success",
+         "failure",
+         "timeout",
+         "bound",
+         "partial",
+         "declined",
+      ]);
+      expect(["none", ...SOURCE_DECLINE_REASONS]).toEqual([
+         "none",
+         "build_plan_unavailable",
+         "refused",
+         "missing_table",
+         "compile_failed",
+         "cross_connection_unbuilt",
+         "column_types",
+         "no_declaration",
+         "range_not_found",
+         "definition_not_parsed",
+         "pair_join_not_found",
+         "pair_not_compiled",
+         "fields_not_carried",
+         "read_terms_not_kept",
+         "cross_connection_join",
+         "inline_join_kept",
+         "reroot_not_compiled",
+         "classification_not_kept",
+      ]);
+   });
+});
+
+describe("which source declines still serve the source", () => {
+   it("is exactly the served copy's two partial reasons", () => {
+      expect(SOURCE_DECLINE_REASONS.filter(servesInPart)).toEqual([
+         "cross_connection_join",
+         "inline_join_kept",
+      ]);
+   });
+});
+
+describe("one served-copy outcome per source per compile", () => {
+   const ids = (...xs: string[]) => new Set(xs);
+   it("counts a source with two partial reasons once, while it is re-rooted", () => {
+      expect(
+         servedCopyOutcomes(
+            [
+               { sourceID: "s", reason: "inline_join_kept" },
+               { sourceID: "s", reason: "inline_join_kept" },
+               { sourceID: "s", reason: "cross_connection_join" },
+            ],
+            ids("s"),
+         ),
+      ).toEqual([{ outcome: "partial", reason: "inline_join_kept" }]);
+   });
+
+   it("declines a source that is partial and then dropped", () => {
+      expect(
+         servedCopyOutcomes(
+            [{ sourceID: "s", reason: "inline_join_kept" }],
+            ids(),
+         ),
+      ).toEqual([{ outcome: "declined", reason: "inline_join_kept" }]);
+   });
+
+   it("lets declined beat partial on one source, by its leaving-out reason", () => {
+      expect(
+         servedCopyOutcomes(
+            [
+               { sourceID: "s", reason: "cross_connection_join" },
+               { sourceID: "s", reason: "classification_not_kept" },
+            ],
+            ids("s"),
+         ),
+      ).toEqual([{ outcome: "declined", reason: "classification_not_kept" }]);
+   });
+
+   it("keeps sources apart, and counts a problem naming no source on its own", () => {
+      expect(
+         servedCopyOutcomes(
+            [
+               { sourceID: "a", reason: "inline_join_kept" },
+               { sourceName: "b", reason: "column_types" },
+               { reason: "cross_connection_unbuilt" },
+            ],
+            ids("a"),
+         ),
+      ).toEqual([
+         { outcome: "declined", reason: "cross_connection_unbuilt" },
+         { outcome: "partial", reason: "inline_join_kept" },
+         { outcome: "declined", reason: "column_types" },
+      ]);
    });
 });

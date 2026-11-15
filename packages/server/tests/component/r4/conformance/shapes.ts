@@ -21,6 +21,7 @@
  * the list, and skipped rather than failed.
  */
 
+import { COVERAGE_SHAPES } from "./coverage_shapes";
 import { RAW_MODEL } from "./data";
 
 export type Variant = "storage" | "colocated" | "materialize";
@@ -92,6 +93,8 @@ export interface Shape {
    queries: (ConformanceQuery & { gaps?: GapMap })[];
    variants?: Variant[];
    gaps?: GapMap;
+   /** Settings the shape is loaded under, over the runner's. */
+   env?: Record<string, string>;
 }
 
 /** Render a shape's files for one variant. */
@@ -149,20 +152,13 @@ const LIVE_ACROSS_CONNECTIONS: Partial<Record<Variant, Expect>> = {
 };
 
 /**
- * Two sources whose tables take one name in one destination (#6644's class)
- * are both refused rather than mis-served: v1 reads each as `live:refused`,
- * and `#(materialize)` builds neither (materialize-not-built), so each
- * answers live.
+ * Two sources an author's `name=` puts on one table in one destination
+ * (#6644's class). By default the package fails to load
+ * (`materialization-table-collision`); under the operator's opt-out
+ * (`PERSIST_COLLISION_ENFORCE=false`) both are refused rather than
+ * mis-served, so each answers live.
  */
 const SHARED_TABLE_LIVE: Expect = "live";
-
-/**
- * `#(materialize)` renders no `name=`, so two same-named sources both default
- * to the table `summary` and are both refused (the shared-table class above).
- */
-const SAME_NAMED_MATERIALIZE: Partial<Record<Variant, Expect>> = {
-   materialize: SHARED_TABLE_LIVE,
-};
 
 /** Today's serve shape answers a v1 `storage=` rollup without its measures' annotations. */
 const V1_STORAGE_ROLLUP_ANNOTATIONS: Gap = {
@@ -183,13 +179,6 @@ const UNFLAGGED_BEFORE_CUTOVER: Gap = {
    kind: "live",
    reason:
       "a model file without ##! experimental.persistence plans no #@ persist source before the cutover (guard 1); the cutover's build copy carries the flag (D3)",
-};
-
-/** Today's serve shape compiles a model's sources together, so one that cannot be shaped takes the others live. */
-const SERVE_SHAPE_FAILS_BESIDE: Gap = {
-   kind: "live",
-   reason:
-      "today's serve shape does not compile this model (the re-hidden source's measure reads a column its storage= table does not hold), so every source in it answers live; the cutover's served copy contains that failure and serves the source beside it",
 };
 
 /** A query live answers wrong on Malloy 0.0.438, whose stored answer is right. */
@@ -695,51 +684,31 @@ import { shipped is summary } from "b.malloy"
             model: "a.malloy",
             malloy:
                "run: summary -> { group_by: region; aggregate: t is total.sum() }",
-            expect: SAME_NAMED_MATERIALIZE,
-            gaps: {
-               "storage/off": {
-                  kind: "live",
-                  issue: "#6644",
-                  reason:
-                     "the serve shape does not serve a source whose name another model also persists (the v1 fix refuses rather than mis-serves)",
-               },
-            },
          },
          {
             name: "summary in b.malloy",
             model: "b.malloy",
             malloy:
                "run: summary -> { group_by: region; aggregate: t is total.sum() }",
-            expect: SAME_NAMED_MATERIALIZE,
-            gaps: {
-               "storage/off": {
-                  kind: "live",
-                  issue: "#6644",
-                  reason:
-                     "the serve shape does not serve a source whose name another model also persists (the v1 fix refuses rather than mis-serves)",
-               },
-            },
          },
          {
             name: "a.malloy's summary imported as placed",
             model: "c.malloy",
             malloy:
                "run: placed -> { group_by: region; aggregate: t is total.sum() }",
-            expect: SAME_NAMED_MATERIALIZE,
          },
          {
             name: "b.malloy's summary imported as shipped",
             model: "c.malloy",
             malloy:
                "run: shipped -> { group_by: region; aggregate: t is total.sum() }",
-            expect: SAME_NAMED_MATERIALIZE,
          },
       ],
    },
    {
       name: "same-named sources in two models, no name=",
       issue: "#6644",
-      about: "Two models each persisting a source named summary with no name=, so both tables take the source's name",
+      about: "Two models each persisting a source named summary with no name=: each takes a readable name of its own (its model and source, hashed), so both build and serve",
       files: {
          "a.malloy": `${HEADER}
 import "raw.malloy"
@@ -755,6 +724,53 @@ source: summary is orders_raw -> {
 import "raw.malloy"
 
 @PERSIST()
+source: summary is orders_raw -> {
+  where: status = 'shipped'
+  group_by: region
+  aggregate: total is amount.sum()
+}
+`,
+      },
+      queries: [
+         {
+            name: "summary in a.malloy",
+            model: "a.malloy",
+            malloy:
+               "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+         },
+         {
+            name: "summary in b.malloy",
+            model: "b.malloy",
+            malloy:
+               "run: summary -> { group_by: region; aggregate: t is total.sum() }",
+         },
+      ],
+   },
+   {
+      name: "two models' sources at one name=",
+      issue: "#6644",
+      about: 'Two models each persisting a source at name="summary": one table for two sources, refused alone under the collision opt-out (by default the load fails)',
+      // The default, a load failure, is covered by
+      // materialization_load_policy.spec.ts and coverage_refusals; this
+      // holds the serve path to the opt-out.
+      env: { PERSIST_COLLISION_ENFORCE: "false" },
+      // `#(materialize)` renders no `name=`, so only the v1 forms collide.
+      variants: ["storage", "colocated"],
+      files: {
+         "a.malloy": `${HEADER}
+import "raw.malloy"
+
+@PERSIST(summary)
+source: summary is orders_raw -> {
+  where: status = 'placed'
+  group_by: region
+  aggregate: total is amount.sum()
+}
+`,
+         "b.malloy": `${HEADER}
+import "raw.malloy"
+
+@PERSIST(summary)
 source: summary is orders_raw -> {
   where: status = 'shipped'
   group_by: region
@@ -895,16 +911,12 @@ source: order_facts is orders_raw -> {
             name: "a measure over the joined source's internal column, from the index",
             malloy:
                "run: order_facts -> { group_by: c.segment; aggregate: w is c.west_n, t is amount.sum() }",
-            expect: { storage: "live" },
          },
          {
             name: "the joined source's measure, in its own file",
             model: "dims.malloy",
             malloy:
                "run: customer_dim -> { group_by: segment; aggregate: west_n }",
-            // v1 stores a persisted table's public columns only, so a measure
-            // reading `home_region` is answered live there.
-            expect: { storage: "live" },
          },
       ],
    },
@@ -1673,19 +1685,13 @@ source: rehidden is customers_raw -> {
          {
             name: "a measure beside the excepted column",
             malloy: "run: dropped -> { group_by: region; aggregate: total }",
-            gaps: {
-               "storage/off": SERVE_SHAPE_FAILS_BESIDE,
-               "storage/on": SERVE_SHAPE_FAILS_BESIDE,
-            },
          },
          {
             name: "a measure over the re-hidden column",
             malloy:
                "run: rehidden -> { group_by: segment; aggregate: n, west_n }",
-            // A storage= table holds public columns only, so a measure over
-            // the hidden column is answered live there.
-            expect: { storage: "live" },
          },
       ],
    },
+   ...COVERAGE_SHAPES,
 ];

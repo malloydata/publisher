@@ -5,9 +5,9 @@ import type {
    BuildManifestResult,
    IncrementalStrategy,
    MaterializationStatus,
-} from "../service/materialization/types";
+} from "../service/materialization/domain/types";
 
-// The materialization domain types moved to service/materialization/types.ts;
+// The materialization domain types moved to service/materialization/domain/types.ts;
 // re-exported here so the store and its repositories keep compiling unchanged.
 export type {
    BuildInstruction,
@@ -25,8 +25,8 @@ export type {
    Realization,
    RefusedSource,
    SourceFailure,
-} from "../service/materialization/types";
-export { isLegacyFailedEntry } from "../service/materialization/types";
+} from "../service/materialization/domain/types";
+export { isLegacyFailedEntry } from "../service/materialization/domain/types";
 
 export interface ResourceRepository {
    // Environments
@@ -334,7 +334,11 @@ export interface Materialization {
    environmentId: string;
    packageName: string;
    status: MaterializationStatus;
-   /** Build output. Null until status = MANIFEST_FILE_READY. */
+   /**
+    * Build output. Null until the tables are built (MANIFEST_ROWS_READY), and
+    * on a run that failed or was cancelled before then. A run interrupted at
+    * MANIFEST_ROWS_READY ends FAILED with it (`failInterrupted`).
+    */
    manifest: BuildManifestResult | null;
    startedAt: Date | null;
    completedAt: Date | null;

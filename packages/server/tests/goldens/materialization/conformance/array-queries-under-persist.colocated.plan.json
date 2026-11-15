@@ -1,0 +1,118 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "cart_rows@<pkg>/m.malloy": [],
+          "cart_totals@<pkg>/m.malloy": []
+        },
+        "order": [
+          "cart_totals@<pkg>/m.malloy",
+          "cart_rows@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "cart_rows@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "cart_totals@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "cart_rows@<pkg>/m.malloy": "m.malloy",
+      "cart_totals@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "cart_totals@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "cart_rows@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "cart_rows@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "cart_rows"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "g",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "cart_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4",
+        "sourceID": "cart_rows@<pkg>/m.malloy",
+        "sql": "sha256:c247d4433be69012"
+      },
+      "cart_totals@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "cart_totals"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "g",
+            "type": "string"
+          },
+          {
+            "name": "t",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "cart_totals",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031",
+        "sourceID": "cart_totals@<pkg>/m.malloy",
+        "sql": "sha256:4ddc3dd945b05bda"
+      }
+    }
+  }
+}

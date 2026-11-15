@@ -15,7 +15,7 @@ import {
    WRITES_TARGETS_KEY,
    type WriteTarget,
 } from "../../versions/materialization_scope";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 
 /**
  * Which tables an active run of a package writes, so two runs never write one
@@ -88,7 +88,9 @@ export class TableClaims {
             (m) =>
                !isVersionOwnedRun(m) &&
                (m.metadata?.mode !== "orchestrated" || m.version === null) &&
-               m.status === "MANIFEST_FILE_READY",
+               // A run loading its manifest has recorded it already.
+               (m.status === "MANIFEST_FILE_READY" ||
+                  (m.status === "MANIFEST_ROWS_READY" && m.manifest != null)),
          )
          .flatMap((m) =>
             Object.values(m.manifest?.entries ?? {}).map(
@@ -207,35 +209,13 @@ export class TableClaims {
    }
 
    /**
-    * After run `id` committed a `name=` view in place of a table this
-    * package's own run wrote at that name (name_view.ts): mark, on every
-    * other run, the entries naming that table there superseded
-    * (SUPERSEDED_TABLES_KEY). The table is gone, so no reader may serve or
-    * reuse it again; the dropper retires those entries when their run goes
-    * (heldByOwnNameView). Matched exactly: the same name, connection and
-    * destination. Best-effort: a mark that fails is logged.
-    */
-   async markReplacedByView(
-      environmentId: string,
-      packageName: string,
-      id: string,
-      tables: {
-         physicalTableName: string;
-         connectionName: string;
-         storageDestinationName?: string;
-      }[],
-   ): Promise<void> {
-      await this.markTablesGone(environmentId, packageName, id, tables);
-   }
-
-   /**
     * When an auto-run finds a table its package's records name held by
     * another package, or cannot tell who holds it (table_ownership.ts): mark,
     * on every run of the package but `id`, the entries naming that table
     * there superseded (SUPERSEDED_TABLES_KEY), so the package serves the
     * source live rather than another package's rows, and never reuses the
-    * entry. Matched exactly, as {@link markReplacedByView}. Best-effort: a
-    * mark that fails is logged.
+    * entry. Matched exactly: the same name, connection and destination.
+    * Best-effort: a mark that fails is logged.
     */
    async markHeldElsewhere(
       environmentId: string,

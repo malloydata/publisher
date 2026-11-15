@@ -1,8 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, it } from "bun:test";
-import * as sinon from "sinon";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import {
@@ -15,7 +14,7 @@ import {
    computePackageBuildPlan,
 } from "./build_plan_compile";
 import { setEventLoopYieldBudgetMsForTesting } from "../../event_loop_yield";
-import { Model } from "../../model";
+import * as modelRuntime from "../../model_runtime";
 
 /**
  * Compiling a package's build plan on the main thread (build_plan_compile.ts):
@@ -129,7 +128,7 @@ describe("compilePackageBuildPlan", () => {
       it("skips .malloynb notebooks without compiling them", async () => {
          // A notebook would throw on its `>>>` cell delimiter if compiled as a
          // flat model, aborting the whole package plan; it must be skipped.
-         const getModelRuntime = sinon.stub(Model, "getModelRuntime");
+         const getModelRuntime = spyOn(modelRuntime, "createModelRuntime");
          try {
             const pkg = {
                getModelPaths: () => ["notes.malloynb"],
@@ -141,15 +140,15 @@ describe("compilePackageBuildPlan", () => {
             const compiled = await compilePackageBuildPlan(pkg);
 
             expect(compiled.builds).toEqual([]);
-            expect(getModelRuntime.called).toBe(false);
+            expect(getModelRuntime).not.toHaveBeenCalled();
          } finally {
-            getModelRuntime.restore();
+            getModelRuntime.mockRestore();
          }
       });
    });
 
    it("stops on a cancel that lands while it yields, before compiling the next model", async () => {
-      const getModelRuntime = sinon.stub(Model, "getModelRuntime");
+      const getModelRuntime = spyOn(modelRuntime, "createModelRuntime");
       // Yield at every step, so the first model's yield is a real turn.
       const budget = setEventLoopYieldBudgetMsForTesting(0);
       try {
@@ -166,10 +165,10 @@ describe("compilePackageBuildPlan", () => {
          await expect(
             compilePackageBuildPlan(pkg, controller.signal),
          ).rejects.toThrow("Build cancelled");
-         expect(getModelRuntime.called).toBe(false);
+         expect(getModelRuntime).not.toHaveBeenCalled();
       } finally {
          setEventLoopYieldBudgetMsForTesting(budget);
-         getModelRuntime.restore();
+         getModelRuntime.mockRestore();
       }
    });
 
@@ -214,19 +213,20 @@ describe("compilePackageBuildPlan", () => {
             unbuildable: [],
          };
       };
-      const getModelRuntime = sinon
-         .stub(Model, "getModelRuntime")
-         .callsFake((async (_path: unknown, modelPath: unknown) => ({
-            runtime: {
-               loadModel: () => ({
-                  getModel: async () => models[modelPath as string],
-               }),
-               getBuildTargets,
-            },
-            modelURL: new URL(`file:///${modelPath}`),
-            importBaseURL: new URL("file:///"),
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         })) as any);
+      const getModelRuntime = spyOn(
+         modelRuntime,
+         "createModelRuntime",
+      ).mockImplementation((async (_path: unknown, modelPath: unknown) => ({
+         runtime: {
+            loadModel: () => ({
+               getModel: async () => models[modelPath as string],
+            }),
+            getBuildTargets,
+         },
+         modelURL: new URL(`file:///${modelPath}`),
+         importBaseURL: new URL("file:///"),
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      })) as any);
       try {
          const pkg = {
             getModelPaths: () => ["base.malloy", "agg.malloy"],
@@ -242,14 +242,14 @@ describe("compilePackageBuildPlan", () => {
          expect(compiled.builds).toHaveLength(1);
          expect(compiled.builds[0].order).toEqual(["daily@agg"]);
       } finally {
-         getModelRuntime.restore();
+         getModelRuntime.mockRestore();
       }
    });
 });
 
 // Real-compiler coverage of `compilePackageBuildPlan`'s gate-classification
 // wiring, over an actual temp-dir package (like `tests/component/query_boundary.component.spec.ts`'s
-// `makeMalloyConfig` pattern), rather than the stubbed `Model.getModelRuntime`
+// `makeMalloyConfig` pattern), rather than the stubbed `createModelRuntime`
 // above. `classifyPersistSourceGate` (`classifyPersistSourceGate.spec.ts`) is
 // otherwise only ever called directly; nothing else asserts that
 // `compilePackageBuildPlan`'s two call sites (the ordinary persist-source loop
@@ -346,7 +346,7 @@ source: gated is base -> { select: org_id }
          // no group to reject, `attributed: true` because both the deep and
          // no-join walks find nothing. This is still a real assertion, not a
          // vacuous one — if the rollup branch classified against the wrong
-         // model/materializer pair (see `preaggregation_compile.ts:105-107`)
+         // model/materializer pair (see `text/generated_files.ts`)
          // or degraded to blanket refusal, this would come back `rejected`.
          const pkg =
             await packages.create(`##! experimental { persistence composite_sources }

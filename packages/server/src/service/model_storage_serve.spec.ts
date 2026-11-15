@@ -17,7 +17,7 @@ import {
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import { Model } from "./model";
-import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import type { Binding } from "./materialization/domain/binding";
 import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
 import {
@@ -50,7 +50,9 @@ let lastFiles: ServedCopyFiles | undefined;
 const sourceIDIn = (name: string, file: string) =>
    `${name}@${lastFiles!.urlOf(file)}`;
 const QUERY = "run: X -> { aggregate: t is total.sum() }";
-const BINDING: ServeBinding = {
+const BINDING: Binding = {
+   kind: "persist",
+   tier: "storage",
    sourceName: "X",
    destinationName: "duckdb",
    virtualHandle: "h",
@@ -178,6 +180,8 @@ describe("storage= serve routing (end-to-end)", () => {
       model.setServeBindings([
          BINDING,
          {
+            kind: "persist",
+            tier: "storage",
             sourceName: "OtherModelSource", // not defined in this model
             destinationName: "duckdb",
             virtualHandle: "h2",

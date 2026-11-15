@@ -84,6 +84,60 @@ Concretely:
   deployed on your own origin. Publisher does not scan, sandbox, or vet them.
   Package-authored skill and agent text is served unauthenticated over MCP and REST too, bounded
   by the realpath rule (nothing that resolves outside the package) and the per-file size caps.
+- **A package's Malloy reads only its own package's files.** The same realpath rule bounds every
+  file the compiler reads for a package's models (an `import`, a `.malloynb`, a data-styles
+  file) on every compile: the load and its worker, a reload, `/compile` and MCP `compile_model`
+  at every scope, the build plan, and the generated build and served-copy models. A `file:` URL
+  is read only when its realpath is the package root or inside it. For a versioned package the
+  root is the version's own directory, so a version cannot read its siblings or the directory
+  that holds them. Both sides are resolved, so a package mounted as a symlink (watch mode) reads
+  its own files and a `../` between the package's own directories still works. A `../` that
+  climbs past the root, an absolute path, a symlink inside the package that leads out of it, and
+  any scheme but `file:` are refused. The refusal is one fixed message, "imports must stay inside
+  the package", with no path in it and the same whether or not the target exists, so an import
+  cannot probe the server's disk. A path outside the root as given and its realpath is refused
+  before the filesystem is asked about it. A model or notebook file that is itself a symlink
+  out of the package, dangling or not, is refused the same way, as a compile error rather than
+  an outage. The walk that lists a package's files does not descend into a directory link that
+  leads out. A model's saved text, read back for a report, a lint or `/compile` append, goes
+  through the same reader; text the served copy and the chained build read back from a compiled
+  model is read only from the files that model compiled from, and the chained build follows the
+  imports the compile resolved, never text that merely looks like an import. Virtual files (a request's overlay, `/compile`'s `__compile_check.malloy`, the
+  generated companions) are served from memory before the disk is asked. This bounds the
+  compiler, not the query: SQL a model runs through DuckDB (`read_text`, `read_blob`,
+  `read_csv`, `read_parquet`) reaches the filesystem through the connection and is not confined
+  by this rule (see gap 6), which remains the larger open hole for a package author.
+- **A package's `publisher.json` is read and written only as a file inside the package.** A
+  manifest that is a link out of the package, to anything or to nothing, a directory, or a file
+  Publisher cannot read, gets one answer, that the manifest does not exist, and none of what it
+  leads to is echoed: an invalid manifest's error names the kind of value, never the value or
+  the parser's quote of it. The versioned publish reads the declared version the same way. A
+  PATCH never writes through a link: a `publisher.json` that leads outside the package is refused
+  with 400, and any other is replaced through a temporary file and a rename, so a link (one
+  inside the package, or one that appears in between) is replaced by the file rather than
+  followed. An update that changes nothing in the manifest leaves it alone. A report write (`PUT …/models/{path}`) onto a link
+  planted at the file, or onto a dangling link on the way to it, is refused with the answer a
+  link out of the package gets, before anything about where it leads is looked at.
+- **A copied package keeps its links as written.** Every copy of a package tree (an install
+  from a local location, an environment's packages at boot) copies a symlink verbatim, so a
+  relative link inside the package still leads inside the copy, and is served, rather than
+  being rewritten to an absolute path back into the source, which the rule above refuses.
+- **Where a link leads is decided as the kernel decides it.** A path that does not resolve is
+  walked one component at a time, and a `..` after a symlinked directory steps to the parent of
+  that link's real target, not to the parent its spelling suggests. So a link whose text climbs
+  back through another link is judged by where opening it would really go. The walk starts at
+  the package's real root and never looks at a path outside the package: a step into a directory
+  that is neither inside the package nor an ancestor of it is refused before it is looked at, so
+  a path that goes out and comes back, through a directory that exists or one that does not,
+  gets the same refusal, and a target outside the package that does not exist is refused exactly
+  like one that does. Every lookup Publisher makes through a path a package author controls uses this
+  walk: model and notebook reads, the package listing and its data probe, `publisher.json`,
+  the content hash, the retrieval prompt files, package skills and agent skills and their
+  assets, the report write path, and the files of an HTML data app. When the walk stops at a
+  missing directory, only that point and the next name are opened, never the rest of the
+  spelled path, so a directory appearing there afterwards cannot carry the open out. (A symlink
+  appearing there, or at a component already checked, between the check and the open still
+  could; only someone changing the served tree at runtime can arrange that.)
 - **Registering a package is an operator action.** Packages come from `publisher.config.json` or a
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker
@@ -210,7 +264,12 @@ same origin as the REST API. The consequences follow from that and are all inten
 - The only CSP on these documents is `frame-ancestors`. There is no `script-src`, so a page may
   load and run anything, including third-party scripts.
 - The routes are unauthenticated, and only `public/` is reachable. Path traversal is blocked
-  lexically and again through `realpath`, and a symlink escaping the directory returns 403.
+  lexically and again by the package's own path walk, which never looks outside the package.
+  `public/` itself is resolved against the package root: a `public/` that is a link out of the
+  package serves and lists nothing (403), whatever it leads to, while one that links inside the
+  package (`public -> web`) serves. A file in it must resolve inside the real `public/`: a
+  symlink escaping the directory returns 403 whether or not its target exists, and a page
+  outside it is never opened, not even for its `<title>`.
 
 **Reports carry no author-written JavaScript file.** A report (a tagged `.malloy`, of either
 layout, or a legacy `.malloynb`) is Malloy, markdown and renderer tags. It is declarative, which

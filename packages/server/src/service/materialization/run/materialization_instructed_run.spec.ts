@@ -11,7 +11,7 @@ import {
    MaterializationEligibilityError,
    BadRequestError,
 } from "../../../errors";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import {
    compiledWith,
    fakeSource,
@@ -282,7 +282,7 @@ describe("executeInstructedBuild", () => {
       ).toContain("Permission denied while writing to dataset analytics");
    });
 
-   it("refuses a host-instructed rollup over a stored base with its reason, not a chained-build error (#6293)", async () => {
+   it("gates a host-instructed rollup over a stored base as any storage rollup, never for its base being stored", async () => {
       const runSQL = sinon.stub().resolves();
       const orders = fakeSource({
          name: "orders",
@@ -309,6 +309,7 @@ describe("executeInstructedBuild", () => {
          ]),
          preaggregatePlans: {
             orders__preagg__category: {
+               variant: true,
                baseSourceName: "orders",
                baseSourceID: "orders",
                grainDimensions: ["category"],
@@ -316,7 +317,8 @@ describe("executeInstructedBuild", () => {
             },
          },
       };
-      // Only the rollup instructed: refused, so the run has nothing to build.
+      // Only the rollup instructed, with no destination: refused for that,
+      // as a storage rollup over any base is, so the run has nothing to build.
       const err = await callExecute(
          compiled,
          [
@@ -332,7 +334,8 @@ describe("executeInstructedBuild", () => {
          () => undefined,
          (e: unknown) => e as Error,
       );
-      expect(err?.message).toContain("cannot build or serve yet");
+      expect(err?.message).toContain("instructed with no storage destination");
+      expect(err?.message).not.toContain("cannot build or serve yet");
       expect(runSQL.called).toBe(false);
    });
 
@@ -1005,7 +1008,10 @@ describe("executeInstructedBuild", () => {
     * than the model declares, which is the case `persistenceCollisionWarnings`
     * cannot see at load.
     */
-   function collidingBuild(runSQL: sinon.SinonStub) {
+   function collidingBuild(
+      runSQL: sinon.SinonStub,
+      names: [string, string] = ["rollup", "rollup"],
+   ) {
       const connection = { runSQL } as unknown as MalloyConnection;
       const a = fakeSource({
          name: "a",
@@ -1027,13 +1033,13 @@ describe("executeInstructedBuild", () => {
             {
                sourceEntityId: "baaaaaaaaaaaaaa",
                materializedTableId: "mt-a",
-               physicalTableName: "rollup",
+               physicalTableName: names[0],
                realization: "COPY",
             },
             {
                sourceEntityId: "bbbbbbbbbbbbbbb",
                materializedTableId: "mt-b",
-               physicalTableName: "rollup",
+               physicalTableName: names[1],
                realization: "COPY",
             },
          ],
@@ -1068,6 +1074,30 @@ describe("executeInstructedBuild", () => {
          restore();
          warn.restore();
       }
+   });
+
+   it.each([[["main.rollup", "rollup"]], [["rollup", "main.rollup"]]] as [
+      [string, string],
+   ][])(
+      "refuses two definitions on %p: a name with the default schema and one without it are one table",
+      async (names) => {
+         const runSQL = sinon.stub().resolves();
+         const err = await collidingBuild(runSQL, names).catch(
+            (e: unknown) => e,
+         );
+         expect(String((err as Error)?.message)).toContain(
+            "both materialize into table",
+         );
+         expect(createsFrom(runSQL)).toEqual([]);
+      },
+   );
+
+   it("builds two definitions in two named schemas, which are two tables", async () => {
+      const runSQL = sinon.stub().resolves();
+      await collidingBuild(runSQL, ["s1.rollup", "s2.rollup"]);
+      expect(
+         createsFrom(runSQL).filter((s) => s.includes("rollup")),
+      ).toHaveLength(2);
    });
 
    it("builds only the last of several same-address instructions with no sourceID", async () => {

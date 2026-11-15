@@ -17,8 +17,8 @@
  * rewriter is checked against the same scenarios when it lands (phase 3).
  */
 
+import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect } from "bun:test";
-import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import {
@@ -33,10 +33,10 @@ import {
    parentKeyNeedsOf,
    storedKeyChecksOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
-import { SourceMap } from "../../../src/service/materialization/plan/source_map";
+import { SourceMap } from "../../../src/service/materialization/text/source_map";
 import {
+   pairLeafKeyChecksOf,
    runRollupKeyCheck,
-   storedKeyCheckSql,
 } from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
@@ -44,11 +44,18 @@ import {
    extensionOverStoredModel,
    type MaterializePlan,
 } from "../../../src/service/materialization/plan/build_file_generator";
-import { planChainedDownstream } from "../../../src/service/materialization/run/materialization_build_session";
-import { storageTablePath } from "../../../src/service/materialization/run/storage_table_path";
+import {
+   oneFileModel,
+   planChainedDownstream,
+} from "../../../src/service/materialization/run/materialization_build_session";
+import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
-import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
+import {
+   deriveColocatedServeBindings,
+   kindFromPlan,
+} from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
+import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -74,14 +81,17 @@ import {
    compilerBuildId,
    presentAs,
 } from "../../../src/service/materialization/plan/addressing";
+import { buildVirtualMap } from "../../../src/service/materialization/serve/bindings";
 import {
-   buildVirtualMap,
    deriveServeBindings,
-   duckdbTypeToMalloy,
+   makeSnapshot,
+   type Binding,
+} from "../../../src/service/materialization/domain/binding";
+import {
    groupAliasesByName,
    planSourceIds,
-   type ServeBinding,
-} from "../../../src/service/materialization/serve/materialization_serve_transform";
+} from "../../../src/service/materialization/domain/source_aliases";
+import { declarableColumns } from "../../../src/service/materialization/stored_column_types";
 import {
    castToDeclaredTypes,
    persistSourceDeclaredColumns,
@@ -90,7 +100,7 @@ import {
 import type {
    KeyUniqueness,
    ManifestEntry,
-} from "../../../src/service/materialization/types";
+} from "../../../src/service/materialization/domain/types";
 import { Model } from "../../../src/service/model";
 import type { HydrationRuntime } from "../../../src/service/model_runtime";
 import { malloyGivenToApi, type MalloyGiven } from "../../../src/service/given";
@@ -169,13 +179,21 @@ export interface R4Scenario {
     */
    preaggregate?: boolean;
    /**
-    * With {@link preaggregate}: run each colocated rollup's key check (known
+    * With {@link preaggregate}: run each rollup's key check (known
     * limitation 29) once its table is built, as an auto-run does, and bind
     * what it found. `false` binds no check, as for a table a host's manifest
     * binds or a build that could not check; `"unique"` binds a pass without
     * running the check, as a check over earlier rows would have left it.
     */
    rollupKeyChecks?: boolean | "unique";
+   /**
+    * With {@link materialize}: run each pair table's leaf key check (known
+    * limitation 40) once its table is built, on the source's connection, as
+    * an auto-run does, and bind what it found. `false` binds no check, as
+    * for a table a host's manifest binds or a build that could not check.
+    * Default true.
+    */
+   pairLeafKeyChecks?: boolean;
    /**
     * Also build the generated `#@ persist` view sources (`<src>__<view>__view`,
     * in the persisted-view companion), as a package with PUBLISHER_MATERIALIZE
@@ -221,7 +239,7 @@ export interface R4Run {
 
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
-   bindings: ServeBinding[];
+   bindings: Binding[];
    /** Each built source's table id (its content address in the plan), by name. */
    tableIds: Record<string, string>;
    /**
@@ -262,7 +280,7 @@ export interface R4Fixture {
     * serve shape, so the next served query compiles it again. Kept apart from
     * {@link runAsIs} so a benchmark can do it outside its stopwatch.
     */
-   setBindings(bindings: ServeBinding[]): void;
+   setBindings(bindings: Binding[]): void;
    /** One query under the bindings already set, with nothing around it. */
    runAsIs(
       malloy: string,
@@ -284,6 +302,13 @@ export interface R4Fixture {
    setClock(at: string): void;
    /** Why the persisted-view planner refused a view, one sentence each. */
    viewRefusals: string[];
+   /**
+    * With {@link R4Scenario.preaggregate}: each `#(preaggregate)` declaration
+    * the rollup planner refused, by its code and base source.
+    */
+   rollupRefusals: { code: string; sourceName: string }[];
+   /** For a `#(materialize)` scenario: each source's plan, by its name. */
+   materializePlans: Record<string, MaterializePlan>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
       sql: (table: (sourceName: string) => string) => string,
@@ -441,46 +466,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          ]),
       ),
    );
-   let runtime = new Runtime({ urlReader, connections: authorConnections });
-   let materializer = runtime.loadModel(new URL(urlOf(entry)), {
+   const runtime = new Runtime({ urlReader, connections: authorConnections });
+   const materializer = runtime.loadModel(new URL(urlOf(entry)), {
       importBaseURL: new URL(root),
    });
-   // A model joining sources across origin connections does not compile;
-   // with the materialize switch it loads from its build view (#6982), as a
-   // package load does.
-   let buildView: ReadonlyMap<string, string> = new Map();
-   let compiled: Awaited<ReturnType<typeof materializer.getModel>>;
-   try {
-      compiled = await materializer.getModel();
-   } catch (first) {
-      const view = await loadLeavingOutCrossConnectionJoins({
-         firstError: first,
-         readText: (url) =>
-            Object.entries(scenario.files).find(([f]) => urlOf(f) === url)?.[1],
-         load: async (overlay) => {
-            const rt = new Runtime({
-               urlReader: new InMemoryURLReader(
-                  new Map([
-                     ...Object.entries(scenario.files).map(
-                        ([file, text]) => [urlOf(file), text] as const,
-                     ),
-                     ...overlay,
-                  ]),
-               ),
-               connections: authorConnections,
-            });
-            const mm = rt.loadModel(new URL(urlOf(entry)), {
-               importBaseURL: new URL(root),
-            });
-            return { rt, mm, model: await mm.getModel() };
-         },
-      });
-      if (!view) throw first;
-      runtime = view.result.rt;
-      materializer = view.result.mm;
-      compiled = view.result.model;
-      buildView = view.overlay;
-   }
+   const compiled = await materializer.getModel();
 
    // Build each persist source with its real SQL.
    const entries: Record<string, ManifestEntry> = {};
@@ -500,7 +490,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                        ...Object.entries(scenario.files).map(
                           ([file, text]) => [urlOf(file), text] as const,
                        ),
-                       ...buildView,
                        ...overlay,
                     ]),
                  ),
@@ -665,6 +654,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // `#@ persist` views (phase 4, P14): their generated build sources keep
    // their own sourceIDs, as the package's build plan keeps them.
    const viewRefusals: string[] = [];
+   const viewBuildSourceIDs = new Set<string>();
    if (scenario.persistedViews) {
       const views = await tryCompilePersistedViewCompanion({
          packagePath: dir,
@@ -678,7 +668,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                      ...Object.entries(scenario.files).map(
                         ([file, text]) => [urlOf(file), text] as const,
                      ),
-                     ...buildView,
                      ...overlay,
                   ]),
                ),
@@ -695,6 +684,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const names = new Set(
             views.generated.plans.map((p) => p.buildSourceName),
          );
+         for (const p of views.generated.plans) {
+            viewBuildSourceIDs.add(p.buildSourceID);
+         }
          for (const target of targets.connections.flatMap((c) => c.targets)) {
             if (target.readsGivens) {
                for (const s of target.sources) {
@@ -759,8 +751,29 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const storedBuildSQL: Record<string, string> = {};
    const colocatedMaterializeEntries: Record<
       string,
-      { tableName: string; nativeSchema?: { name: string; type: string }[] }
+      {
+         tableName: string;
+         schema?: { name: string; type: string }[];
+         nativeSchema?: { name: string; type: string }[];
+         keyUniqueness?: KeyUniqueness;
+      }
    > = {};
+   // A pair table's leaf key checks, run on the source's own connection once
+   // its table is built, as an auto-run runs them: by the leaf's sourceID.
+   const pairLeafKeys = async (
+      source: (typeof sources)[number],
+   ): Promise<Record<string, boolean> | undefined> => {
+      if (scenario.pairLeafKeyChecks === false) return undefined;
+      const checks = pairLeafKeyChecksOf(materializePlans[source.sourceID]);
+      if (checks.length === 0) return undefined;
+      const on = connections.get(source.connectionName) ?? duckdb;
+      const out: Record<string, boolean> = {};
+      for (const check of checks) {
+         const record = await runRollupKeyCheck(check, on, "pair");
+         if (record) out[check.sourceID] = record.unique;
+      }
+      return out;
+   };
    const builtSQL: Record<string, string> = {};
    const checkFailures: Record<string, string> = {};
    // The stored-table key checks a package's build plan asks for.
@@ -813,9 +826,20 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             dialect: builder.dialectName,
             sourceName: source.name,
          });
+         // And its columns, read back as a colocated build reads them
+         // (colocated_build_strategy.ts), which its binding declares.
+         const schema = await capturedColocatedSchema({
+            connection: builder,
+            physicalTableName: table,
+            dialect: builder.dialectName,
+            sourceName: source.name,
+         });
+         const leafKeys = await pairLeafKeys(source);
          colocatedMaterializeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
+            ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
          };
          continue;
       }
@@ -845,19 +869,23 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             type: c.type as string,
          }));
          const planned = await planChainedDownstream({
-            transientModel: extensionOverStoredModel({
-               plan: materializePlans[source.sourceID],
-               chain: over.overStored,
-               connectionName: DESTINATION,
-               virtualHandle: parentEntry.sourceEntityId,
-               columns: schema.map((c) => ({
-                  name: c.name,
-                  type: duckdbTypeToMalloy(c.type),
-               })),
-            }),
+            model: oneFileModel(
+               extensionOverStoredModel({
+                  plan: materializePlans[source.sourceID],
+                  chain: over.overStored,
+                  connectionName: DESTINATION,
+                  virtualHandle: parentEntry.sourceEntityId,
+                  columns: declarableColumns(schema).declared.map((c) => ({
+                     name: c.name,
+                     type: c.malloyType,
+                  })),
+               }),
+            ),
             downstreamName: materializePlans[source.sourceID].buildSourceName,
             virtualMap: buildVirtualMap([
                {
+                  kind: "persist",
+                  tier: "storage",
                   sourceName: over.overStored.parentBuildSourceName,
                   destinationName: DESTINATION,
                   virtualHandle: parentEntry.sourceEntityId,
@@ -918,6 +946,14 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ? { origin: "preaggregate" }
             : {}),
       } as ManifestEntry;
+      const leafKeys = await pairLeafKeys(source);
+      if (leafKeys) {
+         (
+            entries[`h${i}`] as ManifestEntry & {
+               keyUniqueness?: KeyUniqueness;
+            }
+         ).keyUniqueness = { parentKeys: leafKeys };
+      }
       // A stored source's primary key, checked over its table as its build
       // checks it, when a storage rollup is read through a join on it.
       const storedKey = storedKeyChecks[source.sourceID];
@@ -942,12 +978,14 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                     table,
                  );
          if (record) {
-            (
-               entries[`h${i}`] as ManifestEntry & {
-                  keyUniqueness?: KeyUniqueness;
-               }
-            ).keyUniqueness = {
-               parentKeys: { [source.sourceID]: record.unique },
+            const entry = entries[`h${i}`] as ManifestEntry & {
+               keyUniqueness?: KeyUniqueness;
+            };
+            entry.keyUniqueness = {
+               parentKeys: {
+                  ...entry.keyUniqueness?.parentKeys,
+                  [source.sourceID]: record.unique,
+               },
             };
          }
       }
@@ -978,15 +1016,55 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             parentKeys: { ...entry.keyUniqueness?.parentKeys, ...parentKeys },
          };
       }
+      // A storage rollup's own key check (known limitation 29), run on its
+      // base's connection over the rows its build reads, as a colocated
+      // one's is, when a join_one is keyed on its grain.
+      const rollupKey = rollupOrigin.has(source.sourceID)
+         ? rollupPlanByName.get(source.name)?.keyCheck
+         : undefined;
+      if (
+         rollupKey &&
+         checks !== false &&
+         joinOneKeys.has(
+            joinOneKey(
+               rollupPlanByName.get(source.name)?.baseSourceID ?? "",
+               rollupKey.keyColumn,
+            ),
+         )
+      ) {
+         const record =
+            checks === "unique"
+               ? { keyColumn: rollupKey.keyColumn, unique: true }
+               : await runRollupKeyCheck(
+                    rollupKey,
+                    connections.get(source.connectionName) ?? duckdb,
+                    table,
+                 );
+         if (record) {
+            const entry = entries[`h${i}`] as ManifestEntry & {
+               keyUniqueness?: KeyUniqueness;
+            };
+            entry.keyUniqueness = {
+               ...entry.keyUniqueness,
+               keyColumn: record.keyColumn,
+               unique: record.unique,
+            };
+         }
+      }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
+   // Each kind read off the plan, as the package's bind reads it.
+   const kinds = {
+      materializeSourceIDs: new Set(Object.keys(materializePlans)),
+      viewBuildSourceIDs,
+   };
    const bindings = [
       ...deriveServeBindings(
          entries,
          groupAliasesByName(Object.values(plan)),
          undefined,
          planSourceIds(plan),
-      ),
+      ).map((b) => ({ ...b, kind: kindFromPlan(b, kinds) })),
       // The colocated `#(materialize)` tables, through the package's own
       // derivation.
       ...deriveColocatedServeBindings({
@@ -1013,10 +1091,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // The manifest is passed only on a served run, so a live run reads live.
    let manifestOn = false;
    const policy = ModelPolicy.fixed({
-      freshBuildManifestEntries: () =>
-         manifestOn && Object.keys(colocatedEntries).length > 0
-            ? colocatedEntries
-            : undefined,
+      snapshot: () => makeSnapshot([], manifestOn ? colocatedEntries : {}),
       materializedTables: {
          planned: new Map([
             ...sources.map(
@@ -1120,7 +1195,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          (e) => [e.sourceName, e.physicalTableName] as const,
       ),
       ...bindings
-         .filter((b) => b.colocated)
+         .filter((b) => b.tier === "colocated")
          .map((b) => [b.sourceName, b.tablePath] as const),
    ]);
    return {
@@ -1137,6 +1212,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       duckdb,
       model,
       viewRefusals,
+      rollupRefusals: (rollups?.refused ?? []).map((r) => ({
+         code: r.code,
+         sourceName: r.sourceName,
+      })),
+      materializePlans: Object.fromEntries(
+         Object.values(materializePlans).map((p) => [p.sourceName, p]),
+      ),
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;
@@ -1244,22 +1326,25 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 
 /**
  * Whether a run over a pair table (`inline=` on a join_many) was served by the
- * served copy, as it should be: since Malloy 0.0.438 (malloydata/malloy#3208)
+ * served copy, as it should be. Since Malloy 0.0.438 (malloydata/malloy#3208)
  * live counts a parent with no joined row as none, which the pair table's
- * null-extended row for that parent cannot be told apart from, so a query
- * that counts through the inlined path (`segments.count()`, or one of the
- * fixture's measures that does, named in `counts`) is answered live. Rows are
- * compared by the caller.
+ * null-extended row for that parent cannot be told apart from by the record
+ * alone. The served copy re-declares a measure that counts through the path
+ * over the rows where the leaf's stored key is not null, so such a measure is
+ * served (known limitation 40, narrowed); a count written in the query
+ * (`segments.count()`), or in a view or measure the served copy cannot
+ * re-declare (named in `live`), is answered live. Rows are compared by the
+ * caller.
  */
 export function expectPairServedVia(
    run: R4Run,
-   counts: readonly string[],
+   live: readonly string[],
    servedHere = true,
 ): void {
    const malloy = run.malloy ?? "";
    const countsThroughPath =
       /\.count\(\)/.test(malloy) ||
-      counts.some((n) => new RegExp(`\\b${n}\\b`).test(malloy));
+      live.some((n) => new RegExp(`\\b${n}\\b`).test(malloy));
    expect(run.servedVia).toBe(
       servedHere && !countsThroughPath ? "served_copy" : undefined,
    );

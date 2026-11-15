@@ -88,6 +88,11 @@ import {
 } from "./governed_runnable";
 import { derivedStructsReachable } from "./ir/source_graph";
 import {
+   arrayQueryJoinRefusal,
+   arrayQueryJoins,
+   governsAccess,
+} from "./ir/array_query";
+import {
    assertFilterDimensionBindsToDeclaringSource,
    assertGraftedGateBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
@@ -284,10 +289,8 @@ export interface GovernRequest {
       /**
        * `"served_copy"` when the router answered from the served copy (the
        * author's text re-rooted on stored tables), so the ceiling is read on
-       * {@link CompiledQuery.runnable}, the compile that answers: the live
-       * compile is a cross-connection model's build view, which lacks the
-       * joins it leaves out, so a query through one does not compile there.
-       * The live compile is still checked whenever it compiles. Any other
+       * {@link CompiledQuery.runnable}, the compile that answers. The live
+       * compile is still checked whenever it compiles. Any other
        * routed shape carries no annotations to read a ceiling from, so it
        * stays on the live compile.
        */
@@ -704,6 +707,8 @@ export class QueryGovernor {
             );
          }
       }
+      // The compile that runs: live, or the served copy when it answers.
+      await this.assertNoArrayQueryJoin(runnable);
       if (request.ceiling && !request.bypassAuthorize) {
          const source = await request.ceiling.source(runnable);
          for (const target of await this.ceilingTargets(
@@ -1957,10 +1962,9 @@ export class QueryGovernor {
     * served copy answered. When it did, the served copy's own compile (the
     * routed runnable, before any graft, as the live check reads the live
     * compile before any graft), and live as well whenever live compiles: a
-    * live compile that does not compile is a cross-connection model's build
-    * view without the join the query goes through, which has nothing to
-    * read, and is never what answers. A served-copy claim with no separate
-    * routed compile is not one: the live compile is what runs, so it is read.
+    * live compile that does not compile has nothing to read, and is never
+    * what answers. A served-copy claim with no separate routed compile is
+    * not one: the live compile is what runs, so it is read.
     */
    private async ceilingTargets(
       ceiling: NonNullable<GovernRequest["ceiling"]>,
@@ -1988,6 +1992,35 @@ export class QueryGovernor {
    }
 
    /**
+    * Refuse a query that joins a source inside a query on an array, in a
+    * model that governs access: no check here can follow what that join
+    * reads, so a gate or a `#(carries)` it reaches would pass unseen and the
+    * access record would miss it. A model's own such join refuses its load
+    * (`Package.formatArrayQueryJoins`), so this is one the caller wrote, in
+    * the query or in a source it declares. After the gates, so a caller a
+    * gate refuses is refused as one.
+    */
+   private async assertNoArrayQueryJoin(
+      runnable: QueryMaterializer,
+   ): Promise<void> {
+      if (!governsAccess(this.modelDef)) return;
+      let prepared: Awaited<ReturnType<typeof readPreparedQuery>>;
+      try {
+         prepared = await readPreparedQuery(runnable);
+      } catch {
+         // No query to read (a compile with no final `run:`): nothing runs.
+         return;
+      }
+      const joins = [
+         prepared.query,
+         resolveStructRef(prepared.structRef, prepared.modelDef),
+         prepared.compositeResolvedSourceDef,
+      ].flatMap((root) => arrayQueryJoins(root));
+      const refusal = arrayQueryJoinRefusal("This query", joins);
+      if (refusal) throw new BadRequestError(refusal);
+   }
+
+   /**
     * Refuse a query whose entry carries a `#(carries)` ceiling when it reads a
     * field past it, so a source's list holds for what a caller reads and not
     * only for what the author declared. The entry's ceiling is read off the
@@ -2002,9 +2035,8 @@ export class QueryGovernor {
       givens: Record<string, GivenValue> | undefined,
       region: CallerRegion | undefined,
       /**
-       * `live` is the served copy's compile: its own model is the one read
-       * (the build view's lacks what it left out), and a ceiling declared
-       * only there still counts.
+       * `live` is the served copy's compile: its own model is the one read,
+       * and a ceiling declared only there still counts.
        */
       servedCopy = false,
    ): Promise<void> {
@@ -2030,7 +2062,7 @@ export class QueryGovernor {
               )
             : [];
          // The served copy's compile without its own model cannot be read
-         // against anything: refused rather than read against the build view.
+         // against anything: refused rather than read against live's.
          refusal =
             servedCopy && !modelDef
                ? "this query's source cannot be read completely"

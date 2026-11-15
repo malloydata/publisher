@@ -5,7 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
-import { BuildInstruction, LedgerEntry } from "../types";
+import { BuildInstruction, LedgerEntry } from "../domain/types";
 import { indexCallerLedger } from "./incremental_build";
 import {
    compiledWith,
@@ -382,7 +382,6 @@ describe("build failure logs never carry the driver's message", () => {
             "t",
             `SELECT 'x${ROW_VALUE}' AS flag`,
             { columns: [{ name: "flag", type: "boolean" }] },
-            [],
          );
          // The cast refused the value, so the warehouse's type is stored.
          expect(schema).toEqual([{ name: "flag", type: "VARCHAR" }]);

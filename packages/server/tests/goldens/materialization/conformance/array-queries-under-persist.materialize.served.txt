@@ -1,0 +1,32 @@
+// conformance: array queries under persist [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence array_queries }
+
+##! experimental { virtual_source }
+type: cart_rows__served is {
+   id::number,
+   g::string,
+   items::{ sku::string, price::number }[]
+}
+type: cart_totals__served is {
+   id::number,
+   g::string,
+   t::number
+}
+
+source: carts is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (1, 'a', [{'sku': 'x', 'price': 1.5}, {'sku': 'y', 'price': 2.0}]),
+    (2, 'b', [{'sku': 'x', 'price': 4.0}]),
+    (3, 'a', [])
+  ) AS t(id, g, items)
+""")
+
+#(materialize) storage="lake"
+source: cart_totals is __served_copy_alias_of_lake.virtual('b8c77013015fb5c71865cb71ce01dce1056f7ae465d383a91776c24f2ca6e286')::cart_totals__served extend {
+  measure: total is t.sum()
+}
+
+#(materialize) storage="lake"
+source: cart_rows is __served_copy_alias_of_lake.virtual('94337d64da6f769f74675d99ec9a24e277d11f5b4659313035fad98e3123a032')::cart_rows__served

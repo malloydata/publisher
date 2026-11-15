@@ -46,6 +46,7 @@ import {
    type Variant,
    VARIANTS,
 } from "./conformance/shapes";
+import { withoutDrillExpression } from "./conformance/drill_expression";
 import { rowDifference } from "./harness";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 
@@ -67,7 +68,7 @@ const TOLERANCES = {
    },
    "drill-metadata": {
       reason:
-         "the served copy's #(malloy) drill_expression differs from live's for a dimension it stores (its code is the stored column, or the definition, not live's)",
+         "the #(malloy) drill_expression differs from live's for a column read from a stored table (its code is the stored column, or the definition, not live's); every other #(malloy) key is compared",
    },
 } as const;
 type Tolerance = keyof typeof TOLERANCES;
@@ -80,7 +81,8 @@ const tolerated: Record<Tolerance, string[]> = {
 
 /**
  * A result type with the tolerated differences set aside, a nest's fields
- * included: every number's subtype, and every `#(malloy)` drill annotation.
+ * included: every number's subtype, and the `drill_expression` of every
+ * `#(malloy)` annotation.
  */
 function tolerantType(
    type: unknown,
@@ -89,16 +91,15 @@ function tolerantType(
 ): unknown {
    if (depth > 32 || type === null || typeof type !== "object") return type;
    if (Array.isArray(type)) {
-      return type
-         .filter(
-            (a) =>
-               !(
-                  tolerate.includes("drill-metadata") &&
-                  typeof (a as { value?: unknown })?.value === "string" &&
-                  isDrill((a as { value: string }).value)
-               ),
-         )
-         .map((t) => tolerantType(t, tolerate, depth + 1));
+      return type.map((a) =>
+         tolerate.includes("drill-metadata") &&
+         typeof (a as { value?: unknown })?.value === "string"
+            ? {
+                 ...(a as object),
+                 value: withoutDrillExpression((a as { value: string }).value),
+              }
+            : tolerantType(a, tolerate, depth + 1),
+      );
    }
    return Object.fromEntries(
       Object.entries(type as Record<string, unknown>)
@@ -109,11 +110,10 @@ function tolerantType(
    );
 }
 
-const isDrill = (a: string) => a.startsWith("#(malloy)");
-
 /**
  * The first difference in result metadata, or undefined. With tolerances,
- * a number's subtype and the `#(malloy)` drill annotations are not compared.
+ * a number's subtype and each `#(malloy)` annotation's `drill_expression`
+ * are not compared.
  */
 function fieldDifference(
    live: Answer,
@@ -128,11 +128,12 @@ function fieldDifference(
    const type = (f: WireField) => tolerantType(f.type, tolerate);
    const notes = (f: WireField) =>
       tolerate.includes("drill-metadata")
-         ? f.annotations.filter((n) => !isDrill(n))
+         ? f.annotations.map(withoutDrillExpression)
          : f.annotations;
    for (let i = 0; i < a.length; i++) {
       const pairs: [string, unknown, unknown][] = [
          ["name", a[i].name, b[i].name],
+         ["kind", a[i].kind, b[i].kind],
          ["type", type(a[i]), type(b[i])],
          ["annotations", notes(a[i]), notes(b[i])],
       ];
@@ -263,7 +264,7 @@ for (const shape of SHAPES) {
             // rollup leg's, under their v2 names) and at bind, so it gets a
             // package of its own, loaded, built and bound under it, by a
             // load pool spawned with it.
-            restore = withSwitch("on");
+            restore = withSwitch("on", shape.env);
             try {
                await freshLoadPool();
                const loader = await loadFixture({
@@ -276,13 +277,13 @@ for (const shape of SHAPES) {
                fixture = await loader.bind({ includeRollups: true });
                for (const on of SWITCHES.filter((s) => s !== "cutover")) {
                   restore();
-                  restore = withSwitch(on);
+                  restore = withSwitch(on, shape.env);
                   for (const q of shape.queries) {
                      served.set(key(q, on), await runIn(fixture, q));
                   }
                }
                restore();
-               restore = withSwitch("cutover");
+               restore = withSwitch("cutover", shape.env);
                await freshLoadPool();
                const cutoverLoader = await loadFixture({
                   ...DATA_FILES,

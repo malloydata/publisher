@@ -31,12 +31,11 @@
       }
     },
     "sourceModelPaths": {
-      "daily@<hammer>/tim/a.malloy": "b.malloy",
+      "daily@<hammer>/tim/a.malloy": "a.malloy",
       "weekly@<hammer>/tim/b.malloy": "b.malloy"
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -79,7 +78,7 @@
         "connectionName": "orders_pg",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "b.malloy",
+        "modelPath": "a.malloy",
         "name": "daily",
         "origin": "persist",
         "preaggregate": null,

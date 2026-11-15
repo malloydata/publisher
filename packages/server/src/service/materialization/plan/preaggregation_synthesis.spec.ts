@@ -13,8 +13,8 @@ import {
 import {
    planSourcePreaggregation,
    rollupSourceName,
-   type RollupPlan,
 } from "./preaggregation_synthesis";
+import type { RollupPlan } from "../domain/rollup_measures";
 import type { ValidatableSource } from "./preaggregation_validation";
 
 let connections: FixedConnectionMap;

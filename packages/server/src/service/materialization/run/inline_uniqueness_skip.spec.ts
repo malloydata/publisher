@@ -20,7 +20,7 @@ import { makeMaterialization } from "../../../test_helpers/materialization_test_
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import {
    INLINE_UNIQUENESS_KEY,
    UniquenessLedger,
@@ -130,7 +130,7 @@ async function scenario(model: string) {
    const builder = new SourceBuilder(async (request) => {
       const table = request.instruction.physicalTableName;
       await duckdb.runSQL(
-         `CREATE OR REPLACE TABLE ${table} AS ${request.publicBuildSQL}`,
+         `CREATE OR REPLACE TABLE ${table} AS ${request.storedBuildSQL}`,
       );
       return {
          sourceEntityId: request.contentSourceEntityId ?? "",

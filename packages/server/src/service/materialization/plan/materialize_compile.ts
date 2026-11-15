@@ -3,7 +3,7 @@
 
 /**
  * Compiles the generated `#(materialize)` build companion (see
- * build_file_generator.ts), as preaggregation_compile.ts compiles the rollup
+ * build_file_generator.ts), as rollup_compile.ts compiles the rollup
  * companion: the text is served from an overlay at a URL beside the author's
  * model, so its `import` resolves while it never shows up in
  * `getModelPaths()`, the API or the package's own compile, and cannot go stale
@@ -11,9 +11,13 @@
  */
 
 import {
+   hiddenAccess,
+   modelDefIfAny,
+   modelDefOf,
+} from "../../governance/ir/compiled_model";
+import {
    FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
+   type Runtime,
    type Connection,
    type Model as MalloyModel,
    type ModelMaterializer,
@@ -21,8 +25,11 @@ import {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
-import { omittedByID, omittedFromFile, type Omission } from "./omitted_sources";
-import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
+import type { Omission } from "../domain/omitted_sources";
+import {
+   keyCheckCompilerKey,
+   type KeyCheckCompiler,
+} from "../domain/key_check";
 import {
    buildCopyDeclarationAt,
    buildCopyName,
@@ -32,8 +39,6 @@ import {
    generatedNamesOf,
    generateBuildFiles,
    givenReadTerms,
-   hiddenAccess,
-   keptBasesInText,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
    planModelMaterialize,
@@ -45,8 +50,13 @@ import {
    type MaterializeRefusal,
    type StoredColumnType,
 } from "./build_file_generator";
-import type { TermUse } from "./persist_dynamic_terms";
-import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import type { TermUse } from "../domain/read_time_terms";
+import {
+   compileInMemory,
+   companionOmissions,
+   GeneratedFiles,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
 import { leftOutWindowTerms } from "./rolling_window";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import {
@@ -55,7 +65,7 @@ import {
    type ProbeCompiler,
 } from "../../probe_compiler";
 
-export interface GeneratedMaterialize {
+interface GeneratedMaterialize {
    /** The sources the generator planned. Never empty. */
    plans: MaterializePlan[];
    /** The compiled companion: its build targets are the generated sources. */
@@ -76,13 +86,16 @@ export interface GeneratedMaterialize {
     * table and is no build of its own.
     */
    generatedURLs: ReadonlySet<string>;
+   /**
+    * Each uniqueness check's compiler over a run's manifest, by
+    * {@link keyCheckCompilerKey}: compiled through the companion, which only
+    * this process holds.
+    */
+   checkCompilers: ReadonlyMap<string, KeyCheckCompiler>;
 }
 
 /** Where the generated companion for `modelPath` lives, as an absolute URL. */
-export function materializeCompanionURL(
-   packagePath: string,
-   modelPath: string,
-): URL {
+function materializeCompanionURL(packagePath: string, modelPath: string): URL {
    // pathToFileURL, not `file://${path}`: on Windows the path is `D:\…`, and
    // the overlay key must match the URL Malloy normalizes to.
    return pathToFileURL(
@@ -158,19 +171,13 @@ export async function tryCompileMaterializeCompanion(args: {
       refused.push(...planned.refused);
       plannedIDs = planned.plans.map((p) => p.sourceID);
       // The text the author's model was compiled from, through the reader
-      // the companion compiles with: a package's build view (joins across
-      // connections left out) or a worker's file map, not necessarily the
-      // file on disk, and the compiled locations the terms are found by are
+      // the companion compiles with: a worker's file map or an overlay, not
+      // necessarily the file on disk, and the compiled locations the terms are found by are
       // positions in that text. Read once.
+      const files = GeneratedFiles.over(args.getRuntime);
       let modelText: Promise<string> | undefined;
       const readModelText = () =>
-         (modelText ??= (async () => {
-            const { runtime } = await args.getRuntime(new Map());
-            const read = await runtime.urlReader.readURL(
-               pathToFileURL(modelFile),
-            );
-            return typeof read === "string" ? read : read.contents;
-         })());
+         (modelText ??= files.read(pathToFileURL(modelFile)));
       // A build copy compiled on its own, beside the author's model, so its
       // imports resolve as the author's do; never run. P3 reads which hidden
       // fields the copy lets the build select off it.
@@ -178,14 +185,12 @@ export async function tryCompileMaterializeCompanion(args: {
          const url = pathToFileURL(
             path.join(path.dirname(modelFile), fileName),
          );
-         const { runtime, importBaseURL } = await args.getRuntime(
+         const { model } = await files.compile(
+            url,
             new Map([[url.href, text]]),
          );
-         const model = await runtime
-            .loadModel(url, { importBaseURL })
-            .getModel();
          return {
-            contents: model._modelDef.contents as Record<string, unknown>,
+            contents: modelDefOf(model).contents as Record<string, unknown>,
             url: url.href,
          };
       };
@@ -313,18 +318,16 @@ export async function tryCompileMaterializeCompanion(args: {
       );
       return {
          refused,
-         omitted: plannedIDs
-            ? omittedByID(
-                 plannedIDs.filter(
-                    (id) => !refused.some((r) => r.sourceID === id),
-                 ),
-                 "materialize_companion_failed",
-              )
-            : omittedFromFile(
-                 pathToFileURL(modelFile).href,
-                 undefined,
-                 "materialize_companion_failed",
-              ),
+         omitted: companionOmissions(
+            "materialize",
+            plannedIDs
+               ? {
+                    sourceIDs: plannedIDs.filter(
+                       (id) => !refused.some((r) => r.sourceID === id),
+                    ),
+                 }
+               : { file: pathToFileURL(modelFile).href, names: undefined },
+         ),
       };
    }
 }
@@ -340,11 +343,11 @@ export async function tryCompileMaterializeCompanion(args: {
 function withStoredColumns(
    generated: GeneratedMaterialize,
 ): GeneratedMaterialize {
-   const contents = (
+   const contents = modelDefIfAny(
       generated.model as unknown as {
          _modelDef?: { contents?: Record<string, unknown> };
-      }
-   )._modelDef?.contents;
+      },
+   )?.contents;
    return {
       ...generated,
       plans: generated.plans.map((plan) => {
@@ -468,8 +471,9 @@ async function compileCompanion(
    for (const [name, level] of files.levels) {
       overlay.set(pathToFileURL(path.join(dir, name)).href, level);
    }
-   const { runtime, importBaseURL } = await args.getRuntime(overlay);
-   const materializer = runtime.loadModel(url, { importBaseURL });
+   const { runtime, materializer } = await GeneratedFiles.over(
+      args.getRuntime,
+   ).load(url, overlay);
    const copyOwners = new Map(
       [...used].map(
          ([sourceID, c]) =>
@@ -479,6 +483,7 @@ async function compileCompanion(
    const model = await materializer.getModel().catch((error: unknown) => {
       throw new CompanionCompileError(error, overlay, copyOwners);
    });
+   const checkCompilers = new Map<string, KeyCheckCompiler>();
    // The P8 checks' SQL, compiled now (never run here) so a build runs it
    // against the joined source's connection before it writes anything.
    // Each check can also be compiled again over a run's manifest, so a run
@@ -497,8 +502,8 @@ async function compileCompanion(
                   plan.sourceID,
                );
             });
-         registerUniquenessCheckCompiler(
-            check,
+         checkCompilers.set(
+            keyCheckCompilerKey(plan.sourceID, check.queryName),
             (buildManifest, connectionDigests) =>
                materializer
                   .loadQueryByName(check.queryName)
@@ -513,6 +518,7 @@ async function compileCompanion(
       runtime,
       text,
       generatedURLs: new Set(overlay.keys()),
+      checkCompilers,
       ...(used.size > 0
          ? {
               buildCopies: new Map(
@@ -551,27 +557,25 @@ async function storedChainsNotCompiling(
          );
          const handle = "stand_in";
          const url = "file:///materialize-stored-chain/m.malloy";
-         const runtime = new Runtime({
-            urlReader: new InMemoryURLReader(
-               new Map([
-                  [
-                     url,
-                     extensionOverStoredModel({
-                        plan,
-                        chain,
-                        connectionName: destination,
-                        virtualHandle: handle,
-                        columns,
-                     }),
-                  ],
-               ]),
-            ),
-            connections: new FixedConnectionMap(
+         const { runtime, model } = await compileInMemory(
+            new Map([
+               [
+                  url,
+                  extensionOverStoredModel({
+                     plan,
+                     chain,
+                     connectionName: destination,
+                     virtualHandle: handle,
+                     columns,
+                  }),
+               ],
+            ]),
+            url,
+            new FixedConnectionMap(
                new Map([[destination, destinationStandIn(destination)]]),
                destination,
             ),
-         });
-         const model = await runtime.loadModel(new URL(url)).getModel();
+         );
          const targets = await runtime.getBuildTargets(model, {
             virtualMap: new Map([[destination, new Map([[handle, "t"]])]]),
          });
@@ -780,8 +784,7 @@ async function withBuildCopies(
             givenReadTerms(p).length > 0 ||
             leftOutWindowTerms(p.readTimeTerms).length > 0 ||
             p.buildsOver ||
-            hiddenOf(p).length > 0 ||
-            p.keptBases !== undefined,
+            hiddenOf(p).length > 0,
       )
    ) {
       return { plans, copies, refused };
@@ -890,30 +893,6 @@ async function withBuildCopies(
                "re-applied over the table at read",
          );
          continue;
-      }
-      // A term or dimension a base writes is left out of the build only when
-      // the served copy keeps that base's block: confirmed against the text
-      // before anything is built.
-      if (plan.keptBases) {
-         const bases =
-            text === undefined
-               ? {
-                    reason:
-                       "the model file could not be read to confirm the " +
-                       `blocks its served copy keeps: ${unreadable}`,
-                 }
-               : declaredIn !== modelFile
-                 ? {
-                      reason:
-                         "a `where:` reading a given or a caller-dependent " +
-                         "dimension written on a base can only be left out " +
-                         "of the build for a source declared in a local model file",
-                   }
-                 : keptBasesInText(text, plan);
-         if ("reason" in bases) {
-            refuse(plan, bases.reason);
-            continue;
-         }
       }
       const liftAccess = lifted !== undefined;
       const given = givenReadTerms(plan).length > 0;

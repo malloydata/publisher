@@ -644,11 +644,18 @@ describe("EnvironmentStore Service", () => {
       expect(status.loadErrors).toHaveLength(1);
       expect(status.loadErrors?.[0]?.environment).toBe(projectName);
       expect(status.loadErrors?.[0]?.package).toBe("bad");
-      // The message has to name the location that is actually wrong. The
+      // The message has to say the configured location is what is wrong. The
       // un-mounted package also fails its lazy load on the manifest that was
       // never copied, and reporting that instead points the reader at
-      // publisher_data/ for what is really a typo in the config.
-      expect(status.loadErrors?.[0]?.message).toContain("/non/existent/path");
+      // publisher_data/ for what is really a typo in the config. It names the
+      // package, not the server path, which a caller must not learn.
+      expect(status.loadErrors?.[0]?.message).toContain(
+         "Package bad for environment",
+      );
+      expect(status.loadErrors?.[0]?.message).toContain(
+         "not found at its configured location",
+      );
+      expect(status.loadErrors?.[0]?.message).not.toContain("/non/existent");
       expect(status.loadErrors?.[0]?.message).not.toContain("publisher_data");
    });
 

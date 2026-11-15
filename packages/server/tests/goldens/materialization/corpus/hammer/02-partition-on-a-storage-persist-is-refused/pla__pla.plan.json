@@ -1,0 +1,102 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "persist-retired-key",
+        "key": "partition",
+        "message": "#@ persist source \"orders\": `partition=` is no longer read on `#@`",
+        "model": "pla.malloy",
+        "rewrite": "remove it: partition= is not supported, and the stored table is written unpartitioned. It was a layout choice only, so the cost is scan time; what each caller sees is unchanged",
+        "route": "@",
+        "subject": "orders",
+        "tier": "malformed"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/pla/pla.malloy": []
+        },
+        "order": [
+          "orders@<hammer>/pla/pla.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<hammer>/pla/pla.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/pla/pla.malloy": "pla.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/pla/pla.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders@<hammer>/pla/pla.malloy": {
+        "annotationFields": {
+          "name": "pla_orders",
+          "partition": "org_id",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pla.malloy",
+        "name": "orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2dba74c60a5b45dae95c454cee72dc79452b923a0c23ba1d794aa8fb057a8a86",
+        "sourceID": "orders@<hammer>/pla/pla.malloy",
+        "sql": "sha256:6850ab918f10e4fa",
+        "strippedTerms": [
+          {
+            "code": "org_id = $ORG_ID",
+            "givens": [
+              "ORG_ID"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

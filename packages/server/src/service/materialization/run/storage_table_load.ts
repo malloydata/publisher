@@ -247,9 +247,12 @@ export function readerRefusal(
  * - The same table guarantees as {@link loadStorageTable}: one DuckLake
  *   transaction, `create` refusing a table that exists (409), a transient
  *   session with the build session's teardown.
- * - A partitioned source is written with its partition spec and in partition
- *   order, as a partitioned build writes it, and the spec is returned. A
- *   partitioned table copied onto itself is refused (400).
+ * - A partitioned source (one a since-retired `partition=` build wrote) is
+ *   written with its partition spec and in partition order, and the spec is
+ *   returned. A partitioned table copied onto itself is refused (400).
+ *   Copied with `replace` onto a table an incremental build manages, the
+ *   spec stays until that build's next full refresh, and its deltas into it
+ *   run without the copy's memory bounds (as before `partition=` was retired).
  * - The caller checks that the source exists and that the destination may
  *   hold its rows before calling: this attaches and writes.
  *
@@ -383,8 +386,11 @@ const COPY_SOURCE_ALIAS = "__copy_source";
  * is thrown in place of the original (the load passes {@link readerRefusal}).
  * It never sees the flush, count or describe that follow, which fail against the
  * catalog after the table is committed, so a retry would meet the table.
+ *
+ * Exported as a test seam: its callers reach it only after a DuckLake attach,
+ * which needs a Postgres catalog, so a spec drives it on a file catalog.
  */
-async function writeTableAs(
+export async function writeTableAs(
    session: DuckDBConnection,
    params: {
       destinationName: string;
@@ -409,15 +415,13 @@ async function writeTableAs(
       if (partitionedBy.length === 0) {
          await session.runSQL(`${create} ${target} AS SELECT * FROM ${from}`);
       } else {
-         // Bounded as a partitioned build is: the writer's memory, not the
-         // source's, is what a wide many-partition insert exhausts.
+         // Bounded: the writer's memory, not the source's, is what a wide
+         // many-partition insert exhausts.
          await writePartitionedTable(session, {
             quotedTablePath: target,
             selectSQL: `SELECT * FROM ${from}`,
             keys: partitionedBy,
             createStatement: create,
-            bounded: true,
-            read: async () => undefined,
          });
       }
    } catch (error) {

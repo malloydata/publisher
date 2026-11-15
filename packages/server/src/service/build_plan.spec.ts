@@ -11,7 +11,7 @@ import {
    deriveBuildPlan,
    emptyBuildPlanParts,
    plannedSources,
-   projectToPublicColumns,
+   projectToStoredColumns,
    resolveFreshness,
    resolveQueryMetadata,
    resolvePackageConnections,
@@ -228,6 +228,15 @@ describe("deriveAnnotationFields", () => {
                      yield ["name", { text: () => "engaged_events" }];
                      yield ["realization", { text: () => "COPY" }];
                   },
+                  text: (...path: string[]) =>
+                     path.length === 1 && path[0] === "name"
+                        ? "engaged_events"
+                        : path.length === 1 && path[0] === "realization"
+                          ? "COPY"
+                          : undefined,
+                  has: (...path: string[]) =>
+                     path.length === 1 &&
+                     (path[0] === "name" || path[0] === "realization"),
                },
             }),
          },
@@ -296,61 +305,80 @@ source: leaky_metadata is raw -> { select: * }
    });
 });
 
-describe("projectToPublicColumns", () => {
-   // A source whose PUBLIC surface (intrinsic atomic fields) is `cols` — i.e. any
-   // `except:`-ed / access-restricted column is already absent here, as Malloy
-   // reflects it. deriveColumns reads exactly this.
-   const sourceWithPublicCols = (cols: string[]): PersistSource =>
+describe("projectToStoredColumns", () => {
+   // A source whose column surface (intrinsic atomic fields, public or
+   // hidden) is `cols`: an `except:`-ed column is already absent here, as
+   // Malloy reflects it. `renamed` maps a column's name to the one a
+   // `rename:` gives it.
+   const sourceWithCols = (
+      cols: string[],
+      renamed: Record<string, string> = {},
+   ): PersistSource =>
       ({
          dialectName: "postgres",
+         _sourceDef: {
+            fields: cols.map((name) => ({
+               name,
+               ...(renamed[name] ? { as: renamed[name] } : {}),
+            })),
+         },
          _explore: {
             intrinsicFields: cols.map((name) => ({
-               name,
+               name: renamed[name] ?? name,
                isAtomicField: () => true,
                type: "string",
             })),
          },
       }) as unknown as PersistSource;
 
-   it("wraps the build SQL to project only the source's public columns", () => {
-      const src = sourceWithPublicCols(["order_date", "amount"]); // `region` hidden → absent
-      const out = projectToPublicColumns(
+   it("wraps the build SQL to project the source's columns, leaving out one it drops", () => {
+      // `region` dropped with `except:` → absent; `secret` hidden → present.
+      const src = sourceWithCols(["order_date", "secret", "amount"]);
+      const out = projectToStoredColumns(
          src,
-         "SELECT order_date, region, amount FROM t",
+         "SELECT order_date, region, secret, amount FROM t",
       );
-      // Outer projection lists ONLY the public columns; the hidden one is dropped.
       expect(out).toMatch(/^SELECT\b/);
-      expect(out).toContain("order_date");
-      expect(out).toContain("amount");
       expect(out).toContain(
-         "FROM (SELECT order_date, region, amount FROM t) AS __public",
+         "FROM (SELECT order_date, region, secret, amount FROM t) AS __public",
       );
-      // `region` must not appear in the OUTER projection (before the subquery).
       const outerProjection = out.slice(0, out.indexOf("FROM ("));
+      expect(outerProjection).toContain("order_date");
+      expect(outerProjection).toContain("secret");
+      expect(outerProjection).toContain("amount");
       expect(outerProjection).not.toContain("region");
    });
 
-   // Fails closed, like the rest of the eligibility surface: a public surface we
-   // can't determine refuses the build rather than widening to everything getSQL
-   // projects (which is where the hidden columns are).
+   it("projects a renamed column by the name its build SQL emits", () => {
+      const src = sourceWithCols(["id", "home_region"], {
+         home_region: "region_raw",
+      });
+      const out = projectToStoredColumns(src, "SELECT id, home_region FROM t");
+      const outerProjection = out.slice(0, out.indexOf("FROM ("));
+      expect(outerProjection).toContain("home_region");
+      expect(outerProjection).not.toContain("region_raw");
+   });
+
+   // Fails closed, like the rest of the eligibility surface: a column surface
+   // we can't determine refuses the build rather than widening to everything
+   // getSQL projects (which is where the dropped columns are).
    it("refuses the build when the field list can't be read", () => {
       const noExplore = {} as unknown as PersistSource;
-      expect(() => projectToPublicColumns(noExplore, "SELECT 1")).toThrow(
-         /public column surface could not be determined/,
+      expect(() => projectToStoredColumns(noExplore, "SELECT 1")).toThrow(
+         /column surface could not be determined/,
       );
    });
 
-   it("refuses the build when the source exposes no public atomic columns", () => {
-      // Everything getSQL projects is hidden — the worst case to materialize.
+   it("refuses the build when the source declares no atomic columns", () => {
       expect(() =>
-         projectToPublicColumns(sourceWithPublicCols([]), "SELECT 1"),
-      ).toThrow(/no public atomic columns/);
+         projectToStoredColumns(sourceWithCols([]), "SELECT 1"),
+      ).toThrow(/no atomic columns/);
    });
 
    it("refuses with an eligibility error (422), naming the source", () => {
-      const src = { ...sourceWithPublicCols([]), name: "daily" };
+      const src = { ...sourceWithCols([]), name: "daily" };
       try {
-         projectToPublicColumns(src as unknown as PersistSource, "SELECT 1");
+         projectToStoredColumns(src as unknown as PersistSource, "SELECT 1");
          throw new Error("expected a refusal");
       } catch (err) {
          expect(err).toBeInstanceOf(MaterializationEligibilityError);
@@ -827,6 +855,39 @@ describe("BuildPlan.refusedSources", () => {
    afterEach(() => packages.cleanup());
 
    it(
+      "refuses a colocated source whose table a refused source shares, with that source's reason",
+      async () => {
+         // `ok` and `leaky` compile to the same SQL, so one table. The build
+         // and the bind refuse an address any source on it is refused for,
+         // so the plan does not list `ok` as buildable.
+         const pkg = await packages.create(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount")
+
+#@ persist name="ok"
+source: ok is base -> { aggregate: c is count() }
+
+#@ persist name="leaky" storage="dest"
+#@ queryMetadata { owner=@env.PUBLISHER_SPEC_UNSET_VAR }
+source: leaky is base -> { aggregate: c is count() }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(Object.values(plan?.sources ?? {})).toEqual([]);
+         const refused = Object.values(plan?.refusedSources ?? {});
+         const ok = refused.find((r) => r.name === "ok");
+         expect(ok).toMatchObject({
+            tier: "colocated",
+            reason: "env_reference",
+         });
+         expect(ok?.message).toStartWith(
+            "'ok' is not built: it shares its table with 'leaky'",
+         );
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "refuses a source whose #@ route reads the server's environment, instead of building it into the warehouse",
       async () => {
          // Publisher drops that source's whole `#@` route, so it reads no
@@ -836,7 +897,7 @@ describe("BuildPlan.refusedSources", () => {
 source: base is duckdb.sql("SELECT 1 AS amount")
 
 #@ persist name="ok"
-source: ok is base -> { aggregate: c is count() }
+source: ok is base -> { aggregate: n is count() }
 
 #@ persist name="leaky" storage="dest"
 #@ queryMetadata { owner=@env.PUBLISHER_SPEC_UNSET_VAR }
@@ -1115,8 +1176,7 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
 }
 `);
 
-         const { plan, rollupsOverStoredBase } =
-            await computePackageBuildPlan(pkg);
+         const { plan } = await computePackageBuildPlan(pkg);
 
          const entries = Object.values(plan?.sources ?? {});
          expect(
@@ -1124,7 +1184,6 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
          ).toHaveLength(1);
          expect(entries.map((s) => s.name)).toContain("orders");
          expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
-         expect(rollupsOverStoredBase ?? []).toEqual([]);
          // Every graph node is planned or refused.
          const nodes = (plan?.graphs ?? []).flatMap((g) =>
             g.nodes.flat().map((n) => n.sourceID),

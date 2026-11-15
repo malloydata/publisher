@@ -1,0 +1,591 @@
+{
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "preaggregate-time-zone",
+        "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "model": "m.malloy",
+        "route": "preaggregate",
+        "subject": "zoned.total",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "mat@<pkg>/m.malloy": [],
+          "wide@<pkg>/m.malloy": []
+        },
+        "order": [
+          "mat@<pkg>/m.malloy",
+          "wide@<pkg>/m.malloy"
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {
+      "mat@<pkg>/m.malloy": {
+        "buildSourceName": "mat__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "leftOut": [
+          {
+            "dimension": "created_day",
+            "reads": [
+              "time_zone"
+            ]
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "mat",
+          "storage": "lake"
+        },
+        "sourceID": "mat@<pkg>/m.malloy",
+        "sourceName": "mat",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "wide@<pkg>/m.malloy": {
+        "buildSourceName": "wide__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "customers__id",
+            "computed": true,
+            "dimension": "id",
+            "join": "customers"
+          },
+          {
+            "column": "customers__name",
+            "computed": true,
+            "dimension": "name",
+            "join": "customers"
+          },
+          {
+            "column": "customers__segment",
+            "computed": true,
+            "dimension": "segment",
+            "join": "customers"
+          },
+          {
+            "column": "customers__home_region",
+            "computed": true,
+            "dimension": "home_region",
+            "join": "customers"
+          },
+          {
+            "column": "customers__signup_date",
+            "computed": true,
+            "dimension": "signup_date",
+            "join": "customers"
+          }
+        ],
+        "inline": [
+          "customers"
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "wide",
+          "storage": "lake"
+        },
+        "sourceID": "wide@<pkg>/m.malloy",
+        "sourceName": "wide",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customers__id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customers__name",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__segment",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__home_region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "customers__signup_date",
+            "type": "DATE"
+          }
+        ],
+        "uniquenessChecks": [
+          {
+            "connectionName": "duckdb",
+            "join": "customers",
+            "joinedSourceID": "customers_raw@<pkg>/raw.malloy",
+            "keyColumn": "id",
+            "queryName": "wide__mat__unique__customers",
+            "sql": "SELECT \n   base.\"id\" as \"id\",\n   COUNT(1) as \"matches\"\nFROM (\n  SELECT CAST(id AS BIGINT) AS id, name, segment, home_region,\n         CAST(signup_date AS DATE) AS signup_date\n  FROM read_csv('data/customers.csv', header=true, all_varchar=true)\n) as base\nWHERE base.\"id\" IS NOT NULL\nGROUP BY 1\nHAVING (COUNT(1))>1\nORDER BY 2 desc NULLS LAST\nLIMIT 1\n"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "orders",
+        "baseGated": false,
+        "baseSourceID": "orders@<pkg>/m.malloy",
+        "baseSourceName": "orders",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "m",
+          "region"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "orders__rollup__m_region__75e7c0f9",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "mat@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "wide@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "mat@<pkg>/m.malloy": "m.malloy",
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "wide@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "preaggregate-time-zone",
+      "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "zoned.total"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "mat@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "wide@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "mat@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "mat",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "mat",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+        "sourceID": "mat@<pkg>/m.malloy",
+        "sql": "sha256:d7205aaa5763e7e3"
+      },
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "m",
+            "type": "timestamp"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__rollup__m_region__75e7c0f9",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "m",
+            "region"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
+        "sourceID": "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:f57a937d99ef9160"
+      },
+      "wide@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "wide",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "customers__id",
+            "type": "number"
+          },
+          {
+            "name": "customers__name",
+            "type": "string"
+          },
+          {
+            "name": "customers__segment",
+            "type": "string"
+          },
+          {
+            "name": "customers__home_region",
+            "type": "string"
+          },
+          {
+            "name": "customers__signup_date",
+            "type": "date"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "wide",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13",
+        "sourceID": "wide@<pkg>/m.malloy",
+        "sql": "sha256:95a38a42d7268032"
+      }
+    }
+  }
+}

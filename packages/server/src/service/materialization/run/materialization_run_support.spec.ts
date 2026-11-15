@@ -3,7 +3,7 @@
 
 import { Manifest } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import type { ManifestEntry } from "../types";
+import type { ManifestEntry } from "../domain/types";
 import {
    manifestExcludingStorage,
    manifestForCompiler,
@@ -20,11 +20,15 @@ import {
    upstreamReuseFromManifest,
    WRONG_TIER_MARKER,
    wrongTierDetail,
+   PACKAGE_STALE_MARKER,
+   withChainBuildText,
+   ChainedPackageStaleError,
 } from "./materialization_run_support";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { logger } from "../../../logger";
 import * as sinon from "sinon";
+import { errorCodeOf } from "./error_code";
 
 /**
  * The pure helpers behind a materialization run (materialization_run_support.ts),
@@ -529,7 +533,7 @@ describe("upstreamReuseFromManifest", () => {
 describe("manifestForCompiler", () => {
    const facts = {
       addressBySourceId: {
-         "p@m": "addr-p-partitioned",
+         "p@m": "addr-p-with-destination",
          "u@m": "addr-u",
          "x@m": undefined,
       },
@@ -539,10 +543,10 @@ describe("manifestForCompiler", () => {
          "x@m": "key-x",
       },
    };
-   it("adds a partitioned entry under the compiler's key and leaves everything else alone", () => {
+   it("adds the entry of a source whose address folds in its destination under the compiler's key and leaves everything else alone", () => {
       const full = {
          entries: {
-            "addr-p-partitioned": { tableName: "p__g1" },
+            "addr-p-with-destination": { tableName: "p__g1" },
             "addr-u": { tableName: "u__g1" },
          },
          strict: true,
@@ -552,9 +556,11 @@ describe("manifestForCompiler", () => {
          strict: boolean;
       };
       expect(out.entries["key-p"]).toEqual({ tableName: "p__g1" });
-      expect(out.entries["addr-p-partitioned"]).toEqual({ tableName: "p__g1" });
+      expect(out.entries["addr-p-with-destination"]).toEqual({
+         tableName: "p__g1",
+      });
       expect(Object.keys(out.entries).sort()).toEqual([
-         "addr-p-partitioned",
+         "addr-p-with-destination",
          "addr-u",
          "key-p",
       ]);
@@ -797,5 +803,49 @@ describe("noteWrongTierRecompute", () => {
       } finally {
          warn.restore();
       }
+   });
+});
+
+describe("withChainBuildText", () => {
+   const request = {
+      downstream: { sourceID: "d@m", name: "d" },
+      destination: { name: "lake", schema: "main" },
+      upstreams: [],
+   };
+   const text = { declined: "the package's own answer" } as const;
+
+   it("asks the package for the text while it is current", () => {
+      const scoped = withChainBuildText({} as never, {
+         chainBuildText: () => text,
+      }) as { chainBuildText(r: unknown): unknown };
+      expect(scoped.chainBuildText(request)).toBe(text);
+   });
+
+   it("declines with package_stale, asking nothing of the package, while it serves an older model", () => {
+      let stale = true;
+      let asked = 0;
+      const scoped = withChainBuildText(
+         {} as never,
+         {
+            chainBuildText: () => {
+               asked++;
+               return text;
+            },
+         },
+         () => stale,
+      ) as { chainBuildText(r: unknown): { declined: string; code?: string } };
+      const out = scoped.chainBuildText(request);
+      expect(out.code).toBe("package_stale");
+      expect(out.declined).toContain(PACKAGE_STALE_MARKER);
+      expect(asked).toBe(0);
+      // Asked at each build, not once: a later save that loads clears it.
+      stale = false;
+      expect(scoped.chainBuildText(request)).toBe(text);
+   });
+
+   it("gives a stale package's refusal its own code", () => {
+      expect(errorCodeOf(new ChainedPackageStaleError("x"))).toBe(
+         "package_stale",
+      );
    });
 });

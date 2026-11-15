@@ -31,6 +31,42 @@ const GATED_ON = { PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" };
 
 const raw = { "raw.malloy": RAW_MODEL };
 
+/** A `storage=""` on each route that reads a destination. */
+const EMPTY_STORAGE: [string, string][] = [
+   [
+      "a v1 persist",
+      `#@ persist storage=""
+source: p_empty is orders_raw -> { group_by: region; aggregate: n is count() }`,
+   ],
+   [
+      "a materialize",
+      `#(materialize) storage=""
+source: m_empty is orders_raw extend { measure: n is count() }`,
+   ],
+   [
+      "a persisted view",
+      `source: views is orders_raw extend {
+  measure: n is count()
+  #@ persist storage=""
+  view: v_empty is { group_by: region; aggregate: n }
+}`,
+   ],
+   [
+      "a v2 rollup",
+      `source: rollups is orders_raw extend {
+  #(preaggregate) grain=["status"] storage=""
+  measure: r_empty is amount.max()
+}`,
+   ],
+   [
+      "a v1 rollup",
+      `source: v1_rollups is orders_raw extend {
+  #@ preaggregate grain="region" storage=""
+  measure: v1_empty is amount.min()
+}`,
+   ],
+];
+
 /** Gates over rollups and materialized sources, with the gated switch off and on. */
 const GATED: Pick<FeatureShape, "files" | "queries"> = {
    files: {
@@ -636,6 +672,202 @@ source: orders is orders_raw extend {
          },
       ],
    },
+   {
+      name: "time zones",
+      files: {
+         "m.malloy": `import "raw.malloy"
+
+source: orders is orders_raw extend {
+  dimension: m is created_at.month
+  #(preaggregate) grain=["region", "m"]
+  measure: total is amount.sum()
+}
+
+source: zoned is orders_raw extend {
+  timezone: 'America/Los_Angeles'
+  dimension: m is created_at.month
+  #(preaggregate) grain=["region", "m"]
+  measure: total is amount.sum()
+}
+
+source: rezoned is orders extend { timezone: 'America/New_York' }
+
+#(materialize) storage="lake"
+source: mat is orders_raw extend {
+  dimension: created_day is created_at.day
+  measure: n is count()
+}
+
+#(materialize) storage="lake" inline=["customers"]
+source: wide is orders_raw extend {
+  join_one: customers is customers_raw with customer_id
+  measure: n is count()
+}
+`,
+         ...raw,
+      },
+      queries: [
+         {
+            name: "a rollup, no zone",
+            malloy: "run: orders -> { group_by: m; aggregate: total }",
+         },
+         {
+            name: "a rollup under a query time zone",
+            malloy:
+               "run: orders -> { timezone: 'America/Los_Angeles'; group_by: m; aggregate: total }",
+         },
+         {
+            name: "a rollup under a nest's time zone",
+            malloy:
+               "run: orders -> { group_by: region; nest: n is { timezone: 'America/Los_Angeles'; group_by: m; aggregate: total } }",
+         },
+         {
+            name: "a zoned source's rollup",
+            malloy: "run: zoned -> { group_by: m; aggregate: total }",
+         },
+         {
+            name: "an extension that sets its own zone",
+            malloy: "run: rezoned -> { group_by: m; aggregate: total }",
+         },
+         {
+            name: "a materialized source's stored day, no zone",
+            malloy: "run: mat -> { group_by: created_day; aggregate: n }",
+         },
+         {
+            name: "a materialized source's stored day under a query time zone",
+            malloy:
+               "run: mat -> { timezone: 'America/Los_Angeles'; group_by: created_day; aggregate: n }",
+         },
+         {
+            name: "an inlined join under a query time zone",
+            malloy:
+               "run: wide -> { timezone: 'America/Los_Angeles'; group_by: customers.segment; aggregate: n }",
+         },
+      ],
+   },
    { name: "gated sources", ...GATED },
    { name: "gated sources, gated switch on", env: GATED_ON, ...GATED },
+   {
+      // Every way a declaration names its destination, on every route that
+      // reads one: `storage=` beside the route's key (`#@ persist
+      // storage=`), inside it (`#@ persist { storage= }`), and on a v1 and a
+      // v2 pre-aggregate. Frozen so one placement rule can be shown to read
+      // each as it was read before; an empty one, per route, follows.
+      name: "storage placement",
+      files: {
+         "m.malloy": `##! experimental { persistence composite_sources }
+import "raw.malloy"
+
+#@ persist storage="lake"
+source: p_sibling is orders_raw -> { group_by: region; aggregate: n is count() }
+
+#@ persist { storage="lake" }
+source: p_nested is orders_raw -> { group_by: region; aggregate: n is count() }
+
+#@ persist name="p_named" storage="lake"
+source: p_named_sibling is orders_raw -> { group_by: status; aggregate: n is count() }
+
+#@ persist { name="p_named_nested" storage="lake" }
+source: p_named_nested is orders_raw -> { group_by: status; aggregate: n is count() }
+
+#(materialize) storage="lake"
+source: m_storage is orders_raw extend { measure: n is count() }
+
+source: views is orders_raw extend {
+  measure: n is count()
+  #@ persist storage="lake"
+  view: v_sibling is { group_by: region; aggregate: n }
+  #@ persist { storage="lake" }
+  view: v_nested is { group_by: status; aggregate: n }
+}
+
+source: rollups is orders_raw extend {
+  #(preaggregate) grain=["region"] storage="lake"
+  measure: r_storage is amount.sum()
+}
+
+source: v1_rollups is orders_raw extend {
+  #@ preaggregate grain="region" storage="lake"
+  measure: v1_sibling is amount.sum()
+  #@ preaggregate { grain="status" storage="lake" }
+  measure: v1_nested is amount.max()
+}
+`,
+         ...raw,
+      },
+      queries: [
+         { name: "sibling persist", malloy: "run: p_sibling -> { select: * }" },
+         { name: "nested persist", malloy: "run: p_nested -> { select: * }" },
+         { name: "sibling view", malloy: "run: views -> v_sibling" },
+         { name: "nested view", malloy: "run: views -> v_nested" },
+         {
+            name: "a v2 rollup with a destination",
+            malloy:
+               "run: rollups -> { group_by: region; aggregate: r_storage }",
+         },
+         {
+            name: "a v1 rollup, sibling",
+            malloy:
+               "run: v1_rollups -> { group_by: region; aggregate: v1_sibling }",
+         },
+         {
+            name: "a v1 rollup, nested",
+            malloy:
+               "run: v1_rollups -> { group_by: status; aggregate: v1_nested }",
+         },
+      ],
+   },
+   {
+      // Texts two readings of Malloy tell apart, where the rewriters read
+      // them: non-ASCII names and a `"""` block with a `%{ … }`, each on a
+      // stored source the served copy re-roots. (A backtick name with an
+      // escape does not compile as a source name; the lexer corpus pins it.)
+      name: "lexer edges",
+      files: {
+         "m.malloy": `##! experimental { persistence }
+import "raw.malloy"
+
+#@ persist storage="lake"
+source: café is orders_raw -> { group_by: region; aggregate: größe is count() } extend {
+  measure: summe is größe.sum()
+}
+
+#(materialize) storage="lake" name="orders_cjk"
+source: 注文 is orders_raw extend {
+  dimension: 地域 is region
+  measure: 件数 is count()
+}
+
+#@ persist storage="lake"
+source: via_sql is duckdb.sql("""select * from %{ orders_raw -> { select: region, amount } }""") -> { group_by: region; aggregate: total is amount.sum() }
+`,
+         ...raw,
+      },
+      queries: [
+         {
+            name: "a non-ASCII source and field",
+            malloy: "run: café -> { group_by: region; aggregate: summe }",
+         },
+         {
+            name: "a CJK source, dimension and measure",
+            malloy: "run: 注文 -> { group_by: 地域; aggregate: 件数 }",
+         },
+         {
+            name: "a source over a SQL block with Malloy in it",
+            malloy: "run: via_sql -> { select: * }",
+         },
+      ],
+   },
+   ...EMPTY_STORAGE.map(([route, declaration]) => ({
+      name: `storage placement, an empty destination on ${route}`,
+      files: {
+         "m.malloy": `##! experimental { persistence composite_sources }
+import "raw.malloy"
+
+${declaration}
+`,
+         ...raw,
+      },
+      queries: [],
+   })),
 ];

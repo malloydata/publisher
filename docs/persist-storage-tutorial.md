@@ -423,7 +423,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/pers
 # Rebuild, then query — now it reflects the new row (375 + 999 = 1374):
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations \
   -H 'content-type: application/json' -d '{"forceRefresh": true}' >/dev/null
-# (wait for MANIFEST_FILE_READY, then query again) -> [{"t":1374}]
+# (wait for MANIFEST_FILE_READY, which an auto-run reaches only once the package serves the new table, then query again) -> [{"t":1374}]
 ```
 
 That's the point: queries serve from the store you materialized into, and
@@ -727,13 +727,14 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 
 Remove `paramtest.malloy` and reload to continue.
 
-A third check runs **after** the build, once the table's authoritative schema is
-captured: the served shape must **compile in DuckDB** (the served table lives
-there, even for a warehouse-authored source). A source whose materialized shape
-isn't DuckDB-portable is refused the same way — a serve-time error turned into a
-build-time refusal. In practice it rarely fires, because the served shape is
-just the stored columns; it's the floor that guarantees the captured schema
-forms a valid DuckDB source.
+Once the table is built, its authoritative schema is captured, and whether
+each stored column can be read is decided when the table is bound, per source,
+not by refusing the build. A list or struct column is declared as Malloy's
+array or record type. A column Malloy has no faithful declaration for (a MAP,
+UNION, ENUM, BLOB, INTERVAL or JSON column, or a list or struct holding one)
+is left out of the source's declaration, so a query that reads it is answered
+live and every other query reads the table. A table with no column left to
+declare still builds; its source is answered live.
 
 These are the checks derivable from the compiled source and the built schema
 alone. One more belongs here and **is enforced**: a source protected by
@@ -792,9 +793,9 @@ Everything you need is on the package status and the logs:
   That fallback line is the only per-query account of a storage-tier miss, since
   the response reports it as a bare `null` (see the caveat below).
 - Metrics (OpenTelemetry, under the `publisher` meter):
-  - `publisher_storage_serve_routing_total{outcome=storage|live_fallback|runtime_live_fallback}`
-    — the serve hit rate; the headline signal for "is the tier actually serving?"
-    `runtime_live_fallback` is the one to watch: the query **routed** and then the
+  - `publisher_query_route_total{leg,outcome,reason}` — the serve hit rate; the
+    headline signal for "is the tier actually serving?" `outcome="fallback"`
+    (`reason="RUN_FAILED"`) is the one to watch: the query **routed** and then the
     store failed under it, so the caller still got a correct answer from the
     warehouse while the tier is broken. The hit rate alone will not show that.
 

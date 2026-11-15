@@ -30,8 +30,8 @@ import {
    isTerminalStatus,
    parseMetadata,
    sourcesSummary,
-   statusColor,
-   statusLabel,
+   runColor,
+   runLabel,
 } from "./utils";
 
 type MaterializationRunsListProps = {
@@ -164,12 +164,12 @@ function MaterializationRow({
                   sx={{
                      fontWeight: 500,
                      color:
-                        statusColor(materialization.status) === "default"
+                        runColor(materialization) === "default"
                            ? "text.primary"
-                           : `${statusColor(materialization.status)}.main`,
+                           : `${runColor(materialization)}.main`,
                   }}
                >
-                  {statusLabel(materialization.status)}
+                  {runLabel(materialization)}
                </Typography>
                {error && (
                   <Tooltip title={error}>

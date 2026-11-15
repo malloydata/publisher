@@ -5,11 +5,14 @@ import {
    generatedNameOwner,
    type MaterializePlan,
 } from "../plan/build_file_generator";
+import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
-import { MaterializationEligibilityError } from "../../../errors";
+import {
+   ChainedShapeNotCarriedError,
+   MaterializationEligibilityError,
+} from "../../../errors";
 import { logger } from "../../../logger";
-import { malloyGivenToApi, type MalloyGiven } from "../../given";
 import {
    recordStaleUpstreamEntry,
    recordStorageTableRetained,
@@ -21,7 +24,7 @@ import {
    ManifestEntry,
    RefusedSource,
    SourceFailure,
-} from "../types";
+} from "../domain/types";
 import { errMessage } from "../../../utils";
 import {
    buildSQLOf,
@@ -33,18 +36,12 @@ import { declaredStorage } from "../plan/persist_source_fields";
 import { type QueryContext, type QueryMetadata } from "../../query_metadata";
 import type { components } from "../../../api";
 import { getPersistStorageMode } from "../../../config";
-import { resolvePartitionColumns } from "../plan/persist_partition";
 import { escapeSQL } from "../../connection";
-import {
-   groupAliasesByName,
-   planSourceIds,
-   type ServeShapeGiven,
-} from "../serve/materialization_serve_transform";
+import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 
 import type { ApiConnection } from "../../model";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
 import { redactPgSecrets } from "../../../pg_helpers";
+import { packageRelativeText } from "../../../package_relative_text";
 
 /**
  * What a build needs from the plan about stored tables: which reached sources
@@ -69,8 +66,9 @@ export interface ChainedPlanFacts {
    addressBySourceId: Record<string, string | undefined>;
    /**
     * Each source's key as the compiler computes it (`compilerBuildId`): the
-    * address without the publisher's `partition=` layout, so it differs only
-    * for a partitioned source, whose entry the compiler finds only under it.
+    * address without the publisher's folded `storage=` destination, so it
+    * differs only for a source that has one, whose entry the compiler finds
+    * only under it.
     */
    compilerKeyBySourceId: Record<string, string | undefined>;
    /**
@@ -134,8 +132,8 @@ export const NO_PLAN_FACTS: ChainedPlanFacts = {
 };
 
 /**
- * The run's manifest as the compiler must see it: a partitioned source's entry
- * also under the compiler's own key, since `persistedTableFor` looks it up by
+ * The run's manifest as the compiler must see it: the entry of a source whose
+ * address folds in its destination also under the compiler's own key, since `persistedTableFor` looks it up by
  * that key and would otherwise inline (or strictly miss) the upstream. Only for
  * the compare and strict renders; the ledger stays keyed by address.
  */
@@ -358,9 +356,10 @@ export function compilerMissingUpstream(
  *
  * Each source is addressed by `computeSourceEntityId`, which
  * `build_targets_address_equality.spec.ts` pins equal to `target.buildId` for
- * an unpartitioned source. A `partition=` layout moves the address but not the
- * key the compiler files the table under, so the compiler's key is kept beside
- * it (`compilerKeyBySourceId`, read by `manifestForCompiler`).
+ * a source whose address folds in no destination. A folded `storage=`
+ * destination moves the address but not the key the compiler files the table
+ * under, so the compiler's key is kept beside it (`compilerKeyBySourceId`, read
+ * by `manifestForCompiler`).
  */
 export function chainedPlanFacts(
    sources: Record<string, PersistSource>,
@@ -515,6 +514,23 @@ export class HostSuppliedWrongTierError extends Error {
    }
 }
 
+/**
+ * A chained `storage=` build could not stack on its parents because its
+ * package serves a model older than its files (its last reload did not
+ * compile): the build text is read from those files, which the plan's content
+ * addresses do not describe. A shape not carried, with its own code, so the
+ * caller recomputes from the model the package serves (or, strict, refuses).
+ */
+export class ChainedPackageStaleError extends ChainedShapeNotCarriedError {
+   /** The code a log or metric carries for it (errorCodeOf). */
+   readonly reason = "package_stale" as const;
+
+   constructor(detail: string) {
+      super(detail);
+      this.name = "ChainedPackageStaleError";
+   }
+}
+
 /** The phrase every wrong-tier detail carries, for a caller that classifies one. */
 export const WRONG_TIER_MARKER = "supplied at the wrong tier";
 
@@ -584,15 +600,6 @@ export function noteWrongTierRecompute(params: {
    );
 }
 
-/** An author model file's text by `file:` URL, or undefined when unreadable. */
-export function readAuthorFile(url: string): string | undefined {
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
-}
-
 /**
  * The narrow environment surface the build path needs, plus the environment
  * root (for a plain-DuckDB destination's file path).
@@ -608,7 +615,59 @@ export interface BuildEnvironment {
    getEnvironmentPath(): string;
    /** For the usage record a metered build emits; absent in some test doubles. */
    getEnvironmentName?(): string;
+   /**
+    * The package's text for a chained `storage=` build (the host port's
+    * `chainBuildText`). Absent, a chained build cannot stack on its parents
+    * and recomputes, or under strict upstreams refuses.
+    */
+   chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The root of the package being built, which the build's reads of author
+    * files stay inside. Absent in test doubles: those reads are then confined
+    * to the files the model compiled from alone.
+    */
+   getPackagePath?(): string;
 }
+
+/**
+ * `environment` with the package's `chainBuildText`, for one run of that
+ * package. The environment itself is left as it is.
+ */
+export function withChainBuildText<E extends BuildEnvironment>(
+   environment: E,
+   pkg: {
+      chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+      getPackagePath?(): string;
+   },
+   /**
+    * Whether the package serves a model older than its files (a reload that
+    * did not compile), asked at each build: its files are not what the plan's
+    * addresses describe, so no chained build is written from them.
+    */
+   isStale: () => boolean = () => false,
+): E {
+   if (!pkg.chainBuildText && !pkg.getPackagePath) return environment;
+   const scoped = Object.create(environment) as E;
+   if (pkg.getPackagePath) {
+      const packagePath = pkg.getPackagePath();
+      scoped.getPackagePath = () => packagePath;
+   }
+   if (!pkg.chainBuildText) return scoped;
+   scoped.chainBuildText = (request) =>
+      isStale()
+         ? {
+              declined:
+                 `its package ${PACKAGE_STALE_MARKER}: its last reload did ` +
+                 `not compile, so the files a chained build is written from ` +
+                 `are not the model this build was planned from`,
+              code: "package_stale",
+           }
+         : pkg.chainBuildText!(request);
+   return scoped;
+}
+
+/** The phrase a stale package's recompute reason carries, for a reader that classifies one. */
+export const PACKAGE_STALE_MARKER = "serves a model older than its files";
 
 /**
  * What a build needs to tag its statements: the package-level metadata layer
@@ -728,54 +787,6 @@ export function manifestExcludingStorage(
  * tier is off.
  */
 export { declaredStorage };
-
-/**
- * The author model's given surface (inheritance through imports already
- * collapsed), for the chained build's transient model. A given whose type
- * cannot be rendered is dropped, not guessed: text reading it then fails to
- * compile, where a guessed type could compile a silently coercing predicate.
- */
-export function chainedBuildGivens(
-   persistSource: PersistSource,
-): ServeShapeGiven[] {
-   const out: ServeShapeGiven[] = [];
-   for (const given of persistSource._model?.givens?.values() ?? []) {
-      const api = malloyGivenToApi(given as unknown as MalloyGiven);
-      if (!api.name || !api.type) continue;
-      out.push({
-         name: api.name,
-         type: api.type,
-         defaultText: typeof api.default === "string" ? api.default : undefined,
-      });
-   }
-   return out;
-}
-
-/**
- * The columns this source's table is laid out by, for a build about to run.
- * Re-resolved (pure over the source and its annotation) rather than threaded
- * from the eligibility gate, so the two agree by contract. A refusal here
- * THROWS: the gate should already have refused it, and building unpartitioned
- * would silently diverge from what the author declared.
- */
-export function partitionColumnsForBuild(
-   persistSource: PersistSource,
-): string[] {
-   const resolved = resolvePartitionColumns(
-      persistSource,
-      deriveAnnotationFields(persistSource),
-   );
-   if (!resolved.ok) {
-      throw new MaterializationEligibilityError({
-         reason: resolved.reason,
-         message:
-            `Source '${persistSource.name}' reached a build with an ` +
-            `unusable 'partition=': ${resolved.detail}. The eligibility gate ` +
-            `should have refused this before any warehouse work ran.`,
-      });
-   }
-   return resolved.columns;
-}
 
 /**
  * The EFFECTIVE `storage=` destination name for a build, or undefined for the
@@ -1027,4 +1038,43 @@ export function physicalTargetKey(
            ]
          : ["connection", connectionName, instruction.physicalTableName],
    );
+}
+
+/**
+ * A run's results with every message a reader of the run sees (a failure's
+ * reason, an entry's error or recompute reason, a refusal's message) naming
+ * the package's files package-relative, never by where the server keeps
+ * them: a compile error names its file by the URL it was loaded from.
+ */
+export function packageRelativeRun(
+   run: {
+      entries: Record<string, ManifestEntry>;
+      failures: Record<string, SourceFailure>;
+      refused: Record<string, RefusedSource>;
+   },
+   packagePath: string,
+): {
+   entries: Record<string, ManifestEntry>;
+   failures: Record<string, SourceFailure>;
+   refused: Record<string, RefusedSource>;
+} {
+   const rel = (text: string) => packageRelativeText(text, packagePath);
+   const each = <T>(
+      record: Record<string, T>,
+      map: (value: T) => T,
+   ): Record<string, T> =>
+      Object.fromEntries(Object.entries(record).map(([k, v]) => [k, map(v)]));
+   return {
+      entries: each(run.entries, (e) => ({
+         ...e,
+         ...(typeof e.error === "string" ? { error: rel(e.error) } : {}),
+         ...(e.upstreamRecomputeReason
+            ? { upstreamRecomputeReason: rel(e.upstreamRecomputeReason) }
+            : {}),
+      })),
+      failures: each(run.failures, (f) => ({ ...f, reason: rel(f.reason) })),
+      refused: each(run.refused, (r) =>
+         typeof r.message === "string" ? { ...r, message: rel(r.message) } : r,
+      ),
+   };
 }

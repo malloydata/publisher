@@ -21,11 +21,12 @@ import type {
    IncrementalStrategy,
    LedgerEntry,
    ManifestEntry,
-} from "../types";
+} from "../domain/types";
 import {
    collectIncrementalDeclarations,
    CompiledBuildPlan,
    deriveColumns,
+   storedColumnOf,
 } from "../plan/build_plan";
 import { storageDeltaTarget } from "./incremental_storage";
 import {
@@ -249,8 +250,10 @@ export function incrementalLineage(params: {
    // A pair table's delta replaces whole parents by its key, in DuckDB, the
    // target of every `storage=` table and of a colocated table in a DuckDB
    // warehouse (pairDeltaStatements). Anything else seeds: a colocated pair
-   // table in another warehouse, or a pair whose merge key is not its parent
-   // key, which was planned wrong.
+   // table in another warehouse, which its plan already rebuilds in full with
+   // a package warning (`materialize-pair-full-refresh`), so this is only a
+   // backstop, or a pair whose merge key is not its parent key, which was
+   // planned wrong.
    if (
       d.pair &&
       (params.targetDialect !== "duckdb" ||
@@ -465,6 +468,8 @@ export async function advanceLedgerAfterSeed(params: {
    quotedTablePath: string;
    runner: SqlRunner;
    dialect: string;
+   /** The column the table holds the watermark under, when renamed. */
+   storedColumn?: (field: string) => string;
 }): Promise<WatermarkBound | undefined> {
    const boundary = await seedCoveredThrough(
       params.runner,
@@ -472,6 +477,7 @@ export async function advanceLedgerAfterSeed(params: {
       params.lineage,
       params.quotedTablePath,
       params.context.now,
+      params.storedColumn,
    );
    if (!boundary.bound) {
       if (boundary.error) {
@@ -863,11 +869,17 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             persistSource,
          );
+         // The stored table's columns, under the names the delta's SQL
+         // emits them (a renamed field's column under its own name), so a
+         // delta of a source with a `rename:` matches the table.
+         const toStored = storedColumnOf(persistSource);
          let step = await planSourceRefresh({
             context,
             lineage,
             target,
-            columns: deriveColumns(persistSource).map((c) => String(c.name)),
+            columns: deriveColumns(persistSource).map((c) =>
+               toStored(String(c.name)),
+            ),
             reseed: instruction.reseed || recast.length > 0,
          });
          if (
@@ -921,6 +933,7 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             dialect: STORAGE_TARGET_DIALECT,
             runner: (sql) => session.runSQL(sql),
+            storedColumn: storedColumnOf(persistSource),
          }),
    };
 }

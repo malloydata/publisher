@@ -13,7 +13,6 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    callerIndependent,
    currentTimeCalls,
-   probeFieldDependence,
    probeSourceDependence,
    readsAGiven,
 } from "./probe_compiler";
@@ -92,7 +91,7 @@ beforeAll(async () => {
 });
 
 async function probe(source: string, fields: string[]) {
-   return probeFieldDependence(materializer, source, fields);
+   return (await probeSourceDependence(materializer, source, fields)).fields;
 }
 
 describe("probe compiler: which givens a field reads", () => {
@@ -210,7 +209,7 @@ describe("probe compiler: failing closed", () => {
    });
 
    it("names its probe fields so no author field is shadowed", async () => {
-      const out = await probeFieldDependence(
+      const { fields: out } = await probeSourceDependence(
          materializer,
          "orders",
          ["big"],

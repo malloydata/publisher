@@ -80,9 +80,9 @@ const OPTIONAL_MODEL_FIELDS: ReadonlyArray<[keyof SerializedModel, Expect]> = [
    ["compilationError", "object"],
    ["authorizeWarnings", "string[]"],
    ["renderTagResults", "array"],
+   ["renderTagResultsDigest", "string"],
    ["preaggregateCompanion", "object"],
    ["entities", "object"],
-   ["crossConnectionLeftOut", "array"],
 ];
 
 /** The arrays a planned `SerializedModel.entities` carries. */

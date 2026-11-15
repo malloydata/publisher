@@ -18,8 +18,11 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 /**
  * The gate for a source's INCREMENTAL declaration, plus advisory findings.
  *
- * STRICT everywhere a package is admitted: publish/PATCH answer a 400 with these
- * messages, and a package LOAD fails the same way (see Package.loadViaWorker).
+ * STRICT everywhere a package is admitted for an INVALID declaration:
+ * publish/PATCH answer a 400 with these messages, and a package LOAD fails
+ * the same way (see Package.loadViaWorker). A VALID declaration this
+ * deployment cannot honour (rules 6, 7 and 12) refuses that source alone
+ * instead ({@link incrementalUnbuildableReason}).
  * Unlike the persistence-policy gate, load is not lenient: a package can reach a
  * worker without the publish endpoint, and a rejection nobody sees means a
  * silent full rebuild forever. Advisories never block; they ride the package's
@@ -36,7 +39,13 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
 /** One source's inputs to the gate. */
 export interface IncrementalPolicySource {
+   /**
+    * The author's source name: for a persisted view, the source the view is
+    * declared on, never the generated build source's name.
+    */
    sourceName: string;
+   /** For a persisted view, the author's view name on {@link sourceName}. */
+   viewName?: string;
    /** Package-relative model path, for the warning's `model` field. */
    modelPath?: string;
    /** The source's Malloy dialect name (`postgres`, `standardsql`, …). */
@@ -49,9 +58,26 @@ export interface IncrementalPolicySource {
     */
    sourceEntityId?: string;
    declaration: IncrementalDeclaration;
+   /** The code an invalid declaration fails the load under, by its route. */
+   invalidCode?: string;
 }
 
 const MODE = `refresh="incremental"`;
+
+/** How a message names the declaration: the author's source, or view. */
+function declaredOn(source: IncrementalPolicySource): string {
+   // malloy-text: names quoted in a rejection message, not generated Malloy
+   return source.viewName === undefined
+      ? `#@ persist source "${source.sourceName}"`
+      : `#@ persist on view "${source.viewName}" of source "${source.sourceName}"`;
+}
+
+/** A warning's `subject`, as a persisted view's other findings write it. */
+function subjectOf(source: IncrementalPolicySource): string {
+   return source.viewName === undefined
+      ? source.sourceName
+      : `${source.sourceName} -> ${source.viewName}`;
+}
 
 /** `"a", "b"` for a message. */
 function quoteList(names: string[]): string {
@@ -73,12 +99,11 @@ function aggregateBacked(names: (ResolvedName | undefined)[]): ResolvedName[] {
 }
 
 function malformedMessage(
-   sourceName: string,
+   where: string,
    key: string,
    problem: string,
    detail: string | undefined,
 ): string {
-   const where = `#@ persist source "${sourceName}"`;
    switch (problem) {
       case "array":
          return (
@@ -123,15 +148,40 @@ export function incrementalPolicyRejections(
 ): string[] {
    const rejections: string[] = [];
    for (const source of sources) {
-      rejections.push(...rejectionsForSource(source));
+      rejections.push(...judgeSource(source).invalid);
    }
    return rejections;
 }
 
-function rejectionsForSource(source: IncrementalPolicySource): string[] {
-   const { sourceName, declaration: d } = source;
-   const where = `#@ persist source "${sourceName}"`;
+/**
+ * Why a VALID incremental declaration cannot be built incrementally here
+ * (rules 6, 7 and 12: the dialect cannot bound or merge a delta, or a window
+ * field would be recomputed wrongly), or undefined when it can, or when the
+ * declaration is invalid (an invalid one fails the load instead). Such a
+ * source is refused alone: not built, answered live, and the package loads.
+ */
+export function incrementalUnbuildableReason(
+   source: IncrementalPolicySource,
+): string | undefined {
+   const { invalid, unbuildable } = judgeSource(source);
+   return invalid.length === 0 && unbuildable.length > 0
+      ? unbuildable.join("; ")
+      : undefined;
+}
+
+/**
+ * A source's incremental rules, split by outcome: `invalid` (the
+ * declaration says something wrong; it fails the load) and `unbuildable`
+ * (valid, but this deployment cannot honour it; the source is refused alone).
+ */
+function judgeSource(source: IncrementalPolicySource): {
+   invalid: string[];
+   unbuildable: string[];
+} {
+   const { declaration: d } = source;
+   const where = declaredOn(source);
    const out: string[] = [];
+   const unbuildable: string[] = [];
 
    // Rule 4: the mode itself must be one of the two known values. Checked first
    // because a misspelled mode is why the coherence rules below see no mode.
@@ -147,7 +197,7 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    // Rule 5: malformed key VALUES, from the raw tag — otherwise the array form
    // would misdiagnose as rule 2's "no watermark declared".
    for (const m of d.malformed) {
-      out.push(malformedMessage(sourceName, m.key, m.problem, m.detail));
+      out.push(malformedMessage(where, m.key, m.problem, m.detail));
    }
 
    // ── The coherence chain: merge_key ⇒ watermark ⇒ incremental ──────────
@@ -197,7 +247,7 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
 
    // The remaining rules are about machinery; on a non-incremental source rule 1
    // has already named the real problem.
-   if (!d.incremental) return out;
+   if (!d.incremental) return { invalid: out, unbuildable };
 
    // Rule 6: a SOURCE dialect the publisher can derive a bounded range for (a
    // literal for every watermark type plus a frontier probe). An allowlist, not
@@ -207,21 +257,22 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    // (see INCREMENTAL_TARGET_DML_DIALECTS).
    const dialect = source.dialect ?? "";
    if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(dialect)) {
-      out.push(
-         `${where} declares ${MODE}, which is not supported on dialect ` +
+      unbuildable.push(
+         `it declares ${MODE}, which is not supported on dialect ` +
             `"${dialect || "unknown"}". Incremental refresh reads a bounded ` +
             `watermark range out of the source and applies it transactionally, ` +
             `so it is enabled only where the publisher has proven both: ` +
             `${describeDialects(INCREMENTAL_SOURCE_RANGE_DIALECTS)}. Use ` +
-            `refresh="full" here; the supported set widens in a later release.`,
+            `refresh="full" to build it; the supported set widens in a later ` +
+            `release`,
       );
    } else if (d.declaredMergeKey && !MERGE_CAPABLE_DIALECTS.has(dialect)) {
       // Rule 7: distinct from rule 6 though currently subsumed by it, so the
       // two can widen independently.
-      out.push(
-         `${where} declares merge_key=, which needs a MERGE statement that ` +
+      unbuildable.push(
+         `it declares merge_key=, which needs a MERGE statement that ` +
             `dialect "${dialect}" does not have. Remove merge_key= to replace ` +
-            `the watermark range instead of merging by row identity.`,
+            `the watermark range instead of merging by row identity`,
       );
    }
 
@@ -283,8 +334,8 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    // Rule 12: any window field. Conservative on purpose; the message states the
    // eventual criterion.
    if (d.calculateFields.length > 0) {
-      out.push(
-         `${where} declares ${MODE} but computes ` +
+      unbuildable.push(
+         `it declares ${MODE} but computes ` +
             `${quoteList([...new Set(d.calculateFields)])} with calculate:. A ` +
             `window function is not supported on an incremental source yet: a ` +
             `delta recomputes only rows inside its range, so a frame that reaches ` +
@@ -293,13 +344,13 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
             `rewrites them. Frames strictly BACKWARD along the watermark ordering ` +
             `are stable and will become legal; every other frame will not. Use ` +
             `refresh="full", or move the window computation into the query that ` +
-            `reads this source. (Plain non-additive aggregates like ` +
-            `count_distinct are fine — a delta recomputes whole output rows from ` +
-            `full input and never merges partial aggregates.)`,
+            `reads this source (plain non-additive aggregates like ` +
+            `count_distinct are fine: a delta recomputes whole output rows from ` +
+            `full input and never merges partial aggregates)`,
       );
    }
 
-   return out;
+   return { invalid: out, unbuildable };
 }
 
 /**
@@ -349,12 +400,10 @@ function sharedAddressAdvisories(
          new Set(group.map((s) => recordedLineage(s.declaration))).size > 1;
       // Reported on EVERY source in the group: none is the "original".
       for (const source of group) {
-         const others = group
-            .filter((s) => s !== source)
-            .map((s) => s.sourceName);
+         const others = group.filter((s) => s !== source).map(subjectOf);
          warnings.push({
             model: source.modelPath ?? "",
-            subject: source.sourceName,
+            subject: subjectOf(source),
             code: INCREMENTAL_SHARED_ADDRESS_CODE,
             severity: "warn",
             message:
@@ -393,7 +442,7 @@ export function incrementalPolicyAdvisories(
    const warnings: ApiPackageWarning[] = sharedAddressAdvisories(sources);
    for (const source of sources) {
       const { declaration: d } = source;
-      const at = { model: source.modelPath ?? "", subject: source.sourceName };
+      const at = { model: source.modelPath ?? "", subject: subjectOf(source) };
 
       // An unknown key (a misspelled `merge_key=`, which would silently
       // degrade to range replace) is reported for every persist source, coded
