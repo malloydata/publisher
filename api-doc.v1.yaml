@@ -149,8 +149,10 @@ info:
     root, outside the API base, which serves only a version's `public/` files, each with its own media type: `private,
     max-age=31536000, immutable` under a stored version id, whose files never change, and `private, no-cache` through
     `latest` or `live`. v0's `/environments/{environmentName}/packages/{packageName}/{path}` stays as the latest
-    version's short form. Nothing outside `public/` is served, so no model or data file is reachable around the query
-    controls.
+    version's short form. Nothing outside `public/` is served, so the static route reaches no model or data file around
+    the query controls. The SQL operations (`run-sql`, `run-sql-in-version`) are not under those controls: they name a
+    connection, not a source, and run no `#(authorize)` or `#(access_filter)` gate, so a deployment that gates a
+    package keeps them from that package's callers at its gateway.
 
     - Every operation but `/status` may answer 429 `RATE_LIMITED`; 429 and 503 carry `Retry-After` in seconds. `/status`
     is never rate-limited and never answers 503, because it is the orchestrator's heartbeat: it reports `initializing`
@@ -1557,7 +1559,11 @@ paths:
           explode: true
           schema:
             $ref: "#/components/schemas/EncodedGivenValues"
-          description: Given values for a model whose sources depend on them, one per given (`givens[region]=west`).
+          description: "The caller's givens, as the gateway set them, one per given (`givens[region]=west`). They filter the
+            answer by access: a source whose `#(authorize)` gate cannot admit the caller on these `#(secure)` givens is
+            left out of `sources`, with the named queries over it and its `sourceInfos`; `content` and `modelInfo` are
+            not filtered. Absent, every published source is listed. The filter changes what this read shows, never
+            what a query can reach: `:query` evaluates the gate itself."
         - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
@@ -3129,6 +3135,10 @@ paths:
       tags:
         - connections
       summary: Run or describe a SQL statement on the connection
+      description: "Runs no `#(authorize)` or `#(access_filter)` gate: it names a connection, not a source, so it can read
+        data a gated source wraps (on a version's `duckdb` sandbox, the version's own data files). A deployment that
+        gates a package keeps this operation from the callers those gates restrict, at its gateway. Each request is
+        recorded in the access record as `ungated`."
       requestBody:
         required: true
         content:
@@ -3362,6 +3372,11 @@ paths:
       tags:
         - connections
       summary: Run or describe a SQL statement on the version's `duckdb` sandbox
+      description: "Runs no `#(authorize)` or `#(access_filter)` gate: it names a connection, not a source, so it can read
+        data a gated source wraps (on a version's `duckdb` sandbox, the version's own data files). A deployment that
+        gates a package keeps this operation from the callers those gates restrict, at its gateway. Each request is
+        recorded in the access record as `ungated`. Loads the version when it is not loaded (a hydrate when the
+        compiled-model store has an entry)."
       requestBody:
         required: true
         content:
@@ -3409,7 +3424,6 @@ paths:
           $ref: "#/components/responses/GatewayTimeout"
       parameters:
         - $ref: "#/components/parameters/requestId"
-      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry).
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
@@ -4463,7 +4477,9 @@ components:
           readOnly: true
         name:
           x-immutable: true
-          description: Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
+          description: "Set on create; a write that changes it answers 400 `INVALID_REQUEST`. `duckdb` is reserved for the
+            version's sandbox: a create or an environment push that names a connection `duckdb` answers 400
+            `INVALID_REQUEST` with `details.field: name`."
           $ref: "#/components/schemas/IdentifierPattern"
         type:
           type: string
@@ -4780,7 +4796,9 @@ components:
       properties:
         name:
           x-immutable: true
-          description: The name `#@ persist storage=` uses. Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
+          description: "The name `#@ persist storage=` uses. Set on create; a write that changes it answers 400 `INVALID_REQUEST`.
+            `duckdb` is reserved, as for a connection: a destination named `duckdb` answers 400 `INVALID_REQUEST` with
+            `details.field: name`."
           $ref: "#/components/schemas/IdentifierPattern"
         type:
           type: string
@@ -5623,17 +5641,23 @@ components:
           $ref: "#/components/schemas/VersionId"
           description: The version that did not load. Absent when the failure is not one version's.
         error:
-          $ref: "#/components/schemas/EmbeddedError"
-          description: Why the version did not load, or, when `stale`, why its newer content did not compile.
+          description: Why the version did not load, or, when `stale`, why its newer content did not compile; `failedAt` is
+            when it failed. The same shape as `VersionStatus.error` (decision A51's C6).
           readOnly: true
+          allOf:
+            - $ref: "#/components/schemas/EmbeddedError"
+            - type: object
+              required:
+                - failedAt
+              properties:
+                failedAt:
+                  type: string
+                  format: date-time
+                  readOnly: true
+                  description: When the load or compile failed.
         stale:
           type: boolean
           description: The version still serves its last successful compile; `error` says why the newer content did not compile.
-        failedAt:
-          type: string
-          format: date-time
-          description: When the load or compile failed.
-          readOnly: true
       readOnly: true
 
     ManifestBinding:
@@ -5982,6 +6006,8 @@ components:
           description: MySQL server hostname or IP address
         port:
           type: integer
+          minimum: 1
+          maximum: 65535
           description: MySQL server port number
         database:
           type: string
@@ -6229,6 +6255,8 @@ components:
           description: PostgreSQL server hostname or IP address
         port:
           type: integer
+          minimum: 1
+          maximum: 65535
           description: PostgreSQL server port number
         password:
           type: string
@@ -6456,8 +6484,13 @@ components:
 
     QueryMetadata:
       type: object
+      maxProperties: 20
+      propertyNames:
+        pattern: ^[A-Za-z0-9_]{1,128}$
       additionalProperties:
         type: string
+        maxLength: 256
+        pattern: '^[\x20\x21\x23-\x7E]*$'
       description: >-
         Per-query metadata: a flat bag of string properties attached to the statements a query issues, for the backend's
         own reporting — cost attribution, workload classification, tracing. Each backend applies it through a per-query
@@ -7899,6 +7932,8 @@ components:
           description: SQL Server host name or IP address
         port:
           type: integer
+          minimum: 1
+          maximum: 65535
           default: 1433
           description: TCP port. Not used when `instanceName` is set.
         database:
@@ -7913,10 +7948,12 @@ components:
           writeOnly: true
         encrypt:
           type: boolean
+          default: true
           description: Encrypt the connection with TLS. On when omitted, as the driver defaults it; a server that requires
             encryption refuses a connection with it off.
         trustServerCertificate:
           type: boolean
+          default: false
           description: Accept a server certificate the client cannot verify, such as a self-signed one on a local or test server.
             Off when omitted. Leave it off for any server you do not control; a certificate the client cannot verify
             then fails the connection rather than being trusted.
@@ -7943,6 +7980,8 @@ components:
           description: Bastion hostname or IP address (the SSH jump host)
         port:
           type: integer
+          minimum: 1
+          maximum: 65535
           default: 22
           description: Bastion SSH port (defaults to 22)
         username:
@@ -7965,9 +8004,13 @@ components:
             List multiple lines to pin a load-balanced/HA bastion that presents a
             different key per backend — any listed key is accepted; a mismatch
             fails the connection closed. Plain and hashed (`|1|…`) lines both work
-            — only the key blob is compared, never the hostname. When omitted, the
-            tunnel connects without host-key verification (the self-service
-            default); the SSH transport is still encrypted.
+            — only the key blob is compared, never the hostname. When omitted or
+            empty the tunnel is unpinned, and the server refuses it at connect time
+            (the first query that uses it fails) unless the deployment allows an
+            unverified host key (`allow.unverifiedSshHostKey`,
+            `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY`); the write itself succeeds and
+            the server logs a warning. A value that holds no usable key line is
+            refused.
       additionalProperties: false
 
     StorageStatus:
@@ -8116,6 +8159,8 @@ components:
           description: The coordinator's URL (`http://` or `https://`).
         port:
           type: integer
+          minimum: 1
+          maximum: 65535
           description: The coordinator's port. Used only when `server` carries none.
         catalog:
           type: string
@@ -8337,8 +8382,9 @@ components:
         schemaAsOf:
           type: string
           format: date-time
-          description: When the warehouse schema the served models carry was read. Equals `compiledAt` unless the compile was a
-            refresh.
+          description: When the warehouse schema the served models carry was read. Equals `compiledAt` when that compile read
+            the warehouse's schemas, as a `:reload` always does (it bypasses the schema cache); earlier when the compile
+            reused cached schemas.
           readOnly: true
         compiledModelBytes:
           type: integer
