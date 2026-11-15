@@ -1,3 +1,3 @@
 {
-  "loadError": "persist_advisory_test.malloy: #@ persist source \"daily_orders\": `mergekey=` is not a key `#@` reads, so it does nothing (did you mean `merge_key=`?) [persist-unknown-key]"
+  "loadError": "persist_advisory_test.malloy: #@ persist source \"daily_orders\": `mergekey=` is not a key `#@` reads, so it does nothing (did you mean `merge_key=`?). [persist-unknown-key]"
 }

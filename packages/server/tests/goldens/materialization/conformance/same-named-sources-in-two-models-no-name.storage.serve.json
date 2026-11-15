@@ -12,19 +12,10 @@
       }
     ],
     "verdicts": [
-      "summary:live:refused",
-      "summary:live:refused"
+      "summary:serves",
+      "summary:serves"
     ],
-    "warnings": [
-      {
-        "code": "persist-not-built",
-        "message": "#@ persist sources \"summary\", \"summary\" all resolve to the same materialized table \"summary\" in destination \"lake\". Distinct sources must not share a physical target — the second build would overwrite the first, and a serve binding or GC drop for one would affect the other, so none is served from it and queries on them are answered live. Give each a distinct #@ persist name=."
-      },
-      {
-        "code": "persist-source-refused",
-        "message": "#@ persist sources \"summary\", \"summary\" all resolve to the same materialized table \"summary\" in destination \"lake\". Distinct sources must not share a physical target — the second build would overwrite the first, and a serve binding or GC drop for one would affect the other, so none is served from it and queries on them are answered live. Give each a distinct #@ persist name=."
-      }
-    ]
+    "warnings": []
   },
   "queries": [
     {
@@ -69,10 +60,8 @@
       "path": {
         "considered": [
           {
-            "code": "refused",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
         ],
@@ -88,20 +77,15 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "refused",
-            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
-            "sourceName": "summary",
-            "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
-          }
-        ]
+        "warnings": []
       },
       "query": "summary in a.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -146,10 +130,8 @@
       "path": {
         "considered": [
           {
-            "code": "refused",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
         ],
@@ -165,20 +147,15 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "refused",
-            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
-            "sourceName": "summary",
-            "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
-          }
-        ]
+        "warnings": []
       },
       "query": "summary in b.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -223,10 +200,8 @@
       "path": {
         "considered": [
           {
-            "code": "refused",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
         ],
@@ -242,20 +217,15 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "refused",
-            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
-            "sourceName": "summary",
-            "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
-          }
-        ]
+        "warnings": []
       },
       "query": "summary in a.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -300,10 +270,8 @@
       "path": {
         "considered": [
           {
-            "code": "refused",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "outcome": "used",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
         ],
@@ -319,20 +287,15 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "refused",
-            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
-            "sourceName": "summary",
-            "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
-          }
-        ]
+        "warnings": []
       },
       "query": "summary in b.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     }
   ]

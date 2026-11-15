@@ -26,6 +26,16 @@
       "order_rows@<hammer>/xt/xt.malloy": "xt.malloy"
     }
   },
+  "refusedAlone": [
+    {
+      "code": "persist-not-built",
+      "message": "#@ persist source \"order_rows\" is not built, so it is answered live: it declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" to build it; the supported set widens in a later release.",
+      "model": "xt.malloy",
+      "route": "@",
+      "subject": "order_rows",
+      "tier": "unservable"
+    }
+  ],
   "rollupsKeepingGates": [],
   "wirePlan": null
 }

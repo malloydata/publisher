@@ -1,40 +1,25 @@
 {
   "internal": {
-    "annotationFindings": [],
-    "builds": [
+    "annotationFindings": [
       {
-        "connectionName": "duckdb",
-        "dependsOn": {
-          "daily_orders@<pkg>/persist_incremental_test.malloy": []
-        },
-        "order": [
-          "daily_orders@<pkg>/persist_incremental_test.malloy"
-        ]
+        "code": "persist-not-built",
+        "message": "#@ persist source \"daily_orders\" is not built, so it is answered live: it declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" to build it; the supported set widens in a later release.",
+        "model": "persist_incremental_test.malloy",
+        "route": "@",
+        "subject": "daily_orders",
+        "tier": "unservable"
       }
     ],
+    "builds": [],
     "droppedPersistSources": [],
     "materializePlans": {},
     "rollupPlans": {},
-    "sourceGateOutcomes": {
-      "daily_orders@<pkg>/persist_incremental_test.malloy": {
-        "attributed": true,
-        "classification": "row_level"
-      }
-    },
-    "sourceModelPaths": {
-      "daily_orders@<pkg>/persist_incremental_test.malloy": "persist_incremental_test.malloy"
-    }
+    "sourceGateOutcomes": {},
+    "sourceModelPaths": {}
   },
   "loadWarnings": [
     {
       "code": "persist-not-built",
-      "message": "#@ persist source \"daily_orders\" is not built, so it is answered live: it declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" to build it; the supported set widens in a later release.",
-      "model": "persist_incremental_test.malloy",
-      "severity": "warn",
-      "subject": "daily_orders"
-    },
-    {
-      "code": "persist-source-refused",
       "message": "#@ persist source \"daily_orders\" is not built, so it is answered live: it declares refresh=\"incremental\", which is not supported on dialect \"duckdb\". Incremental refresh reads a bounded watermark range out of the source and applies it transactionally, so it is enabled only where the publisher has proven both: postgres, snowflake, standardsql (BigQuery). Use refresh=\"full\" to build it; the supported set widens in a later release.",
       "model": "persist_incremental_test.malloy",
       "severity": "warn",
