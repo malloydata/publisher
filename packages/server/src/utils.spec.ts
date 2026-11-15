@@ -273,3 +273,56 @@ describe("compiledTextReader and compiledImports", () => {
       expect(importsOf(imported())).toEqual([]);
    });
 });
+
+describe("a .. after a symlinked directory", () => {
+   // <tmp2>/pkg/x/y/sub -> <tmp2>/outside/a/b, and pkg/probe.json beside it.
+   // The kernel resolves `sub/../../..` from sub's real target, so the link
+   // `pkg/<name> -> x/y/sub/../../../probe.json` leads to <tmp2>/probe.json,
+   // outside the package, whether or not that file exists; read by spelling
+   // it would land on pkg/probe.json instead.
+   let base = "";
+   let pkg2 = "";
+   beforeAll(() => {
+      base = fs.mkdtempSync(path.join(os.tmpdir(), "dotdot-link-"));
+      pkg2 = path.join(base, "pkg");
+      fs.mkdirSync(path.join(pkg2, "x", "y"), { recursive: true });
+      fs.mkdirSync(path.join(base, "outside", "a", "b"), { recursive: true });
+      fs.symlinkSync(
+         path.join(base, "outside", "a", "b"),
+         path.join(pkg2, "x", "y", "sub"),
+      );
+      fs.writeFileSync(path.join(pkg2, "present.json"), "inside");
+      fs.writeFileSync(path.join(pkg2, "absent_.json"), "inside");
+      // Only `present.json` exists at the outside spot.
+      fs.writeFileSync(path.join(base, "present.json"), "outside");
+      for (const name of ["present.json", "absent_.json"]) {
+         fs.symlinkSync(
+            `x/y/sub/../../../${name}`,
+            path.join(pkg2, `l-${name}`),
+         );
+      }
+   });
+   afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
+
+   it("refuses both, the same way, as the kernel would resolve them out", async () => {
+      for (const name of ["present.json", "absent_.json"]) {
+         const target = url(path.join(pkg2, `l-${name}`));
+         expect(await outcome(pkg2, target)).toBe(
+            IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+         );
+         expect(() => readPackageURLSync(pkg2, target)).toThrow(
+            IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+         );
+      }
+   });
+
+   it("fails a path through a missing directory as missing, never landing on a file its spelling reaches", async () => {
+      // pkg/nodir/../present.json: the kernel stops at nodir.
+      fs.symlinkSync("nodir/../present.json", path.join(pkg2, "via-missing"));
+      const message = await outcome(pkg2, url(path.join(pkg2, "via-missing")));
+      expect(message).toContain("ENOENT");
+      expect(() =>
+         readPackageURLSync(pkg2, url(path.join(pkg2, "via-missing"))),
+      ).toThrow("ENOENT");
+   });
+});

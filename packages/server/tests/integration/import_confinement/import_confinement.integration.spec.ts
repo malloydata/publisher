@@ -622,3 +622,136 @@ describe("a copy-installed package's relative in-package links", () => {
       ).toBe(2);
    });
 });
+
+describe("a .. after a symlinked directory, resolved as the kernel resolves it", () => {
+   // pkg/x/y/sub -> <root>/dd/a/b, so `x/y/sub/../../../<name>` leads to
+   // <root>/dd/<name>, outside the package. Only `pres.json` and `pres.malloy`
+   // exist there. Each package also holds a file of that name inside it,
+   // which a resolution by spelling would land on.
+   let dd = "";
+   beforeAll(() => {
+      dd = path.join(root, "dd");
+      fs.mkdirSync(path.join(dd, "a", "b"), { recursive: true });
+      fs.writeFileSync(path.join(dd, "pres.json"), '{"name": "x"}');
+      fs.writeFileSync(path.join(dd, "pres.malloy"), SECRET);
+   });
+
+   function viaLink(
+      folder: string,
+      inside: string,
+      link: string,
+      name: string,
+   ) {
+      const dir = writePackage(folder, { "ok.malloy": BASE });
+      fs.mkdirSync(path.join(dir, "x", "y"), { recursive: true });
+      fs.symlinkSync(path.join(dd, "a", "b"), path.join(dir, "x", "y", "sub"));
+      fs.writeFileSync(path.join(dir, name), inside);
+      if (link === "publisher.json")
+         fs.rmSync(path.join(dir, "publisher.json"));
+      fs.symlinkSync(`x/y/sub/../../../${name}`, path.join(dir, link));
+      return dir;
+   }
+
+   /** The two answers, present and absent, with the package names masked. */
+   async function pair(
+      make: (folder: string, name: string) => string,
+      ext: string,
+   ): Promise<string[]> {
+      const answers: string[] = [];
+      for (const [folder, name] of [
+         [`dd${ext}p`, `pres.${ext}`],
+         [`dd${ext}a`, `abst.${ext}`],
+      ]) {
+         const res = await publishing(folder, make(folder, name));
+         answers.push(
+            `${res.status} ${res.text.replaceAll(folder, "<pkg>").replaceAll(name, "<name>")}`,
+         );
+      }
+      return answers;
+   }
+
+   it("answers the same for a manifest whether the outside file exists or not", async () => {
+      const [present, absent] = await pair(
+         (folder, name) =>
+            viaLink(
+               folder,
+               JSON.stringify({ name: folder }),
+               "publisher.json",
+               name,
+            ),
+         "json",
+      );
+      expect(present).toBe(absent);
+      expect(present).not.toStartWith("2");
+   });
+
+   it("answers the same for an import whether the outside file exists or not", async () => {
+      const [present, absent] = await pair((folder, name) => {
+         const dir = viaLink(folder, BASE, "l.malloy", name);
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            'import "l.malloy"\nsource: n2 is numbers\n',
+         );
+         return dir;
+      }, "malloy");
+      expect(present).toBe(absent);
+      expect(present).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+   });
+
+   it("answers the same for a model file whether the outside file exists or not", async () => {
+      const [present, absent] = await pair(
+         (folder, name) => viaLink(folder, BASE, "x.malloy", name),
+         "mdl",
+      );
+      expect(present).toBe(absent);
+      expect(present).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+   });
+});
+
+describe("a publish whose publisher.json is a link inside the package", () => {
+   it("answers 2xx and records the location", async () => {
+      const dir = writePackage("pjinside", { "ok.malloy": BASE });
+      fs.mkdirSync(path.join(dir, "conf"));
+      fs.renameSync(
+         path.join(dir, "publisher.json"),
+         path.join(dir, "conf", "manifest.json"),
+      );
+      fs.symlinkSync("conf/manifest.json", path.join(dir, "publisher.json"));
+      const published = await publishing("pjinside", dir);
+      expect(published.status).toBe(200);
+      const pkg = (await (await fetch(api("/pjinside"))).json()) as {
+         location?: string;
+      };
+      expect(pkg.location).toBe(dir);
+   });
+});
+
+describe("the data probe of a package's files", () => {
+   it("probes only regular files inside the package, never a link out", async () => {
+      const outside = path.join(root, "outdata");
+      fs.mkdirSync(path.join(outside, "dir.csv"), { recursive: true });
+      fs.writeFileSync(path.join(outside, "secret.csv"), "SECRETCOLUMN\n1\n");
+      fs.writeFileSync(
+         path.join(outside, "dir.csv", "inner.csv"),
+         "SECRETCOLUMN\n1\n",
+      );
+      const dir = writePackage("probe", {
+         "ok.malloy": BASE,
+         "own.csv": "owncolumn\n1\n",
+      });
+      fs.symlinkSync(
+         path.join(outside, "secret.csv"),
+         path.join(dir, "leak.csv"),
+      );
+      fs.symlinkSync(path.join(outside, "dir.csv"), path.join(dir, "dir.csv"));
+      fs.symlinkSync(path.join(outside, "dir.csv"), path.join(dir, "data"));
+      expect(await publish("probe", dir)).toBe(200);
+      const res = await fetch(api("/probe/databases"));
+      const text = await res.text();
+      expect(res.status).toBe(200);
+      expect(text).toContain("own.csv");
+      expect(text).not.toContain("SECRETCOLUMN");
+      expect(text).not.toContain("leak.csv");
+      expect(text).not.toContain("dir.csv");
+   });
+});

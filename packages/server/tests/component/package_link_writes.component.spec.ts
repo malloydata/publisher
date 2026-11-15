@@ -67,6 +67,32 @@ describe("a PATCH of a package whose publisher.json is a link", () => {
       ).toBe(true);
    });
 
+   it("writes a manifest that is a link inside the package by replacing the link, leaving what it led to alone", async () => {
+      const { env, served } = await installed();
+      const original = fs.readFileSync(
+         path.join(served, "publisher.json"),
+         "utf8",
+      );
+      fs.mkdirSync(path.join(served, "conf"));
+      fs.writeFileSync(path.join(served, "conf", "manifest.json"), original);
+      fs.rmSync(path.join(served, "publisher.json"));
+      fs.symlinkSync("conf/manifest.json", path.join(served, "publisher.json"));
+      await env.updatePackage("pkg", { description: "written" });
+      expect(
+         fs.lstatSync(path.join(served, "publisher.json")).isSymbolicLink(),
+      ).toBe(false);
+      expect(
+         (
+            JSON.parse(
+               fs.readFileSync(path.join(served, "publisher.json"), "utf8"),
+            ) as { description?: string }
+         ).description,
+      ).toBe("written");
+      expect(
+         fs.readFileSync(path.join(served, "conf", "manifest.json"), "utf8"),
+      ).toBe(original);
+   });
+
    it("still writes a manifest that is a plain file, by replacing it", async () => {
       const { env, served } = await installed();
       await env.updatePackage("pkg", { description: "written" });

@@ -57,7 +57,13 @@ import {
    FreshnessManifest,
    ManifestEntry,
 } from "./materialization/domain/types";
-import { confinedPackagePath, errMessage, readPackageURL } from "../utils";
+import {
+   confinedPackagePath,
+   errMessage,
+   ImportOutsidePackageError,
+   readPackageURL,
+} from "../utils";
+import { isDeepStrictEqual } from "util";
 import { pathToFileURL } from "url";
 import {
    buildEnvironmentMalloyConfig,
@@ -3678,35 +3684,28 @@ export class Environment {
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
-      // Never written through a link: one planted as the manifest could lead
-      // to any writable JSON file, another package's manifest or the server's
-      // config among them. Refused whatever it leads to.
-      const linked = await fs.promises
-         .lstat(manifestPath)
-         .then((stat) => stat.isSymbolicLink())
-         .catch(() => false);
-      if (linked) {
+      // Where the write lands, settled before anything is written: inside
+      // the package. A manifest that is a link out of it is not written; one
+      // that is a link inside it is replaced by the file itself (the rename
+      // below replaces the link, never writes through it).
+      try {
+         await confinedPackagePath(packagePath, pathToFileURL(manifestPath));
+      } catch (error) {
+         if (!(error instanceof ImportOutsidePackageError)) throw error;
          throw new BadRequestError(
-            `The package's publisher.json is a symbolic link; Publisher does ` +
-               `not write through one. Replace it with the file itself.`,
+            `The package's publisher.json leads outside the package, so ` +
+               `Publisher does not write it. Replace it with the file itself.`,
          );
       }
 
       try {
-         // Where the write lands, settled before it: inside the package.
-         await confinedPackagePath(packagePath, pathToFileURL(manifestPath));
-         // The rename below would replace a file its mode says not to write;
-         // a read-only manifest is refused with its errno, as a write was.
-         await fs.promises
-            .access(manifestPath, fs.constants.W_OK)
-            .catch((error: NodeJS.ErrnoException) => {
-               if (error.code !== "ENOENT") throw error;
-            });
          let existingManifest: Record<string, unknown> = {};
+         let existingRead = false;
          try {
             existingManifest = JSON.parse(
                await readPackageURL(packagePath, pathToFileURL(manifestPath)),
             );
+            existingRead = true;
          } catch (_err) {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
@@ -3716,23 +3715,38 @@ export class Environment {
             metadata,
          );
 
-         // A temporary file beside it, renamed over it: the rename replaces
-         // whatever is at the path, a link that appeared since included,
-         // rather than writing through it.
-         const temporary = path.join(
-            packagePath,
-            `.publisher.json.${crypto.randomUUID()}.tmp`,
-         );
-         try {
-            await fs.promises.writeFile(
-               temporary,
-               JSON.stringify(updatedManifest, null, 2),
-               { encoding: "utf-8", flag: "wx" },
+         // An update that changes nothing in the manifest (an install that
+         // only records its location) leaves the file alone, so it cannot
+         // fail after the install has committed.
+         if (
+            !existingRead ||
+            !isDeepStrictEqual(existingManifest, updatedManifest)
+         ) {
+            // The rename below would replace a file its mode says not to
+            // write; a read-only manifest is refused with its errno.
+            await fs.promises
+               .access(manifestPath, fs.constants.W_OK)
+               .catch((error: NodeJS.ErrnoException) => {
+                  if (error.code !== "ENOENT") throw error;
+               });
+            // A temporary file beside it, renamed over it: the rename
+            // replaces whatever is at the path, a link included, rather than
+            // writing through it.
+            const temporary = path.join(
+               packagePath,
+               `.publisher.json.${crypto.randomUUID()}.tmp`,
             );
-            await fs.promises.rename(temporary, manifestPath);
-         } catch (error) {
-            await fs.promises.rm(temporary, { force: true }).catch(() => {});
-            throw error;
+            try {
+               await fs.promises.writeFile(
+                  temporary,
+                  JSON.stringify(updatedManifest, null, 2),
+                  { encoding: "utf-8", flag: "wx" },
+               );
+               await fs.promises.rename(temporary, manifestPath);
+            } catch (error) {
+               await fs.promises.rm(temporary, { force: true }).catch(() => {});
+               throw error;
+            }
          }
          // Recorded outside the package directory so nothing the package's
          // content carries is ever read as its install location. Never

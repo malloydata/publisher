@@ -3691,7 +3691,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       packagePath: string,
    ): Promise<string[]> {
       const files = await listPackageTree(packagePath);
-      return files
+      const candidates = files
          .map((fullPath: string) => {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");
          })
@@ -3706,6 +3706,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                modelPath.endsWith(".xlsx")
             );
          });
+      // Only a regular file inside the package is probed: a link out of it,
+      // to a file or a directory, is not read through the connection.
+      const probed: string[] = [];
+      for (const relativePath of candidates) {
+         try {
+            const real = await confinedPackagePath(
+               packagePath,
+               pathToFileURL(path.join(packagePath, relativePath)),
+            );
+            if ((await fs.stat(real)).isFile()) probed.push(relativePath);
+         } catch {
+            // Outside the package, missing or unreadable: not probed.
+         }
+      }
+      return probed;
    }
 
    private static async getDatabaseInfo(

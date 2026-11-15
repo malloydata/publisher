@@ -44,60 +44,113 @@ function within(root: string, p: string): boolean {
    return !stepsOutside(path.relative(root, p));
 }
 
-/**
- * Where `p` leads once every symlink on it is followed, for a path that may
- * not exist: the deepest part that resolves is realpath'd and the rest is
- * appended. A dangling link is followed by its text, so a link to a missing
- * file outside the package resolves outside, exactly like one to a file that
- * is there. Throws {@link ImportOutsidePackageError} on a link loop.
- */
-async function resolveThroughLinks(p: string, hops = 0): Promise<string> {
-   if (hops > MAX_LINK_HOPS) throw new ImportOutsidePackageError();
-   try {
-      return await fs.promises.realpath(p);
-   } catch {
-      // Missing, unreadable, or a dangling link: decided below.
-   }
-   const stat = await fs.promises.lstat(p).catch(() => undefined);
-   if (stat?.isSymbolicLink()) {
-      const text = await fs.promises.readlink(p).catch(() => undefined);
-      if (text === undefined) throw new ImportOutsidePackageError();
-      return resolveThroughLinks(path.resolve(path.dirname(p), text), hops + 1);
-   }
-   const parent = path.dirname(p);
-   if (parent === p) return p;
-   return path.join(await resolveThroughLinks(parent, hops), path.basename(p));
+/** Where a path leads: `at` is the deepest real point the kernel reaches. */
+interface Resolution {
+   /** The path to open: real when it exists, else spelled so the open fails as the kernel would. */
+   path: string;
+   /** The real location to judge containment by. */
+   at: string;
 }
 
-/** {@link resolveThroughLinks}, synchronously. */
-function resolveThroughLinksSync(p: string, hops = 0): string {
-   if (hops > MAX_LINK_HOPS) throw new ImportOutsidePackageError();
-   try {
-      return fs.realpathSync(p);
-   } catch {
-      // Missing, unreadable, or a dangling link: decided below.
-   }
-   let stat: fs.Stats | undefined;
-   try {
-      stat = fs.lstatSync(p);
-   } catch {
-      stat = undefined;
-   }
-   if (stat?.isSymbolicLink()) {
-      let text: string;
-      try {
-         text = fs.readlinkSync(p);
-      } catch {
-         throw new ImportOutsidePackageError();
+/** One filesystem question the resolution asks, answered by a driver. */
+type Ask = { op: "lstat"; path: string } | { op: "readlink"; path: string };
+
+/** A path's components, as the kernel walks them: no `..` collapsed by spelling. */
+function components(p: string): string[] {
+   const separators = path.sep === "\\" ? /[\\/]+/ : /\/+/;
+   return p.split(separators).filter((c) => c !== "" && c !== ".");
+}
+
+/**
+ * Where `p` leads, walked one component at a time as the kernel walks it, for
+ * a path that may not exist. A `..` steps to the parent of the real directory
+ * reached so far, so `link/..` after a symlinked directory goes where the
+ * kernel goes (the link target's parent), never where the spelling suggests.
+ * A link's text is followed whether or not its target exists. The walk stops
+ * at the first component that is missing or cannot be looked at: `at` is that
+ * point, and `path` keeps the rest unresolved, so opening it fails there as
+ * the kernel would rather than landing on a file the spelling reaches. Throws
+ * {@link ImportOutsidePackageError} on a link loop or an unreadable link.
+ */
+function* resolveSteps(p: string): Generator<Ask, Resolution, unknown> {
+   const absolute = path.resolve(p);
+   let cur = path.parse(absolute).root;
+   let pending = components(absolute.slice(cur.length));
+   let hops = 0;
+   while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (name === "..") {
+         cur = path.dirname(cur);
+         continue;
       }
-      return resolveThroughLinksSync(
-         path.resolve(path.dirname(p), text),
-         hops + 1,
-      );
+      const next = path.join(cur, name);
+      const stat = (yield { op: "lstat", path: next }) as fs.Stats | undefined;
+      if (stat === undefined) {
+         return { at: next, path: [next, ...pending].join(path.sep) };
+      }
+      if (stat.isSymbolicLink()) {
+         if (++hops > MAX_LINK_HOPS) throw new ImportOutsidePackageError();
+         const text = (yield { op: "readlink", path: next }) as
+            | string
+            | undefined;
+         if (text === undefined) throw new ImportOutsidePackageError();
+         if (path.isAbsolute(text)) cur = path.parse(path.resolve(text)).root;
+         pending = [...components(text), ...pending];
+         continue;
+      }
+      if (!stat.isDirectory() && pending.length > 0) {
+         // A file with more to walk: the kernel stops here (ENOTDIR).
+         return { at: next, path: [next, ...pending].join(path.sep) };
+      }
+      cur = next;
    }
-   const parent = path.dirname(p);
-   if (parent === p) return p;
-   return path.join(resolveThroughLinksSync(parent, hops), path.basename(p));
+   return { at: cur, path: cur };
+}
+
+/** {@link resolveSteps}, asked through the filesystem asynchronously. */
+async function resolveLikeKernel(p: string): Promise<Resolution> {
+   try {
+      const real = await fs.promises.realpath(p);
+      return { at: real, path: real };
+   } catch {
+      // Missing, unreadable or a dangling link: walked below.
+   }
+   const steps = resolveSteps(p);
+   let answer: unknown;
+   for (;;) {
+      const step = steps.next(answer);
+      if (step.done) return step.value;
+      const ask = step.value;
+      answer =
+         ask.op === "lstat"
+            ? await fs.promises.lstat(ask.path).catch(() => undefined)
+            : await fs.promises.readlink(ask.path).catch(() => undefined);
+   }
+}
+
+/** {@link resolveSteps}, asked through the filesystem synchronously. */
+function resolveLikeKernelSync(p: string): Resolution {
+   try {
+      const real = fs.realpathSync(p);
+      return { at: real, path: real };
+   } catch {
+      // Missing, unreadable or a dangling link: walked below.
+   }
+   const steps = resolveSteps(p);
+   let answer: unknown;
+   for (;;) {
+      const step = steps.next(answer);
+      if (step.done) return step.value;
+      const ask = step.value;
+      try {
+         answer =
+            ask.op === "lstat"
+               ? fs.lstatSync(ask.path)
+               : fs.readlinkSync(ask.path);
+      } catch {
+         answer = undefined;
+      }
+   }
 }
 
 /** A `file:` URL's path, or the refusal for any other scheme. */
@@ -148,9 +201,9 @@ export async function confinedPackagePath(
       throw new ImportOutsidePackageError();
    }
    refuseLexically(packageRoot, realRoot, filePath);
-   const realFile = await resolveThroughLinks(filePath);
-   if (!within(realRoot, realFile)) throw new ImportOutsidePackageError();
-   return realFile;
+   const { at, path: resolved } = await resolveLikeKernel(filePath);
+   if (!within(realRoot, at)) throw new ImportOutsidePackageError();
+   return resolved;
 }
 
 /**
@@ -186,9 +239,9 @@ export function confinedPackagePathSync(
       throw new ImportOutsidePackageError();
    }
    refuseLexically(packageRoot, realRoot, filePath);
-   const realFile = resolveThroughLinksSync(filePath);
-   if (!within(realRoot, realFile)) throw new ImportOutsidePackageError();
-   return realFile;
+   const { at, path: resolved } = resolveLikeKernelSync(filePath);
+   if (!within(realRoot, at)) throw new ImportOutsidePackageError();
+   return resolved;
 }
 
 /** {@link readPackageURL}, synchronously, for the synchronous text readers. */
