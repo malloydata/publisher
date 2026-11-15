@@ -22,7 +22,7 @@ source: recent_body is orders_raw -> {
 
 #@ persist name="recent_read" storage="lake"
 source: recent_read is __served_copy_alias_of_lake.virtual('b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3')::recent_read__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"

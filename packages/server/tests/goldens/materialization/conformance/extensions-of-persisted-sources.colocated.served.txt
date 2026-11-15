@@ -16,7 +16,7 @@ import "raw.malloy"
 
 #@ persist name="base_daily"
 source: base_daily is duckdb.virtual('175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad')::base_daily__served extend {
-  internal rename:
+  private rename:
     customer_id__stored is customer_id
   dimension:
     customer_id is customer_id__stored::"BIGINT"
