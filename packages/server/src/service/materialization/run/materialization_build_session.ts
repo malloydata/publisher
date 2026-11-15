@@ -781,8 +781,8 @@ export async function buildSourceIntoStorage(params: {
     * Absent for a non-incremental source, which always builds in full.
     */
    incremental?: StorageIncrementalRefresh;
-   /** The name holds this package's own `name=` view, which the table replaces. */
-   replacesNameView?: boolean;
+   /** See StorageBuildRequest.replacesView. */
+   replacesView?: string[];
    /**
     * Test seam for federation and the passthrough read; production passes
     * nothing. Lets a spec prove the `finally` closes a proxied source's tunnel
@@ -946,7 +946,9 @@ export async function buildSourceIntoStorage(params: {
          params.partitionColumns ?? [],
          {
             sourceType,
-            ...(params.replacesNameView ? { replacesView: true } : {}),
+            ...(params.replacesView
+               ? { replacesView: params.replacesView }
+               : {}),
          },
       );
       // Record where the new snapshot reaches, so the next refresh can be a
@@ -1021,7 +1023,7 @@ async function buildSameCatalogIntoStorage(params: {
    declaredColumns?: readonly DeclaredColumn[];
    castOptions?: BuildCastOptions;
    environmentPath: string;
-   replacesNameView?: boolean;
+   replacesView?: string[];
 }): Promise<StorageBuildResult> {
    const { destinationName, destinationConnection, physicalTableName } = params;
    const alias = params.sourceConnection.name || destinationName;
@@ -1068,7 +1070,7 @@ async function buildSameCatalogIntoStorage(params: {
          params.buildSQL,
          { columns: params.declaredColumns ?? [], ...params.castOptions },
          params.partitionColumns ?? [],
-         params.replacesNameView ? { replacesView: true } : {},
+         params.replacesView ? { replacesView: params.replacesView } : {},
       );
       // Reads no warehouse, as a chained build does: nothing was charged.
       return {
@@ -1311,8 +1313,8 @@ export async function buildDownstreamIntoStorage(params: {
     */
    partitionColumns?: string[];
    environmentPath: string;
-   /** The name holds this package's own `name=` view, which the table replaces. */
-   replacesNameView?: boolean;
+   /** See StorageBuildRequest.replacesView. */
+   replacesView?: string[];
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -1381,7 +1383,7 @@ export async function buildDownstreamIntoStorage(params: {
          sql,
          { columns: casts.declaredColumns, ...casts.castOptions },
          params.partitionColumns ?? [],
-         params.replacesNameView ? { replacesView: true } : {},
+         params.replacesView ? { replacesView: params.replacesView } : {},
       );
 
       return {
@@ -1505,8 +1507,8 @@ export async function withStorageDestinationSession<T>(
 
 /**
  * The tables in one schema of a `storage=` destination, in name order.
- * Tables only: a `name=` view (name_view.ts) is never listed, so a sweep
- * that drops what it lists never reaches one.
+ * Tables only: a view is never listed, so a sweep that drops what it lists
+ * never reaches one.
  *
  * Read-only, on an isolated instance. A plain DuckDB destination with no
  * database file yet is reported empty rather than created by looking.
@@ -1897,11 +1899,11 @@ export async function createTableAndDescribe(
        */
       sourceType?: FederatedSourceType;
       /**
-       * The name holds this package's own `name=` view, which the table
-       * replaces: the view is dropped in the same transaction, so a failure
-       * leaves it (see viewToTableSwap in name_view.ts).
+       * Statements that drop this package's own leftover `name=` view at the
+       * name, run first in the same transaction, so a failure leaves the view
+       * (leftover_name_views.ts).
        */
-      replacesView?: boolean;
+      replacesView?: string[];
    } = {},
 ): Promise<WireColumn[]> {
    if (partitionColumns.length === 0) {
@@ -1909,8 +1911,8 @@ export async function createTableAndDescribe(
       // CREATE OR REPLACE committed would delete the name the previous
       // manifest serves from.
       return await inTransaction(session, quotedTablePath, async () => {
-         if (options.replacesView) {
-            await session.runSQL(`DROP VIEW IF EXISTS ${quotedTablePath}`);
+         for (const sql of options.replacesView ?? []) {
+            await session.runSQL(sql);
          }
          await session.runSQL(
             `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
@@ -1928,7 +1930,7 @@ export async function createTableAndDescribe(
       createStatement: "CREATE OR REPLACE TABLE",
       bounded: options.sourceType !== undefined,
       read: () => describeTable(session, quotedTablePath),
-      ...(options.replacesView ? { replacesView: true } : {}),
+      ...(options.replacesView ? { replacesView: options.replacesView } : {}),
    });
 }
 
@@ -2006,8 +2008,8 @@ export async function writePartitionedTable<T>(
       createStatement: "CREATE TABLE" | "CREATE OR REPLACE TABLE";
       bounded: boolean;
       read: () => Promise<T>;
-      /** Drop this package's own `name=` view at the name first, in the transaction. */
-      replacesView?: boolean;
+      /** Run first in the transaction: see createTableAndDescribe. */
+      replacesView?: string[];
    },
 ): Promise<T> {
    const { quotedTablePath, selectSQL, keys } = params;
@@ -2033,8 +2035,8 @@ export async function writePartitionedTable<T>(
    }
    try {
       return await inTransaction(session, quotedTablePath, async () => {
-         if (params.replacesView) {
-            await session.runSQL(`DROP VIEW IF EXISTS ${quotedTablePath}`);
+         for (const sql of params.replacesView ?? []) {
+            await session.runSQL(sql);
          }
          await session.runSQL(
             `${params.createStatement} ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,

@@ -272,10 +272,8 @@ source research carries [none, phi.clinical]; this query reads x, which is class
   stored table through the served copy ([materialization](materialization.md#the-served-copy-materialization-v2-publisher_materialize))
   is checked on the served copy's own compile, which is your text re-rooted on the stored
   tables with every `#(classification)` and `#(carries)` kept, and on the live compile as well
-  whenever that compiles. This is what lets a clean query through a join between sources on
-  two connections be served once both sides are stored: such a model loads live with that join
-  left out, so the query does not compile live. Anything the served copy's compile cannot show
-  is refused, and a served answer that falls back to live is checked against live.
+  whenever that compiles. Anything the served copy's compile cannot show is refused, and a
+  served answer that falls back to live is checked against live.
 
 This is breaking for a query that reads past a `#(carries)` source's list, which 0.12.0 served.
 

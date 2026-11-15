@@ -54,10 +54,9 @@ export function v1BuildCompanionText(text: string): string {
  * compile (the file then plans no persisted source, as before).
  *
  * The copy is made from the text the author's model compiled from, read
- * through `getRuntime`'s reader: a package's build view (joins across
- * connections left out, #6982) or a worker's file map, not necessarily the
- * file on disk. The file on disk would put the left-out joins back, and the
- * copy would never compile.
+ * through `getRuntime`'s reader: a worker's file map or an overlay, not
+ * necessarily the file on disk, so the copy indexes the same text the
+ * compiled locations do.
  */
 export async function compileV1BuildCompanion(args: {
    packagePath: string;

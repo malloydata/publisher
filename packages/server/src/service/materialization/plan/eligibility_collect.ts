@@ -8,6 +8,7 @@
  * serve side requires. Split out of build_plan.ts; behaviour unchanged.
  */
 
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -42,6 +43,12 @@ interface EligibilityPlan {
    connectionDigests: Record<string, string>;
    preaggregatePlans?: Record<string, RollupPlan>;
    /** The `#(materialize)` plans, by the author's sourceID. */
+   /**
+    * The package is `scope: "version"`: every table name, `name=` included,
+    * takes the version's suffix, so a defaulted name and an author's name
+    * that are equal write one table.
+    */
+   versionScoped?: boolean;
    materializePlans?: Record<string, unknown>;
    sourceModelPaths?: Record<string, string>;
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
@@ -163,24 +170,57 @@ export function collidingRollups(compiled: {
  * one table. The one definition of a persist-target collision, read by the
  * serve refusal ({@link sharedTables}), the `#(materialize)` refusal and the
  * publish check (`persistenceCollisionWarnings`), so the three never disagree.
- * Verbatim: names differing only by case or quoting may still fold to one
- * table on some destinations, and normalizing is dialect-dependent.
+ *
+ * The key is the name the run writes. In an unversioned or `scope:
+ * "package"` package, a name the author did not choose (`defaulted`: no
+ * `name=` on a `#@ persist`, or a `#(materialize)` with none) takes the
+ * package's suffix in Publisher's own builds, which no author's name
+ * carries, so it never shares a table with one; two such names share one
+ * exactly when their bases do. Under `scope: "version"` (`versionScoped`)
+ * every name takes the version's suffix, so equal names meet whichever chose
+ * them. A destination that folds table names to one case
+ * ({@link tableNamesFoldCase}) folds the key too, so `Orders` and `orders`
+ * meet.
  */
 export function persistTableTarget(
    fields: { name?: string; storage?: string },
    sourceName: string,
    connectionName: string,
+   written: {
+      defaulted?: boolean;
+      dialect?: string;
+      versionScoped?: boolean;
+   } = {},
 ): { key: string; name: string; destination: string } {
    const name = (fields.name || sourceName).trim();
-   const destination = fields.storage?.trim() || connectionName;
-   return { key: `${destination}\u0000${name}`, name, destination };
+   const storage = fields.storage?.trim();
+   const destination = storage || connectionName;
+   const defaulted =
+      !written.versionScoped && (written.defaulted ?? !fields.name?.trim());
+   const folded = tableNamesFoldCase(written.dialect, !!storage)
+      ? name.toLowerCase()
+      : name;
+   return {
+      key: `${destination}\u0000${defaulted ? "default" : "named"}\u0000${folded}`,
+      name,
+      destination,
+   };
 }
 
-function physicalTarget(source: PersistSource) {
+function physicalTarget(
+   source: PersistSource,
+   materialize: { nameDefaulted?: true } | undefined,
+   versionScoped: boolean | undefined,
+) {
    return persistTableTarget(
       deriveAnnotationFields(source),
       source.name,
       source.connectionName,
+      {
+         ...(materialize ? { defaulted: !!materialize.nameDefaulted } : {}),
+         dialect: source.dialectName,
+         ...(versionScoped ? { versionScoped } : {}),
+      },
    );
 }
 
@@ -217,7 +257,13 @@ function sharedTableGroups(
             compiled.connectionDigests,
             compiled.targets?.[sourceID],
          );
-         target = physicalTarget(source);
+         target = physicalTarget(
+            source,
+            compiled.materializePlans?.[sourceID] as
+               | { nameDefaulted?: true }
+               | undefined,
+            compiled.versionScoped,
+         );
       } catch {
          // No address: the other gates refuse it on their own.
          continue;

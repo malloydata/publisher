@@ -41,7 +41,8 @@ describe("deriveSelfInstructions", () => {
       const priorEntries = {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
-            physicalTableName: "s1_prev",
+            // At the name this run writes: carried only there.
+            physicalTableName: "s1",
             connectionName: "duckdb",
          },
       };
@@ -81,7 +82,8 @@ describe("deriveSelfInstructions", () => {
       const priorEntries = {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
-            physicalTableName: "s1_prev",
+            // At the name this run writes: carried only there.
+            physicalTableName: "s1",
             connectionName: "duckdb",
          },
       };
