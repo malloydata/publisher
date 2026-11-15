@@ -5932,8 +5932,11 @@ components:
                   `storage=` gate, an incremental declaration the dialect cannot
                   honour, or, under `PERSIST_COLLISION_ENFORCE=false`, a table
                   another source writes; `subject` the source).
-                  `persist-source-refused` is its former name, emitted beside
-                  it, with the same message, for one release and then removed.
+                  `persist-source-refused` is its former name: each gate
+                  refusal (the cases it named before) is repeated under it,
+                  with the same message, for one release, then the repeat is
+                  removed; the refusals new in this release carry
+                  `persist-not-built` only.
                   `materialize-not-built` (a valid `#(materialize)` Publisher
                   cannot lay out or build; `subject` the source).
                   `persist-view-not-built` and `persist-query-not-built` (a

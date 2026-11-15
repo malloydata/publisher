@@ -9,11 +9,7 @@ import { pathToFileURL } from "url";
 
 import "@malloydata/db-duckdb/native";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   findingSeverity,
-   PERSIST_NOT_BUILT_CODE,
-   PERSIST_SOURCE_REFUSED_ALIAS_CODE,
-} from "./annotation_reader";
+import { codedLine, findingSeverity } from "./annotation_reader";
 import {
    Connection,
    ConnectionRuntime,
@@ -1992,11 +1988,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          // A collision spans sources, so it has no subject; the message names
          // them. Only under PERSIST_COLLISION_ENFORCE=false: otherwise it
          // fails the load (formatInvalidAnnotations).
-         ...this.persistenceCollisionWarnings().map((message) => ({
-            message,
-            code: PERSIST_NOT_BUILT_CODE,
-            severity: "warn" as const,
-         })),
+         ...this.materialization.persistenceCollisionRefusals(),
          ...this.preaggregateAccessWarnings(),
          // Legal but probably unintended, e.g. a typo'd merge_key=.
          ...this.materialization.incrementalPolicyAdvisories(),
@@ -2007,17 +1999,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }),
       ];
       if (allWarnings.length > 0) {
-         // `persist-not-built` was `persist-source-refused` until this
-         // release: each is repeated under its former code, with the same
-         // message, for one release, then the alias is removed.
-         metadata.warnings = allWarnings.flatMap((warning) =>
-            "code" in warning && warning.code === PERSIST_NOT_BUILT_CODE
-               ? [
-                    warning,
-                    { ...warning, code: PERSIST_SOURCE_REFUSED_ALIAS_CODE },
-                 ]
-               : [warning],
-         );
+         metadata.warnings = allWarnings;
       }
       return metadata;
    }
@@ -2373,8 +2355,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * and the load.
     */
    public formatInvalidAnnotations(): string {
-      const nearMisses = this.materializationNearMisses().map(
-         (w) => `${w.model}: ${w.message} [${w.code}]`,
+      const nearMisses = this.materializationNearMisses().map((w) =>
+         codedLine(`${w.model}: ${w.message}`, w.code ?? ""),
       );
       return [this.materialization.formatInvalidAnnotations(), ...nearMisses]
          .filter(Boolean)

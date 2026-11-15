@@ -7,12 +7,14 @@ import {
    type SourceDef,
 } from "@malloydata/malloy";
 import {
+   codedLine,
    findingSeverity,
    MATERIALIZATION_STORAGE_MODE_CODE,
    MATERIALIZATION_TABLE_COLLISION_CODE,
    MATERIALIZE_INVALID_CODE,
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
+   PERSIST_SOURCE_REFUSED_ALIAS_CODE,
    PERSIST_VIEW_INVALID_CODE,
    PREAGGREGATE_INVALID_CODE,
    type PackageAnnotationFinding,
@@ -49,6 +51,7 @@ import type {
    SourceEligibility,
 } from "./plan/build_plan";
 import { computePackageBuildPlan } from "./plan/build_plan_compile";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "./text/read_text";
 import type { MaterializePlan } from "./plan/build_file_generator";
 import {
    incrementalPolicyAdvisories,
@@ -1373,8 +1376,8 @@ export class PackageMaterialization {
     * annotation finding: the annotation is well formed; the source it sits on
     * cannot be materialized. A `#@ persist` source's is coded
     * {@link PERSIST_NOT_BUILT_CODE} and carries the gate's message verbatim,
-    * so there is one wording to maintain (the package repeats it under its
-    * former code for one release; see Package.getPackageMetadata). A rollup's is coded
+    * so there is one wording to maintain, and is repeated under its former
+    * code, {@link PERSIST_SOURCE_REFUSED_ALIAS_CODE}, for one release. A rollup's is coded
     * {@link PREAGGREGATE_NOT_BUILT_CODE}, its message naming its base and
     * grain before the gate's, and its `subject` is its BASE source (its own
     * name is generated), omitted when the base is unavailable.
@@ -1414,7 +1417,13 @@ export class PackageMaterialization {
                  };
          if (source.modelPath) warning.model = source.modelPath;
          if (subject) warning.subject = subject;
-         return [warning];
+         // `persist-not-built` was `persist-source-refused` until this
+         // release, for exactly these gate refusals: each is repeated under
+         // its former code, with the same message, for one release, then the
+         // alias is removed. Display surfaces show it once.
+         return warning.code === PERSIST_NOT_BUILT_CODE
+            ? [warning, { ...warning, code: PERSIST_SOURCE_REFUSED_ALIAS_CODE }]
+            : [warning];
       });
    }
 
@@ -2179,8 +2188,8 @@ export class PackageMaterialization {
          const collisions = this.persistenceCollisionWarnings();
          if (collisions.length > 0) {
             lines.push(
-               ...collisions.map(
-                  (c) => `${c} [${MATERIALIZATION_TABLE_COLLISION_CODE}]`,
+               ...collisions.map((c) =>
+                  codedLine(c, MATERIALIZATION_TABLE_COLLISION_CODE),
                ),
                // The operator's opt-out, named once, after the author's fix.
                "A deployment that must load such a package anyway can set " +
@@ -2213,8 +2222,8 @@ export class PackageMaterialization {
    formatInvalidIncrementalPolicy(): string {
       return this.incrementalPolicySources
          .flatMap((source) =>
-            incrementalPolicyRejections([source]).map(
-               (m) => `${m} [${source.invalidCode ?? PERSIST_INVALID_CODE}]`,
+            incrementalPolicyRejections([source]).map((m) =>
+               codedLine(m, source.invalidCode ?? PERSIST_INVALID_CODE),
             ),
          )
          .join("\n");
@@ -2233,7 +2242,10 @@ export class PackageMaterialization {
          .map(
             // Source names repeat across models; name the file.
             ({ modelPath, violation }) =>
-               `${modelPath}: ${violation.message} [${preaggregateViolationCode(violation.code)}]`,
+               codedLine(
+                  `${modelPath}: ${violation.message}`,
+                  preaggregateViolationCode(violation.code),
+               ),
          )
          .join("\n");
    }
@@ -2283,10 +2295,32 @@ export class PackageMaterialization {
     * holds whichever build ran last, so each answers live. Cross-version and
     * cross-package collisions need the host's global view.
     */
+   /** The {@link persistenceCollisions}' messages. */
    persistenceCollisionWarnings(): string[] {
+      return this.persistenceCollisions().map((c) => c.message);
+   }
+
+   /**
+    * The collisions as refusals, under `PERSIST_COLLISION_ENFORCE=false`
+    * (otherwise they fail the load): each source's own not-built code.
+    */
+   persistenceCollisionRefusals(): ApiPackageWarning[] {
+      return this.persistenceCollisions().map(({ message, code }) => ({
+         message,
+         code,
+         severity: "warn" as const,
+      }));
+   }
+
+   private persistenceCollisions(): { message: string; code: string }[] {
       const targets = new Map<
          string,
-         { name: string; destination: string; sources: Map<string, string> }
+         {
+            name: string;
+            destination: string;
+            sources: Map<string, string>;
+            kinds: Set<string>;
+         }
       >();
       for (const [sourceID, source] of Object.entries(
          this.buildPlan?.sources ?? {},
@@ -2316,29 +2350,36 @@ export class PackageMaterialization {
             name: physicalName,
             destination,
             sources: new Map<string, string>(),
+            kinds: new Set<string>(),
          };
          // Keyed by sourceEntityId so identical-content imports collapse to one.
          bucket.sources.set(source.sourceEntityId, source.name);
+         bucket.kinds.add(refusalCodeOf(sourceID, source.name));
          targets.set(key, bucket);
       }
-      const warnings: string[] = [];
+      const warnings: { message: string; code: string }[] = [];
       for (const {
          name,
          destination,
          sources: colliding,
+         kinds,
       } of targets.values()) {
          if (colliding.size < 2) continue;
          const names = [...colliding.values()].sort();
-         warnings.push(
-            `#@ persist sources ${names
-               .map((n) => `"${n}"`)
-               .join(", ")} all resolve to the same materialized table ` +
+         warnings.push({
+            // Refused alone under the opt-out: a view's or a query's own
+            // not-built code when every member is one, else a source's.
+            code: kinds.size === 1 ? [...kinds][0] : PERSIST_NOT_BUILT_CODE,
+            message:
+               `#@ persist sources ${names
+                  .map((n) => `"${n}"`)
+                  .join(", ")} all resolve to the same materialized table ` +
                `"${name}" in destination "${destination}". Distinct sources ` +
                `must not share a physical target — the second build would ` +
                `overwrite the first, and a serve binding or GC drop for one ` +
                `would affect the other, so none is served from it and queries ` +
                `on them are answered live. Give each a distinct #@ persist name=.`,
-         );
+         });
       }
       return warnings;
    }
@@ -2369,17 +2410,28 @@ function relaxedCollision(
    };
 }
 
+/** The not-built code of a planned source: a persisted view's, a query's, or a source's. */
+function refusalCodeOf(sourceID: string, name: string): string {
+   const url = sourceID.slice(sourceID.indexOf("@") + 1);
+   if (url.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) {
+      if (name.endsWith("__view")) return "persist-view-not-built";
+      if (name.endsWith("__query")) return "persist-query-not-built";
+   }
+   return PERSIST_NOT_BUILT_CODE;
+}
+
 /** Each `malformed` finding as a load failure's line, with its code. */
 function invalidFindingLines(
    findings: readonly PackageAnnotationFinding[],
 ): string[] {
    return findings
       .filter((finding) => finding.tier === "malformed")
-      .map(
-         (finding) =>
+      .map((finding) =>
+         codedLine(
             `${finding.model ? `${finding.model}: ` : ""}${finding.message}` +
-            (finding.rewrite ? `; ${finding.rewrite}` : "") +
-            ` [${finding.code}]`,
+               (finding.rewrite ? `; ${finding.rewrite}` : ""),
+            finding.code,
+         ),
       );
 }
 

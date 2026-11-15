@@ -886,10 +886,10 @@ source: raw is duckdb.sql("""
             subject: "daily",
          });
          expect(notBuilt[0].message).toContain('dialect "duckdb"');
-         // Its former code, beside it, for one release.
+         // A refusal persist-source-refused never named: no alias.
          expect(
             warnings.filter((w) => w.code === "persist-source-refused"),
-         ).toHaveLength(1);
+         ).toEqual([]);
          expect(pkg.formatInvalidIncrementalPolicy()).toBe("");
          // Not built: neither planned nor in the run's plan.
          expect(Object.values(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);

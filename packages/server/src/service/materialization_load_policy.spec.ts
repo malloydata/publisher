@@ -164,7 +164,8 @@ const MISTAKES: Mistake[] = [
    {
       name: "an @env. reference",
       lines: {
-         persist: ['#@ persist name="t" storage=@env.LAKE', "persist-invalid"],
+         // An unquoted name=@env. is the same mistake, not a quoting one.
+         persist: ["#@ persist name=@env.TABLE", "persist-invalid"],
          materialize: [
             "#(materialize) storage=@env.LAKE",
             "materialize-invalid",
@@ -177,14 +178,8 @@ const MISTAKES: Mistake[] = [
             '#@ preaggregate grain="category" storage=@env.LAKE',
             "preaggregate-invalid",
          ],
-         view: [
-            '#@ persist name="t" storage=@env.LAKE',
-            "persist-view-invalid",
-         ],
-         query: [
-            '#@ persist name="t" storage=@env.LAKE',
-            "persist-query-invalid",
-         ],
+         view: ["#@ persist name=@env.TABLE", "persist-view-invalid"],
+         query: ["#@ persist name=@env.TABLE", "persist-query-invalid"],
       },
    },
    {

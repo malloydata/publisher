@@ -17,6 +17,7 @@ import { recordConnectionDigestSkipped } from "../../../materialization_metrics"
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
+   refuseIncrementalUnbuildable,
    emptyBuildPlanParts,
    resolveConnectionDigests,
    resolvePackageConnections,
@@ -46,6 +47,17 @@ import { packageFiles } from "../text/package_files";
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
+   {
+      keepIncrementalUnbuildable = false,
+   }: {
+      /**
+       * Keep a source whose valid incremental declaration this deployment
+       * cannot honour (incremental_policy's rules 6, 7 and 12), rather than
+       * refuse it alone. For a spec that plans incremental machinery on
+       * DuckDB, which no load or run does.
+       */
+      keepIncrementalUnbuildable?: boolean;
+   } = {},
 ): Promise<CompiledBuildPlan> {
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
@@ -176,8 +188,9 @@ export async function compilePackageBuildPlan(
    );
 
    // The build path reads this plan directly: a `#(materialize)` source
-   // refused for its table name must not build here either.
-   return refuseCollidingMaterialize({
+   // refused for its table name, or a source whose incremental declaration
+   // this deployment cannot honour, must not build here either.
+   const compiled = refuseCollidingMaterialize({
       ...(pkg.getPackageMetadata?.()?.scope === "version"
          ? { versionScoped: true }
          : {}),
@@ -196,6 +209,9 @@ export async function compilePackageBuildPlan(
       sourceGateOutcomes: parts.sourceGateOutcomes,
       omittedSources: parts.omittedSources,
    });
+   return keepIncrementalUnbuildable
+      ? compiled
+      : refuseIncrementalUnbuildable(compiled);
 }
 
 /**

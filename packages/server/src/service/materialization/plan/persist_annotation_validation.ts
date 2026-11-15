@@ -3,7 +3,7 @@
 
 import { ModelCompilationError } from "../../../errors";
 import type { Annotations } from "@malloydata/malloy";
-import { routeReadsEnv } from "../../motly";
+import { hasEnvReference, routeReadsEnv } from "../../motly";
 import { hasReservedTableSuffix } from "../domain/table_name";
 import {
    EMPTY_STORAGE_REASON,
@@ -90,6 +90,9 @@ export function assertPersistNamesQuoted(
    const unsafe: string[] = [];
    for (const rawLine of modelSource.split("\n")) {
       if (!PERSIST_LINE_PATTERN.test(rawLine)) continue;
+      // A line that reads the environment is invalid whatever its name says
+      // (persist-invalid, a 400 with its code, persistDeclarationProblems).
+      if (hasEnvReference(rawLine)) continue;
       if (UNQUOTED_NAME_PATTERN.test(rawLine)) {
          unquoted.push(rawLine.trim());
          continue;

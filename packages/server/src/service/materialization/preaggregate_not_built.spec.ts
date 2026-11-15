@@ -166,17 +166,20 @@ describe("preaggregate-not-built", () => {
       );
    });
 
-   it("warns persist-not-built for a refused #@ persist source", () => {
-      const [warning] = holding(
+   it("warns persist-not-built for a refused #@ persist source, and its former code beside it for one release", () => {
+      const warnings = holding(
          refusedPlan("colocated"),
       ).persistRefusalWarnings();
-      expect(warning).toEqual({
-         code: "persist-not-built",
-         severity: "warn",
+      const expected = {
+         severity: "warn" as const,
          model: "m.malloy",
          subject: "orders__category__0a1b2c3d",
          message: GATE_MESSAGE,
-      });
+      };
+      expect(warnings).toEqual([
+         { ...expected, code: "persist-not-built" },
+         { ...expected, code: "persist-source-refused" },
+      ]);
    });
 });
 

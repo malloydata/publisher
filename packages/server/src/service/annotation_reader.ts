@@ -395,6 +395,14 @@ export const PERSIST_NOT_BUILT_CODE = "persist-not-built";
  */
 export const PERSIST_SOURCE_REFUSED_ALIAS_CODE = "persist-source-refused";
 
+/**
+ * A load failure's line: `text` ended with a full stop, then its `[code]`.
+ */
+export function codedLine(text: string, code: string): string {
+   const trimmed = text.trimEnd();
+   return `${/[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`} [${code}]`;
+}
+
 /** One diagnostic about an annotation, with its tier from the outcome rule. */
 export interface AnnotationFinding {
    route: string;

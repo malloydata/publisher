@@ -552,9 +552,9 @@ describe("the load failure for invalid materialization annotations", () => {
             finding("@", "unservable", "persist-view-not-built"),
          ]).split("\n"),
       ).toEqual([
-         "m.malloy: preaggregate-invalid on preaggregate [preaggregate-invalid]",
-         "m.malloy: materialize-unparseable on materialize [materialize-unparseable]",
-         "m.malloy: persist-unknown-key on @ [persist-unknown-key]",
+         "m.malloy: preaggregate-invalid on preaggregate. [preaggregate-invalid]",
+         "m.malloy: materialize-unparseable on materialize. [materialize-unparseable]",
+         "m.malloy: persist-unknown-key on @. [persist-unknown-key]",
       ]);
    });
 });

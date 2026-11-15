@@ -567,7 +567,7 @@ Warnings about the deployment rather than one item carry codes of their own, suc
 
 Renamed and retired codes:
 
-- `persist-source-refused` is now `persist-not-built`. For one release every `persist-not-built` warning is repeated under the old code with the same message; then the repeat is removed.
+- `persist-source-refused` is now `persist-not-built`. For one release each gate refusal that used to carry `persist-source-refused` is repeated under it, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed. The refusals new in this release carry `persist-not-built` only.
 - `preaggregate-malformed` is no longer produced: the same mistake is `preaggregate-invalid` or `preaggregate-unparseable`, and fails the load.
 - The API keeps three reasons it no longer produces: `RefusedSource.reason` `empty_storage` and `env_reference`, and `OmittedSource.reason` `persist_annotation_unparseable`.
 

@@ -29,8 +29,13 @@ export function PackageProblems({
    warnings: PackageWarningsInner[] | undefined;
 }) {
    const [showNotes, setShowNotes] = useState(false);
-   const errors = (warnings ?? []).filter((w) => w.severity === "error");
-   const notes = (warnings ?? []).filter((w) => w.severity !== "error");
+   // `persist-source-refused` is a one-release alias that repeats a
+   // `persist-not-built` warning for API clients; show each problem once.
+   const shown = (warnings ?? []).filter(
+      (w) => w.code !== "persist-source-refused",
+   );
+   const errors = shown.filter((w) => w.severity === "error");
+   const notes = shown.filter((w) => w.severity !== "error");
    if (errors.length === 0 && notes.length === 0) return null;
    return (
       <Stack sx={{ gap: 1, mb: 4 }}>

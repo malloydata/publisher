@@ -10,6 +10,7 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { getPersistCollisionEnforce } from "../../../config";
+import { codedLine } from "../../annotation_reader";
 import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
@@ -36,7 +37,6 @@ import {
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { CompiledBuildPlan } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import { refuseIncrementalUnbuildable } from "../plan/build_plan";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -691,16 +691,12 @@ export class MaterializationService {
 
          // A published version's tree never changes, so compiling it needs
          // no lock; an unversioned package's can be replaced under it.
-         // A source whose valid incremental declaration this deployment
-         // cannot honour was refused alone when the package loaded; it is
-         // not built here either.
-         const compiled = refuseIncrementalUnbuildable(
+         const compiled =
             versionId !== undefined
                ? await compilePackageBuildPlan(pkg, signal)
                : await environment.withPackageLock(packageName, () =>
                     compilePackageBuildPlan(pkg, signal),
-                 ),
-         );
+                 );
 
          // A `#@ persist` source Malloy's build walk did not plan fails the
          // package's load (`persist-not-materializable`), so a package that
@@ -730,9 +726,11 @@ export class MaterializationService {
                `Package ${packageName} is not built: its files carry ` +
                   (invalid.length > 0
                      ? `an invalid materialization annotation, which its load refuses:\n${invalid
-                          .map(
-                             (f) =>
-                                `${f.model ? `${f.model}: ` : ""}${f.message} [${f.code}]`,
+                          .map((f) =>
+                             codedLine(
+                                `${f.model ? `${f.model}: ` : ""}${f.message}`,
+                                f.code,
+                             ),
                           )
                           .join("\n")}`
                      : `a change its last reload refused, so it serves an ` +

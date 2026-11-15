@@ -120,8 +120,14 @@ export function registerReloadPackageTool(
             ...(pkg.description !== undefined && {
                description: pkg.description,
             }),
+            // The persist-source-refused alias repeats a persist-not-built
+            // warning for REST clients; an agent reads it once.
             ...(pkg.warnings !== undefined &&
-               pkg.warnings.length > 0 && { warnings: pkg.warnings }),
+               pkg.warnings.length > 0 && {
+                  warnings: pkg.warnings.filter(
+                     (w) => w.code !== "persist-source-refused",
+                  ),
+               }),
             // An explores entry that did not resolve to a model, so a
             // mistyped explores edit is not silently swallowed.
             ...(pkg.exploresWarnings !== undefined &&

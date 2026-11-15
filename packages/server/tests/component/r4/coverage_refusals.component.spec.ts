@@ -286,9 +286,14 @@ source: orders is orders_raw extend {
       },
    ],
    {
-      "under the opt-out, the package publishes": (l) => {
-         expect(l.rejections).toBeUndefined();
-      },
+      "under the opt-out, the package publishes, and the views are refused alone as views":
+         (l) => {
+            expect(l.rejections).toBeUndefined();
+            const refused = codes(l, "persist-view-not-built").filter((w) =>
+               /same materialized table "by_key"/.test(w.message ?? ""),
+            );
+            expect(refused).toHaveLength(1);
+         },
       "neither colliding view is served from a table, the third is": (l) => {
          const views = l.fixture.pkg
             .getServeVerdicts()
