@@ -146,7 +146,14 @@ export function planCollisions(
    plan: BuildPlan | null,
    materializePlans: Readonly<Record<string, MaterializePlan>> | undefined,
    versionScoped: boolean,
-): { message: string; code: string; subject: string }[] {
+): {
+   /** The opt-out's warning: each refused alone and answered live. */
+   message: string;
+   /** The load failure's line, when enforced. */
+   enforced: string;
+   code: string;
+   subject: string;
+}[] {
    type Member = {
       address: string;
       name: string;
@@ -191,24 +198,35 @@ export function planCollisions(
       }
       targets.set(target.key, bucket);
    }
-   const out: { message: string; code: string; subject: string }[] = [];
+   const out: {
+      message: string;
+      enforced: string;
+      code: string;
+      subject: string;
+   }[] = [];
    for (const { name, destination, members } of targets.values()) {
       const colliding = membersOnOneTable(members);
       if (colliding.length < 2) continue;
       const kinds = new Set(colliding.map((m) => m.kind));
+      const what =
+         `#@ persist sources ${describeMembers(colliding)} all resolve ` +
+         `to the same materialized table "${name}" in destination ` +
+         `"${destination}". Distinct sources must not share a physical ` +
+         `target — the second build would overwrite the first, and a ` +
+         `serve binding or GC drop for one would affect the other, so `;
       out.push({
          // Refused alone under the opt-out: a view's or a query's own
          // not-built code when every member is one, else a source's.
          code: kinds.size === 1 ? [...kinds][0] : PERSIST_NOT_BUILT_CODE,
          subject: colliding.map((m) => m.name).sort()[0],
          message:
-            `#@ persist sources ${describeMembers(colliding)} all resolve ` +
-            `to the same materialized table "${name}" in destination ` +
-            `"${destination}". Distinct sources must not share a physical ` +
-            `target — the second build would overwrite the first, and a ` +
-            `serve binding or GC drop for one would affect the other, so ` +
-            `none is built or served from it and queries on them are ` +
+            `${what}none is built or served from it and queries on them are ` +
             `answered live. Give each a distinct #@ persist name=.`,
+         enforced:
+            `${what}the package does not load until each has a distinct ` +
+            `#@ persist name= (a deployment that must load it anyway can ` +
+            `set PERSIST_COLLISION_ENFORCE=false, which refuses the ` +
+            `colliding sources alone and serves them live).`,
       });
    }
    return out;
@@ -255,19 +273,13 @@ export function incrementalGateLines(
    );
 }
 
-/** The collisions as load-failure lines, with the operator's opt-out named once. */
+/** The collisions as load-failure lines, each ending with its code. */
 export function collisionGateLines(
-   collisions: readonly { message: string }[],
+   collisions: readonly { enforced: string }[],
 ): string[] {
-   if (collisions.length === 0) return [];
-   return [
-      ...collisions.map((c) =>
-         codedLine(c.message, MATERIALIZATION_TABLE_COLLISION_CODE),
-      ),
-      "A deployment that must load such a package anyway can set " +
-         "PERSIST_COLLISION_ENFORCE=false, which refuses the colliding " +
-         "sources alone and serves them live.",
-   ];
+   return collisions.map((c) =>
+      codedLine(c.enforced, MATERIALIZATION_TABLE_COLLISION_CODE),
+   );
 }
 
 /**

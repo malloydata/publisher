@@ -1803,10 +1803,10 @@ source: plain is raw extend { measure: total is amt.sum() }
 describe.skipIf(process.platform === "win32")(
    "table ownership on a DuckLake destination: a refused name= with a sibling on its address",
    () => {
-      // `owned` and `plain` compile to the same build SQL, so they share one
-      // content address, and auto-run derives ONE instruction for it, at
-      // `owned`'s name=. The refusal holds for the address: both sources are
-      // refused, and the other package's table and its mark stay as they are.
+      // `owned` and `plain` compile to the same build SQL. `owned` names its
+      // own table, so its name= is its own (foldDistinctTableNames): the
+      // refusal is `owned`'s alone, `plain` builds its own table, and the
+      // other package's table and its mark stay as they are.
       const lake = new LakeFixture("owned-twin", () => ({
          "m.malloy": `##! experimental.persistence
 source: raw is warehouse.sql("""
@@ -1823,7 +1823,7 @@ source: plain is raw extend { measure: total is amt.sum() }
       beforeAll(() => lake.setUp());
       afterAll(() => lake.tearDown());
 
-      it("refuses the name= source and its same-address sibling, leaving the other package's table and mark", async () => {
+      it("refuses the name= source alone; its same-SQL sibling builds its own table, and the other package's table and mark stay", async () => {
          await lake.inspect(async (c) => {
             await c.runSQL(
                `CREATE TABLE ${LAKE}.main.shared_t AS SELECT 'x' AS cat, 9.0 AS amt`,
@@ -1833,19 +1833,30 @@ source: plain is raw extend { measure: total is amt.sum() }
             );
          }, false);
          const m = await lake.run();
-         expect(m.status).toBe("FAILED");
-         // Both sources on the address are refused, each naming the table.
-         for (const name of ["owned", "plain"]) {
-            expect(m.error).toContain(
-               `${name}: 'owned' is not built (table-owned-elsewhere)`,
-            );
-         }
-         expect(m.manifest).toBeFalsy();
-         expect(await lake.catalogTables()).toEqual(["shared_t"]);
+         // A partial run: `owned` fails, `plain` builds.
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const failures = Object.values(
+            (m.manifest as { failures: Record<string, { sourceName: string }> })
+               .failures,
+         ).map((f) => f.sourceName);
+         expect(failures).toEqual(["owned"]);
+         expect(lake.entriesByName(m).plain).toMatchObject({
+            physicalTableName: selfName("plain"),
+            storageDestinationName: LAKE,
+         });
+         expect(lake.entriesByName(m).owned).toMatchObject({
+            error: expect.stringContaining("(table-owned-elsewhere)"),
+         });
+         expect((await lake.catalogTables()).sort()).toEqual(
+            [selfName("plain"), "shared_t"].sort(),
+         );
          expect(await lake.storedRows("shared_t", "cat, amt")).toEqual([
             ["x", 9],
          ]);
-         expect(await lake.tableComments()).toEqual({ shared_t: OTHER_MARK });
+         expect(await lake.tableComments()).toEqual({
+            shared_t: OTHER_MARK,
+            [selfName("plain")]: null,
+         });
       });
    },
 );

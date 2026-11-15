@@ -309,6 +309,8 @@ export class PackageMaterialization {
    private rollupsKeepingGates = new Set<string>();
    /** The base and grain of each refused rollup, by its sourceID. */
    private refusedRollups: Record<string, RefusedRollup> = {};
+   /** See BuildPlanOutcome.compilerKeys. */
+   private compilerKeys: Record<string, string> = {};
    private annotationFindings: PackageAnnotationFinding[] = [];
    // Which sources may be served from a materialized table, decided at compile
    // where the compiled sources exist; binding does not recompile. `undefined`
@@ -441,6 +443,7 @@ export class PackageMaterialization {
             materializePlans,
             rollupsKeepingGates,
             refusedRollups,
+            compilerKeys,
          } = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
@@ -449,6 +452,7 @@ export class PackageMaterialization {
          this.rollupsKeepingGates = new Set(rollupsKeepingGates ?? []);
          // `?? {}`: an outcome a worker built before this field existed.
          this.refusedRollups = refusedRollups ?? {};
+         this.compilerKeys = compilerKeys ?? {};
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
          // `?? []`: an outcome a worker built before this field existed.
@@ -502,6 +506,7 @@ export class PackageMaterialization {
          this.incrementalPolicySources = [];
          this.rollupsKeepingGates = new Set();
          this.refusedRollups = {};
+         this.compilerKeys = {};
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.owner.packageName()}`,
@@ -625,10 +630,12 @@ export class PackageMaterialization {
          this.buildPlan?.sources ?? {},
       )) {
          if (!source.sourceEntityId) continue;
+         const compilerKey = this.compilerKeys[source.sourceEntityId];
          planned.set(sourceID, {
             sourceID,
             name: source.name,
             sourceEntityId: source.sourceEntityId,
+            ...(compilerKey ? { compilerKey } : {}),
             origin:
                source.origin === "preaggregate" ? "preaggregate" : "persist",
             ...(source.modelPath ? { modelPath: source.modelPath } : {}),
@@ -1200,6 +1207,7 @@ export class PackageMaterialization {
             colocatedSourceEligibility: this.colocatedSourceEligibility,
             incrementalPolicySources: this.incrementalPolicySources,
             buildConnectionNames: this.buildConnectionNames,
+            compilerKeys: this.compilerKeys,
          };
          let workerPlan: LoadPackageOutcome["buildPlan"];
          let poolFailed = false;
@@ -2348,6 +2356,7 @@ export class PackageMaterialization {
 
    private persistenceCollisions(): {
       message: string;
+      enforced: string;
       code: string;
       subject: string;
    }[] {

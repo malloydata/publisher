@@ -231,7 +231,7 @@ async function chainedRows(model: CorpusModel): Promise<ChainedRow[]> {
    const digests = Object.fromEntries(
       [...model.connections.keys()].map((n) => [n, `${n}-digest`]),
    );
-   const facts = chainedPlanFacts(parts.tables, digests);
+   const facts = chainedPlanFacts(parts.tables, digests, undefined);
 
    // Each storage= source, with what it reaches.
    const storage = Object.entries(sourcesIn(parts)).flatMap(([id, source]) => {

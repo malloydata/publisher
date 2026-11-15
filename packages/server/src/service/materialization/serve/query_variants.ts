@@ -318,6 +318,7 @@ export class PersistedQueryServe {
          modelPath: this.host.modelPath(),
          subject: `query ${plan.queryName}`,
          cacheScope: `persisted_query\u0000${this.generation}\u0000${plan.buildSourceID}\u0000${runTarget ?? ""}`,
+         compilerKey: this.views.compilerKeyOf(plan.buildSourceID),
       });
    }
 

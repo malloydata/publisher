@@ -178,8 +178,8 @@ ORDER BY 2 desc NULLS LAST
 -- ==== source p_named_sibling
 -- sourceID: p_named_sibling@<pkg>/m.malloy
 -- connection: duckdb
--- sourceEntityId: 5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4
--- compiler key: 5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4 (the sourceEntityId)
+-- sourceEntityId: 9dd25350bdb25aa9f7851c358e415a9fd78d32524fe535ed1ecd8aacf8eeec6b
+-- compiler key: 5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4
 -- build SQL:
 SELECT 
    base."status" as "status",
@@ -199,8 +199,8 @@ ORDER BY 2 desc NULLS LAST
 -- ==== source p_named_nested
 -- sourceID: p_named_nested@<pkg>/m.malloy
 -- connection: duckdb
--- sourceEntityId: 5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4
--- compiler key: 5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4 (the sourceEntityId)
+-- sourceEntityId: 2132b8ba56b26471fd390f5db5b1efafcc536a1b564a521951213e4f8928e006
+-- compiler key: 5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4
 -- build SQL:
 SELECT 
    base."status" as "status",
