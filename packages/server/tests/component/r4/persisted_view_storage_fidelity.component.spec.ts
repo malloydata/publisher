@@ -26,8 +26,12 @@
  * answered live. Its timestamp truncations were not, in either tier: the served
  * copy re-truncates a stored truncation in the reading query's zone, which
  * differs from the build's when the source sets a zone in its query
- * (`zoned_src`), on itself (`zoned_own_src`), or when the caller's query sets
- * one (`utc_src`). Each such read is now answered live.
+ * (`zoned_src`), on itself (`zoned_own_src`), when the caller's query sets
+ * one (`utc_src`), or when an extension does (`utc_ny`). Each read of such a
+ * truncation is now answered live, with the `TIME_ZONE` reason; a query that
+ * reads no truncation, or reads one in UTC, stays served. A second zone
+ * (Kolkata, Sydney) and instants either side of each daylight-saving change
+ * (`dst`) are compared alongside New York.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -146,6 +150,54 @@ source: zoned_own_src is orders_raw -> {
 } extend {
   timezone: 'America/New_York'
 }
+
+source: utc_ny is utc_src extend { timezone: 'America/New_York' }
+source: utc_utc is utc_src extend { timezone: 'UTC' }
+
+// Instants either side of each daylight-saving change: New York's (2024-03-10
+// 07:00Z, 2024-11-03 06:00Z) and Sydney's (2024-04-06 16:00Z, 2024-10-05
+// 16:00Z); Kolkata's half-hour offset has none.
+source: dst is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (1, TIMESTAMP '2024-03-10 06:30:00'), (2, TIMESTAMP '2024-03-10 07:30:00'),
+    (3, TIMESTAMP '2024-11-03 04:59:59'), (4, TIMESTAMP '2024-11-03 05:30:00'),
+    (5, TIMESTAMP '2024-11-03 06:30:00'), (6, TIMESTAMP '2024-04-06 15:30:00'),
+    (7, TIMESTAMP '2024-04-06 16:30:00'), (8, TIMESTAMP '2024-10-05 15:30:00'),
+    (9, TIMESTAMP '2024-10-05 16:30:00'), (10, TIMESTAMP '2024-12-31 18:45:00')
+  ) t(id, ts)
+""") extend {
+  primary_key: id
+  measure: n is count()
+
+  @PVIEW(dst_ny)
+  view: ny is {
+    timezone: 'America/New_York'
+    group_by: d is ts.day, h is ts.hour
+    aggregate: n
+    order_by: h
+  }
+
+  @PVIEW(dst_syd)
+  view: syd is {
+    timezone: 'Australia/Sydney'
+    group_by: d is ts.day, w is ts.week, m is ts.month, h is ts.hour
+    aggregate: n
+    order_by: h
+  }
+}
+
+@PERSIST(dst_kol)
+source: dst_kol is dst -> {
+  timezone: 'Asia/Kolkata'
+  group_by: d is ts.day, h is ts.hour, y is ts.year
+  aggregate: c is count()
+}
+
+@PERSIST(dst_utc)
+source: dst_utc is dst -> {
+  group_by: d is ts.day, h is ts.hour
+  aggregate: c is count()
+}
 `;
 
 const SHAPE: Shape = {
@@ -166,7 +218,14 @@ interface Case {
    servedBy?: string;
    /** Text the view leg's decline detail must carry, by tier. */
    declinedBecause?: Partial<Record<Tier, string>>;
+   /**
+    * The served copy's skip reason, when it declines a `storage=` table (a
+    * colocated one's path report does not list the served copy's skip).
+    */
+   servedSkipReason?: string;
 }
+
+const BOTH: Tier[] = ["storage", "colocated"];
 
 const CASES: Case[] = [
    // Bug A: a timestamp truncation under a time zone.
@@ -228,29 +287,114 @@ const CASES: Case[] = [
       name: "a query-shaped source's zoned truncations, through the served copy",
       malloy: "run: zoned_src -> { select: *; order_by: h }",
       liveIn: ["storage", "colocated"],
+      servedSkipReason: "TIME_ZONE",
    },
    {
       name: "a query that sets a time zone over a query-shaped source's truncations, through the served copy",
       malloy:
          "run: utc_src -> { timezone: 'America/New_York'; select: *; order_by: h }",
       liveIn: ["storage", "colocated"],
+      servedSkipReason: "TIME_ZONE",
    },
    {
       name: "a query-shaped source with its own time zone, through the served copy",
       malloy: "run: zoned_own_src -> { select: *; order_by: h }",
       liveIn: ["storage", "colocated"],
+      servedSkipReason: "TIME_ZONE",
    },
    {
       name: "a later stage over a query-shaped source with its own time zone, through the served copy",
       malloy:
          "run: zoned_own_src -> { group_by: m is d.month; aggregate: n is c.sum(); order_by: m }",
       liveIn: ["storage", "colocated"],
+      servedSkipReason: "TIME_ZONE",
    },
    {
       name: "a later stage over a query-shaped source's zoned truncation, through the served copy",
       malloy:
          "run: zoned_src -> { group_by: m is d.month; aggregate: n is c.sum(); order_by: m }",
       liveIn: ["storage", "colocated"],
+      servedSkipReason: "TIME_ZONE",
+   },
+   // A zone the read is not built in declines only the queries that read a
+   // truncation; every other query stays on the table.
+   {
+      name: "S1: a zoned query-shaped source serves a query that reads no truncation",
+      malloy: "run: zoned_src -> { aggregate: n is c.sum() }",
+      servedBy: "materialized",
+   },
+   {
+      name: "S4: a caller's zone over a table, reading no truncation, stays served",
+      malloy:
+         "run: utc_src -> { timezone: 'America/New_York'; aggregate: n is c.sum() }",
+      servedBy: "materialized",
+   },
+   {
+      name: "a caller's explicit UTC over a table's truncations stays served",
+      malloy: "run: utc_src -> { timezone: 'UTC'; select: *; order_by: h }",
+      servedBy: "materialized",
+   },
+   {
+      name: "S5: an extension that sets a zone over a table's truncations answers live",
+      malloy:
+         "run: utc_ny -> { group_by: d; aggregate: n is c.sum(); order_by: d }",
+      liveIn: BOTH,
+      servedSkipReason: "TIME_ZONE",
+   },
+   {
+      name: "S5: an extension that sets a zone, reading no truncation, stays served",
+      malloy: "run: utc_ny -> { aggregate: n is c.sum() }",
+      servedBy: "materialized",
+   },
+   {
+      name: "an extension that sets UTC over a table's truncations stays served",
+      malloy:
+         "run: utc_utc -> { group_by: d; aggregate: n is c.sum(); order_by: d }",
+      servedBy: "materialized",
+   },
+   // Across daylight-saving changes, and in zones other than New York.
+   {
+      name: "a view's New York day and hour across DST",
+      malloy: "run: dst -> ny",
+   },
+   {
+      name: "a view's Sydney truncations across DST",
+      malloy: "run: dst -> syd",
+   },
+   {
+      name: "a later stage over a view's Sydney truncations",
+      malloy:
+         "run: dst -> syd -> { group_by: m; aggregate: t is n.sum(); order_by: m }",
+   },
+   {
+      name: "a Kolkata query-shaped source's truncations answer live",
+      malloy: "run: dst_kol -> { select: *; order_by: h }",
+      liveIn: BOTH,
+      servedSkipReason: "TIME_ZONE",
+   },
+   {
+      name: "a Kolkata query-shaped source serves a query that reads no truncation",
+      malloy: "run: dst_kol -> { aggregate: t is c.sum() }",
+      servedBy: "materialized",
+   },
+   {
+      name: "a caller's Kolkata zone over a table's truncations across DST answers live",
+      malloy:
+         "run: dst_utc -> { timezone: 'Asia/Kolkata'; select: *; order_by: h }",
+      liveIn: BOTH,
+      servedSkipReason: "TIME_ZONE",
+   },
+   {
+      name: "a caller's New York filter on a truncation across DST answers live",
+      malloy:
+         "run: dst_utc -> { timezone: 'America/New_York'; where: d = @2024-11-03; aggregate: t is c.sum() }",
+      liveIn: BOTH,
+      servedSkipReason: "TIME_ZONE",
+   },
+   {
+      name: "a table's truncations across DST, read in UTC, stay served",
+      malloy: "run: dst_utc -> { select: *; order_by: h }",
+      servedBy: "materialized",
    },
 ];
 
@@ -329,6 +473,9 @@ for (const { name: variantName, tier, storeUncast } of VARIANTS) {
             expect(s.answer.servedBy).toBe(want);
             expect(rowDifference(l.answer.rows, s.answer.rows)).toBeUndefined();
             expect(metadata(s.answer)).toEqual(metadata(l.answer));
+            if (c.servedSkipReason && tier === "storage") {
+               expect(s.answer.servedSkip?.reason).toBe(c.servedSkipReason);
+            }
             const because = c.declinedBecause?.[tier];
             if (because) expect(s.answer.viewSkip?.detail).toContain(because);
          });
