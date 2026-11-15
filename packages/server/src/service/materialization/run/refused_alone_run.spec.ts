@@ -20,6 +20,7 @@ import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName } from "../../identity";
 import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { MaterializationService } from "./materialization_service";
+import { BuildPlanUnavailableError } from "../../../errors";
 
 /**
  * One source's VALID annotation Publisher cannot build refuses that source
@@ -155,7 +156,7 @@ describe("a run beside a source refused alone", () => {
       );
    });
 
-   it("refuses a run over files the load refused: a save that broke an annotation is never built", async () => {
+   it("refuses, at creation (409), a run of a package whose last reload refused its files", async () => {
       // The package loaded; then a save gave a source an invalid annotation,
       // which its reload refuses, so it serves the model from before.
       fs.writeFileSync(
@@ -165,9 +166,25 @@ describe("a run beside a source refused alone", () => {
       await expect(
          env.getPackage(parsePackageName("pa"), true),
       ).rejects.toThrow("[persist-unknown-key]");
+      const err = await service
+         .createMaterialization(ENV, "pa", {})
+         .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BuildPlanUnavailableError);
+      expect(await tables()).toEqual([]);
+   });
+
+   it("refuses a run over files on disk the load would refuse, with the load's own text", async () => {
+      // Saved, never reloaded: the run compiles the files, and its guard
+      // reads the load gate's text off them (an invalid incremental
+      // declaration here, which the plan's findings alone do not carry).
+      fs.writeFileSync(
+         path.join(envPath, "pa", "model.malloy"),
+         MODEL.replace("#@ persist\n", '#@ persist refresh="incremental"\n'),
+      );
       const run = await build();
       expect(run.status).toBe("FAILED");
-      expect(run.error).toContain("its files carry");
+      expect(run.error).toContain("no watermark=");
+      expect(run.error).toContain("[persist-invalid]");
       expect(await tables()).toEqual([]);
    });
 

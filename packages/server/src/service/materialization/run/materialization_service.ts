@@ -10,7 +10,6 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { getPersistCollisionEnforce } from "../../../config";
-import { codedLine } from "../../annotation_reader";
 import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
@@ -37,6 +36,8 @@ import {
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import { CompiledBuildPlan } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
+import { deriveBuildPlanOutcome } from "../plan/build_plan";
+import { loadGateText } from "../plan/load_gate_text";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -384,6 +385,18 @@ export class MaterializationService {
          false,
          version !== null ? { versionId: VersionRef.parse(version) } : {},
       );
+      // A package that serves an older model than its files (its last reload
+      // refused them) is not run: the run would build the files the reload
+      // refused. Refused here, a 409, so a schedule does not pile up failed
+      // runs; the run itself checks again.
+      if (
+         version === null &&
+         (environment.getStaleCompileErrors?.().has(packageName) ?? false)
+      ) {
+         throw new BuildPlanUnavailableError(
+            `Package ${packageName} serves an older model than its files: its last reload refused them. Fix the files and reload the package, then run again.`,
+         );
+      }
       // Whose tables a version's run builds (see materialization_scope).
       const scope =
          version !== null
@@ -709,32 +722,36 @@ export class MaterializationService {
          // A version's files never change; only the unversioned package a
          // reload replaces can be stale.
          const stale =
-            versionId === undefined
-               ? (environment.getStaleCompileErrors?.().get(packageName) as
-                    | { message?: string }
-                    | undefined)
-               : undefined;
-         const invalid = (compiled.annotationFindings ?? []).filter(
-            (f) =>
-               f.tier === "malformed" &&
-               // Under the operator's opt-out a collision is refused alone.
-               (f.code !== "materialization-table-collision" ||
-                  getPersistCollisionEnforce()),
+            versionId === undefined &&
+            (environment.getStaleCompileErrors?.().has(packageName) ?? false);
+         // The load gate's own text, read off the plan this run derives
+         // (plan/load_gate_text.ts), so the run and the load agree.
+         const derived = deriveBuildPlanOutcome(
+            compiled,
+            pkg.getMaterializationConfig?.() ?? null,
+            owned !== undefined ? "version" : undefined,
          );
-         if (stale || invalid.length > 0) {
+         const invalid = loadGateText(
+            {
+               plan: derived.plan,
+               annotationFindings: derived.annotationFindings,
+               incrementalDeclarations: derived.incrementalDeclarations,
+               ...(derived.materializePlans
+                  ? { materializePlans: derived.materializePlans }
+                  : {}),
+            },
+            {
+               enforceCollisions: getPersistCollisionEnforce(),
+               versionScoped: owned !== undefined,
+            },
+         );
+         if (stale || invalid) {
             throw new BadRequestError(
-               `Package ${packageName} is not built: its files carry ` +
-                  (invalid.length > 0
-                     ? `an invalid materialization annotation, which its load refuses:\n${invalid
-                          .map((f) =>
-                             codedLine(
-                                `${f.model ? `${f.model}: ` : ""}${f.message}`,
-                                f.code,
-                             ),
-                          )
-                          .join("\n")}`
-                     : `a change its last reload refused, so it serves an ` +
-                       `older model: ${stale?.message ?? "see its load error"}`) +
+               `Package ${packageName} is not built: ` +
+                  (invalid
+                     ? `its files carry an invalid materialization annotation, which its load refuses:\n${invalid}`
+                     : "its files changed and its last reload refused them, " +
+                       "so it serves an older model") +
                   `\nFix the files and reload the package, then run again.`,
             );
          }

@@ -2153,7 +2153,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * Resolves true when it was derived.
     */
    public refreshBuildPlan(
-      options: { retryFailed?: boolean } = {},
+      options: { retryFailed?: boolean; isStale?: () => boolean } = {},
    ): Promise<boolean> {
       return this.materialization.refreshBuildPlan(async () => {
          const outcome = await loadOutcomeOrThrow(
@@ -2375,10 +2375,32 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * and the load.
     */
    public formatInvalidAnnotations(): string {
-      const nearMisses = this.materializationNearMisses().map((w) =>
+      return [
+         this.materialization.formatInvalidAnnotations(),
+         ...this.materializationNearMissLines(),
+      ]
+         .filter(Boolean)
+         .join("\n");
+   }
+
+   /** A misspelled materialization route or directive, one line each. */
+   private materializationNearMissLines(): string[] {
+      return this.materializationNearMisses().map((w) =>
          codedLine(`${w.model}: ${w.message}`, w.code ?? ""),
       );
-      return [this.materialization.formatInvalidAnnotations(), ...nearMisses]
+   }
+
+   /**
+    * The load gate's text: every invalid materialization annotation in the
+    * package, one line each with its code, or "" when it is valid. The load
+    * fails with it; a run over the package's files and a re-derivation read
+    * the same text off the plan they derive (plan/load_gate_text.ts).
+    */
+   public formatLoadGateText(): string {
+      return [
+         this.materialization.formatLoadGateText(),
+         ...this.materializationNearMissLines(),
+      ]
          .filter(Boolean)
          .join("\n");
    }

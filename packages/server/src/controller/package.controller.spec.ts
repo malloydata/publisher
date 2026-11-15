@@ -58,9 +58,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
@@ -107,9 +105,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       const versions = versionsPublishing(mockPackage);
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -159,9 +155,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       // installPackage mimics the real contract: invoke the validator and, if it
       // returns a message, throw BadRequestError (after its internal rollback).
@@ -219,9 +213,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
       const getEnvironment = sinon
@@ -265,9 +257,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -305,9 +295,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       const environment = {
          getVersionService: () => versionsPublishing(mockPackage),
@@ -343,9 +331,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       const installPackage = sinon
          .stub()
@@ -404,9 +390,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => incrementalMsg,
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => incrementalMsg,
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -444,9 +428,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
       const getEnvironment = sinon
@@ -487,9 +469,7 @@ describe("deprecated: explores — PackageController.updatePackage validation", 
          formatInvalidExplores: (override?: string[]) =>
             override?.includes("nope.malloy") ? invalidMsg : "",
          formatInvalidPersistencePolicy: () => "",
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       };
       const installPackage = sinon
          .stub()
@@ -780,9 +760,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
                   getPackageMetadata: () => fetched,
                   formatInvalidExplores: () => "",
                   formatInvalidPersistencePolicy: () => "",
-                  formatInvalidAnnotations: () => "",
-                  formatInvalidIncrementalPolicy: () => "",
-                  formatInvalidPreaggregatePolicy: () => "",
+                  formatLoadGateText: () => "",
                });
                admitted = options.admit(
                   options.update,
@@ -1326,9 +1304,7 @@ describe("PackageController.addPackage manifestLocation", () => {
    const installedPackage = {
       formatInvalidExplores: () => "",
       formatInvalidPersistencePolicy: () => "",
-      formatInvalidAnnotations: () => "",
-      formatInvalidIncrementalPolicy: () => "",
-      formatInvalidPreaggregatePolicy: () => "",
+      formatLoadGateText: () => "",
    };
 
    function addPackageController(environment: object) {
@@ -1403,9 +1379,7 @@ describe("PackageController.addPackage manifestLocation", () => {
       const installPackage = sinon.stub().resolves({
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
-         formatInvalidAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
+         formatLoadGateText: () => "",
       });
       const environment = { getVersionService: () => null, installPackage };
       const environmentStore = fakeOf<PackageAdmin>({
@@ -1617,9 +1591,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
    const installedPackage = {
       formatInvalidExplores: () => "",
       formatInvalidPersistencePolicy: () => "",
-      formatInvalidAnnotations: () => "",
-      formatInvalidIncrementalPolicy: () => "",
-      formatInvalidPreaggregatePolicy: () => "",
+      formatLoadGateText: () => "",
    };
 
    afterEach(() => {

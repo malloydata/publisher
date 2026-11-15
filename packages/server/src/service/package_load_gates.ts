@@ -31,9 +31,7 @@ export interface LoadGatedPackage {
    underListing<T>(listing: Listing | undefined, judge: () => T): T;
    formatInvalidExplores(exploresOverride?: string[]): string;
    formatInvalidPersistencePolicy(): string;
-   formatInvalidAnnotations(): string;
-   formatInvalidIncrementalPolicy(): string;
-   formatInvalidPreaggregatePolicy(): string;
+   formatLoadGateText(): string;
    formatClassificationLeaks(): string;
    formatArrayQueryJoins(): string;
    formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string;
@@ -145,13 +143,7 @@ function judgeLoadGates(
    // BadRequestError gives a 400 (a control plane defaults to 424); the
    // message carries every one, with its code, so one republish fixes them
    // all. A valid annotation Publisher cannot build only warns.
-   const invalid = [
-      pkg.formatInvalidAnnotations(),
-      pkg.formatInvalidIncrementalPolicy(),
-      pkg.formatInvalidPreaggregatePolicy(),
-   ]
-      .filter(Boolean)
-      .join("\n");
+   const invalid = pkg.formatLoadGateText();
    if (invalid) {
       // Logged too: the throw is the author's copy, the log the operator's.
       logger.error(

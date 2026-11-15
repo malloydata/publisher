@@ -329,6 +329,15 @@ describe("re-deriving after a connection edit", () => {
       expect(err).toBeInstanceOf(BuildPlanUnavailableError);
    });
 
+   it("a re-derivation of a package that serves an older model than its files fails", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      v1.markBuildPlanStale();
+      const derived = await v1.refreshBuildPlan({ isStale: () => true });
+      expect(derived).toBe(false);
+      expect(v1.isBuildPlanUnavailable()).toBe(true);
+   });
+
    it("run creation waits for the re-derivation and validates against the new plan, end to end", async () => {
       const env = await newEnvironment();
       const v1 = (await publish(env, source("1.0.0"))).loaded;

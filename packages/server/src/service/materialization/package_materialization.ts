@@ -10,12 +10,8 @@ import {
    codedLine,
    findingSeverity,
    MATERIALIZATION_STORAGE_MODE_CODE,
-   MATERIALIZATION_TABLE_COLLISION_CODE,
-   MATERIALIZE_INVALID_CODE,
-   PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
    PERSIST_SOURCE_REFUSED_ALIAS_CODE,
-   PERSIST_VIEW_INVALID_CODE,
    PREAGGREGATE_INVALID_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
@@ -51,7 +47,15 @@ import type {
    SourceEligibility,
 } from "./plan/build_plan";
 import { computePackageBuildPlan } from "./plan/build_plan_compile";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "./text/read_text";
+import {
+   collisionGateLines,
+   incrementalGateLines,
+   incrementalPolicySourcesOf,
+   invalidFindingLines,
+   loadGateText,
+   planCollisions,
+   relaxedCollision,
+} from "./plan/load_gate_text";
 import type { MaterializePlan } from "./plan/build_file_generator";
 import {
    incrementalPolicyAdvisories,
@@ -104,11 +108,6 @@ import {
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { storageTablePath } from "./domain/storage_table_path";
-import {
-   describeMembers,
-   membersOnOneTable,
-   persistTableTarget,
-} from "./plan/eligibility_collect";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { CLASSIFICATION_COVERAGE } from "../classification";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
@@ -462,8 +461,8 @@ export class PackageMaterialization {
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
          // `?? []`: an outcome a worker built before this field existed.
-         this.annotationFindings = (annotationFindings ?? []).map(
-            relaxedCollision,
+         this.annotationFindings = (annotationFindings ?? []).map((f) =>
+            relaxedCollision(f, getPersistCollisionEnforce()),
          );
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
@@ -485,22 +484,12 @@ export class PackageMaterialization {
                });
             }
          }
-         this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
-            .filter(([sourceID]) => incrementalDeclarations[sourceID])
-            .map(([sourceID, source]) => ({
-               ...(persistedViews.get(sourceID) ?? { sourceName: source.name }),
-               invalidCode: persistedViews.has(sourceID)
-                  ? PERSIST_VIEW_INVALID_CODE
-                  : materializePlans?.[sourceID]
-                    ? MATERIALIZE_INVALID_CODE
-                    : PERSIST_INVALID_CODE,
-               modelPath: source.modelPath,
-               dialect: source.dialect,
-               storageDestination: source.annotationFields?.storage,
-               // So the gate can spot two sources resolving to one table.
-               sourceEntityId: source.sourceEntityId,
-               declaration: incrementalDeclarations[sourceID],
-            }));
+         this.incrementalPolicySources = incrementalPolicySourcesOf(
+            plan,
+            incrementalDeclarations,
+            materializePlans,
+            persistedViews,
+         );
          recordBuildPlanComputeDuration(
             workerPlan
                ? workerPlan.durationMs
@@ -1177,7 +1166,14 @@ export class PackageMaterialization {
     */
    refreshBuildPlan(
       derive: () => Promise<LoadPackageOutcome["buildPlan"]>,
-      { retryFailed = false }: { retryFailed?: boolean } = {},
+      {
+         retryFailed = false,
+         isStale,
+      }: {
+         retryFailed?: boolean;
+         /** Whether the package serves an older model than its files. */
+         isStale?: () => boolean;
+      } = {},
    ): Promise<boolean> {
       const run = this.buildPlanRefreshChain.then(async () => {
          // A retry of a failed re-derivation runs while the plan is
@@ -1205,21 +1201,41 @@ export class PackageMaterialization {
          try {
             workerPlan = await derive();
             // The files on disk now carry an invalid annotation (a save the
-            // load refused): that plan is not this package's, so the
-            // re-derivation fails, keeping what serves, and no run builds it.
+            // load refused), or the package serves an older model than its
+            // files (a reload refused them): that plan is not this
+            // package's, so the re-derivation fails, keeping what serves,
+            // and no run builds it.
             const invalid = workerPlan?.ok
-               ? invalidFindingsText(
-                    (workerPlan.outcome.annotationFindings ?? []).map(
-                       relaxedCollision,
-                    ),
+               ? loadGateText(
+                    {
+                       plan: workerPlan.outcome.plan,
+                       annotationFindings:
+                          workerPlan.outcome.annotationFindings ?? [],
+                       incrementalDeclarations:
+                          workerPlan.outcome.incrementalDeclarations ?? {},
+                       ...(workerPlan.outcome.materializePlans
+                          ? {
+                               materializePlans:
+                                  workerPlan.outcome.materializePlans,
+                            }
+                          : {}),
+                    },
+                    {
+                       enforceCollisions: getPersistCollisionEnforce(),
+                       versionScoped: this.versionOwnsTables(),
+                    },
                  )
                : "";
-            if (invalid) {
+            const stale = isStale?.() ?? false;
+            if (invalid || stale) {
                workerPlan = {
                   ok: false,
-                  error:
-                     "The package's files carry an invalid materialization " +
-                     `annotation, which its load refused: ${invalid}`,
+                  error: invalid
+                     ? "The package's files carry an invalid materialization " +
+                       `annotation, which its load refuses:\n${invalid}`
+                     : "The package's files changed and its last reload " +
+                       "refused them, so it serves an older model; reload " +
+                       "it once they are fixed.",
                   durationMs: 0,
                   digestSkipped: [],
                   eligibilityRefused: {},
@@ -2187,22 +2203,29 @@ export class PackageMaterialization {
     * annotation Publisher cannot build is a `*-not-built` warning instead.
     */
    formatInvalidAnnotations(): string {
-      const lines = invalidFindingLines(this.annotationFindings);
-      if (getPersistCollisionEnforce()) {
-         const collisions = this.persistenceCollisionWarnings();
-         if (collisions.length > 0) {
-            lines.push(
-               ...collisions.map((c) =>
-                  codedLine(c, MATERIALIZATION_TABLE_COLLISION_CODE),
-               ),
-               // The operator's opt-out, named once, after the author's fix.
-               "A deployment that must load such a package anyway can set " +
-                  "PERSIST_COLLISION_ENFORCE=false, which warns instead and " +
-                  "serves the colliding sources live.",
-            );
-         }
-      }
-      return lines.join("\n");
+      return [
+         ...invalidFindingLines(this.annotationFindings),
+         ...(getPersistCollisionEnforce()
+            ? collisionGateLines(this.persistenceCollisions())
+            : []),
+      ].join("\n");
+   }
+
+   /**
+    * The materialization half of the load gate's text, or "" when the
+    * package is valid: its invalid annotations and collisions, its invalid
+    * incremental declarations, and its invalid `#@ preaggregate` ones (the
+    * loaded models'). The package adds the near misses. The same text a run
+    * over the files and a re-derivation read (plan/load_gate_text.ts).
+    */
+   formatLoadGateText(): string {
+      return [
+         this.formatInvalidAnnotations(),
+         this.formatInvalidIncrementalPolicy(),
+         this.formatInvalidPreaggregatePolicy(),
+      ]
+         .filter(Boolean)
+         .join("\n");
    }
 
    /** The {@link persistencePolicyWarnings}, one per line, or "" if valid. */
@@ -2224,13 +2247,7 @@ export class PackageMaterialization {
     * `*-invalid` code, or "" if valid.
     */
    formatInvalidIncrementalPolicy(): string {
-      return this.incrementalPolicySources
-         .flatMap((source) =>
-            incrementalPolicyRejections([source]).map((m) =>
-               codedLine(m, source.invalidCode ?? PERSIST_INVALID_CODE),
-            ),
-         )
-         .join("\n");
+      return incrementalGateLines(this.incrementalPolicySources).join("\n");
    }
 
    /**
@@ -2322,139 +2339,23 @@ export class PackageMaterialization {
       code: string;
       subject: string;
    }[] {
-      type Member = {
-         address: string;
-         name: string;
-         model?: string;
-         written?: string;
-         kind: string;
-      };
-      const targets = new Map<
-         string,
-         { name: string; destination: string; members: Member[] }
-      >();
-      for (const [sourceID, source] of Object.entries(
-         this.buildPlan?.sources ?? {},
-      )) {
-         // The one definition of a collision, shared with the serve refusal.
-         const materialize = this.materializePlans?.[sourceID];
-         const target = persistTableTarget(
-            source.annotationFields ?? {},
-            source.name,
-            source.connectionName,
-            {
-               ...(materialize
-                  ? { defaulted: !!materialize.nameDefaulted }
-                  : {}),
-               ...(source.dialect ? { dialect: source.dialect } : {}),
-               // Only a published version names its tables per version.
-               ...(this.owner.metadata().scope === "version" &&
-               this.owner.versionId() !== undefined
-                  ? { versionScoped: true }
-                  : {}),
-               identity: sourceID,
-            },
-         );
-         const bucket = targets.get(target.key) ?? {
-            name: target.name,
-            destination: target.destination,
-            members: [],
-         };
-         // One member per content address: identical-content imports are
-         // one source.
-         if (!bucket.members.some((m) => m.address === source.sourceEntityId)) {
-            bucket.members.push({
-               address: source.sourceEntityId,
-               name: source.name,
-               ...(source.modelPath ? { model: source.modelPath } : {}),
-               ...(target.written !== undefined
-                  ? { written: target.written }
-                  : {}),
-               kind: refusalCodeOf(sourceID, source.name),
-            });
-         }
-         targets.set(target.key, bucket);
-      }
-      const warnings: { message: string; code: string; subject: string }[] = [];
-      for (const { name, destination, members } of targets.values()) {
-         const colliding = membersOnOneTable(members);
-         if (colliding.length < 2) continue;
-         const kinds = new Set(colliding.map((m) => m.kind));
-         const subject = [...colliding.map((m) => m.name)].sort()[0];
-         warnings.push({
-            // Refused alone under the opt-out: a view's or a query's own
-            // not-built code when every member is one, else a source's.
-            code: kinds.size === 1 ? [...kinds][0] : PERSIST_NOT_BUILT_CODE,
-            subject,
-            message:
-               `#@ persist sources ${describeMembers(colliding)} all resolve ` +
-               `to the same materialized table "${name}" in destination ` +
-               `"${destination}". Distinct sources must not share a physical ` +
-               `target — the second build would overwrite the first, and a ` +
-               `serve binding or GC drop for one would affect the other, so ` +
-               `none is built or served from it and queries on them are ` +
-               `answered live. Give each a distinct #@ persist name=.`,
-         });
-      }
-      return warnings;
-   }
-}
-
-/**
- * A `#(materialize)` table collision as this deployment judges it: invalid
- * (it fails the load) by default, or, under `PERSIST_COLLISION_ENFORCE=false`,
- * that source refused alone, as `materialize-not-built`.
- */
-function relaxedCollision(
-   finding: PackageAnnotationFinding,
-): PackageAnnotationFinding {
-   if (
-      finding.code !== MATERIALIZATION_TABLE_COLLISION_CODE ||
-      getPersistCollisionEnforce()
-   ) {
-      return finding;
-   }
-   return {
-      ...finding,
-      tier: "unservable",
-      code: "materialize-not-built",
-      message: finding.message.replace(
-         " is invalid: ",
-         " is not built, so the source is served live: ",
-      ),
-   };
-}
-
-/** The not-built code of a planned source: a persisted view's, a query's, or a source's. */
-function refusalCodeOf(sourceID: string, name: string): string {
-   const url = sourceID.slice(sourceID.indexOf("@") + 1);
-   if (url.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) {
-      if (name.endsWith("__view")) return "persist-view-not-built";
-      if (name.endsWith("__query")) return "persist-query-not-built";
-   }
-   return PERSIST_NOT_BUILT_CODE;
-}
-
-/** Each `malformed` finding as a load failure's line, with its code. */
-function invalidFindingLines(
-   findings: readonly PackageAnnotationFinding[],
-): string[] {
-   return findings
-      .filter((finding) => finding.tier === "malformed")
-      .map((finding) =>
-         codedLine(
-            `${finding.model ? `${finding.model}: ` : ""}${finding.message}` +
-               (finding.rewrite ? `; ${finding.rewrite}` : ""),
-            finding.code,
-         ),
+      return planCollisions(
+         this.buildPlan,
+         this.materializePlans,
+         this.versionOwnsTables(),
       );
-}
+   }
 
-/** {@link invalidFindingLines}, one per line, or "" when there is none. */
-function invalidFindingsText(
-   findings: readonly PackageAnnotationFinding[] | undefined,
-): string {
-   return invalidFindingLines(findings ?? []).join("\n");
+   /**
+    * Whether this package's tables are named per version: a published
+    * version of a `scope: "version"` package.
+    */
+   private versionOwnsTables(): boolean {
+      return (
+         this.owner.metadata().scope === "version" &&
+         this.owner.versionId() !== undefined
+      );
+   }
 }
 
 /** See PackageMaterialization's entry-point index. */

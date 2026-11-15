@@ -1050,7 +1050,14 @@ export class Environment {
          this.planRefreshesRunning++;
          const connections = this.lastChangedConnections;
          next
-            .refreshBuildPlan({ retryFailed })
+            .refreshBuildPlan({
+               retryFailed,
+               // A version's files never change; only the unversioned package
+               // a reload replaces can serve an older model than its files.
+               isStale: () =>
+                  next.getVersionId() === undefined &&
+                  this.getStaleCompileErrors().has(next.getPackageName()),
+            })
             .then((derived) => {
                if (derived) {
                   const backoff = this.planRefreshBackoff.get(next);

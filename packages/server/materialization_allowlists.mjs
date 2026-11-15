@@ -277,7 +277,6 @@ export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
       "2g.3",
    "service/materialization/plan/build_plan.ts#collidingRollups": "2g.3",
    "service/materialization/plan/build_plan.ts#sourceBuildOf": "2g.3",
-   "service/materialization/plan/eligibility_collect.ts#sharedTables": "2g.3",
    "service/materialization/plan/incremental_declaration.ts#IncrementalStrategy":
       "2g.3",
    "service/materialization/plan/persisted_view_compile.ts#GeneratedPersistedViews":
