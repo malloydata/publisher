@@ -111,7 +111,7 @@ export async function compilePackageBuildPlan(
       } catch (first) {
          const view = await loadLeavingOutCrossConnectionJoins({
             firstError: first,
-            readText: (url) => compiledFileText(url),
+            readText: (url) => compiledFileText(pkg.getPackagePath(), url),
             load: (files) => load(keyedOverlay(files)),
          });
          if (!view) throw first;

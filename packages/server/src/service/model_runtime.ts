@@ -21,7 +21,12 @@ import { logger } from "../logger";
 import type { SerializedNotebookCell } from "../package_load/notebook_cell_wire";
 import { safeJoinUnderRoot } from "../path_safety";
 import { BuildManifest } from "./materialization/domain/types";
-import { packageURLReader } from "../utils";
+import {
+   confinedPackagePath,
+   ImportOutsidePackageError,
+   importOutsidePackageProblem,
+   packageURLReader,
+} from "../utils";
 import { parseMalloynb } from "./deprecated/malloynb";
 import { overlayKey, overlayKeyOfPath } from "./overlay_key";
 import {
@@ -72,6 +77,22 @@ export async function createModelRuntime(
    const overlaidModel =
       options?.overlay?.has(overlayKeyOfPath(fullModelPath)) === true;
    if (!overlaidModel) {
+      // A model file that is a link out of the package is refused before it
+      // is looked at, the same whether or not its target exists.
+      // A package that is not there has no models, rather than a link out.
+      try {
+         await fs.realpath(packagePath);
+      } catch {
+         throw new ModelNotFoundError(`${modelPath} does not exist.`);
+      }
+      try {
+         await confinedPackagePath(packagePath, pathToFileURL(fullModelPath));
+      } catch (error) {
+         if (error instanceof ImportOutsidePackageError) {
+            throw importOutsidePackageProblem();
+         }
+         throw error;
+      }
       try {
          if (!(await fs.stat(fullModelPath)).isFile()) {
             throw new ModelNotFoundError(`${modelPath} is not a file.`);
@@ -221,8 +242,13 @@ async function getNotebookModelMaterializer(
    let parse = undefined;
 
    try {
-      fileContents = await fs.readFile(modelURL, "utf8");
-   } catch {
+      // Through the runtime's reader: confined to the package, overlay first.
+      const read = await runtime.urlReader.readURL(modelURL);
+      fileContents = typeof read === "string" ? read : read.contents;
+   } catch (error) {
+      if (error instanceof ImportOutsidePackageError) {
+         throw importOutsidePackageProblem();
+      }
       throw new ModelNotFoundError("Model not found: " + modelPath);
    }
 

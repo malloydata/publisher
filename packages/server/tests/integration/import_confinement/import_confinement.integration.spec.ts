@@ -422,3 +422,81 @@ describe("generated companions", () => {
       expect(body.path?.servedBy?.kind).toBe("materialized");
    }, 180_000);
 });
+
+describe("a model or notebook file that is itself a link out of the package", () => {
+   const MARKER = "TOPSECRET-NOTEBOOK-TEXT";
+   let secrets = "";
+   beforeAll(() => {
+      secrets = path.join(root, "secrets");
+      fs.mkdirSync(secrets, { recursive: true });
+      fs.writeFileSync(
+         path.join(secrets, "notes.malloynb"),
+         `>>>markdown\n# ${MARKER}\n>>>malloy\n${SECRET}`,
+      );
+      fs.writeFileSync(path.join(secrets, "model.malloy"), SECRET);
+   });
+
+   /** A package of `ok.malloy` and `link`, a symlink to `target`. */
+   function linkedPackage(folder: string, link: string, target: string) {
+      const dir = writePackage(folder, { "ok.malloy": BASE });
+      fs.symlinkSync(target, path.join(dir, link));
+      return dir;
+   }
+
+   it("refuses a notebook that links out, leaking none of its text", async () => {
+      const refused = await publishing(
+         "nblink",
+         linkedPackage(
+            "nblink",
+            "leak.malloynb",
+            path.join(secrets, "notes.malloynb"),
+         ),
+      );
+      expectRefusedImport(refused);
+      expect(refused.text).not.toContain(MARKER);
+      // Nothing was installed to read it back through.
+      const reports = await fetch(api("/nblink/reports"));
+      expect(await reports.text()).not.toContain(MARKER);
+   });
+
+   it("refuses a dangling notebook link out exactly as one whose target exists", async () => {
+      // `nopes` is spelled with as many characters as `notes`.
+      const texts: string[] = [];
+      for (const [folder, target] of [
+         ["nbone1", "notes.malloynb"],
+         ["nbone2", "nopes.malloynb"],
+      ]) {
+         const refused = await publishing(
+            folder,
+            linkedPackage(folder, "leak.malloynb", path.join(secrets, target)),
+         );
+         expectRefusedImport(refused);
+         texts.push(refused.text.replaceAll(folder, "<pkg>"));
+      }
+      expect(texts[0]).toBe(texts[1]);
+   });
+
+   it("refuses a .malloy model that links out with the import refusal, not a 500", async () => {
+      const refused = await publishing(
+         "mlink",
+         linkedPackage(
+            "mlink",
+            "leak.malloy",
+            path.join(secrets, "model.malloy"),
+         ),
+      );
+      expectRefusedImport(refused);
+      const dangling = await publishing(
+         "mlinx",
+         linkedPackage(
+            "mlinx",
+            "leak.malloy",
+            path.join(secrets, "mod3l.malloy"),
+         ),
+      );
+      expectRefusedImport(dangling);
+      expect(dangling.text.replaceAll("mlinx", "<pkg>")).toBe(
+         refused.text.replaceAll("mlink", "<pkg>"),
+      );
+   });
+});

@@ -11,8 +11,7 @@
  * view.
  */
 
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
+import { packageTextReader } from "../../../utils";
 import { getMaterializeEnabled } from "../../../config";
 import { overlayKey } from "../../overlay_key";
 import { type LeftOutDefinition } from "../text/definition_cut";
@@ -22,19 +21,17 @@ export type { LeftOutDefinition };
 
 /**
  * A file's text by URL, as a compile read it: `overlay`'s (keyed by
- * {@link overlayKey}) when it holds the file, else the file on disk.
+ * {@link overlayKey}) when it holds the file, else the file on disk, read
+ * only when it lies inside `packageRoot`.
  */
 export function compiledFileText(
+   packageRoot: string,
    url: string,
    overlay?: ReadonlyMap<string, string>,
 ): string | undefined {
    const held = overlay?.get(overlayKey(url));
    if (held !== undefined) return held;
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
+   return packageTextReader(packageRoot)(url);
 }
 
 /**

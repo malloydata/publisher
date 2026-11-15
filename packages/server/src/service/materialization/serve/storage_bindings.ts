@@ -15,8 +15,7 @@
 
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import { type ModelDef } from "@malloydata/malloy";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
+import { compiledTextReader } from "../../../utils";
 import { narrowSchemaToPublic } from "./bindings";
 import { type Binding, bindingServesModelSource } from "../domain/binding";
 import {
@@ -152,13 +151,7 @@ function ownBindingsIn(
 function authorModelLift(modelDef: ModelDef | undefined): {
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
 } {
-   return authorModelLiftContext(modelDef, (url) => {
-      try {
-         return readFileSync(fileURLToPath(url), "utf8");
-      } catch {
-         return undefined;
-      }
-   });
+   return authorModelLiftContext(modelDef, compiledTextReader(modelDef));
 }
 
 /**

@@ -11,6 +11,7 @@
  * at a seam; here it runs for real, over a plain-DuckDB file destination.
  */
 
+import { compiledTextReader } from "../../../utils";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -49,7 +50,6 @@ import { servedCopyAlias } from "../serve/served_copy_config";
 import * as session from "./materialization_build_session";
 import {
    chainedPlanFacts,
-   readAuthorFile,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
 import { StorageBuildStrategy } from "./storage_build_strategy";
@@ -241,7 +241,10 @@ async function stack(
          `${name}_t`,
          chain.facts,
          chain.facts.addressBySourceId[id]!,
-         authorModelLiftContext(source._model?._modelDef, readAuthorFile),
+         authorModelLiftContext(
+            source._model?._modelDef,
+            compiledTextReader(source._model?._modelDef),
+         ),
       );
       return { result, models: transientModels(spy) };
    } catch (error) {
@@ -718,6 +721,55 @@ source: monthly is daily -> {
          expect(text && "rerooted" in text ? text.rerooted : []).toEqual([
             "daily",
          ]);
+      });
+
+      it("follows only the imports the compile resolved, never one inside a comment", async () => {
+         // A secret outside the package, and a path that does not exist: the
+         // text that names them is not an import, so neither is read, and the
+         // answer is the same for both.
+         const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "outside-"));
+         dirs.push(outsideDir);
+         const secret = path.join(outsideDir, "secret.malloy");
+         fs.writeFileSync(secret, "source: secret is duckdb.sql('SELECT 1')\n");
+         const missing = path.join(outsideDir, "absent.malloy");
+         const answers: string[] = [];
+         for (const target of [secret, missing]) {
+            const chain = await planChain(
+               // A line that reads as an import, inside a block comment.
+               `/*\nimport "${target}"\n*/\n${CHAIN}`,
+            );
+            const { id, source } = chain.byName("monthly");
+            const address =
+               chain.facts.addressBySourceId[chain.byName("daily").id]!;
+            const text = chainBuildText(
+               {
+                  downstream: { sourceID: id, name: source.name },
+                  destination: { name: "lake", schema: "main" },
+                  upstreams: [
+                     {
+                        entry: parentEntry(chain, "daily")[address],
+                        names: { daily: [chain.byName("daily").id] },
+                     },
+                  ],
+               },
+               {
+                  modelPath: "m.malloy",
+                  modelDef: source._model?._modelDef,
+                  context: [chain.dir, {} as never, {}],
+               },
+            );
+            expect(
+               text && "declined" in text ? text.declined : undefined,
+            ).toBeUndefined();
+            const files = text && "files" in text ? [...text.files.keys()] : [];
+            expect(files.some((url) => url.includes(outsideDir))).toBe(false);
+            answers.push(
+               JSON.stringify(
+                  text && "rerooted" in text ? text.rerooted : null,
+               ),
+            );
+         }
+         expect(answers[0]).toBe(answers[1]);
       });
    },
 );

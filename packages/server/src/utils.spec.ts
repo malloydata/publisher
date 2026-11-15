@@ -1,12 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import { IMPORT_OUTSIDE_PACKAGE_MESSAGE, readPackageURL } from "./utils";
+import {
+   compiledImports,
+   compiledTextReader,
+   IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+   listPackageTree,
+   packageTextReader,
+   readPackageURL,
+   readPackageURLSync,
+} from "./utils";
 
 /**
  * The package URL reader: a model reads its own package's files and nothing
@@ -82,12 +90,18 @@ describe("readPackageURL", () => {
       expect(
          await outcome(mount, url(path.join(mount, "models", "a.malloy"))),
       ).toBe("READ:a");
-      // Either spelling of the root, against either spelling of the file.
-      expect(await outcome(mount, url(path.join(pkg, "top.malloy")))).toBe(
-         "READ:top",
-      );
+      // The mount as the root, against the file by either the mount or its realpath.
+      expect(
+         await outcome(
+            mount,
+            url(path.join(fs.realpathSync(pkg), "top.malloy")),
+         ),
+      ).toBe("READ:top");
+      // A spelling outside both the root as given and its realpath is
+      // refused lexically, even when it leads back in: compiles name files
+      // under the root as given, so only an absolute import spells one so.
       expect(await outcome(pkg, url(path.join(mount, "top.malloy")))).toBe(
-         "READ:top",
+         IMPORT_OUTSIDE_PACKAGE_MESSAGE,
       );
    });
 
@@ -163,5 +177,97 @@ describe("readPackageURL", () => {
       );
       expect(message).toContain("ENOENT");
       expect(message).not.toBe(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+   });
+
+   it("refuses a path outside the package before asking the filesystem about it", async () => {
+      const realpath = spyOn(fs.promises, "realpath");
+      const lstat = spyOn(fs.promises, "lstat");
+      try {
+         for (const target of [
+            path.join(tmp, "env", "other", "x.malloy"),
+            path.join(tmp, "env", "other", "nope.malloy"),
+         ]) {
+            realpath.mockClear();
+            lstat.mockClear();
+            expect(await outcome(pkg, url(target))).toBe(
+               IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+            );
+            // Only the root is resolved; the target is never looked at.
+            expect(realpath.mock.calls.map((c) => String(c[0]))).toEqual([pkg]);
+            expect(lstat).not.toHaveBeenCalled();
+         }
+      } finally {
+         realpath.mockRestore();
+         lstat.mockRestore();
+      }
+   });
+});
+
+describe("readPackageURLSync and packageTextReader", () => {
+   it("read inside the package and refuse outside it, as the async reader does", () => {
+      const fromSub = new URL(
+         "../a.malloy",
+         url(path.join(pkg, "models/sub/b.malloy")),
+      );
+      expect(readPackageURLSync(pkg, fromSub)).toBe("a");
+      for (const target of [
+         url(path.join(tmp, "env", "other", "x.malloy")),
+         url(path.join(tmp, "env", "other", "nope.malloy")),
+         url(path.join(pkg, "out", "x.malloy")),
+         url(path.join(pkg, "gone")),
+         new URL("https://example.com/x.malloy"),
+      ]) {
+         expect(() => readPackageURLSync(pkg, target)).toThrow(
+            IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+         );
+      }
+      const read = packageTextReader(pkg);
+      expect(read(url(path.join(pkg, "top.malloy")).href)).toBe("top");
+      expect(read(url(path.join(pkg, "out", "x.malloy")).href)).toBeUndefined();
+      expect(read("not a url")).toBeUndefined();
+   });
+});
+
+describe("listPackageTree", () => {
+   it("lists the package's files, a dangling link among them, and nothing behind a directory link out", async () => {
+      const listed = (await listPackageTree(pkg))
+         .map((p) => path.relative(pkg, p))
+         .sort();
+      expect(listed).toEqual([
+         "alias/a.malloy",
+         "alias/sub/b.malloy",
+         "gone",
+         "models/a.malloy",
+         "models/sub/b.malloy",
+         "top.malloy",
+      ]);
+   });
+});
+
+describe("compiledTextReader and compiledImports", () => {
+   // The shape a compiled modelDef carries: the model's own file through a
+   // declaration's location, and its import tree.
+   const own = () => url(path.join(pkg, "models", "sub", "b.malloy")).href;
+   const imported = () => url(path.join(pkg, "models", "a.malloy")).href;
+   const modelDef = () => ({
+      contents: { b: { location: { url: own() } } },
+      dependencies: { [imported()]: {} },
+   });
+
+   it("reads only the files the model compiled from", () => {
+      const read = compiledTextReader(modelDef(), pkg);
+      expect(read(own())).toBe("b");
+      expect(read(imported())).toBe("a");
+      // In the package, but not a file this model read.
+      expect(read(url(path.join(pkg, "top.malloy")).href)).toBeUndefined();
+      expect(
+         read(url(path.join(tmp, "env", "other", "x.malloy")).href),
+      ).toBeUndefined();
+   });
+
+   it("answers a file's imports from the compiled tree", () => {
+      const importsOf = compiledImports(modelDef());
+      expect(importsOf(own())).toEqual([imported()]);
+      expect(importsOf(imported())).toEqual([]);
    });
 });

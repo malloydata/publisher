@@ -154,7 +154,9 @@ export async function planModelFileEntities(
    options: PlanModelEntitiesOptions,
 ): Promise<ModelEntitiesPlan> {
    const run = () => planOrFail(file, options);
-   return options.texts ? withModelTextCache(run, options.texts) : run();
+   return options.texts
+      ? withModelTextCache(run, options.texts, options.packageRoot)
+      : run();
 }
 
 async function planOrFail(

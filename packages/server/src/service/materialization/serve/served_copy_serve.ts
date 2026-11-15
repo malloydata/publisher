@@ -27,8 +27,6 @@ import {
    modelDefOf,
    queryTimezoneOf,
 } from "../../governance/ir/compiled_model";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
 import {
    MalloyError,
    MalloyConfig,
@@ -148,6 +146,7 @@ import {
 import type { LeftOutDefinition } from "../text/definition_cut";
 import { LegDecline, type ServedCopyDeclineCode } from "../domain/leg_decline";
 import type { ServedCopyProblemReason } from "../domain/source_decline";
+import { compiledImports, compiledTextReader } from "../../../utils";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -482,20 +481,8 @@ export interface ServedCopyJoinBasis {
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
 
-/** An `import` statement's target, which the chained build's text follows. */
-const IMPORT_TARGET = /^\s*import\b[^"'\n]*["']([^"']+)["']/gm;
-
 /** The flag a model's `#@ persist` sources are planned under. */
 const PERSISTENCE_FLAG = /^\s*##!\s*experimental[^\n]*persistence/m;
-
-/** An author file's text by URL, or undefined when it cannot be read. */
-function readAuthorText(url: string): string | undefined {
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
-}
 
 /** One model's served copy. */
 export class ServedCopyServe {
@@ -1543,7 +1530,10 @@ export class ServedCopyServe {
    ): ChainBuildText {
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
-      const lift = authorModelLiftContext(modelDef, readAuthorText);
+      const lift = authorModelLiftContext(
+         modelDef,
+         compiledTextReader(modelDef, this.packagePath),
+      );
       const problems: ServedCopyProblem[] = [];
       const { candidates } = this.rerootCandidates(
          bindings.filter((b) => b.kind !== "rollup"),
@@ -1609,7 +1599,9 @@ export class ServedCopyServe {
          keepAt(at?.url, at?.range);
       }
       for (const c of candidates) keepAt(c.reroot.url, c.reroot.range);
-      // Every file the downstream's file reaches by import, blanked.
+      // Every file the downstream's file reaches by import, blanked: the
+      // imports the compile resolved, never text that only looks like one.
+      const importsOf = compiledImports(modelDef);
       const blanked = new Map<string, string>();
       const pending = [location.url];
       while (pending.length > 0) {
@@ -1624,15 +1616,7 @@ export class ServedCopyServe {
             return why(`a file it reaches could not be read (${url})`);
          }
          blanked.set(url, kept);
-         for (const m of text.matchAll(IMPORT_TARGET)) {
-            try {
-               pending.push(new URL(m[1], url).href);
-            } catch {
-               return why(
-                  `an import it reaches could not be resolved (${m[1]})`,
-               );
-            }
-         }
+         pending.push(...importsOf(url));
       }
       const copy = buildServedCopy(
          candidates.map((c) => c.reroot),
@@ -1815,7 +1799,10 @@ export class ServedCopyServe {
       }
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
-      const lift = authorModelLiftContext(modelDef, readAuthorText);
+      const lift = authorModelLiftContext(
+         modelDef,
+         compiledTextReader(modelDef, this.packagePath),
+      );
       const prepared = this.rerootCandidates(
          bindings,
          map,
@@ -3901,7 +3888,10 @@ export function chainBuildText(
    request: ChainBuildRequest,
    model: ChainBuildModel,
 ): ChainBuildText | undefined {
-   const lift = authorModelLiftContext(model.modelDef, readAuthorText);
+   const lift = authorModelLiftContext(
+      model.modelDef,
+      compiledTextReader(model.modelDef, model.context[0]),
+   );
    if (!lift.sourceNameById.has(request.downstream.sourceID)) return undefined;
    const entries: Record<string, ManifestEntry> = {};
    const aliases: Record<string, string[]> = {};

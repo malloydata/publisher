@@ -36,7 +36,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { parentPort, threadId, workerData } from "node:worker_threads";
-import recursive from "recursive-readdir";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import {
@@ -83,7 +82,14 @@ import {
    ignoredRetrievalWarnings,
    readPackageRetrieval,
 } from "../service/package_retrieval_settings";
-import { errMessage, ignoreDotfiles, readPackageURL } from "../utils";
+import {
+   confinedPackagePath,
+   errMessage,
+   ImportOutsidePackageError,
+   importOutsidePackageProblem,
+   listPackageTree,
+   readPackageURL,
+} from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
 import {
@@ -646,9 +652,9 @@ async function declaredReportPaths(
       const modelPath = normalizeModelPath(entry);
       if (!known.has(modelPath) || !isReportEligiblePath(modelPath)) continue;
       try {
-         const text = await fs.promises.readFile(
-            path.join(packagePath, modelPath),
-            "utf8",
+         const text = await readPackageURL(
+            packagePath,
+            pathToFileURL(path.join(packagePath, modelPath)),
          );
          if (readReportTagOfText(text).status === "report")
             reports.add(modelPath);
@@ -785,7 +791,7 @@ async function readPackageMetadata(
  * so sorting keeps it stable across reloads and servers.
  */
 async function listPackageFiles(packagePath: string): Promise<string[]> {
-   const files = await recursive(packagePath, [ignoreDotfiles]);
+   const files = await listPackageTree(packagePath);
    return (
       files
          .map((full: string) =>
@@ -1091,7 +1097,10 @@ async function planEntitiesForMainThread(
    let text = file.texts.get(file.absolutePath);
    if (text === undefined) {
       try {
-         text = await fs.promises.readFile(file.absolutePath, "utf8");
+         text = await readPackageURL(
+            job.packagePath,
+            pathToFileURL(file.absolutePath),
+         );
       } catch {
          return undefined;
       }
@@ -1271,7 +1280,7 @@ async function compileNotebookModel(
    const importBaseURL = new URL(".", modelURL);
 
    const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
-   const fileContents = await fs.promises.readFile(modelURL, "utf8");
+   const fileContents = await readPackageURL(job.packagePath, modelURL);
    const { materializer, cells } = await compileNotebookCells(
       runtime,
       importBaseURL,
@@ -1318,6 +1327,14 @@ async function compileNotebookModel(
    };
 }
 
+/** Whether the job compiles `modelPath` from text it carries, not the disk. */
+function heldInMemory(job: LoadPackageRequest, modelPath: string): boolean {
+   return (
+      job.replacement?.modelPath === modelPath ||
+      (job.overlay ?? []).some((file) => file.modelPath === modelPath)
+   );
+}
+
 async function compileOneModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
@@ -1326,6 +1343,15 @@ async function compileOneModel(
    files: JobFiles,
 ): Promise<SerializedModel> {
    try {
+      // A model or notebook file that is itself a link out of the package is
+      // refused before it is read, as an import out of it is. Text held in
+      // memory (a dry run's replacement or overlay) is not on disk to check.
+      if (!heldInMemory(job, modelPath)) {
+         await confinedPackagePath(
+            job.packagePath,
+            pathToFileURL(path.join(job.packagePath, modelPath)),
+         );
+      }
       if (modelPath.endsWith(MODEL_FILE_SUFFIX)) {
          return await compileMalloyModel(
             job,
@@ -1360,7 +1386,9 @@ async function compileOneModel(
          // Classified before serializing (the check reads the stack), so it
          // crosses as a compile problem rather than an outage.
          compilationError: serializeError(
-            translatorMalloyError(error) ?? error,
+            error instanceof ImportOutsidePackageError
+               ? importOutsidePackageProblem()
+               : (translatorMalloyError(error) ?? error),
          ),
       };
    }

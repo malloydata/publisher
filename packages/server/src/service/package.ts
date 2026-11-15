@@ -34,7 +34,6 @@ import type { SourceAddress } from "./entities/internal_types";
 import { toApiEntities } from "./entities/to_api";
 import { isUnconditionalDenyAuthorize } from "./entities/access_gates";
 import { splitSourcePath } from "./entities/explore_walk";
-import recursive from "recursive-readdir";
 import { components } from "../api";
 import {
    getPackageLoadPool,
@@ -103,7 +102,7 @@ import type {
    ChainBuildRequest,
    ChainBuildText,
 } from "./materialization/domain/chain_build";
-import { errMessage, ignoreDotfiles } from "../utils";
+import { errMessage, listPackageTree, readPackageURL } from "../utils";
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
@@ -1817,7 +1816,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             // from the revision its range describes.
             text:
                model.getCompiledSourceText() ??
-               (await fs.readFile(absolutePath, "utf-8")),
+               (await readPackageURL(
+                  this.packagePath,
+                  pathToFileURL(absolutePath),
+               )),
          });
       }
       return modelFiles;
@@ -2791,9 +2793,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       try {
          return (
             model.getCompiledSourceText() ??
-            (await fs.readFile(
-               safeJoinUnderRoot(this.packagePath, modelPath),
-               "utf8",
+            (await readPackageURL(
+               this.packagePath,
+               pathToFileURL(safeJoinUnderRoot(this.packagePath, modelPath)),
             ))
          );
       } catch {
@@ -3657,7 +3659,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private static async getDatabasePaths(
       packagePath: string,
    ): Promise<string[]> {
-      const files = await recursive(packagePath, [ignoreDotfiles]);
+      const files = await listPackageTree(packagePath);
       return files
          .map((fullPath: string) => {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");

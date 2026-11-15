@@ -38,7 +38,6 @@ import {
    NO_PLAN_FACTS,
    noteWrongTierRecompute,
    presentedSourceName,
-   readAuthorFile,
    strictMissSourceId,
    HostSuppliedWrongTierError,
    upstreamEntryIsCurrent,
@@ -47,6 +46,7 @@ import {
 } from "./materialization_run_support";
 import type { SwapDependents } from "./name_view";
 import type { StorageBuildRequest } from "./storage_build_strategy";
+import { compiledTextReader } from "../../../utils";
 
 /** The colocated tier, in the order it is tried: a delta, else a full rebuild. */
 const COLOCATED_STRATEGIES: readonly BuildStrategy<ColocatedBuildRequest>[] = [
@@ -195,9 +195,10 @@ export class SourceBuilder {
       // `_model._modelDef` is compiler-internal. If a compiler bump removes it,
       // the walk below finds nothing and the entry carries no
       // `upstreamReuse`: a visible gap, not a wrong answer.
+      const plannedDef = plannedModelDefOf(persistSource);
       const lift = authorModelLiftContext(
-         plannedModelDefOf(persistSource),
-         readAuthorFile,
+         plannedDef,
+         compiledTextReader(plannedDef),
       );
       // A strict miss as a reason names it: a name only the generated files
       // declare by the author's source it stands for, read from the

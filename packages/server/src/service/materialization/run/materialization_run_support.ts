@@ -41,8 +41,6 @@ import { escapeSQL } from "../../connection";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 
 import type { ApiConnection } from "../../model";
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
 import { redactPgSecrets } from "../../../pg_helpers";
 import { packageRelativeText } from "../../../package_relative_text";
 
@@ -599,15 +597,6 @@ export function noteWrongTierRecompute(params: {
          reason: params.detail,
       },
    );
-}
-
-/** An author model file's text by `file:` URL, or undefined when unreadable. */
-export function readAuthorFile(url: string): string | undefined {
-   try {
-      return readFileSync(fileURLToPath(url), "utf8");
-   } catch {
-      return undefined;
-   }
 }
 
 /**

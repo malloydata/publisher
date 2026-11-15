@@ -95,11 +95,18 @@ Concretely:
   climbs past the root, an absolute path, a symlink inside the package that leads out of it, and
   any scheme but `file:` are refused. The refusal is one fixed message, "imports must stay inside
   the package", with no path in it and the same whether or not the target exists, so an import
-  cannot probe the server's disk. Virtual files (a request's overlay, `/compile`'s
-  `__compile_check.malloy`, the generated companions) are served from memory before the disk is
-  asked. This bounds the compiler, not the query: SQL a model runs through DuckDB (`read_text`,
+  cannot probe the server's disk. A path outside the root as given and its realpath is refused
+  before the filesystem is asked about it. A model or notebook file that is itself a symlink
+  out of the package, dangling or not, is refused the same way, as a compile error rather than
+  an outage. The walk that lists a package's files does not descend into a directory link that
+  leads out. A model's saved text, read back for a report, a lint or `/compile` append, goes
+  through the same reader; text the served copy and the chained build read back from a compiled
+  model is read only from the files that model compiled from, and the chained build follows the
+  imports the compile resolved, never text that merely looks like an import. Virtual files (a request's overlay, `/compile`'s `__compile_check.malloy`, the
+  generated companions) are served from memory before the disk is asked. This bounds the
+  compiler, not the query: SQL a model runs through DuckDB (`read_text`, `read_blob`,
   `read_csv`, `read_parquet`) reaches the filesystem through the connection and is not confined
-  by this rule (see gap 6).
+  by this rule (see gap 6), which remains the larger open hole for a package author.
 - **Registering a package is an operator action.** Packages come from `publisher.config.json` or a
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker
