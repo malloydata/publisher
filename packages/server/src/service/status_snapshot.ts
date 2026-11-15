@@ -22,8 +22,8 @@ export interface StatusVersionRecords {
  * Two parts, each the expensive half of a status entry:
  *
  * - A package copy's metadata (`Package.getPackageMetadata()`, the warnings
- *   pass and the inline fields), captured when the copy is committed and again
- *   when an operation on its package settles. Kept by copy, so a copy that is
+ *   pass and the inline fields), captured when an operation that built or
+ *   changed the copy settles. Kept by copy, so a copy that is
  *   retired is simply dropped. Only while PUBLISHER_PACKAGE_INLINE_FIELDS is
  *   on: the slim entry has no metadata.
  * - Each versioned package's registry rows and `latest`, read once when the
@@ -33,65 +33,46 @@ export interface StatusVersionRecords {
  * is read live on each poll from what the environment already holds.
  */
 export class StatusSnapshot {
-   /** Orders captures against operations; see {@link begin}. */
-   private sequence = 0;
-   private readonly metadata = new WeakMap<
-      Package,
-      { metadata: ApiPackage; capturedAt: number }
-   >();
+   private readonly metadata = new WeakMap<Package, ApiPackage>();
    private readonly versionRecords = new Map<string, StatusVersionRecords>();
-   /** The newest refresh that landed, per package; an older one is dropped. */
+   /** Orders version reads: each takes a ticket when it starts. */
+   private tickets = 0;
+   /** The ticket of the newest read that landed, per package. */
    private readonly landed = new Map<string, number>();
+   /** Packages whose latest read failed, so their rows may be out of date. */
+   private readonly dirty = new Set<string>();
    /** Polls that found a copy with no captured metadata (built on the poll). */
    private misses = 0;
 
    constructor(private readonly environmentName: string) {}
 
-   /** Mark the start of an operation on a package; pass it to {@link settle}. */
-   begin(): number {
-      return ++this.sequence;
-   }
-
-   /** Capture `pkg`'s metadata now. */
-   capture(pkg: Package): ApiPackage {
-      const metadata = pkg.getPackageMetadata();
-      this.metadata.set(pkg, { metadata, capturedAt: ++this.sequence });
-      return metadata;
-   }
-
-   /** Capture `pkg`'s metadata unless it already has one. Never throws. */
-   ensure(pkg: Package): void {
-      if (!this.metadata.has(pkg)) this.tryCapture(pkg);
-   }
-
    /**
-    * An operation begun at `begun` settled: capture every copy whose metadata
-    * predates it, since the operation may have changed it in place. A copy the
-    * operation committed (and captured) is not built twice.
+    * An operation on these copies settled: capture each one's metadata, since
+    * the operation may have built it or changed it in place. Never throws.
     */
-   settle(copies: Iterable<Package | undefined>, begun: number): void {
+   settle(copies: Iterable<Package | undefined>): void {
       for (const pkg of new Set(copies)) {
-         if (pkg === undefined) continue;
-         const captured = this.metadata.get(pkg);
-         if (captured === undefined || captured.capturedAt < begun) {
-            this.tryCapture(pkg);
-         }
+         if (pkg !== undefined) this.tryCapture(pkg);
       }
    }
 
    /**
-    * The copy's captured metadata. A copy nothing captured (none should be
-    * resident without one) is built here, once, and counted.
+    * The copy's captured metadata. A copy no settled operation captured yet
+    * (one a poll reaches while the operation that committed it is still
+    * running) is built here, once, and counted; the operation's settle
+    * captures it again when it ends.
     */
    metadataOf(pkg: Package): ApiPackage {
       const captured = this.metadata.get(pkg);
-      if (captured !== undefined) return captured.metadata;
+      if (captured !== undefined) return captured;
       this.misses += 1;
       logger.debug("Status snapshot built a package's metadata on a poll", {
          environmentName: this.environmentName,
          packageName: pkg.getPackageName(),
       });
-      return this.capture(pkg);
+      const metadata = pkg.getPackageMetadata();
+      this.metadata.set(pkg, metadata);
+      return metadata;
    }
 
    /** Visible for tests: polls that had to build a copy's metadata. */
@@ -99,50 +80,70 @@ export class StatusSnapshot {
       return this.misses;
    }
 
-   /** Replace every package's version rows (when versions are bound). */
+   /** Take a ticket before a read of version rows starts. */
+   ticket(): number {
+      return ++this.tickets;
+   }
+
+   /**
+    * Every package's version rows, read with `ticket`. A package a newer read
+    * already landed for keeps those rows; every other package, listed or not,
+    * takes what this read found.
+    */
    replaceVersionRecords(
       rows: ReadonlyArray<Version & { latest: string | null }>,
+      ticket: number,
    ): void {
-      this.versionRecords.clear();
+      const read = new Map<string, StatusVersionRecords>();
       for (const row of rows) {
-         const records = this.versionRecords.get(row.packageName) ?? {
+         const records = read.get(row.packageName) ?? {
             latest: row.latest,
             versions: [],
          };
          const { latest: _latest, ...version } = row;
          records.versions.push(version);
-         this.versionRecords.set(row.packageName, records);
+         read.set(row.packageName, records);
+      }
+      for (const packageName of new Set([
+         ...this.versionRecords.keys(),
+         ...read.keys(),
+         ...this.dirty,
+      ])) {
+         this.land(packageName, read.get(packageName), ticket);
       }
    }
 
    /**
-    * Re-read one package's version rows with `read`. Refreshes of one package
-    * land in the order they started, so a slow read never puts back rows a
-    * later write replaced. A failed read keeps the rows held and is logged.
+    * Re-read one package's version rows with `read`. Reads of one package land
+    * in the order they started, so a slow read never puts back rows a later
+    * write replaced. A failed read keeps the rows held, and marks the package
+    * dirty until a later read of it lands. Returns whether this read landed.
     */
    async refreshVersionRecords(
       packageName: string,
       read: () => Promise<StatusVersionRecords>,
-   ): Promise<void> {
-      const ticket = ++this.sequence;
+   ): Promise<boolean> {
+      const ticket = this.ticket();
       let records: StatusVersionRecords;
       try {
          records = await read();
       } catch (error) {
+         if ((this.landed.get(packageName) ?? 0) < ticket) {
+            this.dirty.add(packageName);
+         }
          logger.warn("Could not refresh a package's versions for /status", {
             environmentName: this.environmentName,
             packageName,
             error: error instanceof Error ? error.message : String(error),
          });
-         return;
+         return false;
       }
-      if ((this.landed.get(packageName) ?? 0) > ticket) return;
-      this.landed.set(packageName, ticket);
-      if (records.versions.length === 0) {
-         this.versionRecords.delete(packageName);
-      } else {
-         this.versionRecords.set(packageName, records);
-      }
+      return this.land(packageName, records, ticket);
+   }
+
+   /** Packages whose rows a failed read left possibly out of date. */
+   dirtyPackages(): string[] {
+      return [...this.dirty];
    }
 
    /** Whether the package has any version row. */
@@ -162,9 +163,25 @@ export class StatusSnapshot {
          );
    }
 
+   private land(
+      packageName: string,
+      records: StatusVersionRecords | undefined,
+      ticket: number,
+   ): boolean {
+      if ((this.landed.get(packageName) ?? 0) > ticket) return false;
+      this.landed.set(packageName, ticket);
+      this.dirty.delete(packageName);
+      if (records === undefined || records.versions.length === 0) {
+         this.versionRecords.delete(packageName);
+      } else {
+         this.versionRecords.set(packageName, records);
+      }
+      return true;
+   }
+
    private tryCapture(pkg: Package): void {
       try {
-         this.capture(pkg);
+         this.metadata.set(pkg, pkg.getPackageMetadata());
       } catch (error) {
          // Left to the poll, which builds it once; an observer must never
          // fail the operation it observes.

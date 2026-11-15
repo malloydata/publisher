@@ -14,6 +14,8 @@ import { writePackageFiles } from "../test_helpers/temp_package";
 import { parseEnvironmentName, parsePackageName } from "./identity";
 import { startedStore } from "../test_helpers/started_store";
 import type { VersionService } from "./versions/version_service";
+import type { Version } from "../storage/DatabaseInterface";
+import { StatusSnapshot, type StatusVersionRecords } from "./status_snapshot";
 
 /**
  * The correctness proof for the `/status` snapshot (ms2data/service#7795).
@@ -36,17 +38,27 @@ let root: string;
 let store: EnvironmentStore | undefined;
 let restoreSettings: (() => void) | undefined;
 
+async function closeStore(): Promise<void> {
+   if (!store) return;
+   for (const environment of store.getLoadedEnvironments()) {
+      await environment.closeAllConnections();
+   }
+   await (
+      store as unknown as { storageManager: { close(): Promise<void> } }
+   ).storageManager.close();
+   store = undefined;
+}
+
+/** Stop the server and start it again on the same root, as a restart does. */
+async function restart(): Promise<void> {
+   await closeStore();
+   store = startedStore(new EnvironmentStore(path.join(root, "server")));
+   await store.finishedInitialization;
+}
+
 afterEach(async () => {
    sinon.restore();
-   if (store) {
-      for (const environment of store.getLoadedEnvironments()) {
-         await environment.closeAllConnections();
-      }
-      await (
-         store as unknown as { storageManager: { close(): Promise<void> } }
-      ).storageManager.close();
-      store = undefined;
-   }
+   await closeStore();
    restoreSettings?.();
    restoreSettings = undefined;
    if (root) fs.rmSync(root, { recursive: true, force: true });
@@ -291,8 +303,8 @@ for (const inline of ["on", "off"]) {
             PUBLISHER_VERSION_PROMOTION: "explicit",
             PUBLISHER_PACKAGE_INLINE_FIELDS: inline,
          });
-         const org = await environmentOf("org");
-         const versions = org.getVersionService() as VersionService<Package>;
+         let org = await environmentOf("org");
+         let versions = org.getVersionService() as VersionService<Package>;
          await expectSnapshotEqualsFresh("boot");
 
          const publish = (version: string, manifestLocation?: string) =>
@@ -333,6 +345,13 @@ for (const inline of ["on", "off"]) {
          await publishing;
          await expectSnapshotEqualsFresh("publish settled");
 
+         // A restart reads every version row once, when the environment's
+         // versions are bound; no write follows to read them otherwise.
+         await restart();
+         org = await environmentOf("org");
+         versions = org.getVersionService() as VersionService<Package>;
+         await expectSnapshotEqualsFresh("restarted");
+
          await versions.deleteVersion("sales", "1.0.0");
          await expectSnapshotEqualsFresh("version deleted");
 
@@ -367,5 +386,144 @@ describe("/status snapshot reads", () => {
       const names = status.environments[0].packages?.map((p) => p.name);
       expect(names).toContain("anchor");
       expect(names).not.toContain("later");
+   });
+});
+
+/** A promise and the function that settles it. */
+function gate<T>(): { promise: Promise<T>; open: (value: T) => void } {
+   let open!: (value: T) => void;
+   const promise = new Promise<T>((resolve) => (open = resolve));
+   return { promise, open };
+}
+
+async function eventually(check: () => Promise<boolean>): Promise<void> {
+   const deadline = Date.now() + 10_000;
+   while (!(await check())) {
+      if (Date.now() > deadline) throw new Error("never settled");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+   }
+}
+
+describe("/status snapshot version rows", () => {
+   it("re-reads, in the background, a package whose refresh failed", async () => {
+      await boot([{ name: "org", packages: ["anchor"] }], {
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+      });
+      const org = await environmentOf("org");
+      const versions = org.getVersionService() as VersionService<Package>;
+      const read = versions.versionRecords.bind(versions);
+      let failures = 1;
+      sinon.stub(versions, "versionRecords").callsFake(async (name) => {
+         if (name === "sales" && failures-- > 0) {
+            throw new Error("database busy");
+         }
+         return read(name);
+      });
+
+      const dir = source("sales", "1.0.0");
+      await versions.publish("sales", copyFrom(dir), {
+         sourceLocation: dir,
+         promotion: "on-publish",
+      });
+      const listed = async () =>
+         (await store!.getStatus()).environments[0].packages?.some(
+            (p) => p.name === "sales",
+         ) ?? false;
+      // The write's own read failed: the committed version is not listed yet.
+      expect(await listed()).toBe(false);
+
+      await eventually(listed);
+      expect(comparable(await store!.getStatus())).toEqual(
+         comparable(await store!.computeStatusFromListings()),
+      );
+   });
+
+   it("re-reads a dirty package on the next write to any package", async () => {
+      await boot([{ name: "org", packages: ["anchor"] }], {
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+      });
+      const org = await environmentOf("org");
+      const versions = org.getVersionService() as VersionService<Package>;
+      const read = versions.versionRecords.bind(versions);
+      let failSales = true;
+      sinon.stub(versions, "versionRecords").callsFake(async (name) => {
+         if (name === "sales" && failSales) throw new Error("database busy");
+         return read(name);
+      });
+      const dir = source("sales", "1.0.0");
+      await versions.publish("sales", copyFrom(dir), {
+         sourceLocation: dir,
+         promotion: "on-publish",
+      });
+      failSales = false;
+      const other = source("other", "1.0.0");
+      await versions.publish("other", copyFrom(other), {
+         sourceLocation: other,
+         promotion: "on-publish",
+      });
+
+      const names = (await store!.getStatus()).environments[0].packages?.map(
+         (p) => p.name,
+      );
+      expect(names).toContain("sales");
+      expect(names).toContain("other");
+   });
+
+   it("shares one read among callers priming at once, and lands a later read over an earlier slow one", async () => {
+      await boot([{ name: "org", packages: ["anchor"] }], {
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+      });
+      const org = await environmentOf("org");
+      const versions = org.getVersionService() as VersionService<Package>;
+      const listAll = sinon.spy(versions, "listAllVersions");
+      await Promise.all([org.primeStatusVersions(), org.primeStatusVersions()]);
+      expect(listAll.callCount).toBe(1);
+   });
+});
+
+describe("StatusSnapshot", () => {
+   const version = (versionId: string) =>
+      ({ packageName: "p", versionId }) as unknown as Version;
+
+   it("drops a read that finishes after a later one landed", async () => {
+      const snapshot = new StatusSnapshot("env");
+      const slow = gate<StatusVersionRecords>();
+      const first = snapshot.refreshVersionRecords("p", () => slow.promise);
+      await snapshot.refreshVersionRecords("p", async () => ({
+         latest: "2.0.0",
+         versions: [version("1.0.0"), version("2.0.0")],
+      }));
+      slow.open({ latest: "1.0.0", versions: [version("1.0.0")] });
+      expect(await first).toBe(false);
+      expect(
+         snapshot.versionRows().map((r) => [r.versionId, r.latest]),
+      ).toEqual([
+         ["1.0.0", "2.0.0"],
+         ["2.0.0", "2.0.0"],
+      ]);
+   });
+
+   it("keeps a package's newer rows when an older full read lands", async () => {
+      const snapshot = new StatusSnapshot("env");
+      const ticket = snapshot.ticket();
+      await snapshot.refreshVersionRecords("p", async () => ({
+         latest: "2.0.0",
+         versions: [version("2.0.0")],
+      }));
+      snapshot.replaceVersionRecords([], ticket);
+      expect(snapshot.isVersioned("p")).toBe(true);
+   });
+
+   it("marks a package dirty when its read fails, until one lands", async () => {
+      const snapshot = new StatusSnapshot("env");
+      await snapshot.refreshVersionRecords("p", async () => {
+         throw new Error("busy");
+      });
+      expect(snapshot.dirtyPackages()).toEqual(["p"]);
+      await snapshot.refreshVersionRecords("p", async () => ({
+         latest: null,
+         versions: [version("1.0.0")],
+      }));
+      expect(snapshot.dirtyPackages()).toEqual([]);
    });
 });

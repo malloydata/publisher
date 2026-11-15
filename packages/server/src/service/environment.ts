@@ -331,6 +331,9 @@ function mergePackageManifest(
  * reads (`PackageStatusEntry`). While PUBLISHER_PACKAGE_INLINE_FIELDS is on an
  * entry is the package's full response plus its serving state.
  */
+/** Background re-reads of version rows a failed read left out of `/status`. */
+const STATUS_VERSIONS_RETRIES = 8;
+
 export type PackageListingOptions = {
    includeLoading?: boolean;
    operational?: boolean;
@@ -1529,7 +1532,6 @@ export class Environment {
       // under the old connections: re-derive it, and the package's other
       // loaded copies, once it lands (see refreshBuildPlans).
       const generation = this.connectionGeneration;
-      const begun = this.statusSnapshot.begin();
       const tracked = async (): Promise<T> => {
          let result: T | undefined;
          try {
@@ -1538,7 +1540,7 @@ export class Environment {
          } finally {
             // Before the load is marked settled: what it committed or
             // changed in place, for /status.
-            this.settleStatusSnapshot(packageName, begun, result);
+            this.settleStatusSnapshot(packageName, result);
          }
       };
       return this.loadsInFlight.track(packageName, tracked).then((result) => {
@@ -1604,23 +1606,30 @@ export class Environment {
    }
 
    /**
-    * An operation on the package begun at `begun` settled: capture, for
-    * `/status`, every copy it may have changed. `result` is the copy it built,
-    * when it built one (a version is not in the cache yet). Slim entries carry
-    * no metadata, so there is nothing to capture while inline fields are off.
+    * An operation on the package settled: capture, for `/status`, the copies
+    * it may have built or changed. When `result` names the copy it worked on
+    * (a load returns the copy, a publish `{ loaded }`), that copy and the
+    * package's single slot, which a first versioned publish retires; a
+    * version is not in the cache yet when its load settles. Otherwise, as for
+    * a rebind that returns nothing, every copy of the package in memory.
+    * Slim entries carry no metadata, so nothing is captured while inline
+    * fields are off.
     */
-   private settleStatusSnapshot(
-      packageName: string,
-      begun: number,
-      result: unknown,
-   ): void {
+   private settleStatusSnapshot(packageName: string, result: unknown): void {
       if (!isPackageInlineFieldsEnabled()) return;
+      const touched =
+         result instanceof Package
+            ? result
+            : typeof result === "object" &&
+                result !== null &&
+                "loaded" in result &&
+                result.loaded instanceof Package
+              ? result.loaded
+              : undefined;
       this.statusSnapshot.settle(
-         [
-            ...this.residentCopiesOf(packageName),
-            ...(result instanceof Package ? [result] : []),
-         ],
-         begun,
+         touched !== undefined
+            ? [touched, this.packages.get(packageName)]
+            : this.residentCopiesOf(packageName),
       );
    }
 
@@ -1966,7 +1975,6 @@ export class Environment {
     * logged and swallowed: an observer must never fail the load.
     */
    private notifyPackageLoaded(pkg: Package): void {
-      if (isPackageInlineFieldsEnabled()) this.statusSnapshot.ensure(pkg);
       try {
          this.packageLoadedHook?.(pkg);
       } catch (error) {
@@ -2409,38 +2417,118 @@ export class Environment {
    /**
     * Read every version row once, for `/status`, when this environment's
     * versions are bound. Every later write refreshes its own package's rows
-    * (see {@link refreshStatusVersions}), so a poll reads none.
+    * (see {@link refreshStatusVersions}), so a poll reads none. One read at a
+    * time: a caller arriving while one runs shares it. A failed read is
+    * retried in the background (see {@link scheduleStatusVersionsRetry}).
     */
-   public async primeStatusVersions(): Promise<void> {
+   public primeStatusVersions(): Promise<void> {
+      this.statusVersionsPriming ??= this.readAllStatusVersions().finally(
+         () => {
+            this.statusVersionsPriming = undefined;
+         },
+      );
+      return this.statusVersionsPriming;
+   }
+
+   private async readAllStatusVersions(): Promise<void> {
       const versions = this.versionService;
       if (!versions) return;
+      const ticket = this.statusSnapshot.ticket();
       try {
          this.statusSnapshot.replaceVersionRecords(
             await versions.listAllVersions(),
+            ticket,
          );
          this.statusVersionsPrimed = true;
+         this.statusVersionsRetryAttempt = 0;
       } catch (error) {
          logger.error("Could not read package versions for /status", {
             environmentName: this.environmentName,
             error: error instanceof Error ? error.message : String(error),
          });
+         this.scheduleStatusVersionsRetry();
       }
    }
 
    /** Whether {@link primeStatusVersions} has read every row. */
    private statusVersionsPrimed = false;
+   private statusVersionsPriming: Promise<void> | undefined;
+   private statusVersionsRetry: ReturnType<typeof setTimeout> | undefined;
+   private statusVersionsRetryAttempt = 0;
 
    /**
-    * Re-read one package's version rows for `/status`, or every row when the
-    * first read failed. Never throws.
+    * Re-read one package's version rows for `/status` after a write to them,
+    * with every package an earlier failed read left dirty, or every row when
+    * the first read has not succeeded. Never throws.
+    *
+    * Between a write's commit and this read landing, `/status` lists the
+    * package's rows as they were before the write; the write's caller is
+    * answered only after it lands.
     */
    private async refreshStatusVersions(packageName: string): Promise<void> {
       const versions = this.versionService;
       if (!versions) return;
+      await this.statusVersionsPriming;
       if (!this.statusVersionsPrimed) return this.primeStatusVersions();
-      await this.statusSnapshot.refreshVersionRecords(packageName, () =>
-         versions.versionRecords(packageName),
+      for (const name of new Set([
+         packageName,
+         ...this.statusSnapshot.dirtyPackages(),
+      ])) {
+         await this.statusSnapshot.refreshVersionRecords(name, () =>
+            versions.versionRecords(name),
+         );
+      }
+      // A new write: the retries start over.
+      this.statusVersionsRetryAttempt = 0;
+      if (this.statusSnapshot.dirtyPackages().length > 0) {
+         this.scheduleStatusVersionsRetry();
+      }
+   }
+
+   /**
+    * Retry, in the background, the version reads that failed: a committed
+    * version missing from `/status` reads as absent to the control plane,
+    * which would dispatch it again. Backs off from 250 ms to 30 s and gives
+    * up after {@link STATUS_VERSIONS_RETRIES} attempts; the next write to any
+    * package retries again.
+    */
+   private scheduleStatusVersionsRetry(): void {
+      if (this.statusVersionsRetry !== undefined) return;
+      const attempt = this.statusVersionsRetryAttempt++;
+      if (attempt >= STATUS_VERSIONS_RETRIES) {
+         logger.error("Gave up re-reading package versions for /status", {
+            environmentName: this.environmentName,
+            packages: this.statusSnapshot.dirtyPackages(),
+         });
+         return;
+      }
+      this.statusVersionsRetry = setTimeout(
+         () => {
+            this.statusVersionsRetry = undefined;
+            void this.retryStatusVersions();
+         },
+         Math.min(250 * 2 ** attempt, 30_000),
       );
+      this.statusVersionsRetry.unref?.();
+   }
+
+   private async retryStatusVersions(): Promise<void> {
+      const versions = this.versionService;
+      if (!versions) return;
+      if (!this.statusVersionsPrimed) {
+         await this.primeStatusVersions();
+         return;
+      }
+      for (const name of this.statusSnapshot.dirtyPackages()) {
+         await this.statusSnapshot.refreshVersionRecords(name, () =>
+            versions.versionRecords(name),
+         );
+      }
+      if (this.statusSnapshot.dirtyPackages().length > 0) {
+         this.scheduleStatusVersionsRetry();
+      } else {
+         this.statusVersionsRetryAttempt = 0;
+      }
    }
 
    /**
@@ -2501,7 +2589,8 @@ export class Environment {
             continue;
          }
          if (!inline) {
-            entries.push(this.statusEntry(packageName, resident));
+            const entry = this.slimStatusEntry(packageName, resident);
+            if (entry !== undefined) entries.push(entry);
             continue;
          }
          const entry = this.inlineStatusEntry(resident);
@@ -2526,7 +2615,7 @@ export class Environment {
       for (const row of this.statusSnapshot.versionRows()) {
          const loaded = versions.cache.peek(row.packageName, row.versionId);
          const base: ApiPackage | undefined = !inline
-            ? this.statusEntry(row.packageName, loaded, row.versionId)
+            ? this.slimStatusEntry(row.packageName, loaded, row.versionId)
             : loaded
               ? this.inlineStatusEntry(loaded)
               : {
@@ -2591,6 +2680,28 @@ export class Environment {
          logger.error("Could not describe a package for /status", {
             environmentName: this.environmentName,
             packageName: pkg.getPackageName(),
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return undefined;
+      }
+   }
+
+   /**
+    * A copy's slim entry while inline fields are off, or undefined when it
+    * cannot be read: one package that throws must not fail the whole poll.
+    */
+   private slimStatusEntry(
+      packageName: string,
+      loaded: Package | undefined,
+      versionId?: string,
+   ): ApiPackageStatusEntry | undefined {
+      try {
+         return this.statusEntry(packageName, loaded, versionId);
+      } catch (error) {
+         logger.error("Could not describe a package for /status", {
+            environmentName: this.environmentName,
+            packageName,
+            versionId,
             error: error instanceof Error ? error.message : String(error),
          });
          return undefined;
@@ -4148,7 +4259,6 @@ export class Environment {
       // flight and apply to whatever is resident afterwards (or 404).
       await this.awaitPackageLoads(packageName);
       return this.withPackageLock(packageName, async () => {
-         const begun = this.statusSnapshot.begin();
          try {
             return await this._updatePackageLocked(packageName, body, {
                recordLocation: false,
@@ -4156,7 +4266,10 @@ export class Environment {
             });
          } finally {
             // The PATCH changed the resident copy in place: /status reads it.
-            this.settleStatusSnapshot(packageName, begun, undefined);
+            this.settleStatusSnapshot(
+               packageName,
+               this.packages.get(packageName),
+            );
          }
       });
    }
@@ -4543,13 +4656,6 @@ export class Environment {
    /** Every change to a package's phase or problems goes through here. */
    private transition(packageName: string, event: PackageLifecycleEvent): void {
       this.lifecycle.apply(packageName, callerVisibleEvent(event));
-      // A copy that starts serving outside an operation (a version made
-      // `latest`) has its metadata captured for /status here.
-      if (isPackageInlineFieldsEnabled()) {
-         for (const copy of this.residentCopiesOf(packageName)) {
-            this.statusSnapshot.ensure(copy);
-         }
-      }
    }
 
    public async deletePackage(
@@ -4609,6 +4715,9 @@ export class Environment {
             if (versioned && this.versionService) {
                this.versionService.forgetPackage(packageName);
                // Its rows went with removeRecords (or before this was called).
+               // Until this read lands, /status still lists the versions, as
+               // not loaded: the window between a row's write and its read
+               // that every version write has.
                await this.refreshStatusVersions(packageName);
                await new VersionStore(this.environmentPath).removePackage(
                   packageName,
@@ -4835,6 +4944,8 @@ export class Environment {
 
    public async closeAllConnections(): Promise<void> {
       this.cancelPlanRefreshes();
+      clearTimeout(this.statusVersionsRetry);
+      this.statusVersionsRetry = undefined;
       // Package configs (each with its own sandbox `duckdb`) first, or hard
       // unload leaks their handles.
       const packageReleases = await Promise.allSettled(
