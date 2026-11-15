@@ -13,7 +13,6 @@ import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 
 // Shared with the store: the strategy a declaration implies is what the ledger records.
-export type { IncrementalStrategy };
 
 /**
  * Resolves a persist source's INCREMENTAL declaration — the `refresh=`,

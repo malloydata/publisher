@@ -5,11 +5,45 @@ Turns a compiled package's declarations (`#@ persist`, `#(materialize)`,
 run should build, or a refusal or omission for each. It compiles and never
 runs: on the package-load worker its connection refuses SQL.
 
+## What it produces
+
+One `TablePlan` per planned table (`domain/table_plans.ts`), in
+`CompiledBuildPlan.tables`, keyed by `sourceID`: the planned source, its
+build target, its declaring model, its classified gate, its stored-table key
+check, and its kind, fixed by the planner that made it:
+
+| Kind          | Planned by                                                             | Carries               |
+| ------------- | ---------------------------------------------------------------------- | --------------------- |
+| `persist`     | the v1 walk (`collectModelBuildPlan`)                                  | nothing more          |
+| `materialize` | `materialize_plan.ts`, compiled by `materialize_compile.ts`            | its `MaterializePlan` |
+| `pair`        | the same, for an inlined join_many                                     | its `MaterializePlan` |
+| `rollup`      | `rollup_plan.ts` and the v1 synthesis, compiled by `rollup_compile.ts` | its rollup plan       |
+| `view`        | `persisted_view.ts`, compiled by `persisted_view_compile.ts`           | nothing more          |
+
+Nothing downstream derives a kind: the build, its telemetry, eligibility and
+the wire projection read it off the table. A declaration that is not planned
+is a refusal (a package warning, and `refusedSources` on the wire) or an
+omission (`omittedSources`, `omittedFiles`). `deriveBuildPlan` projects the
+tables into the wire `BuildPlan`; `deriveBuildPlanOutcome` into what a
+package load keeps, which crosses the load worker as plain data.
+
+## The build path
+
+1. Each model's declarations are read (`declaration.ts`) and each generated
+   companion is planned and compiled: `#(materialize)`, persisted views and
+   rollups, then the v1 walk over the author's model or its build copy.
+2. Each planned table's gate is classified where the model compiled.
+3. Per package: rollup key checks, stored-table key checks, connection
+   digests, and the refusal of `#(materialize)` tables that would share a
+   table.
+4. The run (`run/`) builds the tables in build order on their tier, and the
+   facade binds what it committed (`serve/`).
+
 ## Modules
 
 | Module                                 | Responsibility                                                                                                                                                | Read by                                                                          |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `build_plan.ts`                        | The package's build plan: each model's persist sources, builds and refusals, and the wire projection (`deriveBuildPlan`)                                      | the load worker, `package.ts`, `model.ts`, the facade, most of `run/`            |
+| `build_plan.ts`                        | The package's build plan: one `TablePlan` per planned table, collected model by model, its eligibility, and the wire projection (`deriveBuildPlan`)           | the load worker, `package.ts`, `model.ts`, the facade, most of `run/`            |
 | `build_plan_compile.ts`                | Compiling a package's build plan on the main thread, against its live connections                                                                             | the facade, the materialization service                                          |
 | `addressing.ts`                        | A persist source's content address and the SQL it is keyed by                                                                                                 | the build plan, eligibility, the instructed build                                |
 | `declaration.ts`                       | The one reader of materialization's annotations, and the one placement rule (`storage=` and `name=`, beside a route's key or inside it; an empty one refused) | every planner here                                                               |
@@ -50,5 +84,8 @@ that removes it, in `materialization_allowlists.mjs`.
 
 ## Where things are added
 
-A new kind of table is a declaration reader, a planner and a gate-policy row
-here. A planner returns findings rather than logging or counting (H5).
+A new kind of table is a `TableKind`, a declaration reader, a planner that
+sets the kind on the tables it plans, and a gate-policy row
+(`domain/gate_policy.ts`). Run and bind do not branch on a kind beyond what
+the plan carries. A planner returns findings rather than logging or counting
+(H5); the planners that still log are listed in `materialization_allowlists.mjs`.

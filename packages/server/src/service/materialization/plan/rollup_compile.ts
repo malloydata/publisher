@@ -51,7 +51,7 @@ import type { ParentKeyCheck, RollupVariantPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
 
-export interface GeneratedRollups {
+interface GeneratedRollups {
    /** The rollups the companion declares. Never empty. */
    plans: RollupVariantPlan[];
    model: MalloyModel;
@@ -61,10 +61,7 @@ export interface GeneratedRollups {
 }
 
 /** Where the rollup companion for `modelPath` lives, as an absolute URL. */
-export function rollupCompanionURL(
-   packagePath: string,
-   modelPath: string,
-): URL {
+function rollupCompanionURL(packagePath: string, modelPath: string): URL {
    return pathToFileURL(
       `${path.join(packagePath, modelPath)}${ROLLUP_COMPANION_SUFFIX}`,
    );

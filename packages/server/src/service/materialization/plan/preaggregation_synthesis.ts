@@ -91,9 +91,7 @@ export function rollupSourceName(
  * A trailing dot yields nothing either: the base's own table segment is empty, so
  * the name is malformed and inventing a namespace from it would hide that.
  */
-export function persistNamespace(
-   persistName: string | undefined,
-): string | undefined {
+function persistNamespace(persistName: string | undefined): string | undefined {
    if (!persistName) return undefined;
    const lastDot = persistName.lastIndexOf(".");
    if (lastDot <= 0) return undefined;
@@ -116,7 +114,7 @@ export function persistNamespace(
  *
  * The generated name is the final tie-break, so the order is total.
  */
-export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
+function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
    return (
       a.grainDimensions.length - b.grainDimensions.length ||
       a.rollupSourceName.localeCompare(b.rollupSourceName)

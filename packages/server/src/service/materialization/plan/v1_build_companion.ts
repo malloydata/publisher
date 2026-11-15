@@ -27,7 +27,7 @@ import {
 } from "../text/generated_files";
 
 /** The flag line the build copy opens with. */
-export const PERSISTENCE_FLAG_LINE = "##! experimental.persistence";
+const PERSISTENCE_FLAG_LINE = "##! experimental.persistence";
 
 /**
  * Whether `text` may declare a v1 `#@ persist`: a `#@` line naming `persist`
@@ -35,7 +35,7 @@ export const PERSISTENCE_FLAG_LINE = "##! experimental.persistence";
  * false positive costs one compile that plans nothing; a false negative
  * would plan the file's sources nowhere and report them nowhere.
  */
-export function declaresV1Persist(text: string): boolean {
+function declaresV1Persist(text: string): boolean {
    return /^\s*#@.*\bpersist\b/m.test(text);
 }
 

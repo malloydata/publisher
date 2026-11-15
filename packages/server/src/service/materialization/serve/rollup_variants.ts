@@ -2371,7 +2371,7 @@ function proveGates(
  * A level that reads a measure other than by its bare name (an expression, a
  * filtered measure, a `calculate:`, a `having:`) is held to every measure's.
  */
-export function checkCoverage(
+function checkCoverage(
    plan: RollupVariantPlan,
    levels: QueryLevelFacts | undefined,
 ): void {

@@ -99,6 +99,7 @@ export function extensionOverStoredModel(params: {
    const fields = params.columns
       .map((c) => `   ${identifier(c.name)}::${c.type}`)
       .join(",\n");
+   // malloy-text: buildSourceBody writes every name through identifier
    const body = buildSourceBody(plan);
    const flags = [
       // malloy-text: the author file's own `##!` lines, carried as written

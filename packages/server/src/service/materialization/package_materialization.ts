@@ -1,6 +1,34 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The package facade: one package version's materialization, composing
+ * plan/, run/ and serve/ for `Package` and `Environment`, and the module's
+ * one door for them. It holds the version's plan (from the load worker, or
+ * compiled again on a connection edit), its snapshot of bindings, its serve
+ * verdicts and its package warnings.
+ *
+ * Its contract is nine methods. Each is listed with what serves it today;
+ * the rest of the surface, and `Package`'s forwarders to it, go as each
+ * caller moves onto these.
+ *
+ * | Method | What it does | Today |
+ * | --- | --- | --- |
+ * | `load(plan)` | Take the load worker's plan, or its absence | `applyLoadBuildPlan` |
+ * | `replan(changedConnections)` | Derive the plan again after a connection edit | `markBuildPlanStale`, `refreshBuildPlan`, `whenBuildPlanCurrent` |
+ * | `bind(manifest)` | Bind a run's or a host's manifest and swap the snapshot | `bind`, `publishSnapshot`, `markManifestBound`, `markManifestBindFailed` |
+ * | `snapshot()` | The bindings the package serves, for one pin per query | `snapshot` |
+ * | `plan()` | The compiled plan, when there is one | `getBuildPlan`, `planConnectionNames` |
+ * | `buildPlan(waitMs?)` | The wire plan, or when to ask again | `getBuildPlan`, `isBuildPlanUnavailable`, `whenBuildPlanCurrent` |
+ * | `serveVerdicts(opts?)` | Whether each planned source is served, and why not | `serveVerdicts`, `previewServeVerdicts`, `previewServeBindings` |
+ * | `warnings()` | Every package warning materialization raises | the `*Warnings()` readers |
+ * | `publishRejections()` | What refuses a publish | the `format*()` readers, `persistenceCollisionWarnings` |
+ *
+ * Effects: logs, and the bind and plan-refusal metrics. Plans and binds
+ * through the layers' pure entry points; compiles the plan on the main
+ * thread only when the worker left none.
+ */
+
 import {
    isSourceDef,
    type MalloyConfig,

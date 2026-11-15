@@ -291,9 +291,7 @@ const sharedTablesByTables = new WeakMap<
  * `PERSIST_COLLISION_ENFORCE` says: that flag (on by default) decides whether
  * a publish is refused, and a wrong answer is never the alternative.
  */
-export function sharedTables(
-   compiled: EligibilityPlan,
-): ReadonlyMap<string, string> {
+function sharedTables(compiled: EligibilityPlan): ReadonlyMap<string, string> {
    const memo = sharedTablesByTables.get(compiled.tables);
    if (memo) return memo;
    const shared = new Map<string, string>();

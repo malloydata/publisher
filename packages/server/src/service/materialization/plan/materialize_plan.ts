@@ -1388,6 +1388,7 @@ function materializeDeclarationOf(
    const inherited = inheritedPersist(def, contents);
    if (inherited) {
       return new Declined(
+         // malloy-text: a refusal for a person, not Malloy
          `the source inherits #@ persist from ${inherited.from ? `\`${inherited.from}\`` : "the source it is built on"}, ` +
             "so it is already stored as that source's table; put #(materialize) on a " +
             "source that does not inherit #@ persist, or drop the #@ persist",

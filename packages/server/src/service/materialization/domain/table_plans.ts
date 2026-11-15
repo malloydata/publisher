@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * What the planner decides for each stored table, as plain data the build
- * and the serving legs both read: a `#(materialize)` source's plan (its stored
+ * What the planner decides for each stored table: `TablePlan`, one per
+ * planned table with its kind fixed at plan, and, as plain data the build and
+ * the serving legs both read, a `#(materialize)` source's plan (its stored
  * columns, read-time terms, pair layout and the bases its served copy keeps),
- * a persisted view's, and a `#(preaggregate)` rollup's, with the one reader
- * of the `sourceID` that keys each of them.
+ * a persisted view's, a `#(preaggregate)` rollup's and a table's classified
+ * gate, with the one reader of the `sourceID` that keys each of them.
  *
  * Planned in `plan/` (`build_file_generator.ts`, `persisted_view.ts`,
  * `rollup_plan.ts`); read by the run's builds, the bind, the served copy and

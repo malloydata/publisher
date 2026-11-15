@@ -252,7 +252,7 @@ const GATE_ROUTES = new Set(["authorize", "access_filter"]);
  * finds them there (R3). Throws when one cannot be written as a single line:
  * the variant is then not compiled and the stored table not read.
  */
-export function gateLines(modelDef: ModelDef, sourceID: string): string {
+function gateLines(modelDef: ModelDef, sourceID: string): string {
    const def = SourceMap.of(modelDef).node(sourceID)?.def;
    if (!def) return "";
    const lines: string[] = [];

@@ -150,7 +150,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
 
 /** H1: modules with no header yet, by file under src/: step. */
 export const MATERIALIZATION_HEADER_ALLOWLIST = {
-   "service/materialization/package_materialization.ts": "5",
    "service/materialization/plan/build_plan.ts": "5",
    "service/materialization/plan/incremental_declaration.ts": "5",
    "service/materialization/plan/incremental_policy.ts": "5",
@@ -268,29 +267,10 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
 };
 /** H4: exports no other file imports, "<file>#<name>": step. */
 export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
-   "service/materialization/plan/eligibility_collect.ts#sharedTables": "2g.3",
-   "service/materialization/plan/incremental_declaration.ts#IncrementalStrategy":
-      "2g.3",
-   "service/materialization/plan/persisted_view_compile.ts#GeneratedPersistedViews":
-      "2g.3",
-   "service/materialization/plan/persisted_view_compile.ts#persistedViewRefusalReason":
-      "2g.3",
-   "service/materialization/plan/preaggregation_synthesis.ts#compareRollupBreadth":
-      "2g.3",
-   "service/materialization/plan/preaggregation_synthesis.ts#persistNamespace":
-      "2g.3",
-   "service/materialization/plan/rollup_compile.ts#GeneratedRollups": "2g.3",
-   "service/materialization/plan/rollup_compile.ts#rollupCompanionURL": "2g.3",
-   "service/materialization/plan/v1_build_companion.ts#PERSISTENCE_FLAG_LINE":
-      "2g.3",
-   "service/materialization/plan/v1_build_companion.ts#declaresV1Persist":
-      "2g.3",
    "service/materialization/run/incremental_apply.ts#IncrementalStepReasonCode":
       "2g.4",
    "service/materialization/run/incremental_build.ts#planSourceRefresh": "2g.4",
    "service/materialization/run/table_ownership.ts#OWNED_TABLE_MARK": "2g.4",
-   "service/materialization/serve/declaring_file_variant.ts#gateLines": "2g.3",
-   "service/materialization/serve/rollup_variants.ts#checkCoverage": "2g.3",
 };
 /** Annotation payload reads outside plan/declaration.ts, per file. */
 export const RATCHET_ANNOTATION_READS = {};
