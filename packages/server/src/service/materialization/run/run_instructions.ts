@@ -40,6 +40,7 @@ import {
 } from "../../versions/materialization_scope";
 import {
    computeSourceEntityId,
+   planTableFolds,
    sharedTables,
    tierGateInputs,
 } from "../plan/build_plan";
@@ -136,6 +137,12 @@ function gateSources(
    const refused: Record<string, RefusedSource> = {};
    const refusals: MaterializationEligibilityError[] = [];
    const cleared = new Map<string, EligibilityTier>();
+   // A compiled package's plan carries its folds; a hand-made one is decided
+   // here, over every source.
+   const tableFolds = compiled.tableFolds ?? planTableFolds(compiled);
+   // Two definitions writing one table (sharedTables): neither is built,
+   // whether or not the other is rebuilt this run or carried.
+   const shared = sharedTables({ ...compiled, tableFolds });
    for (const build of compiled.builds) {
       for (const persistSource of sourcesInBuildOrder(build, compiled.tables)) {
          if (include && !include.has(persistSource.name)) continue;
@@ -176,7 +183,7 @@ function gateSources(
             // alone, never built, so neither overwrites the other (only
             // reachable under PERSIST_COLLISION_ENFORCE=false; otherwise the
             // package does not load).
-            const sharing = sharedTables(compiled).get(persistSource.sourceID);
+            const sharing = shared.get(persistSource.sourceID);
             if (sharing !== undefined) {
                throw new MaterializationEligibilityError({
                   reason: "table_name_collision",
@@ -219,6 +226,8 @@ function gateSources(
             sourceEntityId: computeSourceEntityId(
                persistSource,
                compiled.connectionDigests,
+               undefined,
+               tableFolds,
             ),
             destination,
          });

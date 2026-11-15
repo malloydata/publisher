@@ -694,7 +694,7 @@ describe("incrementalPolicyAdvisories", () => {
          const warnings = collisionMessages(pair());
          expect(warnings).toHaveLength(2);
          for (const w of warnings) {
-            expect(w.message).toContain("Only one is materialized");
+            expect(w.message).toContain("Only one table is materialized");
             expect(w.message).not.toContain("DISAGREE");
          }
       });
@@ -976,14 +976,13 @@ source: daily is raw -> {
    );
 
    it(
-      "really does compile two differently named sources to ONE address",
+      "gives two differently named sources of one build an address each",
       async () => {
-         // What makes the shared-address advisory worth having: nothing here says
-         // "duplicate" — two names, two name= tables — and yet the compiler emits
-         // byte-identical SQL, so one content address, one table, one boundary.
-         // The advisory's own wording is covered by the unit tests above, which
-         // can name a dialect that accepts an incremental declaration; here the
-         // sources stay plain so the package loads and the plan can be read.
+         // The compiler emits byte-identical SQL for both, which alone would be
+         // one content address, one table, one boundary; each `name=` is a
+         // table of its own, so it is folded into each address
+         // (foldDistinctTableNames) and the shared-address advisory, whose
+         // wording the unit tests above cover, never meets them.
          const pkg = await loadPackage(
             `${RAW}` +
                `#@ persist name="t_a"\n` +
@@ -1002,7 +1001,7 @@ source: daily is raw -> {
             "daily_a",
             "daily_b",
          ]);
-         expect(new Set(sources.map((s) => s.sourceEntityId)).size).toBe(1);
+         expect(new Set(sources.map((s) => s.sourceEntityId)).size).toBe(2);
       },
       { timeout: 30000 },
    );

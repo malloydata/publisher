@@ -43,7 +43,7 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets } from "../../../pg_helpers";
-import { computeSourceEntityId } from "../plan/build_plan";
+import { addressSQL, computeSourceEntityId } from "../plan/build_plan";
 import {
    sourcesInBuildOrder,
    type CompiledBuildPlan,
@@ -249,6 +249,7 @@ export function resolveInstruction(
    index: InstructionIndex,
    persistSource: PersistSource,
    connectionDigests: CompiledBuildPlan["connectionDigests"],
+   tableFolds?: CompiledBuildPlan["tableFolds"],
 ): ResolvedInstruction | undefined {
    // sourceID first, so the caller's sourceEntityId scheme stays opaque; the
    // sourceEntityId lookup is the fallback for instructions without one.
@@ -266,7 +267,12 @@ export function resolveInstruction(
    // throw as "no match" rather than abort every other instructed source.
    let sourceEntityId: string;
    try {
-      sourceEntityId = computeSourceEntityId(persistSource, connectionDigests);
+      sourceEntityId = computeSourceEntityId(
+         persistSource,
+         connectionDigests,
+         undefined,
+         tableFolds,
+      );
    } catch {
       return undefined;
    }
@@ -291,20 +297,44 @@ export function assertNoTableCollisions(
    tables: CompiledBuildPlan["tables"],
    connectionDigests: CompiledBuildPlan["connectionDigests"],
    index: InstructionIndex,
+   tableFolds?: CompiledBuildPlan["tableFolds"],
 ): void {
    // Keyed by the table segment on its connection or destination: `main.t`
    // and `t` may be one table, as the plan's collision check reads them
    // (tableNamesMeet).
    const claimedBy = new Map<
       string,
-      { sourceName: string; sourceEntityId: string; table: string }[]
+      {
+         sourceName: string;
+         sourceEntityId: string;
+         table: string;
+         sql?: string;
+      }[]
    >();
-   const collisions: { first: string; second: string; table: string }[] = [];
+   const collisions: {
+      first: string;
+      second: string;
+      table: string;
+      /** Same query, different stored columns (foldDistinctTableNames). */
+      sameQuery: boolean;
+   }[] = [];
+   const sqlOf = (source: PersistSource) => {
+      try {
+         return addressSQL(source);
+      } catch {
+         return undefined;
+      }
+   };
    for (const build of builds) {
       for (const persistSource of sourcesInBuildOrder(build, tables)) {
          let address: string;
          try {
-            address = computeSourceEntityId(persistSource, connectionDigests);
+            address = computeSourceEntityId(
+               persistSource,
+               connectionDigests,
+               undefined,
+               tableFolds,
+            );
          } catch {
             // getSQL() throws for a source the eligibility gate is about to
             // refuse with a clean 422. That refusal is the build loop's to
@@ -329,6 +359,7 @@ export function assertNoTableCollisions(
             tableNameParts(table).leaf,
          ]);
          const claims = claimedBy.get(target) ?? [];
+         const sql = sqlOf(persistSource);
          const other = claims.find(
             (c) =>
                c.sourceEntityId !== address && tableNamesMeet(c.table, table),
@@ -338,12 +369,14 @@ export function assertNoTableCollisions(
                first: other.sourceName,
                second: persistSource.name,
                table: instruction.physicalTableName,
+               sameQuery: sql !== undefined && sql === other.sql,
             });
          }
          claims.push({
             sourceName: persistSource.name,
             sourceEntityId: address,
             table,
+            sql,
          });
          claimedBy.set(target, claims);
       }
@@ -359,8 +392,12 @@ export function assertNoTableCollisions(
       const detail = collisions
          .map(
             (c) =>
-               `'${c.first}' and '${c.second}' compile to different SQL but ` +
-               `both materialize into table '${c.table}'`,
+               `'${c.first}' and '${c.second}' ` +
+               (c.sameQuery
+                  ? `compile to the same query but store different columns, ` +
+                    `yet both materialize`
+                  : `compile to different SQL but both materialize`) +
+               ` into table '${c.table}'`,
          )
          .join("; ");
       throw new MaterializationEligibilityError({

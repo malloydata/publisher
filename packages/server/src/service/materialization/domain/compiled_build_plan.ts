@@ -63,6 +63,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
    connectionDigests: Record<string, string>;
    connections: Map<string, MalloyConnection>;
    /**
+    * What each moved source's address folds in (`foldDistinctTableNames` in
+    * `plan/`), by sourceID: decided over the whole package before any
+    * refusal. Pass it to every address computation of a plan source.
+    */
+   tableFolds?: Readonly<Record<string, string>>;
+   /**
     * `#@ persist` sources Malloy's build walk did NOT recognize as persistable
     * (`detectDroppedPersistSources` in `plan/`). Callers surface these as a
     * load-time warning and a hard build failure so the annotation is never a
