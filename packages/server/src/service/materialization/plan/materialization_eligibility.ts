@@ -23,19 +23,16 @@ import {
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
 import { EMPTY_STORAGE_REASON } from "./declaration";
-import { resolvePartitionColumns } from "./persist_partition";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 
 /**
  * What an eligible source carries into the build and the serve shape. Returned
- * by the gate rather than re-derived, because each is only valid because the
- * gate proved it: where a term sits, and that a partition column resolves.
+ * by the gate rather than re-derived, because it is only valid because the
+ * gate proved it: where each term sits.
  */
 interface PersistDynamicPlan {
    /** Terms absent from the build, re-applied per caller at read. */
    terms: DynamicTerm[];
-   /** Declared `partition=` columns, resolved and ordered. Empty for none. */
-   partitionColumns: string[];
 }
 
 /**
@@ -75,8 +72,8 @@ interface PersistDynamicPlan {
  * before the build, so it fails fast before warehouse work.
  *
  * @param annotationFields the source's `#@ persist` key=value fields, which is
- *   where `partition=` is read from.
- * @returns the terms the build strips and the columns it lays the table out by.
+ *   where `merge_key=` is read from.
+ * @returns the terms the build strips.
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source and the
  *   specific reason, so the author can either fix the source or drop `storage=`.
  */
@@ -154,20 +151,7 @@ export function assertMaterializationEligible(
       });
    }
 
-   // Last: the only check not about isolation, so the refusals above are
-   // reported ahead of a mistyped column.
-   const partition = resolvePartitionColumns(persistSource, annotationFields);
-   if (!partition.ok) {
-      recordEligibilityRefused(partition.reason);
-      throw new MaterializationEligibilityError({
-         reason: partition.reason,
-         message:
-            `Source '${sourceName}' cannot be materialized into a storage ` +
-            `destination: ${partition.detail}.`,
-      });
-   }
-
-   return { terms: classified.terms, partitionColumns: partition.columns };
+   return { terms: classified.terms };
 }
 
 /**
@@ -299,24 +283,6 @@ export function assertColocatedPersistNotAuthorizeGated(
             `source warehouse to write the result. The source serves live. ` +
             `Remove the annotation, or persist a source on a connection that ` +
             `can write.`,
-      });
-   }
-
-   // `partition=` is meaningless without `storage=`. Only this gate sees a
-   // colocated source declaring it, which would otherwise reach a build that
-   // silently ignores it.
-   const partition = resolvePartitionColumns(persistSource, annotationFields);
-   if (!partition.ok) {
-      recordEligibilityRefused(partition.reason);
-      const what =
-         origin === "preaggregate"
-            ? `Pre-aggregation rollup '${sourceName}'`
-            : `Source '${sourceName}'`;
-      throw new MaterializationEligibilityError({
-         reason: partition.reason,
-         message:
-            `${what} cannot be materialized (colocated '#@ persist'): ` +
-            `${partition.detail}.`,
       });
    }
 

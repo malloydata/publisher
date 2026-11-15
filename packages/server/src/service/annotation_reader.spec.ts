@@ -138,6 +138,42 @@ describe("the #@ route's keys", () => {
    });
 });
 
+describe("the retired partition= key", () => {
+   it("is malformed on #@ persist, with a rewrite that says to remove it", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([`#@ persist name="orders" partition="day"`]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.tier])).toEqual([
+         ["persist-retired-key", "malformed"],
+      ]);
+      expect(findings[0]?.rewrite).toMatch(
+         /^remove it: partition= is not supported/,
+      );
+   });
+
+   it("is malformed written inside the persist key too", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([`#@ persist { name="orders" partition="day" }`]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.tier, f.key, f.nested])).toEqual([
+         ["persist-retired-key", "malformed", "partition", true],
+      ]);
+   });
+
+   it("is retired on #(materialize), not a key it accepts", () => {
+      expect(PUBLISHER_ROUTES["materialize"]?.keys?.has("partition")).toBe(
+         false,
+      );
+      expect(PUBLISHER_ROUTES["materialize"]?.retiredKeys?.partition).toMatch(
+         /^remove it: partition= is not supported/,
+      );
+   });
+});
+
 describe("the materialization v2 routes", () => {
    it("registers #(materialize) with the keys its generator reads", () => {
       expect([...(PUBLISHER_ROUTES["materialize"]?.keys ?? [])].sort()).toEqual(

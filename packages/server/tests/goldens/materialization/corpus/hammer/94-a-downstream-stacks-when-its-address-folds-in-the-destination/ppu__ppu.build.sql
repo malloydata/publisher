@@ -1,12 +1,12 @@
--- hammer/94-a-downstream-of-a-partitioned-upstream-stacks-on-its-table/ppu/ppu.malloy: build plan
+-- hammer/94-a-downstream-stacks-when-its-address-folds-in-the-destination/ppu/ppu.malloy: build plan
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 
 -- ==== source orders_all
 -- sourceID: orders_all@<hammer>/ppu/ppu.malloy
 -- connection: orders_pg
--- sourceEntityId: 4ec213661900b95f0c62b5af954319decea2cf369c2cf55ca3f87c02866990c5
--- compiler key: 8a63d1881bfbddd03bd50f539d20f21c76919924c321214cc32e2ac0430da70b
+-- sourceEntityId: 8a63d1881bfbddd03bd50f539d20f21c76919924c321214cc32e2ac0430da70b
+-- compiler key: 8a63d1881bfbddd03bd50f539d20f21c76919924c321214cc32e2ac0430da70b (the sourceEntityId)
 -- build SQL:
 SELECT 
    base."amount" as "amount",

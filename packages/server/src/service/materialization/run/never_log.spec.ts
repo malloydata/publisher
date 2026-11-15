@@ -382,7 +382,6 @@ describe("build failure logs never carry the driver's message", () => {
             "t",
             `SELECT 'x${ROW_VALUE}' AS flag`,
             { columns: [{ name: "flag", type: "boolean" }] },
-            [],
          );
          // The cast refused the value, so the warehouse's type is stored.
          expect(schema).toEqual([{ name: "flag", type: "VARCHAR" }]);

@@ -5,7 +5,14 @@
 
 import { ov__by_region__view__built is ov__by_region__view } from "m.malloy.persist-view.malloy"
 source: ov is ov__by_region__view__built extend {
-  view: by_region is { select: region, total; order_by: total desc }
+  view: by_region is {
+    group_by: region
+    aggregate:
+      # currency
+      #(doc) "Revenue"
+      total is total.max()
+    order_by: total desc
+  }
 }
 
 // ==== <pkg>/m.malloy.persist-view.malloy

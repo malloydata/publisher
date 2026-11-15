@@ -25,6 +25,12 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.
 
+## [Unreleased] — a persisted view's answer reports its measures as measures
+
+A query answered from a persisted view's table (`#@ persist` on a `view:`) returned the view's rows exactly, but every column as a dimension: a measure's `#(malloy)` result annotation lost `calculation` (and gained a drill `code`), so a renderer or chart reading the result saw dimensions where live returns measures. The view is now redeclared over its stored rows by grouping them again by its dimensions, each group one stored row, with each measure re-aggregated from its one stored value (a boolean measure keeps a NULL as NULL). The rows are unchanged, and each column now carries live's kind and annotations; only a stored column's `drill_expression` still names the stored column, as before.
+
+That regrouping is exact only when the stored rows are keyed by the view's dimensions, so a persisted view that holds a measure or a nest is now answered from its table only when its last stage groups by at least one dimension and it has no nest. Any other such view is answered live, with the same rows and metadata as live: one with a measure and no dimension (`{ aggregate: … }`), one whose `select:` carries a `calculate:`, one with a `nest:` (with or without a measure beside it), and one with a measure of a type `max()` does not take (a JSON value, an array). These were served from the table before, with dimensions in place of measures. A view of dimensions alone, with no nest, is served as before. Its table is still built; to have it serve, give the view a dimension, or move the nest into a view of its own. No API change.
+
 ## [Unreleased] — (BREAKING) the `name=` view is removed; `name=` on `#(materialize)` still names and places the table
 
 Materialization v2 (`PUBLISHER_MATERIALIZE`, now on by default) no longer makes a view at a `#(materialize)` source's `name=`. That view gave a table named by its generation (a `scope: "version"` run's, or a host-orchestrated run's) a stable alias for readers outside Malloy; it is gone, and generation-named tables get no alias view. This removal is the breaking part. `name=` itself stays: on `#(materialize)` it names the table and places it in a schema or dataset, as on v1 `#@ persist`, which is unchanged.
@@ -61,11 +67,50 @@ What an operator sees on a server that did not set the switch before:
   - **Refused at load.** An invalid incremental refresh policy on a `#(materialize)` source or a persisted view, such as `refresh="incremental"` with no `watermark=`, or on a dialect incremental refresh does not support. This is the rule a v1 `#@ persist` source has always been held to, and as for one, the package fails to load: a package already published, or loaded from a control plane's storage, stops loading until it is fixed.
 
   Before upgrading, load each package that carries a v2 annotation or a persisted view on a server with `PUBLISHER_MATERIALIZE=true` and fix what it reports, or set `PUBLISHER_MATERIALIZE=false` (below) until you have. Packages with only v1 annotations on sources and measures are not refused by this change. The release policy counts a refused package as breaking; whether this ships in a minor or a patch release is the release cutter's call.
-- **Answers.** A query no table can answer is answered live, as before; the path report says which table a query read, and a `served-copy-not-served` warning says why a built source is not read. One known difference: an answer from a persisted view's table has live's rows, but Malloy's result metadata marks each measure column as a dimension (its `#(malloy)` annotation has no `calculation`), so a renderer treats those columns as dimensions.
+- **Answers.** A query no table can answer is answered live, as before; the path report says which table a query read, and a `served-copy-not-served` warning says why a built source is not read. A persisted view's answer carries live's measure kinds, or is answered live (see "a persisted view's answer reports its measures as measures" above).
 
 To opt out, set `PUBLISHER_MATERIALIZE=false`: `#(materialize)` and `#(preaggregate)` are ignored again and the build plan is what it was before. Set it the same on every worker, and treat it as one-way in an environment: once on, leave it on rather than switching it off and back on.
 
 The setting is removed one release after this one, together with its off position; from then on materialization v2 is always on. See docs/materialization.md and docs/materialization-migration.md.
+
+## [Unreleased] — (BREAKING) `partition=` is no longer supported, and a publish that carries it is refused
+
+`partition=` laid a `storage=` table out as one directory per value of the named columns. It is
+removed from both `#@ persist` and `#(materialize)`, and a package that declares it is now
+**refused at publish**: a package with `partition=` that published yesterday does not publish today.
+
+**What to do:** remove `partition=` from the annotation and publish again. The table is then written
+unpartitioned. `partition=` was a layout and never isolation, since every term that scopes a caller is
+re-applied at read either way, so the only cost is scan cost: a read filtered to one value of the
+column reads the whole table. No answer changes.
+
+- **The refusal.** On `#@ persist` (written `partition="…"`, as a list, or inside the key as
+  `#@ persist { partition="…" }`) the package warning is `persist-retired-key`, severity `error`, and
+  the publish is refused with "`partition=` is no longer read …; remove it: partition= is not
+  supported". On `#(materialize)` it is the new code `materialize-retired-key` (severity `error`), the
+  source is not built and answers live, and the publish is refused. Either way it is refused at
+  publish only: a package that is already loaded (at startup or on reload) keeps loading with the
+  warning, keeps its schedule, and accepts a metadata PATCH.
+- **What a loaded package's next build does.** A `storage=` `#@ persist` source that declared
+  `partition=` has a new address, since the layout was part of it: its next build writes a new,
+  unpartitioned table, and the old one is reclaimed as any superseded generation is. A colocated
+  `#@ persist` source that declared `partition=` was refused (`partition_without_storage`) and never
+  built; it now builds, into its own warehouse. A `#@ persist` on a view that declares `partition=`
+  stays unbuilt (`persist-view-not-built`), now with a message that says to remove it.
+- **Control-plane operators: reseed partitioned incremental sources.** An incremental
+  `storage=` source that declared `partition=` is measured under its old address, so its first
+  instructed run after the upgrade fails with "measured under a different definition … set reseed".
+  Run it once with `reseed` (`--reseed`) to rebuild it in full under the new address.
+- **API.** `BuildPlan.sources[].partition` is deprecated and always absent. The three refusal
+  reasons `partition_without_storage`, `partition_column_unknown` and
+  `partition_column_not_public` stay in the `RefusedSource.reason` enum, so generated clients keep
+  compiling, and are no longer produced.
+- **Configuration.** `duckdb.partitionedWriteFlushThreshold`
+  (`PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`) is removed. A config file that still sets it
+  loads with the usual unknown-key warning; the variable is ignored.
+- **Unchanged.** The admin API's table copy still keeps a copied table's partition spec and writes
+  it in partition order, so a table an earlier `partition=` build laid out copies as before. No other
+  source's address, build SQL or stored table changes.
 
 ## [Unreleased] — (BREAKING) a model that joins sources across origin connections fails to load, as Malloy says
 

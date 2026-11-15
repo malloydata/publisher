@@ -160,19 +160,6 @@ source: mz_given_outside is base -> { select: * } extend { where: tenant = $tena
       expect(plan.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
-      expect(plan.partitionColumns).toEqual([]);
-   });
-
-   it("resolves partition= into the plan the build lays the table out with", async () => {
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#@ persist name="mz_part" storage=lake partition="region"
-source: mz_part is base -> { select: * }`);
-      const plan = assertMaterializationEligible(
-         sources.mz_part,
-         deriveAnnotationFields(sources.mz_part),
-      );
-      expect(plan.partitionColumns).toEqual(["region"]);
    });
 
    it("refuses a source protected by its own #(authorize) gate", async () => {

@@ -12,9 +12,6 @@ import type { IncrementalStrategy } from "../domain/types";
 import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 
-/** Persist-tag keys the publisher knows about, declared in the annotation reader's registry. */
-export { RECOGNIZED_PERSIST_KEYS };
-
 // Shared with the store: the strategy a declaration implies is what the ledger records.
 export type { IncrementalStrategy };
 
