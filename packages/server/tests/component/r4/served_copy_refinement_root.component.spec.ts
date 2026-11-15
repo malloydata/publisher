@@ -12,7 +12,10 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES } from "./conformance/data";
-import { freshLoadPool, loadFixture } from "./conformance/package_harness";
+import {
+   freshLoadPool,
+   loadFixture,
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
 const QUERY =

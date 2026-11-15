@@ -18,6 +18,34 @@ import {
 } from "./run_instructions";
 
 /**
+ * `c` with its tables keyed by each source's sourceID, as a plan keys them,
+ * and each declaring model path `modelPaths` gives, by sourceID.
+ */
+function bySourceID(
+   c: CompiledBuildPlan,
+   modelPaths: Record<string, string> = {},
+): CompiledBuildPlan {
+   const rename = new Map<string, string>();
+   const tables: CompiledBuildPlan["tables"] = {};
+   for (const [key, table] of Object.entries(c.tables)) {
+      const id = table.source.sourceID;
+      rename.set(key, id);
+      tables[id] = {
+         ...table,
+         ...(modelPaths[id] ? { modelPath: modelPaths[id] } : {}),
+      };
+   }
+   return {
+      ...c,
+      tables,
+      builds: c.builds.map((b) => ({
+         ...b,
+         order: b.order.map((key) => rename.get(key) ?? key),
+      })),
+   };
+}
+
+/**
  * Auto-run's table names, which must never let two packages, or two
  * environments, on one schema build one table: every name the author did not
  * choose is Publisher's readable one, `<pkg>__<file>__<source>[__v<ver>]__p<8
@@ -44,45 +72,53 @@ const LEGACY_V120 = versionTableSuffix({
 
 const READABLE = /__p[0-9a-f]{8}$/;
 
-const compiled = (): CompiledBuildPlan => ({
-   ...compiledWith(
+const compiled = (): CompiledBuildPlan =>
+   bySourceID(
+      compiledWith(
+         {
+            summary: fakeSource({ name: "summary", sourceEntityId: "a1" }),
+            named: fakeSource({
+               name: "named",
+               sourceEntityId: "a2",
+               annotationFields: { name: "named_t" },
+            }),
+            qualified: fakeSource({
+               name: "qualified",
+               sourceEntityId: "a3",
+               annotationFields: { name: "analytics.q_t" },
+            }),
+            rollup: fakeSource({
+               name: "orders__preagg__category__1a2b3c4d",
+               sourceEntityId: "a4",
+               annotationFields: {
+                  name: "ns.orders__preagg__category__1a2b3c4d",
+               },
+            }),
+         },
+         [["summary", "named", "qualified", "rollup"]],
+      ),
       {
-         summary: fakeSource({ name: "summary", sourceEntityId: "a1" }),
-         named: fakeSource({
-            name: "named",
-            sourceEntityId: "a2",
-            annotationFields: { name: "named_t" },
-         }),
-         qualified: fakeSource({
-            name: "qualified",
-            sourceEntityId: "a3",
-            annotationFields: { name: "analytics.q_t" },
-         }),
-         rollup: fakeSource({
-            name: "orders__preagg__category__1a2b3c4d",
-            sourceEntityId: "a4",
-            annotationFields: {
-               name: "ns.orders__preagg__category__1a2b3c4d",
-            },
-         }),
+         summary: "models/sales.malloy",
+         named: "models/sales.malloy",
+         qualified: "models/sales.malloy",
+         orders__preagg__category__1a2b3c4d: "models/sales.malloy",
       },
-      [["summary", "named", "qualified", "rollup"]],
-   ),
-   sourceModelPaths: {
-      summary: "models/sales.malloy",
-      named: "models/sales.malloy",
-      qualified: "models/sales.malloy",
-      orders__preagg__category__1a2b3c4d: "models/sales.malloy",
-   },
-});
+   );
 
+const ROLLUP = "orders__preagg__category__1a2b3c4d";
 const withRollup = (c: CompiledBuildPlan): CompiledBuildPlan => ({
    ...c,
-   preaggregatePlans: {
-      [c.sources.rollup.sourceID]: {
-         baseSourceName: "orders",
-         grainDimensions: ["category"],
-      } as never,
+   tables: {
+      ...c.tables,
+      [ROLLUP]: {
+         ...c.tables[ROLLUP],
+         kind: "rollup",
+         rollup: {
+            baseSourceName: "orders",
+            grainDimensions: ["category"],
+         } as never,
+         materialize: undefined,
+      },
    },
 });
 
@@ -206,8 +242,8 @@ describe("auto-run's table names", () => {
       const shared = (order: string[]) =>
          names(
             deriveSelfInstructions(
-               {
-                  ...compiledWith(
+               bySourceID(
+                  compiledWith(
                      {
                         zeta: fakeSource({
                            name: "zeta",
@@ -220,8 +256,8 @@ describe("auto-run's table names", () => {
                      },
                      [order],
                   ),
-                  sourceModelPaths: { zeta: "a.malloy", alpha: "b.malloy" },
-               },
+                  { zeta: "a.malloy", alpha: "b.malloy" },
+               ),
                undefined,
                {},
                undefined,
@@ -284,11 +320,17 @@ describe("a #(materialize) table's name", () => {
       defaulted: boolean,
    ): CompiledBuildPlan => ({
       ...c,
-      materializePlans: {
-         [c.sources.named.sourceID]: {
-            persist: { name: "named_t" },
-            ...(defaulted ? { nameDefaulted: true } : {}),
-         } as never,
+      tables: {
+         ...c.tables,
+         named: {
+            ...c.tables.named,
+            kind: "materialize",
+            materialize: {
+               persist: { name: "named_t" },
+               ...(defaulted ? { nameDefaulted: true } : {}),
+            } as never,
+            rollup: undefined,
+         },
       },
    });
 
@@ -565,21 +607,24 @@ describe("two sources whose readable names meet", () => {
       // view, in one file: one identity, so one name. The package's own
       // collision check refuses this before a run; the run never writes one
       // table for two sources even so.
-      const c: CompiledBuildPlan = {
-         ...compiledWith(
-            {
-               first: fakeSource({ name: "orders", sourceEntityId: "a1" }),
-               second: fakeSource({ name: "orders", sourceEntityId: "a2" }),
-            },
-            [["first", "second"]],
-         ),
-         sourceModelPaths: { orders: "m.malloy" },
-      };
+      // Two identities, as a plan has them (one key per sourceID).
+      const first = Object.assign(
+         fakeSource({ name: "orders", sourceEntityId: "a1" }),
+         { sourceID: "orders@first" },
+      );
+      const second = Object.assign(
+         fakeSource({ name: "orders", sourceEntityId: "a2" }),
+         { sourceID: "orders@second" },
+      );
+      const c: CompiledBuildPlan = bySourceID(
+         compiledWith({ first, second }, [["first", "second"]]),
+         { "orders@first": "m.malloy", "orders@second": "m.malloy" },
+      );
       const r = deriveSelfInstructions(c, undefined, {}, undefined, PKG);
       expect(r.instructions.map((i) => i.sourceEntityId)).toEqual(["a1"]);
       expect(r.carried).toEqual({});
       // Refused, with its own reason, so the run's record says why.
-      expect(r.refused.orders).toMatchObject({
+      expect(r.refused["orders@second"]).toMatchObject({
          reason: "table_name_collision",
          tier: "colocated",
          modelPath: "m.malloy",
@@ -599,11 +644,9 @@ describe("a source's file", () => {
       const build = (lastImporter: string, order: string[]) => {
          const orders = declared("orders", "/pkg/models/a.malloy", "a1");
          return deriveSelfInstructions(
-            {
-               ...compiledWith({ orders }, [order]),
-               // The plan's path as the last importing model left it.
-               sourceModelPaths: { [orders.sourceID]: lastImporter },
-            },
+            bySourceID(compiledWith({ orders }, [order]), {
+               [orders.sourceID]: lastImporter,
+            }),
             undefined,
             {},
             undefined,
@@ -640,14 +683,10 @@ describe("a source's file", () => {
       const zeta = declared("zeta", "/pkg/a.malloy", "a1");
       const alpha = declared("alpha", "/pkg/b.malloy", "a1");
       const r = deriveSelfInstructions(
-         {
-            ...compiledWith({ zeta, alpha }, [["alpha", "zeta"]]),
-            // Recorded the other way round by the importers.
-            sourceModelPaths: {
-               [zeta.sourceID]: "z.malloy",
-               [alpha.sourceID]: "a.malloy",
-            },
-         },
+         bySourceID(compiledWith({ zeta, alpha }, [["alpha", "zeta"]]), {
+            [zeta.sourceID]: "z.malloy",
+            [alpha.sourceID]: "a.malloy",
+         }),
          undefined,
          {},
          undefined,
@@ -795,10 +834,7 @@ describe("removing a name= under scope: version", () => {
          [["named"]],
       );
       const r = deriveSelfInstructions(
-         {
-            ...c,
-            sourceModelPaths: { named: "models/sales.malloy" },
-         },
+         bySourceID(c, { named: "models/sales.malloy" }),
          undefined,
          { a2: prior("named_t__v1_2_0__p0123abcd", "a2") },
          undefined,

@@ -17,6 +17,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "line_totals@<pkg>/m.malloy": "persist",
+      "segment_totals@<pkg>/m.malloy": "persist",
+      "with_lines@<pkg>/m.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {

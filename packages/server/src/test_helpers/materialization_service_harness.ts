@@ -6,7 +6,10 @@ import * as sinon from "sinon";
 import { ConnectionNotFoundError, DestinationNotFoundError } from "../errors";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import type { EnvironmentStore } from "../service/environment_store";
-import { MaterializationService } from "../service/materialization/run/materialization_service";
+import {
+   MaterializationService,
+   type RunCollaboratorOverrides,
+} from "../service/materialization/run/materialization_service";
 import { installSettings } from "./settings_env";
 
 /**
@@ -52,9 +55,13 @@ export function withQueryMetadataOn(): void {
  * environment resolves and yields a package whose build plan is empty (no
  * persist sources); individual tests override getBuildPlan via `setPackage`
  * to exercise the orchestrated path. getModelPaths()=>[] keeps the background
- * build from touching the Malloy runtime.
+ * build from touching the Malloy runtime. `collaborators` replaces the steps a
+ * run takes (see RunCollaborators); a spec that replaces one after the mocks
+ * exist constructs another service over `environmentStore` with them.
  */
-export function createMocks(): ServiceMocks {
+export function createMocks(
+   collaborators: RunCollaboratorOverrides = {},
+): ServiceMocks {
    const sandbox = sinon.createSandbox();
 
    const repository = {
@@ -83,7 +90,7 @@ export function createMocks(): ServiceMocks {
    });
    setPackage(environmentStore, { getBuildPlan: () => null });
 
-   const service = new MaterializationService(environmentStore);
+   const service = new MaterializationService(environmentStore, collaborators);
 
    return { sandbox, repository, environmentStore, service };
 }

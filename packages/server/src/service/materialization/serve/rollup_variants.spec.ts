@@ -8,7 +8,7 @@ import {
    grainDecline,
    joinCoverageDecline,
    joinGrainDecline,
-   joinLegDecline,
+   joinBranchDecline,
 } from "./rollup_variants";
 
 const GRAIN = new Set(["region", "month"]);
@@ -69,19 +69,21 @@ describe("coverageDecline", () => {
    });
 });
 
-describe("joinLegDecline", () => {
-   it("tries a leg whose join the query reads", () => {
+describe("joinBranchDecline", () => {
+   it("tries a branch whose join the query reads", () => {
       expect(
-         joinLegDecline("segments", [["segments", "region"]], undefined),
+         joinBranchDecline("segments", [["segments", "region"]], undefined),
       ).toBeUndefined();
    });
 
-   it("tries a leg when the query's reads are unreadable", () => {
-      expect(joinLegDecline("segments", undefined, undefined)).toBeUndefined();
+   it("tries a branch when the query's reads are unreadable", () => {
+      expect(
+         joinBranchDecline("segments", undefined, undefined),
+      ).toBeUndefined();
    });
 
-   it("skips a leg whose join the query does not read, without a decline", () => {
-      const skipped = joinLegDecline("segments", [["orders", "id"]], {
+   it("skips a branch whose join the query does not read, without a decline", () => {
+      const skipped = joinBranchDecline("segments", [["orders", "id"]], {
          code: "rollup_contract",
          callerDetail: "never reported",
       });
@@ -89,8 +91,8 @@ describe("joinLegDecline", () => {
       expect(skipped).not.toBeInstanceOf(LegDecline);
    });
 
-   it("declines a read leg with its refusal, as a shape check", () => {
-      const decline = joinLegDecline("segments", [["segments", "region"]], {
+   it("declines a read branch with its refusal, as a shape check", () => {
+      const decline = joinBranchDecline("segments", [["segments", "region"]], {
          code: "rollup_count_semantics",
          callerDetail: "the join fans out",
       });
@@ -161,5 +163,84 @@ describe("joinCoverageDecline", () => {
       expect(decline?.code).toBe("rollup_missing_field");
       expect(decline?.shapeCheck).toBe(true);
       expect(decline?.callerDetail).toContain("`segments.avg`");
+   });
+});
+
+describe("the rollup branch's decisions at their edges", () => {
+   it("passes a query that groups, filters and aggregates nothing", () => {
+      const empty = { groupedBy: [], filteredBy: [], measures: [] };
+      expect(grainDecline(empty, GRAIN, MEASURES)).toBeUndefined();
+      expect(coverageDecline(empty, MEASURES)).toBeUndefined();
+      expect(
+         joinGrainDecline("segments", empty, GRAIN, MEASURES),
+      ).toBeUndefined();
+      expect(
+         joinCoverageDecline("segments", empty, GRAIN, MEASURES),
+      ).toBeUndefined();
+   });
+
+   it("declines a grouped field before a filtered one, naming the first in order", () => {
+      const decline = grainDecline(
+         { groupedBy: ["city"], filteredBy: ["day"] },
+         GRAIN,
+         MEASURES,
+      );
+      expect(decline?.callerDetail).toBe(
+         "the query reads `city`, which the rollup's grain does not keep",
+      );
+   });
+
+   it("declines every field against an empty grain, a stored measure still kept", () => {
+      const none = new Set<string>();
+      expect(
+         grainDecline({ groupedBy: ["region"], filteredBy: [] }, none, MEASURES)
+            ?.code,
+      ).toBe("rollup_grain_too_coarse");
+      expect(
+         grainDecline({ groupedBy: [], filteredBy: ["total"] }, none, MEASURES),
+      ).toBeUndefined();
+   });
+
+   it("reads a join branch's filter on a stored measure through the join as in the grain", () => {
+      expect(
+         joinGrainDecline(
+            "segments",
+            { groupedBy: [], filteredBy: ["segments.total"] },
+            GRAIN,
+            MEASURES,
+         ),
+      ).toBeUndefined();
+   });
+
+   it("skips a branch whose join a query that reads nothing does not read", () => {
+      const skipped = joinBranchDecline("segments", [], undefined);
+      expect(skipped).toBeInstanceOf(Error);
+      expect(skipped).not.toBeInstanceOf(LegDecline);
+   });
+
+   it("tries a branch the query reads through on any path, not only the first", () => {
+      expect(
+         joinBranchDecline(
+            "segments",
+            [
+               ["orders", "id"],
+               ["segments", "region"],
+            ],
+            undefined,
+         ),
+      ).toBeUndefined();
+   });
+
+   it("names the join and the field it reads in a join branch's decline", () => {
+      expect(
+         joinCoverageDecline(
+            "segments",
+            { measures: ["segments.avg"] },
+            GRAIN,
+            MEASURES,
+         )?.callerDetail,
+      ).toBe(
+         "the query aggregates `segments.avg`, which the rollup does not store",
+      );
    });
 });

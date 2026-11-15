@@ -32,6 +32,7 @@
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import { exploreOf } from "../governance/ir/compiled_model";
 import { getDialect } from "@malloydata/malloy";
+import { capabilitiesOf, STORAGE_DIALECT } from "./domain/dialect";
 import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
@@ -95,12 +96,12 @@ const CHECKED_TYPES = new Set([
 /**
  * Whether a column stored as `storedType` serves as `declaredType`, or
  * `undefined` when the declared type is not one this check compares (json,
- * sql native, arrays, records), which keeps today's behaviour for them.
+ * sql native, arrays, records), which is never a mismatch.
  *
- * The rule is the serve shape's own mapping ({@link duckdbTypeToMalloyType}):
- * the type the shape will declare must be the type the author declared, with
- * one widening: the shape declares every DuckDB timestamp as `timestamp`, which
- * serves a declared `timestamptz` faithfully in a UTC session.
+ * The rule is the DuckDB type mapping ({@link duckdbTypeToMalloyType}): the
+ * type it declares must be the type the author declared, with one widening:
+ * it declares every DuckDB timestamp as `timestamp`, which serves a declared
+ * `timestamptz` faithfully in a UTC session.
  *
  * | Declared      | Faithful stored types                                    |
  * | ------------- | -------------------------------------------------------- |
@@ -223,7 +224,7 @@ export function castToDeclaredTypes(
    const casts = declared.flatMap((d) => {
       const target = buildCastTarget(d.type, options);
       if (!target) return [];
-      const column = quoteIdentifier(d.name, "duckdb");
+      const column = quoteIdentifier(d.name, STORAGE_DIALECT);
       return [`CAST(${column} AS ${target}) AS ${column}`];
    });
    if (casts.length === 0) return selectSQL;
@@ -400,7 +401,7 @@ export function rebuildWouldRecast(
 }
 
 /**
- * How the serve shape handles each mismatched column: read it through a cast
+ * How the served copy handles each mismatched column: read it through a cast
  * when {@link faithfulCastTarget} names one, since that cast gives the value
  * live gives and no value can fail it; otherwise report it unservable, so only
  * the queries reading it are answered live.
@@ -430,8 +431,7 @@ export function serveTypePlan(
  * For a colocated `#(materialize)` table (no `storage=`), whose build writes
  * into the source's own warehouse and captures no schema: its columns are the
  * build source's output, a table at one content address holds exactly that
- * build's columns, and Malloy reads each back as the basic type it built
- * (decided for the colocated served copy, phase 3 pull request 6).
+ * build's columns, and Malloy reads each back as the basic type it built.
  *
  * A field whose type has no faithful spelling here (`timestamptz`, `json`, a
  * `sql native` type, a nested type off DuckDB) is left out, so the served copy
@@ -445,14 +445,13 @@ export function storedColumnsOfOutput(
       /**
        * Store a `bigint` (Malloy's numberType for a 64-bit integer read back
        * from a table) as BIGINT rather than DOUBLE: for a schema read off a
-       * table, under the v1 cutover. Off, as before (a `#(materialize)`
-       * plan's compiled output).
+       * v1 table. Off for a `#(materialize)` plan's compiled output.
        */
       bigint?: boolean;
       /**
        * Store a `timestamptz` as TIMESTAMP WITH TIME ZONE rather than leaving
-       * the column out: for a v1 table's schema under the v1 cutover, whose
-       * every column the served copy must declare. Off, as before.
+       * the column out: for a v1 table's schema, whose every column the
+       * served copy must declare. Off otherwise.
        */
       timestamptz?: boolean;
    },
@@ -565,7 +564,12 @@ function structOf(
  * every digit too, or leaves the column live.
  */
 export function liveKeepsBigIntegers(dialect: unknown): boolean {
-   if (typeof dialect !== "string" || dialect === "duckdb") return true;
+   if (
+      typeof dialect !== "string" ||
+      capabilitiesOf(dialect).driverKeepsBigIntegers
+   ) {
+      return true;
+   }
    try {
       return (
          (getDialect(dialect) as { supportsBigIntPrecision?: boolean })
@@ -695,14 +699,6 @@ export interface BigIntegerReadOptions {
 }
 
 /**
- * The dialects with exactly one type Malloy reads as a `bigint` number, by
- * that type: a column whose field is one is that type, captured or not.
- */
-const ONLY_BIG_INTEGER_TYPE: Readonly<Record<string, string>> = {
-   standardsql: "INT64",
-};
-
-/**
  * A colocated column's captured warehouse type, as the cast that reads it
  * exactly, when Malloy types that type as a `bigint` number (`bigint`,
  * `NUMBER(38,0)`, `decimal(38,0)`, `UHUGEINT`); undefined for any other type
@@ -722,14 +718,15 @@ function exactWarehouseCast(
 ): string | undefined {
    if (typeof dialect !== "string") return undefined;
    if (!nativeType?.trim()) {
-      return Object.hasOwn(ONLY_BIG_INTEGER_TYPE, dialect)
-         ? ONLY_BIG_INTEGER_TYPE[dialect]
-         : undefined;
+      return capabilitiesOf(dialect).onlyBigIntegerType;
    }
    // MySQL's CAST names no integer type (`CAST(x AS bigint)` is a syntax
    // error; its SIGNED and UNSIGNED are not numbers to Malloy), so only a
    // DECIMAL is a type the column can be read through.
-   if (dialect === "mysql" && !/^decimal\b/i.test(nativeType.trim())) {
+   if (
+      !capabilitiesOf(dialect).castsToIntegerType &&
+      !/^decimal\b/i.test(nativeType.trim())
+   ) {
       return undefined;
    }
    try {
@@ -856,8 +853,8 @@ export function duckdbTypeToMalloyType(
  * declaration ({@link declarableColumns}), so a query reading it is answered
  * live.
  *
- * The one rule for every stored table's `type:`: the serve shape, the
- * chained build's parents, and the served copy.
+ * The one rule for every stored table's `type:`: the chained build's parents
+ * and the served copy.
  */
 export function storedMalloyType(stored: string): string | undefined {
    const parsed = parseStoredType(stored);

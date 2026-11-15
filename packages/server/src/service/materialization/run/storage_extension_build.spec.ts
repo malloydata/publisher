@@ -5,7 +5,7 @@ import type { PersistSource } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import { ChainedUpstreamMissingError } from "../../../errors";
 import { buildEnvironmentStub } from "../../../test_helpers/materialization_service_harness";
-import type { MaterializePlan } from "../plan/build_file_generator";
+import type { MaterializePlan } from "../domain/table_plans";
 import type { ManifestEntry } from "../domain/types";
 import {
    NO_PLAN_FACTS,

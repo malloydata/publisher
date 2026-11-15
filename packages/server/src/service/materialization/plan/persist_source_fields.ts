@@ -55,34 +55,6 @@ export function deriveAnnotationFields(
 }
 
 /**
- * Whether every gate on the entry point RESOLVED, not which route it was written
- * on. `"row_level"` is kept as the name so stored plans still read; an
- * `#(authorize)` lock lands there too, deliberately — this decides whether a
- * source may be BUILT, and `Model.queryEntryPointHasRowLevelGate` blocks routing
- * to frozen rows per request on ANY collected gate.
- */
-export type PersistSourceGateClassification = "row_level" | "rejected";
-
-/**
- * `classification`: whether the entry point's gates resolved to something
- * enforceable. `attributed`: `false` when `isAuthorizeAttributedToEntryPoint`
- * (materialization_eligibility.ts) finds a note reachable only through a join —
- * checked independently because `collectEntryPointGates` does not trace joins,
- * so `classification` cannot see a join-carried gate. `inheritedRowFilter`:
- * an `#(access_filter)` the entry point reads from a source it derives from or
- * extends rather than declares itself. A table of it holds every caller's
- * rows, and the served copy, which re-roots the entry point and so replaces
- * the source that declares the gate, cannot graft it: every query is declined
- * and answered live, so such a table is never built. Absent reads false (a
- * plan recorded before it).
- */
-export interface PersistSourceGateOutcome {
-   classification: PersistSourceGateClassification;
-   attributed: boolean;
-   inheritedRowFilter?: boolean;
-}
-
-/**
  * The `storage=` destination a persist source declares, trimmed; undefined
  * for none, and for one that names nothing (refused at eligibility).
  */

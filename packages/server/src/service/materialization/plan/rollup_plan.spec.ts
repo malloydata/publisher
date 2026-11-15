@@ -2,17 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { allowGatedStorageRollupsForTests } from "../../../config";
-import {
-   afterAll,
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../test_helpers/settings_env";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 import { persistBlankedFiles } from "../text/persist_blanking";
 import {
    planModelRollups,
@@ -24,10 +16,7 @@ import { emitMeasureExpr, generateRollupBuildFile } from "../text/read_text";
 import type { RollupVariantPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 
-const connection = new DuckDBConnection("duckdb", ":memory:");
-afterAll(async () => {
-   await connection.close();
-});
+const mz = materializationFixture();
 
 const ROWS = `duckdb.sql("""
   SELECT * FROM (VALUES
@@ -39,31 +28,12 @@ const ROWS = `duckdb.sql("""
 
 const CARRIERS = `duckdb.sql("SELECT 'AA' AS code, 5 AS fleet UNION ALL SELECT 'BB', 7")`;
 
-/** Compile `files` and return the first file's model definition. */
-async function compile(files: Record<string, string>): Promise<unknown> {
-   const urls = new Map(
-      Object.entries(files).map(([name, text]) => [
-         `file:///pkg/${name}`,
-         text,
-      ]),
-   );
-   const runtime = new SingleConnectionRuntime({
-      urlReader: new InMemoryURLReader(urls),
-      connection,
-   });
-   const [first] = Object.keys(files);
-   const model = await runtime
-      .loadModel(new URL(`file:///pkg/${first}`))
-      .getModel();
-   return model._modelDef;
-}
-
 async function plan(
    files: Record<string, string>,
    declaredIn?: string,
    readUnderGates?: boolean,
 ): Promise<{ plans: RollupVariantPlan[]; refused: RollupRefusal[] }> {
-   const modelDef = await compile(files);
+   const modelDef = await mz.compile(files);
    return planModelRollups(
       SourceMap.of(modelDef),
       {
@@ -496,7 +466,7 @@ source: orders is ${ROWS} extend {
 });
 
 describe("a source that sets its own time zone (#1686)", () => {
-   it("plans its rollup only where the join leg reads it: joined from a source in the same zone, stored beside a storage= rollup", async () => {
+   it("plans its rollup only where the join branch reads it: joined from a source in the same zone, stored beside a storage= rollup", async () => {
       const zoned = (
          name: string,
          storage = "",
@@ -609,7 +579,7 @@ describe("the rollup build file", () => {
       expect(text).toContain("    per_order__partial0 is amount.sum()");
       expect(text).toContain("    per_order__partial1 is count()");
       // It compiles beside the author's file.
-      await compile({
+      await mz.compile({
          "orders.malloy.preaggregate.malloy": text,
          "orders.malloy": `source: orders is ${ROWS} extend {
   measure: paid is amount.sum() { where: region = 'x' }
@@ -622,7 +592,7 @@ describe("the rollup build file", () => {
 #@ persist storage="lake"
 source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
 `;
-      const modelDef = await compile({ "m.malloy": text });
+      const modelDef = await mz.compile({ "m.malloy": text });
       const blanked = await persistBlankedFiles(modelDef, () => text);
       const out = [...(blanked?.values() ?? [])][0] ?? "";
       expect(out.split("\n")[1]?.trim()).toBe("");
@@ -635,7 +605,7 @@ source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
 #@ persist storage="lake"
 source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
 `;
-      const modelDef = await compile({ "m.malloy": text });
+      const modelDef = await mz.compile({ "m.malloy": text });
       // The file moved on since it compiled: the span holds something else.
       expect(
          await persistBlankedFiles(modelDef, () => `\n\n${text}`),
@@ -810,11 +780,11 @@ source: orders is ${ROWS} extend {
   measure: n is count()
 }`;
 
-   async function planV1(readsV1: boolean) {
-      const modelDef = await compile({ "orders.malloy": V1 });
+   async function planV1(readsPreaggregateLines: boolean) {
+      const modelDef = await mz.compile({ "orders.malloy": V1 });
       return planModelRollups(SourceMap.of(modelDef), {
          packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
-         readsV1,
+         readsPreaggregateLines,
       });
    }
 
@@ -846,7 +816,7 @@ source: orders is ${ROWS} extend {
 
 describe("a v1 rollup's namespace under the v1 cutover", () => {
    it("inherits its base's #@ persist name= namespace when its line names none, as v1 places it", async () => {
-      const modelDef = await compile({
+      const modelDef = await mz.compile({
          "orders.malloy": `##! experimental.persistence
 #@ persist name="analytics.orders_tbl"
 source: orders is ${ROWS} -> {
@@ -865,7 +835,7 @@ source: orders is ${ROWS} -> {
       });
       const { plans, refused } = planModelRollups(SourceMap.of(modelDef), {
          packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
-         readsV1: true,
+         readsPreaggregateLines: true,
       });
       expect(refused).toEqual([]);
       expect(

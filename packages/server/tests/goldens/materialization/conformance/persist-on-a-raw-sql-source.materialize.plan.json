@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "raw_direct@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "raw_direct@<pkg>/m.malloy": {
         "buildSourceName": "raw_direct__mat",

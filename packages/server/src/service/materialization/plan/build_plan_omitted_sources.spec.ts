@@ -32,7 +32,14 @@ import {
    type BuildPlanParts,
 } from "./build_plan";
 import { finalizeOmissions, omittedFromFile } from "../domain/omitted_sources";
-import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
+import type { TablePlan } from "../domain/table_plans";
+import {
+   fakeSource,
+   materializePlansIn,
+   persistTables,
+   rollupPlansIn,
+   sourcesIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 
 const duckdb = new DuckDBConnection("duckdb", ":memory:");
@@ -166,7 +173,7 @@ source: p is base -> { group_by: a }
    it("a rollup companion that fails reports the v1 rollups as rollup_companion_failed", async () => {
       const env = {};
       const good = await plan(V1_ROLLUP, env, false);
-      const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
+      const planned = Object.keys(rollupPlansIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
       );
       expect(planned).toHaveLength(1);
@@ -194,7 +201,7 @@ source: by_category is orders -> { group_by: category }
 `;
       const env = {};
       const good = await plan(text, env, false);
-      const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
+      const planned = Object.keys(rollupPlansIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
       );
       expect(planned).toHaveLength(1);
@@ -219,7 +226,7 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
 `;
       const env = {};
       const good = await plan(text, env, false);
-      const planned = Object.keys(good.parts.sources).map((id) =>
+      const planned = Object.keys(sourcesIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
       );
       expect(planned).toHaveLength(1);
@@ -227,7 +234,7 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
       // The copy's text unreadable, or the copy not compiling.
       for (const fails of [true, "overlay"] as const) {
          const bad = await plan(text, env, fails);
-         expect(Object.keys(bad.parts.sources)).toEqual([]);
+         expect(Object.keys(sourcesIn(bad.parts))).toEqual([]);
          expect(
             wirePlan(bad.parts)?.omittedSources?.map((o) => ({
                ...o,
@@ -250,7 +257,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
 `;
       const env = { PUBLISHER_MATERIALIZE: "true" };
       const good = await plan(text, env, false);
-      const planned = Object.keys(good.parts.materializePlans).map((id) =>
+      const planned = Object.keys(materializePlansIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
       );
       expect(planned).toHaveLength(1);
@@ -278,7 +285,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
 `;
       const env = { PUBLISHER_MATERIALIZE: "true" };
       const good = await plan(text, env, false);
-      const planned = Object.keys(good.parts.sources)
+      const planned = Object.keys(sourcesIn(good.parts))
          .filter((id) => id.includes("__view@"))
          .map((id) => id.replace(good.dir, "<pkg>"));
       expect(planned).toHaveLength(1);
@@ -386,20 +393,27 @@ describe("BuildPlan.omittedSources: projection failures", () => {
          },
       };
       const sources = { ok, unkeyable, stray, broken };
+      const tables: Record<string, TablePlan> = {
+         ...persistTables(sources),
+         broken: {
+            kind: "rollup",
+            source: broken,
+            rollup: brokenRollup as never,
+         },
+      };
       const wire = deriveBuildPlan(
-         [
-            {
-               connectionName: "duckdb",
-               order: Object.keys(sources),
-               dependsOn: {},
-            },
-         ],
-         sources,
-         { duckdb: "digest" },
-         undefined,
-         undefined,
+         {
+            builds: [
+               {
+                  connectionName: "duckdb",
+                  order: Object.keys(sources),
+                  dependsOn: {},
+               },
+            ],
+            tables,
+            connectionDigests: { duckdb: "digest" },
+         },
          null,
-         { preaggregatePlans: { broken: brokenRollup as never } },
       );
       expect(Object.keys(wire.sources)).toEqual(["ok"]);
       expect(wire.omittedSources).toEqual([
@@ -413,13 +427,12 @@ describe("BuildPlan.omittedSources: projection failures", () => {
    it("drops a recorded omission the plan did list, keeps the first reason per sourceID, and sorts", () => {
       const ok = fakeSource({ name: "ok2", sourceEntityId: "e-ok2" });
       const wire = deriveBuildPlan(
-         [{ connectionName: "duckdb", order: ["ok2"], dependsOn: {} }],
-         { ok2: ok },
-         { duckdb: "digest" },
-         undefined,
-         undefined,
-         null,
          {
+            builds: [
+               { connectionName: "duckdb", order: ["ok2"], dependsOn: {} },
+            ],
+            tables: persistTables({ ok2: ok }),
+            connectionDigests: { duckdb: "digest" },
             omittedSources: [
                { sourceID: "z@f", reason: "rollup_companion_failed" },
                // Another model's walk planned it: not omitted.
@@ -428,6 +441,7 @@ describe("BuildPlan.omittedSources: projection failures", () => {
                { sourceID: "z@f", reason: "projection_failed" },
             ],
          },
+         null,
       );
       expect(wire.omittedSources).toEqual([
          { sourceID: "a@f", reason: "materialize_companion_failed" },
@@ -452,19 +466,19 @@ describe("BuildPlan.omittedSources: projection failures", () => {
       // written as `*@<file>` would read as, and be dropped beside, it.
       const star = fakeSource({ name: "*", sourceEntityId: "e-star" });
       const wire = deriveBuildPlan(
-         [{ connectionName: "duckdb", order: ["*@f"], dependsOn: {} }],
-         { "*@f": star },
-         { duckdb: "digest" },
-         undefined,
-         undefined,
-         null,
          {
+            builds: [
+               { connectionName: "duckdb", order: ["*@f"], dependsOn: {} },
+            ],
+            tables: persistTables({ "*@f": star }),
+            connectionDigests: { duckdb: "digest" },
             omittedSources: [
                { file: "f", reason: "materialize_companion_failed" },
                { file: "f", reason: "projection_failed" },
                { file: "a", reason: "rollup_companion_failed" },
             ],
          },
+         null,
       );
       expect(Object.keys(wire.sources)).toEqual(["*@f"]);
       expect(wire.omittedSources).toEqual([]);

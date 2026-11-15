@@ -16,15 +16,26 @@ import {
    modelDefToModelInfo,
    Runtime,
 } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   spyOn,
+} from "bun:test";
 import { logger } from "../logger";
 import { installSettings } from "../test_helpers/settings_env";
-import { writeServedCopyFiles } from "../test_helpers/served_copy_files";
+import { materializationFixture } from "../test_helpers/materialization_fixture";
 import type { Binding } from "./materialization/domain/binding";
 import { GeneratedFiles } from "./materialization/text/generated_files";
 import { unrecordedAudit } from "./access_record";
 import { Model } from "./model";
 import { QueryPrivileges } from "./model_query_request";
+
+const mz = materializationFixture();
+afterAll(() => mz.close());
 
 const BINDING: Binding = {
    kind: "persist",
@@ -41,7 +52,7 @@ async function buildModel(originalText: string, storageSQL: string) {
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
    await duckdb.runSQL(storageSQL);
    const connMap = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
-   const files = writeServedCopyFiles({ "m.malloy": originalText });
+   const files = mz.servedCopy({ "m.malloy": originalText });
    const runtime = new Runtime({
       urlReader: new InMemoryURLReader(files.byUrl),
       connections: new FixedConnectionMap(connMap, "duckdb"),

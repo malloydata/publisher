@@ -14,6 +14,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders__rollup__category__17b7053b@<hammer>/pf/pf.malloy.preaggregate.malloy": "rollup"
+    },
     "materializePlans": {},
     "rollupPlans": {
       "orders__rollup__category__17b7053b@<hammer>/pf/pf.malloy.preaggregate.malloy": {

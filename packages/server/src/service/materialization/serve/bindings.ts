@@ -17,6 +17,7 @@
 import { quoteManifestTablePath } from "../../quoting";
 import type { Binding } from "../domain/binding";
 import type { DerivedSourceDef } from "../text/author_model";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 /**
  * Whether a source opts out of the pre-built table with `#@ -persist`.
@@ -43,7 +44,7 @@ export function optsOutOfPersist(def: DerivedSourceDef): boolean {
 export function boundTablePath(b: Binding): string {
    return b.tier === "colocated"
       ? b.tablePath
-      : quoteManifestTablePath(b.tablePath, "duckdb");
+      : quoteManifestTablePath(b.tablePath, STORAGE_DIALECT);
 }
 
 /**

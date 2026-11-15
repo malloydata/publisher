@@ -76,8 +76,8 @@ export interface GatedTable {
    readonly tier: GateTier;
    /**
     * A v1 declaration (`#@ persist`), not a v2 one; for a rollup, one the
-    * variant leg did not plan (a v1 `#@ preaggregate` line is planned as a
-    * variant since the cutover's G4, so it is not `v1` here).
+    * rollup leg did not plan (a v1 `#@ preaggregate` line is planned as a
+    * variant too, so it is not `v1` here).
     */
    readonly v1: boolean;
    /**
@@ -118,7 +118,7 @@ const ROWS: Record<GateKind, Row> = {
    // A `#(preaggregate)` rollup's variant redeclares its base with its gates,
    // proven on the rollup; colocated under the gated-sources switch, in a
    // storage destination only once that is reviewed, a v1 `#@ preaggregate`
-   // line read as one (G4) alike. A rollup no variant was planned for keeps
+   // line read as one alike. A rollup no variant was planned for keeps
    // none.
    rollup: (t, s) =>
       !t.v1 &&
@@ -162,10 +162,10 @@ type GateLeg = (typeof GATE_LEGS)[number];
 /** What the router's caller adds to the switches. */
 interface LegGateContext {
    /**
-    * The v1 cutover's contracts at read for colocated tables (G3): a served
-    * answer reading only colocated tables keeps the gates even with the
-    * gated-sources switch off, since a colocated table never leaves the
-    * author's warehouse. Every model passes it; the serve verdict does not.
+    * Contracts at read for colocated tables: a served answer reading only
+    * colocated tables keeps the gates even with the gated-sources switch
+    * off, since a colocated table never leaves the author's warehouse.
+    * Every model passes it; the serve verdict does not.
     */
    readonly colocatedReadsKeepGates: boolean;
 }
@@ -174,7 +174,8 @@ interface LegGateContext {
  * Whether a leg may be attempted past an entry-point gate. Each leg keeps the
  * author's gates on its own compile (the served copy's text, a variant's
  * redeclared base), under the gated-sources switch; the served copy also
- * under G3, decided per answer by {@link answerKeepsGates}.
+ * under `colocatedReadsKeepGates`, decided per answer by
+ * {@link answerKeepsGates}.
  */
 export function legMayPassGate(
    leg: GateLeg,
@@ -195,8 +196,8 @@ export function legMayPassGate(
 /**
  * Whether an answer a leg produced past an entry-point gate keeps the gates,
  * given the tables it read: always under the gated-sources switch; for the
- * served copy under G3 alone, only when it read at least one table and every
- * one is colocated.
+ * served copy under `colocatedReadsKeepGates` alone, only when it read at
+ * least one table and every one is colocated.
  */
 export function answerKeepsGates(
    leg: GateLeg,

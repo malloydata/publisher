@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily_r@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "daily_r@<pkg>/m.malloy": {
         "buildSourceName": "daily_r__mat",

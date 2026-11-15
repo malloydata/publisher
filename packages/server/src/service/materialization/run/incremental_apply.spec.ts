@@ -13,6 +13,7 @@ import {
    compilePersistSources,
    duckdbTestConnections,
 } from "../../../test_helpers/incremental_test_harness";
+import { probeSelect, snowflakeScriptingBlock } from "./warehouse_sql";
 import {
    canonicalBoundValue,
    compareBounds,
@@ -26,13 +27,11 @@ import {
    deltaSelect,
    planIncrementalStep,
    probeMaxWatermark,
-   probeSelect,
    probeTargetColumns,
    renderSqlBound,
    seedCoveredThrough,
    shapeMismatch,
    snapshotBound,
-   snowflakeScriptingBlock,
    type SqlRunner,
    warehouseDeltaTarget,
 } from "./incremental_apply";

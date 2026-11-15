@@ -1,6 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * A run's state machine and its life in this process ({@link RunLifecycle}):
+ * every status change through the transitions `VALID_TRANSITIONS` admits,
+ * cooperative cancellation, and a background run's settle, recording its
+ * terminal status and its failure. Read by the materialization service, the
+ * manifest committer and the reclaimer.
+ *
+ * Effects: writes the run store, logs a failed or cancelled run (secrets
+ * redacted), counts each run's outcome. In-process only: a run on another
+ * process cannot be cancelled from here.
+ */
+
 import {
    InvalidStateTransitionError,
    MaterializationConflictError,
