@@ -7,7 +7,9 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-import { Environment } from "../../../src/service/environment";
+import { Package } from "../../../src/service/package";
+import { parseEnvironmentName } from "../../../src/service/identity";
+import { bootMainServer } from "../../harness/main_server";
 import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -386,48 +388,102 @@ describe("Materialization REST API: single-call (E2E)", () => {
          await fetch(`${baseUrl}${API}?reload=true`);
       }
 
+      /**
+       * Hold the next manifest load (`Package.reloadAllModels`, which the run
+       * calls under the package's lock) until `release`; later calls pass.
+       */
+      function holdNextLoad() {
+         let entered!: () => void;
+         const loading = new Promise<void>((r) => (entered = r));
+         let release!: () => void;
+         const released = new Promise<void>((r) => (release = r));
+         const original = Package.prototype.reloadAllModels;
+         let held = false;
+         const spy = spyOn(
+            Package.prototype,
+            "reloadAllModels",
+         ).mockImplementation(async function (
+            this: Package,
+            ...args: Parameters<Package["reloadAllModels"]>
+         ) {
+            if (!held) {
+               held = true;
+               entered();
+               await released;
+            }
+            return original.apply(this, args);
+         });
+         return { loading, release, restore: () => spy.mockRestore() };
+      }
+
       it(
          "holds MANIFEST_ROWS_READY while the load runs, then answers from the table at once",
          async () => {
             await fetch(`${baseUrl}${API}?reload=true`);
             expect(await executedSql()).toContain("data/orders.csv");
-
-            let entered!: () => void;
-            const loading = new Promise<void>((r) => (entered = r));
-            let release!: () => void;
-            const released = new Promise<void>((r) => (release = r));
-            const original = Environment.prototype.reloadAllModelsForPackage;
-            const spy = spyOn(
-               Environment.prototype,
-               "reloadAllModelsForPackage",
-            ).mockImplementation(async function (
-               this: Environment,
-               ...args: Parameters<Environment["reloadAllModelsForPackage"]>
-            ) {
-               entered();
-               await released;
-               return original.apply(this, args);
-            });
+            const hold = holdNextLoad();
             let id = "";
             try {
                const createRes = await createMaterialization();
                expect(createRes.status).toBe(201);
                id = ((await createRes.json()) as { id: string }).id;
-               await loading;
+               await hold.loading;
                // Built and recorded, not yet served: not done.
                const mid = await getMaterialization(id);
                expect(mid.status).toBe("MANIFEST_ROWS_READY");
                expect(mid.manifest).not.toBeNull();
                expect(await executedSql()).toContain("data/orders.csv");
-               release();
+               hold.release();
                const built = await pollUntilTerminal(id);
                expect(built.status).toBe("MANIFEST_FILE_READY");
                expect(built.metadata).toMatchObject({ autoLoad: "loaded" });
+               expect(built.error ?? null).toBeNull();
                // At once, no polling: done means served.
                expect(await executedSql()).not.toContain("data/orders.csv");
             } finally {
-               release();
-               spy.mockRestore();
+               hold.release();
+               hold.restore();
+               if (id) await dropRun(id);
+            }
+         },
+         { timeout: 120_000 },
+      );
+
+      it(
+         "a reload sent while the manifest loads waits, then binds this run's manifest, not the one before",
+         async () => {
+            const { environmentStore } = await bootMainServer();
+            (
+               await environmentStore.getEnvironment(
+                  parseEnvironmentName(PROJECT_NAME),
+               )
+            ).restoreUnversionedBindingsFromLocalStore();
+            await fetch(`${baseUrl}${API}?reload=true`);
+            const hold = holdNextLoad();
+            let id = "";
+            try {
+               const createRes = await createMaterialization();
+               expect(createRes.status).toBe(201);
+               id = ((await createRes.json()) as { id: string }).id;
+               await hold.loading;
+               // A reload of the package lands in the window: it waits on the
+               // package's lock until the run is MANIFEST_FILE_READY, then reads
+               // the store, which now has this run. (Restoring from the store,
+               // as an environment reloaded at startup does; one created over
+               // the API serves an unversioned package live after a reload.)
+               const reload = fetch(`${baseUrl}${API}?reload=true`);
+               await new Promise((r) => setTimeout(r, 200));
+               expect((await getMaterialization(id)).status).toBe(
+                  "MANIFEST_ROWS_READY",
+               );
+               hold.release();
+               expect((await reload).status).toBe(200);
+               const built = await pollUntilTerminal(id);
+               expect(built.status).toBe("MANIFEST_FILE_READY");
+               expect(await executedSql()).not.toContain("data/orders.csv");
+            } finally {
+               hold.release();
+               hold.restore();
                if (id) await dropRun(id);
             }
          },
@@ -438,11 +494,20 @@ describe("Materialization REST API: single-call (E2E)", () => {
          "records a load that fails on the run, which still settles, and the package serves as before",
          async () => {
             await fetch(`${baseUrl}${API}?reload=true`);
+            const original = Package.prototype.reloadAllModels;
+            let failed = false;
             const spy = spyOn(
-               Environment.prototype,
-               "reloadAllModelsForPackage",
-            ).mockImplementation(async () => {
-               throw new Error("the package no longer compiles");
+               Package.prototype,
+               "reloadAllModels",
+            ).mockImplementation(async function (
+               this: Package,
+               ...args: Parameters<Package["reloadAllModels"]>
+            ) {
+               if (!failed) {
+                  failed = true;
+                  throw new Error("the package no longer compiles");
+               }
+               return original.apply(this, args);
             });
             let id = "";
             try {
@@ -451,12 +516,14 @@ describe("Materialization REST API: single-call (E2E)", () => {
                id = ((await createRes.json()) as { id: string }).id;
                const settled = await pollUntilTerminal(id);
                // The tables were built: the run settles, and says the load
-               // did not take.
+               // did not take, on its metadata and its error.
                expect(settled.status).toBe("MANIFEST_FILE_READY");
                expect(settled.metadata).toMatchObject({
                   autoLoad: "failed",
+                  autoLoadStep: "reload",
                   autoLoadError: "the package no longer compiles",
                });
+               expect(String(settled.error)).toContain("Built, but not served");
                expect(await executedSql()).toContain("data/orders.csv");
             } finally {
                spy.mockRestore();

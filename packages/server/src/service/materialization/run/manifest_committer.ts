@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { Mutex } from "async-mutex";
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
 import { logger } from "../../../logger";
@@ -12,8 +13,9 @@ import { resolveEnvironmentId } from "../../resolve_environment";
 import {
    newestServingEntries,
    ServingReader,
+   SUPERSEDED_TABLES_KEY,
 } from "../../versions/materialization_scope";
-import type { MaterializationHost } from "../host";
+import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import {
    BuildInstruction,
    BuildManifestResult,
@@ -28,12 +30,48 @@ import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import type { RunLifecycle } from "./run_lifecycle";
 
 /**
- * How an auto-run's manifest load went, recorded on the run's metadata when it
- * reaches MANIFEST_FILE_READY.
+ * What a run records when it reaches MANIFEST_FILE_READY about its manifest
+ * load: metadata merged into the run's (`autoLoad`, and on a failure
+ * `autoLoadStep` and `autoLoadError`), and on a failure the record's `error`.
  */
-type AutoLoadOutcome =
-   | { autoLoad: "loaded" }
-   | { autoLoad: "failed"; autoLoadError: string };
+interface Served {
+   metadata: Record<string, unknown>;
+   error?: string;
+}
+
+/** Nothing to report: an orchestrated run, which loads nothing. */
+const NOT_SERVED: Served = { metadata: {} };
+
+/**
+ * How long an auto-run waits for its manifest load before it settles as
+ * MANIFEST_FILE_READY with `autoLoad: "failed"`, so a hung load cannot hold
+ * the package's build slot until a restart.
+ */
+const AUTO_LOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** What each failed step leaves serving, for the run's `error`. */
+const NOT_SERVED_CONSEQUENCE: Record<string, string> = {
+   reload:
+      "the package keeps the models it had, until its next reload or restart binds this run's manifest",
+   bind: "the run's colocated tables are served and its stored ones are not, until the package's next reload or restart binds this run's manifest",
+   timeout:
+      "what the package serves is undecided until the load finishes, or its next reload or restart binds this run's manifest",
+};
+
+/** A load that did not take: the step, its error, and the record's `error`. */
+function notServed(step: string, error: string): Served {
+   return {
+      metadata: {
+         autoLoad: "failed",
+         autoLoadStep: step,
+         autoLoadError: error,
+      },
+      error: `Built, but not served (${step}): ${error}; ${NOT_SERVED_CONSEQUENCE[step] ?? ""}`.replace(
+         /; $/,
+         "",
+      ),
+   };
+}
 
 /**
  * A run's manifest, from commit to serving: it commits the manifest a build
@@ -47,6 +85,13 @@ export class ManifestCommitter {
          repository: () => ResourceRepository;
          host: MaterializationHost;
          lifecycle: RunLifecycle;
+         /**
+          * The package's table lock (`TableClaims.lockFor`), under which
+          * another run marks this one's entries superseded: the final write
+          * re-reads and keeps those marks under it. Absent in tests that
+          * drive one run.
+          */
+         tableLock?: (environmentId: string, packageName: string) => Mutex;
       },
    ) {}
 
@@ -55,32 +100,41 @@ export class ManifestCommitter {
    }
 
    /**
-    * Finalize a successful build: persist the assembled manifest on the move to
-    * MANIFEST_ROWS_READY, run `serve` (an auto-run's {@link autoLoad}), then
-    * advance to MANIFEST_FILE_READY with what `serve` reports merged into the
-    * metadata. So a caller that waits for MANIFEST_FILE_READY and then queries
-    * is answered by the package this run's manifest is loaded into, never by
-    * the one before it. The caller supplies the per-run metadata; the build
-    * itself happens before this.
+    * Finalize a successful build: record the assembled manifest on the move to
+    * MANIFEST_ROWS_READY, run `serve` (an auto-run's {@link autoLoad}), and
+    * advance to MANIFEST_FILE_READY when it calls `finish`, with what it
+    * reports merged into the metadata. `serve` calls `finish` under the
+    * package's lock, after the load, so a caller that waits for
+    * MANIFEST_FILE_READY and then queries is answered by the package this
+    * run's manifest is loaded into, and no reload can bind an older manifest
+    * in between. The caller supplies the per-run metadata; the build itself
+    * happens before this.
     *
-    * Every store reader counts MANIFEST_FILE_READY runs only (the serving
-    * fold, the reclaimer, table claims, boot restore, skip-if-unchanged), so
-    * the manifest persisted at MANIFEST_ROWS_READY is invisible to them until
-    * the final move. A run interrupted in between (a crash) is settled FAILED
-    * when the store next opens, as one interrupted while PENDING is
-    * (`failInterrupted`), so its manifest is never served or restored.
+    * The readers that serve or reuse a run (the serving fold, boot restore,
+    * skip-if-unchanged, the reclaimer's references) count MANIFEST_FILE_READY
+    * runs only, so the manifest recorded at MANIFEST_ROWS_READY is not served
+    * or reused until the final move. Those that mark a run's entries stale
+    * (markSuperseded, markTablesGone) read every run with a manifest, and the
+    * shared-table check counts a run that is loading its manifest. The record's metadata is left as it is until then, so its table
+    * claims hold through the load; the final move keeps any superseded-table
+    * mark another run left on it meanwhile. A run interrupted in between (a
+    * crash) is settled FAILED when the store next opens, as one interrupted
+    * while PENDING is (`failInterrupted`).
     *
-    * A stop that lands while `serve` runs aborts nothing here: the load is
-    * awaited and the run still reaches MANIFEST_FILE_READY, since its package
-    * may already serve the new tables. The window was a single statement
-    * before the load moved into it, so no stop could land there then either.
+    * A `serve` that throws, or does not call `finish` within
+    * `serveTimeoutMs`, settles the run with `autoLoad: "failed"`, so a hung
+    * load never holds the package's build slot.
+    *
+    * A stop that lands during `serve` does not cut it short (the caller marks
+    * the run `stopIgnored`): the package may already serve the new tables.
     */
    async commit(
       id: string,
       entries: Record<string, ManifestEntry>,
       failures: Record<string, SourceFailure>,
       metadata: Record<string, unknown>,
-      serve?: () => Promise<Record<string, unknown>>,
+      serve?: (finish: (served: Served) => Promise<void>) => Promise<void>,
+      serveTimeoutMs: number = AUTO_LOAD_TIMEOUT_MS,
    ): Promise<void> {
       const manifest: BuildManifestResult = {
          builtAt: new Date().toISOString(),
@@ -91,14 +145,68 @@ export class ManifestCommitter {
       };
       await this.deps.lifecycle.transition(id, "MANIFEST_ROWS_READY", {
          manifest,
-         metadata,
       });
-      const served = serve ? await serve() : {};
-      await this.deps.lifecycle.transition(id, "MANIFEST_FILE_READY", {
-         completedAt: new Date(),
-         manifest,
-         metadata: { ...metadata, ...served },
-      });
+      let finished = false;
+      const finish = async (served: Served = NOT_SERVED): Promise<void> => {
+         if (finished) return;
+         finished = true;
+         // Keep the superseded-table marks another run left on this record
+         // while it was MANIFEST_ROWS_READY (markSuperseded, markHeldElsewhere),
+         // read and written under the same table lock they are made under.
+         const write = async () => {
+            const current = await this.repository.getMaterializationById(id);
+            const superseded = current?.metadata?.[SUPERSEDED_TABLES_KEY];
+            await this.deps.lifecycle.transition(id, "MANIFEST_FILE_READY", {
+               completedAt: new Date(),
+               manifest,
+               metadata: {
+                  ...metadata,
+                  ...(superseded !== undefined
+                     ? { [SUPERSEDED_TABLES_KEY]: superseded }
+                     : {}),
+                  ...served.metadata,
+               },
+               ...(served.error !== undefined ? { error: served.error } : {}),
+            });
+         };
+         const record = this.deps.tableLock
+            ? await this.repository.getMaterializationById(id)
+            : undefined;
+         if (this.deps.tableLock && record) {
+            await this.deps
+               .tableLock(record.environmentId, record.packageName)
+               .runExclusive(write);
+         } else {
+            await write();
+         }
+      };
+      if (serve) {
+         let timer: ReturnType<typeof setTimeout> | undefined;
+         const timedOut = new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => resolve("timeout"), serveTimeoutMs);
+         });
+         try {
+            const settled = await Promise.race([
+               serve(finish).then(() => "served" as const),
+               timedOut,
+            ]);
+            if (settled === "timeout") {
+               recordAutoLoadOutcome("failure");
+               await finish(
+                  notServed(
+                     "timeout",
+                     `the manifest load did not finish within ${Math.round(serveTimeoutMs / 1000)}s`,
+                  ),
+               );
+            }
+         } catch (err) {
+            recordAutoLoadOutcome("failure");
+            await finish(notServed("reload", errMessage(err)));
+         } finally {
+            clearTimeout(timer);
+         }
+      }
+      await finish();
    }
 
    /**
@@ -111,25 +219,17 @@ export class ManifestCommitter {
     * says so.
     */
    async autoLoad(
-      environment: {
-         reloadAllModelsForPackage(
-            packageName: string,
-            manifest: FreshnessManifest,
-            versionId?: string,
-         ): Promise<void>;
-         bindPackageStorageServeBindings(
-            packageName: string,
-            entries: Record<string, ManifestEntry>,
-            versionId?: string,
-         ): Promise<void>;
-      },
+      environment: Pick<MaterializationEnvironment, "loadRunManifest">,
       packageName: string,
       entries: Record<string, ManifestEntry>,
       // The version the run built; undefined for an unversioned package.
       versionId?: string,
       // The rollup key checks this run stands behind (known limitation 29).
       rollupKeys?: Readonly<Record<string, RollupKeyRecord>>,
-   ): Promise<AutoLoadOutcome> {
+      // Records the run done, with what this reports; called under the
+      // package's lock, after the load (see commit).
+      finish: (served: Served) => Promise<void> = async () => {},
+   ): Promise<void> {
       // Bound un-gated: freshness is stamped only on the control plane's wire
       // manifest. A failed source mirrored into `entries` (the
       // `ManifestEntry.error` deprecation window) names the previous
@@ -165,46 +265,43 @@ export class ManifestCommitter {
             };
          }
       }
-      try {
-         await environment.reloadAllModelsForPackage(
-            packageName,
-            manifestEntries,
-            versionId,
-         );
-         // Storage sources serve cross-connection via the virtual-source
-         // transform. No-op without storage= sources.
-         // A stored table's own primary key check rides on its entry, from
-         // this run's records alone (the join-to-rollup leg in a destination).
-         await environment.bindPackageStorageServeBindings(
-            packageName,
-            Object.fromEntries(
-               Object.entries(builtEntries).map(([id, entry]) => {
-                  const keyUniqueness = entry.storageDestinationName
-                     ? keyUniquenessAt(rollupKeys, id, entry)
-                     : undefined;
-                  return [
-                     id,
-                     keyUniqueness ? { ...entry, keyUniqueness } : entry,
-                  ];
-               }),
-            ),
-            versionId,
-         );
-         recordAutoLoadOutcome("success");
-         logger.info("Auto-run: loaded manifest into package models", {
-            packageName,
-            entryCount: Object.keys(manifestEntries).length,
-         });
-         return { autoLoad: "loaded" };
-      } catch (err) {
-         recordAutoLoadOutcome("failure");
-         const error = err instanceof Error ? err.message : String(err);
-         logger.warn("Auto-run: failed to load manifest into package models", {
-            packageName,
-            error,
-         });
-         return { autoLoad: "failed", autoLoadError: error };
-      }
+      // A stored table's own primary key check rides on its entry, from this
+      // run's records alone (the join-to-rollup leg in a destination).
+      const storageEntries = Object.fromEntries(
+         Object.entries(builtEntries).map(([id, entry]) => {
+            const keyUniqueness = entry.storageDestinationName
+               ? keyUniquenessAt(rollupKeys, id, entry)
+               : undefined;
+            return [id, keyUniqueness ? { ...entry, keyUniqueness } : entry];
+         }),
+      );
+      await environment.loadRunManifest({
+         packageName,
+         versionId,
+         colocated: manifestEntries,
+         storage: storageEntries,
+         commit: async (outcome) => {
+            if (outcome.loaded) {
+               recordAutoLoadOutcome("success");
+               logger.info("Auto-run: loaded manifest into package models", {
+                  packageName,
+                  entryCount: Object.keys(manifestEntries).length,
+               });
+               await finish({ metadata: { autoLoad: "loaded" } });
+               return;
+            }
+            recordAutoLoadOutcome("failure");
+            logger.warn(
+               "Auto-run: failed to load manifest into package models",
+               {
+                  packageName,
+                  step: outcome.step,
+                  error: outcome.error,
+               },
+            );
+            await finish(notServed(outcome.step, outcome.error));
+         },
+      });
    }
 
    /**
@@ -339,6 +436,44 @@ export class ManifestCommitter {
             }
          }
          carried[eid] = merged;
+      }
+   }
+
+   /**
+    * Rebind an auto-run's own version from the store when what it bound has
+    * moved: a version first loaded while the run's manifest was loading read
+    * the store before the run was MANIFEST_FILE_READY, so it bound the run
+    * before. Called once the run is MANIFEST_FILE_READY. Best-effort, as
+    * {@link rebindLoadedVersions} is.
+    */
+   async rebindOwnVersionIfMoved(
+      environmentName: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      try {
+         const environmentId = await resolveEnvironmentId(
+            this.repository,
+            environmentName,
+         );
+         const environment = await this.deps.host.getEnvironment(
+            parseEnvironmentName(environmentName),
+            false,
+         );
+         await environment.rebindVersionFromStore(
+            packageName,
+            versionId,
+            (reader) =>
+               // "" excludes nothing — a deleted record is already gone.
+               this.mostRecentEntries(environmentId, packageName, "", reader),
+            { onlyIfMoved: true },
+         );
+      } catch (err) {
+         logger.warn("Failed to rebind a run's own version", {
+            packageName,
+            versionId,
+            error: errMessage(err),
+         });
       }
    }
 

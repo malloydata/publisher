@@ -11,17 +11,7 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — an auto-run reports `MANIFEST_FILE_READY` only once its package serves the new tables
-
-A materialization auto-run used to report `MANIFEST_FILE_READY` and then load its manifest into the package. A caller that waited for `MANIFEST_FILE_READY` (the REST `GET …/materializations/{id}`, `malloy-pub materializations create --wait`, the Console) and queried at once could be answered live, or from the previous table, until the load finished.
-
-Now the run records its manifest when it reaches `MANIFEST_ROWS_READY`, loads it into its package, and only then reports `MANIFEST_FILE_READY`, so a query sent after it is answered from the new tables. The run's `metadata` says how the load went: `autoLoad: "loaded"`, or `autoLoad: "failed"` with `autoLoadError` when it did not take, in which case the run still settles at `MANIFEST_FILE_READY` (its tables were built) and the package keeps serving what it served before. A run's `manifest` is now present from `MANIFEST_ROWS_READY`, not only from `MANIFEST_FILE_READY`.
-
-- Other loaded versions that share the run's tables (`scope: "package"`) are rebound just after the run reports `MANIFEST_FILE_READY`, as before.
-- An orchestrated run never loads its manifest (the host distributes it), so for it nothing changes.
-- No status is added. `MANIFEST_ROWS_READY` now also spans the load, so a run can be seen there a little longer.
-
-## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
 One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
 
@@ -30,6 +20,27 @@ Both steps handle several sections, which matters because unrelated narratives a
 Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
+
+## [Unreleased] — an auto-run reports `MANIFEST_FILE_READY` only once its package serves the new tables
+
+A materialization auto-run used to report `MANIFEST_FILE_READY` and then load its manifest into the package. A caller that waited for `MANIFEST_FILE_READY` (the REST `GET …/materializations/{id}`, `malloy-pub materialize --wait`, the Console) and queried at once could be answered live, or from the previous table, until the load finished.
+
+Now the run records its manifest when it reaches `MANIFEST_ROWS_READY`, loads it into its package, and only then reports `MANIFEST_FILE_READY`, so a query sent after it is answered from the new tables. The load and that last move happen under the package's lock, so a reload or publish that lands meanwhile waits for them and binds the new manifest, not the one before it.
+
+The run's `metadata` says how the load went: `autoLoad: "loaded"`, or `autoLoad: "failed"` with `autoLoadStep` (`reload`, `bind` or `timeout`) and `autoLoadError`. A failed load also sets the run's `error` ("Built, but not served …"). Such a run still settles at `MANIFEST_FILE_READY`, since its tables were built:
+
+- `malloy-pub materialize --wait` prints "built but not served" and exits **2** for it, where it used to print "ready" and exit 0. A script that treats any non-zero exit as a failed build should treat 2 as "built, not yet served".
+- The Console shows it as a warning, "Built, not served", not as done.
+- What the package serves meanwhile depends on the step: after `reload` it keeps the models it had; after `bind` the run's colocated tables are served and its `storage=` ones are not. The package's next reload or restart binds the run's manifest either way.
+
+Also:
+
+- A load that has not finished after ten minutes settles the run as `autoLoad: "failed"`, `autoLoadStep: "timeout"`, so a hung load no longer holds the package's build slot until a restart.
+- A stop that lands while the manifest loads does not cut the load short; the run settles at `MANIFEST_FILE_READY` with `stopIgnored: true`.
+- A run's `manifest` is now present from `MANIFEST_ROWS_READY`, not only from `MANIFEST_FILE_READY`.
+- Other loaded versions that share the run's tables (`scope: "package"`) are rebound just after the run reports `MANIFEST_FILE_READY`, as before.
+- An orchestrated run never loads its manifest (the host distributes it), so for it nothing changes.
+- No status is added. `MANIFEST_ROWS_READY` now also spans the load, so a run can be seen there a little longer.
 
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 

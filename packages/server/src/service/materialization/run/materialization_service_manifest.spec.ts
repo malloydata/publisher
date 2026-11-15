@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { beforeEach, describe, expect, it } from "bun:test";
-import * as sinon from "sinon";
 import { MaterializationUpdate } from "../../../storage/DatabaseInterface";
 import { MaterializationStatus } from "../domain/types";
 import { makeMaterialization } from "../../../test_helpers/materialization_test_fixtures";
@@ -20,13 +19,17 @@ function manifestMethods(service: MaterializationService): {
       env: unknown,
       pkg: string,
       entries: Record<string, unknown>,
-   ) => Promise<Record<string, unknown>>;
+      versionId?: string,
+      rollupKeys?: unknown,
+      finish?: (served: Served) => Promise<void>,
+   ) => Promise<void>;
    commitManifest: (
       id: string,
       entries: Record<string, unknown>,
       failures: Record<string, unknown>,
       metadata: Record<string, unknown>,
-      serve?: () => Promise<Record<string, unknown>>,
+      serve?: (finish: (served: Served) => Promise<void>) => Promise<void>,
+      serveTimeoutMs?: number,
    ) => Promise<void>;
    getMostRecentManifestEntries: (
       envId: string,
@@ -37,36 +40,68 @@ function manifestMethods(service: MaterializationService): {
    return service as unknown as ReturnType<typeof manifestMethods>;
 }
 
+interface Served {
+   metadata: Record<string, unknown>;
+   error?: string;
+}
+
 let ctx: ReturnType<typeof createMocks>;
 beforeEach(() => {
    ctx = createMocks();
 });
 
+/**
+ * An environment whose load reports `outcome`, recording what it was asked to
+ * load and running the commit as the real one does (under its lock, after the
+ * load).
+ */
+function loader(
+   outcome:
+      | { loaded: true }
+      | { loaded: false; step: "reload" | "bind"; error: string } = {
+      loaded: true,
+   },
+) {
+   const calls: {
+      packageName: string;
+      colocated: Record<string, unknown>;
+      storage: Record<string, unknown>;
+   }[] = [];
+   return {
+      calls,
+      env: {
+         loadRunManifest: async (params: {
+            packageName: string;
+            colocated: Record<string, unknown>;
+            storage: Record<string, unknown>;
+            commit: (o: typeof outcome) => Promise<void>;
+         }) => {
+            calls.push(params);
+            await params.commit(outcome);
+            return outcome;
+         },
+      },
+   };
+}
+
 describe("autoLoadManifest", () => {
    it("loads only entries with a physical table into the package models", async () => {
-      const reloadAllModelsForPackage = sinon.stub().resolves();
-      const entries = {
+      const { env, calls } = loader();
+      await manifestMethods(ctx.service).autoLoadManifest(env, "pkg", {
          b1: {
             sourceEntityId: "b1",
             physicalTableName: "orders_v1",
             connectionName: "duckdb",
          },
          b2: { sourceEntityId: "b2", physicalTableName: undefined },
-      };
-
-      await manifestMethods(ctx.service).autoLoadManifest(
-         { reloadAllModelsForPackage },
-         "pkg",
-         entries,
-      );
-
-      expect(reloadAllModelsForPackage.calledOnce).toBe(true);
+      });
+      expect(calls).toHaveLength(1);
       // connectionName is carried alongside tableName so the bind step
       // (Package.quoteBoundTableNames) can quote the path for its dialect.
-      expect(reloadAllModelsForPackage.firstCall.args).toEqual([
-         "pkg",
-         { b1: { tableName: "orders_v1", connectionName: "duckdb" } },
-      ]);
+      expect(calls[0].packageName).toBe("pkg");
+      expect(calls[0].colocated).toEqual({
+         b1: { tableName: "orders_v1", connectionName: "duckdb" },
+      });
    });
 
    it("does not bind a failed source mirrored into entries", async () => {
@@ -74,14 +109,8 @@ describe("autoLoadManifest", () => {
       // also written into `entries`, under the physical name it was headed for.
       // Auto-run names are stable, so that name is the previous generation's
       // table: binding it would serve stale rows as though this run built them.
-      const reload = sinon.stub().resolves();
-      const bindStorage = sinon.stub().resolves();
-      const environment = {
-         reloadAllModelsForPackage: reload,
-         bindPackageStorageServeBindings: bindStorage,
-      };
-
-      await manifestMethods(ctx.service).autoLoadManifest(environment, "pkg", {
+      const { env, calls } = loader();
+      await manifestMethods(ctx.service).autoLoadManifest(env, "pkg", {
          ok: {
             sourceEntityId: "ok",
             sourceName: "healthy",
@@ -94,36 +123,50 @@ describe("autoLoadManifest", () => {
             error: "Permission denied while writing to dataset analytics",
          },
       });
-
-      expect(Object.keys(reload.firstCall.args[1])).toEqual(["ok"]);
-      expect(Object.keys(bindStorage.firstCall.args[1])).toEqual(["ok"]);
+      expect(Object.keys(calls[0].colocated)).toEqual(["ok"]);
+      expect(Object.keys(calls[0].storage)).toEqual(["ok"]);
    });
 
-   it("reports a reload failure for the run's metadata rather than throwing (the tables were built)", async () => {
-      const reloadAllModelsForPackage = sinon
-         .stub()
-         .rejects(new Error("reload boom"));
-      await expect(
-         manifestMethods(ctx.service).autoLoadManifest(
-            { reloadAllModelsForPackage },
+   it("finishes the run with the load that took", async () => {
+      const finished: Served[] = [];
+      await manifestMethods(ctx.service).autoLoadManifest(
+         loader().env,
+         "pkg",
+         { b1: { sourceEntityId: "b1", physicalTableName: "t" } },
+         undefined,
+         undefined,
+         async (served) => {
+            finished.push(served);
+         },
+      );
+      expect(finished).toEqual([{ metadata: { autoLoad: "loaded" } }]);
+   });
+
+   it.each(["reload", "bind"] as const)(
+      "finishes the run with the %s step that failed, and its error (the tables were built)",
+      async (step) => {
+         const finished: Served[] = [];
+         await manifestMethods(ctx.service).autoLoadManifest(
+            loader({ loaded: false, step, error: "boom" }).env,
             "pkg",
             { b1: { sourceEntityId: "b1", physicalTableName: "t" } },
-         ),
-      ).resolves.toEqual({ autoLoad: "failed", autoLoadError: "reload boom" });
-   });
-
-   it("reports a load that took", async () => {
-      await expect(
-         manifestMethods(ctx.service).autoLoadManifest(
-            {
-               reloadAllModelsForPackage: sinon.stub().resolves(),
-               bindPackageStorageServeBindings: sinon.stub().resolves(),
+            undefined,
+            undefined,
+            async (served) => {
+               finished.push(served);
             },
-            "pkg",
-            { b1: { sourceEntityId: "b1", physicalTableName: "t" } },
-         ),
-      ).resolves.toEqual({ autoLoad: "loaded" });
-   });
+         );
+         expect(finished).toHaveLength(1);
+         expect(finished[0].metadata).toEqual({
+            autoLoad: "failed",
+            autoLoadStep: step,
+            autoLoadError: "boom",
+         });
+         expect(finished[0].error).toContain(
+            `Built, but not served (${step}): boom`,
+         );
+      },
+   );
 });
 
 describe("commitManifest", () => {
@@ -207,35 +250,119 @@ describe("commitManifest", () => {
       expect(persistedManifest()).not.toHaveProperty("failures");
    });
 
+   function writes(): {
+      status?: string;
+      manifest?: unknown;
+      metadata?: Record<string, unknown>;
+      error?: string;
+   }[] {
+      return ctx.repository.updateMaterialization
+         .getCalls()
+         .map((c) => c.args[1] as never);
+   }
+
    it("serves before it reports MANIFEST_FILE_READY, with the manifest recorded, and records how the load went", async () => {
-      const seen: { status?: string; manifest?: unknown }[] = [];
+      const seen: {
+         status?: string;
+         manifest?: unknown;
+         metadata?: unknown;
+      }[] = [];
+      await manifestMethods(ctx.service).commitManifest(
+         "mat-1",
+         healthy,
+         {},
+         { mode: "auto" },
+         async (finish) => {
+            const w = writes();
+            seen.push(w[w.length - 1]);
+            await finish({ metadata: { autoLoad: "loaded" } });
+         },
+      );
+      // While serving: built and recorded, not yet done; the metadata is not
+      // rewritten, so the run's table claims hold through the load.
+      expect(seen).toHaveLength(1);
+      expect(seen[0].status).toBe("MANIFEST_ROWS_READY");
+      expect(seen[0].manifest).toMatchObject({ entries: healthy });
+      expect(seen[0].metadata).toBeUndefined();
+      // Then done, once, with the load's outcome on the metadata.
+      const final = writes().filter((w) => w.status === "MANIFEST_FILE_READY");
+      expect(final).toHaveLength(1);
+      expect(final[0].metadata).toEqual({ mode: "auto", autoLoad: "loaded" });
+   });
+
+   it("keeps a superseded-table mark another run left on the record during the load", async () => {
+      // Another run marks this one while it loads.
+      let status: MaterializationStatus = "PENDING";
+      ctx.repository.getMaterializationById.callsFake(async () =>
+         makeMaterialization({
+            status,
+            metadata:
+               status === "MANIFEST_ROWS_READY"
+                  ? { mode: "auto", supersededTables: ["ok_v1"] }
+                  : { mode: "auto" },
+         }),
+      );
+      ctx.repository.updateMaterialization.callsFake(
+         async (_id: string, update: MaterializationUpdate) => {
+            if (update.status) status = update.status;
+            return makeMaterialization({ status });
+         },
+      );
+      await manifestMethods(ctx.service).commitManifest(
+         "mat-1",
+         healthy,
+         {},
+         { mode: "auto" },
+         async (finish) => finish({ metadata: { autoLoad: "loaded" } }),
+      );
+      const final = writes().find((w) => w.status === "MANIFEST_FILE_READY");
+      expect(final?.metadata).toEqual({
+         mode: "auto",
+         supersededTables: ["ok_v1"],
+         autoLoad: "loaded",
+      });
+   });
+
+   it("settles a load that throws as not served, with the record's error", async () => {
       await manifestMethods(ctx.service).commitManifest(
          "mat-1",
          healthy,
          {},
          { mode: "auto" },
          async () => {
-            const writes = ctx.repository.updateMaterialization.getCalls();
-            const last = writes[writes.length - 1]?.args[1] as {
-               status?: string;
-               manifest?: unknown;
-            };
-            seen.push({ status: last.status, manifest: last.manifest });
-            return { autoLoad: "loaded" };
+            throw new Error("the lock broke");
          },
       );
-      // While serving: built and recorded, not yet done.
-      expect(seen).toHaveLength(1);
-      expect(seen[0].status).toBe("MANIFEST_ROWS_READY");
-      expect(seen[0].manifest).toMatchObject({ entries: healthy });
-      // Then done, with the load's outcome on the metadata.
-      const writes = ctx.repository.updateMaterialization.getCalls();
-      const final = writes[writes.length - 1].args[1] as {
-         status: string;
-         metadata: Record<string, unknown>;
-      };
-      expect(final.status).toBe("MANIFEST_FILE_READY");
-      expect(final.metadata).toEqual({ mode: "auto", autoLoad: "loaded" });
+      const final = writes().find((w) => w.status === "MANIFEST_FILE_READY");
+      expect(final?.metadata).toMatchObject({
+         autoLoad: "failed",
+         autoLoadError: "the lock broke",
+      });
+      expect(final?.error).toContain("Built, but not served");
+   });
+
+   it("settles a load that hangs as timed out, and ignores its late finish", async () => {
+      let lateFinish: ((s: Served) => Promise<void>) | undefined;
+      await manifestMethods(ctx.service).commitManifest(
+         "mat-1",
+         healthy,
+         {},
+         { mode: "auto" },
+         (finish) => {
+            lateFinish = finish;
+            return new Promise<void>(() => {});
+         },
+         20,
+      );
+      const finals = () =>
+         writes().filter((w) => w.status === "MANIFEST_FILE_READY");
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].metadata).toMatchObject({
+         autoLoad: "failed",
+         autoLoadStep: "timeout",
+      });
+      await lateFinish?.({ metadata: { autoLoad: "loaded" } });
+      expect(finals()).toHaveLength(1);
    });
 });
 

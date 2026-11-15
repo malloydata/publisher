@@ -664,10 +664,48 @@ describe("runBuild (branch behavior)", () => {
       // Auto-run owns distribution: it loads the fresh manifest into the
       // models, inside the commit, before the run reports MANIFEST_FILE_READY.
       expect(svc.autoLoadManifest.called).toBe(false);
-      const serve = svc.commitManifest.firstCall.args[4] as () => unknown;
+      const serve = svc.commitManifest.firstCall.args[4] as (
+         finish: () => Promise<void>,
+      ) => unknown;
       expect(typeof serve).toBe("function");
-      await serve();
+      await serve(async () => {});
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
+   });
+
+   it("auto-run: a stop that lands while the manifest loads does not cut it short, and the run says so", async () => {
+      const svc = stubEngine();
+      svc.autoLoadManifest = sinon
+         .stub()
+         .callsFake(async (...args: unknown[]) => {
+            const finish = args[5] as (s: {
+               metadata: Record<string, unknown>;
+            }) => Promise<void>;
+            await finish({ metadata: { autoLoad: "loaded" } });
+         });
+      const controller = new AbortController();
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: true,
+            buildInstructions: undefined,
+         },
+         controller.signal,
+      );
+      const serve = svc.commitManifest.firstCall.args[4] as (
+         finish: (s: { metadata: Record<string, unknown> }) => Promise<void>,
+      ) => Promise<void>;
+      // The stop lands during the load.
+      controller.abort();
+      const finished: { metadata: Record<string, unknown> }[] = [];
+      await serve(async (served) => {
+         finished.push(served);
+      });
+      expect(finished).toEqual([
+         { metadata: { autoLoad: "loaded", stopIgnored: true } },
+      ]);
    });
 
    it("records auto-run's refused sources in the run metadata, not on the manifest", async () => {

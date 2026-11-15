@@ -10378,10 +10378,13 @@ components:
         the tables are built and the manifest is recorded. `MANIFEST_FILE_READY`:
         the run is done; an auto-run reaches it only after its manifest is
         loaded into the package it built, so a query sent after it is answered
-        from the new tables (`metadata.autoLoad` is `loaded`, or `failed` with
-        `metadata.autoLoadError` when that load did not take and the package
-        serves what it served before). An orchestrated run never loads its
-        manifest, so for it `MANIFEST_FILE_READY` means built.
+        from the new tables (`metadata.autoLoad` is `loaded`). When that load
+        does not take, the run still reaches `MANIFEST_FILE_READY`, since its
+        tables were built, with `metadata.autoLoad` `failed`,
+        `metadata.autoLoadStep` (`reload`, `bind` or `timeout`),
+        `metadata.autoLoadError`, and `error` set; the package's next reload
+        or restart binds the run's manifest. An orchestrated run never loads
+        its manifest, so for it `MANIFEST_FILE_READY` means built.
       enum:
         - PENDING
         - MANIFEST_ROWS_READY
@@ -10408,7 +10411,9 @@ components:
           description: >-
             Build output. Null until the tables are built (status
             MANIFEST_ROWS_READY), and on a run that failed or was cancelled
-            before then.
+            before then. A run interrupted at MANIFEST_ROWS_READY (the server
+            stopped while it loaded its manifest) ends FAILED with its
+            manifest; that manifest is never served.
         startedAt:
           type: ["string", "null"]
           format: date-time

@@ -587,9 +587,10 @@ export function recordBuildPlanComputeFailed(): void {
 }
 
 /**
- * Record an auto-run manifest auto-load attempt. Auto-load is best-effort (a
- * failure does not fail the run), so a failure here is otherwise invisible:
- * the run is MANIFEST_FILE_READY but queries still resolve to the old tables.
+ * Record an auto-run manifest auto-load attempt. A failure does not fail the
+ * run, whose tables were built: the run reaches MANIFEST_FILE_READY with
+ * `autoLoad: "failed"` on its metadata and its `error` set, and queries are
+ * not answered from the new tables until the package's next reload or restart.
  */
 export function recordAutoLoadOutcome(outcome: "success" | "failure"): void {
    autoLoadCounter().add(1, { outcome });

@@ -136,6 +136,8 @@ export class MaterializationService {
          repository,
          host,
          lifecycle: this.lifecycle,
+         tableLock: (environmentId, packageName) =>
+            this.claims.lockFor(environmentId, packageName),
       });
       this.reclaimer = new Reclaimer({
          repository,
@@ -1043,16 +1045,37 @@ export class MaterializationService {
             // once it is MANIFEST_FILE_READY.
             orchestrated
                ? undefined
-               : () =>
+               : (finish) =>
                     this.autoLoadManifest(
                        environment,
                        packageName,
                        entries,
                        versionId,
                        uniquenessChecks?.rollupKeys,
+                       // A stop that landed during the load did not cut it
+                       // short; the run says so.
+                       (served) =>
+                          finish(
+                             signal.aborted
+                                ? {
+                                     ...served,
+                                     metadata: {
+                                        ...served.metadata,
+                                        stopIgnored: true,
+                                     },
+                                  }
+                                : served,
+                          ),
                     ),
          );
 
+         if (!orchestrated && versionId !== undefined) {
+            await this.committer.rebindOwnVersionIfMoved(
+               environmentName,
+               packageName,
+               versionId,
+            );
+         }
          if (markedShared && versionId !== undefined) {
             // Every other loaded version is rebound to this run too: each
             // binds only what its own definition built, and serves live what
