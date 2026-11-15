@@ -777,9 +777,14 @@ export class InstructedBuild {
             );
          }
       } catch (buildErr) {
-         // Only a build that ran: a check before it (ownership, uniqueness,
-         // ...) is cheap to run again for the next source.
-         if (buildStartedAt !== undefined) {
+         // A build that ran, or an ownership refusal: that refusal is the
+         // table's, so no source sharing it may write it, and each takes the
+         // same reason. Any other check before the build (uniqueness, ...)
+         // is cheap to run again for the next source.
+         if (
+            buildStartedAt !== undefined ||
+            buildErr instanceof TableOwnershipError
+         ) {
             run.failedTargets?.set(target, { sourceEntityId, err: buildErr });
          }
          recordInstructedBuildFailure(
@@ -983,11 +988,14 @@ export class InstructedBuild {
 }
 
 /**
- * Where an auto-run writes a source's table at the author's own `name=`, or
+ * Where an auto-run writes a source's table at an author's own `name=`, or
  * undefined: a host-instructed build (the host chose the name), a name
  * Publisher chose (its readable name, hashed over the package and the
  * version, so no other package writes it), or a run that cannot say whose it
- * is.
+ * is. Decided by the instruction, not the source: every source sharing the
+ * address builds the one instruction, named after the first of them, so a
+ * sibling with no `name=` of its own writes that author's name too, and is
+ * checked as the author's source is.
  */
 function authorNamedTarget(
    run: InstructedRun,
@@ -997,10 +1005,7 @@ function authorNamedTarget(
 ): OwnedTableTarget | undefined {
    if (orchestrated || run.planFacts.hostInstructed) return undefined;
    if (!runPackageOf(run)) return undefined;
-   if (!hasAuthorTableName(run.compiled, persistSource)) return undefined;
-   if (instruction.physicalTableName !== selfAssignTableName(persistSource)) {
-      return undefined;
-   }
+   if (!authorNamedInstructions(run).has(instruction)) return undefined;
    return {
       physicalTableName: instruction.physicalTableName,
       connectionName: persistSource.connectionName,
@@ -1008,6 +1013,33 @@ function authorNamedTarget(
          ? { storageDestinationName: instruction.destination }
          : {}),
    };
+}
+
+/** Each run's {@link authorNamedInstructions}, computed once. */
+const authorNamedByRun = new WeakMap<InstructedRun, Set<BuildInstruction>>();
+
+/**
+ * The run's instructions written at an author's own `name=`: those a source
+ * with that `name=` resolves to, at that name.
+ */
+function authorNamedInstructions(run: InstructedRun): Set<BuildInstruction> {
+   let named = authorNamedByRun.get(run);
+   if (!named) {
+      named = new Set();
+      for (const source of Object.values(run.compiled.sources)) {
+         if (!hasAuthorTableName(run.compiled, source)) continue;
+         const instruction = resolveInstruction(
+            run.index,
+            source,
+            run.compiled.connectionDigests,
+         )?.instruction;
+         if (instruction?.physicalTableName === selfAssignTableName(source)) {
+            named.add(instruction);
+         }
+      }
+      authorNamedByRun.set(run, named);
+   }
+   return named;
 }
 
 /** The environment and package a run builds, when it says. */
