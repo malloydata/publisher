@@ -5,8 +5,8 @@
  * Materialization's mechanical checks beside the import-direction rows
  * (src/import_direction.spec.ts pins R5 to R10 and H5):
  *
- *  - H1 and H2, the documentation lint rules (eslint.config.mjs): their
- *    seed lists name exactly today's offenders.
+ *  - H1 and H2, the documentation lint rules (eslint.config.mjs): they allow
+ *    no exceptions.
  *  - H3: each layer's README lists exactly the modules in its directory.
  *  - H4: every export is imported outside its own file, or is a listed test
  *    seam.
@@ -113,6 +113,8 @@ describe("H1 and H2: the documentation lint rules", () => {
       const results = await eslint.lintFiles([
          "src/service/materialization/**/*.ts",
       ]);
+      // A glob that matched nothing would pass both checks vacuously.
+      expect(results.length).toBeGreaterThan(0);
       found = { headers: new Set(), history: new Map() };
       for (const r of results) {
          for (const m of r.messages) {

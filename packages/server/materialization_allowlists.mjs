@@ -123,10 +123,10 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/serve/view_variants.ts -> logger": "2o",
 };
 
-/** H1: modules with no header yet, by file under src/: step. */
+/** H1: modules with no header. None is allowed. */
 export const MATERIALIZATION_HEADER_ALLOWLIST = {};
 
-/** H2: ticket numbers, phase or step labels and dates in comments, per file: the count allowed, and the step that removes them. */
+/** H2: ticket numbers, phase or step labels and dates in comments. None is allowed. */
 export const MATERIALIZATION_HISTORY_ALLOWLIST = {};
 
 /** H4: exports no other file imports, "<file>#<name>": step. */
