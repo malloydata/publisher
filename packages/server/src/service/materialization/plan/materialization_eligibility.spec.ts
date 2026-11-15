@@ -1146,19 +1146,64 @@ source: reads_measure is offers_measure -> {
          MaterializationEligibilityError,
       );
 
-      // And the same shape with the given only where it is applied at read stays
-      // admitted, so the fallback is not a blanket refusal.
-      const readTimeOnly = {
-         name: "read_time_only",
-         _sourceDef: {
-            query: { pipeline: [{}] },
-            filterList: [{ node: "filterCondition", e: { node: "given" } }],
-            fields: [{ name: "d", e: { node: "given" } }],
+      // And the same shape with the given only where it is applied at read
+      // (a term the source's own statement writes) stays admitted, so the
+      // fallback is not a blanket refusal.
+      const url = "file:///m.malloy";
+      const at = (line: number) => ({
+         url,
+         range: {
+            start: { line, character: 0 },
+            end: { line, character: 5 },
          },
-      } as unknown as PersistSource;
+      });
+      const readTimeOnly = (located: boolean) =>
+         ({
+            name: "read_time_only",
+            _sourceDef: {
+               ...(located
+                  ? {
+                       location: {
+                          url,
+                          range: {
+                             start: { line: 0, character: 0 },
+                             end: { line: 5, character: 0 },
+                          },
+                       },
+                    }
+                  : {}),
+               query: { pipeline: [{}] },
+               filterList: [
+                  {
+                     node: "filterCondition",
+                     e: { node: "given" },
+                     ...(located
+                        ? {
+                             refSummary: {
+                                givenUsage: [{ id: "G", at: at(2) }],
+                             },
+                          }
+                        : {}),
+                  },
+               ],
+               fields: [{ name: "d", e: { node: "given" } }],
+            },
+         }) as unknown as PersistSource;
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(readTimeOnly),
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly(true)),
       ).not.toThrow();
+      // A read-time term that cannot be placed in the source's own statement
+      // fails closed: it may be inherited, which the read would not re-apply.
+      let refusal: unknown;
+      try {
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly(false));
+      } catch (error) {
+         refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(MaterializationEligibilityError);
+      expect((refusal as { reason?: string }).reason).toBe(
+         "inherited_where_with_given",
+      );
    });
 
    it("refuses when the compiled definition cannot be read at all", () => {

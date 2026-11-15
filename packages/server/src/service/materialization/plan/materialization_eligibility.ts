@@ -18,6 +18,7 @@ import {
 import {
    buildSubstitutesAGiven,
    admitGivenPositions,
+   inheritedGivenWhereRefusal,
    readTimeDynamicTerms,
    type DynamicTerm,
 } from "./persist_dynamic_terms";
@@ -231,6 +232,27 @@ function assertMergeKeyScopeResolvable(
 export const READ_ONLY_DIALECTS: ReadonlySet<string> = new Set(["sqlserver"]);
 
 /**
+ * A colocated `#@ persist` whose given-reading `where:` is inherited from a
+ * base is refused: only the declaration carrying its `#@ persist` is
+ * re-applied over its table at read, so the source answers live, under the
+ * term (as on storage=, through `admitGivenPositions`).
+ */
+function assertNoInheritedGivenWhere(
+   persistSource: PersistSource,
+   sourceName: string,
+): void {
+   const inherited = inheritedGivenWhereRefusal(persistSource);
+   if (inherited === undefined) return;
+   recordEligibilityRefused("inherited_where_with_given");
+   throw new MaterializationEligibilityError({
+      reason: "inherited_where_with_given",
+      message:
+         `Source '${sourceName}' cannot be materialized (colocated ` +
+         `'#@ persist'): ${inherited}.`,
+   });
+}
+
+/**
  * Compile-time eligibility gate for the COLOCATED persist path (`#@ persist`
  * with no `storage=`, a CTAS into the source's own warehouse). Deliberately
  * narrower than {@link assertMaterializationEligible}: the storage tier's
@@ -363,6 +385,10 @@ export function assertColocatedPersistNotAuthorizeGated(
             `there — where it binds per caller over the materialized rows. ` +
             `Otherwise stop persisting this source.`,
       });
+   }
+
+   if (origin === "persist") {
+      assertNoInheritedGivenWhere(persistSource, sourceName);
    }
 
    // The colocated artifact also omits extend-block `where:` terms, so the

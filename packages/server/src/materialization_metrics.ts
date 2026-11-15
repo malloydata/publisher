@@ -193,6 +193,7 @@ export type EligibilityRefusalReason =
    | "dynamic_projection"
    | "dynamic_join"
    | "dynamic_joined_where"
+   | "inherited_where_with_given"
    | "partition_without_storage"
    | "partition_column_unknown"
    | "partition_column_not_public"
@@ -389,7 +390,8 @@ const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
    "materialization-eligibility refusals, both tiers. Label: reason " +
       "('free_parameter'|'given_in_persisted_query'|'dynamic_projection'|" +
-      "'dynamic_join'|'dynamic_joined_where'|'partition_without_storage'|" +
+      "'dynamic_join'|'dynamic_joined_where'|'inherited_where_with_given'|" +
+      "'partition_without_storage'|" +
       "'partition_column_unknown'|'partition_column_not_public'|" +
       "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
       "'authorize'|'partition'|'not_duckdb_portable'|" +

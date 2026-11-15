@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — BREAKING: a materialized source serves from its table only its own given-reading `where:`
+
+**BREAKING (speed, not correctness).** A source scoped by a caller's given (`where: org_id = $ORG_ID`) is still built with that term left out and served from its table with the term applied for each caller, but only when the term is written on the materialized source itself. A given-reading `where:` the source inherits from a base is now refused at plan: the source is not built and is answered live, under the term, exactly as it answers without materialization. Nothing answers differently; some queries that read a table now run live.
+
+- **`#(materialize)`** (materialization v2): a source that inherits its term from a base in the same file (one or several `extend` or rename hops up) used to be built and served by keeping that base's text in the served copy (#1688). It now gets a `materialize-not-built` warning that says to move the given-reading `where:` onto the materialized source itself. An extension that declares its own `#(materialize)` over a parent that writes such a term is refused the same way; the parent is still built, and the extension's queries are answered from the parent's table. A given-reading dimension declared on a base now refuses the source too, and a time-zone-dependent one declared on a base is stored as built, so a query with its own `timezone:` over that table is answered live.
+- **v1 `#@ persist`**, on both tiers: a source whose given-reading `where:` is inherited from a base was built but always answered live. It is now refused at plan and no longer built, so its verdict reads live, with the new reason `inherited_where_with_given`.
+- **API addition:** `RefusedSource.reason` gains `inherited_where_with_given`, and the `publisher_materialization_eligibility_refused_total` metric can carry it as its `reason` label.
+
+To keep a shape on a table, write the term on the source you materialize (`#(materialize)` on `tenant_orders is orders extend { where: org_id = $ORG_ID }`). Extensions of it that declare no `#(materialize)` read its table.
+
 ## [Unreleased] — routing and bind metrics: one route counter, one bind counter
 
 The serving metrics are renamed and folded so each counts one thing, in the vocabulary the path report already uses. Every label is a closed set, and none names a package, source, table or connection. What changes for a dashboard or alert:

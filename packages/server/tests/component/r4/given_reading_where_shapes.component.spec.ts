@@ -11,18 +11,19 @@
  * - simple: the term is on the materialized source itself. It is left out of
  *   the build (`WHERE true`) and re-applied at read, so the table holds every
  *   caller's rows and each caller reads only its own.
- * - kept base: the term is inherited from a base declared in the same file,
- *   through one or more `extend` (or rename) hops. The plan lists the base on
- *   `keptBases`, the build copy writes `true` in the base's text, and the
- *   served copy keeps the base's trailing `extend` blocks.
  * - refused: not built (a package warning, or a `refusedSources` entry), so
- *   the source answers live.
+ *   the source answers live, under its terms. A term inherited from any base
+ *   (in this file or another, through `extend`, a rename or a materialized
+ *   parent) is refused at plan, as is a given-reading dimension a base
+ *   declares: the served copy keeps only the source's own declaration, so it
+ *   could not re-apply either at read.
  * - live: built, but the served copy does not re-root it, so every query is
- *   answered live.
+ *   answered live. (A v1 `#@ persist` that inherits its term from a base used
+ *   to be this; it is now refused, `inherited_where_with_given`.)
  *
  * A query-shaped source over a scoped base is refused by the eligibility gate
- * (`given_in_persisted_query`); a v1 `#@ persist` never takes the kept-base
- * path (an inherited term keeps the source live at read).
+ * (`given_in_persisted_query`). A zone-dependent dimension a base declares is
+ * stored as built, and a `timezone:` query over the table is answered live.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -39,6 +40,9 @@ const HEAD = `##! experimental { persistence givens }`;
 /** A root of its own per shape, so no two shapes' tables share a content address. */
 const root = (x: string) =>
    `source: ev_${x} is duckdb.sql("SELECT id, org, amt, '${x}' AS tag FROM read_csv_auto('data/ev.csv')")`;
+/** The text every refusal of an inherited given-reading `where:` carries. */
+const MOVE_WHERE =
+   "move the given-reading `where:` onto the materialized source itself";
 const base = (x: string) =>
    `${root(x)}\nsource: base_${x} is ev_${x} extend { where: org = $ORG }`;
 
@@ -91,6 +95,16 @@ source: ms_join is ev_ms_join extend {
 
 #(materialize) storage="lake"
 source: ms_dim is dim_base extend { measure: total is amt.sum() }
+
+source: ev_ms_zone is duckdb.sql("""
+  SELECT id, org, amt, 'ms_zone' AS tag,
+    TIMESTAMP '2026-01-01 20:30:00' + INTERVAL (id) HOUR AS ts
+  FROM read_csv_auto('data/ev.csv')
+""")
+source: zone_base is ev_ms_zone extend { dimension: ts_day is ts.day }
+
+#(materialize) storage="lake"
+source: ms_zone is zone_base extend { measure: total is amt.sum() }
 
 ${root("ms_parent")}
 #(materialize) storage="lake"
@@ -154,6 +168,19 @@ source: vs_own_query is ev_vs_own_query -> { group_by: id, org, amt } extend {
   where: org = $ORG
 }
 
+${root("vs_parent")}
+#@ persist name="vs_parent" storage="lake"
+source: vs_parent is ev_vs_parent extend {
+  where: org = $ORG
+  measure: total is amt.sum()
+}
+
+// Declares no #@ persist: inherits vs_parent's, and its table.
+source: vs_inherits is vs_parent extend { dimension: amt2 is amt * 2 }
+
+#@ persist name="vs_child" storage="lake"
+source: vs_child is vs_parent extend { dimension: amt3 is amt * 3 }
+
 #@ persist name="vs_join" storage="lake"
 source: vs_join is ev_vs_join extend {
   join_one: b is base_vs_joined on b.id = id
@@ -190,9 +217,9 @@ source: vi_one is base_vi_one extend { measure: total is amt.sum() }
 
 type Path =
    | { kind: "simple" }
-   | { kind: "kept_base"; bases: string[] }
    | { kind: "refused_warning"; code: string; says: string }
    | { kind: "refused_source"; reason: string }
+   | { kind: "inherits_annotation" }
    | { kind: "live" };
 
 interface ShapeCase {
@@ -203,6 +230,12 @@ interface ShapeCase {
    query?: string;
    /** Every served row is the caller's own org (false for a join's null side). */
    ownRowsOnly?: boolean;
+   /**
+    * Answered from a stored table through the served copy (default: when
+    * built and simple). A refused extension of a materialized parent is
+    * answered from the parent's table, which keeps the parent's own term.
+    */
+   fromTable?: boolean;
 }
 
 const AGG = "{ group_by: org; aggregate: n is count(), s is amt.sum() }";
@@ -230,25 +263,42 @@ const CASES: ShapeCase[] = [
       name: "#(materialize) storage=, the term on a base in the same file, one extend",
       model: "mat_storage.malloy",
       source: "ms_one",
-      path: { kind: "kept_base", bases: ["base_ms_one"] },
+      path: {
+         kind: "refused_warning",
+         code: "materialize-not-built",
+         says: MOVE_WHERE,
+      },
    },
    {
       name: "#(materialize) storage=, the term on a base two extend levels up",
       model: "mat_storage.malloy",
       source: "ms_two",
-      path: { kind: "kept_base", bases: ["mid_ms_two", "base_ms_two"] },
+      path: {
+         kind: "refused_warning",
+         code: "materialize-not-built",
+         says: MOVE_WHERE,
+      },
    },
    {
       name: "#(materialize) storage=, the term on a base reached through a bare rename",
       model: "mat_storage.malloy",
       source: "ms_alias",
-      path: { kind: "kept_base", bases: ["alias_ms_alias", "base_ms_alias"] },
+      path: {
+         kind: "refused_warning",
+         code: "materialize-not-built",
+         says: MOVE_WHERE,
+      },
    },
    {
       name: "#(materialize) storage=, the term on a materialized parent (an extension table)",
       model: "mat_storage.malloy",
       source: "ms_child",
-      path: { kind: "kept_base", bases: ["ms_parent"] },
+      path: {
+         kind: "refused_warning",
+         code: "materialize-not-built",
+         says: MOVE_WHERE,
+      },
+      fromTable: true,
    },
    {
       name: "#(materialize) storage=, the parent of that extension table (its own term)",
@@ -260,7 +310,11 @@ const CASES: ShapeCase[] = [
       name: "#(materialize) colocated, the term on a base in the same file",
       model: "mat_colocated.malloy",
       source: "mc_one",
-      path: { kind: "kept_base", bases: ["base_mc_one"] },
+      path: {
+         kind: "refused_warning",
+         code: "materialize-not-built",
+         says: MOVE_WHERE,
+      },
    },
    {
       name: "#(materialize) storage=, the term on a base imported from another file",
@@ -269,7 +323,7 @@ const CASES: ShapeCase[] = [
       path: {
          kind: "refused_warning",
          code: "materialize-not-built",
-         says: "cannot re-apply it at read",
+         says: MOVE_WHERE,
       },
    },
    {
@@ -292,7 +346,11 @@ const CASES: ShapeCase[] = [
       name: "#(materialize) storage=, a given-reading dimension (no where:) on a base in the same file",
       model: "mat_storage.malloy",
       source: "ms_dim",
-      path: { kind: "kept_base", bases: ["dim_base"] },
+      path: {
+         kind: "refused_warning",
+         code: "materialize-not-built",
+         says: "declare the given-reading dimension on the materialized source itself",
+      },
       query: "run: ms_dim -> { group_by: mine; aggregate: n is count() }",
       ownRowsOnly: false,
    },
@@ -324,19 +382,39 @@ const CASES: ShapeCase[] = [
       name: "v1 #@ persist storage=, the term on a base in the same file",
       model: "v1_storage.malloy",
       source: "vs_one",
-      path: { kind: "live" },
+      path: { kind: "refused_source", reason: "inherited_where_with_given" },
    },
    {
       name: "v1 #@ persist colocated, the term on a base in the same file",
       model: "v1_colocated.malloy",
       source: "vc_one",
-      path: { kind: "live" },
+      path: { kind: "refused_source", reason: "inherited_where_with_given" },
    },
    {
       name: "v1 #@ persist storage=, the term on a base imported from another file",
       model: "v1_import.malloy",
       source: "vi_one",
-      path: { kind: "live" },
+      path: { kind: "refused_source", reason: "inherited_where_with_given" },
+   },
+   {
+      name: "v1 #@ persist storage=, a parent that writes its own term",
+      model: "v1_storage.malloy",
+      source: "vs_parent",
+      path: { kind: "simple" },
+   },
+   {
+      name: "v1 #@ persist storage=, an extension that inherits its parent's #@ persist (and table)",
+      model: "v1_storage.malloy",
+      source: "vs_inherits",
+      path: { kind: "inherits_annotation" },
+      fromTable: true,
+   },
+   {
+      name: "v1 #@ persist storage=, an extension with its own #@ persist over a parent that writes the term",
+      model: "v1_storage.malloy",
+      source: "vs_child",
+      path: { kind: "refused_source", reason: "inherited_where_with_given" },
+      fromTable: true,
    },
    {
       name: "v1 #@ persist storage=, query-shaped over a scoped base",
@@ -358,7 +436,7 @@ const CALLERS = ["acme", "globex", "acme", "globex"];
 
 type MaterializePlans = Record<
    string,
-   { keptBases?: { sourceID: string }[] } | undefined
+   { leftOut?: { dimension: string }[] } | undefined
 >;
 
 const nameOf = (sourceID: string) => sourceID.split("@")[0];
@@ -372,6 +450,7 @@ describe("given-reading where: by where it is written, through a real package", 
    let restore: () => void;
    let fixture: LoadedFixture;
    const live: Record<string, Outcome> = {};
+   const zoneLive: Record<string, Record<string, unknown>[]> = {};
 
    beforeAll(async () => {
       restore = installSettings({
@@ -387,6 +466,14 @@ describe("given-reading where: by where it is written, through a real package", 
                { ORG },
             );
          }
+      }
+      for (const query of [
+         "run: ms_zone -> { group_by: ts_day; aggregate: n is count() }",
+         "run: ms_zone -> { timezone: 'America/New_York'; group_by: ts_day; aggregate: n is count() }",
+      ]) {
+         zoneLive[query] = answered(
+            await loaded.run("mat_storage.malloy", query),
+         ).rows;
       }
       fixture = await loaded.bind();
    }, 300_000);
@@ -416,15 +503,9 @@ describe("given-reading where: by where it is written, through a real package", 
 
          switch (c.path.kind) {
             case "simple":
-            case "kept_base":
                expect(built).toBe(true);
                expect(refused).toBeUndefined();
-               if (c.model.startsWith("mat_")) {
-                  expect(plan).toBeDefined();
-                  expect(
-                     (plan?.keptBases ?? []).map((b) => nameOf(b.sourceID)),
-                  ).toEqual(c.path.kind === "kept_base" ? c.path.bases : []);
-               }
+               if (c.model.startsWith("mat_")) expect(plan).toBeDefined();
                break;
             case "refused_warning":
                expect(built).toBe(false);
@@ -435,6 +516,11 @@ describe("given-reading where: by where it is written, through a real package", 
             case "refused_source":
                expect(built).toBe(false);
                expect(refused?.reason).toBe(c.path.reason as never);
+               break;
+            case "inherits_annotation":
+               // Shares its parent's table, so it is neither refused nor
+               // built under its own name.
+               expect(refused).toBeUndefined();
                break;
             case "live":
                // Built, but the served copy does not re-root it.
@@ -449,8 +535,8 @@ describe("given-reading where: by where it is written, through a real package", 
             const now = answered(await fixture.run(c.model, query, { ORG }));
             expect(rowDifference(before.rows, now.rows)).toBeUndefined();
             const fromTable =
-               (c.path.kind === "simple" || c.path.kind === "kept_base") &&
-               c.source !== "ms_join";
+               c.fromTable ??
+               (c.path.kind === "simple" && c.source !== "ms_join");
             expect(now.servedBy).toBe(fromTable ? "materialized" : "live");
             if (fromTable) expect(now.via).toBe("served_copy");
             if (c.ownRowsOnly ?? true) {
@@ -464,4 +550,35 @@ describe("given-reading where: by where it is written, through a real package", 
          expect(rowDifference(served[1], served[3])).toBeUndefined();
       }, 120_000);
    }
+
+   it("#(materialize) storage=, a zone-dependent dimension on a base: stored as built, a timezone: query answered live", async () => {
+      const plans =
+         (
+            fixture.pkg as unknown as {
+               materialization?: { materializePlans?: MaterializePlans };
+            }
+         ).materialization?.materializePlans ?? {};
+      const plan = Object.entries(plans).find(
+         ([id]) => nameOf(id) === "ms_zone",
+      )?.[1];
+      expect(plan).toBeDefined();
+      expect((plan?.leftOut ?? []).map((d) => d.dimension)).toEqual([]);
+      expect(fixture.built.some((b) => b.name === "ms_zone")).toBe(true);
+      const inDefaultZone =
+         "run: ms_zone -> { group_by: ts_day; aggregate: n is count() }";
+      const inNewYork =
+         "run: ms_zone -> { timezone: 'America/New_York'; group_by: ts_day; aggregate: n is count() }";
+      for (const [query, fromTable] of [
+         [inDefaultZone, true],
+         [inNewYork, false],
+      ] as const) {
+         const now = answered(await fixture.run("mat_storage.malloy", query));
+         expect(rowDifference(zoneLive[query], now.rows)).toBeUndefined();
+         expect(now.servedBy).toBe(fromTable ? "materialized" : "live");
+      }
+      // The zone moves the day boundary, so the two answers differ.
+      expect(
+         rowDifference(zoneLive[inDefaultZone], zoneLive[inNewYork]),
+      ).toBeDefined();
+   }, 120_000);
 });

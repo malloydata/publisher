@@ -246,12 +246,6 @@ export type CallerInput = "given" | "current_time" | "time_zone";
 export interface LeftOutDimension {
    dimension: string;
    reads: CallerInput[];
-   /**
-    * For one a base on the plan's `keptBases` declares: where (the field's
-    * compiled location), so the build copy confirms it is in that base's
-    * trailing `extend` run, the text the served copy keeps.
-    */
-   at?: TermUse;
 }
 
 /** A given a read-time term reads, and the file that declares it. */
@@ -305,20 +299,9 @@ export interface MaterializePlan {
    inline?: string[];
    /**
     * The computed dimensions left out of the build because each depends on
-    * the caller (P9), in field order: the source's own, and ones a base on
-    * {@link keptBases} declares. Absent when none is.
+    * the caller (P9), in field order. Absent when none is.
     */
    leftOut?: LeftOutDimension[];
-   /**
-    * The ancestors whose trailing `extend` blocks the served copy must keep
-    * ahead of the source's own (kept_ancestors.ts), nearest first, up to the
-    * farthest one needed: one writes a given-reading `where:` the source
-    * inherits, or declares a dimension left out because it depends on the
-    * caller. The build leaves those out, and only that base's block,
-    * written again over the stored table, re-applies them at read. Absent
-    * when the source needs no base's block.
-    */
-   keptBases?: KeptAncestor[];
    /**
     * The probe compiler found the source's rows the same in every query time
     * zone (P9): its `where:` terms and base relation compile to the same SQL

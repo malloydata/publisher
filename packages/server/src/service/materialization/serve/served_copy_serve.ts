@@ -1486,13 +1486,12 @@ export class ServedCopyServe {
     * the file's text), which its re-root keeps ahead of its own blocks. Kept
     * for an extension table (P10), whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
-    * declares; and for a source whose plan needs its bases' blocks
-    * (`keptBases`): a given-reading `where:` or a caller-dependent dimension a
-    * base declares, which the build left out and only the base's block
-    * re-applies at read. Undefined when the source is neither, or no such
-    * ancestor is on the walk: a source with none keeps only its own blocks
-    * (decision 2); and for one whose bases declare a measure, view or join it
-    * inherits (G8), which the re-root would otherwise lose.
+    * declares; and for one whose bases declare a measure, view or join it
+    * inherits (G8), which the re-root would otherwise lose. Undefined when
+    * the source is neither, or no such ancestor is on the walk: a source with
+    * none keeps only its own blocks (decision 2). A base's given-reading
+    * `where:` or dimension is never left out of a build (it refuses the
+    * source at plan), so no block is kept to re-apply one.
     */
    private keptBlocksFor(
       reroot: Reroot & { sourceID: string },
@@ -1509,7 +1508,6 @@ export class ServedCopyServe {
          keptAncestorChain(map, reroot.sourceID, reroot.url),
       );
       const needed =
-         (plan.keptBases?.length ?? 0) > 0 ||
          confirmed.some(
             (a) => this.materializePlans[a.sourceID] !== undefined,
          ) ||
