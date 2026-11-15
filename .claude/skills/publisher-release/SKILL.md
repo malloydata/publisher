@@ -351,9 +351,14 @@ gh workflow run release.yml --repo malloydata/publisher --ref main -f bump=minor
 gh workflow run release.yml --repo malloydata/publisher --ref main -f version=<next>
 ```
 
+The run starts with `main-thread-check`, the main-thread regression gate
+(`main-thread-regression.yml`, main against the anchor release), which adds
+about 10 minutes before `prepare` cuts anything.
+
 **Do not merge to `main` while it runs.** `publish-packages` aborts if `main`
 moves under a watched path mid-release. A `RELEASE_NOTES.md`-only merge is not
-watched, but the window is short — just wait. **Do not push to
+watched, but just wait: the window is the whole run, about 10 minutes longer
+than it was before the gate. **Do not push to
 `release/v<version>` while it runs either**: `npm-sdk.yml` and
 `docker-image.yml` check it out by name, so a push mid-run can publish two
 different commits under one version.
@@ -487,6 +492,11 @@ after the merge (the first command in step 3).
 
 ## If it fails
 
+- **Only `main-thread-check` is red** → nothing was cut or published. Read its
+  job summary. A harness error (titled *Main-thread harness error (not a
+  performance verdict)*) or a flake → *Re-run failed jobs*. A real FAIL → fix
+  `main` and dispatch again. Dispatch with `-f skip_main_thread_check=true` only
+  when the check itself is known to be wrong.
 - **Only `build-python-sdk` or `publish-python-sdk` is red** → npm and Docker are
   unaffected; neither job is in `gh-release`'s `needs`. *Re-run failed jobs*:
   the publish job skips a version PyPI already holds, and reuses the verified

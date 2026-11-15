@@ -47,6 +47,24 @@ function run(over: Partial<StormResult> = {}): StormResult {
          loadDispatches: 0,
          dispatches: {},
       },
+      hooks: {
+         postMessage: true,
+         compile: true,
+         getModel: true,
+         queryModel: true,
+      },
+      control: { queryStatus: 200, queryCompiles: 1 },
+      queryModel: { builds: 20, ms: 5, byCaller: {} },
+      indexedLoad: {
+         ok: true,
+         indexedDimensions: 120,
+         builds: 4,
+         ms: 1,
+         byCaller: {},
+         entitiesOk: true,
+         entitiesBuilds: 0,
+         entitiesMs: 0,
+      },
       maxRssBytes: 1e9,
       ...over,
    };
@@ -119,7 +137,8 @@ describe("judge", () => {
       });
       const v = judge([run(), run()], [run(), compiled]);
       const check = v.checks.find(
-         (c) => c.name === "served-copy compiles on an identical re-bind",
+         (c) =>
+            c.name === "main-thread Malloy compiles on an identical re-bind",
       );
       expect(check?.outcome).toBe("fail");
       expect(check?.detail).toContain("compile 3");
@@ -160,6 +179,170 @@ describe("judge", () => {
    });
 });
 
+describe("judge at the limits", () => {
+   const p90 = (n: number) => ({
+      n: 100,
+      p50: 40,
+      p90: n,
+      max: n,
+      timeouts: 0,
+   });
+
+   it("keeps the documented limits", () => {
+      expect(DEFAULT_LIMITS).toEqual({
+         cpuPerOpRatio: 1.5,
+         statusP90Ratio: 2,
+         statusP90RatioFloorMs: 150,
+         statusP90BudgetMs: 1000,
+         maxBlockBudgetMs: 3000,
+         rebindCompiles: 0,
+         statusLoads: 0,
+         indexedLoadQueryModelBuilds: 20,
+      });
+   });
+
+   it("passes exactly 1.5x CPU and fails just over", () => {
+      const at = judge([run()], [run({ cpuPerOpMs: 90 })]);
+      expect(outcomeOf(at, "main-thread CPU per op vs baseline")).toBe("pass");
+      const over = judge([run()], [run({ cpuPerOpMs: 90.1 })]);
+      expect(outcomeOf(over, "main-thread CPU per op vs baseline")).toBe(
+         "fail",
+      );
+   });
+
+   it("passes exactly 1000 ms p90 and 3000 ms block, fails just over", () => {
+      const at = judge([run()], [run({ status: p90(1000), maxBlockMs: 3000 })]);
+      expect(outcomeOf(at, "/status p90 under the storm")).toBe("pass");
+      expect(outcomeOf(at, "longest event-loop block")).toBe("pass");
+      const over = judge(
+         [run()],
+         [run({ status: p90(1001), maxBlockMs: 3001 })],
+      );
+      expect(outcomeOf(over, "/status p90 under the storm")).toBe("fail");
+      expect(outcomeOf(over, "longest event-loop block")).toBe("fail");
+   });
+
+   it("applies the p90 ratio only above the 150 ms floor", () => {
+      const base = run({ status: p90(50) });
+      expect(
+         outcomeOf(
+            judge([base], [run({ status: p90(150) })]),
+            "/status p90 vs baseline",
+         ),
+      ).toBe("pass");
+      expect(
+         outcomeOf(
+            judge([base], [run({ status: p90(151) })]),
+            "/status p90 vs baseline",
+         ),
+      ).toBe("fail");
+   });
+
+   it("fails an indexed load over 20 QueryModel builds, naming the callers", () => {
+      const bad = run({
+         indexedLoad: {
+            ...run().indexedLoad,
+            builds: 256,
+            byCaller: {
+               buildDimIndexFingerprintLookup: 252,
+               getDatabaseInfo: 4,
+            },
+         },
+      });
+      const v = judge([run()], [bad]);
+      const c = v.checks.find(
+         (k) => k.name === "main-thread QueryModel builds on an indexed load",
+      );
+      expect(c?.outcome).toBe("fail");
+      expect(c?.detail).toContain("buildDimIndexFingerprintLookup 252");
+      const at = run({ indexedLoad: { ...run().indexedLoad, builds: 20 } });
+      expect(
+         outcomeOf(
+            judge([run()], [at]),
+            "main-thread QueryModel builds on an indexed load",
+         ),
+      ).toBe("pass");
+   });
+
+   it("is invalid on a failed re-bind, few samples, empty sides or a counter that cannot count", () => {
+      expect(
+         judge([run()], [run({ rebind: { ...run().rebind, ok: false } })])
+            .outcome,
+      ).toBe("invalid");
+      expect(
+         judge([run()], [run({ status: { ...run().status, n: 9 } })]).outcome,
+      ).toBe("invalid");
+      expect(judge([], [run()]).outcome).toBe("invalid");
+      expect(judge([run()], []).outcome).toBe("invalid");
+      expect(
+         judge(
+            [run()],
+            [run({ control: { queryStatus: 200, queryCompiles: 0 } })],
+         ).outcome,
+      ).toBe("invalid");
+      expect(
+         judge([run()], [run({ hooks: { ...run().hooks, compile: false } })])
+            .outcome,
+      ).toBe("invalid");
+      expect(
+         judge(
+            [run()],
+            [run({ queryModel: { builds: 0, ms: 0, byCaller: {} } })],
+         ).outcome,
+      ).toBe("invalid");
+      expect(
+         judge(
+            [run()],
+            [run({ indexedLoad: { ...run().indexedLoad, ok: false } })],
+         ).outcome,
+      ).toBe("invalid");
+   });
+
+   it("is invalid on the wrong runner, or a baseline far over budget", () => {
+      expect(
+         judge([run()], [run()], DEFAULT_LIMITS, { cpus: 2, expectCpus: 4 })
+            .outcome,
+      ).toBe("invalid");
+      expect(
+         judge([run()], [run()], DEFAULT_LIMITS, { cpus: 4, expectCpus: 4 })
+            .outcome,
+      ).toBe("pass");
+      expect(judge([run({ status: p90(2500) })], [run()]).outcome).toBe(
+         "invalid",
+      );
+      expect(judge([run({ maxBlockMs: 3500 })], [run()]).outcome).toBe(
+         "invalid",
+      );
+   });
+
+   it("compares every op type, but only notes one a side never serves", () => {
+      const fewer = run({
+         ops: {
+            load: { ok: 40, failed: {} },
+            unload: { ok: 5, failed: { "503": 15 } },
+         },
+      });
+      const more = run({
+         ops: { load: { ok: 40, failed: {} }, unload: { ok: 20, failed: {} } },
+      });
+      expect(judge([more], [fewer]).outcome).toBe("invalid");
+      const noRoute = run({
+         ops: {
+            load: { ok: 40, failed: {} },
+            entities: { ok: 0, failed: { "404": 9 } },
+         },
+      });
+      const route = run({
+         ops: { load: { ok: 40, failed: {} }, entities: { ok: 9, failed: {} } },
+      });
+      const v = judge([noRoute], [route]);
+      expect(v.outcome).toBe("pass");
+      expect(
+         v.checks.find((c) => c.name === "ops only one side serves")?.value,
+      ).toContain("entities");
+   });
+});
+
 describe("median", () => {
    it("averages the middle two of an even count", () => {
       expect(median([1, 9, 3, 5])).toBe(4);
@@ -183,6 +366,9 @@ describe("summarize", () => {
       expect(md).toContain(
          "| main-thread CPU per op | 60 ms / 60 ms | 60 ms / 120 ms |",
       );
-      expect(md).toContain("served-copy compiles on an identical re-bind");
+      expect(md).toContain(
+         "main-thread Malloy compiles on an identical re-bind",
+      );
+      expect(md).toContain("indexed-load QueryModel builds");
    });
 });

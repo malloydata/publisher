@@ -19,10 +19,15 @@ name: main-thread-regression
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "packages/server/**"
       - "bun.lock"
       - ".github/workflows/main-thread-regression.yml"
+      # Nothing the server runs: docs, unit specs and the k6 harness.
+      - "!**/*.md"
+      - "!packages/server/**/*.spec.ts"
+      - "!packages/server/k6-tests/**"
   schedule:
     # 06:41 UTC: off the hour, and clear of hammer-nightly at 07:17.
     - cron: "41 6 * * *"
@@ -75,29 +80,39 @@ jobs:
     # on GitHub-hosted ubuntu-latest, and a runner class change moves them.
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # A draft PR waits for ready_for_review.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     steps:
-      - name: Skipped by the caller
-        if: ${{ inputs.skip }}
+      - name: Gate
+        id: gate
+        env:
+          SKIP: ${{ inputs.skip }}
         run: |
-          echo "::warning title=Main-thread check skipped::release.yml was dispatched with skip_main_thread_check"
-          echo "## Main-thread regression: skipped by the release dispatch" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SKIP" = "true" ]; then
+            echo "::warning title=Main-thread check skipped::release.yml was dispatched with skip_main_thread_check"
+            echo "## Main-thread regression: skipped by the release dispatch" >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/checkout@v4
-        if: ${{ !inputs.skip }}
+        if: steps.gate.outputs.run == 'true'
         with:
           # The PR's own head (not the merge commit), so the baseline is its merge base.
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Setup Bun
-        if: ${{ !inputs.skip }}
+        if: steps.gate.outputs.run == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache Bun dependencies
-        if: ${{ !inputs.skip }}
+        if: steps.gate.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -106,16 +121,16 @@ jobs:
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
 
       - name: Install dependencies
-        if: ${{ !inputs.skip }}
+        if: steps.gate.outputs.run == 'true'
         run: bun install --frozen-lockfile
 
       - name: Unit-test the verdict
-        if: ${{ !inputs.skip }}
+        if: steps.gate.outputs.run == 'true'
         working-directory: packages/server
         run: bun test tests/perf/main-thread
 
       - name: Choose the baseline and candidate
-        if: ${{ !inputs.skip }}
+        if: steps.gate.outputs.run == 'true'
         id: sides
         env:
           EVENT: ${{ github.event_name }}
@@ -125,11 +140,21 @@ jobs:
           IN_CANDIDATE: ${{ inputs.candidate }}
           IN_ROUNDS: ${{ inputs.rounds }}
         run: |
-          anchor=$(jq -r .release packages/server/tests/perf/main-thread/anchor.json)
+          anchor_json=packages/server/tests/perf/main-thread/anchor.json
+          anchor=$(jq -r .release "$anchor_json")
+          anchor_commit=$(jq -r .commit "$anchor_json")
           if [ "$EVENT" = "pull_request" ]; then
             baseline="git:$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          elif [ -n "$IN_BASELINE" ]; then
+            baseline="git:$IN_BASELINE"
           else
-            baseline="git:${IN_BASELINE:-$anchor}"
+            # The anchor by commit, after checking its tag still names it.
+            tagged=$(git rev-parse "$anchor^{commit}")
+            if [ "$tagged" != "$anchor_commit" ]; then
+              echo "::error title=Main-thread harness error (not a performance verdict)::$anchor is $tagged, but anchor.json pins $anchor_commit"
+              exit 2
+            fi
+            baseline="git:$anchor_commit"
           fi
           # The candidate is this checkout unless a dispatch names a ref.
           candidate="${IN_CANDIDATE:+git:$IN_CANDIDATE}"
@@ -139,7 +164,7 @@ jobs:
           echo "baseline=$baseline candidate=${candidate:-. ($(git rev-parse --short HEAD))}"
 
       - name: Run the A/B
-        if: ${{ !inputs.skip }}
+        if: steps.gate.outputs.run == 'true'
         working-directory: packages/server
         env:
           BASELINE: ${{ steps.sides.outputs.baseline }}
@@ -151,10 +176,10 @@ jobs:
           [ "$CANDIDATE" = "." ] && CANDIDATE="$GITHUB_WORKSPACE"
           bun tests/perf/main-thread/run.ts \
             --baseline "$BASELINE" --candidate "$CANDIDATE" \
-            --rounds "$ROUNDS" --out "$OUT"
+            --rounds "$ROUNDS" --out "$OUT" --expect-cpus 4
 
       - name: Upload results
-        if: ${{ always() && !inputs.skip }}
+        if: ${{ always() && steps.gate.outputs.run == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: main-thread-regression-${{ github.run_id }}-${{ github.run_attempt }}

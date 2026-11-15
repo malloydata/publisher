@@ -25,6 +25,19 @@ export interface Limits {
    rebindCompiles: number;
    /** Load-pool dispatches from `/status` polls, at most. */
    statusLoads: number;
+   /**
+    * Main-thread QueryModel builds in one load of the indexed fixture (120
+    * `#(index)` dimensions), at most: 0.12.1-0.12.5 built one per dimension
+    * (ms2data/service#7641).
+    */
+   indexedLoadQueryModelBuilds: number;
+}
+
+/** What `run.ts` knows about the machine, for the runner check. */
+export interface RunEnv {
+   cpus?: number;
+   /** When set (CI), a different CPU count makes the run invalid. */
+   expectCpus?: number;
 }
 
 // Calibrated on GitHub-hosted ubuntu-latest (4 vCPU), 3 A/B jobs each of
@@ -35,6 +48,8 @@ export interface Limits {
 //  - longest block: 0.12.6 724-2211 ms, fixed 854-1778, 0.13.1 963-2211. It
 //    does not separate them (the common cost is hydrating the large generated
 //    package), so it only guards against a gross stall, like 0.12.5's 47 s.
+//  - indexed load: 0.12.0, 0.12.6, 0.13.1 and main build 4 QueryModels on
+//    the main thread; 0.12.1 and 0.12.5 build 256 (252 fingerprints).
 export const DEFAULT_LIMITS: Limits = {
    cpuPerOpRatio: 1.5,
    statusP90Ratio: 2,
@@ -43,6 +58,7 @@ export const DEFAULT_LIMITS: Limits = {
    maxBlockBudgetMs: 3000,
    rebindCompiles: 0,
    statusLoads: 0,
+   indexedLoadQueryModelBuilds: 20,
 };
 
 export type Outcome = "pass" | "fail" | "invalid";
@@ -81,8 +97,32 @@ export function judge(
    baseline: StormResult[],
    candidate: StormResult[],
    limits: Limits = DEFAULT_LIMITS,
+   env: RunEnv = {},
 ): Verdict {
    const checks: Check[] = [];
+   if (baseline.length === 0 || candidate.length === 0) {
+      return {
+         outcome: "invalid",
+         checks: [
+            {
+               name: "both sides ran",
+               kind: "validity",
+               outcome: "invalid",
+               value: `baseline ${baseline.length} round(s), candidate ${candidate.length}`,
+               limit: "at least one round each",
+            },
+         ],
+      };
+   }
+   if (env.expectCpus !== undefined && env.cpus !== env.expectCpus) {
+      checks.push({
+         name: "the runner is the calibrated kind",
+         kind: "validity",
+         outcome: "invalid",
+         value: `${env.cpus} CPUs`,
+         limit: `${env.expectCpus} CPUs (the absolute budgets were calibrated there)`,
+      });
+   }
    const med = (rs: StormResult[], f: (r: StormResult) => number) =>
       median(rs.map(f));
 
@@ -100,31 +140,100 @@ export function judge(
             problems.push(`only ${r.status.n} /status samples`);
          if (!r.rebind.ok)
             problems.push("the re-bind check's binds did not succeed");
+         // Positive controls: each counter must be able to count.
+         const broken = Object.entries(r.hooks ?? {})
+            .filter(([, ok]) => !ok)
+            .map(([h]) => h);
+         if (!r.hooks || broken.length) {
+            problems.push(
+               `probe hooks that did not take: ${broken.join(", ") || "all"}`,
+            );
+         }
+         if ((r.control?.queryCompiles ?? 0) < 1) {
+            problems.push(
+               "an ad-hoc query counted no compile, so a zero re-bind count proves nothing",
+            );
+         }
+         if ((r.queryModel?.builds ?? 0) < 1) {
+            problems.push(
+               "the storm counted no QueryModel build, so a zero indexed-load count proves nothing",
+            );
+         }
+         if (!r.indexedLoad?.ok) {
+            problems.push(
+               "the quiet load of the indexed package did not succeed",
+            );
+         }
          if (problems.length) {
             checks.push({
                name: `${side} run ${r.label} did the work`,
                kind: "validity",
                outcome: "invalid",
                value: problems.join("; "),
-               limit: "all ops answered, loads seen, re-binds bound",
+               limit: "all ops answered, loads seen, re-binds bound, counters proven",
             });
          }
       }
    };
    validity("baseline", baseline);
    validity("candidate", candidate);
-   const okLoads = (rs: StormResult[]) => med(rs, (r) => r.ops.load?.ok ?? 0);
-   const bl = okLoads(baseline);
-   const cl = okLoads(candidate);
-   if (bl > 0 && Math.abs(cl - bl) / bl > 0.1) {
+   // The same workload on both sides: every op type answered OK about as
+   // often. An op one side never answers OK (a route that build predates,
+   // like /entities before 0.12.1) is noted, not compared.
+   const ops = new Set(
+      [...baseline, ...candidate].flatMap((r) => Object.keys(r.ops)),
+   );
+   const mismatched: string[] = [];
+   const absent: string[] = [];
+   for (const op of [...ops].sort()) {
+      const b = med(baseline, (r) => r.ops[op]?.ok ?? 0);
+      const c = med(candidate, (r) => r.ops[op]?.ok ?? 0);
+      if (b === 0 || c === 0) {
+         if (b !== c)
+            absent.push(`${op} (baseline ${b} ok, candidate ${c} ok)`);
+         continue;
+      }
+      if (Math.abs(c - b) > Math.max(3, 0.1 * b)) {
+         mismatched.push(`${op}: baseline ${b} ok, candidate ${c} ok`);
+      }
+   }
+   if (mismatched.length) {
       checks.push({
          name: "both sides ran the same workload",
          kind: "validity",
          outcome: "invalid",
-         value: `successful publishes: baseline ${bl}, candidate ${cl}`,
-         limit: "within 10%",
+         value: mismatched.join("; "),
+         limit: "each op type's successes within 10% (or 3)",
          detail:
-            "A side refusing loads the other accepts changes what CPU per op means; read the server logs.",
+            "A side refusing work the other accepts changes what CPU per op means; the failure mix is in the table below and the server logs are in the artifact.",
+      });
+   }
+   if (absent.length) {
+      checks.push({
+         name: "ops only one side serves",
+         kind: "validity",
+         outcome: "pass",
+         value: absent.join("; "),
+         limit: "noted, not compared",
+      });
+   }
+
+   // A baseline far outside what it measures on the calibrated runner means
+   // the runner, not the candidate, is what changed.
+   const bBlock = med(baseline, (r) => r.maxBlockMs);
+   const bP90s = med(baseline, (r) => r.status.p90);
+   if (
+      bP90s > 2 * limits.statusP90BudgetMs ||
+      bBlock > limits.maxBlockBudgetMs
+   ) {
+      checks.push({
+         name: "the baseline ran as calibrated",
+         kind: "validity",
+         outcome: "invalid",
+         value: `baseline /status p90 ${ms(bP90s)}, longest block ${ms(bBlock)}`,
+         limit: `p90 <= ${ms(2 * limits.statusP90BudgetMs)} and block <= ${ms(limits.maxBlockBudgetMs)}`,
+         detail:
+            "The baseline itself is over budget: an overloaded runner or a bad baseline. Re-run; if it repeats, the baseline needs looking at.",
       });
    }
 
@@ -173,7 +282,7 @@ export function judge(
    const compiles = Math.max(...candidate.map((r) => r.rebind.compiles));
    const callers = mergeCounts(candidate.map((r) => r.rebind.compilesByCaller));
    checks.push({
-      name: "served-copy compiles on an identical re-bind",
+      name: "main-thread Malloy compiles on an identical re-bind",
       kind: "absolute",
       outcome: compiles > limits.rebindCompiles ? "fail" : "pass",
       value: `${compiles} per ${candidate[0]?.rebind.rebinds ?? 0} re-binds`,
@@ -194,6 +303,22 @@ export function judge(
       limit: `<= ${limits.statusLoads}`,
    });
 
+   const qm = Math.max(...candidate.map((r) => r.indexedLoad?.builds ?? 0));
+   const dims = candidate[0]?.indexedLoad?.indexedDimensions ?? 0;
+   const qmCallers = mergeCounts(
+      candidate.map((r) => r.indexedLoad?.byCaller ?? {}),
+   );
+   checks.push({
+      name: "main-thread QueryModel builds on an indexed load",
+      kind: "absolute",
+      outcome: qm > limits.indexedLoadQueryModelBuilds ? "fail" : "pass",
+      value: `${qm} for ${dims} #(index) dimensions`,
+      limit: `<= ${limits.indexedLoadQueryModelBuilds}`,
+      detail: Object.keys(qmCallers).length
+         ? `QueryModel builds by caller: ${formatCounts(qmCallers)}`
+         : undefined,
+   });
+
    const outcome: Outcome = checks.some((c) => c.outcome === "invalid")
       ? "invalid"
       : checks.some((c) => c.outcome === "fail")
@@ -208,6 +333,14 @@ function mergeCounts(maps: Record<string, number>[]): Record<string, number> {
       for (const [k, v] of Object.entries(m)) out[k] = (out[k] ?? 0) + v;
    }
    return out;
+}
+
+function failureMix(r: StormResult): string {
+   return Object.entries(r.ops)
+      .flatMap(([op, o]) =>
+         Object.entries(o.failed).map(([code, n]) => `${op} ${code}x${n}`),
+      )
+      .join(", ");
 }
 
 function formatCounts(m: Record<string, number>): string {
@@ -271,6 +404,18 @@ export function summarize(
    row("blocks >= 250 ms", (r) => String(r.blocksOver["250"] ?? 0));
    row("re-bind compiles", (r) => String(r.rebind.compiles));
    row("loads started by /status", (r) => String(r.statusLoads.loadDispatches));
+   row(
+      "indexed-load QueryModel builds",
+      (r) => `${r.indexedLoad.builds} (${r.indexedLoad.ms} ms)`,
+   );
+   row(
+      "storm QueryModel builds",
+      (r) => `${r.queryModel.builds} (${r.queryModel.ms} ms)`,
+   );
+   row("ad-hoc query compiles (control)", (r) =>
+      String(r.control.queryCompiles),
+   );
+   row("failed ops", (r) => failureMix(r) || "none");
    row("storm wall time", (r) => `${(r.wallMs / 1000).toFixed(0)} s`);
    row("ops answered", (r) => String(r.completedOps));
    row("peak RSS", (r) => `${(r.maxRssBytes / 1024 ** 3).toFixed(2)} GiB`);

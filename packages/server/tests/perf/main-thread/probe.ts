@@ -16,16 +16,22 @@
  *  - jobs posted to the package-load worker pool (`Worker.postMessage` with a
  *    `type: "load-package"` message), so a `/status` poll that starts a load
  *    shows up as a dispatch;
- *  - Malloy model compiles on the main thread (`ModelMaterializer.getModel`
- *    in the `@malloydata/malloy` the bundle resolves, which the bundle keeps
- *    external), each attributed to the bundle function that asked for it.
+ *  - Malloy translations on the main thread (the static `Malloy.compile` in
+ *    the `@malloydata/malloy` the bundle resolves, which the bundle keeps
+ *    external), each attributed to the bundle function that asked for it,
+ *    and model materializations (`getModel`) beside them;
+ *  - Malloy QueryModel builds on the main thread
+ *    (`QueryModelImpl.loadModelFromDef`), with their time and callers.
+ *
+ * `hooks` in every snapshot says which of these took, so the harness can
+ * refuse a run whose counters could not have counted anything.
  *
  * Because it hooks only the runtime and the external Malloy package, it works
  * unchanged against any build, an old release included, which is what lets
  * the A/B compare a baseline that predates the harness.
  *
  * It answers on its own port, `GET /probe` (a JSON snapshot) and
- * `POST /probe/reset` (restart the block and compile windows). Both are served
+ * `POST /probe/reset` (answer with the window so far, then start a new one). Both are served
  * by the main thread, so read them when the server is quiet.
  */
 
@@ -46,6 +52,10 @@ interface Window {
    blockedMsOver50: number;
    dispatches: Record<string, number>;
    compiles: number;
+   materializations: number;
+   queryModelBuilds: number;
+   queryModelMs: number;
+   queryModelByCaller: Record<string, number>;
    compilesByCaller: Record<string, number>;
 }
 
@@ -59,10 +69,25 @@ function install(): void {
       dispatches: {},
       compiles: 0,
       compilesByCaller: {},
+      materializations: 0,
+      queryModelBuilds: 0,
+      queryModelMs: 0,
+      queryModelByCaller: {},
    });
    let win = fresh();
    // Totals since boot, never reset: the harness diffs them per window.
-   const total = { dispatches: {} as Record<string, number>, compiles: 0 };
+   // Which hooks took: a hook that silently failed would read as "no work".
+   const hooks = {
+      postMessage: false,
+      compile: false,
+      getModel: false,
+      queryModel: false,
+   };
+   const total = {
+      dispatches: {} as Record<string, number>,
+      compiles: 0,
+      queryModelBuilds: 0,
+   };
 
    // ── Event-loop blocking ──────────────────────────────────────────────
    // A timer due every TICK ms; whatever it is late by, the loop was busy.
@@ -108,6 +133,7 @@ function install(): void {
       };
       (wrapped as { __mtr?: true }).__mtr = true;
       proto.postMessage = wrapped;
+      hooks.postMessage = true;
    }
 
    // ── Main-thread Malloy compiles ──────────────────────────────────────
@@ -119,7 +145,27 @@ function install(): void {
       );
       const malloy = req("@malloydata/malloy") as {
          Runtime?: { prototype: Record<string, unknown> };
+         Malloy?: Record<string, unknown>;
       };
+      // Translations: the static Malloy.compile, which every path that
+      // translates Malloy text goes through (a model's getModel, a query's
+      // run, validate, a prepared query), looked up on the class per call.
+      const compile = malloy.Malloy?.compile as
+         | ((...a: unknown[]) => unknown)
+         | undefined;
+      if (malloy.Malloy && compile) {
+         malloy.Malloy.compile = function (this: unknown, ...a: unknown[]) {
+            win.compiles++;
+            total.compiles++;
+            const caller = callerOf(new Error().stack ?? "");
+            win.compilesByCaller[caller] =
+               (win.compilesByCaller[caller] ?? 0) + 1;
+            return compile.apply(this, a);
+         };
+         hooks.compile = true;
+      } else {
+         console.error("[mtr-probe] Malloy.compile not found");
+      }
       // ModelMaterializer is not exported, so its prototype is taken from the
       // first one `Runtime.loadModel` returns, and its `getModel` (where the
       // translation runs) is counted from then on.
@@ -149,16 +195,46 @@ function install(): void {
             return;
          }
          const wrapped = function (this: unknown, ...a: unknown[]): unknown {
-            win.compiles++;
-            total.compiles++;
-            const caller = callerOf(new Error().stack ?? "");
-            win.compilesByCaller[caller] =
-               (win.compilesByCaller[caller] ?? 0) + 1;
+            win.materializations++;
             return getModel.apply(this, a);
          };
          (wrapped as { __mtr?: true }).__mtr = true;
          proto.getModel = wrapped;
+         hooks.getModel = true;
       };
+      // QueryModel builds: Malloy's whole-model pass (QueryStruct per source,
+      // a UUID per field), which ms2data/service#7641's 0.12.1-0.12.5 ran on
+      // the main thread once per #(index) dimension. It is synchronous, so
+      // the wall time around it is main-thread time.
+      const impl = req(
+         path.join(
+            path.dirname(req.resolve("@malloydata/malloy")),
+            "model",
+            "query_model_impl.js",
+         ),
+      ) as { QueryModelImpl?: { prototype: Record<string, unknown> } };
+      const qm = impl.QueryModelImpl?.prototype;
+      const loadModelFromDef = qm?.loadModelFromDef as
+         | ((...a: unknown[]) => unknown)
+         | undefined;
+      if (qm && loadModelFromDef) {
+         hooks.queryModel = true;
+         qm.loadModelFromDef = function (this: unknown, ...a: unknown[]) {
+            const start = performance.now();
+            try {
+               return loadModelFromDef.apply(this, a);
+            } finally {
+               win.queryModelBuilds++;
+               total.queryModelBuilds++;
+               win.queryModelMs += performance.now() - start;
+               const caller = callerOf(new Error().stack ?? "");
+               win.queryModelByCaller[caller] =
+                  (win.queryModelByCaller[caller] ?? 0) + 1;
+            }
+         };
+      } else {
+         console.error("[mtr-probe] QueryModelImpl.loadModelFromDef not found");
+      }
    } catch (e) {
       console.error(`[mtr-probe] could not hook Malloy: ${String(e)}`);
    }
@@ -182,6 +258,11 @@ function install(): void {
          },
          dispatches: win.dispatches,
          compiles: win.compiles,
+         materializations: win.materializations,
+         hooks,
+         queryModelBuilds: win.queryModelBuilds,
+         queryModelMs: Math.round(win.queryModelMs),
+         queryModelByCaller: win.queryModelByCaller,
          compilesByCaller: win.compilesByCaller,
          totals: total,
       };
@@ -192,9 +273,12 @@ function install(): void {
       fetch(req) {
          const url = new URL(req.url);
          if (url.pathname === "/probe/reset" && req.method === "POST") {
+            // Answer with the window that just closed, then open a new one.
+            const closed = snapshot();
             win = fresh();
             eld.reset();
             last = performance.now();
+            return Response.json(closed);
          }
          if (url.pathname.startsWith("/probe")) {
             return Response.json(snapshot());

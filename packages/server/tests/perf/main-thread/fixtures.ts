@@ -19,7 +19,14 @@
  */
 
 import { DuckDBInstance } from "@duckdb/node-api";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import {
+   cpSync,
+   existsSync,
+   mkdirSync,
+   readdirSync,
+   readFileSync,
+   writeFileSync,
+} from "fs";
 import path from "path";
 import { generatePackage } from "../../../k6-tests/perf/gen-package";
 
@@ -33,13 +40,20 @@ export interface FixtureVersion {
 export interface Fixture {
    name: string;
    /** What the fixture stands for in the fleet's mix. */
-   kind: "example" | "generated" | "materializing" | "governed-arrays";
+   kind:
+      | "example"
+      | "generated"
+      | "indexed"
+      | "materializing"
+      | "governed-arrays";
    versions: FixtureVersion[];
    /**
     * For a materializing fixture: the parquet files a manifest entry may name
     * as its physical table (DuckDB reads a quoted file path as a table).
     */
    tables?: string[];
+   /** For an indexed fixture: how many `#(index)` dimensions it declares. */
+   indexedDimensions?: number;
    /**
     * The package the quiet re-bind check binds: one model, no reports, no
     * index, so an identical re-bind has nothing to compile on the main
@@ -223,6 +237,33 @@ async function governedArraysData(dataDir: string): Promise<void> {
    ]);
 }
 
+// The string dimensions every generated fact source declares, each tagged
+// `#(index)` in the indexed fixture, as Credible's worker storm tags them
+// (ms2data/service#7641: 0.12.1-0.12.5 compiled a fingerprint per indexed
+// dimension against a model whose QueryModel was rebuilt each time).
+const INDEXED = [
+   "category is products.category",
+   "brand is products.brand",
+   "region is stores.region",
+   "segment is customers.segment",
+];
+
+function tagIndexed(dir: string): number {
+   let tagged = 0;
+   for (const file of readdirSync(dir)) {
+      if (!/^model_\d+\.malloy$/.test(file)) continue;
+      const full = path.join(dir, file);
+      let text = readFileSync(full, "utf8");
+      for (const dim of INDEXED) {
+         const parts = text.split(`    ${dim}\n`);
+         tagged += parts.length - 1;
+         text = parts.join(`    #(index)\n    ${dim}\n`);
+      }
+      writeFileSync(full, text);
+   }
+   return tagged;
+}
+
 function setVersion(dir: string, name: string, version: string): void {
    const file = path.join(dir, "publisher.json");
    const json = existsSync(file)
@@ -321,6 +362,32 @@ export async function buildFixtures(
       tables: await matMiniData(miniDir),
       versions: versionsOf(out, "mat-mini", miniDir, versions),
       rebindProbe: true,
+   });
+
+   // A moderately large model with tens of indexed dimensions: 30 fact
+   // sources over 6 files, four indexed string dimensions each, all
+   // re-exported by index.malloy.
+   const indexDir = path.join(src, "gen-index");
+   await generatePackage({
+      dir: indexDir,
+      preset: "indexed",
+      shape: {
+         models: 6,
+         sourcesPerModel: 5,
+         dimensions: 12,
+         measures: 10,
+         views: 4,
+      },
+      rows: 2000,
+      seed: 13,
+      name: "gen-index",
+   });
+   const indexedDimensions = tagIndexed(indexDir);
+   fixtures.push({
+      name: "gen-index",
+      kind: "indexed",
+      versions: versionsOf(out, "gen-index", indexDir, versions),
+      indexedDimensions,
    });
 
    const govDir = path.join(src, "gov-arrays");

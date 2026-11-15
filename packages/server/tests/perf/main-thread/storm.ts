@@ -82,6 +82,14 @@ export interface ProbeSnapshot {
    dispatches: Record<string, number>;
    compiles: number;
    compilesByCaller: Record<string, number>;
+   materializations: number;
+   hooks: Record<
+      "postMessage" | "compile" | "getModel" | "queryModel",
+      boolean
+   >;
+   queryModelBuilds: number;
+   queryModelMs: number;
+   queryModelByCaller: Record<string, number>;
 }
 
 export interface StormResult {
@@ -118,6 +126,27 @@ export interface StormResult {
       unloaded: number;
       loadDispatches: number;
       dispatches: Record<string, number>;
+   };
+   /** Which probe hooks took (probe.ts); a counter whose hook failed counts nothing. */
+   hooks: ProbeSnapshot["hooks"];
+   /** Positive controls: an ad-hoc query's compiles, which must be at least 1. */
+   control: { queryStatus: number; queryCompiles: number };
+   /** Main-thread Malloy QueryModel builds over the storm (ms2data/service#7641). */
+   queryModel: { builds: number; ms: number; byCaller: Record<string, number> };
+   /**
+    * One quiet load of the indexed fixture's version, from unloaded: the
+    * main-thread QueryModel builds it took, against its #(index) count.
+    */
+   indexedLoad: {
+      ok: boolean;
+      indexedDimensions: number;
+      builds: number;
+      ms: number;
+      byCaller: Record<string, number>;
+      /** The same, for three `GET …/entities` reads after it (404 before 0.12.1). */
+      entitiesOk: boolean;
+      entitiesBuilds: number;
+      entitiesMs: number;
    };
    maxRssBytes: number;
 }
@@ -156,6 +185,7 @@ const PROBE = path.join(import.meta.dir, "probe.ts");
 interface Server {
    proc: Subprocess;
    api: string;
+   mcp: string;
    probe: string;
    root: string;
 }
@@ -222,6 +252,7 @@ async function startServer(o: StormOptions): Promise<Server> {
                return {
                   proc,
                   api,
+                  mcp: `http://127.0.0.1:${o.port + 1}/mcp`,
                   probe: `http://127.0.0.1:${probePort}/probe`,
                   root,
                };
@@ -278,12 +309,16 @@ async function call(
    url: string,
    body?: unknown,
    timeoutMs = 300_000,
+   headers: Record<string, string> = {},
 ): Promise<Answer> {
    const start = performance.now();
    try {
       const r = await fetch(url, {
          method,
-         headers: body ? { "content-type": "application/json" } : undefined,
+         headers: {
+            ...(body ? { "content-type": "application/json" } : {}),
+            ...headers,
+         },
          body: body ? JSON.stringify(body) : undefined,
          signal: AbortSignal.timeout(timeoutMs),
       });
@@ -366,14 +401,26 @@ interface Placed {
    manifests?: { a: string; b: string; bound: "a" | "b" };
 }
 
-type Op = "load" | "unload" | "reload" | "bind" | "rebind" | "patchEnv";
+type Op =
+   | "load"
+   | "unload"
+   | "reload"
+   | "bind"
+   | "rebind"
+   | "entities"
+   | "context"
+   | "patchEnv";
 const MIX: Array<[Op, number]> = [
-   ["load", 0.4],
+   ["load", 0.35],
    ["unload", 0.2],
    ["reload", 0.1],
    ["bind", 0.1],
-   ["rebind", 0.15],
-   ["patchEnv", 0.05],
+   ["rebind", 0.1],
+   // What an indexer and an agent read: the package's entities, and
+   // get_context (MCP only; it has no REST form).
+   ["entities", 0.07],
+   ["context", 0.05],
+   ["patchEnv", 0.03],
 ];
 
 function pickOp(r: number): Op {
@@ -439,6 +486,36 @@ async function writeManifests(
    writeFileSync(`${base}-b.json`, JSON.stringify(manifest(persisted.length)));
    p.manifests = { a: `${base}-a.json`, b: `${base}-b.json`, bound: "a" };
    return true;
+}
+
+/** MCP `get_context` for a few concepts in one package (stateless HTTP). */
+async function getContext(s: Server, p: Placed): Promise<Answer> {
+   const a = await call(
+      "POST",
+      s.mcp,
+      {
+         jsonrpc: "2.0",
+         id: 1,
+         method: "tools/call",
+         params: {
+            name: "get_context",
+            arguments: {
+               search_targets: [
+                  { target_type: "source", search_text: "orders by region" },
+                  { target_type: "dimension", search_text: "brand" },
+                  { target_type: "measure", search_text: "revenue" },
+               ],
+               scopes: [{ environment: p.env, package: p.pkg }],
+            },
+         },
+      },
+      300_000,
+      { accept: "application/json, text/event-stream" },
+   );
+   // A tool error is a 200 carrying `isError`; count it as failed.
+   return a.status === 200 && a.body.includes('"isError":true')
+      ? { ...a, status: 599 }
+      : a;
 }
 
 async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
@@ -602,6 +679,12 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
                   );
                   break;
                }
+               case "entities":
+                  a = await call("GET", `${pkgUrl(p)}/entities`);
+                  break;
+               case "context":
+                  a = await getContext(s, p);
+                  break;
                case "patchEnv":
                   a = await call("PATCH", `${s.api}/environments/${p.env}`, {
                      name: p.env,
@@ -636,7 +719,18 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
          { manifestLocation: m[m.bound] },
       );
       await Bun.sleep(2000);
+      // Positive control first: one ad-hoc query must count as a compile, or
+      // a zero in the re-bind window means nothing.
       await readProbe(s, true);
+      const q = await call(
+         "POST",
+         `${pkgUrl(target)}/models/mat.malloy/query`,
+         {
+            query: "run: orders -> { aggregate: order_count }",
+            versionId: target.version,
+         },
+      );
+      const control = await readProbe(s, true);
       const REBINDS = 3;
       let rebindOk = first.status === 200;
       for (let i = 0; i < REBINDS; i++) {
@@ -670,6 +764,51 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
       }
       await Bun.sleep(1000);
       const statusLoads = await readProbe(s);
+
+      // 5. Quiet check: one load of the indexed package from unloaded, then
+      // three reads of its entities, each in its own probe window.
+      const indexed = fixtures.find((f) => f.kind === "indexed");
+      const ip = indexed
+         ? placement.find((x) => x.pkg === indexed.name)
+         : undefined;
+      let indexedLoad: StormResult["indexedLoad"] = {
+         ok: false,
+         indexedDimensions: indexed?.indexedDimensions ?? 0,
+         builds: 0,
+         ms: 0,
+         byCaller: {},
+         entitiesOk: false,
+         entitiesBuilds: 0,
+         entitiesMs: 0,
+      };
+      if (ip) {
+         await call("DELETE", `${pkgUrl(ip)}/versions/${ip.version}`);
+         await Bun.sleep(1000);
+         await readProbe(s, true);
+         const a = await call(
+            "POST",
+            `${s.api}/environments/${ip.env}/packages`,
+            { name: ip.pkg, location: ip.dir },
+         );
+         await Bun.sleep(1000);
+         const loaded = await readProbe(s, true);
+         let entitiesOk = true;
+         for (let i = 0; i < 3; i++) {
+            const e = await call("GET", `${pkgUrl(ip)}/entities`);
+            entitiesOk &&= e.status === 200;
+         }
+         const read = await readProbe(s);
+         indexedLoad = {
+            ...indexedLoad,
+            ok: a.status >= 200 && a.status < 300,
+            entitiesOk,
+            builds: loaded.queryModelBuilds,
+            ms: loaded.queryModelMs,
+            byCaller: loaded.queryModelByCaller,
+            entitiesBuilds: read.queryModelBuilds,
+            entitiesMs: read.queryModelMs,
+         };
+      }
 
       const loadsIn = (d: Record<string, number>) =>
          (d["load-package"] ?? 0) + (d["load-package+manifest"] ?? 0);
@@ -725,6 +864,14 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
             loadDispatches: loadsIn(statusLoads.dispatches),
             dispatches: statusLoads.dispatches,
          },
+         hooks: after.hooks,
+         control: { queryStatus: q.status, queryCompiles: control.compiles },
+         queryModel: {
+            builds: after.queryModelBuilds,
+            ms: after.queryModelMs,
+            byCaller: after.queryModelByCaller,
+         },
+         indexedLoad,
          maxRssBytes: maxRss,
       };
       writeFileSync(o.out, JSON.stringify(result, null, 2));
@@ -733,7 +880,9 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
             `main-thread CPU ${result.cpuPerOpMs} ms/op, /status p50/p90/max ` +
             `${result.status.p50}/${result.status.p90}/${result.status.max} ms (n=${result.status.n}), ` +
             `longest block ${result.maxBlockMs} ms, re-bind compiles ${rebind.compiles}, ` +
-            `status-started loads ${result.statusLoads.loadDispatches}`,
+            `status-started loads ${result.statusLoads.loadDispatches}, ` +
+            `main-thread QueryModel builds ${after.queryModelBuilds} (${after.queryModelMs} ms), ` +
+            `indexed load ${indexedLoad.builds} builds for ${indexedLoad.indexedDimensions} #(index)`,
       );
    } finally {
       await stopServer(s);

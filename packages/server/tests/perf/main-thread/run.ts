@@ -65,7 +65,12 @@ function prepareBuild(spec: string, buildsDir: string): string {
          if (!existsSync(dir)) {
             git(["worktree", "add", "--detach", dir, sha]);
          }
-         sh(["bun", "install", "--frozen-lockfile"], dir);
+         // Once more on failure: a registry hiccup is not a verdict.
+         try {
+            sh(["bun", "install", "--frozen-lockfile"], dir);
+         } catch {
+            sh(["bun", "install", "--frozen-lockfile"], dir);
+         }
          sh(
             ["bun", "run", "build:server-only:bundle"],
             path.join(dir, "packages/server"),
@@ -95,19 +100,25 @@ function storm(argv: string[]): void {
    );
 }
 
+/** Where results go; module-level so a harness error can still leave a summary. */
+let out = "";
+
 async function main(): Promise<number> {
    const baselineSpec = flag("baseline");
    const candidateSpec = flag("candidate");
    if (!baselineSpec || !candidateSpec) {
       console.error(
-         "usage: bun run.ts --baseline <git:ref|path> --candidate <git:ref|path> [--rounds 2] [--out dir] [--cpu-prof]",
+         "usage: bun run.ts --baseline <git:ref|path> --candidate <git:ref|path> [--rounds 2] [--out dir] [--cpu-prof] [--expect-cpus 4]",
       );
       return 2;
    }
-   const out = path.resolve(
-      flag("out", path.join(os.tmpdir(), `mtr-${Date.now()}`)),
-   );
+   out = path.resolve(flag("out", path.join(os.tmpdir(), `mtr-${Date.now()}`)));
    const rounds = Number(flag("rounds", "2"));
+   if (!Number.isInteger(rounds) || rounds < 1) {
+      throw new Error(
+         `--rounds must be a whole number of at least 1, not ${flag("rounds")}`,
+      );
+   }
    const limits: Limits = {
       ...DEFAULT_LIMITS,
       ...(flag("limits")
@@ -174,11 +185,16 @@ async function main(): Promise<number> {
       }
    }
    const probe = set.fixtures.find((f) => f.rebindProbe);
-   if (!probe || !only.includes(probe.name)) {
-      console.error(
-         "the re-bind probe fixture does not load on both sides; the bind path would go untested",
-      );
-      return 2;
+   const indexed = set.fixtures.find((f) => f.kind === "indexed");
+   for (const [what, f] of [
+      ["re-bind probe", probe],
+      ["indexed", indexed],
+   ] as const) {
+      if (!f || !only.includes(f.name)) {
+         throw new Error(
+            `the ${what} fixture does not load on both sides, so its check would go untested (see the preflight lines above)`,
+         );
+      }
    }
 
    const results: Record<"baseline" | "candidate", StormResult[]> = {
@@ -207,7 +223,10 @@ async function main(): Promise<number> {
       }
    }
 
-   const verdict = judge(results.baseline, results.candidate, limits);
+   const verdict = judge(results.baseline, results.candidate, limits, {
+      cpus: os.availableParallelism(),
+      expectCpus: flag("expect-cpus") ? Number(flag("expect-cpus")) : undefined,
+   });
    const summary = summarize(verdict, results.baseline, results.candidate, {
       baseline: baselineSpec,
       candidate: candidateSpec,
@@ -227,6 +246,30 @@ async function main(): Promise<number> {
 try {
    process.exit(await main());
 } catch (e) {
+   // Not a performance verdict: say so where a release manager looks first,
+   // and leave a summary, so a failed install or boot never reads as a FAIL.
+   const message = e instanceof Error ? e.message : String(e);
    console.error(e);
+   const summary =
+      `## Main-thread regression: harness error (not a performance verdict)\n\n` +
+      `The check could not run, so it says nothing about the candidate. ` +
+      `Re-run the failed jobs; if it fails the same way, read the step log ` +
+      `and the server logs in the artifact.\n\n` +
+      "```\n" +
+      message.slice(0, 2000) +
+      "\n```\n";
+   if (process.env.GITHUB_ACTIONS) {
+      const oneLine = message.replace(/\s+/g, " ").slice(0, 400);
+      console.log(
+         `::error title=Main-thread harness error (not a performance verdict)::${oneLine} (re-run the failed jobs)`,
+      );
+   }
+   if (out) {
+      mkdirSync(out, { recursive: true });
+      writeFileSync(path.join(out, "summary.md"), summary);
+   }
+   if (process.env.GITHUB_STEP_SUMMARY) {
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+   }
    process.exit(2);
 }
