@@ -70,41 +70,7 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2g.3",
    "service/materialization/run/table_ownership.ts -> service/materialization/plan/persist_source_fields":
       "2g.3",
-   "service/materialization/serve/author_imports.ts -> service/materialization/plan/persisted_view":
-      "2g.2",
-   "service/materialization/serve/bind.ts -> service/materialization/plan/build_file_generator":
-      "2g.2",
-   "service/materialization/serve/declaring_file_variant.ts -> service/materialization/plan/persisted_view":
-      "2g.2",
-   "service/materialization/serve/join_rollup.ts -> service/materialization/plan/rollup_measure_grammar":
-      "2g.2",
-   "service/materialization/serve/join_rollup.ts -> service/materialization/plan/rollup_plan":
-      "2g.2",
-   "service/materialization/serve/rollup_variants.ts -> service/materialization/plan/persisted_view":
-      "2g.2",
-   "service/materialization/serve/rollup_variants.ts -> service/materialization/plan/persisted_view_compile":
-      "2g.2",
-   "service/materialization/serve/rollup_variants.ts -> service/materialization/plan/rollup_compile":
-      "2g.2",
-   "service/materialization/serve/rollup_variants.ts -> service/materialization/plan/rollup_measure_grammar":
-      "2g.2",
-   "service/materialization/serve/rollup_variants.ts -> service/materialization/plan/rollup_plan":
-      "2g.2",
-   "service/materialization/serve/served_copy.ts -> service/materialization/plan/build_file_generator":
-      "2g.2",
-   "service/materialization/serve/served_copy_containment.ts -> service/materialization/plan/cross_connection_joins":
-      "2g.2",
-   "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/build_file_generator":
-      "2g.2",
-   "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/cross_connection_joins":
-      "2g.2",
    "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/persist_dynamic_terms":
-      "2g.2",
-   "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/rolling_window":
-      "2g.2",
-   "service/materialization/serve/view_variants.ts -> service/materialization/plan/persisted_view":
-      "2g.2",
-   "service/materialization/serve/view_variants.ts -> service/materialization/plan/persisted_view_compile":
       "2g.2",
    // R10: outside the module, only index.ts and domain/.
    "controller/materialization.controller.ts -> service/materialization/run/materialization_run_support":
@@ -136,8 +102,10 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model.ts -> service/materialization/plan/build_plan": "2g.2",
    "service/model.ts -> service/materialization/plan/cross_connection_joins":
       "2g.2",
+   "service/model.ts -> service/materialization/plan/persisted_view": "2g.2",
    "service/model.ts -> service/materialization/plan/preaggregation_validation":
       "2g.2",
+   "service/model.ts -> service/materialization/plan/rollup_plan": "2g.2",
    "service/model.ts -> service/materialization/serve/rollup_variants": "2g.2",
    "service/model.ts -> service/materialization/serve/serve_verdict": "2g.2",
    "service/model.ts -> service/materialization/serve/served_copy_serve":
@@ -242,9 +210,11 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       count: 8,
       step: "5",
    },
+   "service/materialization/domain/rollup_measures.ts": { count: 1, step: "5" },
+   "service/materialization/domain/table_plans.ts": { count: 1, step: "5" },
    "service/materialization/plan/addressing.ts": { count: 1, step: "5" },
    "service/materialization/plan/build_file_generator.ts": {
-      count: 8,
+      count: 7,
       step: "5",
    },
    "service/materialization/plan/build_plan.ts": { count: 8, step: "5" },
@@ -253,7 +223,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       step: "5",
    },
    "service/materialization/plan/cross_connection_joins.ts": {
-      count: 5,
+      count: 1,
       step: "5",
    },
    "service/materialization/plan/eligibility_collect.ts": {
@@ -265,10 +235,6 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
       step: "5",
    },
    "service/materialization/plan/persisted_view.ts": { count: 2, step: "5" },
-   "service/materialization/plan/preaggregation_synthesis.ts": {
-      count: 1,
-      step: "5",
-   },
    "service/materialization/plan/rolling_window.ts": { count: 2, step: "5" },
    "service/materialization/plan/rollup_compile.ts": { count: 2, step: "5" },
    "service/materialization/plan/rollup_measure_grammar.ts": {
@@ -318,6 +284,10 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    "service/materialization/serve/storage_bindings.ts": { count: 1, step: "5" },
    "service/materialization/serve/view_variants.ts": { count: 1, step: "5" },
    "service/materialization/stored_column_types.ts": { count: 1, step: "5" },
+   "service/materialization/text/cross_connection_text.ts": {
+      count: 4,
+      step: "5",
+   },
 };
 /** H4: exports no other file imports, "<file>#<name>": step. */
 export const MATERIALIZATION_UNIMPORTED_EXPORTS = {

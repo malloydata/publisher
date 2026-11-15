@@ -19,7 +19,7 @@ import { makeMaterialization } from "../../../test_helpers/materialization_test_
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import type { RollupVariantPlan } from "../plan/rollup_plan";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import {
    PackageMaterialization,
    type PackageMaterializationOwner,

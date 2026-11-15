@@ -36,7 +36,7 @@ import { collectEntryPointGates } from "../../gate_classification";
 import { doubleQuotedString, identifier } from "../../malloy_text";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
-import { splitSourceID } from "../plan/persisted_view";
+import { splitSourceID } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import type { GeneratedFiles } from "../text/generated_files";
 import { packageFiles } from "../text/package_files";

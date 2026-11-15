@@ -36,6 +36,7 @@ import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
 import type { Binding } from "./domain/binding";
+import type { StoredColumn } from "./domain/table_plans";
 
 /**
  * The `code` of the package warning, and of the build and serve log lines, for
@@ -419,12 +420,6 @@ export function serveTypePlan(
       }
    }
    return { casts, unservable };
-}
-
-/** A stored column's name and type, in DuckDB's spelling (`DESCRIBE`'s). */
-export interface StoredColumn {
-   name: string;
-   type: string;
 }
 
 /**

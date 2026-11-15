@@ -171,6 +171,11 @@ import {
 import type { MaterializePlan } from "./materialization/plan/build_file_generator";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
+   planSourceRollups,
+   rollupGateEnforcedAtRead,
+} from "./materialization/plan/rollup_plan";
+import { planModelPersistedViews } from "./materialization/plan/persisted_view";
+import {
    chainBuildText,
    resultShapeOf,
    ServedCopyServe,
@@ -335,6 +340,7 @@ export class Model {
       modelMaterializer: () => this.modelMaterializer,
       serveDestinationConfig: () => this.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
+      planModelPersistedViews,
    });
    /**
     * The served copy on `virtual`: the author's own files with each stored
@@ -361,6 +367,8 @@ export class Model {
          this.servedCopyEnabled()
             ? this.servedCopy.joinRollupBasis(pinned)
             : undefined,
+      planSourceRollups,
+      rollupGateEnforcedAtRead,
    });
    /** {@link sourceChains}, keyed by the model it was read from. */
    private sourceChainCache:

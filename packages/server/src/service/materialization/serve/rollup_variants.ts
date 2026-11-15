@@ -117,7 +117,6 @@ import {
    malloyIdentifiers,
    type TextRange,
 } from "../../query_text";
-import { viewNoteTexts } from "../plan/persisted_view_compile";
 import {
    aggregateOutsideJoin,
    namedViewsRead,
@@ -133,18 +132,14 @@ import {
 } from "../../governance/ir/prepared_query";
 import { packageFiles } from "../text/package_files";
 import {
+   emitMeasureExpr,
+   generateRollupBuildFile,
    packageRelativeSourceID,
    rollupCompanionURLOf,
-} from "../plan/rollup_compile";
-import { emitMeasureExpr } from "../plan/rollup_measure_grammar";
-import { splitSourceID } from "../plan/persisted_view";
-import {
-   generateRollupBuildFile,
-   planSourceRollups,
-   rollupGateEnforcedAtRead,
-   type RollupVariantPlan,
-} from "../plan/rollup_plan";
-import { SourceMap } from "../text/source_map";
+   viewNoteTexts,
+} from "../text/read_text";
+import { splitSourceID, type RollupVariantPlan } from "../domain/table_plans";
+import { SourceMap, type SourceNode } from "../text/source_map";
 import {
    authorNameImports,
    relativeImport,
@@ -196,6 +191,25 @@ interface RollupVariantHost {
     * (known limitation 26).
     */
    joinRollupBasis?(pinned: Pinned): Promise<ServedCopyJoinBasis | undefined>;
+   /**
+    * The rollups one source declares, as the planner reads them
+    * (`plan/rollup_plan.ts`): passed in by the model, since serving never
+    * imports the planner.
+    */
+   planSourceRollups(
+      map: SourceMap,
+      node: SourceNode,
+      ctx: {
+         packageRelativeSourceID(sourceID: string): string;
+         readsV2?: boolean;
+      },
+   ): { plans: RollupVariantPlan[] };
+   /**
+    * Whether a planned rollup's base gate is enforced when it is read, by the
+    * planner's one answer (`plan/rollup_plan.ts`), which the build plan and
+    * the bind ask too.
+    */
+   rollupGateEnforcedAtRead(plan: RollupVariantPlan): boolean;
 }
 
 /** A rollup's answer, for the router. */
@@ -361,7 +375,7 @@ export class RollupVariantServe {
       if (modelDef && packagePath) {
          const map = SourceMap.of(modelDef);
          for (const node of map.nodes()) {
-            const { plans } = planSourceRollups(map, node, {
+            const { plans } = this.host.planSourceRollups(map, node, {
                packageRelativeSourceID: (id) =>
                   packageRelativeSourceID(packagePath, id),
                // Routed under the v1 cutover too: v2's route only with its
@@ -1132,7 +1146,7 @@ export class RollupVariantServe {
       const { localName, shape } = query;
       // Past an entry-point gate, only a rollup whose base gate is enforced
       // at read (built for it: rows 1 and 21) is offered.
-      if (query.gates && !rollupGateEnforcedAtRead(plan)) {
+      if (query.gates && !this.host.rollupGateEnforcedAtRead(plan)) {
          throw contractSkip();
       }
       // A source with its own `timezone:` truncated and compared its times in

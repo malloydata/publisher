@@ -25,7 +25,7 @@ import {
    materializeRefusalFinding,
    type MaterializePlan,
 } from "./build_file_generator";
-import type { RollupPlan } from "./preaggregation_synthesis";
+import type { RollupPlan } from "../domain/rollup_measures";
 import {
    declaredStorage,
    deriveAnnotationFields,

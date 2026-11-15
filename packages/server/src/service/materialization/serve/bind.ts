@@ -25,11 +25,8 @@
  */
 
 import { quoteManifestTablePath } from "../../quoting";
-import type { MaterializePlan } from "../plan/build_file_generator";
-import {
-   type StoredColumn,
-   storedColumnsOfOutput,
-} from "../stored_column_types";
+import type { MaterializePlan, StoredColumn } from "../domain/table_plans";
+import { storedColumnsOfOutput } from "../stored_column_types";
 import type {
    BuildPlan,
    FreshnessAwareManifestEntry,

@@ -15,14 +15,13 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
 import { persistBlankedFiles } from "../text/persist_blanking";
 import {
-   generateRollupBuildFile,
    planModelRollups,
    rollupName,
    rollupGateEnforcedAtRead,
    type RollupRefusal,
-   type RollupVariantPlan,
 } from "./rollup_plan";
-import { emitMeasureExpr } from "./rollup_measure_grammar";
+import { emitMeasureExpr, generateRollupBuildFile } from "../text/read_text";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 
 const connection = new DuckDBConnection("duckdb", ":memory:");

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import type { MaterializePlan } from "../plan/build_file_generator";
+import type { MaterializePlan } from "../domain/table_plans";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import {
    bindColocatedEntries,

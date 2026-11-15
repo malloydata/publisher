@@ -60,11 +60,8 @@ import { keepDeclarations } from "../text/declarations_kept";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { ManifestEntry } from "../domain/types";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
-import type {
-   MaterializePair,
-   MaterializePlan,
-} from "../plan/build_file_generator";
-import { rollingWindowsOf } from "../plan/rolling_window";
+import type { MaterializePair, MaterializePlan } from "../domain/table_plans";
+import { rollingWindowsOf } from "../domain/read_time_terms";
 import {
    bigIntegerReadOf,
    bigIntegerReads,
@@ -148,8 +145,8 @@ import { annotationValue } from "../../malloy_text";
 import {
    isCrossConnectionRefusal,
    leaveOutCrossConnectionJoins,
-   type LeftOutDefinition,
-} from "../plan/cross_connection_joins";
+} from "../text/cross_connection_text";
+import type { LeftOutDefinition } from "../text/definition_cut";
 import { LegDecline, type ServedCopyDeclineCode } from "../domain/leg_decline";
 
 type VirtualMap = Map<string, Map<string, string>>;

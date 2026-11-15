@@ -10,7 +10,7 @@ import {
    type Reroot,
 } from "./served_copy";
 import { failingReroots } from "./served_copy_containment";
-import { JOIN_CONNECTION_MISMATCH } from "../plan/cross_connection_joins";
+import { JOIN_CONNECTION_MISMATCH } from "../text/cross_connection_text";
 
 const URL = "file:///m.malloy";
 

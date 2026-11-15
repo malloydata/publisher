@@ -7,7 +7,7 @@
  * one `<name> is …` holding the offset, with its annotations.
  *
  * `definitionCutAt` is read by the cross-connection join blanking
- * (plan/cross_connection_joins.ts) and the inlined-join rewrite
+ * (cross_connection_text.ts) and the inlined-join rewrite
  * (inlined_join_text.ts). A cut is undefined when no definition holds the
  * offset or the text does not lex; never a guess.
  *

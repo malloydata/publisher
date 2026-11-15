@@ -2,11 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import {
-   decomposeMeasure,
-   emitMeasureExpr,
-   isMeasureRefusal,
-} from "./rollup_measure_grammar";
+import { decomposeMeasure, isMeasureRefusal } from "./rollup_measure_grammar";
+import { emitMeasureExpr } from "../text/read_text";
 
 /** A scope over a fixed set of measures. */
 function scope(measures: Record<string, string>) {

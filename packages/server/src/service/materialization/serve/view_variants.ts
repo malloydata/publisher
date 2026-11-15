@@ -71,11 +71,9 @@ import type { BuildManifest } from "../domain/types";
 import {
    generatePersistedViewFile,
    persistedViewCompanionHref,
-   planModelPersistedViews,
-   splitSourceID,
-   type PersistedViewPlan,
-} from "../plan/persisted_view";
-import { viewNoteTexts } from "../plan/persisted_view_compile";
+   viewNoteTexts,
+} from "../text/read_text";
+import { splitSourceID, type PersistedViewPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import type { Binding, Pinned } from "../domain/binding";
@@ -99,6 +97,12 @@ interface ViewVariantHost {
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
    /** The package's planned tables, to find each view's address. */
    catalog(): MaterializedTableCatalog | undefined;
+   /**
+    * Every persisted view a compiled model can see, as the planner reads them
+    * (`plan/persisted_view.ts`): passed in by the model, since serving never
+    * imports the planner.
+    */
+   planModelPersistedViews(modelDef: unknown): { plans: PersistedViewPlan[] };
 }
 
 /** A persisted view's answer, for the router. */
@@ -177,7 +181,9 @@ export class PersistedViewServe {
       const modelDef = this.host.modelDef();
       const memo = this.planMemo;
       if (memo && memo.modelDef === modelDef) return memo.plans;
-      const plans = modelDef ? planModelPersistedViews(modelDef).plans : [];
+      const plans = modelDef
+         ? this.host.planModelPersistedViews(modelDef).plans
+         : [];
       this.planMemo = { modelDef, plans };
       return plans;
    }
@@ -523,9 +529,9 @@ ${viewBody}
             }
             // The companion over the copy, so its build SQL (and so its
             // address) is the one the build plan computed.
-            const siblings = planModelPersistedViews(modelDef).plans.filter(
-               (p) => p.declaringURL === declared.url,
-            );
+            const siblings = this.host
+               .planModelPersistedViews(modelDef)
+               .plans.filter((p) => p.declaringURL === declared.url);
             const text = generatePersistedViewFile(siblings, copyName);
             if (!text) return { error: "no companion" };
             const companion = persistedViewCompanionHref(declaringURL.href);

@@ -51,7 +51,7 @@ import {
    type MaterializeRefusal,
    type StoredColumnType,
 } from "./build_file_generator";
-import type { TermUse } from "./persist_dynamic_terms";
+import type { TermUse } from "../domain/read_time_terms";
 import {
    compileInMemory,
    companionOmissions,

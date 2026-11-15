@@ -18,8 +18,8 @@ import {
    type AdditiveAggregate,
    type ClassifiableMeasure,
    type NonAdditiveReason,
-   type ReaggregateFunction,
 } from "./preaggregation_classifier";
+import type { ReaggregateFunction } from "../domain/rollup_measures";
 import {
    duckdbTestConnections,
    loadTestModel,
