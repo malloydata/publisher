@@ -27,6 +27,23 @@ A `#@ persist` source whose build reads the current time used to build, and then
 
 The build plan's `refusedSources[].reason` and the `publisher_materialization_eligibility_refused_total` metric's `reason` label gain one value, `current_time`. A client that switches on the reason should handle it. A table such a source built before is no longer served. Three neighbouring shapes also served the build's rows after the clock moved, and now answer live; each is a wrong-rows fix. A `#@ persist` view or a persisted `query:` (`PUBLISHER_MATERIALIZE` on) whose `select: *` reads a dimension that reads `now`, or whose source is a query-shaped source whose query reads it, is not built (`persist-view-not-built`, `persist-query-not-built`). A `#(preaggregate)` or v1 `#@ preaggregate` rollup whose grain dimension reads a join to a query-shaped source whose query reads `now` is not built (`preaggregate-current-time`), and its queries are answered live. A `#(materialize)` whose `inline=` names such a join, or any join whose joined rows read `now`, is not built (`materialize-not-built`) and answers live. One `#(materialize)` shape that built before, with correct rows, is now refused too, as a plain join whose `where:` reads `now` already was: a source whose dimension, declared on a base it extends, reads such a join (`materialize-not-built`, "the dimension `in_window` reads the current time and is not declared on this source"); it answers live. Declare the dimension on the materialized source itself to build it again.
 
+## [Unreleased] — re-binding the same build manifest no longer recompiles the package
+
+Workers in Credible's dev fleet on 0.13.1 looped reloads: the control plane re-binds a version's build manifest whenever a heartbeat does not show it bound, and every such bind, even of the manifest the package was already serving, recompiled every model in the load pool and then every model's served copy on the main thread. With the main thread busy, `/status` heartbeats timed out, which made the control plane re-bind and reload again.
+
+Binding a version (or a package loaded with a `manifestLocation`) to the manifest its models were last compiled against now fetches it and recompiles nothing; the binding is reported `bound` as before. A manifest that changed, a reload since, or another bind in between still recompiles. A `PATCH` that names a `manifestLocation` always reloads, as before, since it also applies the `publisher.json` it writes. When a package does recompile against a manifest, each model's served copy compiles once instead of starting, being discarded and starting again; a served copy with no table to read compiles nothing; and a source whose re-root does not compile is not recompiled or warned about again for the same model and tables (for ten minutes) — it keeps answering live, as it did. The served copy hands the event loop a turn between its compile passes.
+
+Answers are unchanged: the same sources are served from the same tables. No API, enum or metric value changes.
+## [Unreleased] — less main-thread work per package load
+
+0.13.1 added a check to every package load that walked each model's whole compiled definition for joins inside array queries. That walk ran on the main thread, and it remembered every node it visited in a table that outlived the walk. The check now asks first whether a model governs access at all. A model that governs nothing is not walked for joins. A model that does is walked once, and the walk keeps nothing afterwards. A load that refused such a join still refuses it, with the same message.
+
+The memory governor reads only the process's resident memory on each tick, not the full `process.memoryUsage()` object with its heap statistics. In Bun those statistics cost more as the heap grows.
+
+The render-tag check now keeps its findings for each model, keyed on a digest of the results it reads. A model loaded again unchanged reuses its findings instead of being checked again on the main thread. A change to the model's text or to the schema of a table it reads is checked afresh. The cache lives in the server process, so a new `@malloydata/render-validator` is checked afresh after the restart that installs it. The cache holds the findings of at most 1,024 models. The warnings a package reports are unchanged.
+
+No API, enum or metric value changes.
+
 ## [Unreleased] — colocated and `storage=` tables answer five shapes the same way
 
 Five shapes were answered differently by a colocated table and a `storage=` one, by accident rather than for any reason inherent to where the table lives. Each now gives the same outcome in both tiers, equal to live:
