@@ -307,6 +307,8 @@ export interface R4Fixture {
     * the rollup planner refused, by its code and base source.
     */
    rollupRefusals: { code: string; sourceName: string }[];
+   /** For a `#(materialize)` scenario: each source's plan, by its name. */
+   materializePlans: Record<string, MaterializePlan>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
       sql: (table: (sourceName: string) => string) => string,
@@ -1214,6 +1216,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          code: r.code,
          sourceName: r.sourceName,
       })),
+      materializePlans: Object.fromEntries(
+         Object.values(materializePlans).map((p) => [p.sourceName, p]),
+      ),
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;

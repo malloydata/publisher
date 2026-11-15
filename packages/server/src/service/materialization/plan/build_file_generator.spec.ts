@@ -1700,6 +1700,60 @@ source: orders is orders_raw extend {
 `;
 
    it(
+      "plans a colocated incremental pair table outside DuckDB as a full rebuild, saying why",
+      async () => {
+         const colocated = pairSource(
+            'watermark=["order_date", "lines.loaded_on"]',
+         ).replace(' storage="lake"', ' name="orders_pairs"');
+         const pkg = await packages.create(colocated);
+         const contents = await contentsOf(pkg);
+         // In a DuckDB warehouse its delta applies in place.
+         const [inDuckDB] = planModelMaterialize(contents).plans;
+         expect(inDuckDB.pairFullRefresh).toBeUndefined();
+         expect(inDuckDB.persist.refresh).toBe("incremental");
+         // The same source in a Postgres warehouse: rebuilt in full, which
+         // the plan says, carrying no incremental key to its build.
+         const inPostgres = Object.fromEntries(
+            Object.entries(contents).map(([name, def]) => [
+               name,
+               name === "orders"
+                  ? { ...(def as object), dialect: "postgres" }
+                  : def,
+            ]),
+         );
+         const [plan] = planModelMaterialize(inPostgres).plans;
+         expect(plan.pairFullRefresh).toMatch(
+            /colocated in its source's postgres warehouse.*declare storage=/,
+         );
+         expect(plan.persist).not.toHaveProperty("refresh");
+         expect(plan.persist).not.toHaveProperty("watermark");
+         expect(plan.persist).not.toHaveProperty("merge_key");
+         // A `storage=` one keeps its delta, its origin whatever it is.
+         const stored = planModelMaterialize(
+            Object.fromEntries(
+               Object.entries(
+                  await contentsOf(
+                     await packages.create(
+                        pairSource(
+                           'watermark=["order_date", "lines.loaded_on"]',
+                        ),
+                     ),
+                  ),
+               ).map(([name, def]) => [
+                  name,
+                  name === "orders"
+                     ? { ...(def as object), dialect: "postgres" }
+                     : def,
+               ]),
+            ),
+         ).plans[0];
+         expect(stored.pairFullRefresh).toBeUndefined();
+         expect(stored.persist.refresh).toBe("incremental");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "plans an incremental pair table: a per-parent watermark over both sides, replaced by the parent key",
       async () => {
          const c = await compiled(

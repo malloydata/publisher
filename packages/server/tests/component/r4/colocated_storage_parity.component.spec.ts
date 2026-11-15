@@ -24,8 +24,13 @@
  *    leg reads it: joined from a source in the same zone, which for a
  *    `storage=` rollup must be stored in its destination. Otherwise it is
  *    refused at plan (`preaggregate-time-zone`), in both tiers.
+ * 5. An incremental pair table refreshes in place in DuckDB only. A colocated
+ *    one in another warehouse is planned as a full rebuild with the package
+ *    warning `materialize-pair-full-refresh`, not rebuilt silently; it serves
+ *    as live does. On Postgres when `PUBLISHER_TEST_POSTGRES_URL` names one.
  */
 
+import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
@@ -37,6 +42,9 @@ import {
    type R4Fixture,
    type R4Run,
 } from "./harness";
+
+const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
+const PG_SCHEMA = "r4_parity";
 
 /** Each tier: its placement on a declaration, and its `name=` when colocated. */
 const TIERS = [
@@ -373,6 +381,134 @@ source: flights_unread is duckdb.table('flights_raw') extend {
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
          expect(run.servedBy?.kind).not.toBe("rollup");
+      });
+   });
+}
+
+/**
+ * Fix 5: an incremental pair table. In a `storage=` destination (DuckDB) its
+ * plan keeps the incremental keys and the package says nothing; colocated in
+ * a Postgres warehouse it is planned as a full rebuild and the package says
+ * so. Both serve as live does.
+ */
+const PAIR_SEED = (schema: string) => [
+   `CREATE TABLE ${schema}flights AS SELECT * FROM (VALUES
+      (1, 'AA', 100, DATE '2026-11-01'), (2, 'AA', 200, DATE '2026-11-02'),
+      (3, 'BB', 300, DATE '2026-11-03'), (4, 'BB', 50, DATE '2026-11-04')
+    ) AS t(id, carrier, distance, updated_on)`,
+   `CREATE TABLE ${schema}segs AS SELECT * FROM (VALUES
+      (10, 1, 2.0, DATE '2026-11-01'), (11, 1, 3.0, DATE '2026-11-02'),
+      (12, 2, 4.0, DATE '2026-11-03'), (13, 3, 1.0, DATE '2026-11-04')
+    ) AS t(seg_id, flight_id, w, loaded_on)`,
+];
+const pairModel = (w: string, schema: string, place: string) =>
+   `source: segs is ${w}.table('${schema}segs') extend { primary_key: seg_id }
+
+#(materialize)${place} inline=["segs"] refresh="incremental" watermark=["updated_on", "segs.loaded_on"]
+source: flights is ${w}.table('${schema}flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+  measure: seg_w is segs.w.sum()
+}
+`;
+const PAIR_TIERS = [
+   {
+      label: "storage=, from DuckDB",
+      incremental: true,
+      scenario: async () => ({
+         files: {
+            "m.malloy": pairModel("duckdb", "", ` storage="${DESTINATION}"`),
+         },
+         seedSql: PAIR_SEED(""),
+         materialize: true,
+      }),
+   },
+   ...(POSTGRES_URL
+      ? [
+           {
+              label: "colocated, in Postgres",
+              incremental: false,
+              scenario: async () => {
+                 const pg = new PostgresConnection({
+                    name: "pg",
+                    connectionString: POSTGRES_URL,
+                 });
+                 await pg.runSQL(`DROP SCHEMA IF EXISTS ${PG_SCHEMA} CASCADE`);
+                 await pg.runSQL(`CREATE SCHEMA ${PG_SCHEMA}`);
+                 return {
+                    files: {
+                       "m.malloy": pairModel(
+                          "pg",
+                          `${PG_SCHEMA}.`,
+                          ` name="parity_pairs"`,
+                       ),
+                    },
+                    seedSql: PAIR_SEED(`${PG_SCHEMA}.`),
+                    materialize: true,
+                    warehouse: {
+                       name: "pg",
+                       connection: pg,
+                       schema: PG_SCHEMA,
+                    },
+                    cleanup: async () => {
+                       await pg.runSQL(
+                          `DROP SCHEMA IF EXISTS ${PG_SCHEMA} CASCADE`,
+                       );
+                       await pg.close();
+                    },
+                 };
+              },
+           },
+        ]
+      : []),
+];
+
+for (const tier of PAIR_TIERS) {
+   describe(`R4 parity (${tier.label}): an incremental pair table`, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      let cleanup: (() => Promise<void>) | undefined;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         const scenario = await tier.scenario();
+         cleanup = (scenario as { cleanup?: () => Promise<void> }).cleanup;
+         fixture = await buildScenario(scenario);
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+         await cleanup?.();
+      });
+
+      it(
+         tier.incremental
+            ? "plans it incremental, with no warning"
+            : "plans it as a full rebuild, saying why (materialize-pair-full-refresh)",
+         () => {
+            const plan = fixture.materializePlans.flights;
+            expect(plan).toBeDefined();
+            if (tier.incremental) {
+               expect(plan.pairFullRefresh).toBeUndefined();
+               expect(plan.persist.refresh).toBe("incremental");
+            } else {
+               expect(plan.pairFullRefresh).toMatch(
+                  /colocated in its source's postgres warehouse/,
+               );
+               expect(plan.persist.refresh).toBeUndefined();
+            }
+         },
+      );
+
+      it("serves child measures from the pair table, equal to live", async () => {
+         const run = await fixture.run({
+            name: "pair",
+            malloy:
+               "run: flights -> { group_by: carrier; aggregate: seg_w; order_by: carrier }",
+         });
+         expectPairServedVia(run, []);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
    });
 }
