@@ -10,7 +10,7 @@ import {
 import type {
    IncrementalDeclaration,
    ResolvedName,
-} from "./incremental_declaration";
+} from "../domain/incremental";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];

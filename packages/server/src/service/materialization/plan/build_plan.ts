@@ -39,11 +39,8 @@ import {
    type GraftScope,
 } from "../../gate_classification";
 import { malloyGivenToApi, type MalloyGiven } from "../../given";
-import {
-   resolveIncrementalDeclaration,
-   type IncrementalDeclaration,
-   type PairDelta,
-} from "./incremental_declaration";
+import { resolveIncrementalDeclaration } from "./incremental_declaration";
+import type { IncrementalDeclaration, PairDelta } from "../domain/incremental";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,

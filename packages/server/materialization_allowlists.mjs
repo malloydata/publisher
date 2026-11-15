@@ -11,13 +11,7 @@
 /** Import-direction pairs (R5 to R10, H5), "<importer> -> <module>": step. */
 export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    // R8: plan/, run/ and serve/ never import one another.
-   "service/materialization/run/incremental_apply.ts -> service/materialization/plan/incremental_declaration":
-      "2g.3",
-   "service/materialization/run/incremental_apply.ts -> service/materialization/plan/rolling_window":
-      "2g.3",
    "service/materialization/run/incremental_build.ts -> service/materialization/plan/build_plan":
-      "2g.3",
-   "service/materialization/run/incremental_build.ts -> service/materialization/plan/incremental_declaration":
       "2g.3",
    "service/materialization/run/incremental_storage.ts -> service/materialization/plan/build_plan":
       "2g.3",
@@ -48,8 +42,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/run/run_instructions.ts -> service/materialization/plan/materialization_eligibility":
       "2g.3",
    "service/materialization/run/run_telemetry.ts -> service/materialization/plan/build_plan":
-      "2g.3",
-   "service/materialization/run/run_telemetry.ts -> service/materialization/plan/persisted_view":
       "2g.3",
    "service/materialization/run/source_build.ts -> service/materialization/plan/build_plan":
       "2g.3",
@@ -262,11 +254,7 @@ export const MATERIALIZATION_HISTORY_ALLOWLIST = {
    },
 };
 /** H4: exports no other file imports, "<file>#<name>": step. */
-export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
-   "service/materialization/run/incremental_apply.ts#IncrementalStepReasonCode":
-      "2g.4",
-   "service/materialization/run/table_ownership.ts#OWNED_TABLE_MARK": "2g.4",
-};
+export const MATERIALIZATION_UNIMPORTED_EXPORTS = {};
 /** Annotation payload reads outside plan/declaration.ts, per file. */
 export const RATCHET_ANNOTATION_READS = {};
 /** Reads of `_modelDef`, `_query`, `_sourceDef` or `_explore` outside governance/ir, per file. */

@@ -50,7 +50,7 @@ import {
    type WatermarkBound,
 } from "./incremental_apply";
 import { capturedNativeSchema } from "./colocated_native_types";
-import type { IncrementalDeclaration } from "../plan/incremental_declaration";
+import type { IncrementalDeclaration } from "../domain/incremental";
 
 /**
  * The run-level half of incremental materialization: per source, decide whether

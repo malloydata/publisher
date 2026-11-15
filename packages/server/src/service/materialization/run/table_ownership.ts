@@ -26,7 +26,7 @@ import {
 } from "./table_site";
 import type { BuildInstruction } from "../domain/types";
 
-export { OWNED_TABLE_MARK, parseOwnedTableComment };
+export { parseOwnedTableComment };
 
 /**
  * Who owns a table an auto-run writes at a name the author chose.

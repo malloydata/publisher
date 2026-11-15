@@ -91,10 +91,7 @@ import {
    readNotesIfAny,
 } from "./declaration";
 import { SourceMap, type SourceNode } from "../text/source_map";
-import {
-   PERSISTED_VIEW_COMPANION_SUFFIX,
-   persistedViewCompanionHref,
-} from "../text/read_text";
+import { persistedViewCompanionHref } from "../text/read_text";
 import {
    splitSourceID,
    type PersistedQueryPlan,
@@ -104,8 +101,6 @@ import {
    declaredPersistQueries,
    persistQueryNotBuiltFinding,
 } from "./persisted_query";
-
-export { PERSISTED_VIEW_COMPANION_SUFFIX };
 
 /** The package warning for a persisted view that is not built, or not served. */
 export const PERSIST_VIEW_NOT_BUILT = "persist-view-not-built";

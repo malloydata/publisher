@@ -30,8 +30,8 @@ import {
    deletingWindowsOf,
    leftOutWindowTerms,
    rollingWindowTerms,
-   windowDeleteBefore,
 } from "./rolling_window";
+import { windowDeleteBefore } from "../domain/read_time_terms";
 
 const URL_ = "file:///rw/m.malloy";
 let duckdb: DuckDBConnection;

@@ -5,9 +5,13 @@ import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
 import { readRoute } from "./declaration";
-import type { RollingWindow } from "./rolling_window";
 import type { Tag } from "@malloydata/malloy-tag";
 
+import type {
+   IncrementalDeclaration,
+   MalformedValue,
+   ResolvedName,
+} from "../domain/incremental";
 import type { IncrementalStrategy } from "../domain/types";
 import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
@@ -45,113 +49,6 @@ const ORDERABLE_TYPES: ReadonlySet<string> = new Set([
    "date",
    "timestamp",
 ]);
-
-/** What a declared name turned out to be on the compiled source. */
-export type ResolvedName =
-   | {
-        name: string;
-        kind: "dimension" | "aggregate";
-        /** The column's Malloy type (`date`, `timestamp`, `number`, …). */
-        malloyType: string;
-     }
-   | { name: string; kind: "unresolved" };
-
-/** A key whose VALUE is unusable, as opposed to absent. */
-interface MalformedValue {
-   key: "refresh" | "watermark" | "merge_key";
-   problem:
-      | "array" // tag-array form: watermark=["a","b"]
-      | "empty" // empty string: watermark=""
-      | "empty-entry" // an empty name in the split list: merge_key="a,,b"
-      | "duplicate"; // a repeated name: merge_key="a, a"
-   /** The offending name, when one name of several is at fault. */
-   detail?: string;
-}
-
-export interface IncrementalDeclaration {
-   /** The effective `refresh=` value verbatim; undefined when unset. */
-   refresh?: string;
-   /** True only when `refresh=` is exactly `"incremental"`. */
-   incremental: boolean;
-   /** Set when `refresh=` is declared but outside {full, incremental}. */
-   invalidRefresh?: string;
-   /** Whether the key is present on the raw tag, whatever its value's shape. */
-   declaredWatermark: boolean;
-   declaredMergeKey: boolean;
-   /** The watermark, resolved against the output schema. */
-   watermark?: ResolvedName;
-   /** Whether the watermark's type supports a `<` range. */
-   watermarkOrderable: boolean;
-   /** `merge_key=` split on commas, in declared order, each resolved. */
-   mergeKeys: ResolvedName[];
-   /**
-    * The source's own columns its stripped dynamic terms constrain. A
-    * `merge_key=` is chosen against the source filtered to one caller, but the
-    * stored table holds every caller's rows; these columns restore the intended
-    * relation inside the merge's match.
-    */
-   scopeColumns: string[];
-   /**
-    * True when a stripped term contributes no column of this source (it reaches
-    * through a join, or its field usage could not be read). A caller must refuse,
-    * never partially scope: scoping by the other terms alone still matches across
-    * callers.
-    */
-   scopeIncomplete: boolean;
-   /** True when `merge_key=` repeats the watermark dimension. */
-   watermarkInMergeKeys: boolean;
-   /**
-    * The strategy the keys imply, present only when the declaration is coherent
-    * enough to derive one (incremental + a resolved watermark).
-    */
-   strategy?: IncrementalStrategy;
-   malformed: MalformedValue[];
-   /** Unrecognized persist-tag keys, in tag order. */
-   unknownKeys: string[];
-   /**
-    * Names of `calculate:` (window) fields anywhere in the query definition.
-    * Presence alone gates an incremental source for now (see the publish rules).
-    */
-   calculateFields: string[];
-   /** Output column names, for "did you mean" context in messages. */
-   outputColumns: string[];
-   /**
-    * A `#(materialize)` source's rolling windows (rolling_window.ts), set from
-    * its plan's read-time terms by `collectIncrementalDeclarations`: each
-    * refresh deletes the rows below every window's new lower bound.
-    */
-   rollingWindow?: RollingWindow[];
-   /**
-    * An incremental pair table's parent key and parent-row flag column (a
-    * `#(materialize)` inlined join_many), set by
-    * `collectIncrementalDeclarations` from its plan: each refresh replaces
-    * every row of each parent whose watermark moved, by the key, rather than
-    * merging row by row (incremental_apply.ts).
-    */
-   pair?: PairDelta;
-}
-
-/**
- * What a pair table's delta replaces rows by and checks after: the parent key
- * and the parent-row flag, and, for a path of join_manys or a table of
- * several blocks, every row flag the delta must leave exact, each with the
- * stored keys it marks one row per distinct value of (from the source down
- * to its level), and for a table of several blocks the block it is checked
- * within (`lane`, a value of `laneColumn`). Absent `checks`: the parent-row
- * flag over the parent key, as a one-hop table of one block has.
- */
-export interface PairDelta {
-   parentKey: string;
-   parentRow: string;
-   checks?: { flag: string; keys: string[]; lane?: number }[];
-   laneColumn?: string;
-   /**
-    * For a table of several blocks: how many there are. Every parent has rows
-    * in each (a block is a LEFT JOIN from the parents), which the delta also
-    * checks.
-    */
-   lanes?: number;
-}
 
 /** The source's `#@` tag, or undefined when it does not parse. */
 function safeTag(source: PersistSource): Tag | undefined {

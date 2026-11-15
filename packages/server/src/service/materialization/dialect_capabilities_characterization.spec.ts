@@ -19,7 +19,7 @@
 import { describe, expect, it } from "bun:test";
 import { tableNamesFoldCase } from "./domain/storage_table_path";
 import { incrementalPolicyRejections } from "./plan/incremental_policy";
-import type { IncrementalDeclaration } from "./plan/incremental_declaration";
+import type { IncrementalDeclaration } from "./domain/incremental";
 import { planModelMaterialize } from "./plan/materialize_plan";
 import {
    capturedColocatedSchema,

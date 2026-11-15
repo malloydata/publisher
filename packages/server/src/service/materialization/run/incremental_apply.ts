@@ -15,8 +15,11 @@ import {
 } from "../domain/dialect";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier } from "../../quoting";
-import type { PairDelta } from "../plan/incremental_declaration";
-import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
+import type { PairDelta } from "../domain/incremental";
+import {
+   windowDeleteBefore,
+   type RollingWindow,
+} from "../domain/read_time_terms";
 
 /**
  * Generating and applying an incremental DELTA: the bounded slice of a persisted
@@ -1073,7 +1076,7 @@ export function ledgerLineageMismatch(
  * `reason` label — the free-text `reason` names specifics (columns, versions,
  * boundary values) that a metric label cannot carry.
  */
-export type IncrementalStepReasonCode = IncrementalStepReason;
+type IncrementalStepReasonCode = IncrementalStepReason;
 
 /** What one source's refresh should do. */
 export type IncrementalStep =

@@ -18,7 +18,7 @@ import {
    recordBuildReadBytes,
 } from "../../../materialization_metrics";
 import type { CompiledBuildPlan } from "../plan/build_plan";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../plan/persisted_view";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import type {
    BuildInstruction,
    BuildPlan,
