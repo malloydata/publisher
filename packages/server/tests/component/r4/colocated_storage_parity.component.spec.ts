@@ -13,6 +13,10 @@
  *    spell, as a `storage=` one is with every column, where the planned
  *    columns alone left the zoned timestamp out and sent the whole source
  *    live.
+ * 2. Two pair tables (an inlined join_many) whose sources compile to the same
+ *    SQL are each served as their own source: colocated, they share one table
+ *    at one content address, which the pair check once read as a read
+ *    through a join.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -21,6 +25,7 @@ import {
    buildScenario,
    DESTINATION,
    disposeScenarios,
+   expectPairServedVia,
    rowDifference,
    type R4Fixture,
    type R4Run,
@@ -110,6 +115,71 @@ source: s is duckdb.table('ex') extend { primary_key: id }
          expect(run.live.length).toBe(3);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
          expect(run.servedVia).toBeUndefined();
+      });
+   });
+
+   describe(`R4 parity (${tier.label}): two pair tables whose sources compile to the same SQL`, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      const pairSource = (
+         name: string,
+      ) => `#(materialize)${tier.place(`parity_${name}`)} inline=["segs"]
+source: ${name} is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+  measure:
+    flight_count is count()
+    seg_w is segs.w.sum()
+    seg_max is segs.w.max()
+}`;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         fixture = await buildScenario({
+            files: {
+               "m.malloy": `source: segs is duckdb.table('segs') extend { primary_key: seg_id }
+
+${pairSource("pairs_a")}
+
+${pairSource("pairs_b")}
+`,
+            },
+            seedSql: [
+               `CREATE TABLE flights AS SELECT * FROM (VALUES
+                  (1, 'AA', 100), (2, 'AA', 200), (3, 'BB', 300), (4, 'BB', 50)
+                ) AS t(id, carrier, distance)`,
+               `CREATE TABLE segs AS SELECT * FROM (VALUES
+                  (10, 1, 2.0), (11, 1, 3.0), (12, 2, 4.0), (13, 3, 1.0), (14, 3, 6.0)
+                ) AS t(seg_id, flight_id, w)`,
+            ],
+            materialize: true,
+         });
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+
+      for (const source of ["pairs_a", "pairs_b"]) {
+         it(`serves ${source}'s child measures from its pair table, equal to live`, async () => {
+            const run = await fixture.run({
+               name: source,
+               malloy: `run: ${source} -> { group_by: carrier; aggregate: seg_w, seg_max; order_by: carrier }`,
+            });
+            expectPairServedVia(run, []);
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+         });
+      }
+
+      it("serves parent and child measures together, equal to live", async () => {
+         const run = await fixture.run({
+            name: "mixed",
+            malloy:
+               "run: pairs_b -> { group_by: carrier; aggregate: flight_count, seg_w; order_by: carrier }",
+         });
+         expectPairServedVia(run, []);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
    });
 

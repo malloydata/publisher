@@ -132,10 +132,17 @@ export function boundTablePath(b: Binding): string {
  * same name (`AS "orders"`) also spells.
  */
 export function sqlReadsTable(sql: string, tablePath: string): boolean {
+   return sqlTableReads(sql, tablePath) > 0;
+}
+
+/** How many times `sql` reads the table at `tablePath` ({@link sqlReadsTable}). */
+export function sqlTableReads(sql: string, tablePath: string): number {
    const path = tablePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-   return new RegExp(`\\b(?:FROM|JOIN)\\s+${path}(?![\\w$".\x60])`, "i").test(
-      sql,
-   );
+   return (
+      sql.match(
+         new RegExp(`\\b(?:FROM|JOIN)\\s+${path}(?![\\w$".\x60])`, "gi"),
+      ) ?? []
+   ).length;
 }
 
 /**

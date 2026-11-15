@@ -92,6 +92,7 @@ import {
 import {
    boundTablePath,
    sqlReadsTable,
+   sqlTableReads,
    buildVirtualMap,
    narrowSchemaToPublic,
    optsOutOfPersist,
@@ -906,8 +907,12 @@ export class ServedCopyServe {
             annotated.set(join, fields);
          }
       }
-      const pairsRead = (compiled.pairs ?? []).filter((p) =>
-         tablesRead.some((b) => b.tablePath === p.tablePath),
+      const pairsRead = await pairsReadPerTable(
+         attempt,
+         sql,
+         (compiled.pairs ?? []).filter((p) =>
+            tablesRead.some((b) => b.tablePath === p.tablePath),
+         ),
       );
       const lane = await pairBlockLane(attempt, pairsRead);
       if (lane !== undefined) {
@@ -3205,6 +3210,52 @@ async function pairBlockLane(
    return undefined;
 }
 
+/** The queried source's struct, and the sourceIDs on its chain. */
+async function queriedChain(attempt: AnswerAttempt): Promise<{
+   struct: { fields?: unknown; filterList?: unknown } | undefined;
+   chain: readonly string[];
+}> {
+   const { compiled, prepared } = attempt;
+   const { structRef } = await prepared();
+   const struct = resolveStructRefSource<{
+      fields?: unknown;
+      filterList?: unknown;
+   }>(structRef, compiled.modelDef as never);
+   const chain = struct
+      ? SourceMap.of(compiled.modelDef).chainOf(struct as never)
+      : [];
+   return { struct, chain };
+}
+
+/**
+ * The pair tables a query reads, one entry per table. Sources whose build SQL
+ * is identical (differing only in gates or `name=`) share one colocated table
+ * at their one content address, so each is a pair at that one path. Read
+ * once, that table is read as the queried source's own when the queried
+ * source is one of them, as on `storage=`, where each source has a table of
+ * its own. Read more than once, or by a source that is none of them, every
+ * sharer is kept, and {@link checkPairTables} declines it as a read through
+ * a join.
+ */
+async function pairsReadPerTable(
+   attempt: AnswerAttempt,
+   sql: string,
+   pairsRead: NonNullable<Compiled["pairs"]>,
+): Promise<NonNullable<Compiled["pairs"]>> {
+   const byPath = new Map<string, NonNullable<Compiled["pairs"]>>();
+   for (const p of pairsRead) {
+      byPath.set(p.tablePath, [...(byPath.get(p.tablePath) ?? []), p]);
+   }
+   if (byPath.size === pairsRead.length) return pairsRead;
+   const { chain } = await queriedChain(attempt);
+   return [...byPath].flatMap(([tablePath, sharers]) => {
+      const own = sharers.find((p) => chain.includes(p.sourceID));
+      return sharers.length > 1 && own && sqlTableReads(sql, tablePath) === 1
+         ? [own]
+         : sharers;
+   });
+}
+
 /**
  * A pair table (an inlined join_many) is read flat: exact only for the
  * aggregates pair_flat_query.ts proves, and only as the queried
@@ -3217,14 +3268,8 @@ async function checkPairTables(
 ): Promise<void> {
    const { compiled, decline, prepared } = attempt;
    if (pairsRead.length > 0) {
-      const { structRef, query } = await prepared();
-      const struct = resolveStructRefSource<{
-         fields?: unknown;
-         filterList?: unknown;
-      }>(structRef, compiled.modelDef as never);
-      const chain = struct
-         ? SourceMap.of(compiled.modelDef).chainOf(struct as never)
-         : [];
+      const { query } = await prepared();
+      const { struct, chain } = await queriedChain(attempt);
       const own = pairsRead.find((p) => chain.includes(p.sourceID));
       const verdict =
          pairsRead.length > 1 || !own
