@@ -947,8 +947,11 @@ export class ServedCopyServe {
    }
 
    /**
-    * A query that sets a timezone is answered live when it reads either
-    * of two tables. A stored computed dimension (`order_ts.day`,
+    * A query that sets a timezone is answered live when it reads either of
+    * two tables: in its own text, or through the source it runs on (a
+    * `timezone:` on that source or anything on its chain) when that zone is
+    * not the one the table was built in (a materialized source that declares
+    * its own `timezone:` is built in it). A stored computed dimension (`order_ts.day`,
     * `day_of_week(order_ts)`) was evaluated at build in the default
     * timezone; live evaluates it in the query's. And a rolling window's
     * cut-off moves: Malloy takes its offset in the zone's wall time, so
@@ -961,11 +964,20 @@ export class ServedCopyServe {
       tablesRead: readonly Binding[],
    ): Promise<void> {
       const { compiled, decline, prepared } = attempt;
-      const computed = tablesRead.some((b) =>
+      const zoned = tablesRead.filter(
+         (b) =>
+            compiled.computedTables?.has(b.tablePath) ||
+            this.readsRollingWindow(b),
+      );
+      if (zoned.length === 0) return;
+      const computed = zoned.some((b) =>
          compiled.computedTables?.has(b.tablePath),
       );
-      const windowed = tablesRead.some((b) => this.readsRollingWindow(b));
-      if ((computed || windowed) && setsTimezone((await prepared()).query)) {
+      const { query, structRef } = await prepared();
+      if (
+         setsTimezone(query) ||
+         readsInAnotherZone(compiled, structRef, zoned)
+      ) {
          decline(
             computed
                ? "the query sets a timezone over a table built in the default zone (a stored computed dimension or a row filter that depends on it)"
@@ -1486,13 +1498,12 @@ export class ServedCopyServe {
     * the file's text), which its re-root keeps ahead of its own blocks. Kept
     * for an extension table (P10), whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
-    * declares; and for a source whose plan needs its bases' blocks
-    * (`keptBases`): a given-reading `where:` or a caller-dependent dimension a
-    * base declares, which the build left out and only the base's block
-    * re-applies at read. Undefined when the source is neither, or no such
-    * ancestor is on the walk: a source with none keeps only its own blocks
-    * (decision 2); and for one whose bases declare a measure, view or join it
-    * inherits (G8), which the re-root would otherwise lose.
+    * declares; and for one whose bases declare a measure, view or join it
+    * inherits (G8), which the re-root would otherwise lose. Undefined when
+    * the source is neither, or no such ancestor is on the walk: a source with
+    * none keeps only its own blocks (decision 2). A base's given-reading
+    * `where:` or dimension is never left out of a build (it refuses the
+    * source at plan), so no block is kept to re-apply one.
     */
    private keptBlocksFor(
       reroot: Reroot & { sourceID: string },
@@ -1509,7 +1520,6 @@ export class ServedCopyServe {
          keptAncestorChain(map, reroot.sourceID, reroot.url),
       );
       const needed =
-         (plan.keptBases?.length ?? 0) > 0 ||
          confirmed.some(
             (a) => this.materializePlans[a.sourceID] !== undefined,
          ) ||
@@ -2756,6 +2766,43 @@ function v1ColumnsOf(
  * One query's answer in progress in one compiled copy, as each of
  * {@link ServedCopyServe}'s answer checks reads it.
  */
+/**
+ * Whether the source a query runs on computes it in a time zone other than
+ * the one any of `tables` was built in: the zone it sets itself, or inherits
+ * from anything on its chain (`ny is orders extend { timezone: … }`), which
+ * its query text never names; a table is built in its stored source's own
+ * zone. Fails closed: a source that cannot be resolved counts as another
+ * zone.
+ */
+function readsInAnotherZone(
+   compiled: Compiled,
+   structRef: unknown,
+   tables: readonly Binding[],
+): boolean {
+   try {
+      const struct = resolveStructRefSource<unknown>(
+         structRef as never,
+         compiled.modelDef as never,
+      );
+      if (struct === undefined) return true;
+      const map = SourceMap.of(compiled.modelDef);
+      const zone =
+         queryTimezoneOf(struct) ??
+         map
+            .chainOf(struct)
+            .map((id) => queryTimezoneOf(map.node(id)?.def))
+            .find((z) => z !== undefined);
+      if (zone === undefined) return false;
+      return tables.some((b) => {
+         const id = b.sourceIDs?.[0];
+         const built = id ? queryTimezoneOf(map.node(id)?.def) : undefined;
+         return built !== zone;
+      });
+   } catch {
+      return true;
+   }
+}
+
 interface AnswerAttempt {
    compiled: Compiled;
    queryString: string;
