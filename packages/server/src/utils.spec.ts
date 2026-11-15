@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import {
+   linkTextSteps,
    compiledImports,
    compiledTextReader,
    IMPORT_OUTSIDE_PACKAGE_MESSAGE,
@@ -324,5 +325,87 @@ describe("a .. after a symlinked directory", () => {
       expect(() =>
          readPackageURLSync(pkg2, url(path.join(pkg2, "via-missing"))),
       ).toThrow("ENOENT");
+   });
+});
+
+describe("a path that goes out of the package and comes back", () => {
+   // <base>/pkg/lib/real.malloy, with <base>/outside/present a directory and
+   // <base>/outside/absent not there. A link through either, back into the
+   // package, must answer the same: the walk never looks outside.
+   let base = "";
+   let pkg3 = "";
+   beforeAll(() => {
+      base = fs.realpathSync(
+         fs.mkdtempSync(path.join(os.tmpdir(), "out-back-")),
+      );
+      pkg3 = path.join(base, "pkg");
+      fs.mkdirSync(path.join(pkg3, "lib"), { recursive: true });
+      fs.mkdirSync(path.join(base, "outside", "present"), { recursive: true });
+      fs.writeFileSync(path.join(pkg3, "lib", "real.malloy"), "real");
+      for (const which of ["present", "absent"]) {
+         fs.symlinkSync(
+            `../outside/${which}/../../pkg/lib/real.malloy`,
+            path.join(pkg3, `rel-${which}`),
+         );
+         fs.symlinkSync(
+            // Spelled, not joined: path.join would collapse the `..`.
+            `${base}/outside/${which}/../../pkg/lib/real.malloy`,
+            path.join(pkg3, `abs-${which}`),
+         );
+      }
+   });
+   afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
+
+   it("refuses both, relative or absolute, without looking at what it passes through", async () => {
+      const lstat = spyOn(fs.promises, "lstat");
+      try {
+         for (const form of ["rel", "abs"]) {
+            for (const which of ["present", "absent"]) {
+               lstat.mockClear();
+               const target = url(path.join(pkg3, `${form}-${which}`));
+               expect(await outcome(pkg3, target)).toBe(
+                  IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+               );
+               expect(() => readPackageURLSync(pkg3, target)).toThrow(
+                  IMPORT_OUTSIDE_PACKAGE_MESSAGE,
+               );
+               const outside = path.join(base, "outside");
+               expect(
+                  lstat.mock.calls.some((c) =>
+                     String(c[0]).startsWith(outside),
+                  ),
+               ).toBe(false);
+            }
+         }
+      } finally {
+         lstat.mockRestore();
+      }
+   });
+
+   it("still follows an absolute link that walks down to the package through its own ancestors", async () => {
+      fs.symlinkSync(
+         path.join(pkg3, "lib", "real.malloy"),
+         path.join(pkg3, "abs-inside"),
+      );
+      expect(await outcome(pkg3, url(path.join(pkg3, "abs-inside")))).toBe(
+         "READ:real",
+      );
+   });
+});
+
+describe("linkTextSteps", () => {
+   it("does not walk a Windows root's spelling as a component", () => {
+      expect(linkTextSteps("C:\\pkg\\lib\\a.malloy", path.win32)).toEqual({
+         root: "C:\\",
+         parts: ["pkg", "lib", "a.malloy"],
+      });
+      expect(linkTextSteps("..\\lib\\a.malloy", path.win32)).toEqual({
+         root: undefined,
+         parts: ["..", "lib", "a.malloy"],
+      });
+      expect(linkTextSteps("/pkg/lib", path.posix)).toEqual({
+         root: "/",
+         parts: ["pkg", "lib"],
+      });
    });
 });

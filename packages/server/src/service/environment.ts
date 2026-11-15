@@ -3296,11 +3296,26 @@ export class Environment {
 
          // Same lock hold: as a separate step, a delete queued behind the
          // swap could run first and the update would 404 for completed work.
+         // The install has committed and is serving, so a metadata update
+         // that fails now (a read-only manifest, a full disk) is logged, not
+         // answered as a failure of the publish that already took effect.
          if (update !== undefined) {
-            await this._updatePackageLocked(packageName, update, {
-               recordLocation: true,
-               regated: true,
-            });
+            try {
+               await this._updatePackageLocked(packageName, update, {
+                  recordLocation: true,
+                  regated: true,
+               });
+            } catch (error) {
+               logger.error(
+                  "The package installed and is serving, but its metadata " +
+                     "update after the install failed",
+                  {
+                     environmentName: this.environmentName,
+                     packageName,
+                     error,
+                  },
+               );
+            }
          }
 
          return newPackage;
@@ -3715,6 +3730,22 @@ export class Environment {
             metadata,
          );
 
+         // Recorded outside the package directory so nothing the package's
+         // content carries is ever read as its install location. Never
+         // cleared from here. Written before the manifest, so a manifest that
+         // cannot be written does not lose it.
+         if (metadata.location !== undefined && metadata.location !== "") {
+            const recordPath = this.installRecordPath(packageName);
+            await fs.promises.mkdir(path.dirname(recordPath), {
+               recursive: true,
+            });
+            await fs.promises.writeFile(
+               recordPath,
+               JSON.stringify({ location: metadata.location }, null, 2),
+               "utf-8",
+            );
+         }
+
          // An update that changes nothing in the manifest (an install that
          // only records its location) leaves the file alone, so it cannot
          // fail after the install has committed.
@@ -3748,21 +3779,6 @@ export class Environment {
                throw error;
             }
          }
-         // Recorded outside the package directory so nothing the package's
-         // content carries is ever read as its install location. Never
-         // cleared from here.
-         if (metadata.location !== undefined && metadata.location !== "") {
-            const recordPath = this.installRecordPath(packageName);
-            await fs.promises.mkdir(path.dirname(recordPath), {
-               recursive: true,
-            });
-            await fs.promises.writeFile(
-               recordPath,
-               JSON.stringify({ location: metadata.location }, null, 2),
-               "utf-8",
-            );
-         }
-
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
          logger.error(`Failed to update publisher.json`, { error });

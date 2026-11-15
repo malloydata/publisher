@@ -755,3 +755,134 @@ describe("the data probe of a package's files", () => {
       expect(text).not.toContain("dir.csv");
    });
 });
+
+describe("a path that goes out of the package and comes back", () => {
+   // `../orx/../<pkg>/…` passes through a sibling package that exists (orx)
+   // or does not (ory), and returns into the package itself; the absolute
+   // form spells the environment's own path. Either way the walk refuses at
+   // the sibling, before looking at it, so the two answers match.
+   let envPath = "";
+   beforeAll(async () => {
+      expect(
+         await publish("orx", writePackage("orx", { "ok.malloy": BASE })),
+      ).toBe(200);
+      const { bootMainServer } = await import("../../harness/main_server");
+      const { environmentStore } = await bootMainServer();
+      envPath = (
+         await environmentStore.getEnvironment(parseEnvironmentName(ENV_NAME))
+      ).getEnvironmentPath();
+   });
+
+   /** The link text through `via` back to `<pkg>/<rest>`, in `form`. */
+   const text = (form: string, via: string, pkg: string, rest: string) =>
+      form === "rel"
+         ? `../${via}/../${pkg}/${rest}`
+         : `${envPath}/${via}/../${pkg}/${rest}`;
+
+   /** Publish one package per sibling, masked so the answers can be compared. */
+   async function pair(
+      tag: string,
+      make: (dir: string, folder: string, via: string) => void,
+   ): Promise<string[]> {
+      const answers: string[] = [];
+      for (const via of ["orx", "ory"]) {
+         const folder = `${tag}${via.slice(-1)}`;
+         const dir = writePackage(folder, {
+            "ok.malloy": BASE,
+            "lib/real.malloy": BASE,
+            "conf.json": JSON.stringify({ name: folder }),
+            "real.csv": "owncolumn\n1\n",
+         });
+         make(dir, folder, via);
+         const res = await publishing(folder, dir);
+         let databases = "";
+         if (res.status === 200) {
+            databases = await (await fetch(api(`/${folder}/databases`))).text();
+         }
+         // A served package is compared by what its data probe lists (its
+         // own body carries a revision id); a refused one by its refusal.
+         answers.push(
+            (res.status === 200
+               ? `200 ${databases}`
+               : `${res.status} ${res.text}`
+            )
+               .replaceAll(folder, "<pkg>")
+               .replaceAll(via, "<via>"),
+         );
+      }
+      return answers;
+   }
+
+   for (const form of ["rel", "abs"]) {
+      it(`answers the same for an import, a model file, the manifest and the data probe (${form})`, async () => {
+         const imp = await pair(`i${form}`, (dir, folder, via) => {
+            fs.symlinkSync(
+               text(form, via, folder, "lib/real.malloy"),
+               path.join(dir, "probe.malloy"),
+            );
+            fs.writeFileSync(
+               path.join(dir, "m.malloy"),
+               'import "probe.malloy"\nsource: n2 is numbers\n',
+            );
+         });
+         expect(imp[0]).toBe(imp[1]);
+         expect(imp[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+
+         const model = await pair(`m${form}`, (dir, folder, via) => {
+            fs.symlinkSync(
+               text(form, via, folder, "lib/real.malloy"),
+               path.join(dir, "x.malloy"),
+            );
+         });
+         expect(model[0]).toBe(model[1]);
+         expect(model[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+
+         const manifest = await pair(`j${form}`, (dir, folder, via) => {
+            fs.rmSync(path.join(dir, "publisher.json"));
+            fs.symlinkSync(
+               text(form, via, folder, "conf.json"),
+               path.join(dir, "publisher.json"),
+            );
+         });
+         expect(manifest[0]).toBe(manifest[1]);
+         expect(manifest[0]).not.toStartWith("200");
+
+         const probe = await pair(`d${form}`, (dir, folder, via) => {
+            fs.symlinkSync(
+               text(form, via, folder, "real.csv"),
+               path.join(dir, "d.csv"),
+            );
+         });
+         expect(probe[0]).toBe(probe[1]);
+         expect(probe[0]).toStartWith("200");
+         expect(probe[0]).toContain("real.csv");
+         expect(probe[0]).not.toContain("d.csv");
+      });
+   }
+});
+
+describe("a publish whose manifest update fails after the install committed", () => {
+   it("answers 200, serves, and records the location", async () => {
+      // A manifest naming another package, so the install rewrites it, and
+      // read-only, so that rewrite fails after the swap.
+      const dir = writePackage(
+         "ropub",
+         { "ok.malloy": BASE },
+         { name: "other" },
+      );
+      fs.chmodSync(path.join(dir, "publisher.json"), 0o444);
+      const published = await publishing("ropub", dir);
+      expect(published.status).toBe(200);
+      expect(
+         await answerOf(
+            "ropub",
+            "ok.malloy",
+            "run: numbers -> { select: answer }",
+         ),
+      ).toBe(1);
+      const pkg = (await (await fetch(api("/ropub"))).json()) as {
+         location?: string;
+      };
+      expect(pkg.location).toBe(dir);
+   });
+});

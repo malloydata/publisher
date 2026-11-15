@@ -56,26 +56,68 @@ interface Resolution {
 type Ask = { op: "lstat"; path: string } | { op: "readlink"; path: string };
 
 /** A path's components, as the kernel walks them: no `..` collapsed by spelling. */
-function components(p: string): string[] {
-   const separators = path.sep === "\\" ? /[\\/]+/ : /\/+/;
+function components(p: string, api: path.PlatformPath = path): string[] {
+   const separators = api.sep === "\\" ? /[\\/]+/ : /\/+/;
    return p.split(separators).filter((c) => c !== "" && c !== ".");
 }
 
 /**
- * Where `p` leads, walked one component at a time as the kernel walks it, for
- * a path that may not exist. A `..` steps to the parent of the real directory
- * reached so far, so `link/..` after a symlinked directory goes where the
- * kernel goes (the link target's parent), never where the spelling suggests.
- * A link's text is followed whether or not its target exists. The walk stops
- * at the first component that is missing or cannot be looked at: `at` is that
- * point, and `path` keeps the rest unresolved, so opening it fails there as
- * the kernel would rather than landing on a file the spelling reaches. Throws
- * {@link ImportOutsidePackageError} on a link loop or an unreadable link.
+ * A link's text as where its walk starts and the components it walks: an
+ * absolute text starts at its own root (`/`, or `C:\` on Windows), whose
+ * spelling is not walked as a component; a relative one starts where the
+ * link is. Exported for its test.
  */
-function* resolveSteps(p: string): Generator<Ask, Resolution, unknown> {
+export function linkTextSteps(
+   text: string,
+   api: path.PlatformPath = path,
+): { root: string | undefined; parts: string[] } {
+   if (!api.isAbsolute(text))
+      return { root: undefined, parts: components(text, api) };
+   const root = api.parse(text).root;
+   return {
+      root: api.parse(api.resolve(text)).root,
+      parts: components(text.slice(root.length), api),
+   };
+}
+
+/**
+ * Where a path inside the package leads, walked one component at a time as
+ * the kernel walks it, for a path that may not exist. A `..` steps to the
+ * parent of the real directory reached so far, so `link/..` after a symlinked
+ * directory goes where the kernel goes (the link target's parent), never where
+ * the spelling suggests, and a link's text is followed whether or not its
+ * target exists.
+ *
+ * The filesystem is never asked about a path outside the package: before
+ * each look, the next path must be inside `realRoot`, or an ancestor of it or
+ * of the root as given (the server's own path to the package, which an
+ * absolute link may walk down through). A step into any other directory is
+ * refused with {@link ImportOutsidePackageError} before it is looked at, so a
+ * path that goes out and comes back cannot tell whether what it passed
+ * through exists.
+ *
+ * The walk stops at the first component that is missing or cannot be looked
+ * at: `at` is that point, and `path` keeps the rest unresolved, so opening it
+ * fails there as the kernel would rather than landing on a file the spelling
+ * reaches. A link loop or an unreadable link is refused.
+ */
+function* resolveSteps(
+   p: string,
+   givenRoot: string,
+   realRoot: string,
+): Generator<Ask, Resolution, unknown> {
    const absolute = path.resolve(p);
-   let cur = path.parse(absolute).root;
-   let pending = components(absolute.slice(cur.length));
+   // Walked from the real root, by the components below whichever spelling
+   // of the root the path is under (refuseLexically has checked it is).
+   const below = within(realRoot, absolute)
+      ? path.relative(realRoot, absolute)
+      : path.relative(givenRoot, absolute);
+   let cur = realRoot;
+   let pending = components(below);
+   const mayLook = (next: string) =>
+      within(realRoot, next) ||
+      within(next, realRoot) ||
+      within(next, givenRoot);
    let hops = 0;
    while (pending.length > 0) {
       const name = pending.shift()!;
@@ -84,6 +126,7 @@ function* resolveSteps(p: string): Generator<Ask, Resolution, unknown> {
          continue;
       }
       const next = path.join(cur, name);
+      if (!mayLook(next)) throw new ImportOutsidePackageError();
       const stat = (yield { op: "lstat", path: next }) as fs.Stats | undefined;
       if (stat === undefined) {
          return { at: next, path: [next, ...pending].join(path.sep) };
@@ -94,8 +137,9 @@ function* resolveSteps(p: string): Generator<Ask, Resolution, unknown> {
             | string
             | undefined;
          if (text === undefined) throw new ImportOutsidePackageError();
-         if (path.isAbsolute(text)) cur = path.parse(path.resolve(text)).root;
-         pending = [...components(text), ...pending];
+         const { root, parts } = linkTextSteps(text);
+         if (root !== undefined) cur = root;
+         pending = [...parts, ...pending];
          continue;
       }
       if (!stat.isDirectory() && pending.length > 0) {
@@ -108,14 +152,12 @@ function* resolveSteps(p: string): Generator<Ask, Resolution, unknown> {
 }
 
 /** {@link resolveSteps}, asked through the filesystem asynchronously. */
-async function resolveLikeKernel(p: string): Promise<Resolution> {
-   try {
-      const real = await fs.promises.realpath(p);
-      return { at: real, path: real };
-   } catch {
-      // Missing, unreadable or a dangling link: walked below.
-   }
-   const steps = resolveSteps(p);
+async function resolveLikeKernel(
+   p: string,
+   givenRoot: string,
+   realRoot: string,
+): Promise<Resolution> {
+   const steps = resolveSteps(p, givenRoot, realRoot);
    let answer: unknown;
    for (;;) {
       const step = steps.next(answer);
@@ -129,14 +171,12 @@ async function resolveLikeKernel(p: string): Promise<Resolution> {
 }
 
 /** {@link resolveSteps}, asked through the filesystem synchronously. */
-function resolveLikeKernelSync(p: string): Resolution {
-   try {
-      const real = fs.realpathSync(p);
-      return { at: real, path: real };
-   } catch {
-      // Missing, unreadable or a dangling link: walked below.
-   }
-   const steps = resolveSteps(p);
+function resolveLikeKernelSync(
+   p: string,
+   givenRoot: string,
+   realRoot: string,
+): Resolution {
+   const steps = resolveSteps(p, givenRoot, realRoot);
    let answer: unknown;
    for (;;) {
       const step = steps.next(answer);
@@ -201,7 +241,11 @@ export async function confinedPackagePath(
       throw new ImportOutsidePackageError();
    }
    refuseLexically(packageRoot, realRoot, filePath);
-   const { at, path: resolved } = await resolveLikeKernel(filePath);
+   const { at, path: resolved } = await resolveLikeKernel(
+      filePath,
+      path.resolve(packageRoot),
+      realRoot,
+   );
    if (!within(realRoot, at)) throw new ImportOutsidePackageError();
    return resolved;
 }
@@ -239,7 +283,11 @@ export function confinedPackagePathSync(
       throw new ImportOutsidePackageError();
    }
    refuseLexically(packageRoot, realRoot, filePath);
-   const { at, path: resolved } = resolveLikeKernelSync(filePath);
+   const { at, path: resolved } = resolveLikeKernelSync(
+      filePath,
+      path.resolve(packageRoot),
+      realRoot,
+   );
    if (!within(realRoot, at)) throw new ImportOutsidePackageError();
    return resolved;
 }
