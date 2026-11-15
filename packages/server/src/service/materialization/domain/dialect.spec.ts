@@ -11,11 +11,14 @@ import {
    type DialectName,
 } from "./dialect";
 
+/** Every capability but the leaf budget, which is a number. */
+type Flag = Exclude<keyof Capabilities, "leafBudget">;
+
 /**
  * Which dialects have each capability, as decided. A change here changes what
  * a dialect is allowed to do, so it says why in its commit.
  */
-const DECIDED: Record<keyof Capabilities, DialectName[]> = {
+const DECIDED: Record<Flag, DialectName[]> = {
    incrementalSourceRange: ["postgres", "snowflake", "standardsql"],
    incrementalTargetDml: ["duckdb", "postgres", "snowflake", "standardsql"],
    merge: ["duckdb", "postgres", "snowflake", "standardsql"],
@@ -60,6 +63,19 @@ const DECIDED: Record<keyof Capabilities, DialectName[]> = {
    foldsTableNameCase: ["databricks", "duckdb", "presto", "sqlserver", "trino"],
 };
 
+/** Each dialect's leaf budget, as decided (`domain/table_name.ts`). */
+const DECIDED_LEAF_BUDGETS: Record<DialectName, number> = {
+   duckdb: 120,
+   postgres: 50,
+   standardsql: 120,
+   snowflake: 120,
+   databricks: 120,
+   trino: 50,
+   presto: 50,
+   mysql: 50,
+   sqlserver: 115,
+};
+
 describe("the dialect table", () => {
    it("names only dialects Malloy registers", () => {
       for (const name of Object.keys(CAPABILITIES)) {
@@ -69,9 +85,7 @@ describe("the dialect table", () => {
 
    for (const [capability, dialects] of Object.entries(DECIDED)) {
       it(`gives ${capability} to exactly the decided dialects`, () => {
-         expect(
-            [...dialectsWith(capability as keyof Capabilities)].sort(),
-         ).toEqual(dialects);
+         expect([...dialectsWith(capability as Flag)].sort()).toEqual(dialects);
       });
    }
 
@@ -81,11 +95,20 @@ describe("the dialect table", () => {
       }
    });
 
-   it("gives an unknown dialect no capability", () => {
+   it("gives each dialect its decided leaf budget", () => {
+      for (const name of Object.keys(CAPABILITIES) as DialectName[]) {
+         expect(capabilitiesOf(name).leafBudget).toBe(
+            DECIDED_LEAF_BUDGETS[name],
+         );
+      }
+   });
+
+   it("gives an unknown dialect no capability, and the least leaf budget", () => {
       for (const unknown of ["bigquery", "", "toString", undefined, null, 7]) {
-         const flags = capabilitiesOf(unknown);
+         const { leafBudget, ...flags } = capabilitiesOf(unknown);
          expect(Object.values(flags).some(Boolean)).toBe(false);
          expect(Object.keys(flags).sort()).toEqual(Object.keys(DECIDED).sort());
+         expect(leafBudget).toBe(50);
       }
    });
 });

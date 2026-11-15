@@ -8,11 +8,13 @@
  * "bigquery", so keying by the friendly name would reject every BigQuery
  * source).
  *
- * Flags only: whether a dialect can, not the SQL it is asked in. The text that
- * differs by dialect is the table's other half, `run/warehouse_sql.ts`.
+ * Capabilities only: whether a dialect can, and how much (its identifier
+ * budget), not the SQL it is asked in. The text that differs by dialect is
+ * the table's other half, `run/warehouse_sql.ts`.
  *
  * An allowlist, not a probe: a dialect this table does not name has no
- * capability, so whatever asks refuses it or rebuilds in full. Adding a dialect
+ * capability (and the least leaf budget), so whatever asks refuses it or
+ * rebuilds in full. Adding a dialect
  * is a row here, and the record is total, so a missing flag does not compile.
  *
  * Not here: whether a dialect can hold a table at all. That is a deny-list
@@ -115,6 +117,16 @@ export interface Capabilities {
     * `lower_case_table_names`, which Publisher cannot see.
     */
    foldsTableNameCase: boolean;
+   /**
+    * The longest leaf a table Publisher names itself may have
+    * (`domain/table_name.ts`): its identifier limit less the 13 characters a
+    * build appends for its staging and aside copies, capped at 120 for
+    * readability. 50 for Postgres (and Redshift, which connects as
+    * `postgres`), MySQL, Trino and Presto (whose limit is the catalog's behind
+    * it, 63 or 64 over Postgres or MySQL), and for a dialect this table does
+    * not name; 128 less 13 for SQL Server; 120 for the rest.
+    */
+   leafBudget: number;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -133,6 +145,7 @@ const NONE: Capabilities = Object.freeze({
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
+   leafBudget: 50,
 });
 
 /** Each dialect's capabilities. */
@@ -149,6 +162,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       driverKeepsBigIntegers: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
+      leafBudget: 120,
    }),
    postgres: Object.freeze({
       ...NONE,
@@ -172,6 +186,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       needsQualifiedTable: true,
       castsToIntegerType: true,
       onlyBigIntegerType: "INT64",
+      leafBudget: 120,
    }),
    snowflake: Object.freeze({
       ...NONE,
@@ -181,6 +196,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       relationProbe: true,
       tableOwnership: true,
       castsToIntegerType: true,
+      leafBudget: 120,
    }),
    databricks: Object.freeze({
       ...NONE,
@@ -188,6 +204,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       tableOwnership: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
+      leafBudget: 120,
    }),
    trino: Object.freeze({
       ...NONE,
@@ -212,21 +229,31 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       tableOwnership: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
+      leafBudget: 115,
    }),
 };
 
 /** A dialect's capabilities; none for a dialect the table does not name. */
 export function capabilitiesOf(dialect: unknown): Capabilities {
-   return isDialectName(dialect) ? CAPABILITIES[dialect] : NONE;
+   const name = registeredDialect(dialect);
+   return name === undefined ? NONE : CAPABILITIES[name];
 }
 
-function isDialectName(name: unknown): name is DialectName {
-   return typeof name === "string" && Object.hasOwn(CAPABILITIES, name);
+/**
+ * `dialect` as a registered dialect, or undefined for one this table does not
+ * name. A caller holding a connection's own `dialectName` (a string) narrows
+ * it here once, so its branches compare a `DialectName` and a switch over it
+ * is checked for a missing case.
+ */
+export function registeredDialect(dialect: unknown): DialectName | undefined {
+   return typeof dialect === "string" && Object.hasOwn(CAPABILITIES, dialect)
+      ? (dialect as DialectName)
+      : undefined;
 }
 
-/** The dialects that have a capability. */
+/** The dialects that have a capability (any but the leaf budget, a number). */
 export function dialectsWith(
-   capability: keyof Capabilities,
+   capability: Exclude<keyof Capabilities, "leafBudget">,
 ): ReadonlySet<DialectName> {
    return new Set(
       (Object.keys(CAPABILITIES) as DialectName[]).filter(

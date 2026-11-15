@@ -14,15 +14,31 @@
  * the same in every dialect (but for quoting) stays with the statement that
  * runs it; identifiers are quoted by `quoting.ts`.
  *
- * Pure: SQL text in, SQL text out. A dialect a family does not name keeps
- * that family's own answer for it, which each function states: a refusal (a
- * thrown error), a default spelling, or undefined. Every statement is pinned,
- * per dialect, in `dialect_statements.golden.json`.
+ * Pure: SQL text in, SQL text out. Each function takes the connection's own
+ * `dialectName` and narrows it once to a registered dialect
+ * (`registeredDialect`), so its switch names every registered dialect, and a
+ * dialect the table does not name takes the switch's `default`, which states
+ * that family's answer for it: a refusal (a thrown error), a default spelling,
+ * or undefined. Every statement is pinned, per dialect, in
+ * `dialect_statements.golden.json`.
  */
 
 import { sqlLiteral } from "../../db_utils";
 import { quoteIdentifier, quoteTablePath } from "../../quoting";
-import { capabilitiesOf } from "../domain/dialect";
+import {
+   capabilitiesOf,
+   registeredDialect,
+   type DialectName,
+} from "../domain/dialect";
+
+/**
+ * The `default` of a switch over a registered dialect, where `knownDialect` is
+ * a dialect the table does not name. It takes `undefined` only, so the switch
+ * compiles only while every registered dialect has a case of its own.
+ */
+function unregistered(knownDialect: undefined): void {
+   void knownDialect;
+}
 
 // ---------------------------------------------------------------------------
 // String literals.
@@ -33,7 +49,8 @@ import { capabilitiesOf } from "../domain/dialect";
  * one. An unknown dialect doubles the quote.
  */
 export function sqlString(value: string, dialect: string): string {
-   switch (dialect) {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
       // Backslash is the escape character in these dialects' literals.
       case "standardsql":
       case "databricks":
@@ -43,8 +60,15 @@ export function sqlString(value: string, dialect: string): string {
          return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
       case "sqlserver":
          return `N'${value.replace(/'/g, "''")}'`;
+      case "duckdb":
+      case "postgres":
+      case "trino":
+      case "presto":
+      case "mysql":
+         return doubledQuoteString(value);
       default:
-         return `'${value.replace(/'/g, "''")}'`;
+         unregistered(knownDialect);
+         return doubledQuoteString(value);
    }
 }
 
@@ -61,11 +85,12 @@ export function sqlString(value: string, dialect: string): string {
  * cannot pair with that escape.
  */
 export function escapeSqlString(value: string, dialect?: string): string {
-   if (dialect === "standardsql") {
+   const knownDialect = registeredDialect(dialect);
+   if (knownDialect === "standardsql") {
       return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
    }
    const quoted = value.replace(/'/g, "''");
-   return dialect === "snowflake" ? quoted.replace(/\\/g, "\\\\") : quoted;
+   return knownDialect === "snowflake" ? quoted.replace(/\\/g, "\\\\") : quoted;
 }
 
 /** A SQL string literal with its single quotes doubled, in any dialect. */
@@ -96,7 +121,7 @@ export function relationProbeSupported(dialect: string): boolean {
    return capabilitiesOf(dialect).relationProbe;
 }
 
-function quotedPath(segments: string[], dialect: string): string {
+function quotedPath(segments: string[], dialect: DialectName): string {
    return quoteTablePath(segments.join("."), dialect);
 }
 
@@ -109,7 +134,8 @@ function quotedPath(segments: string[], dialect: string): string {
 export function relationProbeSql(segments: string[], dialect: string): string {
    const lit = (v: string) => sqlString(v, dialect);
    const name = segments[segments.length - 1];
-   switch (dialect) {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
       case "duckdb": {
          const match = (column: string) => duckdbNameMatch(segments, column);
          return (
@@ -126,7 +152,7 @@ export function relationProbeSql(segments: string[], dialect: string): string {
             `SELECT row_to_json(p) AS "row" FROM (` +
             `SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, ` +
             `obj_description(c.oid, 'pg_class') AS comment FROM pg_class c ` +
-            `WHERE c.oid = to_regclass(${lit(quotedPath(segments, dialect))})) AS p`
+            `WHERE c.oid = to_regclass(${lit(quotedPath(segments, knownDialect))})) AS p`
          );
       case "standardsql": {
          if (segments.length < 2) {
@@ -134,7 +160,7 @@ export function relationProbeSql(segments: string[], dialect: string): string {
                `a BigQuery name needs a dataset-qualified name, not '${name}'`,
             );
          }
-         const schema = `${quotedPath(segments.slice(0, -1), dialect)}.INFORMATION_SCHEMA`;
+         const schema = `${quotedPath(segments.slice(0, -1), knownDialect)}.INFORMATION_SCHEMA`;
          return (
             `SELECT t.table_type AS kind, o.option_value AS comment ` +
             `FROM ${schema}.TABLES t LEFT JOIN ${schema}.TABLE_OPTIONS o ` +
@@ -168,10 +194,10 @@ export function relationProbeSql(segments: string[], dialect: string): string {
          const schema =
             segments.length > 1
                ? `lower(${lit(segments[segments.length - 2])})`
-               : dialect === "databricks"
+               : knownDialect === "databricks"
                  ? "current_schema()"
                  : "current_schema";
-         if (dialect === "databricks") {
+         if (knownDialect === "databricks") {
             return (
                `SELECT table_type AS kind, comment FROM ${from} ` +
                `WHERE table_schema = ${schema} AND table_name = lower(${lit(name)})`
@@ -191,9 +217,14 @@ export function relationProbeSql(segments: string[], dialect: string): string {
             `CAST(ep.value AS nvarchar(4000)) AS comment FROM sys.objects o ` +
             `LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id ` +
             `AND ep.minor_id = 0 AND ep.name = N'MS_Description' ` +
-            `WHERE o.object_id = OBJECT_ID(${lit(quotedPath(segments, dialect))})`
+            `WHERE o.object_id = OBJECT_ID(${lit(quotedPath(segments, knownDialect))})`
          );
+      // MySQL and Presto are probed by ownedTableProbeSql's own queries.
+      case "mysql":
+      case "presto":
+         throw unsupportedDialect(dialect);
       default:
+         unregistered(knownDialect);
          throw unsupportedDialect(dialect);
    }
 }
@@ -224,7 +255,7 @@ function duckdbNameMatch(segments: string[], column: string): string {
 }
 
 /** The session's current schema, in the dialects whose catalog reads it bare. */
-const CURRENT_SCHEMA_SQL: Readonly<Record<string, string>> = {
+const CURRENT_SCHEMA_SQL: Readonly<Record<"databricks" | "trino", string>> = {
    databricks: "current_schema()",
    trino: "current_schema",
 };
@@ -237,14 +268,15 @@ const CURRENT_SCHEMA_SQL: Readonly<Record<string, string>> = {
 function viewDefinitionSql(segments: string[], dialect: string): string {
    const lit = (v: string) => sqlString(v, dialect);
    const name = segments[segments.length - 1];
-   switch (dialect) {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
       case "duckdb":
          return (
             `SELECT sql AS definition, schema_name AS view_schema FROM duckdb_views() ` +
             `WHERE NOT internal AND ${duckdbNameMatch(segments, "view_name")}`
          );
       case "postgres": {
-         const path = lit(quotedPath(segments, dialect));
+         const path = lit(quotedPath(segments, knownDialect));
          return (
             `SELECT row_to_json(p) AS "row" FROM (` +
             `SELECT pg_get_viewdef(c.oid) AS definition, ` +
@@ -258,7 +290,7 @@ function viewDefinitionSql(segments: string[], dialect: string): string {
                `a BigQuery name needs a dataset-qualified name, not '${name}'`,
             );
          }
-         const schema = `${quotedPath(segments.slice(0, -1), dialect)}.INFORMATION_SCHEMA`;
+         const schema = `${quotedPath(segments.slice(0, -1), knownDialect)}.INFORMATION_SCHEMA`;
          return (
             `SELECT view_definition AS definition, table_schema AS view_schema ` +
             `FROM ${schema}.VIEWS ` +
@@ -289,7 +321,7 @@ function viewDefinitionSql(segments: string[], dialect: string): string {
          const schema =
             segments.length > 1
                ? `lower(${lit(segments[segments.length - 2])})`
-               : CURRENT_SCHEMA_SQL[dialect];
+               : CURRENT_SCHEMA_SQL[knownDialect];
          return (
             `SELECT view_definition AS definition, table_schema AS view_schema ` +
             `FROM ${from} ` +
@@ -301,9 +333,13 @@ function viewDefinitionSql(segments: string[], dialect: string): string {
          return (
             `SELECT OBJECT_DEFINITION(o.object_id) AS definition, ` +
             `OBJECT_SCHEMA_NAME(o.object_id) AS view_schema FROM sys.objects o ` +
-            `WHERE o.type = 'V' AND o.object_id = OBJECT_ID(${lit(quotedPath(segments, dialect))})`
+            `WHERE o.type = 'V' AND o.object_id = OBJECT_ID(${lit(quotedPath(segments, knownDialect))})`
          );
+      case "mysql":
+      case "presto":
+         throw unsupportedDialect(dialect);
       default:
+         unregistered(knownDialect);
          throw unsupportedDialect(dialect);
    }
 }
@@ -344,13 +380,14 @@ export function viewReadsSql(
    dialect: string,
 ): { sql: string; answer: "reads" | "definition" } {
    const lit = (v: string) => sqlString(v, dialect);
-   switch (dialect) {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
       case "postgres":
          return {
             answer: "reads",
             sql: `SELECT row_to_json(p) AS "row" FROM (SELECT ${postgresReadsOnlySql(
-               `to_regclass(${lit(quotedPath(view, dialect))})`,
-               `to_regclass(${lit(quotedPath(table, dialect))})`,
+               `to_regclass(${lit(quotedPath(view, knownDialect))})`,
+               `to_regclass(${lit(quotedPath(table, knownDialect))})`,
             )} AS reads) AS p`,
          };
       case "sqlserver":
@@ -358,8 +395,8 @@ export function viewReadsSql(
          return {
             answer: "reads",
             sql: (() => {
-               const v = `OBJECT_ID(${lit(quotedPath(view, dialect))})`;
-               const t = `OBJECT_ID(${lit(quotedPath(table, dialect))})`;
+               const v = `OBJECT_ID(${lit(quotedPath(view, knownDialect))})`;
+               const t = `OBJECT_ID(${lit(quotedPath(table, knownDialect))})`;
                const deps = `FROM sys.sql_expression_dependencies d WHERE d.referencing_id = ${v}`;
                // Reads the target, and nothing it cannot resolve or that is
                // not the target.
@@ -370,7 +407,17 @@ export function viewReadsSql(
                );
             })(),
          };
+      case "duckdb":
+      case "standardsql":
+      case "snowflake":
+      case "databricks":
+      case "trino":
+      case "presto":
+      case "mysql":
+         return { answer: "definition", sql: viewDefinitionSql(view, dialect) };
       default:
+         // Refused by viewDefinitionSql.
+         unregistered(knownDialect);
          return { answer: "definition", sql: viewDefinitionSql(view, dialect) };
    }
 }
@@ -380,9 +427,12 @@ export function viewReadsSql(
  * Refuses a dialect {@link relationProbeSupported} does not name.
  */
 export function dropViewSql(segments: string[], dialect: string): string {
-   if (!relationProbeSupported(dialect)) throw unsupportedDialect(dialect);
-   if (dialect === "sqlserver") assertSqlServerShape(segments);
-   return `DROP VIEW IF EXISTS ${quotedPath(segments, dialect)}`;
+   const knownDialect = registeredDialect(dialect);
+   if (knownDialect === undefined || !relationProbeSupported(knownDialect)) {
+      throw unsupportedDialect(dialect);
+   }
+   if (knownDialect === "sqlserver") assertSqlServerShape(segments);
+   return `DROP VIEW IF EXISTS ${quotedPath(segments, knownDialect)}`;
 }
 
 /** SQL Server's CREATE VIEW takes a schema, never a database. */
@@ -417,7 +467,8 @@ export function ownedTableProbeSql(
 ): string {
    const lit = (v: string) => sqlString(v, dialect);
    const name = segments[segments.length - 1];
-   if (dialect === "mysql") {
+   const knownDialect = registeredDialect(dialect);
+   if (knownDialect === "mysql") {
       const schema =
          segments.length > 1
             ? lit(segments[segments.length - 2])
@@ -427,7 +478,7 @@ export function ownedTableProbeSql(
          `WHERE TABLE_SCHEMA = ${schema} AND TABLE_NAME = ${lit(name)}`
       );
    }
-   if (dialect === "presto") {
+   if (knownDialect === "presto") {
       const schema =
          segments.length > 1
             ? `lower(${lit(segments[segments.length - 2])})`
@@ -455,7 +506,9 @@ export function tableCommentSql(
 ): string {
    const table = quoteTablePath(segments.join("."), dialect);
    const literal = sqlString(comment, dialect);
-   switch (dialect) {
+   const commentOnTable = `COMMENT ON TABLE ${table} IS ${literal}`;
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
       case "standardsql":
          return `ALTER TABLE ${table} SET OPTIONS(description = ${literal})`;
       case "mysql":
@@ -479,8 +532,16 @@ export function tableCommentSql(
             `   EXEC sys.sp_addextendedproperty ${property};`,
          ].join("\n");
       }
+      case "duckdb":
+      case "postgres":
+      case "snowflake":
+      case "databricks":
+      case "trino":
+      case "presto":
+         return commentOnTable;
       default:
-         return `COMMENT ON TABLE ${table} IS ${literal}`;
+         unregistered(knownDialect);
+         return commentOnTable;
    }
 }
 
@@ -498,7 +559,8 @@ export function tableCommentSql(
  * the SELECT as it is. Pinned in incremental_apply.spec.ts.
  */
 export function probeSelect(dialect: string, innerSelect: string): string {
-   return dialect === "postgres"
+   const knownDialect = registeredDialect(dialect);
+   return knownDialect === "postgres"
       ? `SELECT row_to_json(__p) AS "row" FROM (${innerSelect}) AS __p`
       : innerSelect;
 }
@@ -515,7 +577,8 @@ export function targetColumnsProbeSql(
    segments: string[],
 ): string | undefined {
    const alias = quoteIdentifier("column_name", dialect);
-   if (dialect === "duckdb") {
+   const knownDialect = registeredDialect(dialect);
+   if (knownDialect === "duckdb") {
       // `duckdb_columns()`: an attached DuckLake catalog has no
       // `information_schema`, and `DESCRIBE` throws on an absent table where this
       // function's contract needs an empty answer.
@@ -534,7 +597,7 @@ export function targetColumnsProbeSql(
                 AND schema_name = '${escapeSqlString(schema, dialect)}'
                 AND table_name = '${escapeSqlString(table, dialect)}'
               ORDER BY column_index`;
-   } else if (dialect === "postgres" || dialect === "snowflake") {
+   } else if (knownDialect === "postgres" || knownDialect === "snowflake") {
       const table = segments[segments.length - 1];
       // An unqualified name lives in the session's default schema, where the CTAS
       // created it. Not "any schema on the search path": two schemas can hold
@@ -547,7 +610,7 @@ export function targetColumnsProbeSql(
       // name must probe that database's view; Postgres cannot cross databases,
       // so any leading segment is the current one by construction.
       const infoSchema =
-         dialect === "snowflake" && segments.length >= 3
+         knownDialect === "snowflake" && segments.length >= 3
             ? `${quoteIdentifier(segments[segments.length - 3], dialect)}.information_schema.columns`
             : "information_schema.columns";
       return probeSelect(
@@ -582,7 +645,8 @@ export function transactionKeywords(dialect: string): {
    commit: string;
    rollback: string;
 } {
-   return dialect === "standardsql"
+   const knownDialect = registeredDialect(dialect);
+   return knownDialect === "standardsql"
       ? {
            begin: "BEGIN TRANSACTION",
            commit: "COMMIT TRANSACTION",
@@ -623,7 +687,8 @@ export function snowflakeScriptingBlock(statements: string[]): string {
  * BEGIN and COMMIT.
  */
 export function inOneTransaction(dialect: string, body: string[]): string[] {
-   if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
+   const knownDialect = registeredDialect(dialect);
+   if (knownDialect === "snowflake") return [snowflakeScriptingBlock(body)];
    const transaction = transactionKeywords(dialect);
    return [transaction.begin, ...body, transaction.commit];
 }
@@ -653,7 +718,8 @@ export function transactionalSwapSql(
       renameTarget: string;
    },
 ): { sql: string; rollback: string | undefined } {
-   const explicit = dialect !== "postgres";
+   const knownDialect = registeredDialect(dialect);
+   const explicit = knownDialect !== "postgres";
    const body = [
       ...swap.before,
       `DROP TABLE IF EXISTS ${swap.quotedPhysical}`,
@@ -771,8 +837,8 @@ export function nativeTypeCatalogRead(
    const quoted = quoteTablePath(physicalTableName, dialect);
    const parts = physicalTableName.split(".");
    const table = parts[parts.length - 1];
-   const schema = parts.length > 1 ? parts[parts.length - 2] : undefined;
-   switch (dialect) {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
       case "duckdb":
          return {
             sql: `DESCRIBE ${quoted}`,
@@ -808,47 +874,73 @@ export function nativeTypeCatalogRead(
             }),
          };
       }
-      default: {
-         // A three-part name's catalog (Snowflake's or SQL Server's database,
-         // Trino's or Databricks' catalog) holds its own `information_schema`;
-         // unqualified, the view is the session's, where a table of the same
-         // schema and name would be read instead.
-         const catalog =
-            parts.length > 2
-               ? `${quoteTablePath(parts.slice(0, -2).join("."), dialect)}.`
-               : "";
-         // Trino's `information_schema.columns` has no precision columns: its
-         // `data_type` carries them (`decimal(38,0)`).
-         const precision =
-            dialect === "trino" || dialect === "presto"
-               ? ""
-               : ", numeric_precision, numeric_scale";
-         // MySQL resolves an unqualified name in the connection's database,
-         // and its `information_schema` shows every database's tables.
-         const schemaFilter = schema
-            ? ` AND lower(table_schema) = lower(${doubledQuoteString(schema)})`
-            : dialect === "mysql"
-              ? " AND table_schema = DATABASE()"
-              : "";
-         return {
-            sql:
-               "SELECT table_catalog, table_schema, table_name, column_name, data_type" +
-               precision +
-               ` FROM ${catalog}information_schema.columns` +
-               ` WHERE lower(table_name) = lower(${doubledQuoteString(table)})` +
-               schemaFilter +
-               " ORDER BY ordinal_position",
-            read: (r) => ({
-               name: String(field(r, "column_name")),
-               type: informationSchemaType(r),
-            }),
-            tableOf: (r) =>
-               ["table_catalog", "table_schema", "table_name"]
-                  .map((k) => String(field(r, k)))
-                  .join("."),
-         };
-      }
+      case "snowflake":
+      case "databricks":
+      case "trino":
+      case "presto":
+      case "mysql":
+      case "sqlserver":
+         return informationSchemaCatalogRead(parts, dialect, knownDialect);
+      default:
+         unregistered(knownDialect);
+         return informationSchemaCatalogRead(parts, dialect, knownDialect);
    }
+}
+
+/**
+ * {@link nativeTypeCatalogRead} from `information_schema.columns`, for every
+ * dialect but DuckDB, Postgres and BigQuery, an unknown one included.
+ * `dialect` is the connection's own name, `knownDialect` it narrowed.
+ */
+function informationSchemaCatalogRead(
+   parts: string[],
+   dialect: string,
+   knownDialect: DialectName | undefined,
+): {
+   sql: string;
+   read: (row: Record<string, unknown>) => NativeColumn;
+   tableOf: (row: Record<string, unknown>) => string;
+} {
+   const table = parts[parts.length - 1];
+   const schema = parts.length > 1 ? parts[parts.length - 2] : undefined;
+   // A three-part name's catalog (Snowflake's or SQL Server's database,
+   // Trino's or Databricks' catalog) holds its own `information_schema`;
+   // unqualified, the view is the session's, where a table of the same
+   // schema and name would be read instead.
+   const catalog =
+      parts.length > 2
+         ? `${quoteTablePath(parts.slice(0, -2).join("."), dialect)}.`
+         : "";
+   // Trino's `information_schema.columns` has no precision columns: its
+   // `data_type` carries them (`decimal(38,0)`).
+   const precision =
+      knownDialect === "trino" || knownDialect === "presto"
+         ? ""
+         : ", numeric_precision, numeric_scale";
+   // MySQL resolves an unqualified name in the connection's database,
+   // and its `information_schema` shows every database's tables.
+   const schemaFilter = schema
+      ? ` AND lower(table_schema) = lower(${doubledQuoteString(schema)})`
+      : knownDialect === "mysql"
+        ? " AND table_schema = DATABASE()"
+        : "";
+   return {
+      sql:
+         "SELECT table_catalog, table_schema, table_name, column_name, data_type" +
+         precision +
+         ` FROM ${catalog}information_schema.columns` +
+         ` WHERE lower(table_name) = lower(${doubledQuoteString(table)})` +
+         schemaFilter +
+         " ORDER BY ordinal_position",
+      read: (r) => ({
+         name: String(field(r, "column_name")),
+         type: informationSchemaType(r),
+      }),
+      tableOf: (r) =>
+         ["table_catalog", "table_schema", "table_name"]
+            .map((k) => String(field(r, k)))
+            .join("."),
+   };
 }
 
 // ---------------------------------------------------------------------------

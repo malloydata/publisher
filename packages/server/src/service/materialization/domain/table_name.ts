@@ -23,32 +23,18 @@
  */
 
 import { createHash } from "crypto";
+import { capabilitiesOf, type DialectName } from "./dialect";
 
 /**
- * Each dialect's leaf budget: its identifier limit less the 13 characters a
- * build appends for its staging and aside copies, capped at 120 for
- * readability. Keyed by Malloy dialect name.
- *
- *  - Postgres (and Redshift, which connects as `postgres`), MySQL, Trino and
- *    Presto (whose limit is the catalog's behind it, 63 or 64 over Postgres
- *    or MySQL), and any dialect not listed: 50.
- *  - SQL Server: 128 less 13.
- *  - DuckDB, Snowflake, BigQuery (`standardsql`) and Databricks: 120.
- *
- * A table in a storage destination (DuckLake) takes 120 whatever its source's
- * dialect.
+ * A name a dialect's leaf budget is also looked up by: `tsql`, for SQL
+ * Server. Malloy names SQL Server's dialect `sqlserver`, so no source carries
+ * `tsql` today; a connection that reports it still gets SQL Server's budget.
+ * Not a dialect of the dialect table (`domain/dialect.ts`), whose other
+ * lookups do not read it.
  */
-const LEAF_BUDGETS: ReadonlyMap<string, number> = new Map([
-   ["duckdb", 120],
-   ["snowflake", 120],
-   ["standardsql", 120],
-   ["databricks", 120],
-   ["sqlserver", 115],
-   ["tsql", 115],
+const LEAF_BUDGET_ALIASES: ReadonlyMap<string, DialectName> = new Map([
+   ["tsql", "sqlserver"],
 ]);
-
-/** The budget of a dialect {@link LEAF_BUDGETS} does not list. */
-const DEFAULT_LEAF_BUDGET = 50;
 
 /** A storage destination's budget. */
 const DESTINATION_LEAF_BUDGET = 120;
@@ -80,15 +66,18 @@ export const COMPANION_SUFFIXES: readonly string[] = [
 /** The suffix a persisted view's generated build source carries. */
 const VIEW_BUILD_SUFFIX = "__view";
 
-/** The leaf budget of a table built with `dialect`, or in a storage destination. */
+/**
+ * The leaf budget of a table built with `dialect` (its `leafBudget`
+ * capability, matched whatever its case), or in a storage destination (120,
+ * whatever its source's dialect).
+ */
 export function leafBudget(
    dialect: string | undefined,
    inDestination: boolean,
 ): number {
    if (inDestination) return DESTINATION_LEAF_BUDGET;
-   return (
-      LEAF_BUDGETS.get((dialect ?? "").toLowerCase()) ?? DEFAULT_LEAF_BUDGET
-   );
+   const name = (dialect ?? "").toLowerCase();
+   return capabilitiesOf(LEAF_BUDGET_ALIASES.get(name) ?? name).leafBudget;
 }
 
 /** `s` without leading and trailing underscores. */
