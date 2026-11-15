@@ -116,7 +116,7 @@ still build and serve.
 | `annotation-near-miss` | A misspelled route, such as `#(materialise)`. Nothing is built. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
-| `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-in-development-publisher_materialize). |
+| `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize). |
 | `deprecated-preaggregate-annotation` | A measure still uses `#@ preaggregate`. | Rewrite it as `#(preaggregate)`. |
 
 A run can also refuse one source before writing anything, in the run's `failures` rather than as a
@@ -131,7 +131,7 @@ another `name=`, or drop the other table if nothing needs it.
 computed or not (its private and internal ones too), with the source's `where:` applied. v1 stores
 whatever the `#@ persist` source's own query produces. The served copy then reads that table under
 the source's own name, so its extensions, views, joins, named queries and importing files are
-unchanged ([the served copy](materialization.md#the-served-copy-in-development-publisher_materialize)).
+unchanged ([the served copy](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
 
 - **No `##! experimental.persistence` in your file**, for either spelling. A `#(materialize)`
   source's flag lives in the build source Publisher generates; since the v1 cutover a v1 file
@@ -145,7 +145,7 @@ unchanged ([the served copy](materialization.md#the-served-copy-in-development-p
   is built. A source that extends or renames it is not a second table: it reads the materialized
   source's table through the served copy, as its own text says. To give an extension a table of its
   own, put `#(materialize)` on it too
-  ([extension tables](materialization.md#the-served-copy-in-development-publisher_materialize)).
+  ([extension tables](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
 - **One annotation per source.** A source that carries both `#(materialize)` and its own
   `#@ persist` is not built, and is reported as `materialize-not-built`.
 - **A declaration Publisher cannot build serves live, with a warning.** It is not refused at
@@ -245,7 +245,7 @@ source: east_orders_b is orders_base extend {
 
 Or materialize the base as well: an extension of a `#(materialize)` source keeps its parent's
 measures, views and joins, and has a table of its own
-([extension tables](materialization.md#the-served-copy-in-development-publisher_materialize)).
+([extension tables](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
 
 ### Colocated: build into the source's own warehouse
 
@@ -384,7 +384,7 @@ file, in a parenthesised head, or on a base whose fields the source renames, red
 hides refuses the source (`materialize-not-built`), and it serves live (plan rows
 [5](materialization-v2-plan.md#known-limitations-to-revisit) and
 [32](materialization-v2-plan.md#known-limitations-to-revisit);
-[materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize)). A
+[materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize)). A
 `where:` that reads its given through a dimension (`where: is_mine`) is refused, as in v1.
 
 ### A rolling window: a current-time `where:`
@@ -395,7 +395,7 @@ than a moving cut-off (`ts < now - 30 days`) is left out of the build, so the ta
 and is re-applied at every read; a two-sided window builds its lower bound and leaves its upper bound
 out. Other shapes that read `now` (an `or`, a bound `and`ed with another condition) leave the source
 unbuilt, and it serves live. The rules are in
-[materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize).
+[materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize).
 
 ```malloy
 #(materialize) storage="lake" refresh="full"
@@ -438,7 +438,7 @@ source: orders_lines is orders extend {
 through which a given is read (its joined source's `where:`, `on`, fields or own joins read one) is
 refused for that source (`materialize-not-built`), since its stored columns would hold one caller's
 rows; reference it instead. v1 has no equivalent of `inline=`, so there is nothing to migrate here; the limits are in
-[materialization.md](materialization.md#the-served-copy-in-development-publisher_materialize) and
+[materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize) and
 the [known limitations](#known-limitations-you-may-hit) below.
 
 ### A source with a row-level gate
@@ -475,7 +475,7 @@ source: sales is orders extend {
 
 A refinement (`run: sales -> by_category + { limit: 2 }`) is answered live and reports the view's
 table skipped with `MISSING_FIELD`. The rules are in
-[persisted views](materialization.md#persisted-views-in-development-publisher_materialize).
+[persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize).
 
 <a id="persist-opt-out"></a>
 
@@ -626,6 +626,6 @@ it. The build plan, the manifest and reuse all key on it.
 - **A `name=` view is a warehouse object Publisher marks.** When a run names a `#(materialize)`
   table by generation, Publisher also makes a view at `name=`, carrying the comment
   `malloy-publisher:name-view …`; a sweeper, a table dropper and package delete must recognize it
-  ([the `name=` view](materialization.md#the-name-view-in-development-publisher_materialize)).
+  ([the `name=` view](materialization.md#the-name-view-materialization-v2-publisher_materialize)).
   Generations and promote arrive in phase 5. See
   [the plan's control-plane contract](materialization-v2-plan.md#ownership).
