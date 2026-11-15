@@ -14,7 +14,7 @@ import "raw.malloy"
 
 #@ persist name="pv_base" storage="lake"
 source: pv_base is __served_copy_alias_of_lake.virtual('8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792')::pv_base__served extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"

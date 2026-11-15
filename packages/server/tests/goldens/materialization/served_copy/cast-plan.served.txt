@@ -18,7 +18,7 @@ source: ev is duckdb.table('ev')
 
 #@ persist name="typed" storage="lake"
 source: typed is __served_copy_alias_of_unknown.virtual('h0')::typed__served extend {
-  internal rename:
+  private rename:
     big__stored is big
     d_from_ts__stored is d_from_ts
     d_from_tz__stored is d_from_tz
