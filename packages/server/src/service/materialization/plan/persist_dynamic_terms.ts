@@ -264,22 +264,24 @@ const STAGE_PATH_SKIPPED_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The dotted field paths a compiled pipeline reads: each stage's expanded
- * usage, and every field reference in it (a `select: *` names each field of
- * the source as a `fieldref`, and its expanded usage lists only the columns
- * those fields read in turn).
+ * The dotted field paths of the input source a compiled pipeline reads: its
+ * first stage's expanded usage, and every field reference in that stage, its
+ * nests included (a `select: *` names each field of the source as a
+ * `fieldref`, and its expanded usage lists only the columns those fields read
+ * in turn). A later stage names the previous stage's outputs, not the
+ * source's fields; its own `now` is caught by the walk over every stage.
  */
 function stagesReadPaths(stages: readonly unknown[]): string[] {
    const out = new Set<string>();
-   for (const stage of stages) {
-      const usage = (stage as { expandedFieldUsage?: unknown } | null)
-         ?.expandedFieldUsage;
-      for (const u of Array.isArray(usage) ? usage : []) {
-         const p = (u as { path?: unknown } | null)?.path;
-         if (Array.isArray(p) && p.length > 0) out.add(p.join("."));
-      }
+   const first = stages[0];
+   if (first === undefined) return [];
+   const usage = (first as { expandedFieldUsage?: unknown } | null)
+      ?.expandedFieldUsage;
+   for (const u of Array.isArray(usage) ? usage : []) {
+      const p = (u as { path?: unknown } | null)?.path;
+      if (Array.isArray(p) && p.length > 0) out.add(p.join("."));
    }
-   forEachFieldPath(stages, (path) => out.add(path.join(".")), {
+   forEachFieldPath(first, (path) => out.add(path.join(".")), {
       fieldrefs: true,
       skipKeys: STAGE_PATH_SKIPPED_KEYS,
    });

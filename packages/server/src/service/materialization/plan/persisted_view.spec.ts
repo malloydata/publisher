@@ -178,6 +178,18 @@ source: ops2 is ${TABLE} extend {
       );
    });
 
+   it("plans a view whose later stage names a field like a current-time dimension", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="later"
+  view: later is { group_by: carrier, past is ts > @2000-01-01 } -> { select: carrier, past }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops__later__view"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
    it("leaves out a view on a query-shaped source whose query reads now", async () => {
       const c = await compiled(`##! experimental.persistence
 source: qb is ${TABLE} -> { where: ts < now; select: * }

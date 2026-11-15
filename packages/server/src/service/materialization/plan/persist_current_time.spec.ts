@@ -137,6 +137,14 @@ source: p is up -> { select: id, amt }`,
 
 const ADMITTED: [string, string][] = [
    [
+      "a later stage whose field shares a name with a current-time dimension",
+      "source: p is base_dim -> { group_by: id, past is ts > @2000-01-01 } -> { select: id, past }",
+   ],
+   [
+      "a later stage reading an aggregate named like a current-time dimension",
+      "source: p is base_dim -> { group_by: id; aggregate: past is count() } -> { select: id, past }",
+   ],
+   [
       "a join to a query-shaped source whose query does not read it",
       "source: p is base_join_query_plain -> { select: id, jamt is jq.amt }",
    ],
