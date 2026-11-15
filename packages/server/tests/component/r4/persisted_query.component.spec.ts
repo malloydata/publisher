@@ -11,7 +11,11 @@
  * definition are answered live, equal to live. A persisted query over a gated
  * source is never built, and the leg is never tried past its gate (CONTRACT),
  * whatever PUBLISHER_MATERIALIZE_GATED_SOURCES says. The route counter counts
- * the leg as `query`, and a persisted view's as `view`. With PUBLISHER_MATERIALIZE off, a persisted query is
+ * the leg as `query`, and a persisted view's as `view`. A text with a
+ * statement beside the call, or a later stage that extends or joins, is
+ * declined by both legs (the variant gives the run target's name to the
+ * stored result). Every query here orders its rows fully: rows that tie on
+ * `order_by:`, or have none, may come back in another order than live's. With PUBLISHER_MATERIALIZE off, a persisted query is
  * warned and answered live.
  */
 
@@ -151,8 +155,13 @@ source: vs is ${TABLE} extend {
 }
 `;
 
+/** A model that imports the persisted view's file whole. */
+const VIEWER = `import "inline.malloy"
+`;
+
 const FILES = {
    "inline.malloy": INLINE,
+   "viewer.malloy": VIEWER,
    "m.malloy": MODEL,
    "report.malloy": REPORT,
    "other.malloy": OTHER_FILE,
@@ -284,6 +293,26 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "MISSING_FIELD",
       ],
       ["an aggregate-only query", "m.malloy", "run: totals", "MISSING_FIELD"],
+      // The variant gives the run target's name to the stored result, so a
+      // caller's text that names the source again is declined (fails closed).
+      [
+         "a later stage that joins the run target",
+         "m.malloy",
+         "run: by_carrier -> { extend: { join_many: f is fl on carrier = f.carrier }; group_by: carrier; aggregate: c is f.count(); order_by: carrier }",
+         "MISSING_FIELD",
+      ],
+      [
+         "a caller's source over the run target, joined after the call",
+         "m.malloy",
+         "source: mine is fl -> { group_by: carrier; aggregate: rows is count() }\nrun: by_carrier -> { extend: { join_one: m is mine on carrier = m.carrier }; select: carrier, m.rows; order_by: carrier }",
+         "MISSING_FIELD",
+      ],
+      [
+         "a later stage that joins the run target, from another file",
+         "other.malloy",
+         "run: elsewhere -> { extend: { join_many: f is fl on tenant = f.tenant }; group_by: tenant; aggregate: c is f.count(); order_by: tenant }",
+         "MISSING_FIELD",
+      ],
       [
          "a query over a gated source in another file (refused)",
          "other.malloy",
@@ -471,6 +500,45 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          } else {
             expect(considered).toBeUndefined();
          }
+      });
+   }
+
+   /** The same shapes over a persisted view: declined by the view leg, answered live. */
+   const viewDeclined: [label: string, model: string, malloy: string][] = [
+      [
+         "a later stage that joins the view's source",
+         "inline.malloy",
+         "run: vs -> by_tenant -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+      ],
+      [
+         "a caller's source over the view's source, joined after the call",
+         "inline.malloy",
+         "source: mine is vs -> { group_by: tenant; aggregate: rows is count() }\nrun: vs -> by_tenant -> { extend: { join_one: m is mine on tenant = m.tenant }; select: tenant, m.rows; order_by: tenant }",
+      ],
+      [
+         "a later stage that joins the view's source, from an importing model",
+         "viewer.malloy",
+         "run: vs -> by_tenant -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+      ],
+   ];
+
+   for (const [label, model, malloy] of viewDeclined) {
+      it(`declines ${label} on the view leg, equal to live`, async () => {
+         const before = answerOf(await loaded.run(model, malloy));
+         const result = await fixture.pkg
+            .getModel(model)!
+            .runQuery(
+               unrecordedAudit(),
+               { query: malloy } as never,
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+         expect(result.path?.servedBy.kind).toBe("live");
+         expect(result.compactResult as unknown).toEqual(before.rows);
+         const considered = result.path?.considered.find(
+            (c) => c.kind === "view",
+         );
+         expect(considered?.outcome).toBe("skipped");
+         expect(considered?.reason).toBe("MISSING_FIELD");
       });
    }
 

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import type { RunViewCall } from "../../query_text";
 import {
+   callerTextDecline,
    callTargetDecline,
    exactCallDecline,
    refinedCallDecline,
@@ -17,6 +18,7 @@ function call(over: Partial<RunViewCall> = {}): RunViewCall {
       view: "by_carrier",
       refined: false,
       laterStages: 0,
+      shape: { alone: true, laterStageExtends: false },
       ...over,
    };
 }
@@ -75,5 +77,24 @@ describe("exactCallDecline", () => {
       const decline = exactCallDecline(call(), plan, "flights");
       expect(decline?.code).toBe("view_missing_field");
       expect(decline?.callerDetail).toContain("not a call of `by_carrier`");
+   });
+});
+
+describe("callerTextDecline", () => {
+   it("passes a call that is the whole text and never extends", () => {
+      expect(
+         callerTextDecline({ alone: true, laterStageExtends: false }, "v"),
+      ).toBeUndefined();
+   });
+
+   it("declines a text with another statement, or a later stage that extends", () => {
+      for (const shape of [
+         { alone: false, laterStageExtends: false },
+         { alone: true, laterStageExtends: true },
+      ]) {
+         const decline = callerTextDecline(shape, "v");
+         expect(decline?.code).toBe("view_missing_field");
+         expect(decline?.reason).toBe("MISSING_FIELD");
+      }
    });
 });

@@ -70,6 +70,7 @@ import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import {
+   callerTextDecline,
    type ColumnCast,
    type CompiledVariant,
    type PersistedViewServe,
@@ -242,6 +243,8 @@ export class PersistedQueryServe {
             `the query refines \`${call.query}\` (\`+ { … }\`), and the stored result holds only the query as written`,
          );
       }
+      const unfollowed = callerTextDecline(call.shape, call.query);
+      if (unfollowed) throw unfollowed;
       const prepared = await readPreparedQuery(args.authorRunnable);
       const compiledModel = (prepared.modelDef ?? this.host.modelDef()) as
          | { contents?: Record<string, unknown> }

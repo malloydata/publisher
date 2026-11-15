@@ -932,7 +932,7 @@ function timedMs(run: () => void): number {
 
 describe("extractRunViewCall", () => {
    it("reads an exact call of a view", () => {
-      expect(extractRunViewCall("run: ops -> by_carrier")).toEqual({
+      expect(extractRunViewCall("run: ops -> by_carrier")).toMatchObject({
          source: "ops",
          view: "by_carrier",
          refined: false,
@@ -945,7 +945,7 @@ describe("extractRunViewCall", () => {
          extractRunViewCall(
             "run: ops -> by_carrier -> { select: * } -> top_one",
          ),
-      ).toEqual({
+      ).toMatchObject({
          source: "ops",
          view: "by_carrier",
          refined: false,
@@ -958,7 +958,7 @@ describe("extractRunViewCall", () => {
          extractRunViewCall(
             "run: ops -> by_carrier + { limit: 3 } -> { select: * }",
          ),
-      ).toEqual({
+      ).toMatchObject({
          source: "ops",
          view: "by_carrier",
          refined: true,
@@ -1001,13 +1001,13 @@ describe("extractRunViewCall", () => {
 
 describe("extractRunQueryCall", () => {
    it("reads an exact call of a named query, as queryName sends it too", () => {
-      expect(extractRunQueryCall("run: top_carriers")).toEqual({
+      expect(extractRunQueryCall("run: top_carriers")).toMatchObject({
          query: "top_carriers",
          refined: false,
          laterStages: 0,
       });
       // REST and MCP `queryName` send a backticked name on a line of its own.
-      expect(extractRunQueryCall("\nrun: `top carriers`")).toEqual({
+      expect(extractRunQueryCall("\nrun: `top carriers`")).toMatchObject({
          query: "top carriers",
          refined: false,
          laterStages: 0,
@@ -1019,18 +1019,18 @@ describe("extractRunQueryCall", () => {
          extractRunQueryCall(
             "run: q -> { select: * } -> { aggregate: n is count() }",
          ),
-      ).toEqual({ query: "q", refined: false, laterStages: 2 });
+      ).toMatchObject({ query: "q", refined: false, laterStages: 2 });
    });
 
    it("reads a refinement, which the leg declines", () => {
-      expect(extractRunQueryCall("run: q + { limit: 3 }")).toEqual({
+      expect(extractRunQueryCall("run: q + { limit: 3 }")).toMatchObject({
          query: "q",
          refined: true,
          laterStages: 0,
       });
       expect(
          extractRunQueryCall("run: q + { where: a = 1 } -> { select: * }"),
-      ).toEqual({ query: "q", refined: true, laterStages: 1 });
+      ).toMatchObject({ query: "q", refined: true, laterStages: 1 });
    });
 
    it("reads the last run statement, past other statements, comments and strings", () => {
@@ -1038,7 +1038,7 @@ describe("extractRunQueryCall", () => {
          extractRunQueryCall(
             "// run: x\nquery: q2 is q -> { select: * }\nrun: q2 -> { where: s = 'run: q' }",
          ),
-      ).toEqual({ query: "q2", refined: false, laterStages: 1 });
+      ).toMatchObject({ query: "q2", refined: false, laterStages: 1 });
       expect(extractRunQueryCall("run: a\nrun: b")).toMatchObject({
          query: "b",
       });
@@ -1055,6 +1055,41 @@ describe("extractRunQueryCall", () => {
       ]) {
          expect(extractRunQueryCall(text)).toBeUndefined();
       }
+   });
+
+   it("says whether the call is the whole text, and whether a later stage extends", () => {
+      const shape = (text: string) => extractRunQueryCall(text)?.shape;
+      expect(shape("run: q")).toEqual({
+         alone: true,
+         laterStageExtends: false,
+      });
+      expect(shape("\nrun: `q`")).toEqual({
+         alone: true,
+         laterStageExtends: false,
+      });
+      expect(shape("q -> { select: * }")?.alone).toBe(true);
+      expect(shape("source: s is t\nrun: q")?.alone).toBe(false);
+      expect(shape("run: q -> { select: * }\nsource: s is t")?.alone).toBe(
+         false,
+      );
+      for (const stage of [
+         "extend: { join_many: f is fl on a = f.a }; group_by: a",
+         "extend: { dimension: x is 1 }; group_by: x",
+         "join_one: f is fl on a = f.a; select: a",
+      ]) {
+         expect(shape(`run: q -> { ${stage} }`)?.laterStageExtends).toBe(true);
+         expect(
+            extractRunViewCall(`run: s -> v -> { ${stage} }`)?.shape
+               .laterStageExtends,
+         ).toBe(true);
+      }
+      expect(
+         shape("run: q -> { where: s = 'extend: x'; select: * }")
+            ?.laterStageExtends,
+      ).toBe(false);
+      expect(
+         extractRunViewCall("query: x is y\nrun: s -> v")?.shape.alone,
+      ).toBe(false);
    });
 });
 

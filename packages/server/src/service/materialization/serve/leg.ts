@@ -17,8 +17,9 @@
  *
  * {@link makeLegs} makes the legs for one pinned snapshot, in the router's
  * order (R1: the view or named query by exact call, then the coarsest
- * rollup, then the served copy). A leg is listed only when it exists for the model and the snapshot, so the
- * gate check runs exactly when one could route.
+ * rollup, then the served copy). A leg is listed only when it exists for
+ * the model and the snapshot, so the gate check runs exactly when one could
+ * route.
  *
  * {@link Answer} is the one record of how a query was served: built once from
  * the router's decision, replaced (never mutated) when a stored run fails and

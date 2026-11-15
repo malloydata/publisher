@@ -66,7 +66,11 @@ import {
 } from "../../malloy_text";
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import type { ModelConnectionInput } from "../../model_runtime";
-import { extractRunViewCall, type RunViewCall } from "../../query_text";
+import {
+   type CallerTextShape,
+   extractRunViewCall,
+   type RunViewCall,
+} from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
 import type { BuildManifest } from "../domain/types";
 import {
@@ -266,7 +270,8 @@ export class PersistedViewServe {
          throw new LegDecline("view_missing_field");
       }
       const { call, plan } = called;
-      const refined = refinedCallDecline(call);
+      const refined =
+         refinedCallDecline(call) ?? callerTextDecline(call.shape, call.view);
       if (refined) throw refined;
       // The run target must be the view's own source, by sourceID: not an
       // extension, and not a caller's redefinition of the name.
@@ -1008,6 +1013,32 @@ export function refinedCallDecline(call: RunViewCall): LegDecline | undefined {
       return new LegDecline(
          "view_missing_field",
          `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
+      );
+   }
+   return undefined;
+}
+
+/**
+ * A caller's text the variant cannot follow (see {@link CallerTextShape}): a
+ * statement besides the call, or a later stage that extends or joins. The
+ * variant gives the run target's name to the stored result, so a source the
+ * caller's text names there (a join back to it, a source built over it)
+ * would read the stored rows where live reads the source: fails closed.
+ */
+export function callerTextDecline(
+   shape: CallerTextShape,
+   name: string,
+): LegDecline | undefined {
+   if (!shape.alone) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query text declares more than the call of \`${name}\`, which the stored result's variant does not read as live does`,
+      );
+   }
+   if (shape.laterStageExtends) {
+      return new LegDecline(
+         "view_missing_field",
+         `a stage after \`${name}\` extends or joins, which the stored result's variant does not read as live does`,
       );
    }
    return undefined;
