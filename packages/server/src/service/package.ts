@@ -191,6 +191,11 @@ import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
 import {
+   callerVisibleText,
+   rewriteErrorMessage,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
+import {
    PackageModelPolicy,
    type OffSurfaceContext,
    type QueryBoundaryPolicy,
@@ -902,13 +907,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             "publisher.package.dry_run": options.dryRun === true,
          },
          () =>
-            Package.load(
-               environmentName,
-               packageName,
-               packagePath,
-               environmentMalloyConfig,
-               cleanupDirectoryOnFailure,
-               options.dryRun === true,
+            // A failed load's message names the package's files
+            // package-relative, whichever path loaded it.
+            withPackageRelativeErrors(packagePath, () =>
+               Package.load(
+                  environmentName,
+                  packageName,
+                  packagePath,
+                  environmentMalloyConfig,
+                  cleanupDirectoryOnFailure,
+                  options.dryRun === true,
+               ),
             ),
       );
    }
@@ -1092,6 +1101,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
       const timings = { hydrateMs: 0, renderValidationMs: 0 };
+      // A model's compile error is read by every caller of the package (a
+      // query's 424, get_context, the package's warnings): it names the
+      // package's files package-relative and no other server path, whether
+      // it is thrown or kept on a placeholder.
+      const callerVisible = (err: Error): Error => {
+         rewriteErrorMessage(err, (message) =>
+            callerVisibleText(message, packagePath),
+         );
+         return err;
+      };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -1100,7 +1119,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             packageName,
             sm.modelPath,
             sm.modelType,
-            err,
+            callerVisible(err),
             {
                policy: ctx.modelPolicy.forModel(sm.modelPath),
                sourceText:
@@ -1115,7 +1134,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       for (const sm of outcome.models) {
          await yielder.maybeYield();
          if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
+            const err = callerVisible(
+               Model.deserializeCompilationError(sm.compilationError),
+            );
             if (onCompileError === "throw") {
                logger.error("Model compilation failed", {
                   packageName,

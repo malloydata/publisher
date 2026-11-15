@@ -34,6 +34,12 @@ import {
 } from "../path_safety";
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
+import {
+   callerVisibleText,
+   OUTSIDE_PACKAGE,
+   packageRelativeText,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import { packageURLReader, readPackageURL } from "../utils";
 import {
    ANNOTATION_GATE_NEAR_MISS_CODE,
@@ -246,9 +252,19 @@ export async function compileSource(
    assertValidCompileRequest(request);
    const compileIn = async (versioned: Package | undefined) => {
       const ctx = await openCompileContext(host, request, versioned);
-      if (scope === "package") return compilePackageDryRun(ctx);
-      if (scope === "file") return compileFile(ctx);
-      return compileAppend(ctx);
+      // The diagnostics, and a refusal, name the package's files
+      // package-relative, never where this server keeps them.
+      const result = await withPackageRelativeErrors(ctx.packagePath, () => {
+         if (scope === "package") return compilePackageDryRun(ctx);
+         if (scope === "file") return compileFile(ctx);
+         return compileAppend(ctx);
+      });
+      return {
+         ...result,
+         problems: result.problems.map((problem) =>
+            packageRelativeProblem(problem, ctx.packagePath),
+         ),
+      };
    };
    // A published version compiles in its own folder with no lock: its files
    // never change.
@@ -262,6 +278,39 @@ export async function compileSource(
    return host.withPackageLock(packageName, async () =>
       compileIn(await host.versionedPackage(packageName, versionId, true)),
    );
+}
+
+/**
+ * `problem` as a caller may read it: its message naming the package's files
+ * package-relative, and its `at.url` a package file's path relative to the
+ * package root, decoded (`sub dir/a b.malloy`, not `sub%20dir/…`), or
+ * {@link OUTSIDE_PACKAGE} for a file outside the package.
+ */
+function packageRelativeProblem(
+   problem: TaggedLogMessage,
+   packagePath: string,
+): TaggedLogMessage {
+   const at = (problem as { at?: { url?: string } }).at;
+   return {
+      ...problem,
+      message: callerVisibleText(problem.message, packagePath),
+      ...(at?.url !== undefined && {
+         at: { ...at, url: callerVisibleUrl(at.url, packagePath) },
+      }),
+   } as TaggedLogMessage;
+}
+
+function callerVisibleUrl(url: string, packagePath: string): string {
+   if (!url.toLowerCase().startsWith("file:")) {
+      return callerVisibleText(url, packagePath);
+   }
+   const relative = packageRelativeText(url, packagePath);
+   if (relative.toLowerCase().startsWith("file:")) return OUTSIDE_PACKAGE;
+   try {
+      return decodeURIComponent(relative);
+   } catch {
+      return relative;
+   }
 }
 
 /** The argument checks every scope runs before taking the package lock. */

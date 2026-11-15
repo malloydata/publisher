@@ -16,7 +16,7 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
 import { withSpan } from "../telemetry";
 import {
-   recordSourceDeclined,
+   recordServedCopyOutcome,
    recordStoredColumnTypeMismatch,
 } from "../materialization_metrics";
 import type { QueryServingHost } from "./query_serving";
@@ -58,6 +58,7 @@ import {
    type Pinned,
    type Snapshot,
 } from "./materialization/domain/binding";
+import { servedCopyOutcomes } from "./materialization/domain/source_decline";
 import { deserializeError } from "../package_load/package_load_pool";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
@@ -2668,13 +2669,14 @@ export class Model {
       this.storageTables(pinned.snapshot);
       if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare(pinned);
-      // Once per model per snapshot it compiles (a load or a rebind): each
-      // source the copy leaves unserved, by the reason its package warning
-      // gives. `inline_join_kept` and `cross_connection_join` still serve
-      // the source, with that join live; the bind label has no outcome for
-      // a partial serve, so they count as declined.
-      for (const problem of this.servedCopy.problems()) {
-         recordSourceDeclined(problem.reason);
+      // Once per source per model per snapshot it compiles (a load or a
+      // rebind): each source the copy does not serve whole, `declined`
+      // beating `partial`, and `partial` only while it is still re-rooted.
+      for (const { outcome, reason } of servedCopyOutcomes(
+         this.servedCopy.problems(),
+         this.servedCopy.rerootedSourceIDs() ?? new Set(),
+      )) {
+         recordServedCopyOutcome(outcome, reason);
       }
    }
 

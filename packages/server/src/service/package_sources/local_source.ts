@@ -64,7 +64,8 @@ export class LocalPackageSource implements PackageSource {
       assertSafeEnvironmentPath(absoluteTargetPath);
       const notFound = () =>
          new PackageNotFoundError(
-            `Package ${packageName} for environment ${environmentName} not found in "${environmentPath}"`,
+            // Named by the package: the location is the server's path.
+            `Package ${packageName} for environment ${environmentName} not found at its configured location`,
          );
       const source = await fs.promises.stat(environmentPath).catch((error) => {
          if ((error as NodeJS.ErrnoException).code === "ENOENT") {

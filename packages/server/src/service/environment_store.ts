@@ -2560,8 +2560,12 @@ export class EnvironmentStore
             `Failed to ${selected.action} "${selected.subject}"`,
             errorData,
          );
+         // A local location is a path on this server: the answer names the
+         // package instead. A remote one (a URL) is the caller's own text.
          throw new PackageNotFoundError(
-            `Failed to ${selected.action}: ${selected.subject}`,
+            selected.source === this.packageSources.local
+               ? `Failed to ${selected.action} for package "${packageName}"`
+               : `Failed to ${selected.action}: ${selected.subject}`,
             { cause: error },
          );
       }

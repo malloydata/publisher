@@ -15,6 +15,14 @@
  * A view whose stored rows cannot be regrouped into exactly themselves (no
  * dimension to key them, a nest) is declined by the view leg and answers
  * live; those cases assert the decline, and rows and metadata equal to live.
+ *
+ * A column's type is compared too: every date and timestamp truncation, for
+ * a `storage=` table built as a build casts it (a date truncation stored as a
+ * DATE) and one stored uncast, as a build stores it when it declines or fails
+ * a cast (a date truncation stored as a TIMESTAMP, which the view leg reads
+ * through the served copy's `::"DATE"` cast rather than typing a timestamp).
+ * The same truncations through a query-shaped `storage=` source answered by
+ * the served copy are compared alongside.
  */
 
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
@@ -35,7 +43,7 @@ import {
 import { renderFiles, type Shape } from "./conformance/shapes";
 import { rowDifference } from "./harness";
 
-const MODEL = `##! experimental { persistence }
+const MODEL = `##! experimental { persistence sql_functions }
 import "raw.malloy"
 
 source: ov is orders_raw extend {
@@ -43,6 +51,11 @@ source: ov is orders_raw extend {
   #(doc) "Revenue"
   measure: total is amount.sum()
   measure: order_count is count()
+  // A flag the warehouse returns as an INTEGER, and a number it returns as
+  // text: a build stored uncast keeps both.
+  dimension: big_flag is sql_boolean("CASE WHEN \${amount} > 100 THEN 1 ELSE 0 END")
+  dimension: amount_text is sql_number("CAST(\${amount} AS VARCHAR)")
+  dimension: maybe_date is pick order_date when amount > 50 else null
 
   @PVIEW(ov_by_region)
   view: by_region is { group_by: region; aggregate: total, order_count }
@@ -164,6 +177,77 @@ source: ov is orders_raw extend {
   @PVIEW(ov_listing)
   view: listing is { select: id, region, amount; order_by: id }
 
+  @PVIEW(ov_date_grains)
+  view: date_grains is {
+    group_by:
+      d_day is order_date.day
+      d_week is order_date.week
+      d_month is order_date.month
+      d_quarter is order_date.quarter
+      d_year is order_date.year
+    aggregate: order_count
+    order_by: d_day
+  }
+
+  @PVIEW(ov_timestamp_grains)
+  view: timestamp_grains is {
+    group_by:
+      t_minute is created_at.minute
+      t_hour is created_at.hour
+      t_day is created_at.day
+      t_week is created_at.week
+      t_month is created_at.month
+      t_quarter is created_at.quarter
+      t_year is created_at.year
+    aggregate: order_count
+    order_by: t_minute
+  }
+
+  @PVIEW(ov_zoned_by_month)
+  view: zoned_by_month is {
+    timezone: 'America/New_York'
+    group_by: order_month is order_date.month
+    aggregate: total
+    order_by: order_month
+  }
+
+  @PVIEW(ov_zoned_by_day)
+  view: zoned_by_day is {
+    timezone: 'America/New_York'
+    group_by: created_day is created_at.day
+    aggregate: total
+    order_by: created_day
+  }
+
+  @PVIEW(ov_flags)
+  view: flags is { group_by: big_flag; aggregate: order_count; order_by: big_flag }
+
+  @PVIEW(ov_text_amount)
+  view: text_amount is { group_by: amount_text; aggregate: order_count }
+
+  @PVIEW(ov_date_probes)
+  view: date_probes is {
+    group_by:
+      old_month is (order_date - 60 years).month
+      far_month is (order_date + 3000 years).month
+      null_month is maybe_date.month
+    aggregate: order_count
+    order_by: old_month, null_month
+  }
+
+  @PVIEW(ov_tf_collision)
+  view: tf_collision is {
+    group_by: d_month is order_date.month, d_month__tf is order_date.year
+    aggregate: order_count
+    order_by: d_month
+  }
+
+  @PVIEW(ov_date_measure)
+  view: date_measure is {
+    group_by: region
+    aggregate: last_order is max(order_date.month)
+  }
+
   @PVIEW(ov_nested)
   view: nested is {
     group_by: region
@@ -176,6 +260,33 @@ source: ov is orders_raw extend {
     }
   }
 }
+
+source: ovz is orders_raw extend {
+  timezone: 'America/New_York'
+  measure: total is amount.sum()
+
+  @PVIEW(ovz_by_month)
+  view: by_month is {
+    group_by: order_month is order_date.month
+    aggregate: total
+    order_by: order_month
+  }
+}
+
+@PERSIST(grains_src)
+source: grains is orders_raw -> {
+  group_by:
+    d_day is order_date.day
+    d_week is order_date.week
+    d_month is order_date.month
+    d_quarter is order_date.quarter
+    d_year is order_date.year
+    t_hour is created_at.hour
+    t_day is created_at.day
+    t_month is created_at.month
+    t_year is created_at.year
+  aggregate: n is count()
+}
 `;
 
 const SHAPE: Shape = {
@@ -185,17 +296,21 @@ const SHAPE: Shape = {
    queries: [],
 };
 
+type Tier = "storage" | "colocated";
+
 interface Case {
    name: string;
    malloy: string;
-   /** Variants whose answer is live by design (a nest is stored only colocated). */
-   liveIn?: ("storage" | "colocated")[];
-   /** A known difference this spec does not fix, by variant, with its reason. */
-   knownGap?: Partial<Record<"storage" | "colocated", string>>;
+   /** Tiers whose answer is live by design (a nest is stored only colocated). */
+   liveIn?: Tier[];
+   /** What answers it when not live (default the view leg). */
+   servedBy?: string;
+   /** A known difference this spec does not fix, by tier, with its reason. */
+   knownGap?: Partial<Record<Tier, string>>;
    /** Values a column must hold among the answer's rows, so the case covers each. */
    covers?: { column: string; values: unknown[] };
-   /** Text the view leg's decline detail must carry, by variant. */
-   declinedBecause?: Partial<Record<"storage" | "colocated", string>>;
+   /** Text the view leg's decline detail must carry, by tier. */
+   declinedBecause?: Partial<Record<Tier, string>>;
 }
 
 /** The warning a variant that fails to compile logs; a refusal never does. */
@@ -204,13 +319,67 @@ const DID_NOT_COMPILE = "A persisted-view variant did not compile";
 const CASES: Case[] = [
    { name: "measures and a dimension", malloy: "run: ov -> by_region" },
    { name: "a timestamp timeframe", malloy: "run: ov -> by_month" },
+   { name: "a date timeframe", malloy: "run: ov -> by_order_month" },
    {
-      name: "a date timeframe",
-      malloy: "run: ov -> by_order_month",
+      name: "every date truncation",
+      malloy: "run: ov -> date_grains",
+   },
+   {
+      name: "every timestamp truncation",
+      malloy: "run: ov -> timestamp_grains",
+   },
+   {
+      name: "a date truncation under a view's time zone",
+      malloy: "run: ov -> zoned_by_month",
+   },
+   {
+      name: "a timestamp truncation under a view's time zone",
+      malloy: "run: ov -> zoned_by_day",
       knownGap: {
          storage:
-            "a date truncation is stored as a TIMESTAMP and served as a timestamp, where live types it a date (a column type, not a kind)",
+            "the stored day reads back at UTC midnight where live answers New York midnight (rows differ, not only a type)",
       },
+   },
+   {
+      name: "an integer flag read as a boolean",
+      malloy: "run: ov -> flags",
+      covers: { column: "big_flag", values: [true, false] },
+   },
+   {
+      name: "a column no faithful cast reads as live's type",
+      malloy: "run: ov -> text_amount",
+      liveIn: ["storage"],
+      declinedBecause: {
+         storage:
+            "the stored `amount_text` (VARCHAR) cannot be read as live's number",
+      },
+   },
+   {
+      name: "a date before 1970, a far-future one and a NULL one",
+      malloy: "run: ov -> date_probes",
+      covers: { column: "null_month", values: [null] },
+   },
+   {
+      name: "a timeframe column beside one named like its internal name",
+      malloy: "run: ov -> tf_collision",
+   },
+   {
+      name: "a date truncation under a source's time zone",
+      malloy: "run: ovz -> by_month",
+   },
+   {
+      name: "a date-typed measure",
+      malloy: "run: ov -> date_measure",
+   },
+   {
+      name: "a later stage over date truncations",
+      malloy:
+         "run: ov -> date_grains -> { group_by: d_month, d_year; aggregate: c is order_count.sum(); order_by: d_month }",
+   },
+   {
+      name: "a query-shaped source's truncations, through the served copy",
+      malloy: "run: grains -> { select: *; order_by: d_day, t_hour }",
+      servedBy: "materialized",
    },
    { name: "a calculation", malloy: "run: ov -> ranked" },
    { name: "a multi-stage view", malloy: "run: ov -> two_stage" },
@@ -319,8 +488,14 @@ function stripSubtype(t: unknown): unknown {
 beforeAll(freshLoadPool);
 afterAll(freshLoadPool);
 
-for (const variant of ["storage", "colocated"] as const) {
-   describe(`a persisted view's result metadata [${variant}]`, () => {
+const VARIANTS: { name: string; tier: Tier; storeUncast?: true }[] = [
+   { name: "storage", tier: "storage" },
+   { name: "storage, stored uncast", tier: "storage", storeUncast: true },
+   { name: "colocated", tier: "colocated" },
+];
+
+for (const { name: variantName, tier: variant, storeUncast } of VARIANTS) {
+   describe(`a persisted view's result metadata [${variantName}]`, () => {
       let restore: () => void = () => {};
       let fixture: LoadedFixture | undefined;
       const live = new Map<string, Outcome>();
@@ -338,7 +513,10 @@ for (const variant of ["storage", "colocated"] as const) {
          for (const c of CASES) {
             live.set(c.name, await loader.run("m.malloy", c.malloy));
          }
-         fixture = await loader.bind({ includeRollups: true });
+         fixture = await loader.bind({
+            includeRollups: true,
+            ...(storeUncast ? { storeUncast } : {}),
+         });
          for (const c of CASES) {
             const logged: string[] = [];
             const warn = spyOn(logger, "warn").mockImplementation(((
@@ -362,7 +540,9 @@ for (const variant of ["storage", "colocated"] as const) {
       });
 
       for (const c of CASES) {
-         const want = c.liveIn?.includes(variant) ? "live" : "view";
+         const want = c.liveIn?.includes(variant)
+            ? "live"
+            : (c.servedBy ?? "view");
          const gap = c.knownGap?.[variant];
          (gap ? it.skip : it)(
             `${c.name}${gap ? ` (known gap: ${gap})` : ""}: answered by ${want}, kinds and annotations equal to live`,

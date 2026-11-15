@@ -151,6 +151,6 @@ If **even this** doesn't build after a real run, the problem is package-wide: re
 - **A reload unbinds; a restart rebinds** - run a build before trusting a timing.
 - **Reuse is by content address, not by name** - `--force-refresh` and every scheduler fire defeat it.
 - **Removing a persist source does not drop its table** - `delete materialization --drop-tables` drops what no other ready run names, and serving reverts to live in place.
-- **A given inside the persisted query is refused; in the source's own `extend` block it is applied per caller** - `reference/storage.md`.
+- **A given inside the persisted query is refused; in the source's own `extend` block it is applied per caller; inherited from a base it is refused and the source answers live** - `reference/storage.md`.
 - **A join to a non-persisted source, or a nested column, serves live for the queries that touch it** - the source's own fields still serve from the table.
 - **A `#(access_filter)`-gated source freezes its gating column when persisted** - `storage=` and `#@ preaggregate` refuse it outright; `reference/access-filter.md`.

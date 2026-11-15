@@ -266,7 +266,9 @@ source: orders is scoped extend { dimension: big is amount > 10 }
                (f) =>
                   f.code === "materialize-not-built" && f.subject === "orders",
             )?.message,
-         ).toContain("on a source in another file");
+         ).toContain(
+            "move the given-reading `where:` onto the materialized source itself",
+         );
       },
       { timeout: 30000 },
    );

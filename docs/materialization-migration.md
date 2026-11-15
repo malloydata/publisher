@@ -399,15 +399,13 @@ given: ORG_ID :: number is 1
 source: scoped is orders extend { where: org_id = $ORG_ID }
 ```
 
-v2 goes further than v1 in two places. A dimension that reads a given is left out of the build and
-computed at read, and a given-reading `where:` on a base the source extends or renames in the same
-file is left out of the build and re-applied at read too, where v1 refuses a given. Both need the
-served copy to keep the definition: a given-reading dimension or base `where:` declared in another
-file, in a parenthesised head, or on a base whose fields the source renames, redefines, drops or
-hides refuses the source (`materialize-not-built`), and it serves live (plan rows
-[5](materialization-v2-plan.md#known-limitations-to-revisit) and
-[32](materialization-v2-plan.md#known-limitations-to-revisit);
-[materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize)). A
+v2 goes further than v1 in one place: a dimension that reads a given is left out of the build and
+computed at read. Both need the term or the dimension on the materialized source's own declaration,
+which is all the served copy keeps. A given-reading `where:` or dimension the source inherits from a
+base, in the same file or another, refuses the source (`materialize-not-built`, or
+`inherited_where_with_given` for a v1 `#@ persist`), and it serves live under the term; move it onto
+the materialized source itself to serve it from a table
+([materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize)). A
 `where:` that reads its given through a dimension (`where: is_mine`) is refused, as in v1.
 
 ### A rolling window: a current-time `where:`
@@ -595,7 +593,7 @@ are in the plan's [known limitations](materialization-v2-plan.md#known-limitatio
 | `inline=` on a path through a join_one | Not built: `materialize-not-built` | Row 9 |
 | A pair-table query that reads two blocks, or aggregates a middle level beside the leaf; an incremental refresh of a path or a multi-block table | Answered live; the table rebuilds in full (`materialize-pair-full-refresh`) | Row 9 |
 | `inline=` on a join_cross | Not built: `materialize-not-built` | — |
-| A dimension, or an inherited `where:` term, that reads a given, declared where the served copy cannot keep it (another file, a parenthesised head, a base the source renames past) | The source is refused and serves live | Rows 5 and 32 |
+| A dimension, or a `where:` term, that reads a given and is not written on the materialized source itself (a base in this file or another, a materialized parent) | The source is refused and serves live | Rows 5 and 32 |
 | A query with its own `timezone:` over a stored truncation or rolling window | Answered live | Row 7 |
 | A hidden stored column beside your own `rename:` of a stored column, or a pair table's renames | Answered live (in the second case, the whole model's served copy) | Row 30 |
 | A query on a gated entry point, over a rollup, without `PUBLISHER_MATERIALIZE_GATED_SOURCES`, over a `storage=` rollup, or through a gate that reads a field outside the grain or through a join | Answered live (`CONTRACT`); a rollup no gated query could read is not built (`preaggregate-access-filter`) | Row 1 |
