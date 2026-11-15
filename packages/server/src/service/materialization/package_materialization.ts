@@ -1656,10 +1656,9 @@ export class PackageMaterialization {
             );
             return reaching.length > 0 && reaching.every((root) => root.gated);
          },
-         // The verdict does not apply the colocated-reads rule (a colocated
-         // table keeps its gates), which the router decides per answer: it
-         // asks whether the served copy passes a gate for every table it may
-         // read.
+         // The storage tier's question: whether the served copy passes a
+         // gate for every table it may read. A colocated table passes under
+         // G3, which the verdict reads off the tier.
          servedCopyKeepsGates: legMayPassGate("served", gateSwitches(), {
             colocatedReadsKeepGates: false,
          }),

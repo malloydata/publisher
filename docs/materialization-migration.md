@@ -467,15 +467,15 @@ the [known limitations](#known-limitations-you-may-hit) below.
 
 ### A source with a row-level gate
 
-**Behind its own switch, off by default.** With `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, a
-`#(materialize)` source, colocated or `storage=`, whose own `#(authorize)` or `#(access_filter)`
-compiles to a row filter is built and served from the served copy with the gate grafted on. Off, it
-is not built and serves live: a `storage=` one is refused as a gated `#@ persist storage=` source is,
-and a colocated one too, because its table is read only through the served copy. A colocated gated
-source that must have a table with the switch off stays on `#@ persist`: since the v1 cutover the
-served copy reads a v1 colocated table past its entry point's own proven gate, grafted as on live,
-even with the switch off, when every table the answer reads is colocated. The switch stays off
-until a security review of storing gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
+**Colocated, as v1; `storage=` behind its own switch, off by default.** A colocated
+`#(materialize)` source (no `storage=`) whose own `#(authorize)` or `#(access_filter)` compiles to a
+row filter or a lock is built and served from the served copy with the gate grafted on and proven,
+exactly as a v1 colocated `#@ persist` is, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on or off,
+when every table the answer reads is colocated: its table never leaves the author's warehouse. A
+`storage=` one needs that switch on as well; off, it is refused and serves live, as a gated
+`#@ persist storage=` source is. A gate the source inherits, reaches through a join, or whose build
+would substitute a given is refused either way. The switch stays off until a security review of
+storing gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
 the givens from a verified identity
 ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 
@@ -574,8 +574,6 @@ has the full list.
 
 ## What is not migrated
 
-- **A colocated gated source** with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off: keep `#@ persist`
-  ([above](#a-source-with-a-row-level-gate)).
 - **`#@ persist` on a view** and **`#@ -persist`**: these are the v2 spellings already.
 - **`realization=`** has no v2 form; on `#(materialize)` it is `materialize-unknown-key`.
 - **`partition=`** is retired on both forms, refused at publish; remove it.

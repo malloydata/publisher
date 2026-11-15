@@ -8,8 +8,11 @@
  * router (does a leg get past an entry-point gate). Every combination of kind,
  * tier, v1 or not, and the switches is a row, written against the code as it
  * was before the gate-keeping policy became one table, so that change must
- * leave every row as it is. A wrong row lets a leg past a veto; `govern()`'s
- * re-proof stays behind every row, and is tested by the routed gate suites.
+ * leave every row as it is. One row changed since, by maintainer decision:
+ * colocated `#(materialize)` keeps its own row-level gate under G3 with the
+ * gated-sources switch off, as v1 colocated does. A wrong row lets a leg past
+ * a veto; `govern()`'s re-proof stays behind every row, and is tested by the
+ * routed gate suites.
  *
  * Plan and the serve verdict are read off a real package load (the load
  * worker plans), for two gate shapes: a source's own row-level gate
@@ -253,9 +256,9 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       views__by_region_sto__view: "refused authorize | storage | live refused",
    },
    "a gate on the declared source, materialize on, gated sources off": {
-      mat_col: "planned | colocated | live row_level_gate",
+      mat_col: "planned | colocated | not_built",
       mat_sto: "planned | storage | live row_level_gate",
-      pair_col: "planned | colocated | live row_level_gate",
+      pair_col: "planned | colocated | not_built",
       pair_sto: "planned | storage | live row_level_gate",
       persist_col: "planned | colocated | not_built",
       persist_sto: "refused authorize | storage | live refused",
@@ -281,9 +284,9 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       views__by_region_sto__view: "refused authorize | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources off": {
-      mat_col: "planned | colocated | live row_level_gate",
+      mat_col: "planned | colocated | not_built",
       mat_sto: "planned | storage | live row_level_gate",
-      pair_col: "planned | colocated | live row_level_gate",
+      pair_col: "planned | colocated | not_built",
       pair_sto: "planned | storage | live row_level_gate",
       persist_col: "planned | colocated | not_built",
       persist_sto: "refused authorize | storage | live refused",
@@ -313,9 +316,9 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       views__by_region_sto__view: "planned | storage | not_built",
    },
    "a gate above it, materialize on, gated sources off": {
-      mat_col: "planned | colocated | live row_level_gate",
+      mat_col: "planned | colocated | not_built",
       mat_sto: "planned | storage | live row_level_gate",
-      pair_col: "planned | colocated | live row_level_gate",
+      pair_col: "planned | colocated | not_built",
       pair_sto: "planned | storage | live row_level_gate",
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | live row_level_gate",
@@ -349,9 +352,9 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       views__by_region_sto__view: "planned | storage | live unreachable",
    },
    "a gate above it, materialize off, gated sources off": {
-      mat_col: "planned | colocated | live row_level_gate",
+      mat_col: "planned | colocated | not_built",
       mat_sto: "planned | storage | live row_level_gate",
-      pair_col: "planned | colocated | live row_level_gate",
+      pair_col: "planned | colocated | not_built",
       pair_sto: "planned | storage | live row_level_gate",
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | live row_level_gate",
@@ -400,6 +403,9 @@ const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
       "persist (v1), colocated": false,
       "persist (v1), storage": false,
       "materialize, colocated": true,
+      "materialize, colocated, an inherited row filter": false,
+      "materialize, colocated, a gate not row-level": false,
+      "materialize, colocated, a gate not its own": false,
       "materialize, storage": true,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
@@ -412,6 +418,9 @@ const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
       "persist (v1), colocated": false,
       "persist (v1), storage": false,
       "materialize, colocated": true,
+      "materialize, colocated, an inherited row filter": false,
+      "materialize, colocated, a gate not row-level": false,
+      "materialize, colocated, a gate not its own": false,
       "materialize, storage": true,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
@@ -423,7 +432,10 @@ const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
    "materialize on, gated sources off, storage rollups not reviewed": {
       "persist (v1), colocated": false,
       "persist (v1), storage": false,
-      "materialize, colocated": false,
+      "materialize, colocated": true,
+      "materialize, colocated, an inherited row filter": false,
+      "materialize, colocated, a gate not row-level": false,
+      "materialize, colocated, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
@@ -435,7 +447,10 @@ const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
    "materialize on, gated sources off, storage rollups reviewed": {
       "persist (v1), colocated": false,
       "persist (v1), storage": false,
-      "materialize, colocated": false,
+      "materialize, colocated": true,
+      "materialize, colocated, an inherited row filter": false,
+      "materialize, colocated, a gate not row-level": false,
+      "materialize, colocated, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
@@ -448,6 +463,9 @@ const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
       "persist (v1), colocated": false,
       "persist (v1), storage": false,
       "materialize, colocated": false,
+      "materialize, colocated, an inherited row filter": false,
+      "materialize, colocated, a gate not row-level": false,
+      "materialize, colocated, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
@@ -460,6 +478,9 @@ const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
       "persist (v1), colocated": false,
       "persist (v1), storage": false,
       "materialize, colocated": false,
+      "materialize, colocated, an inherited row filter": false,
+      "materialize, colocated, a gate not row-level": false,
+      "materialize, colocated, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
@@ -472,6 +493,9 @@ const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
       "persist (v1), colocated": false,
       "persist (v1), storage": false,
       "materialize, colocated": false,
+      "materialize, colocated, an inherited row filter": false,
+      "materialize, colocated, a gate not row-level": false,
+      "materialize, colocated, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
@@ -484,6 +508,9 @@ const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
       "persist (v1), colocated": false,
       "persist (v1), storage": false,
       "materialize, colocated": false,
+      "materialize, colocated, an inherited row filter": false,
+      "materialize, colocated, a gate not row-level": false,
+      "materialize, colocated, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
@@ -511,6 +538,21 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
          kind: "materialize",
          materialize: {},
          gate,
+      }),
+      "materialize, colocated, an inherited row filter": table({
+         kind: "materialize",
+         materialize: {},
+         gate: { ...gate, inheritedRowFilter: true },
+      }),
+      "materialize, colocated, a gate not row-level": table({
+         kind: "materialize",
+         materialize: {},
+         gate: { classification: "unclassified", attributed: true },
+      }),
+      "materialize, colocated, a gate not its own": table({
+         kind: "materialize",
+         materialize: {},
+         gate: { ...gate, attributed: false },
       }),
       "materialize, storage": table({
          kind: "materialize",

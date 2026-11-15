@@ -670,13 +670,14 @@ function walkForAuthorizeNotes(
 }
 
 /**
- * Whether a gated source may be built into a storage destination because its
- * gate is enforced when the table is read (R3, contracts at read). True only
- * when all hold:
+ * Whether a gated source may be built because its gate is enforced when the
+ * table is read (R3, contracts at read). True only when all hold:
  *
- * - `materialize.gatedSources` is on (with `materialize.enabled`), so the
- *   router lets the served copy past the gate; off, the managed tier never
- *   holds a gated source's columns (plan, question 14);
+ * - `materialize.enabled` is on, and either `materialize.gatedSources` is on,
+ *   so the router lets the served copy past the gate, or the table is
+ *   colocated, which the served copy reads past its own row-level gate under
+ *   G3 as v1 colocated does; off, the managed tier never holds a gated
+ *   source's columns (plan, question 14);
  * - the source is a `#(materialize)` source (a `materialize` table), so its table
  *   is read only through the served copy, which keeps the author's gates; the
  *   router keeps every other stored shape away from a gated entry point;
@@ -687,11 +688,13 @@ function walkForAuthorizeNotes(
  *
  * The build, the serve bind and the host-instructed build all ask this one
  * question, so a table is never built that cannot be served, nor served
- * because it was built.
+ * because it was built. A caller deciding a `storage=` table passes
+ * `storage`, so the table is asked about as stored whatever the plan says.
  */
 export function gateEnforcedAtRead(
    sourceID: string,
    plan: Pick<TierGateInputs, "tables"> | undefined,
+   storage = false,
 ): boolean {
    const table = plan?.tables?.[sourceID];
    // A rollup asks its own question: its base gates are grafted and proven on
@@ -709,8 +712,10 @@ export function gateEnforcedAtRead(
    return tableKeepsGates(
       {
          kind: "materialize",
+         // Colocated only when neither the caller nor the plan says storage:
+         // G3 admits a colocated table alone, so a doubt reads as storage.
          tier:
-            materialized.persist?.storage === undefined
+            !storage && materialized.persist?.storage === undefined
                ? "colocated"
                : "storage",
          v1: false,
@@ -851,15 +856,19 @@ export function assertTierEligible(
       if (
          table &&
          outcome?.inheritedRowFilter &&
-         gateEnforcedAtRead(source.sourceID, {
-            tables: {
-               ...plan?.tables,
-               [source.sourceID]: {
-                  ...table,
-                  gate: { ...outcome, inheritedRowFilter: false },
+         gateEnforcedAtRead(
+            source.sourceID,
+            {
+               tables: {
+                  ...plan?.tables,
+                  [source.sourceID]: {
+                     ...table,
+                     gate: { ...outcome, inheritedRowFilter: false },
+                  },
                },
             },
-         })
+            true,
+         )
       ) {
          recordEligibilityRefused("authorize");
          throw new MaterializationEligibilityError({
@@ -868,7 +877,7 @@ export function assertTierEligible(
          });
       }
       assertMaterializationEligible(source, annotationFields, {
-         gateEnforcedAtRead: gateEnforcedAtRead(source.sourceID, plan),
+         gateEnforcedAtRead: gateEnforcedAtRead(source.sourceID, plan, true),
       });
       return;
    }
@@ -883,10 +892,12 @@ export function assertTierEligible(
       { gateEnforcedAtRead: !!rollup && rollupGateEnforcedAtRead(rollup) },
    );
    // A colocated `#(materialize)` table is read only through the served copy
-   // (never Malloy's compiler manifest), which answers a gated entry point
-   // only while it keeps the gates (`materialize.gatedSources`), as for
-   // `storage=`. A gated one is built only then, so a table is never built
-   // that cannot be served.
+   // (never Malloy's compiler manifest), which keeps the entry point's own
+   // row-level gate under G3 as v1 colocated does: the gate policy admits it
+   // with `materialize.enabled`, and the gated-sources switch is not needed.
+   // Every other gate is refused above (a joined, inherited or not row-level
+   // one), so this refuses a gated one only when the policy does not keep it,
+   // and a table is never built that cannot be served.
    if (
       table?.materialize &&
       referencesAuthorize(source) &&
@@ -899,11 +910,10 @@ export function assertTierEligible(
             `Source '${source.name}' cannot be materialized (colocated ` +
             `'#(materialize)'): it is protected by an #(authorize) or ` +
             `#(access_filter) gate, and its table is read only through the ` +
-            `served copy, which answers a gated entry point only with ` +
-            `PUBLISHER_MATERIALIZE_GATED_SOURCES on and only for the entry ` +
-            `point's own row-level gate. The source serves live. Turn that ` +
-            `setting on, or use '#@ persist', whose colocated table keeps the ` +
-            `gate through Malloy's build manifest.`,
+            `served copy, which keeps only the entry point's own row-level ` +
+            `gate, and only with PUBLISHER_MATERIALIZE on. The source serves ` +
+            `live. Turn that setting on, or use '#@ persist', whose colocated ` +
+            `table keeps the gate through Malloy's build manifest.`,
       });
    }
 }

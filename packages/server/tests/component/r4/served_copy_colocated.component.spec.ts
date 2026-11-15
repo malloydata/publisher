@@ -472,20 +472,22 @@ source: gated is orders_raw extend {
       }
    });
 
-   it("with gated serving off, binds no gated colocated table, and answers live", async () => {
+   it("with gated serving off, serves the gated colocated table under G3, as v1 colocated", async () => {
       const { fixture, live, restore } = await loaded("false");
       try {
-         // Refused at the bind (the colocated tier's eligibility), so its
-         // table is never read: a table that cannot be served is not served.
-         expect(fixture.verdicts).toEqual(["gated:live:refused"]);
+         // The entry point's own row-level gate is kept on a colocated
+         // table without the switch (G3): the table stays in the warehouse
+         // and the gate is grafted and proven at read.
+         expect(fixture.built).toEqual([{ name: "gated", tier: "colocated" }]);
+         expect(fixture.verdicts).toEqual(["gated:serves"]);
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };
-         expect(model.servedCopy.hasBindings()).toBe(false);
+         expect(model.servedCopy.hasBindings()).toBe(true);
          for (const [i, REGIONS] of CALLERS.entries()) {
             const outcome = await fixture.run("m.malloy", QUERY, { REGIONS });
             if ("error" in outcome) throw new Error(outcome.error);
-            expect(outcome.answer.servedBy).toBe("live");
+            expect(outcome.answer.via).toBe("served_copy");
             expect(rowDifference(live[i], outcome.answer.rows)).toBeUndefined();
          }
       } finally {

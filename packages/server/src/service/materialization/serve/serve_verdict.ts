@@ -306,21 +306,22 @@ function verdictFor(
    // substitutes for it), so the served copy decides its verdict.
    const materialized = facts.materialize?.(sourceID);
 
-   // Colocated persist is substituted inside Malloy, gates and all; storage,
-   // a `#(materialize)` table and rollups go through the router, which skips
-   // a gated entry point, unless the served copy keeps the gates (R3), or a
+   // Colocated persist is substituted inside Malloy, gates and all, and a
+   // colocated `#(materialize)` table is read by the served copy past the
+   // gate under G3 (the plan builds a gated one only when it keeps the
+   // gate); storage and rollups go through the router, which skips a gated
+   // entry point, unless the served copy keeps the gates (R3), or a
    // `#(preaggregate)` rollup's variant keeps them (row 1).
    if (
       ((origin === "preaggregate" && !facts.rollupKeepsGates?.(sourceID)) ||
-         ((tier === "storage" || materialized !== undefined) &&
-            !facts.servedCopyKeepsGates)) &&
+         (tier === "storage" && !facts.servedCopyKeepsGates)) &&
       facts.gated(readID, readName, source.modelPath)
    ) {
       return live(
          "row_level_gate",
          `Every published entry point that reads ${subject} carries a ` +
             `row-level gate (#(authorize) or #(access_filter)), which ` +
-            `${origin === "preaggregate" ? "a rollup" : tier === "storage" ? "the storage tier" : "the served copy"} cannot keep ` +
+            `${origin === "preaggregate" ? "a rollup" : "the storage tier"} cannot keep ` +
             `yet, so every query that reaches it is answered live.`,
          [
             "Materialize the source without storage= (colocated), where the gate is kept.",

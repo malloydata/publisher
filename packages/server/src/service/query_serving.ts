@@ -124,7 +124,7 @@ export function variantsOf(
             gateLeg !== undefined &&
             answerKeepsGates(
                gateLeg,
-               answer.tablesRead ?? [],
+               answer.gateTablesRead ?? answer.tablesRead ?? [],
                switches,
                gateContext,
             ),

@@ -27,6 +27,8 @@
  * Frozen until the security review (plan question 14): gated sources stay
  * behind `PUBLISHER_MATERIALIZE_GATED_SOURCES`, and no new leg, tier or kind
  * may keep its gates, nor a row be loosened, without that review's sign-off.
+ * One row was loosened outside it, by maintainer decision: colocated
+ * `#(materialize)` keeps its own row-level gate under G3, as v1 does.
  * `gate_policy_frozen.spec.ts` enumerates every row this file allows and
  * fails on any change, naming the review.
  */
@@ -109,7 +111,8 @@ const ROWS: Record<GateKind, Row> = {
    persist: () => false,
    // Read only through the served copy, which keeps the author's gates;
    // admitted only for the entry point's own row-level gate, with v2's switch
-   // and the gated-sources switch (the managed-tier review).
+   // and the gated-sources switch (the managed-tier review), or colocated
+   // under G3 without it.
    materialize: (t, s) => materializedKeepsGates(t, s),
    pair: (t, s) => materializedKeepsGates(t, s),
    // A `#(preaggregate)` rollup's variant redeclares its base with its gates,
@@ -129,7 +132,12 @@ const ROWS: Record<GateKind, Row> = {
 function materializedKeepsGates(t: GatedTable, s: GateSwitches): boolean {
    return (
       s.materialize &&
-      s.gatedSources &&
+      // G3 for `#(materialize)`: a colocated table never leaves the author's
+      // warehouse, so it keeps the entry point's own row-level gate with the
+      // gated-sources switch off, as a v1 colocated table does. A
+      // maintainer-approved exception made outside the question-14 review;
+      // `storage=` still waits for that review.
+      (s.gatedSources || t.tier === "colocated") &&
       t.gate?.rowLevel === true &&
       t.gate.attributed &&
       !t.gate.inheritedRowFilter
