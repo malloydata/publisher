@@ -570,6 +570,10 @@ interface RerootRefusal {
     * the serve side re-applies the whole chain's filters, so re-rooting it
     * would drop its base's `where:`. It is left as written; it still inherits
     * a re-rooted base by name.
+    *
+    * `definition_not_parsed`: the declaration could not be read, or its base
+    * is a connection's table or SQL followed by something the re-root does
+    * not keep.
     */
    reason:
       | "range_not_found"
@@ -675,7 +679,13 @@ export function buildServedCopy(
             continue;
          }
          const declaration = out.slice(start, end);
-         const spans = declarationSpans(declaration);
+         // Read as the re-root reads it: a run that keeps the author's
+         // `include { … }` blocks walks back over them too, so a connection's
+         // SQL curated by one (`conn.sql("…") include { … } extend { … }`) is
+         // connection-rooted.
+         const spans = declarationSpans(declaration, {
+            throughIncludes: r.keepsIncludes === true,
+         });
          if (
             spans &&
             !spans.queryShaped &&
@@ -686,7 +696,12 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "not_query_shaped",
+               // A refinement is left as written by design; a connection's
+               // table or SQL the re-root cannot place is a declaration it
+               // could not read, and is warned of.
+               reason: spans.connectionBased
+                  ? "definition_not_parsed"
+                  : "not_query_shaped",
             });
             continue;
          }

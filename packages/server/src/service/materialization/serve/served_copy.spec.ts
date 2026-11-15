@@ -410,6 +410,41 @@ source: raw is duckdb.sql("""SELECT region, amount FROM t""") extend {
       ).toBe(false);
    });
 
+   it("re-roots a connection's SQL curated by an include ahead of its extend, keeping both", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT region, amount FROM t""") include {
+  public: region, amount
+} extend {
+  measure: total is amount.sum()
+}
+`;
+      const copy = buildServedCopy(
+         [reroot(raw, "raw", { keepsIncludes: true })],
+         () => raw,
+      );
+      expect(copy.refused).toEqual([]);
+      expect(copy.files.get("file:///m.malloy")).toContain(
+         "source: raw is __publisher_storage_t_0.virtual('h1')::raw__served include {\n  public: region, amount\n} extend {",
+      );
+      // A re-root that keeps no include cannot place it: refused, and warned
+      // of, unlike a refinement left as written by design.
+      expect(buildServedCopy([reroot(raw, "raw")], () => raw).refused).toEqual([
+         {
+            sourceName: "raw",
+            url: "file:///m.malloy",
+            reason: "definition_not_parsed",
+         },
+      ]);
+      expect(
+         declarationSpans(`t is duckdb.sql("x") include { } extend { }`),
+      ).toMatchObject({ connectionRooted: false, connectionBased: true });
+      expect(
+         declarationSpans(`t is duckdb.sql("x") include { } extend { }`, {
+            throughIncludes: true,
+         }),
+      ).toMatchObject({ connectionRooted: true, connectionBased: true });
+   });
+
    it("refuses every re-root of a file it cannot read", () => {
       const copy = buildServedCopy([reroot(file, "daily")], () => undefined);
       expect(copy.refused.map((r) => r.reason)).toEqual(["range_not_found"]);

@@ -58,6 +58,12 @@ export function declarationSpans(
          * under it.
          */
         connectionRooted: boolean;
+        /**
+         * The base begins with a connection's table or SQL, whatever follows
+         * it before the trailing run: with {@link connectionRooted} false, a
+         * block the run does not walk back over stands between them.
+         */
+        connectionBased: boolean;
      }
    | undefined {
    const tokens = topLevelTokens(declaration);
@@ -103,9 +109,9 @@ export function declarationSpans(
    const base = tokens.filter(
       (t, k) => k > isIndex && t.end <= baseEnd && t.kind !== "close",
    );
-   const connectionRooted =
+   const connectionBased =
       !queryShaped &&
-      base.length === 3 &&
+      base.length >= 3 &&
       base[0].kind === "word" &&
       base[1].text === "." &&
       base[1].start === base[0].end &&
@@ -115,7 +121,8 @@ export function declarationSpans(
       nameEnd,
       ...(extendStart !== undefined ? { extendStart } : {}),
       queryShaped,
-      connectionRooted,
+      connectionRooted: connectionBased && base.length === 3,
+      connectionBased,
    };
 }
 

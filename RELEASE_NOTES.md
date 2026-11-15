@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — tables built in Credible now serve in three shapes that answered live
+
+Three shapes of stored source had their tables built but were answered live, with a warning or none. Each now reads its table, with answers equal to live:
+
+- **An index that exports a source whose join is left out.** A curating `index.malloy` that `export`s a source stored where one of its joins cannot reach (a join to a source on another connection) failed its whole served copy with `Cannot export`, so every stored source it publishes answered live. The join is now left out there as it is in the source's own file: queries that use it are answered live, and the rest read the table.
+- **A colocated BigQuery table with no captured column types.** A colocated table whose manifest entry carries no `nativeSchema` (an entry written before the control plane recorded it) left every big-integer column out, and the source fell back to live with a `column_types` warning. On BigQuery such a column is now read through `INT64`, BigQuery's only integer type, so it is exact. On every other dialect nothing changes: without a captured type, the column is still left out.
+- **A connection's SQL curated by an `include`.** A v1 `#@ persist` source declared as `conn.sql("…") include { … } extend { … }` was silently left as written. Its re-root now keeps both blocks, as for a query-shaped source. A connection-rooted declaration the served copy still cannot re-root now carries a `served-copy-not-served` warning instead of none.
+
+No API change: no field, enum value or warning code is added.
+
 ## [Unreleased] — error messages no longer include the server's filesystem paths
 
 A package that failed to load at boot reported the compile error with the server's absolute path to the file (`FILE: file:///…/publisher_data/<env>/<pkg>/<version>/m.malloy`) in `/status` `loadErrors`, MCP `get_status` and `list_packages`, and the package resource; a refused publish (424) did too. A failed reload already named the file package-relative. Every package load, compile and recompile now names the package's files relative to the package root (`FILE: m.malloy`), and `compile` diagnostics carry a package-relative `at.url` instead of a `file://` URL. Any other server path in such a message (a file imported from outside the package, a configured location that did not mount) reads `<outside package>`, and a missing location is named by its package.
