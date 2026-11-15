@@ -1467,8 +1467,8 @@ source: orders is duckdb.sql("""
 }
 `,
       );
-      const { Model } = await import("../../src/service/model");
-      const runtimeSpy = spyOn(Model, "getModelRuntime");
+      const modelRuntime = await import("../../src/service/model_runtime");
+      const runtimeSpy = spyOn(modelRuntime, "createModelRuntime");
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          await Package.create("env", "pkg", tempDir, malloyConfig);

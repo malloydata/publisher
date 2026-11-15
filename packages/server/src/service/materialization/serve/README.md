@@ -9,22 +9,23 @@ answered live.
 
 ## Modules
 
-| Module                       | Responsibility                                                                                                                                   | Read by                                                                   |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| `served_copy.ts`             | The re-root rewriter: a persisted source's declaration pointed at its stored table                                                               | the served copy, the rollup and view legs, containment                    |
-| `served_copy_serve.ts`       | The served copy as a leg: compile, guard each re-root, answer or decline                                                                         | `model.ts`, `query_serving.ts`, the facade, the rollup leg                |
-| `served_copy_containment.ts` | A re-root that fails to compile steps that source alone back to live                                                                             | the served copy                                                           |
-| `served_copy_config.ts`      | The connections a served copy compiles and runs with                                                                                             | the legs, the facade                                                      |
-| `bindings.ts`                | How serving reads a bound table: its quoted path, the virtual map, whether SQL reads a table, a schema narrowed to public columns, `#@ -persist` | the served copy, the rollup and view legs, storage and colocated bindings |
-| `storage_bindings.ts`        | A model's `storage=` bindings and the destinations they resolve against                                                                          | `model.ts`, `query_serving.ts`                                            |
-| `colocated_bindings.ts`      | Serve bindings for colocated `#(materialize)` tables                                                                                             | the facade                                                                |
-| `rollup_variants.ts`         | The rollup leg                                                                                                                                   | `model.ts`, `query_serving.ts`                                            |
-| `join_rollup.ts`             | Answering a joined source's measures from its rollup through the join                                                                            | the rollup leg                                                            |
-| `view_variants.ts`           | The view leg                                                                                                                                     | `model.ts`, `query_serving.ts`                                            |
-| `declaring_file_variant.ts`  | The declaring-file overlay the rollup and view legs compile a caller's text over                                                                 | the rollup and view legs                                                  |
-| `author_imports.ts`          | The `import` lines a variant writes so a caller's text compiles unchanged                                                                        | the declaring-file variant, the rollup leg                                |
-| `serve_verdict.ts`           | Whether each persisted source can be served, and why not                                                                                         | `model.ts`, the facade                                                    |
-| `query_path.ts`              | The path report: which leg answered, what it read, why the others declined                                                                       | `model.ts`, `model_policy.ts`, `query_serving.ts`, the facade, the legs   |
+| Module                       | Responsibility                                                                                                                                   | Read by                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `served_copy.ts`             | The re-root rewriter: a persisted source's declaration pointed at its stored table                                                               | the served copy, the rollup and view legs, containment                  |
+| `served_copy_serve.ts`       | The served copy as a leg: compile, guard each re-root, answer or decline                                                                         | `model.ts`, `query_serving.ts`, the facade, the rollup leg              |
+| `served_copy_containment.ts` | A re-root that fails to compile steps that source alone back to live                                                                             | the served copy                                                         |
+| `served_copy_config.ts`      | The connections a served copy compiles and runs with                                                                                             | the legs, the facade                                                    |
+| `bindings.ts`                | How serving reads a bound table: its quoted path, the virtual map, whether SQL reads a table, a schema narrowed to public columns, `#@ -persist` | the served copy, the rollup and view legs, the bind, storage bindings   |
+| `bind.ts`                    | The bind: committed entries joined to the plan as bindings and colocated entries, and what it declines                                           | the facade                                                              |
+| `storage_bindings.ts`        | What one model reads of a snapshot's `storage=` tables: its own sources' bindings, and stored column types that do not serve as declared         | `model.ts`                                                              |
+| `leg.ts`                     | A leg (`{ kind, applies, attempt }`), the legs for one pin (`makeLegs`), and the `Answer` every report of a query reads                          | the query pipeline (`model_serving.ts`, `query_serving.ts`)             |
+| `rollup_variants.ts`         | The rollup leg                                                                                                                                   | `model.ts`, `query_serving.ts`                                          |
+| `join_rollup.ts`             | Answering a joined source's measures from its rollup through the join                                                                            | the rollup leg                                                          |
+| `view_variants.ts`           | The view leg                                                                                                                                     | `model.ts`, `query_serving.ts`                                          |
+| `declaring_file_variant.ts`  | The declaring-file overlay the rollup and view legs compile a caller's text over                                                                 | the rollup and view legs                                                |
+| `author_imports.ts`          | The `import` lines a variant writes so a caller's text compiles unchanged                                                                        | the declaring-file variant, the rollup leg                              |
+| `serve_verdict.ts`           | Whether each persisted source can be served, and why not                                                                                         | `model.ts`, the facade                                                  |
+| `query_path.ts`              | The path report: which leg answered, what it read, why the others declined                                                                       | `model.ts`, `model_policy.ts`, `query_serving.ts`, the facade, the legs |
 
 ## Dependency rule
 
@@ -33,7 +34,13 @@ May import: `domain/`, `text/`, governance's gate collection and
 no warehouse and emits no telemetry (H5); the edges that remain are listed,
 each with the step that removes it, in `materialization_allowlists.mjs`.
 
+Every leg reads tables through one pin (`domain/binding.ts`): the query
+pipeline pins the model's snapshot once, before routing, and passes it to each
+leg, the run and the path report. No module here reads the clock or holds
+bindings of its own; a leg's compile cache follows the snapshot's bindings by
+identity.
+
 ## Where things are added
 
-A new leg is one module here, an entry in the router's candidate list and
-rows in `domain/leg_decline.ts`.
+A new leg is one module here implementing `Leg` (`leg.ts`), an entry in
+`makeLegs`, and rows in `domain/leg_decline.ts`.

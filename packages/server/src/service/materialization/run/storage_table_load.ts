@@ -247,9 +247,9 @@ export function readerRefusal(
  * - The same table guarantees as {@link loadStorageTable}: one DuckLake
  *   transaction, `create` refusing a table that exists (409), a transient
  *   session with the build session's teardown.
- * - A partitioned source is written with its partition spec and in partition
- *   order, as a partitioned build writes it, and the spec is returned. A
- *   partitioned table copied onto itself is refused (400).
+ * - A partitioned source (one a since-retired `partition=` build wrote) is
+ *   written with its partition spec and in partition order, and the spec is
+ *   returned. A partitioned table copied onto itself is refused (400).
  * - The caller checks that the source exists and that the destination may
  *   hold its rows before calling: this attaches and writes.
  *
@@ -412,15 +412,13 @@ export async function writeTableAs(
       if (partitionedBy.length === 0) {
          await session.runSQL(`${create} ${target} AS SELECT * FROM ${from}`);
       } else {
-         // Bounded as a partitioned build is: the writer's memory, not the
-         // source's, is what a wide many-partition insert exhausts.
+         // Bounded: the writer's memory, not the source's, is what a wide
+         // many-partition insert exhausts.
          await writePartitionedTable(session, {
             quotedTablePath: target,
             selectSQL: `SELECT * FROM ${from}`,
             keys: partitionedBy,
             createStatement: create,
-            bounded: true,
-            read: async () => undefined,
          });
       }
    } catch (error) {

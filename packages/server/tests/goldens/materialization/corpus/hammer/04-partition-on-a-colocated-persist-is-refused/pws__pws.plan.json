@@ -1,0 +1,94 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "persist-retired-key",
+        "key": "partition",
+        "message": "#@ persist source \"orders\": `partition=` is no longer read on `#@`",
+        "model": "pws.malloy",
+        "rewrite": "remove it: partition= is not supported, and the stored table is written unpartitioned. It was a layout choice only, so the cost is scan time; what each caller sees is unchanged",
+        "route": "@",
+        "subject": "orders",
+        "tier": "malformed"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders@<hammer>/pws/pws.malloy": []
+        },
+        "order": [
+          "orders@<hammer>/pws/pws.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<hammer>/pws/pws.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<hammer>/pws/pws.malloy": "pws.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "rollupsOverStoredBase": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<hammer>/pws/pws.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders@<hammer>/pws/pws.malloy": {
+        "annotationFields": {
+          "name": "pws_orders",
+          "partition": "org_id"
+        },
+        "columns": [
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_id",
+            "type": "number"
+          },
+          {
+            "name": "org_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pws.malloy",
+        "name": "orders",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "07a8f5115ffc9c3654abb7f84215819edba831cde166131328a61361a5897feb",
+        "sourceID": "orders@<hammer>/pws/pws.malloy",
+        "sql": "sha256:317f0d99760f7406"
+      }
+    }
+  }
+}

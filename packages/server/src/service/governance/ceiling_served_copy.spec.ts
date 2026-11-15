@@ -4,10 +4,9 @@
 /**
  * The `#(carries)` ceiling is read on the compile that answers. When the
  * served copy answers, that is the served copy's own compile, and live as
- * well whenever live compiles; the live compile of a cross-connection model
- * is its build view, which lacks the joins it leaves out, so a query through
- * one does not compile there and is read on the served copy alone. Anything
- * the served copy's compile cannot show is refused.
+ * well whenever live compiles; a query live does not compile is read on the
+ * served copy alone. Anything the served copy's compile cannot show is
+ * refused.
  */
 import { describe, expect, it } from "bun:test";
 import type { ModelMaterializer, QueryMaterializer } from "@malloydata/malloy";
@@ -40,7 +39,7 @@ source: s is duckdb.table("child") include { internal: * } extend {
 
 const CLEAN = "run: s -> { group_by: sid; aggregate: c }";
 const LEAK = "run: s -> { group_by: secret }";
-/** Does not compile: what a build view answers for a left-out join. */
+/** Does not compile live. */
 const BROKEN = "run: s -> { group_by: u.missing }";
 
 function compile(model: Model, text: string): QueryMaterializer {

@@ -402,6 +402,17 @@ describe("the ratchets", () => {
       );
    });
 
+   it("Malloy runtimes are made only by the Compiler port", () => {
+      const port = new Set([
+         "service/materialization/text/generated_files.ts",
+         "service/materialization/text/package_files.ts",
+      ]);
+      const files = mzFiles().filter((f) => !port.has(srcRel(f)));
+      expect(
+         countMatches(files, /\bcreateModelRuntime\(|\bnew Runtime\(/),
+      ).toEqual({});
+   });
+
    it("the compiler's IR is read only under governance/ir", () => {
       expectCounts(
          "IR reads",

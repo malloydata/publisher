@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { allowGatedStorageRollupsForTests } from "../../../config";
 import {
    afterAll,
    afterEach,
@@ -14,16 +15,13 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
 import { persistBlankedFiles } from "../text/persist_blanking";
 import {
-   generateRollupBuildFile,
    planModelRollups,
    rollupName,
-   allowGatedStorageRollupsForTests,
    rollupGateEnforcedAtRead,
-   rollupsServeGatedBases,
    type RollupRefusal,
-   type RollupVariantPlan,
 } from "./rollup_plan";
-import { emitMeasureExpr } from "./rollup_measure_grammar";
+import { emitMeasureExpr, generateRollupBuildFile } from "../text/read_text";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 
 const connection = new DuckDBConnection("duckdb", ":memory:");
@@ -283,7 +281,9 @@ describe("#(preaggregate) access filters (A4)", () => {
 
 describe("#(preaggregate) over a gated source with gated sources off (row 21)", () => {
    it("plans no rollup over a gated source, even one whose grain keeps the gate's field", async () => {
-      expect(rollupsServeGatedBases({})).toBe(false);
+      expect(rollupGateEnforcedAtRead({ variant: true, baseGated: true })).toBe(
+         false,
+      );
       const { plans, refused } = await plan(GATED);
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.tier, r.code])).toEqual([

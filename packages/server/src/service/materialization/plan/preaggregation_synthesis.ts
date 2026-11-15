@@ -20,79 +20,20 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import { placementOf, readRouteIfAny } from "./declaration";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
    type AnnotatableMeasure,
 } from "./preaggregation_annotation";
-import {
-   classifyMeasureAdditivity,
-   type ReaggregateFunction,
-} from "./preaggregation_classifier";
+import { classifyMeasureAdditivity } from "./preaggregation_classifier";
+import type { RollupMeasure, RollupPlan } from "../domain/rollup_measures";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
 import { fieldNotes } from "../text/field_notes";
 import type { ValidatableSource } from "./preaggregation_validation";
 
 /** Suffix on the stored partial-aggregate column for a measure. */
 const PARTIAL_SUFFIX = "__partial";
-
-/** One measure served by a rollup, with the merge to apply to its partial. */
-interface RollupMeasure {
-   /** The measure's name on the base, and on the rollup member. */
-   name: string;
-   /** The stored column holding the partial aggregate. */
-   partialName: string;
-   /** The aggregate applied to `partialName` to merge it. */
-   reaggregate: ReaggregateFunction;
-   /**
-    * The measure's annotation lines (`#(classification)`, `#(doc)`, a render
-    * tag such as `# currency`), written again on the merged measure so a
-    * rollup's result column carries what live's does. `#@` directives are
-    * left out: they declare builds, not the column.
-    */
-   notes?: string[];
-}
-
-/** One synthesized rollup: one base, one grain, one table, one `GROUP BY`. */
-export interface RollupPlan {
-   /** The source whose measures were annotated. Queries name this. */
-   baseSourceName: string;
-   /** The synthesized `#@ persist` source's name. Deterministic. */
-   rollupSourceName: string;
-   /**
-    * The namespace the rollup's table is created in: this grain's own
-    * `#@ preaggregate namespace=`, else everything before the last dot of the
-    * base's `#@ persist name=`, else undefined when neither names one.
-    *
-    * A rollup of X belongs where X lives unless its author said otherwise. Not
-    * cosmetic: BigQuery rejects an unqualified CREATE.
-    */
-   namespace?: string;
-   /**
-    * The storage destination this rollup is built into and served from — this
-    * grain's own `#@ preaggregate storage=`, and only ever that. Undefined for a
-    * colocated rollup built into the base's own warehouse.
-    *
-    * NOT inherited from the base's `#@ persist storage=`; see
-    * {@link basePersistNamespace} for why a destination cannot usefully be.
-    *
-    * Mutually exclusive with {@link namespace} (refused at publish as
-    * `namespace_with_storage`).
-    */
-   storage?: string;
-   /** The one grain, canonically sorted. */
-   grainDimensions: string[];
-   /** The measures served here, sorted by name. */
-   measures: RollupMeasure[];
-   /**
-    * The base's Malloy `sourceID`, `<declared name>@<declaring file URL>`. A
-    * model that only imports the base (an `index.malloy` re-export) cannot
-    * rename-import it from itself, so the companion imports it from the file
-    * that declares it (#6646). Absent when the compiler gave none.
-    */
-   baseSourceID?: string;
-}
 
 /**
  * A short digest of the canonical grain, appended to the rollup's name.
@@ -213,17 +154,18 @@ export function basePersistNamespace(
 ): string | undefined {
    if (!source.annotations) return undefined;
    try {
-      const tag = parseRouteTag(
+      const tag = readRouteIfAny(
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          new Annotations(source.annotations as any),
          "@",
-      ).tag;
-      if (!tag.has("persist")) return undefined;
-      // `#@ persist name="x"` parses as SIBLING keys; nested form first, sibling
-      // as the documented fallback (as `readPreaggregateAnnotation` does).
-      const storage = tag.text("persist", "storage") ?? tag.text("storage");
-      if (storage !== undefined && storage.trim() !== "") return undefined;
-      return persistNamespace(tag.text("persist", "name") ?? tag.text("name"));
+      );
+      if (!tag?.has("persist")) return undefined;
+      const read = placementOf(tag, "persist");
+      // A base built in a destination, or refused, lends no namespace.
+      if (!("placement" in read) || read.placement.tier !== "colocated") {
+         return undefined;
+      }
+      return persistNamespace(read.placement.name);
    } catch {
       return undefined;
    }

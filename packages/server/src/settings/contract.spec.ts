@@ -1503,29 +1503,6 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_DUCKDB_TEMP_DIRECTORY"),
       },
    ],
-   "duckdb.partitionedWriteFlushThreshold": [
-      { name: "unset", expect: value(8192) },
-      {
-         name: "PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD",
-         env: { PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "1000" },
-         expect: value(1000),
-      },
-      {
-         name: "off turns the bounds off",
-         env: { PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "off" },
-         expect: value(undefined),
-      },
-      {
-         name: "blank",
-         env: { PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "" },
-         expect: value(8192),
-      },
-      {
-         name: "0 is refused",
-         env: { PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: "0" },
-         expect: fails("PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD"),
-      },
-   ],
    "ducklake.rowGroupSizeBytes": [
       { name: "unset", expect: value(undefined) },
       {
@@ -1599,11 +1576,11 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
    "materialize.enabled": [
-      { name: "unset", expect: value(false) },
+      { name: "unset", expect: value(true) },
       {
          name: "PUBLISHER_MATERIALIZE",
-         env: { PUBLISHER_MATERIALIZE: "true" },
-         expect: value(true),
+         env: { PUBLISHER_MATERIALIZE: "false" },
+         expect: value(false),
       },
       {
          name: "not a boolean",

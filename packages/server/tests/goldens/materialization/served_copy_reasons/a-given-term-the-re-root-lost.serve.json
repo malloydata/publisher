@@ -1,0 +1,9 @@
+{
+  "problems": [
+    {
+      "reason": "read_terms_not_kept",
+      "sourceName": "trailing_where"
+    }
+  ],
+  "query": null
+}

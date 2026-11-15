@@ -17,12 +17,9 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { viewNoteTexts } from "./persisted_view_compile";
-import {
-   generatePersistedViewFile,
-   PERSIST_VIEW_NOT_BUILT,
-   type PersistedViewPlan,
-} from "./persisted_view";
+import { generatePersistedViewFile, viewNoteTexts } from "../text/read_text";
+import { PERSIST_VIEW_NOT_BUILT } from "./persisted_view";
+import type { PersistedViewPlan } from "../domain/table_plans";
 
 const TABLE = `duckdb.sql("""
   select * from (values
@@ -176,6 +173,20 @@ source: ops is ${TABLE} extend {
       const findings = viewFindings(c);
       expect(findings.some((m) => m.includes("incremental"))).toBe(true);
       expect(findings.some((m) => m.includes("@env."))).toBe(true);
+   });
+
+   it("refuses the retired partition=, saying to remove it", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="p" partition="carrier"
+  view: p is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c)).toEqual([
+         expect.stringContaining("`partition=` is not supported; remove it"),
+      ]);
    });
 
    it("refuses a nested view stored with storage=, and builds it colocated", async () => {

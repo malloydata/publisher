@@ -187,6 +187,11 @@ import { sqlLiteral } from "./introspection_sql";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
 import {
+   callerVisibleText,
+   rewriteErrorMessage,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
+import {
    PackageModelPolicy,
    type OffSurfaceContext,
    type QueryBoundaryPolicy,
@@ -898,13 +903,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             "publisher.package.dry_run": options.dryRun === true,
          },
          () =>
-            Package.load(
-               environmentName,
-               packageName,
-               packagePath,
-               environmentMalloyConfig,
-               cleanupDirectoryOnFailure,
-               options.dryRun === true,
+            // A failed load's message names the package's files
+            // package-relative, whichever path loaded it.
+            withPackageRelativeErrors(packagePath, () =>
+               Package.load(
+                  environmentName,
+                  packageName,
+                  packagePath,
+                  environmentMalloyConfig,
+                  cleanupDirectoryOnFailure,
+                  options.dryRun === true,
+               ),
             ),
       );
    }
@@ -1088,6 +1097,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
       const timings = { hydrateMs: 0, renderValidationMs: 0 };
+      // A model's compile error is read by every caller of the package (a
+      // query's 424, get_context, the package's warnings): it names the
+      // package's files package-relative and no other server path, whether
+      // it is thrown or kept on a placeholder.
+      const callerVisible = (err: Error): Error => {
+         rewriteErrorMessage(err, (message) =>
+            callerVisibleText(message, packagePath),
+         );
+         return err;
+      };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -1096,7 +1115,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             packageName,
             sm.modelPath,
             sm.modelType,
-            err,
+            callerVisible(err),
             {
                policy: ctx.modelPolicy.forModel(sm.modelPath),
                sourceText:
@@ -1111,7 +1130,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       for (const sm of outcome.models) {
          await yielder.maybeYield();
          if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
+            const err = callerVisible(
+               Model.deserializeCompilationError(sm.compilationError),
+            );
             if (onCompileError === "throw") {
                logger.error("Model compilation failed", {
                   packageName,
@@ -1437,7 +1458,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             pkg.surfacedRenderTagWarnings(renderTagWarnings);
          pkg.adoptOutcomeMetadata(outcome);
          // No manifest is bound yet, so this serves live until a bind.
-         pkg.materialization.wireFreshnessResolvers();
+         pkg.materialization.wireServingResolvers();
          pkg.refreshServingIdentity();
 
          buildPlanMs = await pkg.materialization.applyLoadBuildPlan(
@@ -2040,9 +2061,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.markManifestBindFailed();
    }
 
-   /** See {@link PackageMaterialization.bindColocatedServeManifest}. */
+   /** The colocated half of {@link PackageMaterialization.bind}. */
    public bindColocatedServeManifest(entries: FreshnessManifest): void {
-      this.materialization.bindColocatedServeManifest(entries);
+      this.materialization.bind({ colocated: entries });
    }
 
    /** See {@link PackageMaterialization.forgetKeyUniqueness}. */
@@ -2050,11 +2071,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.materialization.forgetKeyUniqueness(sourceEntityIds);
    }
 
-   /** See {@link PackageMaterialization.bindStorageServeBindings}. */
+   /** The `storage=` half of {@link PackageMaterialization.bind}. */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
-      this.materialization.bindStorageServeBindings(entries);
+      this.materialization.bind({ storage: entries });
    }
 
    /** See {@link PackageMaterialization.setServeDestinationSchema}. */
@@ -2683,8 +2704,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.applySiblingModelResolverToModels();
       // Applies the query boundary too, against the refreshed explore set.
       this.installReports(discovery);
-      // New models start with no serve routing; re-apply it.
-      this.materialization.pushStorageServeBindingsToModels();
+      // New models read the snapshot through their new policy; compile
+      // their served copies over it now.
+      this.materialization.wireServingResolvers();
+      this.materialization.publishSnapshot({ models: "installed" });
       this.materialization.pushServeDestinationConfigToModels();
       // Read against the reports installed above.
       this.renderTagWarnings =
@@ -2697,8 +2720,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          discovery,
          discoveryMs + performance.now() - lintStarted,
       );
-      this.materialization.recordManifestBinding(entries);
-      this.materialization.wireFreshnessResolvers();
+      this.materialization.bind({ colocated: entries, colocatedAsGiven: true });
       warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
    }

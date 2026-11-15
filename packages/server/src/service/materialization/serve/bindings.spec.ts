@@ -13,8 +13,8 @@ import {
 import {
    bindingServesModelSource,
    deriveServeBindings,
-   type ServeBinding,
-} from "../domain/serve_binding";
+   type Binding,
+} from "../domain/binding";
 
 import { planSourceIds, groupAliasesByName } from "../domain/source_aliases";
 
@@ -49,6 +49,8 @@ describe("buildVirtualMap", () => {
    it("groups handles by connection and quotes the table path for DuckDB", () => {
       const map = buildVirtualMap([
          {
+            kind: "persist",
+            tier: "storage",
             sourceName: "a",
             destinationName: "lake",
             virtualHandle: "h1",
@@ -56,6 +58,8 @@ describe("buildVirtualMap", () => {
             schema: [],
          },
          {
+            kind: "persist",
+            tier: "storage",
             sourceName: "b",
             destinationName: "lake",
             virtualHandle: "h2",
@@ -72,6 +76,8 @@ describe("buildVirtualMap", () => {
       // canonical SQL and must not be re-quoted into `""foo""`.
       const map = buildVirtualMap([
          {
+            kind: "persist",
+            tier: "storage",
             sourceName: "a",
             destinationName: "lake",
             virtualHandle: "h",
@@ -124,11 +130,12 @@ describe("deriveServeBindings", () => {
       );
       expect(bindings).toEqual([
          {
+            kind: "persist",
+            tier: "storage",
             sourceName: "mz",
             // An entry with no `origin` describes an authored `#@ persist`
             // source, which is what the wire default means and what every entry
             // written before the field existed can only have been.
-            origin: "persist",
             destinationName: "lake",
             virtualHandle: "se_storage",
             tablePath: "lake.mz_g003",
@@ -442,7 +449,9 @@ describe("serve binding source identity", () => {
    });
 
    it("an empty sourceIDs list serves no model's source of that name", () => {
-      const binding: ServeBinding = {
+      const binding: Binding = {
+         kind: "persist",
+         tier: "storage",
          sourceName: "daily",
          sourceIDs: [],
          destinationName: "lake",
@@ -482,7 +491,9 @@ describe("serve binding source identity", () => {
    });
 
    it("bindingServesModelSource refuses only a confirmed mismatch", () => {
-      const binding: ServeBinding = {
+      const binding: Binding = {
+         kind: "persist",
+         tier: "storage",
          sourceName: "daily",
          sourceIDs: ["daily@file:///p/a.malloy"],
          destinationName: "lake",
@@ -502,10 +513,7 @@ describe("serve binding source identity", () => {
       ).toBe(true);
       // A rollup's name is generated and names nothing in the author's model.
       expect(
-         bindingServesModelSource(
-            { ...binding, origin: "preaggregate" },
-            other,
-         ),
+         bindingServesModelSource({ ...binding, kind: "rollup" }, other),
       ).toBe(true);
    });
 });

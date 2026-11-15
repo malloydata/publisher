@@ -268,7 +268,7 @@ for (const tier of tiers) {
             fixture.bindings
                .map((b) => [
                   b.sourceName,
-                  b.colocated,
+                  b.tier === "colocated",
                   b.destinationName,
                   b.virtualHandle === fixture.tableIds[b.sourceName],
                ])
@@ -440,13 +440,16 @@ source: gated is orders_raw extend {
             fixture.pkg as unknown as {
                materialization: {
                   colocatedSourceEligibility: unknown;
-                  recordManifestBinding(e: Record<string, unknown>): void;
+                  bind(update: {
+                     colocated: Record<string, unknown>;
+                     colocatedAsGiven: true;
+                  }): void;
                };
             }
          ).materialization;
          const known = materialization.colocatedSourceEligibility;
          materialization.colocatedSourceEligibility = undefined;
-         materialization.recordManifestBinding(entries);
+         materialization.bind({ colocated: entries, colocatedAsGiven: true });
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };

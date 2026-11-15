@@ -32,7 +32,8 @@
  * may well be mergeable, but nothing here can prove it, so it is not stored.
  *
  * Every piece of generated text is re-emitted from the parse through
- * `malloy_text`: the author's expression is never spliced as a string.
+ * `malloy_text` (`text/read_text.ts`'s `emitMeasureExpr`): the author's
+ * expression is never spliced as a string.
  *
  * **Why text, and how it fails closed.** The build has to write each leaf
  * back as Malloy (`aggregate: total__partial is amount.sum() { where: … }`),
@@ -49,65 +50,12 @@
  */
 
 import { lexAll, type Token as LexToken } from "../text/malloy_lexer";
-import {
-   functionName,
-   identifier,
-   numberLiteral,
-   stringLiteral,
-} from "../../malloy_text";
-
-/** The aggregates whose partials merge. */
-type MergeableAggregate = "sum" | "count" | "min" | "max";
-
-/** The aggregate applied to a stored partial to merge it. */
-export type Reaggregate = "sum" | "min" | "max";
-
-/** One node of a measure expression. */
-export type MeasureExpr =
-   | { kind: "number"; text: string }
-   | { kind: "string"; value: string }
-   | { kind: "literal"; value: "true" | "false" | "null" }
-   | { kind: "path"; path: string[] }
-   | { kind: "call"; name: string; args: MeasureExpr[] }
-   | { kind: "method"; path: string[]; fn: string; args: MeasureExpr[] }
-   | { kind: "filtered"; expr: MeasureExpr; where: MeasureExpr[] }
-   | { kind: "unary"; op: "-" | "not"; expr: MeasureExpr }
-   | { kind: "binary"; op: BinaryOp; left: MeasureExpr; right: MeasureExpr }
-   | { kind: "paren"; expr: MeasureExpr }
-   /** A stored partial, merged: only in a decomposed measure's `merged`. */
-   | { kind: "partial"; column: string; reaggregate: Reaggregate };
-
-type BinaryOp =
-   | "+"
-   | "-"
-   | "*"
-   | "/"
-   | "%"
-   | "="
-   | "!="
-   | "<"
-   | "<="
-   | ">"
-   | ">="
-   | "~"
-   | "!~"
-   | "and"
-   | "or";
-
-/** One aggregate leaf of a measure: what the build stores as one partial. */
-export interface AggregateLeaf {
-   aggregate: MergeableAggregate;
-   /** The leaf as written, with every filter that applies to it. */
-   expr: MeasureExpr;
-   /**
-    * The field paths the leaf reads: the method's path (`carriers.fleet` in
-    * `carriers.fleet.sum()`), the argument's and the filters'. The planner
-    * reads join locality from their heads.
-    */
-   reads: string[][];
-   /** A join path the aggregate is taken at (`carriers` in `carriers.count()`). */
-   joinPath: string[];
-}
+import type {
+   AggregateLeaf,
+   MeasureExpr,
+   MergeableAggregate,
+   Reaggregate,
+} from "../domain/rollup_measures";
 
 /** A measure, decomposed into partials and the merge that recombines them. */
 export interface DecomposedMeasure {
@@ -751,117 +699,4 @@ export function isMeasureRefusal(
    d: DecomposedMeasure | MeasureRefusal,
 ): d is MeasureRefusal {
    return "kind" in d;
-}
-
-// ---------------------------------------------------------------------------
-// Emission, through malloy_text
-// ---------------------------------------------------------------------------
-
-function binaryOpText(op: BinaryOp): string {
-   switch (op) {
-      case "+":
-         return "+";
-      case "-":
-         return "-";
-      case "*":
-         return "*";
-      case "/":
-         return "/";
-      case "%":
-         return "%";
-      case "=":
-         return "=";
-      case "!=":
-         return "!=";
-      case "<":
-         return "<";
-      case "<=":
-         return "<=";
-      case ">":
-         return ">";
-      case ">=":
-         return ">=";
-      case "~":
-         return "~";
-      case "!~":
-         return "!~";
-      case "and":
-         return "and";
-      case "or":
-         return "or";
-   }
-}
-
-function literalText(value: "true" | "false" | "null"): string {
-   switch (value) {
-      case "true":
-         return "true";
-      case "false":
-         return "false";
-      case "null":
-         return "null";
-   }
-}
-
-function aggregateMethodText(fn: string): string {
-   switch (fn.toLowerCase()) {
-      case "sum":
-         return "sum";
-      case "count":
-         return "count";
-      case "min":
-         return "min";
-      case "max":
-         return "max";
-      default:
-         throw new Error(`not an aggregate the grammar emits: ${fn}`);
-   }
-}
-
-function reaggregateText(r: Reaggregate): string {
-   switch (r) {
-      case "sum":
-         return "sum";
-      case "min":
-         return "min";
-      case "max":
-         return "max";
-   }
-}
-
-/** A field path, each segment through `identifier`. */
-function pathText(path: readonly string[]): string {
-   return path.map((segment) => identifier(segment)).join(".");
-}
-
-/** Malloy text for `e`, every name and value through `malloy_text`. */
-export function emitMeasureExpr(e: MeasureExpr): string {
-   switch (e.kind) {
-      case "number":
-         return numberLiteral(e.text);
-      case "string":
-         return stringLiteral(e.value);
-      case "literal":
-         return literalText(e.value);
-      case "path":
-         return pathText(e.path);
-      case "call":
-         return `${functionName(e.name)}(${e.args.map((a) => emitMeasureExpr(a)).join(", ")})`;
-      case "method":
-         return `${pathText(e.path)}.${aggregateMethodText(e.fn)}(${e.args.map((a) => emitMeasureExpr(a)).join(", ")})`;
-      case "filtered":
-         return `${emitMeasureExpr(e.expr)} { where: ${e.where.map((w) => emitMeasureExpr(w)).join(", ")} }`;
-      case "unary": {
-         const operand = emitMeasureExpr(e.expr);
-         if (e.op === "not") return `not ${operand}`;
-         // `--` starts a Malloy comment: keep two minus signs apart.
-         return operand.startsWith("-") ? `- ${operand}` : `-${operand}`;
-      }
-      case "binary":
-         return `${emitMeasureExpr(e.left)} ${binaryOpText(e.op)} ${emitMeasureExpr(e.right)}`;
-      case "paren":
-         return `(${emitMeasureExpr(e.expr)})`;
-      case "partial":
-         return `${identifier(e.column)}.${reaggregateText(e.reaggregate)}()`;
-   }
 }

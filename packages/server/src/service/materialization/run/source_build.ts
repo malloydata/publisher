@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { plannedModelDefOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
    Manifest,
@@ -44,7 +45,6 @@ import {
    upstreamReuseFromManifest,
    wrongTierDetail,
 } from "./materialization_run_support";
-import type { SwapDependents } from "./name_view";
 import type { StorageBuildRequest } from "./storage_build_strategy";
 
 /** The colocated tier, in the order it is tried: a delta, else a full rebuild. */
@@ -90,8 +90,10 @@ export class SourceBuilder {
       contentSourceEntityId?: string,
       // The default knows nothing; only test seams rely on it.
       planFacts: ChainedPlanFacts = NO_PLAN_FACTS,
-      // A `name=` view the colocated swap must carry (see SwapDependents).
-      swapDependents?: SwapDependents,
+      // Statements that drop this package's own leftover `name=` view at the
+      // table's name, run first in the build's own transaction (DuckDB,
+      // Postgres; leftover_name_views.ts).
+      replacesView?: string[],
    ): Promise<ManifestEntry> {
       const physicalTableName = instruction.physicalTableName;
       const isStorageBuild =
@@ -195,7 +197,7 @@ export class SourceBuilder {
       // the walk below finds nothing and the entry carries no
       // `upstreamReuse`: a visible gap, not a wrong answer.
       const lift = authorModelLiftContext(
-         persistSource._model?._modelDef,
+         plannedModelDefOf(persistSource),
          readAuthorFile,
       );
       // A strict miss as a reason names it: a name only the generated files
@@ -414,7 +416,7 @@ export class SourceBuilder {
             contentSourceEntityId,
             planFacts,
             lift,
-            ...(swapDependents?.replacesView ? { replacesNameView: true } : {}),
+            ...(replacesView ? { replacesView } : {}),
          });
       }
 
@@ -435,7 +437,7 @@ export class SourceBuilder {
             persistSource,
             { physicalTableName, sourceEntityId: contentSourceEntityId },
          ),
-         ...(swapDependents ? { swapDependents } : {}),
+         ...(replacesView ? { replacesView } : {}),
       };
       for (const strategy of COLOCATED_STRATEGIES) {
          const entry = await strategy.build(request);

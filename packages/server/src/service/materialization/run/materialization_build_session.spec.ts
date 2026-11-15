@@ -31,7 +31,7 @@ import {
 import { identifier } from "../../malloy_text";
 import { declarableColumns } from "../stored_column_types";
 import { buildVirtualMap } from "../serve/bindings";
-import { type ServeBinding } from "../domain/serve_binding";
+import { type Binding } from "../domain/binding";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -41,7 +41,7 @@ type ApiConnection = components["schemas"]["Connection"];
  * declarable columns only), then the downstream as a persist source.
  */
 function buildChainedStorageBuildModel(params: {
-   upstreams: ServeBinding[];
+   upstreams: Binding[];
    downstreamName: string;
    downstreamDefText: string;
    destinationName: string;
@@ -290,12 +290,10 @@ describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
    });
 });
 
-describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partitioned or not", () => {
-   // The ordering a partitioned build needs is applied at the top of the INSERT
-   // (materialization_partitioned_build.spec), never to the SELECT the warehouse
-   // runs: what is executed there, attributed there, and addressed by is the
+describe("buildSourceIntoStorage hands the warehouse its SQL verbatim", () => {
+   // What is executed there, attributed there, and addressed by is the
    // compiled SQL and nothing else.
-   function harness(partitionColumns: string[] | undefined) {
+   function harness() {
       const received: string[] = [];
       const deps: BuildSessionDeps = {
          federate: async () => ({
@@ -308,7 +306,7 @@ describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partition
             return { selectSQL: "SELECT 1 AS org_id", jobId: null, cost: null };
          },
       };
-      const dir = mkdtempSync(join(tmpdir(), "partition-verbatim-"));
+      const dir = mkdtempSync(join(tmpdir(), "build-verbatim-"));
       mkdirSync(storageDestinationRoot(dir), { recursive: true });
       const params = {
          destinationName: "lake",
@@ -320,120 +318,16 @@ describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partition
          buildSQL: "SELECT 1 AS org_id",
          physicalTableName: "t",
          environmentPath: dir,
-         partitionColumns,
          deps,
       };
       return { params, dir, received };
    }
 
-   it("for a partitioned build", async () => {
-      const h = harness(["org_id"]);
-      try {
-         // The plain-DuckDB file destination cannot take a layout, so the build
-         // fails at the ALTER — after the read has been issued, which is the
-         // statement this test is about.
-         await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
-            /PARTITIONED BY/,
-         );
-         expect(h.received).toEqual(["SELECT 1 AS org_id"]);
-      } finally {
-         rmSync(h.dir, { recursive: true, force: true });
-      }
-   });
-
-   it("for an unpartitioned build", async () => {
-      const h = harness(undefined);
+   it("runs the compiled SQL unchanged", async () => {
+      const h = harness();
       try {
          await buildSourceIntoStorage(h.params);
          expect(h.received).toEqual(["SELECT 1 AS org_id"]);
-      } finally {
-         rmSync(h.dir, { recursive: true, force: true });
-      }
-   });
-});
-
-describe("buildSourceIntoStorage bounds the incremental delta's session too", () => {
-   // A delta into a laid-out table is the same partitioned COPY as the seed, and
-   // its memory is width x partitions, not row count. The threshold and the
-   // single appender reach the delta through the session it runs on; proved by
-   // reading the settings back from INSIDE the refresh hook, on a real session.
-   function harness(partitionColumns: string[] | undefined) {
-      const seen: Record<string, string>[] = [];
-      const afterPlan: Record<string, string>[] = [];
-      const deps: BuildSessionDeps = {
-         federate: async () => ({
-            handle: "wh",
-            sourceType: "postgres" as const,
-            close: async () => {},
-         }),
-         read: async () => ({
-            selectSQL: "SELECT 1 AS org_id",
-            jobId: null,
-            cost: null,
-         }),
-      };
-      const settings = async (session: DuckDBConnection) => {
-         const r = await session.runSQL(
-            "SELECT name, value FROM duckdb_settings() " +
-               "WHERE name IN ('threads', 'partitioned_write_flush_threshold')",
-         );
-         return Object.fromEntries(
-            (r.rows as { name: string; value: string }[]).map((x) => [
-               x.name,
-               String(x.value),
-            ]),
-         );
-      };
-      const dir = mkdtempSync(join(tmpdir(), "partition-delta-"));
-      mkdirSync(storageDestinationRoot(dir), { recursive: true });
-      const params = {
-         destinationName: "lake",
-         destinationConnection: {
-            name: "lake",
-            type: "duckdb",
-         } as ApiConnection,
-         sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
-         buildSQL: "SELECT 1 AS org_id",
-         physicalTableName: "t",
-         environmentPath: dir,
-         partitionColumns,
-         incremental: {
-            plan: async ({ session }: { session: DuckDBConnection }) => {
-               seen.push(await settings(session));
-               // A delta was applied: the build returns here, before the seed.
-               return {
-                  readCost: null,
-                  refreshed: true,
-               } as never;
-            },
-            afterSeed: async () => undefined,
-         },
-         deps,
-      };
-      return { params, dir, seen, afterPlan, settings };
-   }
-
-   it("a partitioned build's delta runs on one thread at the flush threshold", async () => {
-      const h = harness(["org_id"]);
-      try {
-         // The plain-DuckDB destination has no laid-out table to describe, so
-         // the build fails after the hook -- which is the part under test.
-         await buildSourceIntoStorage(h.params).catch(() => undefined);
-         expect(h.seen).toEqual([
-            { threads: "1", partitioned_write_flush_threshold: "8192" },
-         ]);
-      } finally {
-         rmSync(h.dir, { recursive: true, force: true });
-      }
-   });
-
-   it("an unpartitioned build's delta sees the session as it was", async () => {
-      const h = harness(undefined);
-      try {
-         await buildSourceIntoStorage(h.params).catch(() => undefined);
-         expect(h.seen).toHaveLength(1);
-         expect(h.seen[0].threads).not.toBe("1");
-         expect(h.seen[0].partitioned_write_flush_threshold).toBe("524288");
       } finally {
          rmSync(h.dir, { recursive: true, force: true });
       }
@@ -453,7 +347,9 @@ describe("buildSourceIntoStorage bounds the incremental delta's session too", ()
 describe.skipIf(process.platform === "win32")(
    "buildDownstreamIntoStorage (stack-on-parent, real DuckDB)",
    () => {
-      const parent: ServeBinding = {
+      const parent: Binding = {
+         kind: "persist",
+         tier: "storage",
          sourceName: "daily_orders",
          destinationName: "lake",
          virtualHandle: "daily_h",
@@ -795,7 +691,7 @@ describe.skipIf(process.platform === "win32")(
       // every such column was declared `json`, which Malloy refuses in a
       // `type:`, so no chained build over such a parent could lift.
       describe("over a parent with list, struct and MAP columns", () => {
-         const exotic: ServeBinding = {
+         const exotic: Binding = {
             ...parent,
             sourceName: "tagged_orders",
             virtualHandle: "tagged_h",
@@ -1056,8 +952,6 @@ describe("writePartitionedTable", () => {
             { column: "day", transform: "month" },
          ],
          createStatement: "CREATE TABLE",
-         bounded: true,
-         read: async () => undefined,
       });
 
       const transaction = issued.slice(issued.indexOf("BEGIN TRANSACTION"));
@@ -1075,29 +969,9 @@ describe("writePartitionedTable", () => {
       );
       expect(transaction[4]).toBe("COMMIT");
       // The bounds are set before the transaction and threads restored after.
+      expect(issued).toContain("SET partitioned_write_flush_threshold = 8192");
       expect(issued).toContain("SET threads = 1");
       expect(issued[issued.length - 1]).toBe("RESET threads");
-   });
-
-   it("keeps the build's identity layout through createTableAndDescribe", async () => {
-      const { session, issued } = recordingSession();
-
-      await createTableAndDescribe(
-         session,
-         `"lake"."t"`,
-         "SELECT 1 AS region",
-         ["region"],
-      );
-
-      expect(issued).toContain(
-         `CREATE OR REPLACE TABLE "lake"."t" AS (SELECT 1 AS region) WITH NO DATA`,
-      );
-      expect(issued).toContain(
-         `ALTER TABLE "lake"."t" SET PARTITIONED BY ("region")`,
-      );
-      // A chained build (no passthrough source) inserts unordered, as before.
-      expect(issued).toContain(`INSERT INTO "lake"."t" (SELECT 1 AS region)`);
-      expect(issued).not.toContain("SET threads = 1");
    });
 });
 

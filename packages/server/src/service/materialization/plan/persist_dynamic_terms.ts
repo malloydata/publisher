@@ -1,16 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import { destinationOf, readRouteIfAny } from "./declaration";
 import { collectGivenRefs } from "../../given";
 import { readsAGiven } from "../../probe_compiler";
 import { forEachFieldPath } from "../../governance/ir/array_query";
 import {
    NOW_OFFSET_UNITS,
+   type MalloyRange,
    type NowComparisonOp,
    type NowOffsetUnit,
-} from "../../malloy_text";
+   type RollingWindow,
+   type TermUse,
+} from "../domain/read_time_terms";
 
 /**
  * Where a persist source's givens sit, and whether that lets the source be
@@ -36,7 +40,8 @@ type DynamicTermRefusal =
    | "given_in_persisted_query"
    | "dynamic_projection"
    | "dynamic_join"
-   | "dynamic_joined_where";
+   | "dynamic_joined_where"
+   | "inherited_where_with_given";
 
 /**
  * One extend-block `where:` conjunct that references a given: absent from the
@@ -98,7 +103,7 @@ function givenNames(node: unknown): string[] {
 export function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
    let def: unknown;
    try {
-      def = persistSource._sourceDef as unknown;
+      def = sourceDefOf(persistSource) as unknown;
    } catch {
       return true;
    }
@@ -185,7 +190,7 @@ export function admitGivenPositions(
 ): DynamicTermClassification {
    let def: unknown;
    try {
-      def = persistSource._sourceDef as unknown;
+      def = sourceDefOf(persistSource) as unknown;
    } catch (err) {
       return unreadable(err, "which givens the build would bake in");
    }
@@ -225,6 +230,18 @@ function classifyDef(def: unknown, depth: number): DynamicTermClassification {
       const fieldRefusal = classifyFields(record.fields, joinedTerms, depth);
       if (fieldRefusal) return fieldRefusal;
 
+      // Only the persisted source's own declaration is re-applied at read
+      // by the served copy, so a given-reading `where:` it inherits from a
+      // base is refused (the source answers live, under the term).
+      const inherited = depth === 0 ? inheritedGivenTerm(record) : undefined;
+      if (inherited !== undefined) {
+         return {
+            ok: false,
+            reason: "inherited_where_with_given",
+            detail: inheritedWhereDetail(inherited),
+         };
+      }
+
       const terms = givenTerms(classifyWhereTerms(record));
 
       // Fail-closed sweep: `filterList` and `fields` were classified above and
@@ -252,6 +269,166 @@ function classifyDef(def: unknown, depth: number): DynamicTermClassification {
    } catch (err) {
       return unreadable(err, "the build leaves every given out");
    }
+}
+
+/**
+ * Why a persisted source whose given-reading `where:` is inherited is refused
+ * (`inherited_where_with_given`), on either tier: the refusal's detail, or
+ * undefined when every such term is the source's own. Unreadable IR is a
+ * refusal.
+ */
+export function inheritedGivenWhereRefusal(
+   persistSource: PersistSource,
+): string | undefined {
+   let def: unknown;
+   try {
+      def = sourceDefOf(persistSource) as unknown;
+   } catch {
+      return inheritedWhereDetail("");
+   }
+   if (def === null || typeof def !== "object") return inheritedWhereDetail("");
+   const inherited = inheritedGivenTerm(def as Record<string, unknown>);
+   return inherited === undefined ? undefined : inheritedWhereDetail(inherited);
+}
+
+function inheritedWhereDetail(code: string): string {
+   return (
+      // malloy-text: markdown code formatting in a refusal reason, not Malloy
+      `${code ? `\`where: ${code}\`` : "a `where:`"} reads a given and is ` +
+      "inherited from a source this one is built from, so it would not be " +
+      "re-applied over the stored table at read; the source is answered " +
+      "live under it. To serve it from a table, move the given-reading " +
+      "`where:` onto the persisted source itself"
+   );
+}
+
+/**
+ * The code of the first given-reading `where:` a persisted source applies that
+ * the declaration carrying its `#@ persist` does not write (one inherited from
+ * a base, in its file or another), "" when such a term has no recorded code,
+ * or undefined when every one is written there.
+ *
+ * Anchored on the `#@ persist` that applies, not the source's own statement:
+ * an extension that declares no `#@ persist` inherits its parent's, shares
+ * the parent's table and is read through it, so the parent's own term is its
+ * too. A term is accepted when it lies in the source's own statement, or when
+ * every use of it lies after that annotation in its file and, when the source
+ * itself is declared there, before the end of the source's statement: that is,
+ * in any declaration after the annotation that the served copy keeps as text
+ * (a base is declared before the annotation, so its term lies ahead of it).
+ * What a term in an unannotated declaration between the annotation and the
+ * source leaves to the read is guarded there: the served copy re-roots no
+ * source whose base chain filters, and refuses any re-root that lost a
+ * given-reading term. Fails closed: a term with no location, a source with
+ * no readable location, or one with no readable annotation counts as
+ * inherited.
+ */
+function inheritedGivenTerm(
+   record: Record<string, unknown>,
+): string | undefined {
+   const list = Array.isArray(record.filterList) ? record.filterList : [];
+   const own = declarationLocation(record.location);
+   const anchor = own && persistAnnotationAt(record.annotations, own);
+   for (const entry of list) {
+      if (entry === null || typeof entry !== "object") continue;
+      if (!readsAGiven(entry, new WeakSet())) continue;
+      const uses = termLocations(entry).at;
+      const written =
+         own !== undefined &&
+         (withinDeclaration(uses, own) ||
+            (anchor !== undefined &&
+               uses.length > 0 &&
+               uses.every(
+                  (use) =>
+                     use.url === anchor.url &&
+                     notBefore(use.range.start, anchor.range.end) &&
+                     (own.url !== anchor.url ||
+                        notBefore(own.range.end, use.range.end)),
+               )));
+      if (!written) {
+         const code = (entry as { code?: unknown }).code;
+         return typeof code === "string" ? code : "";
+      }
+   }
+   return undefined;
+}
+
+/**
+ * Where the `#@ persist` that applies to a source was written: the last one
+ * in its own file ahead of its statement (its own, or the nearest it
+ * inherits there), else the last one it inherits from another file (the
+ * annotation chain lists what a source inherits before its own notes, so the
+ * last is the nearest).
+ */
+function persistAnnotationAt(
+   annotations: unknown,
+   own: TermUse,
+): TermUse | undefined {
+   let notes: { text?: unknown; at?: TermUse }[];
+   try {
+      notes = new Annotations(
+         (annotations ?? {}) as ConstructorParameters<typeof Annotations>[0],
+      ).forRoute("@") as { text?: unknown; at?: TermUse }[];
+   } catch {
+      return undefined;
+   }
+   const persists = notes
+      .map((note) => note.at)
+      .filter(
+         (at, i): at is TermUse =>
+            at !== undefined &&
+            typeof notes[i].text === "string" &&
+            /^#@\s*persist\b/.test(notes[i].text as string),
+      );
+   const here = persists.filter(
+      (at) => at.url === own.url && notBefore(own.range.start, at.range.end),
+   );
+   if (here.length > 0) {
+      // In the source's own file: the one written last ahead of it.
+      return here.reduce((last, at) =>
+         notBefore(at.range.start, last.range.start) ? at : last,
+      );
+   }
+   return persists[persists.length - 1];
+}
+
+/** Whether position `a` is at or after position `b`. */
+function notBefore(
+   a: { line: number; character: number },
+   b: { line: number; character: number },
+): boolean {
+   return a.line > b.line || (a.line === b.line && a.character >= b.character);
+}
+
+/** A compiled declaration's `location`, when it has a readable one. */
+function declarationLocation(location: unknown): TermUse | undefined {
+   const at = location as { url?: unknown; range?: MalloyRange } | undefined;
+   return typeof at?.url === "string" &&
+      typeof at.range?.start?.line === "number" &&
+      typeof at.range?.end?.line === "number"
+      ? { url: at.url, range: at.range }
+      : undefined;
+}
+
+/**
+ * Whether every one of `uses` lies within the declaration at `own`: the text
+ * the served copy keeps of a persisted source, so the only place a term the
+ * build leaves out is re-applied at read. False with no location.
+ */
+export function withinDeclaration(
+   uses: readonly TermUse[],
+   own: TermUse | undefined,
+): boolean {
+   return (
+      own !== undefined &&
+      uses.length > 0 &&
+      uses.every(
+         (use) =>
+            use.url === own.url &&
+            notBefore(use.range.start, own.range.start) &&
+            notBefore(own.range.end, use.range.end),
+      )
+   );
 }
 
 function unreadable(err: unknown, cannotProve: string): FieldRefusal {
@@ -425,15 +602,14 @@ const MAX_JOIN_DEPTH = 4;
 function declaresStorage(annotations: unknown): boolean {
    if (annotations === undefined || annotations === null) return false;
    try {
-      const tag = parseRouteTag(
+      const tag = readRouteIfAny(
          new Annotations(
             annotations as ConstructorParameters<typeof Annotations>[0],
          ),
          "@",
-      ).tag;
-      if (!tag.has("persist")) return false;
-      const storage = tag.text("storage");
-      return typeof storage === "string" && storage.trim().length > 0;
+      );
+      if (!tag?.has("persist")) return false;
+      return destinationOf(tag, "persist") !== undefined;
    } catch {
       return false;
    }
@@ -480,7 +656,7 @@ export function readTimeDynamicTerms(
    persistSource: PersistSource,
 ): DynamicTerm[] {
    try {
-      const def = persistSource._sourceDef as unknown as {
+      const def = sourceDefOf(persistSource) as unknown as {
          filterList?: unknown;
          fields?: unknown;
       };
@@ -490,18 +666,6 @@ export function readTimeDynamicTerms(
       // the source as unscopable, which one empty-column term expresses.
       return [{ code: "<unreadable>", givens: [], columns: [] }];
    }
-}
-
-/** A zero-based range in a Malloy file, as the compiler reports one. */
-export interface MalloyRange {
-   start: { line: number; character: number };
-   end: { line: number; character: number };
-}
-
-/** Where a term reads a field or a given, as its `refSummary` records it. */
-export interface TermUse {
-   url: string;
-   range: MalloyRange;
 }
 
 function termUse(use: unknown): TermUse | undefined {
@@ -616,22 +780,6 @@ function dynamicTerm(entry: object): DynamicTerm {
 // every term of a compiled source by what it depends on beside the stored
 // columns: nothing (fixed), a given, the current time, or both.
 // ---------------------------------------------------------------------------
-
-/**
- * A current-time comparison in the one shape a stored table can re-apply at
- * read: a one-segment field compared with `now`, optionally offset by a whole
- * number of one unit, read with the field on the left. The direction is the
- * comparison: `>=`/`>` keep rows newer than the cut-off (a lower bound),
- * `<`/`<=` rows older than it (an upper bound).
- */
-export interface RollingWindow {
-   /** The field the term compares (a stored column, when it is stored). */
-   field: string;
-   /** As read with the field on the left. */
-   op: NowComparisonOp;
-   /** `now + sign * amount unit`; absent for a bare `now`. */
-   offset?: { sign: 1 | -1; amount: number; unit: NowOffsetUnit };
-}
 
 /** What one `where:` term of a compiled source depends on. */
 type WhereTermDependency =

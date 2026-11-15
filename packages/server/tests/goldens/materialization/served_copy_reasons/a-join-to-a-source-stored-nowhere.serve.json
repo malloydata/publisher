@@ -1,0 +1,13 @@
+{
+  "problems": [
+    {
+      "join": "segments",
+      "reason": "cross_connection_join",
+      "sourceName": "flights"
+    }
+  ],
+  "query": {
+    "equalToLive": true,
+    "servedFrom": "storage"
+  }
+}

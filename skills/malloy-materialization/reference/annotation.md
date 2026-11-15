@@ -29,9 +29,9 @@ source: my_rollup is some_source -> { group_by: ...; aggregate: ... }
 
 ## Identity and reuse
 
-A persist source's identity is its **`sourceEntityId`**: a content address of its connection, its canonical SQL and its `partition=` layout. Not the name, not the file, not the package version. So:
+A persist source's identity is its **`sourceEntityId`**: a content address of its connection and its canonical SQL. Not the name, not the file, not the package version. So:
 
-- **A rebuild with unchanged persist logic reuses the existing table** (skip-if-unchanged); changing the SQL or the partition layout builds fresh under a new address. `--force-refresh` and every scheduler fire defeat the skip; an incremental source is exempt from it and advances by its boundary instead (`reference/refresh.md`).
+- **A rebuild with unchanged persist logic reuses the existing table** (skip-if-unchanged); changing the SQL builds fresh under a new address. `--force-refresh` and every scheduler fire defeat the skip; an incremental source is exempt from it and advances by its boundary instead (`reference/refresh.md`).
 - **Two sources whose bodies compile to the same SQL share one table**, however they are named, and share one freshness policy and one incremental boundary with it.
 - **A republish by itself builds nothing on a standalone server**; reuse is a property of the next *run*.
 
@@ -48,12 +48,13 @@ A persist source's identity is its **`sourceEntityId`**: a content address of it
 |---|---|---|
 | `name="..."` | the target table (required) | above |
 | `storage=<destination>` | build into a storage destination and serve from it | `reference/storage.md` |
-| `partition="a,b"` | lay the stored table out by those columns (`storage=` only) | `reference/storage.md` |
 | `refresh="incremental" watermark="col" [merge_key="a,b"]` | refresh by bounded delta instead of a full rebuild | `reference/refresh.md` |
 | `freshness.window="24h" freshness.fallback="live"` | per-source freshness objective (hosted deployments) | `reference/refresh.md` |
 | `#@ queryMetadata.<key>="v"` (sibling line) | per-source cost-attribution properties | `reference/policy.md` |
 | `#@ -persist` (on a reader) | opt a reader out of the table | above |
 | `#@ preaggregate grain="..."` (on a measure) | store a derived rollup | `reference/storage.md` |
+
+`storage=` and `name=` may be written beside the route's key or inside it: `#@ persist storage="lake"` and `#@ persist { storage="lake" }` place the table the same way, on every route (`#@ persist`, a persisted view, `#@ preaggregate`, `#(materialize)`, `#(preaggregate)`). When both are written, the one inside the key wins, even when it names nothing. A `storage=` that is empty or only whitespace, or that is a list or a block rather than text, refuses that source alone with a warning, and it is answered live (a source sharing its SQL still builds): name the destination, or drop the key to build in the source's own warehouse.
 
 On a server with `PUBLISHER_MATERIALIZE` on, the v2 spelling `#(materialize)` takes the same keys but `realization`, plus `inline=[...]`, as a closed set (an unknown key refuses the publish), and `#(preaggregate) grain=["a", "b"]` replaces `#@ preaggregate`. The main skill's "v1 or v2" section says when to write which.
 

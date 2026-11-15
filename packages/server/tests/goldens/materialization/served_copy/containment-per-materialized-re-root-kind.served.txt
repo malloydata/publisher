@@ -1,0 +1,142 @@
+// containment per materialized re-root kind: files generated while serving
+
+// ==== <root>/m.malloy (text 1 of 3)
+
+
+##! experimental { virtual_source }
+type: e_broken__served is {
+   ts::timestamp,
+   amount::string,
+   org::string,
+   customer_id::number
+}
+type: i_broken__served is {
+   ts::timestamp,
+   amount::string,
+   org::string,
+   customer_id::number,
+   c__id::number,
+   c__segment::string
+}
+type: m_broken__served is {
+   ts::timestamp,
+   amount::string,
+   org::string,
+   customer_id::number
+}
+type: m_kept__served is {
+   ts::timestamp,
+   amount::number,
+   org::string,
+   customer_id::number
+}
+
+source: events is duckdb.table('events')
+source: customers is duckdb.table('customers') extend { primary_key: id }
+
+#(materialize) storage="lake"
+source: m_kept is __served_copy_alias_of_unknown.virtual('h2')::m_kept__served extend {
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake"
+source: m_broken is __served_copy_alias_of_unknown.virtual('h1')::m_broken__served extend {
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake" inline=["c"]
+source: i_broken is __served_copy_alias_of_unknown.virtual('h0')::i_broken__served extend {
+  internal rename:
+    c__id__stored is c__id
+    c__segment__stored is c__segment
+  dimension:
+    c is {
+      id is c__id__stored,
+      segment is c__segment__stored
+    }
+
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake"
+source: e_broken is __served_copy_alias_of_unknown.virtual('h3')::e_broken__served extend {
+  measure: total is amount.sum()
+} extend {
+  measure: top is amount.max()
+}
+
+// ==== <root>/m.malloy (text 2 of 3)
+
+
+##! experimental { virtual_source }
+type: i_broken__served is {
+   ts::timestamp,
+   amount::string,
+   org::string,
+   customer_id::number
+}
+type: m_kept__served is {
+   ts::timestamp,
+   amount::number,
+   org::string,
+   customer_id::number
+}
+
+source: events is duckdb.table('events')
+source: customers is duckdb.table('customers') extend { primary_key: id }
+
+#(materialize) storage="lake"
+source: m_kept is __served_copy_alias_of_unknown.virtual('h2')::m_kept__served extend {
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake"
+source: m_broken is events extend {
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake" inline=["c"]
+source: i_broken is __served_copy_alias_of_unknown.virtual('h0')::i_broken__served extend {
+  join_one: c is customers with customer_id
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake"
+source: e_broken is m_kept extend {
+  measure: top is amount.max()
+}
+
+// ==== <root>/m.malloy (text 3 of 3)
+
+
+##! experimental { virtual_source }
+type: m_kept__served is {
+   ts::timestamp,
+   amount::number,
+   org::string,
+   customer_id::number
+}
+
+source: events is duckdb.table('events')
+source: customers is duckdb.table('customers') extend { primary_key: id }
+
+#(materialize) storage="lake"
+source: m_kept is __served_copy_alias_of_unknown.virtual('h2')::m_kept__served extend {
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake"
+source: m_broken is events extend {
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake" inline=["c"]
+source: i_broken is events extend {
+  join_one: c is customers with customer_id
+  measure: total is amount.sum()
+}
+
+#(materialize) storage="lake"
+source: e_broken is m_kept extend {
+  measure: top is amount.max()
+}

@@ -17,8 +17,8 @@
  * rewriter is checked against the same scenarios when it lands (phase 3).
  */
 
+import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect } from "bun:test";
-import { loadLeavingOutCrossConnectionJoins } from "../../../src/service/materialization/plan/cross_connection_joins";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import {
@@ -37,7 +37,6 @@ import { SourceMap } from "../../../src/service/materialization/text/source_map"
 import {
    pairLeafKeyChecksOf,
    runRollupKeyCheck,
-   storedKeyCheckSql,
 } from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
@@ -51,7 +50,10 @@ import {
 } from "../../../src/service/materialization/run/materialization_build_session";
 import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
-import { deriveColocatedServeBindings } from "../../../src/service/materialization/serve/colocated_bindings";
+import {
+   deriveColocatedServeBindings,
+   kindFromPlan,
+} from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
@@ -81,8 +83,9 @@ import {
 import { buildVirtualMap } from "../../../src/service/materialization/serve/bindings";
 import {
    deriveServeBindings,
-   type ServeBinding,
-} from "../../../src/service/materialization/domain/serve_binding";
+   makeSnapshot,
+   type Binding,
+} from "../../../src/service/materialization/domain/binding";
 import {
    groupAliasesByName,
    planSourceIds,
@@ -235,7 +238,7 @@ export interface R4Run {
 
 /** A built scenario: run queries against it. */
 export interface R4Fixture {
-   bindings: ServeBinding[];
+   bindings: Binding[];
    /** Each built source's table id (its content address in the plan), by name. */
    tableIds: Record<string, string>;
    /**
@@ -276,7 +279,7 @@ export interface R4Fixture {
     * serve shape, so the next served query compiles it again. Kept apart from
     * {@link runAsIs} so a benchmark can do it outside its stopwatch.
     */
-   setBindings(bindings: ServeBinding[]): void;
+   setBindings(bindings: Binding[]): void;
    /** One query under the bindings already set, with nothing around it. */
    runAsIs(
       malloy: string,
@@ -455,46 +458,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          ]),
       ),
    );
-   let runtime = new Runtime({ urlReader, connections: authorConnections });
-   let materializer = runtime.loadModel(new URL(urlOf(entry)), {
+   const runtime = new Runtime({ urlReader, connections: authorConnections });
+   const materializer = runtime.loadModel(new URL(urlOf(entry)), {
       importBaseURL: new URL(root),
    });
-   // A model joining sources across origin connections does not compile;
-   // with the materialize switch it loads from its build view (#6982), as a
-   // package load does.
-   let buildView: ReadonlyMap<string, string> = new Map();
-   let compiled: Awaited<ReturnType<typeof materializer.getModel>>;
-   try {
-      compiled = await materializer.getModel();
-   } catch (first) {
-      const view = await loadLeavingOutCrossConnectionJoins({
-         firstError: first,
-         readText: (url) =>
-            Object.entries(scenario.files).find(([f]) => urlOf(f) === url)?.[1],
-         load: async (overlay) => {
-            const rt = new Runtime({
-               urlReader: new InMemoryURLReader(
-                  new Map([
-                     ...Object.entries(scenario.files).map(
-                        ([file, text]) => [urlOf(file), text] as const,
-                     ),
-                     ...overlay,
-                  ]),
-               ),
-               connections: authorConnections,
-            });
-            const mm = rt.loadModel(new URL(urlOf(entry)), {
-               importBaseURL: new URL(root),
-            });
-            return { rt, mm, model: await mm.getModel() };
-         },
-      });
-      if (!view) throw first;
-      runtime = view.result.rt;
-      materializer = view.result.mm;
-      compiled = view.result.model;
-      buildView = view.overlay;
-   }
+   const compiled = await materializer.getModel();
 
    // Build each persist source with its real SQL.
    const entries: Record<string, ManifestEntry> = {};
@@ -514,7 +482,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                        ...Object.entries(scenario.files).map(
                           ([file, text]) => [urlOf(file), text] as const,
                        ),
-                       ...buildView,
                        ...overlay,
                     ]),
                  ),
@@ -679,6 +646,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // `#@ persist` views (phase 4, P14): their generated build sources keep
    // their own sourceIDs, as the package's build plan keeps them.
    const viewRefusals: string[] = [];
+   const viewBuildSourceIDs = new Set<string>();
    if (scenario.persistedViews) {
       const views = await tryCompilePersistedViewCompanion({
          packagePath: dir,
@@ -692,7 +660,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                      ...Object.entries(scenario.files).map(
                         ([file, text]) => [urlOf(file), text] as const,
                      ),
-                     ...buildView,
                      ...overlay,
                   ]),
                ),
@@ -709,6 +676,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const names = new Set(
             views.generated.plans.map((p) => p.buildSourceName),
          );
+         for (const p of views.generated.plans) {
+            viewBuildSourceIDs.add(p.buildSourceID);
+         }
          for (const target of targets.connections.flatMap((c) => c.targets)) {
             if (target.readsGivens) {
                for (const s of target.sources) {
@@ -896,6 +866,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             downstreamName: materializePlans[source.sourceID].buildSourceName,
             virtualMap: buildVirtualMap([
                {
+                  kind: "persist",
+                  tier: "storage",
                   sourceName: over.overStored.parentBuildSourceName,
                   destinationName: DESTINATION,
                   virtualHandle: parentEntry.sourceEntityId,
@@ -1028,13 +1000,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
+   // Each kind read off the plan, as the package's bind reads it.
+   const kinds = {
+      materializeSourceIDs: new Set(Object.keys(materializePlans)),
+      viewBuildSourceIDs,
+   };
    const bindings = [
       ...deriveServeBindings(
          entries,
          groupAliasesByName(Object.values(plan)),
          undefined,
          planSourceIds(plan),
-      ),
+      ).map((b) => ({ ...b, kind: kindFromPlan(b, kinds) })),
       // The colocated `#(materialize)` tables, through the package's own
       // derivation.
       ...deriveColocatedServeBindings({
@@ -1061,10 +1038,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // The manifest is passed only on a served run, so a live run reads live.
    let manifestOn = false;
    const policy = ModelPolicy.fixed({
-      freshBuildManifestEntries: () =>
-         manifestOn && Object.keys(colocatedEntries).length > 0
-            ? colocatedEntries
-            : undefined,
+      snapshot: () => makeSnapshot([], manifestOn ? colocatedEntries : {}),
       materializedTables: {
          planned: new Map([
             ...sources.map(
@@ -1168,7 +1142,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          (e) => [e.sourceName, e.physicalTableName] as const,
       ),
       ...bindings
-         .filter((b) => b.colocated)
+         .filter((b) => b.tier === "colocated")
          .map((b) => [b.sourceName, b.tablePath] as const),
    ]);
    return {

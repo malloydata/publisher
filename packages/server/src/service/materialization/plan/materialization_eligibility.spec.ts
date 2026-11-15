@@ -14,7 +14,8 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it, spyOn } from "bun:test";
+import * as gatePolicy from "../domain/gate_policy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { deriveAnnotationFields, plannedSources } from "./build_plan";
 import {
@@ -159,19 +160,6 @@ source: mz_given_outside is base -> { select: * } extend { where: tenant = $tena
       expect(plan.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
-      expect(plan.partitionColumns).toEqual([]);
-   });
-
-   it("resolves partition= into the plan the build lays the table out with", async () => {
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#@ persist name="mz_part" storage=lake partition="region"
-source: mz_part is base -> { select: * }`);
-      const plan = assertMaterializationEligible(
-         sources.mz_part,
-         deriveAnnotationFields(sources.mz_part),
-      );
-      expect(plan.partitionColumns).toEqual(["region"]);
    });
 
    it("refuses a source protected by its own #(authorize) gate", async () => {
@@ -1145,19 +1133,64 @@ source: reads_measure is offers_measure -> {
          MaterializationEligibilityError,
       );
 
-      // And the same shape with the given only where it is applied at read stays
-      // admitted, so the fallback is not a blanket refusal.
-      const readTimeOnly = {
-         name: "read_time_only",
-         _sourceDef: {
-            query: { pipeline: [{}] },
-            filterList: [{ node: "filterCondition", e: { node: "given" } }],
-            fields: [{ name: "d", e: { node: "given" } }],
+      // And the same shape with the given only where it is applied at read
+      // (a term the source's own statement writes) stays admitted, so the
+      // fallback is not a blanket refusal.
+      const url = "file:///m.malloy";
+      const at = (line: number) => ({
+         url,
+         range: {
+            start: { line, character: 0 },
+            end: { line, character: 5 },
          },
-      } as unknown as PersistSource;
+      });
+      const readTimeOnly = (located: boolean) =>
+         ({
+            name: "read_time_only",
+            _sourceDef: {
+               ...(located
+                  ? {
+                       location: {
+                          url,
+                          range: {
+                             start: { line: 0, character: 0 },
+                             end: { line: 5, character: 0 },
+                          },
+                       },
+                    }
+                  : {}),
+               query: { pipeline: [{}] },
+               filterList: [
+                  {
+                     node: "filterCondition",
+                     e: { node: "given" },
+                     ...(located
+                        ? {
+                             refSummary: {
+                                givenUsage: [{ id: "G", at: at(2) }],
+                             },
+                          }
+                        : {}),
+                  },
+               ],
+               fields: [{ name: "d", e: { node: "given" } }],
+            },
+         }) as unknown as PersistSource;
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(readTimeOnly),
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly(true)),
       ).not.toThrow();
+      // A read-time term that cannot be placed in the source's own statement
+      // fails closed: it may be inherited, which the read would not re-apply.
+      let refusal: unknown;
+      try {
+         assertColocatedPersistNotAuthorizeGated(readTimeOnly(false));
+      } catch (error) {
+         refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(MaterializationEligibilityError);
+      expect((refusal as { reason?: string }).reason).toBe(
+         "inherited_where_with_given",
+      );
    });
 
    it("refuses when the compiled definition cannot be read at all", () => {
@@ -1361,5 +1394,35 @@ describe("read-only dialect (colocated persist)", () => {
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(source),
       ).not.toThrow();
+   });
+});
+
+describe("gateEnforcedAtRead's tier", () => {
+   // The policy's materialize row does not read the tier today, so a wrong
+   // tier would pass every table test; this pins what the predicate asks.
+   it("asks the gate policy for a #(materialize) table's own tier", () => {
+      const spy = spyOn(gatePolicy, "tableKeepsGates");
+      try {
+         const id = "s@m.malloy";
+         const gate = { classification: "row_level", attributed: true };
+         for (const [persist, tier] of [
+            [{ storage: "lake" }, "storage"],
+            [{}, "colocated"],
+            [undefined, "colocated"],
+         ] as const) {
+            spy.mockClear();
+            gateEnforcedAtRead(id, {
+               materializePlans: { [id]: { persist } },
+               sourceGateOutcomes: { [id]: gate },
+            } as never);
+            expect(spy).toHaveBeenCalledTimes(1);
+            expect(spy.mock.calls[0][0]).toMatchObject({
+               kind: "materialize",
+               tier,
+            });
+         }
+      } finally {
+         spy.mockRestore();
+      }
    });
 });

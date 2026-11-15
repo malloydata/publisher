@@ -25,7 +25,6 @@ import {
    getMcpCorsOrigins,
    getMemoryGovernorConfig,
    getModelPageMode,
-   getPartitionedWriteFlushThreshold,
    getMaterializeEnabled,
    getPersistAddressIncludesDestination,
    getPersistCollisionEnforce,
@@ -148,10 +147,6 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "duckdb.tempDirectory": () => {
       assertDuckDBResourceConfig();
       return getDuckDBTempDirectory();
-   },
-   "duckdb.partitionedWriteFlushThreshold": () => {
-      assertDuckDBResourceConfig();
-      return getPartitionedWriteFlushThreshold();
    },
    "ducklake.rowGroupSizeBytes": () => {
       assertDuckDBResourceConfig();

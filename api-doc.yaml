@@ -5902,7 +5902,7 @@ components:
                   served live (one per annotation, `model` its file; `error`;
                   refused at publish, while a package already published keeps
                   loading). `persist-retired-key`: a `#@ persist` key no longer
-                  read, `sharing=` or `schedule=`, with what to write instead
+                  read, `sharing=`, `schedule=` or `partition=`, with what to write instead
                   (one per key, `subject` the source; `error`; refused at
                   publish). `persist-unknown-key`: a `#@ persist` key Publisher
                   does not read, such as a misspelled `merge_key=` (one per
@@ -8479,9 +8479,9 @@ components:
             to degrade to the live warehouse. **The rows are correct and the
             request succeeded**, which is why this needs its own value: it is
             indistinguishable from a storage hit at the call site, and treating it
-            as one would report a healthy hit rate for a broken store. This value
-            is NOT the same event as the `live_fallback` label on
-            `publisher_storage_serve_routing_total` — see the warning below.
+            as one would report a healthy hit rate for a broken store. On
+            `publisher_query_route_total` the same event is the answering leg's
+            `outcome="fallback", reason="RUN_FAILED"`.
 
             **This field describes the `storage=` tier and nothing else.** It
             records how the storage routing decision came out, so it says nothing
@@ -8529,18 +8529,11 @@ components:
             counts colocated entries only, so a package whose sources are all
             `storage=` reports 0 while being fully bound.
 
-            ⚠️ **`live_fallback` names two different things across two surfaces,
-            and correlating them on the token is wrong in both directions.** On
-            this field it means the store failed at run time. On
-            `publisher_storage_serve_routing_total{outcome}` it means the
-            transform was ineligible — this field's null case 3 — and that
-            metric spells the run-time failure `runtime_live_fallback`. So the
-            field's `live_fallback` is the metric's `runtime_live_fallback`, and
-            the metric's `live_fallback` is this field's `null`. A third surface,
-            `manifestBindingStatus`, uses the same token for a third thing: a
-            configured `manifestLocation` whose fetch or bind failed. Each
-            surface is internally consistent; none of them means what the others
-            do.
+            ⚠️ **`live_fallback` here is not `manifestBindingStatus`'s.** On this
+            field it means the store failed at run time; `manifestBindingStatus`
+            uses the same token for a configured `manifestLocation` whose fetch
+            or bind failed. Each surface is internally consistent; neither means
+            what the other does.
         executionTimeMs:
           type: integer
           description: >-
@@ -10243,7 +10236,13 @@ components:
           properties:
             url:
               type: string
-              description: URL of the source file
+              description: >-
+                The source file, never where the server keeps it: a package
+                file's path relative to the package root, decoded
+                (`sub dir/orders.malloy`). At scope `append` the problem points
+                into a temporary compile-check overlay beside the model,
+                `__compile_check.malloy` (`model` names the model it extends).
+                A file outside the package reads `<outside package>`.
             range:
               type: object
               description: Character range within the source file
@@ -10628,6 +10627,7 @@ components:
               dynamic_projection,
               dynamic_join,
               dynamic_joined_where,
+              inherited_where_with_given,
               partition_without_storage,
               partition_column_unknown,
               partition_column_not_public,
@@ -10639,15 +10639,20 @@ components:
               read_only_dialect,
               env_reference,
               rollup_name_collision,
+              empty_storage,
             ]
           description: >-
             The bounded refusal reason. Only the compile-time reasons can
             appear here — `free_parameter`, `authorize`, the four
             that name where a given the build could not strip sits
             (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
-            `dynamic_joined_where`), the three that name an unusable
-            `partition=` (`partition_without_storage`,
-            `partition_column_unknown`, `partition_column_not_public`),
+            `dynamic_joined_where`), `inherited_where_with_given` (a
+            given-reading `where:` the source inherits from a source it is
+            built from, in its own file or another, rather than writing it in
+            its own declaration: only the source's own declaration is
+            re-applied over the stored table at read, so it is not built and
+            is answered live, under the term; move the `where:` onto the
+            persisted source to serve it from a table),
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns),
             `preaggregate_over_dynamic_source` (a rollup whose base is scoped by
@@ -10660,8 +10665,11 @@ components:
             warehouse), and `rollup_name_collision` (a
             pre-aggregation rollup whose generated name, and so its table, is
             also another model's rollup with different content; neither builds
-            or serves, and each model answers from its base) — those being the
-            only reasons the two
+            or serves, and each model answers from its base), and
+            `empty_storage` (a `#@ persist` whose `storage=` names no
+            destination: written empty, `storage=""`, or as a value that is not
+            a name, such as a list; it is not built and is answered live) —
+            those being the only reasons the two
             compile-time eligibility asserts this collection is computed from
             produce.
 
@@ -10682,7 +10690,12 @@ components:
             placement can no longer be raised. `not_duckdb_portable` is
             likewise retained and no longer produced: a `storage=` table no
             column of which Malloy can type is now built, and its source is
-            answered live. `public_surface_unknown` is raised by the build-time
+            answered live. The three `partition_*` reasons
+            (`partition_without_storage`, `partition_column_unknown`,
+            `partition_column_not_public`) are likewise retained and no longer
+            produced: `partition=` is a retired key, refused at publish as
+            `persist-retired-key` or `materialize-retired-key`, never as a plan
+            refusal. `public_surface_unknown` is raised by the build-time
             narrowing of a stored table to the source's public columns; both
             are listed only because they share the enum the runtime
             eligibility metric uses.
@@ -10838,26 +10851,15 @@ components:
             rewrites).
         partition:
           type: array
+          deprecated: true
           items:
             type: string
           description: >-
-            The source's declared `#@ persist partition=` columns, resolved
-            against its public projection and reported in the author's order,
-            which is the order the stored table's directories nest in. Absent or
-            empty means the table is written unpartitioned, which is the default
-            and what every source built before this field existed means.
-
-
-            A layout, not an access control. Every term the build strips from a
-            source is re-applied when the artifact is read whether or not its
-            column is partitioned, so a list omitting the column a caller is
-            scoped by costs a full scan and never widens what that caller sees.
-            Consumers should not infer isolation from it.
-
-
-            `partition=` requires `storage=`; declared without one it is a
-            publish refusal rather than an ignored key, so this is empty for
-            every colocated source.
+            Retired and no longer produced: always absent. It reported a
+            source's `#@ persist partition=` columns; `partition=` is now a
+            retired key, refused at publish, and every stored table is written
+            unpartitioned. Kept so generated clients that read it still
+            compile.
         strippedTerms:
           type: array
           items:

@@ -41,8 +41,8 @@ import {
    stringLiteral,
 } from "../../malloy_text";
 import { noteSource } from "../text/field_notes";
-import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
-import { storedMalloyType } from "../stored_column_types";
+import type { MaterializeReadTimeTerm } from "../domain/read_time_terms";
+import { storedMalloyType, storedTypeText } from "../stored_column_types";
 
 export { storedMalloyType };
 import {
@@ -130,19 +130,18 @@ export interface Reroot {
     * current-time term inherited from a base is not in the source's own text,
     * so the re-root writes it right on the stored table (one the source's own
     * `extend` repeats is applied twice, which is harmless). A given-reading
-    * term is kept as the author wrote it, in the source's own blocks or a
-    * base's kept block ({@link keptBlocks}).
+    * term is kept as the author wrote it, in the source's own blocks: one
+    * written anywhere else refuses the source at plan.
     */
    readTimeTerms?: readonly MaterializeReadTimeTerm[];
    /**
     * The trailing `extend` runs of the bases the source is built from in this
     * file, root first, as their own declarations wrote them
     * (kept_ancestors.ts). For an extension table (P10), whose table holds
-    * every one of their rows and stored columns, and for a source whose plan
-    * left out a base's given-reading `where:` or caller-dependent dimension
-    * (`keptBases`), which only that base's block re-applies at read. The
-    * re-root keeps their blocks ahead of its own, and their measures, joins
-    * and views stay the source's.
+    * every one of their rows and stored columns, and for a source whose bases
+    * declare a measure, view or join it inherits (G8). The re-root keeps their
+    * blocks ahead of its own, and their measures, joins and views stay the
+    * source's.
     */
    keptBlocks?: string;
    /**
@@ -480,8 +479,19 @@ function timeframeKeyword(timeframe: string | undefined): string {
  * persisted view's result, a rollup's grain): each column with a timeframe,
  * which the table's type cannot carry, renamed internally and redefined as
  * that column truncated again (the identity on a truncated value), so the
- * field keeps its timeframe. Text that opens an `extend { … }` block; empty
- * when no column has a timeframe in {@link TIMEFRAMES}.
+ * field keeps its timeframe; and each column read through a faithful cast
+ * (`castTo`, `serveTypePlan`'s: a date truncation a build stored as a
+ * TIMESTAMP, an integer flag), redefined as it cast, then truncated:
+ *
+ *    internal rename: order_month__tf is order_month
+ *    dimension: order_month is (order_month__tf::"DATE").month
+ *
+ * A date is cast with the SQL type, a plain `CAST(… AS DATE)`, never Malloy's
+ * `::date`, which would convert it to a query's time zone first (as
+ * `timeframeExpression` does). Each internal name is `<column>__tf`, or
+ * `__tf_2`, … when a column of the table (`taken`, by default the columns
+ * given) already has it. Text that opens an `extend { … }` block; empty when
+ * no column is redefined.
  */
 export function timeframeRestatements(
    columns: readonly {
@@ -489,24 +499,54 @@ export function timeframeRestatements(
       timeframe?: string;
       /** The author's annotation lines, written again on the redefined field. */
       notes?: readonly string[];
+      /** The faithful cast the stored column is read through. */
+      castTo?: "DATE" | "BOOLEAN";
    }[],
+   taken: readonly string[] = columns.map((c) => c.name),
 ): string {
-   const truncated = columns.filter(
-      (c) => c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe),
-   );
-   if (truncated.length === 0) return "";
-   const renames = truncated
-      .map((c) => `    ${identifier(`${c.name}__tf`)} is ${identifier(c.name)}`)
+   const redefined = columns.flatMap((c) => {
+      const timeframe =
+         c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe)
+            ? c.timeframe
+            : undefined;
+      return timeframe || c.castTo ? [{ ...c, timeframe }] : [];
+   });
+   if (redefined.length === 0) return "";
+   const used = new Set([...taken, ...columns.map((c) => c.name)]);
+   const internal = redefined.map((c) => freeInternalName(c.name, used));
+   const renames = redefined
+      .map((c, i) => `    ${identifier(internal[i])} is ${identifier(c.name)}`)
       .join("\n");
-   // malloy-text: the author's own notes, then names through identifier and a timeframe from TIMEFRAMES
-   const dims = truncated
-      .map(
-         (c) =>
+   // malloy-text: the author's own notes, then names through identifier, a cast to DATE or boolean and a timeframe from TIMEFRAMES
+   const dims = redefined
+      .map((c, i) => {
+         const stored = identifier(internal[i]);
+         const read =
+            c.castTo === "DATE"
+               ? `${stored}::"DATE"`
+               : c.castTo === "BOOLEAN"
+                 ? `${stored}::boolean`
+                 : stored;
+         const value = !c.timeframe
+            ? read
+            : c.castTo
+              ? `(${read}).${timeframeKeyword(c.timeframe)}`
+              : `${read}.${timeframeKeyword(c.timeframe)}`;
+         return (
             (c.notes ?? []).map((n) => noteSource(n, "    ")).join("") +
-            `    ${identifier(c.name)} is ${identifier(`${c.name}__tf`)}.${timeframeKeyword(c.timeframe)}`,
-      )
+            `    ${identifier(c.name)} is ${value}`
+         );
+      })
       .join("\n");
    return `\n  internal rename:\n${renames}\n  dimension:\n${dims}`;
+}
+
+/** `<name>__tf`, or `<name>__tf_<n>`, the first that is none of `used`; added to it. */
+function freeInternalName(name: string, used: Set<string>): string {
+   let internal = `${name}__tf`;
+   for (let n = 2; used.has(internal); n++) internal = `${name}__tf_${n}`;
+   used.add(internal);
+   return internal;
 }
 
 /** Why a declaration could not be re-rooted; the source then serves live. */
@@ -1423,17 +1463,6 @@ function timeframeStatements(
       if (dims) out += `\n  ${accessPrefix(access)}dimension:\n${dims}`;
    }
    return out;
-}
-
-/**
- * The Malloy type a stored column is declared as in the `type:`: the one rule
- * every stored table's declaration follows ({@link storedMalloyType}). A
- * column it cannot declare is left out before a declaration is written, so
- * the `json` here is never reached by one that compiles: Malloy refuses it in
- * a `type:`, which fails that copy and leaves the source to its fallback.
- */
-export function storedTypeText(stored: string): string {
-   return storedMalloyType(stored) ?? "json";
 }
 
 /** The emitted `type:` declaration for one re-rooted source. */
