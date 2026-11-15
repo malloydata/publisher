@@ -1540,6 +1540,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.packageMetadata.versionId ?? undefined;
    }
 
+   /**
+    * The build manifest the package is configured to bind, as
+    * `getPackageMetadata().manifestLocation` reports it, without building the
+    * rest of the metadata.
+    */
+   public getManifestLocation(): string | null | undefined {
+      return this.packageMetadata.manifestLocation;
+   }
+
    public getPackageName(): string {
       return this.packageName;
    }
