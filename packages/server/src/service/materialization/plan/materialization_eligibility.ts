@@ -914,8 +914,9 @@ export function assertBuildReadsNoCurrentTime(
       message:
          `Source '${source.name}' cannot be materialized: the relation it ` +
          `persists reads the current time (\`now\`), in its query, a view ` +
-         `it runs, or the \`where:\`, a field or a join of the source that ` +
-         `query reads. Its table would hold the rows as of the build and ` +
+         `it runs, the \`where:\`, a field or a join of the source that ` +
+         `query reads, or the query of a query-shaped source it is built ` +
+         `from or joins. Its table would hold the rows as of the build and ` +
          `serve them until the next rebuild, while a live query reads \`now\` ` +
          `again every time, so it is not built and is answered live. To serve ` +
          `it from a table, move the \`now\` into the persisted source's own ` +

@@ -48,7 +48,7 @@ import {
 import { collectEntryPointGates } from "../../gate_classification";
 import { readPreparedQuery } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
-import { currentTimeFields, readsCurrentTime } from "./persist_dynamic_terms";
+import { pipelineReadsCurrentTime } from "./persist_dynamic_terms";
 import {
    planModelPersistedQueries,
    planModelPersistedViews,
@@ -90,22 +90,6 @@ interface StageLike {
    expandedFieldUsage?: { path?: unknown }[];
    expandedUngroupings?: unknown[];
    outputStruct?: { fields?: unknown[] };
-}
-
-/** The dotted paths a stage reads, from the compiler's expanded usage. */
-function stageReads(stage: StageLike): string[] {
-   return (stage.expandedFieldUsage ?? []).flatMap((u) =>
-      Array.isArray(u.path) && u.path.length > 0 ? [u.path.join(".")] : [],
-   );
-}
-
-/** Whether `path` (or a join it reads through) is in `dependent`. */
-function dependsOn(path: string, dependent: ReadonlySet<string>): boolean {
-   const parts = path.split(".");
-   for (let i = 1; i <= parts.length; i++) {
-      if (dependent.has(parts.slice(0, i).join("."))) return true;
-   }
-   return false;
 }
 
 /** Whether an output field is nested (a `nest:`, a record or an array). */
@@ -176,12 +160,7 @@ export async function persistedViewRefusalReason(
       return `the view does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
    }
    if (stages.length === 0) return "the view has no stage to store";
-   const timed = currentTimeFields(def.fields);
-   if (
-      readsCurrentTime(def.filterList) ||
-      readsCurrentTime(stages) ||
-      stages.some((s) => stageReads(s).some((p) => dependsOn(p, timed)))
-   ) {
+   if (pipelineReadsCurrentTime(def, stages)) {
       return "its result reads the current time, so it differs per read";
    }
    const last = stages[stages.length - 1];
@@ -341,12 +320,7 @@ async function persistedQueryRefusalReason(
       filterList?: unknown;
    };
    if (!def || typeof def !== "object") return "its source cannot be read";
-   const timed = currentTimeFields(def.fields);
-   if (
-      readsCurrentTime(def.filterList) ||
-      readsCurrentTime(stages) ||
-      stages.some((s) => stageReads(s).some((p) => dependsOn(p, timed)))
-   ) {
+   if (pipelineReadsCurrentTime(def, stages)) {
       return "its result reads the current time, so it differs per read";
    }
    const last = stages[stages.length - 1];

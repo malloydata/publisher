@@ -37,6 +37,18 @@ source: base_join is ev extend {
   join_one: j is ev extend { where: ts < now } on j.id = id
 }
 source: query_base is ev -> { where: ts < now; select: * }
+source: query_base2 is query_base -> { select: * }
+source: query_base2x is query_base2 extend { dimension: k is 1 }
+source: query_dim is base_dim -> { select: id, amt, ts }
+source: base_join_query is ev extend {
+  join_one: jq is query_base on jq.id = id
+}
+source: base_join_query_deep is ev extend {
+  join_one: jq is query_base2 on jq.id = id
+}
+source: base_join_query_plain is ev extend {
+  join_one: jq is query_dim on jq.id = id
+}
 `;
 
 async function persistSource(body: string): Promise<PersistSource> {
@@ -90,9 +102,48 @@ const REFUSED: [string, string][] = [
       "a query-shaped base it extends",
       "source: p is query_base extend { measure: t is amt.sum() }",
    ],
+   [
+      "a query-shaped base the persisted query reads",
+      "source: p is query_base -> { select: id, amt }",
+   ],
+   [
+      "a query-shaped base two levels up",
+      "source: p is query_base2 -> { select: id, amt }",
+   ],
+   [
+      "a query-shaped base two levels up, extended",
+      "source: p is query_base2x extend { measure: t is amt.sum() }",
+   ],
+   [
+      "an upstream #@ persist the chain inlines",
+      `#@ persist name="up"
+source: up is ev -> { where: ts < now; select: * }
+#@ persist name="p"
+source: p is up -> { select: id, amt }`,
+   ],
+   [
+      "a join to a query-shaped source whose query reads it",
+      "source: p is base_join_query -> { select: id, jamt is jq.amt }",
+   ],
+   [
+      "a join to a query-shaped source two levels up",
+      "source: p is base_join_query_deep -> { select: id, jamt is jq.amt }",
+   ],
+   [
+      "a select: * over a source with a current-time dimension",
+      "source: p is base_dim -> { select: * }",
+   ],
 ];
 
 const ADMITTED: [string, string][] = [
+   [
+      "a join to a query-shaped source whose query does not read it",
+      "source: p is base_join_query_plain -> { select: id, jamt is jq.amt }",
+   ],
+   [
+      "a query-shaped base whose unread base dimension does",
+      "source: p is query_dim -> { select: id, amt }",
+   ],
    [
       "its own extend-block where:",
       "source: p is ev extend { where: ts < now }",
@@ -120,14 +171,18 @@ const ADMITTED: [string, string][] = [
 describe("buildReadsCurrentTime", () => {
    for (const [where, body] of REFUSED) {
       it(`refuses now in ${where}, which the build reads`, async () => {
-         const source = await persistSource(`#@ persist name="p"\n${body}`);
+         const source = await persistSource(
+            body.startsWith("#@") ? body : `#@ persist name="p"\n${body}`,
+         );
          expect(await buildReadsClock(source)).toBe(true);
          expect(buildReadsCurrentTime(source)).toBe(true);
       });
    }
    for (const [where, body] of ADMITTED) {
       it(`admits now in ${where}, which the build leaves to the read`, async () => {
-         const source = await persistSource(`#@ persist name="p"\n${body}`);
+         const source = await persistSource(
+            body.startsWith("#@") ? body : `#@ persist name="p"\n${body}`,
+         );
          expect(await buildReadsClock(source)).toBe(false);
          expect(buildReadsCurrentTime(source)).toBe(false);
       });
@@ -190,5 +245,29 @@ source: ok is ev -> { select: * } extend { where: ts < now }
          "reads the current time",
       );
       expect(eligibility.eligible).toEqual([sources["ok"].sourceID]);
+   });
+});
+
+describe("a given that defaults to now", () => {
+   it("is refused as given_in_persisted_query when the persisted query reads it", async () => {
+      const { sources } = await compilePersistSources(
+         connections,
+         `##! experimental { persistence givens }
+given: CUTOFF :: timestamp is now
+${HEAD.replace("##! experimental.persistence\n", "")}
+#@ persist name="p"
+source: p is ev -> { where: ts < $CUTOFF; select: * }
+`,
+      );
+      let caught: unknown;
+      try {
+         assertTierEligible(sources["p"], false, undefined);
+      } catch (err) {
+         caught = err;
+      }
+      expect(caught).toBeInstanceOf(MaterializationEligibilityError);
+      expect((caught as MaterializationEligibilityError).reason).toBe(
+         "given_in_persisted_query",
+      );
    });
 });

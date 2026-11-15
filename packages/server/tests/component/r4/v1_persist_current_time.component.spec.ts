@@ -33,8 +33,19 @@ const root = (x: string) =>
 function files(movingTs: string): Record<string, string> {
    return {
       "data/ev.csv": `id,ts\n1,2001-01-01 00:00:00\n2,2100-01-01 00:00:00\n3,${movingTs}\n`,
+      "bases.malloy": `
+${root("imp")}
+source: imp_base is ev_imp -> { where: ts < now; select: id, ts }
+`,
       "now.malloy": `
+import "bases.malloy"
 ${root("q")}
+${root("qb")}
+${root("qb2")}
+${root("up")}
+${root("jq")}
+${root("jh")}
+${root("st")}
 ${root("sq")}
 ${root("bw")}
 ${root("bd")}
@@ -61,6 +72,32 @@ source: base_dim_now is base_dim -> { select: id, ts, past }
 #@ persist name="view_now"
 source: view_now is base_view -> recent
 
+source: qbase is ev_qb -> { where: ts < now; select: id, ts }
+#@ persist name="qb_now"
+source: qb_now is qbase -> { select: id, ts }
+
+source: qbase2a is ev_qb2 -> { where: ts < now; select: id, ts }
+source: qbase2 is qbase2a -> { select: * }
+#@ persist name="qb2_now"
+source: qb2_now is qbase2 extend { dimension: k is 1 }
+
+#@ persist name="imp_now"
+source: imp_now is imp_base -> { select: id, ts }
+
+#@ persist name="up_now"
+source: up_now is ev_up -> { where: ts < now; select: id, ts }
+#@ persist name="down_now"
+source: down_now is up_now -> { select: id, ts }
+
+source: jq_base is ev_jq -> { where: ts < now; select: id }
+source: jhost is ev_jh extend { join_one: r is jq_base on r.id = id }
+#@ persist name="join_now"
+source: join_now is jhost -> { where: r.id is not null; select: id, ts }
+
+source: star_base is ev_st extend { dimension: past is ts < now }
+#@ persist name="star_now"
+source: star_now is star_base -> { select: * }
+
 #@ persist name="own_now"
 source: own_now is ev_own extend { where: ts < now }
 
@@ -79,6 +116,13 @@ const REFUSED = [
    "base_where_now",
    "base_dim_now",
    "view_now",
+   "qb_now",
+   "qb2_now",
+   "imp_now",
+   "up_now",
+   "down_now",
+   "join_now",
+   "star_now",
 ];
 const BUILT = ["own_now", "sown_now", "plain"];
 
@@ -86,6 +130,7 @@ const BUILT = ["own_now", "sown_now", "plain"];
 const QUERY: Record<string, string> = {
    base_dim_now:
       "run: base_dim_now -> { where: past; group_by: id; order_by: id }",
+   star_now: "run: star_now -> { where: past; group_by: id; order_by: id }",
 };
 const query = (s: string) =>
    QUERY[s] ?? `run: ${s} -> { group_by: id; order_by: id }`;
