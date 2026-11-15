@@ -79,6 +79,10 @@ type ESLintInstance = {
    lintFiles(
       patterns: string[],
    ): Promise<{ filePath: string; messages: LintMessage[] }[]>;
+   lintText(
+      code: string,
+      options: { filePath: string },
+   ): Promise<{ messages: LintMessage[] }[]>;
 };
 // eslint is CommonJS; require keeps tsc from asking for its declarations.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -93,13 +97,14 @@ const eslintApi = require("eslint") as {
 
 describe("H1 and H2: the documentation lint rules", () => {
    let found: { headers: Set<string>; history: Map<string, number> };
+   let eslint: ESLintInstance;
    beforeAll(async () => {
       const ESLint = await eslintApi.loadESLint({
          useFlatConfig: true,
          cwd: SERVER_DIR,
       });
       // Lint with empty allowlists, so every offender reports.
-      const eslint = new ESLint({
+      eslint = new ESLint({
          cwd: SERVER_DIR,
          overrideConfig: {
             files: ["src/service/materialization/**/*.ts"],
@@ -113,8 +118,15 @@ describe("H1 and H2: the documentation lint rules", () => {
       const results = await eslint.lintFiles([
          "src/service/materialization/**/*.ts",
       ]);
-      // A glob that matched nothing would pass both checks vacuously.
-      expect(results.length).toBeGreaterThan(0);
+      // A glob that matched nothing, or matched only specs, would pass both
+      // checks vacuously.
+      expect(
+         results.some(
+            (r) =>
+               !isSpec(r.filePath) &&
+               srcRel(r.filePath).startsWith("service/materialization/"),
+         ),
+      ).toBe(true);
       found = { headers: new Set(), history: new Map() };
       for (const r of results) {
          for (const m of r.messages) {
@@ -130,6 +142,23 @@ describe("H1 and H2: the documentation lint rules", () => {
          }
       }
    }, 120_000);
+
+   it("H1 and H2 fire on a planted module", async () => {
+      // A module with no header and a ticket, a step label and a date in a
+      // line comment, linted as if it lived in the layer.
+      const [planted] = await eslint.lintText(
+         'import * as fs from "fs";\n// Fixed in #1234, step 2c, 2026-01-02.\nexport const x = fs;\n',
+         {
+            filePath: path.join(MZ_DIR, "plan", "__planted__.ts"),
+         },
+      );
+      const rules = planted.messages.map((m) => m.ruleId);
+      expect(rules).toContain("publisher/module-header");
+      const history = planted.messages.find(
+         (m) => m.ruleId === "publisher/no-history-comments",
+      );
+      expect(history?.message).toContain("has 3");
+   });
 
    it("H1: the modules with no header are exactly the seeded ones", () => {
       expectExact(
