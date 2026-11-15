@@ -358,6 +358,12 @@ const PLAIN_TABLE_NAME = /^[A-Za-z0-9_-]+$/;
 const NEEDS_QUALIFIED_TABLE: ReadonlySet<string> = new Set(["standardsql"]);
 
 /**
+ * The dialects a pair table's delta is applied in (pairDeltaStatements): a
+ * colocated pair table anywhere else is rebuilt in full on every refresh.
+ */
+const PAIR_DELTA_DIALECTS: ReadonlySet<string> = new Set(["duckdb"]);
+
+/**
  * The table name a `#(materialize)` source's build takes: the source's own
  * name when it is plain, else its plain characters (runs of the rest folded
  * to `_`) and a hash of the whole name, so a source named outside ASCII, or
@@ -2095,7 +2101,7 @@ export function planModelMaterialize(
       }
       let pairFullRefresh: string | undefined;
       if (pair && persist.refresh === "incremental") {
-         const incremental = pairIncremental({
+         let incremental = pairIncremental({
             pairs: pairBlocks?.blocks ?? [pair],
             persist,
             names:
@@ -2115,6 +2121,23 @@ export function planModelMaterialize(
             },
             windowFields: window.terms.map((t) => t.window.field),
          });
+         // A pair table's delta replaces whole parents in DuckDB only
+         // (pairDeltaStatements): the target of every `storage=` table, and
+         // of a colocated one in a DuckDB warehouse. A colocated one anywhere
+         // else is rebuilt in full every refresh, which the package says.
+         if (
+            "watermark" in incremental &&
+            persist.storage === undefined &&
+            !PAIR_DELTA_DIALECTS.has(String(def.dialect))
+         ) {
+            incremental = {
+               fullRefresh:
+                  `its table is colocated in its source's warehouse (dialect ` +
+                  `${String(def.dialect)}), and a pair table's delta is applied only in DuckDB ` +
+                  `(a \`storage=\` destination, or a DuckDB warehouse); declare ` +
+                  `storage= to refresh it incrementally`,
+            };
+         }
          if ("watermark" in incremental) {
             if (pairBlocks) {
                pairBlocks = { ...pairBlocks, watermark: incremental.watermark };
