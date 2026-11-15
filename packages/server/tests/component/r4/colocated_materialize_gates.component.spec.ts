@@ -24,7 +24,7 @@
  */
 
 import { QueryMaterializer } from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
@@ -561,33 +561,36 @@ source: gated_mix is orders_raw -> {
          }
       ).servedCopy;
       const loadQuery = copy.loadQuery;
-      const getSQL = QueryMaterializer.prototype.getSQL;
       const served: Served[] = [];
       copy.loadQuery = async (...args) => {
          const answer = await loadQuery.apply(copy, args);
          served.push(answer);
          return answer;
       };
-      if (respell) {
-         // The served copy's SQL also reads the storage table, in a spelling
-         // its exact match does not find (other quoting and case).
-         QueryMaterializer.prototype.getSQL = async function (
-            this: QueryMaterializer,
-            ...args: Parameters<typeof getSQL>
-         ) {
-            const sql = await getSQL.apply(this, args);
-            return sql.replace(
-               /FROM "g3w_gated" as base/,
-               'FROM "g3w_gated" as base LEFT JOIN (SELECT 1 AS one FROM "lake".G3W_CUST LIMIT 0) AS g3w_probe ON TRUE',
-            );
-         };
-      }
+      const getSQL = QueryMaterializer.prototype.getSQL;
+      // The served copy's SQL also reads the storage table, quoted
+      // differently from the bound `"lake"."g3w_cust"`. Only the quoting
+      // defeats the served copy's exact match (sqlTableReads ignores case).
+      const respelled = respell
+         ? spyOn(QueryMaterializer.prototype, "getSQL").mockImplementation(
+              async function (
+                 this: QueryMaterializer,
+                 ...args: Parameters<typeof getSQL>
+              ) {
+                 const sql = await getSQL.apply(this, args);
+                 return sql.replace(
+                    /FROM "g3w_gated" as base/,
+                    'FROM "g3w_gated" as base LEFT JOIN (SELECT 1 AS one FROM "lake".g3w_cust LIMIT 0) AS g3w_probe ON TRUE',
+                 );
+              },
+           )
+         : undefined;
       try {
          const outcome = await fixture.run("m.malloy", QUERY, CALLER);
          return { outcome, served };
       } finally {
          copy.loadQuery = loadQuery;
-         QueryMaterializer.prototype.getSQL = getSQL;
+         respelled?.mockRestore();
       }
    }
 
@@ -624,10 +627,7 @@ source: gated_mix is orders_raw -> {
             .sort(),
       ).toEqual(["colocated", "storage"]);
       // So the router keeps it off G3: answered exactly as live.
-      if ("error" in live) {
-         expect("error" in outcome && outcome.error).toBe(live.error);
-         return;
-      }
+      if ("error" in live) throw new Error(live.error);
       if ("error" in outcome) throw new Error(outcome.error);
       expect(outcome.answer.via ?? outcome.answer.servedBy).toBe("live");
       expect(

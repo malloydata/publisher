@@ -351,10 +351,11 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
       kind: "materialize",
       tablePath: "main.s_tbl",
    });
-   // The storage table read unquoted and upper-cased beside the colocated
-   // one: the served copy's spelling match finds only the colocated table.
+   // The storage table read unquoted beside the colocated one. Only the
+   // quoting defeats the served copy's exact match against the bound
+   // `"main"."s_tbl"` (sqlTableReads ignores case), so it finds only "c_tbl".
    const sql =
-      'SELECT 1 FROM "c_tbl" AS base LEFT JOIN MAIN.S_TBL AS j ON j.id = base.id';
+      'SELECT 1 FROM "c_tbl" AS base LEFT JOIN main.s_tbl AS j ON j.id = base.id';
    const servedCandidate = (gateTablesRead: Binding[] | undefined) =>
       variantsOf(
          makeLegs(pinned, {
@@ -364,6 +365,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
                   runnable,
                   virtualMap,
                   bindings: [colocated, storage],
+                  // The exact-match result, which gateTablesRead overrides.
                   tablesRead: [colocated],
                   gateTablesRead,
                   graftScope: undefined,
