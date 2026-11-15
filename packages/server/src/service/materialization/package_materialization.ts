@@ -2477,9 +2477,8 @@ function servedCopyProblemMessage(
             return (
                "This source's `include` hides " +
                problem.hiddenUnstored.map((c) => "`" + c + "`").join(", ") +
-               " (private or internal), which its v1 `storage=` table does not store: such a table stores " +
-               "public columns only. The served copy leaves the source as written, so it answers live. " +
-               "To serve it from the table, make the column public, keep the source colocated, or use `#(materialize)`."
+               " (private or internal), which its v1 `storage=` table does not hold. The served copy " +
+               "leaves the source as written, so it answers live. Building the source again stores it."
             );
          }
          return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";

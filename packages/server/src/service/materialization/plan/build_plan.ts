@@ -275,17 +275,30 @@ function planDynamicFields(source: PersistSource): {
 }
 
 /**
- * A source's PUBLIC column names, or a throw. The strict counterpart to
- * {@link deriveColumns}: this list decides what gets WRITTEN, so "unknown" must
- * not read as "nothing to narrow". Empty throws too — it means everything
- * the build SQL projects is hidden.
+ * The columns a source's stored table holds, by the names its build SQL emits
+ * them under, or a throw: every column the source declares, public or hidden
+ * (`private:`, `internal:`), so a hidden measure or dimension over one is
+ * served from the table. A renamed column is stored under the name its query
+ * gives it, which the served copy renames again. A column the source drops
+ * with `except:` is not one of its fields, so it is not stored. The strict
+ * counterpart to {@link deriveColumns}: this list decides what gets WRITTEN,
+ * so "unknown" must not read as "nothing to narrow". Empty throws too.
  */
-export function publicColumnNames(persistSource: PersistSource): string[] {
+export function storedColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
    try {
+      // A renamed field's definition keeps the column's own name (`name`)
+      // beside the one the source gives it (`as`).
+      const columnOf = new Map<string, string>();
+      const def = sourceDefOf(persistSource) as { fields?: unknown[] } | null;
+      for (const f of def?.fields ?? []) {
+         const { name, as } = f as { name?: unknown; as?: unknown };
+         if (typeof name !== "string") continue;
+         columnOf.set(typeof as === "string" ? as : name, name);
+      }
       names = exploreOf(persistSource)
          .intrinsicFields.filter((f) => f.isAtomicField())
-         .map((f) => f.name)
+         .map((f) => columnOf.get(f.name) ?? f.name)
          .filter((n): n is string => typeof n === "string" && n.length > 0);
    } catch (err) {
       throw new Error(
@@ -293,45 +306,45 @@ export function publicColumnNames(persistSource: PersistSource): string[] {
       );
    }
    if (names.length === 0) {
-      throw new Error("the compiled source exposes no public atomic columns");
+      throw new Error("the compiled source declares no atomic columns");
    }
    return names;
 }
 
 /**
- * Wrap a source's build SQL to project only its PUBLIC columns. The build SQL
- * emits every underlying column, including hidden ones (`except:`, non-public
- * access).
+ * Wrap a source's build SQL to project the columns its stored table holds
+ * ({@link storedColumnNames}). The build SQL emits every underlying column,
+ * one the source drops with `except:` included, which is left out.
  *
- * A `storage=` build must not put a hidden column's values AT REST in the
- * destination, where direct catalog access reaches them past the source's
- * visibility rules (reads THROUGH the source are bounded separately by
- * `narrowSchemaToPublic`). Applies to both storage build paths.
+ * A hidden column's values are AT REST in the destination, readable by anyone
+ * with direct access to it; reads THROUGH Publisher go through the served
+ * copy, which hides the column again exactly as the source does. Applies to
+ * both storage build paths.
  *
- * Fails CLOSED: an undeterminable public surface refuses the build before any
+ * Fails CLOSED: an undeterminable column surface refuses the build before any
  * SQL runs, leaving the previous generation serving.
  *
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source.
  */
-export function projectToPublicColumns(
+export function projectToStoredColumns(
    persistSource: PersistSource,
    buildSQL: string,
 ): string {
    let cols: string[];
    try {
-      cols = publicColumnNames(persistSource);
+      cols = storedColumnNames(persistSource);
    } catch (err) {
       recordEligibilityRefused("public_surface_unknown");
       throw new MaterializationEligibilityError({
          reason: "public_surface_unknown",
          message:
             `Source '${persistSource.name}' cannot be materialized into a ` +
-            `storage destination: its public column surface could not be ` +
-            `determined — ${errMessage(err)}. The publisher narrows a stored ` +
-            `table to the source's public columns, so it refuses the build ` +
-            `rather than materialize columns the source hides. This usually ` +
-            `means the compiled-source shape changed; drop 'storage=' to serve ` +
-            `this source live in the meantime.`,
+            `storage destination: its column surface could not be ` +
+            `determined — ${errMessage(err)}. The publisher writes a stored ` +
+            `table's columns as the source declares them, so it refuses the ` +
+            `build rather than materialize columns the source drops. This ` +
+            `usually means the compiled-source shape changed; drop 'storage=' ` +
+            `to serve this source live in the meantime.`,
       });
    }
    const projection = cols

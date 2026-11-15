@@ -4,7 +4,7 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { PersistSource } from "@malloydata/malloy";
 
-import { projectToPublicColumns } from "../plan/build_plan";
+import { projectToStoredColumns } from "../plan/build_plan";
 import {
    canonicalBoundValue,
    deltaSelect,
@@ -104,8 +104,8 @@ export function storageDeltaTarget(params: {
          deltaRows: async (start, end) => {
             // Filter INSIDE, project OUTSIDE — the seed's nesting order, so both
             // write the same columns. The watermark is always public (the
-            // publish gate checks it), so the projection cannot hide it.
-            const bounded = projectToPublicColumns(
+            // publish gate checks it), so the projection cannot drop it.
+            const bounded = projectToStoredColumns(
                persistSource,
                deltaSelect({
                   dialect: sourceDialect,

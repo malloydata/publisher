@@ -163,7 +163,8 @@ export interface Reroot {
    keepsIncludes?: true;
    /**
     * With {@link keepsIncludes}: an `except:` item naming no stored column
-    * (a v1 `storage=` table stores public columns only) is deleted from the
+    * (a v1 `storage=` table does not store one its source drops) is
+    * deleted from the
     * kept text, since the re-rooted source has nothing of that name to
     * exclude and Malloy refuses the statement (`dropExceptItems`).
     */
@@ -721,8 +722,9 @@ export function buildServedCopy(
             continue;
          }
          // A kept `include { … }` that hides a column the table does not
-         // store (a v1 `storage=` table stores public columns only) cannot
-         // compile on it: refused before the re-root, saying why.
+         // hold (a v1 `storage=` table that does not hold every column its
+         // source declares) cannot compile on it: refused before the
+         // re-root, saying why.
          const hiddenUnstored =
             r.keepsIncludes && spans?.extendStart !== undefined
                ? (

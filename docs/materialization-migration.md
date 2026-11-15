@@ -219,6 +219,13 @@ A v1 `#@ persist` on a source declared only by refinement (`source: x is orders 
 stores its root table's rows. `#(materialize)` on the same source stores the source's own rows, with
 its `where:` already applied.
 
+Both forms store the columns a source hides (`private:`, `internal:`) in the destination, and the
+served copy hides them again, so a measure over one is answered from the table on either. A v1
+table stores the hidden columns the source's query produces; a `#(materialize)` table stores every
+hidden dimension under its own name, computed ones included. Either way the hidden values are at
+rest in the destination, readable by anyone with direct access to it, and never exposed through
+Publisher ([what a `storage=` table holds](materialization.md#where-a-table-is-built-storage)).
+
 <a id="a-base-with-measures-views-or-joins"></a>
 
 ### A base with measures, views or joins

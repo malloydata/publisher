@@ -186,13 +186,6 @@ const UNFLAGGED_BEFORE_CUTOVER: Gap = {
       "a model file without ##! experimental.persistence plans no #@ persist source before the cutover (guard 1); the cutover's build copy carries the flag (D3)",
 };
 
-/** Today's serve shape compiles a model's sources together, so one that cannot be shaped takes the others live. */
-const SERVE_SHAPE_FAILS_BESIDE: Gap = {
-   kind: "live",
-   reason:
-      "today's serve shape does not compile this model (the re-hidden source's measure reads a column its storage= table does not hold), so every source in it answers live; the cutover's served copy contains that failure and serves the source beside it",
-};
-
 /** A query live answers wrong on Malloy 0.0.438, whose stored answer is right. */
 export const LIVE_WRONG_NEST: Gap = {
    kind: "wrong",
@@ -896,16 +889,12 @@ source: order_facts is orders_raw -> {
             name: "a measure over the joined source's internal column, from the index",
             malloy:
                "run: order_facts -> { group_by: c.segment; aggregate: w is c.west_n, t is amount.sum() }",
-            expect: { storage: "live" },
          },
          {
             name: "the joined source's measure, in its own file",
             model: "dims.malloy",
             malloy:
                "run: customer_dim -> { group_by: segment; aggregate: west_n }",
-            // v1 stores a persisted table's public columns only, so a measure
-            // reading `home_region` is answered live there.
-            expect: { storage: "live" },
          },
       ],
    },
@@ -1674,18 +1663,11 @@ source: rehidden is customers_raw -> {
          {
             name: "a measure beside the excepted column",
             malloy: "run: dropped -> { group_by: region; aggregate: total }",
-            gaps: {
-               "storage/off": SERVE_SHAPE_FAILS_BESIDE,
-               "storage/on": SERVE_SHAPE_FAILS_BESIDE,
-            },
          },
          {
             name: "a measure over the re-hidden column",
             malloy:
                "run: rehidden -> { group_by: segment; aggregate: n, west_n }",
-            // A storage= table holds public columns only, so a measure over
-            // the hidden column is answered live there.
-            expect: { storage: "live" },
          },
       ],
    },

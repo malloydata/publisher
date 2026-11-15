@@ -44,8 +44,8 @@ import { recordStoredColumnTypeMismatch } from "../../../materialization_metrics
 import {
    buildSQLOf,
    plannedSources,
-   projectToPublicColumns,
-   publicColumnNames,
+   projectToStoredColumns,
+   storedColumnNames,
 } from "../plan/build_plan";
 import {
    bigQueryQueryLabelValue,
@@ -1182,8 +1182,8 @@ export async function planChainedDownstream(params: {
       let expected: string[] = [];
       let built: string[] = [];
       try {
-         expected = publicColumnNames(params.recomputes);
-         built = publicColumnNames(downstream);
+         expected = storedColumnNames(params.recomputes);
+         built = storedColumnNames(downstream);
       } catch {
          // An unknown surface is refused where the table is projected to it.
       }
@@ -1213,9 +1213,9 @@ export async function planChainedDownstream(params: {
             `which does not run on the destination's read-write session.`,
       });
    }
-   // Projected to public columns so hidden (`except:` / access-restricted)
-   // values are not stored at rest.
-   const sql = projectToPublicColumns(
+   // Projected to the columns the source declares, hidden ones included, as
+   // a recompute writes them; a column `except:` drops is left out.
+   const sql = projectToStoredColumns(
       downstream,
       buildSQLOf(downstream, { entries: {} }),
    );
