@@ -404,7 +404,9 @@ export class InstructedBuild {
     */
    private async assertOwnable(
       run: InstructedRun,
-      persistSource: PersistSource,
+      // The source whose `name=` this is, which every message names: the
+      // refusal is shared with each source on the table (failedTargets).
+      sourceName: string,
       target: OwnedTableTarget,
       connection: MalloyConnection,
    ): Promise<string[] | undefined> {
@@ -421,7 +423,7 @@ export class InstructedBuild {
                site,
                target,
                owner,
-               persistSource.name,
+               sourceName,
                async () =>
                   !!packageRuns &&
                   !!pkg &&
@@ -443,7 +445,7 @@ export class InstructedBuild {
             if (!view) {
                throw new TableOwnershipError(
                   TABLE_OWNED_ELSEWHERE,
-                  `'${persistSource.name}' is not built (${TABLE_OWNED_ELSEWHERE}): ` +
+                  `'${sourceName}' is not built (${TABLE_OWNED_ELSEWHERE}): ` +
                      `its name= '${target.physicalTableName}' holds a name= view ` +
                      `this package made in an earlier release, which no longer ` +
                      `provably reads the table its mark names, so it is left as ` +
@@ -462,7 +464,7 @@ export class InstructedBuild {
                ))
             ) {
                throw new Error(
-                  `'${persistSource.name}' is not built: its name= ` +
+                  `'${sourceName}' is not built: its name= ` +
                      `'${target.physicalTableName}' changed while it was ` +
                      `checked. The next build checks it again.`,
                );
@@ -470,7 +472,7 @@ export class InstructedBuild {
             logger.info(
                "Dropped this package's leftover name= view to build its table there",
                {
-                  sourceName: persistSource.name,
+                  sourceName,
                   physicalTableName: target.physicalTableName,
                },
             );
@@ -482,7 +484,7 @@ export class InstructedBuild {
             undefined,
             target,
             owner,
-            persistSource.name,
+            sourceName,
             async () => false,
          );
       }
@@ -681,7 +683,8 @@ export class InstructedBuild {
             );
             replacesView = await this.assertOwnable(
                run,
-               persistSource,
+               authorNamedInstructions(run).get(instruction) ??
+                  persistSource.name,
                ownedTarget,
                connection,
             ).catch(async (err) => {
@@ -776,9 +779,14 @@ export class InstructedBuild {
             );
          }
       } catch (buildErr) {
-         // Only a build that ran: a check before it (ownership, uniqueness,
-         // ...) is cheap to run again for the next source.
-         if (buildStartedAt !== undefined) {
+         // A build that ran, or an ownership refusal: that refusal is the
+         // table's, so no source sharing it may write it, and each takes the
+         // same reason. Any other check before the build (uniqueness, ...)
+         // is cheap to run again for the next source.
+         if (
+            buildStartedAt !== undefined ||
+            buildErr instanceof TableOwnershipError
+         ) {
             run.failedTargets?.set(target, { sourceEntityId, err: buildErr });
          }
          recordInstructedBuildFailure(
@@ -966,11 +974,14 @@ export class InstructedBuild {
 }
 
 /**
- * Where an auto-run writes a source's table at the author's own `name=`, or
+ * Where an auto-run writes a source's table at an author's own `name=`, or
  * undefined: a host-instructed build (the host chose the name), a name
  * Publisher chose (its readable name, hashed over the package and the
  * version, so no other package writes it), or a run that cannot say whose it
- * is.
+ * is. Decided by the instruction, not the source: every source sharing the
+ * address builds the one instruction, named after the first of them, so a
+ * sibling with no `name=` of its own writes that author's name too, and is
+ * checked as the author's source is.
  */
 function authorNamedTarget(
    run: InstructedRun,
@@ -980,10 +991,7 @@ function authorNamedTarget(
 ): OwnedTableTarget | undefined {
    if (orchestrated || run.planFacts.hostInstructed) return undefined;
    if (!runPackageOf(run)) return undefined;
-   if (!hasAuthorTableName(run.compiled, persistSource)) return undefined;
-   if (instruction.physicalTableName !== selfAssignTableName(persistSource)) {
-      return undefined;
-   }
+   if (!authorNamedInstructions(run).has(instruction)) return undefined;
    return {
       physicalTableName: instruction.physicalTableName,
       connectionName: persistSource.connectionName,
@@ -991,6 +999,42 @@ function authorNamedTarget(
          ? { storageDestinationName: instruction.destination }
          : {}),
    };
+}
+
+/** Each run's {@link authorNamedInstructions}, computed once. */
+const authorNamedByRun = new WeakMap<
+   InstructedRun,
+   Map<BuildInstruction, string>
+>();
+
+/**
+ * The run's instructions written at an author's own `name=`, each with the
+ * name of the first source that declares it: those a source with that
+ * `name=` resolves to, at that name.
+ */
+function authorNamedInstructions(
+   run: InstructedRun,
+): Map<BuildInstruction, string> {
+   let named = authorNamedByRun.get(run);
+   if (!named) {
+      named = new Map();
+      for (const source of Object.values(run.compiled.sources)) {
+         if (!hasAuthorTableName(run.compiled, source)) continue;
+         const instruction = resolveInstruction(
+            run.index,
+            source,
+            run.compiled.connectionDigests,
+         )?.instruction;
+         if (
+            instruction?.physicalTableName === selfAssignTableName(source) &&
+            !named.has(instruction)
+         ) {
+            named.set(instruction, source.name);
+         }
+      }
+      authorNamedByRun.set(run, named);
+   }
+   return named;
 }
 
 /** The environment and package a run builds, when it says. */

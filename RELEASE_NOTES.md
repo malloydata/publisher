@@ -29,6 +29,17 @@ What happens: each grain is planned, built and served exactly as the `#(preaggre
 
 Nothing that is built or served changes, and no rollup's address or table moves. The `preaggregate-over-stored-base` warning code and the `rollup_over_stored_base` serve verdict reason were already never reported, and still are not; a client may stop handling them.
 
+## [Unreleased] — a source sharing a table with a refused sibling no longer builds over another package's table
+
+Two stored sources that compile to the same build share one table, named after the first of them. When that first source has a `name=` and the table at that name is not provably this package's (another package marked it as its own, or no run of this package wrote it, as with a user's own table), the auto-run refused that source and left the table alone, but then built the same table for the sibling sharing it, replacing that table's rows and removing its mark. The refusal now belongs to the table. Every source sharing it is refused with the same `table-owned-elsewhere` (or `table-ownership-unverified`) reason, nothing is written, the table and its mark stay as they were, and each of those sources is answered live. This holds for colocated tables and `storage=` destinations, and for `scope: "package"` versions. When the name is free, the shared table is built once and marked as this package's, whichever source builds it.
+
+No API, enum or metric value changes.
+## [Unreleased] — a rollup a compile-time gate refuses now warns `preaggregate-not-built`
+
+This changes the meaning of a signal. A valid `#(preaggregate)` or `#@ preaggregate` rollup that a compile-time gate refuses alone, while the rest of the package loads, used to carry the `persist-source-refused` warning of a `#@ persist` source, though its author wrote no `#@ persist`. It now carries its own code, `preaggregate-not-built` (severity `warn`), with `subject` its base source (now also when the refusal left the rollup out of the plan's `sources`), and a message that names the base and the grain before the gate's reason: ``#(preaggregate) rollup of source "orders" at (category) is not built, so its measures are served live: …``, worded as the `preaggregate-reads-given` message. The gates are the ones that refuse a rollup in the build plan's `refusedSources` (tier `preaggregate`): a dialect whose connection creates no table, a table name another rollup's table holds, a base scoped by a given, a row-level gate on a v1 rollup's base, and the `storage=` destination gate. `persist-source-refused` now means a `#@ persist` source only.
+
+Nothing else changes: the same rollups are built or refused, the same queries are served or answered live, and `refusedSources` lists the same entries with the same reasons and messages. A rollup refusal that already had a code of its own keeps it (`preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given`, `preaggregate-over-stored-base` and the like), and `preaggregate-malformed` is unchanged. Who is affected: a client that matched `persist-source-refused` to find refused rollups. Match `preaggregate-not-built` as well; warning codes are open strings, so a client that does not know the new code should show it as it shows any other warning.
+
 ## [Unreleased] — tables built in Credible now serve in three shapes that answered live
 
 Three shapes of stored source had their tables built but were answered live, with a warning or none. Each now reads its table, with answers equal to live:
