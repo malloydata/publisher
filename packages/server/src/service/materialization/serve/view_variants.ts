@@ -140,6 +140,8 @@ interface CompiledVariant {
    modelDef?: ModelDef;
    runtime?: GraftRuntime;
    error?: string;
+   /** Why the stored rows cannot answer the view with live's columns, by design. */
+   refusal?: string;
 }
 
 /** One model's persisted views. */
@@ -293,6 +295,12 @@ export class PersistedViewServe {
          throw new LegDecline("view_stale");
       }
       const variant = await this.compiledVariant(plan, localName, table);
+      if (variant.refusal) {
+         throw new LegDecline(
+            "view_missing_field",
+            `the stored result cannot answer \`${call.view}\` with live's columns: ${variant.refusal}`,
+         );
+      }
       if (!variant.materializer || !variant.modelDef) {
          logger.warn("A persisted-view variant did not compile", {
             modelPath: this.host.modelPath(),
@@ -474,7 +482,10 @@ export class PersistedViewServe {
                  new Set([table.binding.destinationName]),
               )
             : packageConfig;
-      const viewBody = viewDeclaration(plan.viewName, shape);
+      const view = viewDeclaration(plan.viewName, shape);
+      if ("refusal" in view) return { refusal: view.refusal };
+      // malloy-text: viewDeclaration's text, every value through identifier or noteSource
+      const viewBody = view.text;
       return compileDeclaringFileVariant({
          packagePath,
          modelPath,
@@ -773,10 +784,13 @@ function regroupRefusal(shape: ViewShape): string | undefined {
  * annotation carrying `calculation` as live's does. A boolean measure
  * re-aggregates through the number it picks, NULL kept NULL. Where that
  * regrouping is not provably exact ({@link regroupRefusal}), or a measure's
- * type is one `max()` does not take (a JSON value, an array), the variant is
- * refused and the query answers live.
+ * type is one `max()` does not take (a JSON value, an array), it returns the
+ * refusal instead, and the query answers live.
  */
-function viewDeclaration(viewName: string, shape: ViewShape): string {
+function viewDeclaration(
+   viewName: string,
+   shape: ViewShape,
+): { text: string } | { refusal: string } {
    // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
    const notes = shape.notes.map((n) => `  ${n}\n`).join("");
    const select = shape.columns.map((c) => identifier(c.name)).join(", ");
@@ -787,14 +801,28 @@ function viewDeclaration(viewName: string, shape: ViewShape): string {
               .join(", ")}`
          : "";
    if (!regroups(shape.columns)) {
-      return `${notes}  view: ${identifier(viewName)} is { select: ${select}${order ? `; ${order}` : ""} }`;
+      return {
+         text: `${notes}  view: ${identifier(viewName)} is { select: ${select}${order ? `; ${order}` : ""} }`,
+      };
    }
-   const refusal = regroupRefusal(shape);
-   if (refusal) {
-      throw new Error(`the view's stored rows cannot be regrouped: ${refusal}`);
-   }
+   const refusal =
+      regroupRefusal(shape) ??
+      shape.columns
+         .filter(
+            (c) =>
+               c.kind === "measure" &&
+               c.type !== "boolean" &&
+               !MAX_TYPES.has(c.type),
+         )
+         .map(
+            (c) =>
+               `the measure \`${c.name}\` is a ${c.type || "value"} that max() cannot re-aggregate`,
+         )[0];
+   if (refusal) return { refusal };
    const lines = shape.columns.map(groupedColumn).join("");
-   return `${notes}  view: ${identifier(viewName)} is {\n${lines}${order ? `    ${order}\n` : ""}  }`;
+   return {
+      text: `${notes}  view: ${identifier(viewName)} is {\n${lines}${order ? `    ${order}\n` : ""}  }`,
+   };
 }
 
 /** One column of the regrouped view, as its statement. */
@@ -807,11 +835,6 @@ function groupedColumn(c: ViewColumn): string {
    // a NULL is picked as NULL first.
    if (c.type === "boolean") {
       return `    aggregate:\n${notes}      ${name} is max(pick null when ${name} is null pick 1 when ${name} else 0) = 1\n`;
-   }
-   if (!MAX_TYPES.has(c.type)) {
-      throw new Error(
-         `the measure \`${c.name}\` is a ${c.type || "value"} that max() cannot re-aggregate`,
-      );
    }
    return `    aggregate:\n${notes}      ${name} is ${name}.max()\n`;
 }
