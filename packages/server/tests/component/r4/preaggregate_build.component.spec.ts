@@ -144,15 +144,14 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       });
    }
 
-   it("builds nothing over a gated source, whose rollups no query reads yet (row 21)", () => {
-      // The grain keeps the gate's field, so A4 alone would build it; while a
-      // gated entry point skips every rollup, the table would cost a build
-      // for nothing.
+   it("builds a rollup over a source's own gate, its grain keeping the gate's field (G3)", () => {
+      // Read past the gate, which `govern()` grafts and re-proves on it, so
+      // its table is worth the build (r4/gated_rollup).
       expect(
          Object.keys(fixture.rollupTables).filter((n) =>
             n.startsWith("gated__rollup__"),
          ),
-      ).toEqual([]);
+      ).toHaveLength(1);
    });
 
    it("builds nothing for a source whose rows read the current time (S25b)", () => {
