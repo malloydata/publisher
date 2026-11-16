@@ -562,10 +562,17 @@ export function foldDistinctTableNames(
          continue; // Unaddressable: refused on its own path.
       }
       const rollup = !!table.rollup;
-      const declared = deriveAnnotationFields(source).name?.trim();
+      const written = deriveAnnotationFields(source).name?.trim();
+      // A rollup's leaf is Publisher's own, so only its container (its
+      // `name=`'s, or its base's) tells its tables apart: one grain placed
+      // in two containers is two tables, never one written twice.
+      const declared =
+         rollup && written !== undefined
+            ? written.slice(0, Math.max(0, written.lastIndexOf("."))) ||
+              undefined
+            : written;
       const materialize = table.materialize;
-      const defaulted =
-         rollup || (materialize ? !!materialize.nameDefaulted : !declared);
+      const defaulted = materialize ? !!materialize.nameDefaulted : !declared;
       const group = groups.get(address) ?? [];
       group.push({
          sourceID,

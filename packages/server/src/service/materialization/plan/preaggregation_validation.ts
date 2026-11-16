@@ -521,7 +521,7 @@ function grainPlacementViolations(
       violations.push({
          code: "conflicting_namespace",
          sourceName,
-         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different namespaces: ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`namespace=\`, or move one to a different grain.`,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different containers (\`name=\` or \`namespace=\`): ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`name=\` container, or move one to a different grain.`,
       });
    }
 
@@ -572,7 +572,7 @@ function grainPlacementViolations(
          violations.push({
             code: "namespace_with_storage",
             sourceName,
-            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both \`namespace="${namespace}"\` (on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a namespace, so the two cannot both apply. Remove the \`namespace=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
+            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both the container \`${namespace}\` (\`name=\` or \`namespace=\`, on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a container, so the two cannot both apply. Remove the \`name=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
          });
          continue;
       }

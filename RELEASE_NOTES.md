@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — rollups placed by `name=`
+
+**Contract change: one placement key.** A rollup, `#(preaggregate)` or `#@ preaggregate`, now takes `name=`: everything before its last dot is the schema or dataset its table is created in, and its leaf is not used, since Publisher names a rollup's table itself (`<pkg>__<file>__<base>_by_<grain>__p<hash>`). A `name=` with no container, or beside `storage=` or `namespace=`, fails the publish and the load (`preaggregate-invalid`).
+
+- **`namespace=` is deprecated.** It is read for one more release, places the table exactly where the `name=` that replaces it does (switching does not move or rebuild the table), and warns with the new code `deprecated-preaggregate-namespace` (`warn`, `subject` `<base>.<measure>`), naming the rewrite: `namespace="analytics"` becomes `name="analytics.<table>"`.
+- **`#(preaggregate)` inherits its base's container**, as `#@ preaggregate` always has: a rollup with no placement of its own is created in the container of its base's colocated `name=`, from `#@ persist` or, new, `#(materialize)` (`#@ preaggregate` takes it from `#(materialize)` too). A `#(preaggregate)` over a base with a dotted colocated `name=` therefore moves into that container and is rebuilt once under its new name; the old table is left with the runs that built it.
+- **Fixed: one grain placed in two containers** (two lines of one measure, `name="a.t"` and `name="b.t"`, or the same with `namespace=`) built one table, at whichever container came last, and the other was never written. Each is now its own table at its own address. A rollup's table is never its base's, whatever the two `name=`s say.
+
 ## [Unreleased] — materialization telemetry: standard log fields, refusal events, key-check and routing metrics
 
 **Log queries may need updating.** Materialization log lines now name the same things by the same fields: `runId`, `destinationName`, `error`, `environmentName`, `packageName`. Renamed:

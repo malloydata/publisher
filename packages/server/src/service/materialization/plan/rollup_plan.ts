@@ -93,6 +93,7 @@ import {
 } from "../../governance/ir/declared_notes";
 import {
    PREAGGREGATE_INVALID_CODE,
+   PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
    PREAGGREGATE_NOT_BUILT_CODE,
    PREAGGREGATE_ROUTE_KEYS,
    routeOfNote,
@@ -121,7 +122,10 @@ import {
    currentTimeFields,
    readsCurrentTime,
 } from "./persist_dynamic_terms";
-import { isSpliceableNamespace } from "./preaggregation_namespace";
+import {
+   namespaceRewrite,
+   readRollupContainer,
+} from "./preaggregation_namespace";
 import {
    measureAggregates,
    type MeasureAggregate,
@@ -238,7 +242,8 @@ export function rollupGateEnforcedAtRead(plan: unknown): boolean {
 
 /**
  * Why a declaration was not planned: an invalid one (`malformed`, which fails
- * the load), or a valid one refused alone with its refusal record.
+ * the load), or a valid one refused alone with its refusal record; or one
+ * planned with a warning naming its rewrite (`deprecated`).
  */
 export type RollupRefusal = {
    code: string;
@@ -246,7 +251,11 @@ export type RollupRefusal = {
    /** The base source's name in the planning model. */
    sourceName: string;
    measure?: string;
-} & ({ tier: "malformed" } | { tier: "unservable"; refused: RefusalKey });
+} & (
+   | { tier: "malformed" }
+   | { tier: "deprecated" }
+   | { tier: "unservable"; refused: RefusalKey }
+);
 
 /**
  * The refusal record of a rollup declaration refused before its rollup is
@@ -350,7 +359,13 @@ interface Declaration {
    measure: string;
    grain: string[];
    storage?: string;
+   /**
+    * The schema or dataset its table is created in: its `name=`'s container,
+    * its deprecated `namespace=`, or its base's `name=` container.
+    */
    namespace?: string;
+   /** {@link namespace} was written as the deprecated `namespace=`. */
+   deprecatedNamespace?: true;
    /** Its `freshness` group (freshness_declaration.ts). */
    freshness?: DeclaredFreshness;
    /**
@@ -363,7 +378,8 @@ interface Declaration {
 /**
  * Read one note as a declaration, or a refusal. Unknown keys are malformed on
  * this route (the key set is closed); so is a grain that is not a list of
- * names, a namespace beside a storage destination, and an `@env.` reference,
+ * names, a `name=` with no container to place its table in, a container
+ * beside a storage destination, and an `@env.` reference,
  * which is never read from a route Publisher owns. Each fails the load.
  */
 function readDeclaration(
@@ -397,7 +413,7 @@ function readDeclaration(
    if (unknown.length > 0) {
       return refuse(
          "preaggregate-unknown-key",
-         `has ${unknown.map((k) => `\`${k}=\``).join(", ")}, which it does not read; it reads grain=, storage=, namespace= and freshness.window= / freshness.fallback=`,
+         `has ${unknown.map((k) => `\`${k}=\``).join(", ")}, which it does not read; it reads grain=, storage=, name= and freshness.window= / freshness.fallback=`,
       );
    }
    const fresh = readFreshnessGroup(tag, ["freshness"]);
@@ -427,21 +443,22 @@ function readDeclaration(
       );
    }
    const placed = placementOf(tag);
-   const namespace = keys.includes("namespace")
-      ? tag.text("namespace")
-      : undefined;
    if ("refused" in placed) {
       return refuse(
          PREAGGREGATE_INVALID_CODE,
          "has a storage= that is not a destination name",
       );
    }
-   if (keys.includes("namespace") && !namespace?.trim()) {
-      return refuse(
-         PREAGGREGATE_INVALID_CODE,
-         "has a namespace= that is not a name",
-      );
+   const keyText = (key: string) =>
+      keys.includes(key) ? (tag.text(key) ?? "") : undefined;
+   const placedIn = readRollupContainer({
+      name: keyText("name"),
+      namespace: keyText("namespace"),
+   });
+   if ("invalid" in placedIn) {
+      return refuse(PREAGGREGATE_INVALID_CODE, placedIn.invalid);
    }
+   const namespace = placedIn.container;
    const storage =
       "placement" in placed && placed.placement.tier === "storage"
          ? placed.placement.destination
@@ -449,13 +466,7 @@ function readDeclaration(
    if (storage !== undefined && namespace !== undefined) {
       return refuse(
          PREAGGREGATE_INVALID_CODE,
-         "names both storage= and namespace=; a destination places its own tables",
-      );
-   }
-   if (namespace !== undefined && !isSpliceableNamespace(namespace)) {
-      return refuse(
-         PREAGGREGATE_INVALID_CODE,
-         `has namespace="${namespace}", which is not plain dot-separated names`,
+         `names both storage= and ${placedIn.deprecatedNamespace ? "namespace=" : "name="}; a destination places its own tables`,
       );
    }
    return {
@@ -465,6 +476,7 @@ function readDeclaration(
       ),
       ...(storage !== undefined ? { storage } : {}),
       ...(namespace !== undefined ? { namespace } : {}),
+      ...(placedIn.deprecatedNamespace ? { deprecatedNamespace: true } : {}),
       ...(fresh.freshness ? { freshness: fresh.freshness } : {}),
    };
 }
@@ -676,6 +688,34 @@ function rollupDeclarationsOf(
    // (`readsPreaggregateDeclarations: false`).
    const readsPreaggregateDeclarations =
       ctx.readsPreaggregateDeclarations ?? true;
+   // One placement rule for both spellings: a grain with no container of its
+   // own (and no storage=) is created beside its base's colocated `name=`,
+   // and a deprecated `namespace=` is read with a warning naming `name=`.
+   const inherited = basePersistNamespace(
+      { annotations: def.annotations },
+      { materialize: readsPreaggregateDeclarations },
+   );
+   const deprecationWarned = new Set<string>();
+   const placed = (decl: Declaration): Declaration => {
+      if (decl.deprecatedNamespace && decl.namespace !== undefined) {
+         const key = `${decl.measure}\u0000${decl.namespace}`;
+         if (!deprecationWarned.has(key)) {
+            deprecationWarned.add(key);
+            refused.push({
+               tier: "deprecated",
+               code: PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+               message: `Measure "${decl.measure}" of source "${sourceName}" places its rollup with namespace="${decl.namespace}": ${namespaceRewrite(decl.namespace)}.`,
+               sourceName,
+               measure: decl.measure,
+            });
+         }
+      }
+      return decl.namespace === undefined &&
+         decl.storage === undefined &&
+         inherited !== undefined
+         ? { ...decl, namespace: inherited }
+         : decl;
+   };
    for (const field of readsPreaggregateDeclarations ? fields : []) {
       const name = fieldNameOf(field);
       if (name === undefined) continue;
@@ -694,23 +734,18 @@ function rollupDeclarationsOf(
       for (const note of notes) {
          const read = readDeclaration(note, name, sourceName);
          if ("tier" in read) refused.push(read);
-         else declarations.push(read);
+         else declarations.push(placed(read));
       }
    }
    // A measure's own v1 `#@ preaggregate` lines, read by v1's own reader (a
    // grain per line, `#@ -preaggregate` clearing those above it, `storage=`
-   // and `namespace=` bound to their line), are this leg's declarations too,
+   // and `name=` bound to their line), are this leg's declarations too,
    // so a v1 rollup is planned, built (under the `#(preaggregate)` rollup's
    // table name) and served here. A line v1 reports as unusable is left to
    // v1's own validation. A source with a fan-out join has its v1 rollups
    // refused alone (`base_source_has_fanout_join`, which v1's validation
    // reports): none is planned, so its measures answer live.
    if ((ctx.readsPreaggregateLines ?? true) && !hasFanoutJoin({ fields })) {
-      // As v1 places it: a grain naming no namespace (and no storage=) is
-      // created beside its base's own `#@ persist name=`.
-      const inheritedNamespace = basePersistNamespace({
-         annotations: def.annotations,
-      });
       for (const field of fields) {
          const name = fieldNameOf(field);
          if (name === undefined || !isMeasure(field)) continue;
@@ -725,23 +760,25 @@ function rollupDeclarationsOf(
             annotations: { notes },
          });
          for (const grain of read.grains) {
-            declarations.push({
-               measure: name,
-               grain: grain.dimensions,
-               v1: true,
-               ...(grain.freshness !== undefined
-                  ? { freshness: grain.freshness }
-                  : {}),
-               ...(grain.storage !== undefined
-                  ? { storage: grain.storage }
-                  : {}),
-               ...(grain.namespace !== undefined
-                  ? { namespace: grain.namespace }
-                  : grain.storage === undefined &&
-                      inheritedNamespace !== undefined
-                    ? { namespace: inheritedNamespace }
-                    : {}),
-            });
+            declarations.push(
+               placed({
+                  measure: name,
+                  grain: grain.dimensions,
+                  v1: true,
+                  ...(grain.freshness !== undefined
+                     ? { freshness: grain.freshness }
+                     : {}),
+                  ...(grain.storage !== undefined
+                     ? { storage: grain.storage }
+                     : {}),
+                  ...(grain.namespace !== undefined
+                     ? { namespace: grain.namespace }
+                     : {}),
+                  ...(grain.deprecatedNamespace
+                     ? { deprecatedNamespace: true }
+                     : {}),
+               }),
+            );
          }
       }
    }

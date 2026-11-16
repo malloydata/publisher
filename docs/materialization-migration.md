@@ -565,7 +565,10 @@ source: sales is orders extend {
 }
 ```
 
-`namespace=` and `storage=` carry over unchanged (one or the other, never both). A query the rollup
+`storage=` carries over unchanged. `namespace="x"` is deprecated on both spellings: write
+`name="x.<table>"`, whose container places the table where `namespace=` did (one or the other
+of `name=` and `storage=`, never both). A `#(preaggregate)` with neither now takes its base's
+`name=` container, as `#@ preaggregate` always has. A query the rollup
 answers reports `servedBy.kind: "rollup"`. What differs from `#@ preaggregate`:
 
 - **Keys are closed.** `grain=[…]` is required. Any other key, a grain that is not a list of the

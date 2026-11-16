@@ -808,8 +808,8 @@ source: orders is ${ROWS} extend {
    });
 });
 
-describe("a v1 rollup's namespace under the v1 cutover", () => {
-   it("inherits its base's #@ persist name= namespace when its line names none, as v1 places it", async () => {
+describe("a v1 rollup's container under the v1 cutover", () => {
+   it("inherits its base's #@ persist name= container when its line names none, as v1 places it", async () => {
       const modelDef = await mz.compile({
          "orders.malloy": `##! experimental.persistence
 #@ persist name="analytics.orders_tbl"
@@ -817,7 +817,7 @@ source: orders is ${ROWS} -> {
   select: category, region, amount
 } extend {
   measure:
-    #@ preaggregate grain="region" namespace="rollups"
+    #@ preaggregate grain="region" name="rollups.regional"
     regional is amount.sum()
   measure:
     #@ preaggregate grain="category"

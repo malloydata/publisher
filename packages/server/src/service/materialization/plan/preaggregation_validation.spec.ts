@@ -601,7 +601,7 @@ describe("placing a rollup in a storage destination", () => {
          await validate(`  #@ preaggregate grain="category" namespace="ns_a" storage=store_a
   measure: revenue is amount.sum()`);
       expect(violations.map((v) => v.code)).toEqual(["namespace_with_storage"]);
-      expect(violations[0].message).toContain('namespace="ns_a"');
+      expect(violations[0].message).toContain("`ns_a`");
       expect(violations[0].message).toContain("storage=store_a");
    });
 

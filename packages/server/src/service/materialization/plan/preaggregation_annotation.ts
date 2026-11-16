@@ -27,8 +27,9 @@
  * individual notes, with the smallest possible set of ordering rules: **notes
  * are processed in source order; a `#@ preaggregate` line with a grain adds
  * one; a `#@ -preaggregate` line clears every grain accumulated so far.**
- * `namespace=` and `storage=` bind to the grain on their own line and are
- * cleared with it (a grain IS a table, so each can be placed differently).
+ * `name=` (or its deprecated spelling, `namespace=`) and `storage=` bind to the
+ * grain on their own line and are cleared with it (a grain IS a table, so each
+ * can be placed differently).
  *
  * This relies on the IR delivering `blockNotes` in source order, and on an
  * extending source's fields carrying the base's annotations in their own
@@ -54,7 +55,7 @@
 import { hasEnvReference } from "../../motly";
 import { nearestKey } from "../../annotation_reader";
 import { placementOf, readNotes, type RouteTag } from "./declaration";
-import { isSpliceableNamespace } from "./preaggregation_namespace";
+import { readRollupContainer } from "./preaggregation_namespace";
 import type { LogMessage } from "@malloydata/malloy";
 import type { DeclaredFreshness } from "../domain/freshness";
 import {
@@ -76,11 +77,14 @@ interface PreaggregateGrain {
    text: string;
    /**
     * The dataset/schema this rollup's table is created in, when named on the
-    * same line (`#@ preaggregate grain="category" namespace="analytics"`). The
-    * table name itself is always derived. Undefined when unspecified, in which
-    * case the base's `#@ persist name=` supplies it.
+    * same line: the container of its `name=` (`#@ preaggregate
+    * grain="category" name="analytics.orders_rollup"`), or its deprecated
+    * `namespace=`. The table name itself is always derived. Undefined when
+    * unspecified, in which case the base's `name=` supplies it.
     */
    namespace?: string;
+   /** {@link namespace} was written as the deprecated `namespace=`. */
+   deprecatedNamespace?: true;
    /**
     * The storage destination this rollup's table is built into and served from,
     * when the author named one (`#@ preaggregate grain="category"
@@ -174,6 +178,7 @@ const DECLARATION = /^\s*#@\s*preaggregate\b/;
 const LINE_KEYS: ReadonlySet<string> = new Set([
    "preaggregate",
    "grain",
+   "name",
    "namespace",
    "storage",
    "freshness",
@@ -182,6 +187,7 @@ const LINE_KEYS: ReadonlySet<string> = new Set([
 /** The keys `#@ preaggregate { … }` takes inside the directive. */
 const DIRECTIVE_KEYS: ReadonlySet<string> = new Set([
    "grain",
+   "name",
    "namespace",
    "storage",
    "freshness",
@@ -354,7 +360,7 @@ export function readPreaggregateAnnotation(
                         `\`${key}=\`${near ? ` (did you mean \`${near}=\`?)` : ""}`,
                   )
                   .join(", ") +
-               `, which is not a key it reads. Use grain=, namespace=, storage= or freshness.window= / freshness.fallback=.`,
+               `, which is not a key it reads. Use grain=, name=, storage= or freshness.window= / freshness.fallback=.`,
          });
          continue;
       }
@@ -369,25 +375,24 @@ export function readPreaggregateAnnotation(
       // parse per line, so this is the same precedence the merged tag applied.
       const grainText = tag.text("preaggregate", "grain") ?? tag.text("grain");
       // Same precedence as `grain`. Binds to THIS line's grain; a line carrying
-      // only a namespace is a missing grain like any other.
-      const namespaceText =
-         tag.text("preaggregate", "namespace") ?? tag.text("namespace");
-      let namespace: string | undefined;
-      if (namespaceText !== undefined) {
-         const candidate = namespaceText.trim();
-         // Spliced bare into a generated `#@ persist name="…"`: a quote would end
-         // the annotation's string, and a name needing quotes cannot be joined to
-         // a generated table name (the CREATE and bind sides quote a mixed path
-         // differently). Empty is refused, not ignored, per the strictness rule.
-         if (!isSpliceableNamespace(candidate)) {
-            errors.push({
-               kind: "invalid_namespace",
-               message: `Measure \`${name}\` declares \`#@ preaggregate namespace="${candidate}"\`, which is not a plain namespace. Use letters, digits, underscore, dollar or hyphen per part, dot-separated for a qualified one (\`analytics\`, \`my-project.analytics\`) — the rollup's own table name is generated and appended, so a namespace needing quotes cannot be joined to it.`,
-            });
-            continue;
-         }
-         namespace = candidate;
+      // only a placement is a missing grain like any other. Spliced bare into
+      // a generated `#@ persist name="…"`: a quote would end the annotation's
+      // string, and a name needing quotes cannot be joined to a generated
+      // table name, so such a container is refused, not ignored.
+      const placedKey = (key: string) =>
+         tag.text("preaggregate", key) ?? tag.text(key);
+      const read = readRollupContainer({
+         name: placedKey("name"),
+         namespace: placedKey("namespace"),
+      });
+      if ("invalid" in read) {
+         errors.push({
+            kind: "invalid_namespace",
+            message: `Measure \`${name}\` declares \`#@ preaggregate\` that ${read.invalid}. Use letters, digits, underscore, dollar or hyphen per part, dot-separated for a qualified one (\`analytics\`, \`my-project.analytics\`): the rollup's own table name is generated and appended, so a container needing quotes cannot be joined to it.`,
+         });
+         continue;
       }
+      const namespace = read.container;
       // The placement rule (declaration.ts), bound to THIS line's grain. The
       // NAME is not validated here: which destinations exist is a deployment
       // fact, so an unknown one is refused downstream by the
@@ -440,6 +445,7 @@ export function readPreaggregateAnnotation(
          dimensions,
          text: grainText,
          namespace,
+         ...(read.deprecatedNamespace ? { deprecatedNamespace: true } : {}),
          storage,
          ...(fresh.freshness ? { freshness: fresh.freshness } : {}),
       });

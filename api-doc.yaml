@@ -5877,6 +5877,10 @@ components:
                   per measure, `model` its file, `subject` the source and the
                   message the measure; `warn`; only while
                   `PUBLISHER_MATERIALIZE` is on).
+                  `deprecated-preaggregate-namespace`: a rollup line placed with
+                  `namespace=`, the deprecated spelling of its `name=`
+                  container; still read, at the same table (one per measure
+                  and container, `subject` `<base>.<measure>`; `warn`).
                   `report-name-ambiguous`: two or more grid reports share a
                   basename, so the deprecated `GET …/dashboards/{name}` route
                   answers 409 for it (one per name, `subject` naming it and the

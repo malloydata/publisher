@@ -30,7 +30,7 @@ source: orders is duckdb.table('data/orders.parquet') extend {
 
 The rest of this page describes `#@ preaggregate`, which keeps working (deprecated). Where `#(preaggregate)` differs:
 
-- **Keys.** `grain=[…]` (required), and `storage=` or `namespace=`, never both. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure fails the publish and the load (`preaggregate-unknown-key`, `preaggregate-unknown-grain`, `preaggregate-not-a-measure`).
+- **Keys.** `grain=[…]` (required), and `storage=` or `name=`, never both (`name=` places the table; see [below](#where-the-rollups-table-is-created)). `namespace=` is `name=`'s deprecated spelling. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure fails the publish and the load (`preaggregate-unknown-key`, `preaggregate-unknown-grain`, `preaggregate-not-a-measure`).
 - **Which measures.** Read from the measure's own text: `count()`, `x.sum()`, `x.min()`, `x.max()` (and `sum(x)` and so on), each optionally filtered, references to other such measures, and arithmetic or scalar functions over them. Each aggregate is stored as its own partial and merged at read, so `revenue / order_count` stays a ratio of totals. `avg`, a distinct count (`count(x)`), `stddev` and the like, `all()` and `exclude()` fail the publish and the load (`preaggregate-not-mergeable`). Text outside what is read (`pick`, a cast, a date literal, `|` in a filter, `x.count()` on a field, a joined source's measure) is a warning, and the measure serves live. The reading is checked against the compiled measure: a measure whose aggregates the compiler records differently is a warning too, never stored.
 - **Joins.** A source with a `join_many` or `join_cross` can be rolled up. An aggregate through a join (`carriers.fleet.sum()`) is stored only when the join's key (`carrier` in `join_one: carriers with carrier`) is in the grain; otherwise it is a warning and serves live. Its stored total is the joined rows' within each group, and groups that share the key hold the same joined rows, so a query reads a join-level sum or count from the rollup only when it groups by, or fixes, every other grain dimension at each level that aggregates it (a grain of the key alone has none). A join-level `min` or `max` (`carriers.fleet.max()`, key in the grain) is stored too, and merged with `min` or `max`: a repeated joined row cannot change either, so it is read from the rollup however the query groups, and a group with no joined row is `NULL`, as live. An aggregate through more than one join (`carriers.hubs.gates.sum()`) is a warning and serves live. A grain dimension read through a `join_many` is a fan-out dimension: a query reads the rollup only when it groups by it, or fixes it to one value with `where:`, at every level that aggregates.
 - **Where it is declared.** A declaration belongs to the source that writes it. An extension inherits its base's rollups' meaning but does not get its own; an include-list item's annotation is the including source's. Each rollup is planned once, under the model that declares its base, and its name carries that model, so two same-named sources in two models never share a table.
@@ -194,71 +194,86 @@ Nothing about a rollup appears in model discovery. Your model is never edited, s
 
 You do not name a rollup's table — Publisher derives it from the base, the grain and a
 digest, so the resolver and the content address can rely on it. You *do* choose the
-namespace it is created in, and on some warehouses you must.
+schema or dataset it is created in, with the same `name=` every other table is placed
+with, and on some warehouses you must.
 
 ```malloy
 source: orders is bigquery.table('project.raw.orders') extend {
-  measure:
-    #@ preaggregate grain="category" namespace="analytics"
-    total is amount.sum()
+  #(preaggregate) grain=["category"] name="analytics.orders_rollup"
+  measure: total is amount.sum()
 }
 ```
 
 That builds `analytics.<package>__<file>__orders_by_category__p<hash>`, the rollup's
-[readable name](materialization.md#readable-table-names) in the `analytics` namespace.
+[readable name](materialization.md#readable-table-names) in `analytics`. A rollup's
+`name=` places its table: everything before the last dot is the container, and the leaf
+is not used, since Publisher names a rollup's table itself. A `name=` with no container
+(`name="orders_rollup"`) would place nothing, so it fails the publish and the load
+(`preaggregate-invalid`). `#@ preaggregate grain="category" name="analytics.orders_rollup"`
+places a v1 rollup the same way.
+
+**`namespace=` is deprecated.** `namespace="analytics"` is the older spelling of the same
+container. It is read for one more release, places the table exactly where
+`name="analytics.<table>"` does (the table does not move when you switch), and warns
+`deprecated-preaggregate-namespace` naming the rewrite. Writing both `name=` and
+`namespace=` on one line fails the publish and the load (`preaggregate-invalid`).
 
 **BigQuery requires it.** An unqualified `CREATE` is rejected outright there
-(`must be qualified with a dataset`), so a rollup without a namespace cannot be built
-on BigQuery at all. Name a dataset the connection can write — typically a scratch
-dataset, the same one you would give an authored `#@ persist name=`. Other engines
-accept an unqualified name and create the table in the connection's default schema, so
-`namespace` is optional there.
+(`must be qualified with a dataset`), so a rollup with no container, its own or its
+base's, cannot be built on BigQuery at all. Name a dataset the connection can write —
+typically a scratch dataset, the same one you would give an authored `#@ persist name=`.
+Other engines accept an unqualified name and create the table in the connection's
+default schema, so the container is optional there.
 
 **The namespace has to exist already.** Nothing in the tier creates a dataset or a
 schema, so a name that is merely plausible fails the build. Create it once, and let the
 connection's credential create tables in it.
 
-**It belongs to the grain, not to the measure.** A namespace is written on the same
+**It belongs to the grain, not to the measure.** A `name=` is written on the same
 line as the `grain=` it applies to, and applies to nothing else — two grains are two
 tables and can be created in two places:
 
 ```malloy
 measure:
-  #@ preaggregate grain="category" namespace="analytics"
-  #@ preaggregate grain="order_date" namespace="archive"
+  #@ preaggregate grain="category" name="analytics.by_category"
+  #@ preaggregate grain="order_date" name="archive.by_day"
   total is amount.sum()
 ```
 
 Measures that share a grain share its one table, so they must agree on where it goes.
-Two naming different namespaces fail the publish and the load (`preaggregate-invalid`) rather than being resolved silently.
+Two naming different containers fail the publish and the load (`preaggregate-invalid`) rather than being resolved silently.
+One grain placed in two containers by two lines of one measure is two tables, each built.
 
-**A persisted base lends its own.** If the base carries `#@ persist
-name="analytics.orders_tbl"`, its rollups are created in `analytics` without being told
-— a rollup of a table belongs beside it. An explicit `namespace` overrides that, and is
-the only option when the base is not persisted at all, which is common: the annotation
-goes on a measure, and the source it belongs to need not be materialized.
+**A materialized base lends its own.** If the base carries `#@ persist
+name="analytics.orders_tbl"`, or `#(materialize) name="analytics.orders_tbl"`, its rollups
+are created in `analytics` without being told — a rollup of a table belongs beside it,
+on `#(preaggregate)` and `#@ preaggregate` alike, so the two spellings land in one
+schema. A rollup's own `name=` overrides that, and is the only option when the base is
+not materialized at all, which is common: the annotation goes on a measure, and the
+source it belongs to need not be materialized. A rollup's table is never its base's,
+whatever the two `name=`s say: the rollup's leaf is always its own readable name.
 
-A base that also carries `storage=` lends nothing — not its namespace, and not its
+A base that also carries `storage=` lends nothing — not its container, and not its
 destination. See [Rollups in the managed store](#rollups-in-the-managed-store) below.
 
-**Changing it does not move a table that already exists.** A namespace is not part of
+**Changing it does not move a table that already exists.** A container is not part of
 what identifies a rollup's contents, so a package whose rollups have already built keeps
 them where they are: the annotation changes and the table does not. Ask for the rebuild
 explicitly — `malloy-pub materialize --force-refresh`, or `forceRefresh` on the build
 endpoint — which is what defeats the unchanged-content skip. Dropping the table by hand
 does not, and leaves the manifest pointing at something that is no longer there.
 
-**A re-stated grain takes the namespace on its own line, including none.** Writing
-`grain="category"` again without `namespace=` clears the one an earlier line gave that
+**A re-stated grain takes the `name=` on its own line, including none.** Writing
+`grain="category"` again without `name=` clears the one an earlier line gave that
 grain, which matters most across an extend chain: an extending source that re-states its
-base's grain must restate the namespace too, or the rollup moves. To turn a declaration
+base's grain must restate the `name=` too, or the rollup moves. To turn a declaration
 off rather than replace it, negate with `#@ -preaggregate`.
 
-**It is a namespace, not a name.** Write it as plain identifiers — letters, digits,
-underscore, dollar or hyphen — dot-separated where the warehouse needs more than one
-part (`analytics`, `my-project.analytics` on BigQuery). A value needing quotes fails the
-load rather than being mangled, because the generated table name is appended to it and the
-two halves would then be quoted inconsistently.
+**Its container is plain names.** Write the container as plain identifiers — letters,
+digits, underscore, dollar or hyphen — dot-separated where the warehouse needs more than
+one part (`name="analytics.t"`, `name="my-project.analytics.t"` on BigQuery). A container
+needing quotes fails the load rather than being mangled, because the generated table name
+is appended to it and the two halves would then be quoted inconsistently.
 
 ## Rollups in the managed store
 
@@ -305,7 +320,7 @@ reads as. Each grain is one table, in the destination its own line names or, wit
 `storage=`, alongside the base in the warehouse the base reads from, under the rollup's
 [readable name](materialization.md#readable-table-names)
 (`<package>__<file>__<base>_by_<grain>__p<hash>`), never the base's. The base's own
-`name=` is neither a prefix nor a namespace for it. A query a rollup covers is answered
+`name=` is neither a prefix nor a container for it. A query a rollup covers is answered
 from the rollup; one it does not is answered as it was before:
 
 - **A query-shaped base** builds its own stored table as well, which keeps answering every
@@ -321,20 +336,20 @@ rows read a given (reason `reads_given`) or the current time
 `PUBLISHER_MATERIALIZE_GATED_SOURCES` lets a query read the rollup past its gate
 (reason `access_filter`). Each is a `preaggregate-not-built` warning, and the measure is served live.
 
-A colocated base's `name=` namespace *is* inherited, and the asymmetry is not about
+A colocated base's `name=` container *is* inherited, and the asymmetry is not about
 inheritance. Colocated rollups are offered through a companion model whose members
 Publisher names itself, with the base under an import alias, so nothing there is keyed on
 your source's name and there is no binding to collide with.
 
-**It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
+**It belongs to the grain, like `name=`.** Two grains are two tables and can be
 placed differently — one in the store, one alongside the base. Measures sharing a grain
 share its one table, so two of them naming different destinations fail the publish and the
 load (`preaggregate-invalid`).
 
-**`namespace=` and `storage=` cannot be combined.** Placement inside a destination is
+**`name=` and `storage=` cannot be combined on a rollup.** Placement inside a destination is
 derived, not authored: a freshly provisioned catalog has no schema to create the table
-in. Writing both on one `#@ preaggregate` line fails the publish and the load
-(`preaggregate-invalid`).
+in. Writing both (or `namespace=` beside `storage=`) on one line fails the publish and
+the load (`preaggregate-invalid`).
 
 **The tier's switch applies.** With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is
 not built — and not built anywhere else either. Falling back to a build alongside the
