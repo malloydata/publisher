@@ -2117,7 +2117,7 @@ export class Environment {
          for (const copy of this.pendingVersionReleases.get(k) ?? []) {
             this.retireConnectionGeneration(
                `package ${packageName} version ${versionId}`,
-               () => copy.getMalloyConfig().shutdown("close"),
+               () => copy.releaseConnections(),
             );
          }
          this.pendingVersionReleases.delete(k);
@@ -2784,7 +2784,7 @@ export class Environment {
             releaseVersion: (packageName, versionId, loaded) =>
                this.retireConnectionGeneration(
                   `package ${packageName} version ${versionId}`,
-                  () => loaded.getMalloyConfig().shutdown("close"),
+                  () => loaded.releaseConnections(),
                ),
             bindVersionManifest: (loaded, manifestPath) =>
                this.bindVersionManifest(loaded, manifestPath),
@@ -2812,7 +2812,7 @@ export class Environment {
                if (!unversioned) return;
                this.packages.delete(packageName);
                this.retireConnectionGeneration(`package ${packageName}`, () =>
-                  unversioned.getMalloyConfig().shutdown("close"),
+                  unversioned.releaseConnections(),
                );
             },
             ensurePackageRecord: hooks.ensurePackageRecord,
@@ -3279,7 +3279,7 @@ export class Environment {
       }
       if (replaces) {
          this.retireConnectionGeneration(`package ${packageName}`, () =>
-            replaces.getMalloyConfig().shutdown("close"),
+            replaces.releaseConnections(),
          );
          if (options.reportSurfaceChange) {
             pkg.noteSurfaceChangeFrom(replaces.getPackageMetadata().explores);
@@ -3599,7 +3599,7 @@ export class Environment {
       label: string,
    ): Promise<void> {
       try {
-         await pkg.getMalloyConfig().shutdown("close");
+         await pkg.releaseConnections();
       } catch (error) {
          logger.error(`Error releasing the connections of ${label}`, {
             error,
@@ -3804,7 +3804,7 @@ export class Environment {
             // released; drained rather than shut down inline because queries
             // that already hold this Package are not covered by the lock.
             this.retireConnectionGeneration(`package ${packageName}`, () =>
-               oldPackage.getMalloyConfig().shutdown("close"),
+               oldPackage.releaseConnections(),
             );
          }
          this.packages.delete(packageName);
@@ -4759,7 +4759,7 @@ export class Environment {
 
          // Drained so in-flight queries finish before the handle is released.
          this.retireConnectionGeneration(`package ${packageName}`, () =>
-            _package.getMalloyConfig().shutdown("close"),
+            _package.releaseConnections(),
          );
 
          const retiredPath = await this.retirePackageDirectory(packageName);
@@ -4852,7 +4852,7 @@ export class Environment {
          }
          this.transition(packageName, { type: "beginUnload" });
          this.retireConnectionGeneration(`package ${packageName}`, () =>
-            _package.getMalloyConfig().shutdown("close"),
+            _package.releaseConnections(),
          );
          // Eviction and clearing a recorded failure belong together.
          this.clearPackageLoadFailure(packageName);
@@ -4948,9 +4948,7 @@ export class Environment {
       // Package configs (each with its own sandbox `duckdb`) first, or hard
       // unload leaks their handles.
       const packageReleases = await Promise.allSettled(
-         Array.from(this.packages.values(), (pkg) =>
-            pkg.getMalloyConfig().shutdown("close"),
-         ),
+         Array.from(this.packages.values(), (pkg) => pkg.releaseConnections()),
       );
       for (const result of packageReleases) {
          if (result.status === "rejected") {
