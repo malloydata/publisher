@@ -106,6 +106,18 @@ describe("ownedVersionOf", () => {
       expect(ownedVersionOf(pkg("1.0.0"))).toBeUndefined();
       expect(ownedVersionOf(pkg(undefined, "version"))).toBeUndefined();
    });
+
+   it("reads the scope alone when the package offers it, never the whole metadata", () => {
+      const scoped = (scope: string) => ({
+         getVersionId: () => "1.0.0",
+         getPackageMetadata: (): never => {
+            throw new Error("built the whole metadata");
+         },
+         getMaterializationScope: () => scope,
+      });
+      expect(ownedVersionOf(scoped("version"))).toBe("1.0.0");
+      expect(ownedVersionOf(scoped("package"))).toBeUndefined();
+   });
 });
 
 describe("newestServingEntries", () => {

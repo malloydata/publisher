@@ -143,6 +143,11 @@ describe("decodeSerializedModel", () => {
          /authorizeWarnings of kind array; expected string\[\]/,
       ],
       [
+         "a governsAccess that is not a boolean",
+         { modelPath: "m.malloy", modelType: "model", governsAccess: "no" },
+         /governsAccess of kind string; expected boolean/,
+      ],
+      [
          "a notebook cell without text",
          {
             modelPath: "n.malloynb",

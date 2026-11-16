@@ -893,8 +893,8 @@ export class PackageManifestError extends Error {
  * unbound free parameter, a given reference (an RLAC/tenant-isolation
  * refusal), or a shape that does not compile in DuckDB. 422, a hard refusal,
  * never a silent fallback; a distinct class so the givens refusal is greppable
- * for security review. `reason` matches what the throw site passed to
- * `recordEligibilityRefused`.
+ * for security review. `reason` is what a build plan counts a refused source
+ * under (`recordEligibilityRefused`).
  */
 export class MaterializationEligibilityError extends Error {
    get kind(): "materialization_eligibility" {

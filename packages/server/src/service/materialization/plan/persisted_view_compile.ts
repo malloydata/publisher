@@ -32,7 +32,7 @@ import type {
    Runtime,
 } from "@malloydata/malloy";
 import * as path from "path";
-import { fileURLToPath, pathToFileURL } from "url";
+import { pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import {
    ownLevelNotes,
@@ -66,6 +66,7 @@ import {
 } from "../domain/table_plans";
 import {
    companionOmissions,
+   declaredInModel,
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
@@ -379,13 +380,7 @@ export async function tryCompilePersistedViewCompanion(args: {
    // The build sources admitted so far; until planned a failure cannot name them.
    let plannedNames: string[] | undefined;
    try {
-      const declaredHere = (url: string) => {
-         try {
-            return path.resolve(fileURLToPath(url)) === modelFile;
-         } catch {
-            return false;
-         }
-      };
+      const declaredHere = declaredInModel(modelFile, false);
       const planned = planModelPersistedViews(args.modelDef, declaredHere);
       refused.push(...planned.refused);
       const plans: PersistedViewPlan[] = [];

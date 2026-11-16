@@ -34,14 +34,12 @@ import type {
    Reaggregate,
 } from "../domain/rollup_measures";
 import {
+   PERSISTED_VIEW_COMPANION_SUFFIX,
    splitSourceID,
    type PersistedQueryPlan,
    type PersistedViewPlan,
    type RollupVariantPlan,
 } from "../domain/table_plans";
-
-/** Appended to a declaring file's URL to name its persisted-view companion. */
-export const PERSISTED_VIEW_COMPANION_SUFFIX = ".persist-view.malloy";
 
 /** The companion URL for a declaring file, as an `href`. */
 export function persistedViewCompanionHref(declaringURL: string): string {

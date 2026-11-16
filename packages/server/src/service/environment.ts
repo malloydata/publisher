@@ -332,8 +332,15 @@ function mergePackageManifest(
  * reads (`PackageStatusEntry`). While PUBLISHER_PACKAGE_INLINE_FIELDS is on an
  * entry is the package's full response plus its serving state.
  */
-/** Background re-reads of version rows a failed read left out of `/status`. */
-const STATUS_VERSIONS_RETRIES = 8;
+/**
+ * Background re-reads of version rows a failed read left out of `/status`:
+ * the first delay, the cap it doubles up to, and the attempt after which a
+ * read still failing is logged as an error. It is retried at the cap until
+ * one lands, never given up on.
+ */
+const STATUS_VERSIONS_RETRY_FIRST_MS = 250;
+const STATUS_VERSIONS_RETRY_CAP_MS = 30_000;
+const STATUS_VERSIONS_RETRIES_BEFORE_ERROR = 8;
 
 export type PackageListingOptions = {
    includeLoading?: boolean;
@@ -2461,6 +2468,21 @@ export class Environment {
       return this.statusVersionsPriming;
    }
 
+   /**
+    * {@link primeStatusVersions} for an environment whose row was just
+    * created, which no version row can name yet: primed with none, without
+    * reading. Any write after it refreshes its own package's rows as usual.
+    */
+   public primeStatusVersionsEmpty(): void {
+      if (!this.versionService || this.statusVersionsPrimed) return;
+      this.statusSnapshot.replaceVersionRecords(
+         [],
+         this.statusSnapshot.ticket(),
+      );
+      this.statusVersionsPrimed = true;
+      this.statusVersionsRetryAttempt = 0;
+   }
+
    private async readAllStatusVersions(): Promise<void> {
       const versions = this.versionService;
       if (!versions) return;
@@ -2486,6 +2508,8 @@ export class Environment {
    private statusVersionsPriming: Promise<void> | undefined;
    private statusVersionsRetry: ReturnType<typeof setTimeout> | undefined;
    private statusVersionsRetryAttempt = 0;
+   /** Set by {@link closeAllConnections}: nothing is retried after it. */
+   private closed = false;
 
    /**
     * Re-read one package's version rows for `/status` after a write to them,
@@ -2519,33 +2543,41 @@ export class Environment {
    /**
     * Retry, in the background, the version reads that failed: a committed
     * version missing from `/status` reads as absent to the control plane,
-    * which would dispatch it again. Backs off from 250 ms to 30 s and gives
-    * up after {@link STATUS_VERSIONS_RETRIES} attempts; the next write to any
-    * package retries again.
+    * which would dispatch it again. Backs off from 250 ms to 30 s, then
+    * retries every 30 s until a read lands; a write to any package starts
+    * the backoff over. Meanwhile `/status` lists what it last read, plus the
+    * versions this server holds loaded (see {@link statusVersionEntries}).
     */
    private scheduleStatusVersionsRetry(): void {
-      if (this.statusVersionsRetry !== undefined) return;
+      if (this.closed || this.statusVersionsRetry !== undefined) return;
       const attempt = this.statusVersionsRetryAttempt++;
-      if (attempt >= STATUS_VERSIONS_RETRIES) {
-         logger.error("Gave up re-reading package versions for /status", {
-            environmentName: this.environmentName,
-            packages: this.statusSnapshot.dirtyPackages(),
-         });
-         return;
+      if (attempt === STATUS_VERSIONS_RETRIES_BEFORE_ERROR) {
+         logger.error(
+            "Still cannot re-read package versions for /status; retrying every 30 s",
+            {
+               environmentName: this.environmentName,
+               primed: this.statusVersionsPrimed,
+               packages: this.statusSnapshot.dirtyPackages(),
+            },
+         );
       }
       this.statusVersionsRetry = setTimeout(
          () => {
             this.statusVersionsRetry = undefined;
             void this.retryStatusVersions();
          },
-         Math.min(250 * 2 ** attempt, 30_000),
+         Math.min(
+            STATUS_VERSIONS_RETRY_FIRST_MS *
+               2 ** Math.min(attempt, STATUS_VERSIONS_RETRIES_BEFORE_ERROR),
+            STATUS_VERSIONS_RETRY_CAP_MS,
+         ),
       );
       this.statusVersionsRetry.unref?.();
    }
 
    private async retryStatusVersions(): Promise<void> {
       const versions = this.versionService;
-      if (!versions) return;
+      if (!versions || this.closed) return;
       if (!this.statusVersionsPrimed) {
          await this.primeStatusVersions();
          return;
@@ -2669,6 +2701,43 @@ export class Environment {
             status: this.describePackageStatus(row.packageName, row.versionId),
          });
          entries.set(row.packageName, list);
+      }
+      // While a package's rows may be out of date (its last read failed, or
+      // no read has landed yet), a version this server holds loaded is
+      // listed even when the rows it holds lack it: it was committed, since
+      // only a committed version is cached past its publish, and an absent
+      // one reads to the control plane as one to dispatch again. Its
+      // `latestVersion` is the package's as last read, as for a version
+      // still publishing below.
+      const unread = this.statusVersionsPrimed
+         ? new Set(this.statusSnapshot.dirtyPackages())
+         : undefined;
+      if (unread === undefined || unread.size > 0) {
+         for (const [
+            packageName,
+            versionId,
+            loaded,
+         ] of versions.cache.entries()) {
+            if (unread !== undefined && !unread.has(packageName)) continue;
+            if (this.packages.has(packageName)) continue;
+            const list = entries.get(packageName) ?? [];
+            if (list.some((entry) => entry.versionId === versionId)) continue;
+            const base = inline
+               ? this.inlineStatusEntry(loaded)
+               : this.slimStatusEntry(packageName, loaded, versionId);
+            if (base === undefined) continue;
+            list.push({
+               ...base,
+               name: packageName,
+               versionId,
+               latestVersion: list[0]?.latestVersion ?? null,
+               // An archived version is unloaded, so a loaded one is in service.
+               archiveStatus: "unarchive",
+               loaded: true,
+               status: this.describePackageStatus(packageName, versionId),
+            });
+            entries.set(packageName, list);
+         }
       }
       if (options.includeLoading) {
          for (const {
@@ -2869,27 +2938,40 @@ export class Environment {
       // A failed load names the version's files package-relative, as a
       // failed reload does, never this server's version folder.
       return withPackageRelativeErrors(versionPath, async () => {
+         // Read the manifest while the version compiles, and compile it
+         // once: its models hydrate over the colocated entries, so the bind
+         // below binds them without the reload a bind after a plain load
+         // would run. A read that fails is reported by that bind.
+         const manifest = version.manifestPath
+            ? this.fetchManifestEntriesWithTimeout(version.manifestPath)
+            : undefined;
+         manifest?.catch(() => undefined);
          const loaded = await Package.create(
             this.environmentName,
             packageName,
             versionPath,
             () => this.malloyConfig.malloyConfig,
             false,
-            { versionId: version.versionId },
+            {
+               versionId: version.versionId,
+               colocated: manifest?.then(
+                  (fetched) => fetched.tableNameManifest,
+                  () => undefined,
+               ),
+            },
          );
          this.attachDestinationServeConfig(loaded);
          // The version's serving state lives on its registry row, not in its
          // immutable publisher.json: where it came from, which version it is,
          // and the manifest it is bound to.
-         loaded.setPackageMetadata({
-            ...loaded.getPackageMetadata(),
+         loaded.updateStoredMetadata({
             versionId: version.versionId,
             ...(version.sourceLocation
                ? { location: version.sourceLocation }
                : {}),
             manifestLocation: version.manifestPath,
          });
-         await this.bindManifestIfConfigured(loaded);
+         await this.bindManifestIfConfigured(loaded, manifest);
          await this.rebindServeBindingsFromLocalStore(loaded);
          return loaded;
       });
@@ -3065,10 +3147,7 @@ export class Environment {
       const wasBound =
          loaded.hasBoundTableNameManifest() || loaded.hasStorageServeBindings();
       const previous = loaded.getManifestLocation() ?? null;
-      loaded.setPackageMetadata({
-         ...loaded.getPackageMetadata(),
-         manifestLocation: manifestPath,
-      });
+      loaded.updateStoredMetadata({ manifestLocation: manifestPath });
       try {
          if (manifestPath) {
             await this.trackPackageLoad(packageName, () =>
@@ -3082,10 +3161,7 @@ export class Environment {
          }
       } catch (error) {
          // The models still use the previous binding, so the metadata says so.
-         loaded.setPackageMetadata({
-            ...loaded.getPackageMetadata(),
-            manifestLocation: previous,
-         });
+         loaded.updateStoredMetadata({ manifestLocation: previous });
          throw error;
       }
    }
@@ -4016,14 +4092,18 @@ export class Environment {
    /**
     * If the package declares a `manifestLocation`, fetch the host's build
     * manifest and bind it. Best-effort: a failure leaves it serving live.
-    * Caller holds the package lock.
+    * Caller holds the package lock. `fetched`: that manifest, already being
+    * read by the caller.
     */
-   private async bindManifestIfConfigured(pkg: Package): Promise<void> {
+   private async bindManifestIfConfigured(
+      pkg: Package,
+      fetched?: Promise<FetchedManifest>,
+   ): Promise<void> {
       const manifestLocation = pkg.getManifestLocation();
       if (!manifestLocation) {
          return;
       }
-      await this.bindManifest(pkg, manifestLocation);
+      await this.bindManifest(pkg, manifestLocation, "if-changed", fetched);
    }
 
    /**
@@ -4036,12 +4116,14 @@ export class Environment {
       pkg: Package,
       manifestLocation: string,
       recompile: "always" | "if-changed" = "if-changed",
+      /** `manifestLocation`'s manifest, already being read by the caller. */
+      fetched?: Promise<FetchedManifest>,
    ): Promise<void> {
       const packageName = pkg.getPackageName();
       try {
          // Timed out to live, since binding runs before the package serves.
-         const { tableNameManifest, storageEntries } =
-            await this.fetchManifestEntriesWithTimeout(manifestLocation);
+         const { tableNameManifest, storageEntries } = await (fetched ??
+            this.fetchManifestEntriesWithTimeout(manifestLocation));
 
          // Storage entries bind without a recompile. Bind when there are any
          // or were any, so vanished entries drop their old bindings. Take both
@@ -4942,6 +5024,9 @@ export class Environment {
    }
 
    public async closeAllConnections(): Promise<void> {
+      // A closed (deleted) environment stops re-reading version rows, so no
+      // timer keeps it alive.
+      this.closed = true;
       this.cancelPlanRefreshes();
       clearTimeout(this.statusVersionsRetry);
       this.statusVersionsRetry = undefined;
