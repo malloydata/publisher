@@ -76,15 +76,16 @@ pending forever. A docs-only skip needs an always-run gate job first.
 ### Credible's donated runners
 
 Credible runs self-hosted Ubuntu 24.04 x64 runners for the `malloydata` organization (4 vCPU / 16 GB,
-Docker, one job per machine), which do not count against GitHub's 20-concurrent-job limit. A job
+Docker, one job at a time per machine, machines reused between jobs), which do not count against
+GitHub's 20-concurrent-job limit. A job
 opts in with:
 
 ```yaml
-runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
 timeout-minutes: 30
 ```
 
-The organization variable `DONATED_RUNNERS` is the kill switch: set it to `false` and every such job
+The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
 goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux leg of
 `cross-platform-tests.yml`, `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
 `image-scan.yml` (amd64 build only), and `python-sdk.yml` when `build.yml` calls it (not when
@@ -92,8 +93,10 @@ goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux
 `main`, through the `layer-cache-writer` identity bound to `main`'s OIDC subject.
 
 **Keep off them:** any job that uses a repository or organization secret, holds `id-token: write`
-for anything but the layer cache, publishes, or runs on `pull_request_target`; and macOS, Windows,
-and arm64 jobs. Every job moved there needs a `timeout-minutes`. `credible-ubuntu-24.04` is spot
+for anything but the layer cache, publishes, or runs on `pull_request_target` (the runners refuse
+those); and macOS, Windows, and arm64 jobs. Publishing jobs, which stay on GitHub's runners, restore no
+Actions cache (setup-bun's `no-cache: true`): any `main` job, here or on GitHub's runners, can write
+`main`'s cache entries. Every job moved there needs a `timeout-minutes`. `credible-ubuntu-24.04` is spot
 (a reclaimed job fails "The operation was canceled." and a rerun covers it);
 `credible-ubuntu-24.04-ondemand` is the label for a job that must not be interrupted. Package
 installs go through pull-through caches whose credentials last an hour from job start.
