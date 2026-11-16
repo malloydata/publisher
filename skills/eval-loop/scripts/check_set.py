@@ -60,8 +60,8 @@ def check_cases(cfg: config.Config) -> tuple[list[str], list[str]]:
     return problems, import_cases.summarize(cases, lines)[:4]
 
 
-def check_model(cfg: config.Config) -> list[str]:
-    problems = []
+def check_model(cfg: config.Config) -> tuple[list[str], list[str]]:
+    problems, notes = [], []
     # eval.toml wins over set.json, so a disagreement runs a package the set
     # does not say it measures, with nothing to show a choice was made.
     here, there = cfg.data.get("model", {}).get("package"), cfg.set_meta.get("targetPackage")
@@ -74,7 +74,13 @@ def check_model(cfg: config.Config) -> list[str]:
             problems.append(f"no [model] {key}. Fix: add `{key} = \"<value>\"` "
                             f"under [model] in {cfg.file_hint}")
     repo = cfg.get("model", "repo")
-    if repo is None:
+    if repo is None and cfg.get("model", "publisher"):
+        # Someone else serves the model, so a run needs no files of it. Only
+        # improve edits them, and the routine refuses improve without a repo.
+        notes.append("no [model] repo: runs record no model git sha, and "
+                     "`--mode improve` cannot run. Add `repo = \"<path>\"` under "
+                     f"[model] in {cfg.file_hint} to have either")
+    elif repo is None:
         problems.append(f"no [model] repo, the model package directory. Fix: "
                         f"add `repo = \"<path>\"` under [model] in {cfg.file_hint}")
     elif not (repo / "publisher.json").exists():
@@ -84,7 +90,7 @@ def check_model(cfg: config.Config) -> list[str]:
         model = cfg.set_meta.get("targetModelPath")
         if model and not (repo / model).exists():
             problems.append(f"set.json targetModelPath {model} is not in {repo}")
-    return problems
+    return problems, notes
 
 
 def check_truth(cfg: config.Config) -> tuple[list[str], list[str]]:
@@ -95,6 +101,13 @@ def check_truth(cfg: config.Config) -> tuple[list[str], list[str]]:
                     "set of criteria or bare questions; otherwise see "
                     f"init_truth_package.py in {GUIDE}"]
     problems = []
+    if not cfg.has_truth and cfg.get("model", "publisher"):
+        # A run scores against the keys already in cases.jsonl; the truth
+        # package only re-derives them, which `verify` does and a run does not.
+        return [], [f"set.json names truthPackage {name!r} but {cfg.file_hint} "
+                    "has no [truth] section: runs score against the keys as "
+                    "stored, `verify` exits 3, and the routine records "
+                    "keysVerified false"]
     if not cfg.has_truth:
         problems.append(f"set.json names truthPackage {name!r} but "
                         f"{cfg.file_hint} has no [truth] section. Fix: add "
@@ -177,7 +190,9 @@ def report(set_dir: pathlib.Path) -> tuple[list[str], list[str]]:
     p, n = check_cases(cfg)
     problems += p
     notes += n
-    problems += check_model(cfg)
+    p, n = check_model(cfg)
+    problems += p
+    notes += n
     p, n = check_truth(cfg)
     problems += p
     notes += n

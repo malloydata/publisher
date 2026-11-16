@@ -64,6 +64,17 @@ class Report(unittest.TestCase):
         self.assertIn("no [model] environment", text)
         self.assertIn("has no [truth] section", text)
 
+    def test_a_model_served_elsewhere_needs_no_repo_and_no_truth(self):
+        # An agent computer serves the model itself: nothing to edit, nothing
+        # to re-derive keys with, and the run still scores against stored keys.
+        d = a_set('[model]\nenvironment = "e"\npackage = "p"\n'
+                  'publisher = "http://localhost:4000"\n', [CASE], truth="t")
+        problems, notes = self.report(d)
+        self.assertEqual(problems, [])
+        text = "\n".join(notes)
+        self.assertIn("no [model] repo: runs record no model git sha", text)
+        self.assertIn("runs score against the keys as stored", text)
+
     def test_a_truth_ref_that_leaves_the_package_is_a_problem(self):
         d = a_set(MODEL + '[truth]\npackage_dir = "../truth"\n', [CASE], truth="t",
                   truth_malloy="source: u is duckdb.table('../pkg/data/u.parquet')\n")
