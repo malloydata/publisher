@@ -45,6 +45,8 @@ Metrics:
 
 Every materialization metric is listed, with its labels, in `docs/configuration.md` under "Materialization metrics".
 
+**Contract change: one stored-column-type signal on every `storage=` kind.** The `storage-column-type-mismatch` package warning and `publisher_storage_column_type_mismatch_total{stage="serve"}` were raised only for a `#@ persist` `storage=` source. They now also fire for a `#(materialize)` `storage=` source, a stored rollup (its partials and grain), and a persisted view or named query, each checked against the columns its build source declares, the same check the build already ran on every kind (`stage="build"`). Nothing is renamed. The warning's message says how the column is read: through a cast, answered live, or, new, as its stored type (a `#(materialize)` source's served copy, a rollup's grain). A rollup's warning names its base source, a view's or query's its build source. Dashboards on this counter see more `serve` ticks where such tables drift.
+
 ## [Unreleased] — one code per mistake on every materialization route, `realization=` retired, and a persisted query reports as `query`
 
 Every case below still fails the publish and the load; only the code it fails with, or the code it is counted under, changes.

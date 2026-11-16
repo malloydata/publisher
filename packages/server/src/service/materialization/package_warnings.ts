@@ -40,7 +40,33 @@ import {
    VERDICT_WARNING_CODES,
    type ServeVerdict,
 } from "./serve/serve_verdict";
-import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
+import {
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   type StoredColumnTypeMismatch,
+} from "./stored_column_types";
+import type {
+   BoundTableTypeFinding,
+   MismatchHandling,
+} from "./serve/storage_bindings";
+
+/** What a stored column type warning says of how the column is read. */
+const MISMATCH_HANDLING_TEXT: Record<
+   MismatchHandling,
+   (declaredType: string) => string
+> = {
+   cast: (declaredType) =>
+      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
+      `from storage; the next build stores the declared type.`,
+   live: () =>
+      `No cast reproduces its values faithfully, so queries that read it are ` +
+      `answered live. Give the field a native cast in the model (for example ` +
+      `\`::"double"\`) so the warehouse returns the declared type.`,
+   stored: (declaredType) =>
+      `It is read as its stored type, not as \`${declaredType}\`, so a ` +
+      `query that reads it can answer with a different type than live. ` +
+      `Give the field a native cast in the model so the warehouse returns ` +
+      `the declared type, and rebuild.`,
+};
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
@@ -283,41 +309,49 @@ export function servedCopyWarnings(models: Models): ApiPackageWarning[] {
 
 /**
  * Warnings for stored columns whose type does not serve as the type Malloy
- * declares, one per source and column, read from the bindings bound now. Keyed
- * by the source's sourceID, so two models' same-named sources both report and
- * a source several models import reports once.
+ * declares, one per source and column, read from the bindings bound now:
+ * each model's `#@ persist` sources', then every other `storage=` table's
+ * (`bound`). Keyed by the source's sourceID, so two models' same-named
+ * sources both report and a source several models import reports once.
  */
-export function storedColumnTypeWarnings(models: Models): ApiPackageWarning[] {
+export function storedColumnTypeWarnings(
+   models: Models,
+   bound: readonly BoundTableTypeFinding[],
+): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const seen = new Set<string>();
+   const add = (
+      modelPath: string,
+      subject: string,
+      key: string,
+      m: StoredColumnTypeMismatch & { handling: MismatchHandling },
+   ) => {
+      if (seen.has(`${key}\u0000${m.column}`)) return;
+      seen.add(`${key}\u0000${m.column}`);
+      warnings.push({
+         model: modelPath,
+         subject,
+         code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+         severity: "warn",
+         message:
+            `stores column \`${m.column}\` as ${m.storedType}, not its ` +
+            `declared Malloy type \`${m.declaredType}\`. ` +
+            MISMATCH_HANDLING_TEXT[m.handling](m.declaredType),
+      });
+   };
    for (const [modelPath, model] of models) {
       for (const {
          sourceName,
          sourceID,
          mismatches,
       } of model.storedColumnTypeMismatches?.() ?? []) {
-         for (const m of mismatches) {
-            const key = `${sourceID ?? `${modelPath}\u0000${sourceName}`}\u0000${m.column}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            warnings.push({
-               model: modelPath,
-               subject: sourceName,
-               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
-               severity: "warn",
-               message:
-                  `stores column \`${m.column}\` as ${m.storedType}, not its ` +
-                  `declared Malloy type \`${m.declaredType}\`. ` +
-                  (m.handling === "cast"
-                     ? `It is read through a cast to \`${m.declaredType}\`, ` +
-                       `so it still serves from storage; the next build ` +
-                       `stores the declared type.`
-                     : `No cast reproduces its values faithfully, so queries ` +
-                       `that read it are answered live. Give the field a ` +
-                       `native cast in the model (for example \`::"double"\`) ` +
-                       `so the warehouse returns the declared type.`),
-            });
-         }
+         const key = sourceID ?? `${modelPath}\u0000${sourceName}`;
+         for (const m of mismatches) add(modelPath, sourceName, key, m);
+      }
+   }
+   for (const finding of bound) {
+      for (const m of finding.mismatches) {
+         add(finding.modelPath ?? "", finding.subject, finding.sourceID, m);
       }
    }
    return warnings;

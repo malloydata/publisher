@@ -29,6 +29,7 @@ import { logger } from "../../logger";
 import {
    recordSourceBound,
    recordSourceDeclined,
+   recordStoredColumnTypeMismatch,
 } from "../../materialization_metrics";
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import type { Model } from "../model";
@@ -59,6 +60,11 @@ import {
    v1StoredColumnsOf,
 } from "./serve/bind";
 import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
+import {
+   type BoundTableTypeFinding,
+   boundTableTypeFindings,
+} from "./serve/storage_bindings";
+import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import * as warnings from "./package_warnings";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
@@ -153,6 +159,15 @@ export class PackageMaterialization {
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
+   private boundTypeFindingsMemo:
+      | {
+           bindings: readonly Binding[];
+           plan: BuildPlan | null;
+           findings: readonly BoundTableTypeFinding[];
+        }
+      | undefined;
+   /** The bound tables whose type mismatches were counted and logged. */
+   private readonly typeMismatchesLogged = new Set<string>();
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
       | undefined;
@@ -642,6 +657,8 @@ export class PackageMaterialization {
          this.setServedCopyContextOn(model);
          void model.prepareServedCopy();
       }
+      // Counted and logged at the bind, as a model's own tables are.
+      this.boundTypeFindings();
    }
 
    /**
@@ -778,7 +795,46 @@ export class PackageMaterialization {
    }
 
    storedColumnTypeWarnings(): ApiPackageWarning[] {
-      return warnings.storedColumnTypeWarnings(this.owner.models());
+      return warnings.storedColumnTypeWarnings(
+         this.owner.models(),
+         this.boundTypeFindings(),
+      );
+   }
+
+   /**
+    * The type findings of the bound `storage=` tables a model's own
+    * `#@ persist` check does not make ({@link boundTableTypeFindings}),
+    * memoized on the snapshot and the plan. Each table's mismatched columns
+    * are counted and logged once, as a model's own are.
+    */
+   private boundTypeFindings(): readonly BoundTableTypeFinding[] {
+      const { bindings } = this.snapshot();
+      const plan = this.plan.buildPlan;
+      const memo = this.boundTypeFindingsMemo;
+      if (memo && memo.bindings === bindings && memo.plan === plan) {
+         return memo.findings;
+      }
+      const findings = boundTableTypeFindings(bindings, plan);
+      this.boundTypeFindingsMemo = { bindings, plan, findings };
+      for (const finding of findings) {
+         const key = `${finding.binding.kind}\u0000${finding.binding.virtualHandle}`;
+         if (this.typeMismatchesLogged.has(key)) continue;
+         this.typeMismatchesLogged.add(key);
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+         logger.warn(
+            "Stored column types do not match the declared Malloy types",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               packageName: this.owner.packageName(),
+               source: finding.subject,
+               kind: finding.binding.kind,
+               columns: finding.mismatches,
+            },
+         );
+      }
+      return findings;
    }
 
    nativeSchemaWarnings(): ApiPackageWarning[] {

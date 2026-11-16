@@ -542,6 +542,16 @@ rest, give the field a native cast in the model so the warehouse returns the dec
 example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
 `::number` here, emits no SQL.
 
+The same warning, and the same `publisher_storage_column_type_mismatch_total{stage="serve"}`
+count, covers every `storage=` table, checked against the columns its build source declares: a
+`#@ persist` source's (above), a `#(materialize)` source's, a rollup's, and a persisted view's or
+named query's. Each reader takes the column its own way, and the warning says which. A persisted
+view or query reads it through a faithful cast or is answered live. A rollup does not read a
+numeric partial stored as another type, so queries over that measure are answered live, and reads
+a grain column as stored. A `#(materialize)` source's served copy reads the column as its stored
+type, so a query that reads it can answer with a different type than live: rebuild it with a native
+cast in the model. A rollup is named by its base source, and a view or query by its build source.
+
 **Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct

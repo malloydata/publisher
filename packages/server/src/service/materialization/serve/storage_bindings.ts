@@ -25,9 +25,12 @@ import {
 import {
    declaredColumnsOf,
    type ReadCast,
+   serveTypePlan,
    storedColumnReadPlan,
+   storedColumnTypeMismatches,
    type StoredColumnTypeMismatch,
 } from "../stored_column_types";
+import type { BuildPlan } from "../domain/types";
 
 /** The warning code a stored column type mismatch is logged and reported with. */
 export { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
@@ -39,6 +42,98 @@ export interface SourceTypeMismatches {
    sourceID?: string;
    /** Each mismatch, and whether it is read through a cast or answered live. */
    mismatches: (StoredColumnTypeMismatch & { handling: "cast" | "live" })[];
+}
+
+/**
+ * How a stored column whose type does not serve as declared is read: through
+ * a faithful `cast`; not at all, so queries that read it are answered `live`;
+ * or as its `stored` type, where the reader declares the table's own types
+ * (a `#(materialize)` table's served copy, a rollup's grain).
+ */
+export type MismatchHandling = "cast" | "live" | "stored";
+
+/**
+ * A `#(materialize)`, persisted view or query, or rollup `storage=` table's
+ * stored columns that do not serve as the types its build source declares.
+ */
+export interface BoundTableTypeFinding {
+   binding: Binding;
+   sourceID: string;
+   modelPath?: string;
+   /** The name the author wrote: the source, view or query, or a rollup's base. */
+   subject: string;
+   mismatches: (StoredColumnTypeMismatch & { handling: MismatchHandling })[];
+}
+
+/**
+ * The type findings of every `storage=` table that is not a `#@ persist`
+ * source's (whose findings each model makes from its own source's fields,
+ * {@link modelStorageTables}), against the columns the plan's build source
+ * declares: the same declaration the build casts to and checks after it
+ * writes, so build and serve report one drift.
+ */
+export function boundTableTypeFindings(
+   bindings: readonly Binding[],
+   plan: BuildPlan | null,
+): BoundTableTypeFinding[] {
+   const sources = Object.entries(plan?.sources ?? {});
+   const findings: BoundTableTypeFinding[] = [];
+   for (const binding of bindings) {
+      if (binding.tier !== "storage" || binding.kind === "persist") continue;
+      const atAddress = sources.filter(
+         ([, s]) => s.sourceEntityId === binding.virtualHandle,
+      );
+      const [sourceID, source] =
+         atAddress.find(([id]) => binding.sourceIDs?.includes(id)) ??
+         atAddress[0] ??
+         [];
+      if (!sourceID || !source) continue;
+      const declared = (source.columns ?? []).flatMap((c) =>
+         c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+      );
+      const mismatches = storedColumnTypeMismatches(binding.schema, declared);
+      if (mismatches.length === 0) continue;
+      const handled = handlingOf(binding, source, mismatches);
+      findings.push({
+         binding,
+         sourceID,
+         ...(source.modelPath ? { modelPath: source.modelPath } : {}),
+         subject: source.preaggregate?.baseSourceName ?? source.name,
+         mismatches: mismatches.map((m) => ({
+            ...m,
+            handling: handled(m),
+         })),
+      });
+   }
+   return findings;
+}
+
+/**
+ * How each reader treats a mismatch: a persisted result casts what a faithful
+ * cast reads and answers live otherwise (`storedColumnCasts`); a rollup
+ * declares its grain as stored, and does not read a numeric partial stored
+ * as another type (`partialTypeRefusal`); a `#(materialize)` table's served
+ * copy declares each column as stored (`materializedColumnsOf`).
+ */
+function handlingOf(
+   binding: Binding,
+   source: NonNullable<BuildPlan["sources"]>[string],
+   mismatches: readonly StoredColumnTypeMismatch[],
+): (m: StoredColumnTypeMismatch) => MismatchHandling {
+   if (binding.kind === "view") {
+      const cast = new Set(
+         serveTypePlan(mismatches).casts.map((c) => c.column),
+      );
+      return (m) => (cast.has(m.column) ? "cast" : "live");
+   }
+   if (binding.kind === "rollup") {
+      const grain = new Set(source.preaggregate?.grainDimensions ?? []);
+      return (m) =>
+         !grain.has(m.column) && m.declaredType === "number"
+            ? "live"
+            : "stored";
+   }
+   return () => "stored";
 }
 
 /** One binding's mismatches, with how each is handled, for the model's log. */
