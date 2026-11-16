@@ -467,48 +467,8 @@ export class InstructedBuild {
          refusalsInFailures: 0,
          refusedBesideBuilt: {},
       };
-      const deferred: {
-         persistSource: PersistSource;
-         connectionName: string;
-         connection: MalloyConnection;
-      }[] = [];
       try {
-         for (const build of builds) {
-            const connection = connections.get(build.connectionName);
-            if (!connection) {
-               throw new BadRequestError(
-                  `Connection '${build.connectionName}' not found`,
-               );
-            }
-            for (const persistSource of sourcesInBuildOrder(build, tables)) {
-               // A rollup that may read its base's stored table builds once
-               // every other table has, so a base this run builds is there
-               // to read. Nothing a run builds reads a rollup's table.
-               const table = tables[persistSource.sourceID];
-               if (table?.kind === "rollup" && table.overStoredBase) {
-                  deferred.push({
-                     persistSource,
-                     connectionName: build.connectionName,
-                     connection,
-                  });
-                  continue;
-               }
-               await this.buildInRun(
-                  run,
-                  persistSource,
-                  build.connectionName,
-                  connection,
-               );
-            }
-         }
-         for (const later of deferred) {
-            await this.buildInRun(
-               run,
-               later.persistSource,
-               later.connectionName,
-               later.connection,
-            );
-         }
+         await this.buildEveryTable(run, builds, tables, connections);
 
          settled = settleRefusals(run);
 
@@ -690,6 +650,60 @@ export class InstructedBuild {
          );
       }
       return replacesView;
+   }
+
+   /**
+    * Build every planned table in the plan's order, then each rollup that may
+    * read its base's stored table, so a base this run builds is there to
+    * read. Nothing a run builds reads a rollup's table.
+    */
+   private async buildEveryTable(
+      run: InstructedRun,
+      builds: CompiledBuildPlan["builds"],
+      tables: CompiledBuildPlan["tables"],
+      connections: CompiledBuildPlan["connections"],
+   ): Promise<void> {
+      const deferred: {
+         persistSource: PersistSource;
+         connectionName: string;
+         connection: MalloyConnection;
+      }[] = [];
+      for (const build of builds) {
+         const connection = connections.get(build.connectionName);
+         if (!connection) {
+            throw new BadRequestError(
+               `Connection '${build.connectionName}' not found`,
+            );
+         }
+         for (const persistSource of sourcesInBuildOrder(build, tables)) {
+            // A rollup that may read its base's stored table builds once
+            // every other table has, so a base this run builds is there
+            // to read. Nothing a run builds reads a rollup's table.
+            const table = tables[persistSource.sourceID];
+            if (table?.kind === "rollup" && table.overStoredBase) {
+               deferred.push({
+                  persistSource,
+                  connectionName: build.connectionName,
+                  connection,
+               });
+               continue;
+            }
+            await this.buildInRun(
+               run,
+               persistSource,
+               build.connectionName,
+               connection,
+            );
+         }
+      }
+      for (const later of deferred) {
+         await this.buildInRun(
+            run,
+            later.persistSource,
+            later.connectionName,
+            later.connection,
+         );
+      }
    }
 
    /** One source's turn in the run's loop, under its span. */
@@ -2042,7 +2056,7 @@ async function overStoredBaseSource(
 }
 
 /**
- * A rollup's entry with `upstreamReuse` saying what its build read: `reused`
+ * A colocated rollup's entry with `upstreamReuse` saying what its build read: `reused`
  * when it built from its base's stored table ({@link overStoredBaseSource}),
  * absent when it built from the warehouse. Its build source names the base
  * only in the author's text, which the classification reads, so the
@@ -2056,7 +2070,11 @@ function withRollupUpstreamReuse(
    address: string,
    entry: ManifestEntry,
 ): ManifestEntry {
-   if (run.compiled.tables[persistSource.sourceID]?.kind !== "rollup") {
+   // A `storage=` build reports what it stacked on itself (stackOnParents).
+   if (
+      run.compiled.tables[persistSource.sourceID]?.kind !== "rollup" ||
+      entry.storageDestinationName
+   ) {
       return entry;
    }
    const {

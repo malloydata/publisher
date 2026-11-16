@@ -1478,7 +1478,7 @@ source: orders is orders_raw extend {
       "carries freshness onto the generated source, where the plan reads it",
       async () => {
          const c = await compiled(`${BASE}
-#(materialize) freshness.window="24h" freshness.fallback="serve_stale" storage="lake"
+#(materialize) freshness.window="24h" freshness.fallback="stale_ok" storage="lake"
 source: orders is orders_raw
 `);
          const [p] = generatedPlans(c);
@@ -1486,7 +1486,7 @@ source: orders is orders_raw
             name: "orders",
             storage: "lake",
             "freshness.window": "24h",
-            "freshness.fallback": "serve_stale",
+            "freshness.fallback": "stale_ok",
          });
          const outcome = deriveBuildPlanOutcome(c, null);
          const wire = Object.values(outcome.plan?.sources ?? {}).find(

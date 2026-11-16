@@ -822,7 +822,7 @@ export function deriveSelfInstructions(
 }
 
 /** What {@link rebuildStaleUpstreams} reads. */
-export interface StaleUpstreamRule {
+interface StaleUpstreamRule {
    windowSecondsAt(sourceEntityId: string): number | undefined;
    /** The tables a table at `sourceEntityId` is built from (the plan's edges). */
    upstreamsOf(sourceEntityId: string): readonly string[];
