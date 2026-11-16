@@ -121,6 +121,7 @@ async function scenario(model: string) {
       getStorageDestination: () => {
          throw new Error("no storage in this spec");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    // The storage tier, stood in for by the scenario's own database: the
@@ -141,6 +142,7 @@ async function scenario(model: string) {
    };
    const build = new InstructedBuild({
       buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const sourceIdOf = (name: string) =>

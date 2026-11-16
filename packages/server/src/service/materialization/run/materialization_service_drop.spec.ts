@@ -176,6 +176,7 @@ describe("deleteMaterialization", () => {
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
             getApiConnection: () => ({ name: "lake", type: "duckdb" }),
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/test",
             // What the rebind read binds: colocated always, storage= when
             // the read returns it.

@@ -95,6 +95,7 @@ async function scenario() {
       getStorageDestination: () => {
          throw new Error("no storage in this spec");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    const storage: Parameters<typeof buildSource>[1] = async () => {
@@ -102,6 +103,7 @@ async function scenario() {
    };
    const build = new InstructedBuild({
       buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -268,6 +270,9 @@ describe("a pair table's leaf key check, on a build", () => {
       const model = {
          setServedCopyContext: () => {},
          prepareServedCopy: async () => {},
+         persistedViewBuilds: () => [],
+         servedCopyProblems: () => [],
+         storedColumnTypeMismatches: () => [],
       };
       const materialization = new PackageMaterialization({
          models: () => new Map([["m.malloy", model]]),

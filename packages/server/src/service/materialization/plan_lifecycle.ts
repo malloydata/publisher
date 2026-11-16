@@ -213,7 +213,7 @@ export class PlanLifecycle {
             { sourceName: string; viewName: string }
          >();
          for (const model of this.owner.models().values()) {
-            for (const v of model.persistedViewBuilds?.() ?? []) {
+            for (const v of model.persistedViewBuilds() ?? []) {
                // A persisted query takes no incremental key.
                if (v.queryName !== undefined) continue;
                persistedViews.set(v.buildSourceID, {

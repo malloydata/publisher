@@ -241,6 +241,7 @@ describe("run telemetry through the build loop", () => {
                   getApiConnection: () => {
                      throw new Error("no config");
                   },
+                  getEnvironmentName: () => "env",
                   getEnvironmentPath: () => "/tmp/env",
                },
                instructions: [
@@ -705,6 +706,7 @@ describe("run telemetry review findings", () => {
                getApiConnection: () => {
                   throw new Error("no config");
                },
+               getEnvironmentName: () => "env",
                getEnvironmentPath: () => "/tmp/env",
             },
             instructions: [

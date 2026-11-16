@@ -1409,6 +1409,9 @@ async function colocatedEligibilityOf(
       getModelPaths: () => scenario.files.filter((f) => f.endsWith(".malloy")),
       getPackagePath: () => scenario.dir,
       getMalloyConfig: () => config,
+      getMaterializationConfig: () => null,
+      getPackageMetadata: () => ({}),
+      getVersionId: () => undefined,
       getMalloyConnection: async (name) => {
          const c = scenario.connections.get(name);
          if (!c) throw new Error(`no connection ${name}`);

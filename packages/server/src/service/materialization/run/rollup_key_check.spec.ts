@@ -123,6 +123,7 @@ async function scenario(model: string) {
       getStorageDestination: () => {
          throw new Error("no storage in this spec");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    const storage: Parameters<typeof buildSource>[1] = async () => {
@@ -130,6 +131,7 @@ async function scenario(model: string) {
    };
    const build = new InstructedBuild({
       buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -447,6 +449,7 @@ async function storedScenario(
    const environment = {
       getApiConnection: () => ({ name: "duckdb", type: "duckdb" }),
       getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    // The stored rows: the base's, so a duplicate in it reaches the table.
@@ -478,6 +481,7 @@ async function storedScenario(
    };
    const build = new InstructedBuild({
       buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -704,6 +708,7 @@ describe("a colocated rollup over a base that is itself stored", () => {
             getStorageDestination: () => {
                throw new Error("no storage in this spec");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => pkg.getPackagePath(),
          } as unknown as BuildEnvironment;
          const storage: Parameters<typeof buildSource>[1] = async () => {
@@ -711,6 +716,7 @@ describe("a colocated rollup over a base that is itself stored", () => {
          };
          const build = new InstructedBuild({
             buildOneSource: (options) => buildSource(options, storage),
+            tableNotOwned: async () => undefined,
             reclaimStorageTablesFromFailedRun: async () => {},
          });
          const run = (

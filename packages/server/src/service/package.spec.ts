@@ -953,6 +953,10 @@ describe("service/package", () => {
             preaggregateViolations: () => [],
             declaredFilterSourceNames: () => [],
             declaredDeprecatedPersistAnnotations: () => [],
+            persistedViewBuilds: () => [],
+            servedCopyProblems: () => [],
+            storedColumnTypeMismatches: () => [],
+            getModelDef: () => undefined,
          }) as unknown as Model;
       const roles = { name: "ROLES", type: "string[]", secure: true };
       const pkgWith = (models: Map<string, Model>) =>

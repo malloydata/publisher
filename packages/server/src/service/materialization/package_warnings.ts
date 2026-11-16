@@ -272,7 +272,7 @@ export function storageWarnings(
 export function servedCopyWarnings(models: Models): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    for (const [modelPath, model] of models) {
-      const problems = model.servedCopyProblems?.() ?? [];
+      const problems = model.servedCopyProblems() ?? [];
       // A join already inlined, but kept as written: its own warning says
       // why, so the cross-connection one does not advise inlining it.
       const keptInline = new Set(
@@ -344,7 +344,7 @@ export function storedColumnTypeWarnings(
          sourceName,
          sourceID,
          mismatches,
-      } of model.storedColumnTypeMismatches?.() ?? []) {
+      } of model.storedColumnTypeMismatches() ?? []) {
          const key = sourceID ?? `${modelPath}\u0000${sourceName}`;
          for (const m of mismatches) add(modelPath, sourceName, key, m);
       }
@@ -369,7 +369,7 @@ export function nativeSchemaWarnings(
    const warnings: ApiPackageWarning[] = [];
    const seen = new Set<string>();
    for (const [modelPath, model] of models) {
-      const modelDef = model.getModelDef?.();
+      const modelDef = model.getModelDef();
       if (!modelDef) continue;
       for (const n of nativeSchemaNotices(
          bindings,

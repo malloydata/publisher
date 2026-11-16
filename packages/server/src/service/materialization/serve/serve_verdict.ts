@@ -160,7 +160,7 @@ export interface ServeVerdictFacts {
     * eligibility gate the bind applies, such as a rollup name two models
     * share), or undefined when the bind keeps it.
     */
-   refusedAtBind?(
+   refusedAtBind(
       sourceID: string,
       source: PersistSourcePlan,
       tier: "colocated" | "storage",
@@ -185,7 +185,7 @@ export interface ServeVerdictFacts {
     * the served copy is off, `not_served` otherwise. Absent: no source is a
     * `#(materialize)` source.
     */
-   materialize?(sourceID: string): "serves" | "off" | "not_served" | undefined;
+   materialize(sourceID: string): "serves" | "off" | "not_served" | undefined;
    /**
     * A persisted view's generated build source (`#@ persist` on a view, P14),
     * by its plan sourceID: the source and view it stores. A query reaches it
@@ -194,7 +194,7 @@ export interface ServeVerdictFacts {
     * target's `sourceID` and name when it runs a named source (absent for an
     * inline run target, whose reach is not judged).
     */
-   persistedViewOf?(sourceID: string): PersistedResultOf | undefined;
+   persistedViewOf(sourceID: string): PersistedResultOf | undefined;
    /** Per stored source's plan sourceID, its views' verdicts (a preview). */
    views?: ReadonlyMap<string, ViewServeVerdict[]>;
    /**
@@ -203,14 +203,14 @@ export interface ServeVerdictFacts {
     * `undefined` (the list is not known), never warns: a deployment fact that
     * cannot be read must not send a source live.
     */
-   destinationConfigured?(destinationName: string): boolean | undefined;
+   destinationConfigured(destinationName: string): boolean | undefined;
    /**
     * Whether this connection can hold a table, read from its capability:
     * `false` only when its configured type creates no tables. Absent, or
     * `undefined` (not an environment connection, or an unknown type), never
     * warns.
     */
-   connectionCanHoldTable?(connectionName: string): boolean | undefined;
+   connectionCanHoldTable(connectionName: string): boolean | undefined;
 }
 
 /** The tier a plan source's table lives in. */
@@ -300,7 +300,7 @@ function verdictFor(
    // `#(materialize)` is served by the served copy alone, on either tier
    // (never through the colocated build manifest, which Malloy never
    // substitutes for it), so the served copy decides its verdict.
-   const materialized = facts.materialize?.(sourceID);
+   const materialized = facts.materialize(sourceID);
 
    // A gated entry point is answered from the table only when the gate
    // policy keeps the gate on it, as the router asks it.
@@ -321,7 +321,7 @@ function verdictFor(
       );
    }
 
-   const refusedAtBind = facts.refusedAtBind?.(sourceID, source, tier);
+   const refusedAtBind = facts.refusedAtBind(sourceID, source, tier);
    if (refusedAtBind !== undefined) {
       return live(
          "refused",
@@ -386,7 +386,7 @@ function verdictSubjectOf(
    // A rollup is never queried by name: its base is what a query names.
    const rollupBase = source.preaggregate?.baseSourceName;
    // Nor is a persisted view's build source: a call of the view on its source.
-   const view = facts.persistedViewOf?.(sourceID);
+   const view = facts.persistedViewOf(sourceID);
    // malloy-text: markdown code formatting in a verdict message, not Malloy
    const named = rollupBase
       ? `The rollup of \`${rollupBase}\` at (${source.preaggregate?.grainDimensions.join(", ")})`
@@ -437,7 +437,7 @@ function deploymentVerdict(
       destination &&
       facts.storageMode !== "off" &&
       !storageBound &&
-      facts.destinationConfigured?.(destination) === false
+      facts.destinationConfigured(destination) === false
    ) {
       // A preview's per-view verdicts still say what would serve once the
       // destination exists, so they are kept.
@@ -460,7 +460,7 @@ function deploymentVerdict(
    if (
       tier === "colocated" &&
       !facts.boundEntityIds.has(source.sourceEntityId) &&
-      facts.connectionCanHoldTable?.(source.connectionName) === false
+      facts.connectionCanHoldTable(source.connectionName) === false
    ) {
       return live(
          "connection_cannot_hold_table",

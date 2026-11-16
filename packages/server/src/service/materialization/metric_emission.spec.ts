@@ -298,6 +298,7 @@ describe("the build loop's instruments", () => {
          getApiConnection: () => {
             throw new Error("no connection config in this test");
          },
+         getEnvironmentName: () => "env",
          getEnvironmentPath: () => "/tmp/env",
       };
       return (

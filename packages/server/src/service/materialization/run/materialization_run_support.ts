@@ -632,8 +632,8 @@ export interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
    getStorageDestination(destinationName: string): ApiConnection;
    getEnvironmentPath(): string;
-   /** For the usage record a metered build emits; absent in some test doubles. */
-   getEnvironmentName?(): string;
+   /** For the usage record a metered build emits. */
+   getEnvironmentName(): string;
    /**
     * The package's text for a chained `storage=` build (the host port's
     * `chainBuildText`). Absent, a chained build cannot stack on its parents
@@ -655,8 +655,8 @@ export interface BuildEnvironment {
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
    pkg: {
-      chainBuildText?(request: ChainBuildRequest): ChainBuildText;
-      getPackagePath?(): string;
+      chainBuildText(request: ChainBuildRequest): ChainBuildText;
+      getPackagePath(): string;
    },
    /**
     * Whether the package serves a model older than its files (a reload that
@@ -665,13 +665,9 @@ export function withChainBuildText<E extends BuildEnvironment>(
     */
    isStale: () => boolean = () => false,
 ): E {
-   if (!pkg.chainBuildText && !pkg.getPackagePath) return environment;
    const scoped = Object.create(environment) as E;
-   if (pkg.getPackagePath) {
-      const packagePath = pkg.getPackagePath();
-      scoped.getPackagePath = () => packagePath;
-   }
-   if (!pkg.chainBuildText) return scoped;
+   const packagePath = pkg.getPackagePath();
+   scoped.getPackagePath = () => packagePath;
    scoped.chainBuildText = (request) =>
       isStale()
          ? {
@@ -681,7 +677,7 @@ export function withChainBuildText<E extends BuildEnvironment>(
                  `are not the model this build was planned from`,
               code: "package_stale",
            }
-         : pkg.chainBuildText!(request);
+         : pkg.chainBuildText(request);
    return scoped;
 }
 

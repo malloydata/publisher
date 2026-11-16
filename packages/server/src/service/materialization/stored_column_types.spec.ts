@@ -222,18 +222,33 @@ describe("PackageMaterialization.storedColumnTypeWarnings", () => {
          // a.malloy declares orders; b.malloy imports the same source.
          [
             "a.malloy",
-            { storedColumnTypeMismatches: () => of("orders@a", "cast") },
+            {
+               persistedViewBuilds: () => [],
+               storedColumnTypeMismatches: () => of("orders@a", "cast"),
+            },
          ],
          [
             "b.malloy",
-            { storedColumnTypeMismatches: () => of("orders@a", "cast") },
+            {
+               persistedViewBuilds: () => [],
+               storedColumnTypeMismatches: () => of("orders@a", "cast"),
+            },
          ],
          // c.malloy declares an orders of its own: reported too.
          [
             "c.malloy",
-            { storedColumnTypeMismatches: () => of("orders@c", "live") },
+            {
+               persistedViewBuilds: () => [],
+               storedColumnTypeMismatches: () => of("orders@c", "live"),
+            },
          ],
-         ["d.malloy", {}],
+         [
+            "d.malloy",
+            {
+               persistedViewBuilds: () => [],
+               storedColumnTypeMismatches: () => [],
+            },
+         ],
       ]);
       const materialization = new PackageMaterialization({
          models: () => models,

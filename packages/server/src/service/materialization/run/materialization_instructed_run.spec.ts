@@ -68,6 +68,7 @@ describe("executeInstructedBuild", () => {
             }
             return config;
          },
+         getEnvironmentName: () => "env",
          getEnvironmentPath: () => "/tmp/env",
       };
       return (
@@ -2097,6 +2098,7 @@ describe("executeInstructedBuild", () => {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          };
          const service = ctx.service.collaborators as unknown as {

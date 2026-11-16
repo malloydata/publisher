@@ -483,7 +483,7 @@ export class MaterializationService {
       // A configured package whose boot publish was refused is published
       // again first, so a run resolves the version that publish makes rather
       // than an unversioned slot that does not exist.
-      await environment.publishRefusedConfiguredPackage?.(
+      await environment.publishRefusedConfiguredPackage(
          packageName,
          versionId.requested(),
       );
@@ -687,7 +687,7 @@ export class MaterializationService {
       // runs; the run itself checks again.
       if (
          version === null &&
-         (environment.getStaleCompileErrors?.().has(packageName) ?? false)
+         environment.getStaleCompileErrors().has(packageName)
       ) {
          throw new BuildPlanUnavailableError(
             `Package ${packageName} serves an older model than its files: its last reload refused them. Fix the files and reload the package, then run again.`,
@@ -737,11 +737,11 @@ export class MaterializationService {
       if (orchestrated) {
          // Validate against the plan the run will build from: a connection
          // edit re-derives it (build_plan_connection_refresh.spec.ts).
-         await pkg.whenBuildPlanCurrent?.();
+         await pkg.whenBuildPlanCurrent();
          // Never against a plan that failed to derive: after a failed
          // re-derivation the pre-edit plan is gone, and validating against
          // nothing would let stale ledger entries through to the build.
-         if (pkg.isBuildPlanUnavailable?.()) {
+         if (pkg.isBuildPlanUnavailable()) {
             throw new BuildPlanUnavailableError(
                `The build plan of package ${packageName} could not be derived, so the build instructions cannot be checked against it. Reload the package to derive it again.`,
             );
@@ -1111,7 +1111,7 @@ export class MaterializationService {
       // replaces can be stale.
       const stale =
          versionId === undefined &&
-         (environment.getStaleCompileErrors?.().has(packageName) ?? false);
+         environment.getStaleCompileErrors().has(packageName);
       // The load gate's own text, so the run and the load agree.
       const invalid = runLoadGateText(compiled, pkg, {
          enforceCollisions: getPersistCollisionEnforce(),
@@ -1362,7 +1362,7 @@ export class MaterializationService {
          buildMetadata: {
             // Optional: a lighter package surface resolves without a
             // package-level layer.
-            packageMaterialization: pkg.getMaterializationConfig?.() ?? null,
+            packageMaterialization: pkg.getMaterializationConfig(),
             context: {
                queryClass: "materialize",
                environment: environmentName,

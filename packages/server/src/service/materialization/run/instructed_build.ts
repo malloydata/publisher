@@ -327,7 +327,7 @@ export class InstructedBuild {
           * so it answers the source live instead of from rows another
           * package may have written. Absent: nothing is retired.
           */
-         tableNotOwned?: (
+         tableNotOwned: (
             environmentName: string,
             packageName: string,
             target: OwnedTableTarget,
@@ -549,7 +549,7 @@ export class InstructedBuild {
       const pkg = runPackageOf(run);
       if (!pkg) return;
       await this.seams
-         .tableNotOwned?.(pkg.environmentName, pkg.packageName, ownedTarget)
+         .tableNotOwned(pkg.environmentName, pkg.packageName, ownedTarget)
          .catch((retireErr) => {
             if (retireErr instanceof LockOrderError) throw retireErr;
             logger.warn(
@@ -1228,7 +1228,7 @@ function runPackageOf(
 ): { environmentName: string; packageName: string } | undefined {
    const environmentName =
       run.buildMetadata?.context.environment ??
-      run.environment.getEnvironmentName?.();
+      run.environment.getEnvironmentName();
    const packageName =
       run.buildMetadata?.context.package ?? run.owner?.packageName;
    return environmentName && packageName
@@ -1240,7 +1240,7 @@ function runPackageOf(
 function packageOwnerOf(run: InstructedRun): string {
    return packageOwner(
       run.buildMetadata?.context.environment ??
-         run.environment.getEnvironmentName?.() ??
+         run.environment.getEnvironmentName() ??
          "",
       run.buildMetadata?.context.package ?? run.owner?.packageName ?? "",
    );

@@ -108,10 +108,9 @@ export interface PackageMaterializationOwner {
    buildPlanPackage: BuildPlanPackage;
    /**
     * The sources callers may query, by the model that publishes them, or
-    * undefined when every source is queryable. Optional: a spec's owner need
-    * not curate.
+    * undefined when every source is queryable.
     */
-   publishedSurface?():
+   publishedSurface():
       | { modelPath: string; names: string[]; queries?: string[] }[]
       | undefined;
 }
@@ -178,9 +177,7 @@ export class PackageMaterialization {
          plan: this.plan,
          packageName: () => owner.packageName(),
          models: () => owner.models(),
-         publishedSurface: owner.publishedSurface
-            ? () => owner.publishedSurface?.()
-            : undefined,
+         publishedSurface: () => owner.publishedSurface(),
          snapshot: () => this.snapshot(),
          storageBindings: () => this.storageBindings,
          colocatedEntries: () => this.colocatedEntries,
@@ -603,7 +600,7 @@ export class PackageMaterialization {
     */
    private readonly declarationLookup = (sourceID: string): unknown => {
       for (const model of this.owner.models().values()) {
-         const def = SourceMap.of(model.getModelDef?.()).node(sourceID)?.def;
+         const def = SourceMap.of(model.getModelDef()).node(sourceID)?.def;
          if (def) return def;
       }
       return undefined;
@@ -634,7 +631,7 @@ export class PackageMaterialization {
    private persistedViewBuildIDs(): Set<string> {
       const ids = new Set<string>();
       for (const model of this.owner.models().values()) {
-         for (const b of model.persistedViewBuilds?.() ?? []) {
+         for (const b of model.persistedViewBuilds() ?? []) {
             ids.add(b.buildSourceID);
          }
       }

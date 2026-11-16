@@ -258,7 +258,7 @@ async function recomputeIntoStorage(
       return isSameCatalog(sourceConnection, destinationConnection)
          ? await withStatementUsage(
               {
-                 environment: environment.getEnvironmentName?.() ?? "",
+                 environment: environment.getEnvironmentName(),
                  connection: destinationName,
                  surface: "build",
                  package: params.packageName ?? params.incremental?.packageName,
@@ -912,7 +912,7 @@ export class StorageBuildStrategy
          // seconds are the store's, as a same-catalog build's are.
          const result = await withStatementUsage(
             {
-               environment: environment.getEnvironmentName?.() ?? "",
+               environment: environment.getEnvironmentName(),
                connection: destinationName,
                surface: "build",
                package: params.packageName ?? params.incremental?.packageName,

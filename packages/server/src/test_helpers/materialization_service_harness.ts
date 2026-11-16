@@ -181,6 +181,7 @@ export function buildEnvironmentStub(opts: {
          return destination;
       }),
       getEnvironmentPath: () => opts.environmentPath ?? "/tmp/env",
+      getEnvironmentName: () => "env",
       ...UNVERSIONED_ENVIRONMENT,
    };
 }
@@ -195,6 +196,9 @@ export const UNVERSIONED_ENVIRONMENT = {
    getLoadedVersionIds: () => [],
    peekVersion: () => undefined,
    registerVersionBuild: () => () => undefined,
+   // Nothing configured is refused, and nothing is stale.
+   publishRefusedConfiguredPackage: async () => undefined,
+   getStaleCompileErrors: () => new Map<string, unknown>(),
 };
 
 /** Point environmentStore.getEnvironment at a package with the given overrides. */
@@ -210,6 +214,14 @@ export function setPackage(
       getMalloyConnection: async () => ({}),
       // No bound manifestLocation by default, so seedFromBoundManifest no-ops.
       getPackageMetadata: () => ({}),
+      getVersionId: () => undefined,
+      getMaterializationConfig: () => null,
+      whenBuildPlanCurrent: async () => undefined,
+      isBuildPlanUnavailable: () => false,
+      // No served copy, so a chained build recomputes its upstreams.
+      chainBuildText: () => ({
+         declined: "the test double has no served copy",
+      }),
       // Binds no key check, so there is none to forget.
       forgetKeyUniqueness: () => undefined,
       ...pkgOverrides,

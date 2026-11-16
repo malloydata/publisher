@@ -134,6 +134,9 @@ export function tempBuildPlanPackages(): {
             getPackagePath: () => dir,
             getMalloyConfig: () => malloyConfig,
             getMalloyConnection: async () => duckdb,
+            getMaterializationConfig: () => null,
+            getPackageMetadata: () => ({}),
+            getVersionId: () => undefined,
             ...overrides,
          };
       },

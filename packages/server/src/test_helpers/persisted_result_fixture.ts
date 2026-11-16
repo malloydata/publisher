@@ -132,6 +132,8 @@ export async function persistedResultFixture(
       ...host,
       planSourceRollups,
       rollupGateEnforcedAtRead,
+      // No served copy, so no join branch.
+      joinRollupBasis: async () => undefined,
    });
    views.setContext(packagePath, malloyConfig);
    queries.setContext(packagePath, malloyConfig);

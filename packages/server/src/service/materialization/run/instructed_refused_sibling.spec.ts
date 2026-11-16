@@ -66,12 +66,14 @@ function harness(order: string[][]) {
    );
    const build = new InstructedBuild({
       buildOneSource: buildOneSource as never,
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const environment = {
       getApiConnection: () => {
          throw new Error("unused");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => "/tmp/env",
    } as unknown as BuildEnvironment;
    const run = () =>
