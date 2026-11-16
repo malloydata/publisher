@@ -88,10 +88,23 @@ export class RunLifecycle {
          from: current.status,
          to: next,
       });
-      return this.repository().updateMaterialization(id, {
-         status: next,
-         ...extra,
-      });
+      // Written only while the status still admits `next`: another writer
+      // may have moved it since the read.
+      const updated = await this.repository().updateMaterialization(
+         id,
+         { status: next, ...extra },
+         { fromStatuses: statusesInto(next) },
+      );
+      if (updated) return updated;
+      const now = await this.repository().getMaterializationById(id);
+      if (!now) {
+         throw new MaterializationNotFoundError(
+            `Materialization ${id} not found`,
+         );
+      }
+      throw new InvalidStateTransitionError(
+         `Cannot transition from ${now.status} to ${next}`,
+      );
    }
 
    /**
@@ -228,12 +241,25 @@ export class RunLifecycle {
                   read && Object.keys(extra).length > 0
                      ? { ...(current?.metadata ?? {}), ...extra }
                      : undefined;
-               await this.repository().updateMaterialization(id, {
-                  status: next,
-                  completedAt: new Date(),
-                  error: cancelled ? "Cancelled" : message,
-                  ...(metadata ? { metadata } : {}),
-               });
+               // Only over a status that admits it: a record that settled
+               // since the read (its manifest committed, another process
+               // stopped it) is kept, as one found settled is above.
+               const settled = await this.repository().updateMaterialization(
+                  id,
+                  {
+                     status: next,
+                     completedAt: new Date(),
+                     error: cancelled ? "Cancelled" : message,
+                     ...(metadata ? { metadata } : {}),
+                  },
+                  { fromStatuses: statusesInto(next) },
+               );
+               if (!settled) {
+                  logger.warn(
+                     "Materialization run threw after its status was recorded; keeping it",
+                     { materializationId: id, code, stack: stackFrames(err) },
+                  );
+               }
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {
                   materializationId: id,
@@ -247,6 +273,13 @@ export class RunLifecycle {
             onSettled?.();
          });
    }
+}
+
+/** The statuses `VALID_TRANSITIONS` admits a move to `next` from. */
+function statusesInto(next: MaterializationStatus): MaterializationStatus[] {
+   return (Object.keys(VALID_TRANSITIONS) as MaterializationStatus[]).filter(
+      (from) => VALID_TRANSITIONS[from].includes(next),
+   );
 }
 
 /**
