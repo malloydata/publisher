@@ -250,6 +250,14 @@ interface RunTarget {
    owned: string | undefined;
    reader: ServingReader;
    compiled: CompiledBuildPlan;
+   /**
+    * The package's runs, read once, when first asked: what the run reuses
+    * from, the earlier run whose uniqueness passes it relies on, and whose
+    * records name a table. Read at the run's start, before it writes
+    * anything; what changes later is the reads that stay fresh
+    * (claims, commit, rebinds).
+    */
+   runs: () => Promise<Materialization[]>;
 }
 
 /** A run's instructions, and what deriving them decided. */
@@ -1119,6 +1127,13 @@ export class MaterializationService {
                `\nFix the files and reload the package, then run again.`,
          );
       }
+      let listed: Promise<Materialization[]> | undefined;
+      const runs = () =>
+         (listed ??= (async () =>
+            (await this.repository.listMaterializations(
+               environmentId,
+               packageName,
+            )) ?? [])());
       return {
          environmentId,
          environment,
@@ -1127,6 +1142,7 @@ export class MaterializationService {
          owned,
          reader,
          compiled,
+         runs,
       };
    }
 
@@ -1173,6 +1189,7 @@ export class MaterializationService {
                packageName,
                id,
                reader,
+               target.runs,
             );
          }
       } else {
@@ -1187,6 +1204,7 @@ export class MaterializationService {
                packageName,
                id,
                reader,
+               await target.runs(),
             );
          let recheck: Record<string, BuildInstruction>;
          ({
@@ -1367,7 +1385,7 @@ export class MaterializationService {
                  const prior = opts.forceRefresh
                     ? undefined
                     : await this.priorUniquenessMetadata(
-                         environmentId,
+                         target.runs,
                          packageName,
                          id,
                       );
@@ -1625,18 +1643,13 @@ export class MaterializationService {
     * that overlapped, an unreadable listing), relies on nothing.
     */
    private async priorUniquenessMetadata(
-      environmentId: string,
+      packageRuns: RunTarget["runs"],
       packageName: string,
       excludeId: string,
    ): Promise<Record<string, unknown> | undefined> {
       let runs: Materialization[];
       try {
-         runs = (
-            (await this.repository.listMaterializations(
-               environmentId,
-               packageName,
-            )) ?? []
-         ).filter((m) => m.id !== excludeId);
+         runs = (await packageRuns()).filter((m) => m.id !== excludeId);
       } catch (err) {
          logger.warn(
             "Could not list earlier runs; every inline uniqueness check runs",

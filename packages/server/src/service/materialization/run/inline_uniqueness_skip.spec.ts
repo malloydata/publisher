@@ -511,12 +511,16 @@ describe("which run's passes an auto-run relies on", () => {
       const prior = await (
          ctx.service as unknown as {
             priorUniquenessMetadata(
-               env: string,
+               runs: () => Promise<Materialization[]>,
                pkg: string,
                exclude: string,
             ): Promise<Record<string, unknown> | undefined>;
          }
-      ).priorUniquenessMetadata("env-1", "pkg", "now");
+      ).priorUniquenessMetadata(
+         () => ctx.repository.listMaterializations("env-1", "pkg"),
+         "pkg",
+         "now",
+      );
       return prior ? uniquenessPassesIn(prior) : undefined;
    }
 

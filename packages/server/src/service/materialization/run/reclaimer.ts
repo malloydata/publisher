@@ -314,6 +314,45 @@ async function dropStorageTable(
    }
 }
 
+/**
+ * The `name=` views an earlier release recorded making, on `runs` and on every
+ * other run `listed` (a run that carried a table forward did not record its
+ * view again), for the drop to clean up (leftover_name_views.ts); undefined
+ * when none did.
+ */
+function recordedNameViews(
+   listed: Materialization[],
+   runs: Materialization[],
+): RecordedNameView[] | undefined {
+   const ids = new Set(runs.map((m) => m.id));
+   const recorded = [...runs, ...listed.filter((m) => !ids.has(m.id))].flatMap(
+      (m) => nameViewsIn(m.metadata),
+   );
+   return recorded.length > 0 ? recorded : undefined;
+}
+
+/**
+ * The destination-and-name keys of every table a MANIFEST_FILE_READY run
+ * references, among the `listed` runs `include` admits.
+ */
+function tablesStillReferenced(
+   listed: Materialization[],
+   include: (other: Materialization) => boolean,
+): Set<string> {
+   const stillReferenced = new Set<string>();
+   for (const other of listed) {
+      if (!include(other)) continue;
+      if (other.status !== "MANIFEST_FILE_READY") continue;
+      for (const e of Object.values(other.manifest?.entries ?? {})) {
+         const dest = e.storageDestinationName ?? e.connectionName;
+         if (dest && e.physicalTableName) {
+            stillReferenced.add(tableKey(dest, e.physicalTableName));
+         }
+      }
+   }
+   return stillReferenced;
+}
+
 /** A drop of a run's manifest entries; see {@link Reclaimer.dropManifestEntries}. */
 type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
@@ -373,9 +412,11 @@ export class Reclaimer {
    ): Promise<void> {
       if (builtThisRun.length === 0) return;
       try {
-         const stillReferenced = await this.tablesStillReferenced(
-            owner.environmentId,
-            owner.packageName,
+         const stillReferenced = tablesStillReferenced(
+            (await this.repository.listMaterializations(
+               owner.environmentId,
+               owner.packageName,
+            )) ?? [],
             () => true,
          );
          for (const entry of builtThisRun) {
@@ -429,73 +470,21 @@ export class Reclaimer {
       // version built it. `m` is still in the repo (deleted after this sweep),
       // so it is excluded by id.
       const environmentId = await this.resolveEnvironmentId(environmentName);
-      const stillReferenced = await this.tablesStillReferenced(
-         environmentId,
-         packageName,
-         (other) => other.id !== m.id,
-      );
+      const listed =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+         )) ?? [];
       await this.deps.dropManifestEntries(
          environment,
          environmentName,
          packageName,
          m.id,
          Object.values(entries),
-         stillReferenced,
+         tablesStillReferenced(listed, (other) => other.id !== m.id),
          await this.connectionResolverFor(environment, packageName, m.version),
-         await this.recordedNameViews(environmentId, packageName, [m]),
+         recordedNameViews(listed, [m]),
       );
-   }
-
-   /**
-    * The `name=` views an earlier release recorded making, on `runs` and on
-    * every other run of the package (a run that carried a table forward did
-    * not record its view again), for the drop to clean up
-    * (leftover_name_views.ts); undefined when none did.
-    */
-   private async recordedNameViews(
-      environmentId: string,
-      packageName: string,
-      runs: Materialization[],
-   ): Promise<RecordedNameView[] | undefined> {
-      const listed =
-         (await this.repository.listMaterializations(
-            environmentId,
-            packageName,
-         )) ?? [];
-      const ids = new Set(runs.map((m) => m.id));
-      const recorded = [
-         ...runs,
-         ...listed.filter((m) => !ids.has(m.id)),
-      ].flatMap((m) => nameViewsIn(m.metadata));
-      return recorded.length > 0 ? recorded : undefined;
-   }
-
-   /**
-    * The destination-and-name keys of every table a MANIFEST_FILE_READY run of
-    * the package references, among the runs `include` admits.
-    */
-   private async tablesStillReferenced(
-      environmentId: string,
-      packageName: string,
-      include: (other: Materialization) => boolean,
-   ): Promise<Set<string>> {
-      const stillReferenced = new Set<string>();
-      const others =
-         (await this.repository.listMaterializations(
-            environmentId,
-            packageName,
-         )) ?? [];
-      for (const other of others) {
-         if (!include(other)) continue;
-         if (other.status !== "MANIFEST_FILE_READY") continue;
-         for (const e of Object.values(other.manifest?.entries ?? {})) {
-            const dest = e.storageDestinationName ?? e.connectionName;
-            if (dest && e.physicalTableName) {
-               stillReferenced.add(tableKey(dest, e.physicalTableName));
-            }
-         }
-      }
-      return stillReferenced;
    }
 
    /**
@@ -1112,25 +1101,24 @@ export class Reclaimer {
       versionId: string,
       cause: "archived" | "deleted",
    ): Promise<void> {
-      const runs = (
-         await this.repository.listMaterializations(
+      // Read once: the version's lock is held, so none of its runs changes
+      // meanwhile, and the references are read with the runs they exclude.
+      const listed =
+         (await this.repository.listMaterializations(
             environmentId,
             packageName,
-            {
-               version: versionId,
-            },
-         )
-      ).filter(
+         )) ?? [];
+      const runs = listed.filter(
          (m) =>
+            m.version === versionId &&
             isVersionOwnedRun(m) &&
             m.metadata?.mode === "auto" &&
             !isActiveRun(m.status),
       );
       if (runs.length === 0) return;
       const reclaimed = new Set(runs.map((m) => m.id));
-      const stillReferenced = await this.tablesStillReferenced(
-         environmentId,
-         packageName,
+      const stillReferenced = tablesStillReferenced(
+         listed,
          (other) => !reclaimed.has(other.id),
       );
       // Never through getPackage: the version is out of service, and its
@@ -1140,11 +1128,7 @@ export class Reclaimer {
          packageName,
          versionId,
       );
-      const nameViews = await this.recordedNameViews(
-         environmentId,
-         packageName,
-         runs,
-      );
+      const nameViews = recordedNameViews(listed, runs);
       for (const m of runs) {
          const owed = await this.deps.dropManifestEntries(
             environment,

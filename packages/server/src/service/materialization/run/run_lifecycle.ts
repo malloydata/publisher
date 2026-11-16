@@ -66,8 +66,11 @@ export class RunLifecycle {
       id: string,
       next: MaterializationStatus,
       extra?: Omit<MaterializationUpdate, "status">,
+      // The record as the caller has just read it, so it is not read again.
+      read?: Materialization,
    ): Promise<Materialization> {
-      const current = await this.repository().getMaterializationById(id);
+      const current =
+         read ?? (await this.repository().getMaterializationById(id));
       if (!current) {
          throw new MaterializationNotFoundError(
             `Materialization ${id} not found`,

@@ -19,7 +19,10 @@ import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
 import { logger } from "../../../logger";
 import { recordAutoLoadOutcome } from "../../../materialization_metrics";
-import { ResourceRepository } from "../../../storage/DatabaseInterface";
+import {
+   Materialization,
+   ResourceRepository,
+} from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
 import { parseEnvironmentName } from "../../identity";
 import { resolveEnvironmentId } from "../../resolve_environment";
@@ -181,9 +184,11 @@ export class ManifestCommitter {
          ...(Object.keys(failures).length > 0 ? { failures } : {}),
          strict: false,
       };
-      await this.deps.lifecycle.transition(id, "MANIFEST_ROWS_READY", {
-         manifest,
-      });
+      const rowsReady = await this.deps.lifecycle.transition(
+         id,
+         "MANIFEST_ROWS_READY",
+         { manifest },
+      );
       // The first call writes; every later one (a late finish after a timeout,
       // the catch below, the trailing call) awaits that same write, so a write
       // that throws is rethrown to each of them and the run settles FAILED.
@@ -201,28 +206,34 @@ export class ManifestCommitter {
          // Keep the superseded-table marks another run left on this record
          // while it was MANIFEST_ROWS_READY (markSuperseded, markHeldElsewhere),
          // read and written under the same table lock they are made under.
+         // The one read of the record per finish, and under the lock: the
+         // marks may have changed since MANIFEST_ROWS_READY.
          const write = async () => {
             const current = await this.repository.getMaterializationById(id);
             const superseded = current?.metadata?.[SUPERSEDED_TABLES_KEY];
-            await this.deps.lifecycle.transition(id, "MANIFEST_FILE_READY", {
-               completedAt: new Date(),
-               manifest,
-               metadata: {
-                  ...metadata,
-                  ...(superseded !== undefined
-                     ? { [SUPERSEDED_TABLES_KEY]: superseded }
+            await this.deps.lifecycle.transition(
+               id,
+               "MANIFEST_FILE_READY",
+               {
+                  completedAt: new Date(),
+                  manifest,
+                  metadata: {
+                     ...metadata,
+                     ...(superseded !== undefined
+                        ? { [SUPERSEDED_TABLES_KEY]: superseded }
+                        : {}),
+                     ...served.metadata,
+                  },
+                  ...(served.error !== undefined
+                     ? { error: served.error }
                      : {}),
-                  ...served.metadata,
                },
-               ...(served.error !== undefined ? { error: served.error } : {}),
-            });
+               current ?? undefined,
+            );
          };
-         const record = this.deps.tableLock
-            ? await this.repository.getMaterializationById(id)
-            : undefined;
-         if (this.deps.tableLock && record) {
+         if (this.deps.tableLock && rowsReady) {
             await this.deps
-               .tableLock(record.environmentId, record.packageName)
+               .tableLock(rowsReady.environmentId, rowsReady.packageName)
                .runExclusive(write);
          } else {
             await write();
@@ -362,13 +373,17 @@ export class ManifestCommitter {
       packageName: string,
       excludeId: string,
       reader: ServingReader = {},
+      // The package's runs, when the caller has read them already.
+      runs?: Materialization[],
    ): Promise<Record<string, ManifestEntry>> {
-      const list =
-         (await this.repository.listMaterializations(
-            environmentId,
-            packageName,
-            reader.owned !== undefined ? { version: reader.owned } : undefined,
-         )) ?? [];
+      const owned = reader.owned;
+      const list = runs
+         ? runs.filter((m) => owned === undefined || m.version === owned)
+         : ((await this.repository.listMaterializations(
+              environmentId,
+              packageName,
+              owned !== undefined ? { version: owned } : undefined,
+           )) ?? []);
       return storedServingEntries(list, reader, excludeId);
    }
 
@@ -404,6 +419,8 @@ export class ManifestCommitter {
       excludeId: string,
       // Whose runs the references resolve against (see ServingReader).
       reader: ServingReader = {},
+      // The package's runs, read once for the run (see mostRecentEntries).
+      runs?: () => Promise<Materialization[]>,
    ): Promise<void> {
       let cached: Record<string, ManifestEntry>;
       try {
@@ -412,6 +429,7 @@ export class ManifestCommitter {
             packageName,
             excludeId,
             reader,
+            await runs?.(),
          );
       } catch (err) {
          logger.warn(
