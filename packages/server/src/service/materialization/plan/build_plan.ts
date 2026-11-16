@@ -92,6 +92,7 @@ import {
    materializeKindOf,
    splitSourceID,
    type MaterializePlan,
+   type PersistedQueryPlan,
    type PersistSourceGateClassification,
    type PersistSourceGateOutcome,
    type TablePlan,
@@ -683,6 +684,53 @@ function sourceIDFileURL(sourceID: string): string | undefined {
 }
 
 /**
+ * A companion compile's refusals, as findings, and the sources it left out,
+ * added to `parts`: the start every generated companion shares.
+ */
+function addCompanionOutcome(
+   parts: BuildPlanParts,
+   findings: readonly PackageAnnotationFinding[],
+   omitted: readonly Omission[] | undefined,
+): void {
+   for (const finding of findings) addAnnotationFinding(parts, finding);
+   parts.omittedSources.push(...(omitted ?? []));
+}
+
+/**
+ * `all` less every target whose build reads a given, each of whose sources
+ * is handed to `refuse`: a table would hold one given value's rows, served
+ * to every caller.
+ */
+function withoutGivenReadingTargets<
+   T extends {
+      connections: {
+         targets: { readsGivens?: boolean; sources: PersistSource[] }[];
+      }[];
+   },
+>(all: T, refuse: (source: PersistSource) => void): T {
+   for (const target of all.connections.flatMap((c) => c.targets)) {
+      if (!target.readsGivens) continue;
+      for (const source of target.sources) refuse(source);
+   }
+   return {
+      ...all,
+      connections: all.connections.map((c) => ({
+         ...c,
+         targets: c.targets.filter((t) => !t.readsGivens),
+      })),
+   };
+}
+
+/** The gate classification's deps over `model`'s givens, for `modelPath`. */
+function gateDepsFor(
+   model: MalloyModel,
+   modelPath: string,
+): GateClassificationDeps {
+   const givens = Array.from(model.givens.values()) as unknown as MalloyGiven[];
+   return createGateClassificationDeps(givens.map(malloyGivenToApi), modelPath);
+}
+
+/**
  * Add the generated `#(materialize)` build sources of one author model to
  * `parts`, as the rollup companion's are added: whole builds (so a generated
  * source orders after a persisted source it reads), and only the generated
@@ -711,13 +759,11 @@ async function collectGeneratedMaterialize(
          probe: args.materializer,
       },
    );
-   for (const refusal of refused) {
-      addAnnotationFinding(
-         parts,
-         materializeRefusalFinding(refusal, args.modelPath),
-      );
-   }
-   parts.omittedSources.push(...(omitted ?? []));
+   addCompanionOutcome(
+      parts,
+      refused.map((r) => materializeRefusalFinding(r, args.modelPath)),
+      omitted,
+   );
    if (!generated) return;
    for (const [key, compile] of generated.checkCompilers) {
       args.keyCheckCompilers?.set(key, compile);
@@ -760,13 +806,7 @@ async function collectGeneratedMaterialize(
    // The gate is the author's, on the author's source, reading the author's
    // givens: classified there. The companion imports the source but declares
    // none of its givens, so a gate reading one never lifts in it.
-   const givens = Array.from(
-      args.malloyModel.givens.values(),
-   ) as unknown as MalloyGiven[];
-   const deps = createGateClassificationDeps(
-      givens.map(malloyGivenToApi),
-      args.modelPath,
-   );
+   const deps = gateDepsFor(args.malloyModel, args.modelPath);
    for (const [generatedSource, plan] of generatedPlans) {
       const source = presentAs(generatedSource, {
          name: plan.sourceName,
@@ -836,23 +876,20 @@ async function collectGeneratedRollups(
 ): Promise<void> {
    const { generated, refused, omitted } =
       await tryCompileRollupCompanion(args);
-   for (const refusal of refused) {
-      addAnnotationFinding(
-         parts,
-         rollupRefusalFinding(refusal, args.modelPath),
-      );
-   }
-   parts.omittedSources.push(...(omitted ?? []));
+   addCompanionOutcome(
+      parts,
+      refused.map((r) => rollupRefusalFinding(r, args.modelPath)),
+      omitted,
+   );
    if (!generated) return;
-   const all = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(
       generated.plans.map((p) => [p.rollupSourceName, p]),
    );
-   for (const target of all.connections.flatMap((c) => c.targets)) {
-      if (!target.readsGivens) continue;
-      for (const source of target.sources) {
+   const targets = withoutGivenReadingTargets(
+      await generated.runtime.getBuildTargets(generated.model),
+      (source) => {
          const plan = planByName.get(source.name);
-         if (!plan) continue;
+         if (!plan) return;
          addAnnotationFinding(
             parts,
             rollupRefusalFinding(
@@ -869,15 +906,8 @@ async function collectGeneratedRollups(
                args.modelPath,
             ),
          );
-      }
-   }
-   const targets = {
-      ...all,
-      connections: all.connections.map((c) => ({
-         ...c,
-         targets: c.targets.filter((t) => !t.readsGivens),
-      })),
-   };
+      },
+   );
    const kept: { source: PersistSource; plan: RollupPlan }[] = [];
    for (const source of plannedSources(targets)) {
       const plan = planByName.get(source.name);
@@ -885,13 +915,7 @@ async function collectGeneratedRollups(
    }
    parts.builds.push(...sourceBuildsOf(targets));
    if (kept.length === 0) return;
-   const givens = Array.from(
-      generated.model.givens.values(),
-   ) as unknown as MalloyGiven[];
-   const deps = createGateClassificationDeps(
-      givens.map(malloyGivenToApi),
-      `${args.modelPath}#preaggregate`,
-   );
+   const deps = gateDepsFor(generated.model, `${args.modelPath}#preaggregate`);
    for (const { source, plan } of kept) {
       parts.tables[source.sourceID] = {
          kind: "rollup",
@@ -939,21 +963,17 @@ async function collectGeneratedPersistedViews(
          materializer: args.materializer,
          getRuntime: args.getRuntime,
       });
-   for (const refusal of refused) {
-      addAnnotationFinding(
-         parts,
-         persistedViewRefusalFinding(refusal, args.modelPath),
-      );
-   }
-   for (const refusal of refusedQueries) {
-      addAnnotationFinding(
-         parts,
-         persistedQueryRefusalFinding(refusal, args.modelPath),
-      );
-   }
-   parts.omittedSources.push(...(omitted ?? []));
+   addCompanionOutcome(
+      parts,
+      [
+         ...refused.map((r) => persistedViewRefusalFinding(r, args.modelPath)),
+         ...refusedQueries.map((r) =>
+            persistedQueryRefusalFinding(r, args.modelPath),
+         ),
+      ],
+      omitted,
+   );
    if (!generated) return;
-   const all = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(
       generated.plans.map((p) => [p.buildSourceName, p]),
    );
@@ -962,9 +982,9 @@ async function collectGeneratedPersistedViews(
    );
    const readsAGiven =
       "its result reads a given, so it differs per caller and a table holds one caller's result";
-   for (const target of all.connections.flatMap((c) => c.targets)) {
-      if (!target.readsGivens) continue;
-      for (const source of target.sources) {
+   const targets = withoutGivenReadingTargets(
+      await generated.runtime.getBuildTargets(generated.model),
+      (source) => {
          const plan = planByName.get(source.name);
          const query = queryByID.get(source.sourceID);
          if (plan) {
@@ -986,73 +1006,68 @@ async function collectGeneratedPersistedViews(
                ),
             );
          }
-      }
-   }
-   const targets = {
-      ...all,
-      connections: all.connections.map((c) => ({
-         ...c,
-         targets: c.targets.filter((t) => !t.readsGivens),
-      })),
-   };
-   const givens = Array.from(
-      args.malloyModel.givens.values(),
-   ) as unknown as MalloyGiven[];
-   const deps = createGateClassificationDeps(
-      givens.map(malloyGivenToApi),
-      args.modelPath,
+      },
    );
+   const ctx = {
+      authorDef,
+      materializer: args.materializer,
+      deps: gateDepsFor(args.malloyModel, args.modelPath),
+      modelPath: args.modelPath,
+   };
    let kept = 0;
    for (const source of plannedSources(targets)) {
       const query = queryByID.get(source.sourceID);
-      if (query) {
-         kept++;
-         // A query's rows are its run target's: the gate is the run target's,
-         // read on the author's model (by sourceID), or an inline run
-         // target's own, which the planner admits only when it has none.
-         const runTarget =
-            query.sourceID !== undefined
-               ? Object.values(authorDef.contents ?? {}).find(
-                    (object): object is SourceDef =>
-                       isSourceDef(object) &&
-                       object.sourceID === query.sourceID,
-                 )
-               : inlineRunTarget(authorDef, query.queryName);
-         // A persisted query's table is a view's, built from the same
-         // companion and read by an exact call.
-         parts.tables[source.sourceID] = {
-            kind: "view",
-            ...plannedFacts(source, args.modelPath),
-            gate: runTarget
-               ? await classifyPersistSourceGate(
-                    {
-                       _sourceDef: runTarget,
-                       sourceID: query.sourceID ?? source.sourceID,
-                    },
-                    authorDef,
-                    args.materializer,
-                    deps,
-                    args.modelPath,
-                 )
-               : { classification: "rejected", attributed: false },
-         };
-         continue;
-      }
       const plan = planByName.get(source.name);
-      if (!plan) continue;
+      if (!query && !plan) continue;
       kept++;
+      // A persisted query's table is a view's, built from the same
+      // companion and read by an exact call.
       parts.tables[source.sourceID] = {
          kind: "view",
          ...plannedFacts(source, args.modelPath),
-         // The view's rows are its source's: its gate is the source's.
-         gate: await authorSourceGate(plan.sourceID, authorDef, {
-            materializer: args.materializer,
-            deps,
-            modelPath: args.modelPath,
-         }),
+         gate: query
+            ? await persistedQueryGate(source, query, ctx)
+            : // The view's rows are its source's: its gate is the source's.
+              await authorSourceGate(plan!.sourceID, authorDef, ctx),
       };
    }
    if (kept > 0) parts.builds.push(...sourceBuildsOf(targets));
+}
+
+/**
+ * A persisted query's gate. Its rows are its run target's: the gate is the
+ * run target's, read on the author's model (by sourceID), or an inline run
+ * target's own, which the planner admits only when it has none.
+ */
+async function persistedQueryGate(
+   source: PersistSource,
+   query: PersistedQueryPlan,
+   ctx: {
+      authorDef: ModelDef;
+      materializer: ModelMaterializer;
+      deps: GateClassificationDeps;
+      modelPath: string;
+   },
+): Promise<PersistSourceGateOutcome> {
+   const runTarget =
+      query.sourceID !== undefined
+         ? Object.values(ctx.authorDef.contents ?? {}).find(
+              (object): object is SourceDef =>
+                 isSourceDef(object) && object.sourceID === query.sourceID,
+           )
+         : inlineRunTarget(ctx.authorDef, query.queryName);
+   return runTarget
+      ? await classifyPersistSourceGate(
+           {
+              _sourceDef: runTarget,
+              sourceID: query.sourceID ?? source.sourceID,
+           },
+           ctx.authorDef,
+           ctx.materializer,
+           ctx.deps,
+           ctx.modelPath,
+        )
+      : { classification: "rejected", attributed: false };
 }
 
 /**
@@ -1429,18 +1444,10 @@ async function planV1PersistSources(
       } catch {
          // No findings for a source whose annotations cannot be read.
       }
-      if (!classificationCtx) {
-         const givens = Array.from(
-            malloyModel.givens.values(),
-         ) as unknown as MalloyGiven[];
-         classificationCtx = {
-            modelDef: modelDefOf(malloyModel),
-            deps: createGateClassificationDeps(
-               givens.map(malloyGivenToApi),
-               modelPath,
-            ),
-         };
-      }
+      classificationCtx ??= {
+         modelDef: modelDefOf(malloyModel),
+         deps: gateDepsFor(malloyModel, modelPath),
+      };
       parts.tables[sourceID] = {
          kind: "persist",
          // The DECLARING model, never this one: a model that imports the

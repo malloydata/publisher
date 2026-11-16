@@ -39,6 +39,8 @@
  * both be served.
  */
 
+import * as path from "path";
+import { fileURLToPath } from "url";
 import {
    InMemoryURLReader,
    Runtime,
@@ -259,4 +261,23 @@ export function companionOmissions(
    return "sourceIDs" in planned
       ? omittedByID(planned.sourceIDs, reason)
       : omittedFromFile(planned.file, planned.names, reason);
+}
+
+/**
+ * Whether a declaring file is `modelFile`, the model a companion plans: a
+ * declaration is planned only in the model that declares it, however many
+ * models import it. A declaring URL that is not a local file (a host,
+ * another scheme) reads as `otherScheme`.
+ */
+export function declaredInModel(
+   modelFile: string,
+   otherScheme: boolean,
+): (declaringURL: string) => boolean {
+   return (declaringURL) => {
+      try {
+         return path.resolve(fileURLToPath(declaringURL)) === modelFile;
+      } catch {
+         return otherScheme;
+      }
+   };
 }
