@@ -140,7 +140,11 @@ import {
    type RollupMeasure,
    type RollupVariantPlan,
 } from "../domain/table_plans";
-import { rollupBaseAlias, rollupCompanionURLOf } from "../text/read_text";
+import {
+   ROLLUP_COMPANION_SUFFIX,
+   rollupBaseAlias,
+   rollupCompanionURLOf,
+} from "../text/read_text";
 
 export type { ParentKeyCheck, RollupKeyCheck };
 import type { SourceMap, SourceNode } from "../text/source_map";
@@ -265,7 +269,7 @@ export function measureRefusalKey(
       ? `[${[...table.grain].sort().join(",")}${table.storage !== undefined ? ` in ${table.storage}` : ""}]`
       : "";
    return refusalKey(
-      `${name}${at}@${rollupCompanionURLOf(url)?.href ?? url}`,
+      `${name}${at}@${rollupCompanionURLOf(url)?.href ?? `${url}${ROLLUP_COMPANION_SUFFIX}`}`,
       name,
       reason,
       "preaggregate",

@@ -9,6 +9,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import * as path from "path";
+import { pathToFileURL } from "url";
 import type { PackageAnnotationFinding } from "../../annotation_reader";
 import type { BuildPlan } from "../domain/types";
 import { persistRefusalWarnings } from "../package_warnings";
@@ -16,7 +18,11 @@ import { projectRefusals } from "./build_plan";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 import { measureRefusalKey } from "./rollup_plan";
 
-const URL = "file:///pkg/m.malloy";
+/** The model file's URL as a package load makes it, on this platform. */
+const MODEL_FILE = path.resolve("/pkg/m.malloy");
+const URL = pathToFileURL(MODEL_FILE).href;
+/** Its rollup companion's, as the rollup planner compiles it. */
+const COMPANION = pathToFileURL(`${MODEL_FILE}.preaggregate.malloy`).href;
 
 function finding(
    o: Partial<PackageAnnotationFinding> = {},
@@ -43,11 +49,37 @@ describe("measureRefusalKey", () => {
       expect(
          measureRefusalKey(`orders@${URL}`, "orders", "total", "time_zone"),
       ).toEqual({
-         sourceID: `orders.total@${URL}.preaggregate.malloy`,
+         sourceID: `orders.total@${COMPANION}`,
          name: "orders.total",
          tier: "preaggregate",
          reason: "time_zone",
       });
+   });
+
+   it("names the companion of a Windows path as the planner does", () => {
+      const win = (p: string) => pathToFileURL(p, { windows: true }).href;
+      expect(
+         measureRefusalKey(
+            `orders@${win("D:\\pkg\\m.malloy")}`,
+            "orders",
+            "total",
+            "time_zone",
+         ).sourceID,
+      ).toBe(`orders.total@${win("D:\\pkg\\m.malloy.preaggregate.malloy")}`);
+   });
+
+   it("keys two declarations on one measure apart, by grain and destination", () => {
+      const key = (grain: string[], storage?: string) =>
+         measureRefusalKey(`orders@${URL}`, "orders", "total", "time_zone", {
+            grain,
+            ...(storage !== undefined ? { storage } : {}),
+         }).sourceID;
+      expect(key(["region", "day"])).toBe(
+         `orders.total[day,region]@${COMPANION}`,
+      );
+      expect(key(["day"], "lake")).toBe(
+         `orders.total[day in lake]@${COMPANION}`,
+      );
    });
 
    it("keys a refusal of every rollup on a base by the base alone", () => {
