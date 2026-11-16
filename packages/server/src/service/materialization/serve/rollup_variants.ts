@@ -1552,7 +1552,12 @@ export class RollupVariantServe {
       const modelFile = path.join(packagePath, modelPath);
       const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
       const reads = table.binding
-         ? storedRollupReads(plan, table.binding, this.host.modelDef())
+         ? storedRollupReads(
+              plan,
+              table.binding,
+              this.host.modelDef(),
+              declaredRollupColumns(this.host.catalog(), table.binding),
+           )
          : undefined;
       if (reads && "refusal" in reads) return { refusal: reads.refusal };
       const destinations = this.host.serveDestinationConfig();
@@ -2103,9 +2108,10 @@ interface StoredRollupReads {
  * - a grain column whose dimension live types `timestamptz`, stored with its
  *   zone, is declared `timestamptz` (a `type:` would declare the stored
  *   type's `timestamp`);
- * - a column stored as another type than live gives it (a grain dimension,
- *   or a `min` or `max` partial over a field) is read through a faithful
- *   cast ({@link storedColumnReadPlan}), or is the refusal;
+ * - a column stored as another type than its build source declares (a grain
+ *   dimension or any partial, whatever expression it aggregates) is read
+ *   through a faithful cast ({@link storedColumnReadPlan}), or is the
+ *   refusal;
  * - a big integer (a grain dimension, or the partial of a measure live types
  *   as a `bigint` number) is read through its native type
  *   ({@link storedColumnReadPlan}): a `type:` declares it only as a `number`,
@@ -2117,6 +2123,11 @@ function storedRollupReads(
    plan: RollupVariantPlan,
    binding: Pick<Binding, "schema">,
    modelDef: unknown,
+   /**
+    * The columns the rollup's build source declares, by name: the type each
+    * stored column must serve as (`boundTableTypeFindings` reads the same).
+    */
+   declared: ReadonlyMap<string, string>,
 ): StoredRollupReads | { refusal: string } {
    const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
       | {
@@ -2179,7 +2190,7 @@ function storedRollupReads(
       const refusal = read(
          { ...g, kind: "dimension" },
          g.name,
-         typeAt(base?.fields, g.name.split(".")) ?? "",
+         declared.get(g.name) ?? "",
       );
       if (refusal) return { refusal };
    }
@@ -2190,7 +2201,7 @@ function storedRollupReads(
             read(
                { name: p.column, notes: [], kind: "measure" },
                m.name,
-               minMaxLiveType(p, m, base?.fields) ?? "",
+               declared.get(p.column) ?? "",
             );
          if (refusal) return { refusal };
       }
@@ -2199,61 +2210,28 @@ function storedRollupReads(
 }
 
 /**
- * The type live gives the field at `path` of `fields`, through each join's
- * own fields; undefined when it is not a field there.
+ * A `storage=` rollup's declared columns: its build source's, from the
+ * package's plan, matched by the table's content address (and its sourceID
+ * where several share it). Empty when the plan is not known: no column is
+ * then checked but a big integer's, as before.
  */
-function typeAt(
-   fields: readonly unknown[] | undefined,
-   path: readonly string[],
-): string | undefined {
-   const [head, ...rest] = path;
-   const f = (fields ?? []).find(
-      (x) =>
-         String(
-            (x as { as?: unknown; name?: unknown }).as ??
-               (x as { name?: unknown }).name,
-         ) === head,
-   ) as { type?: unknown; fields?: unknown[] } | undefined;
-   if (!f) return undefined;
-   if (rest.length > 0) return typeAt(f.fields, rest);
-   return typeof f.type === "string" ? f.type : undefined;
-}
-
-/**
- * The type live gives a `min` or `max` partial: its argument's, when the
- * argument is a field (`amount.max()`, `max(carriers.fee)`); else, for a
- * measure of that one partial, the measure's own type; else undefined (an
- * expression in a measure of several partials, which the merge's compile
- * checks).
- */
-function minMaxLiveType(
-   partial: RollupVariantPlan["rollupMeasures"][number]["partials"][number],
-   measure: RollupVariantPlan["rollupMeasures"][number],
-   fields: readonly unknown[] | undefined,
-): string | undefined {
-   if (partial.leaf.aggregate !== "min" && partial.leaf.aggregate !== "max") {
-      return undefined;
-   }
-   let expr = partial.leaf.expr;
-   while (expr.kind === "filtered" || expr.kind === "paren") expr = expr.expr;
-   const path =
-      expr.kind === "method" && expr.args.length === 0
-         ? expr.path
-         : expr.kind === "call" &&
-             expr.args.length === 1 &&
-             expr.args[0].kind === "path"
-           ? expr.args[0].path
-           : undefined;
-   if (path) return typeAt(fields, path);
-   return measure.partials.length === 1
-      ? typeAt(fields, [measure.name])
-      : undefined;
+function declaredRollupColumns(
+   catalog: MaterializedTableCatalog | undefined,
+   binding: Pick<Binding, "virtualHandle" | "sourceIDs">,
+): ReadonlyMap<string, string> {
+   const atAddress = [...(catalog?.planned.values() ?? [])].filter(
+      (t) => t.sourceEntityId === binding.virtualHandle,
+   );
+   const table =
+      atAddress.find((t) => binding.sourceIDs?.includes(t.sourceID)) ??
+      atAddress[0];
+   return new Map((table?.columns ?? []).map((c) => [c.name, c.type]));
 }
 
 /**
  * Why a `sum` or `count` partial stored as a non-numeric type cannot merge,
  * or undefined. A `min` or `max` partial takes its argument's type, which
- * {@link storedRollupReads} checks against live's ({@link minMaxLiveType}).
+ * {@link storedRollupReads} checks against the build source's declared one.
  */
 function partialTypeRefusal(
    partial: RollupVariantPlan["rollupMeasures"][number]["partials"][number],

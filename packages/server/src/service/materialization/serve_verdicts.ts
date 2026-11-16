@@ -173,6 +173,9 @@ export class ServeVerdicts {
             origin:
                source.origin === "preaggregate" ? "preaggregate" : "persist",
             ...(source.modelPath ? { modelPath: source.modelPath } : {}),
+            ...(source.origin === "preaggregate"
+               ? { columns: declaredColumnsOfPlan(source.columns) }
+               : {}),
          });
       }
       const catalog: MaterializedTableCatalog = {
@@ -741,4 +744,13 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
       ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}`
       : "off";
    return { on, pending, ids, signature };
+}
+
+/** A plan source's wire columns with both a name and a type. */
+function declaredColumnsOfPlan(
+   columns: readonly { name?: string; type?: string }[] | undefined,
+): { name: string; type: string }[] {
+   return (columns ?? []).flatMap((c) =>
+      c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+   );
 }

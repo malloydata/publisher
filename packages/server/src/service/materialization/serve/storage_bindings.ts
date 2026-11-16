@@ -31,6 +31,7 @@ import {
    type StoredColumnTypeMismatch,
 } from "../stored_column_types";
 import type { BuildPlan } from "../domain/types";
+import type { MaterializePlan } from "../domain/table_plans";
 
 /** The warning code a stored column type mismatch is logged and reported with. */
 export { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
@@ -74,6 +75,19 @@ export interface BoundTableTypeFinding {
 export function boundTableTypeFindings(
    bindings: readonly Binding[],
    plan: BuildPlan | null,
+   readers: {
+      /**
+       * The query time zone the reader of a table's source reads it in (a
+       * date cast from an instant is not faithful under one); undefined when
+       * it reads in none or the source is not found.
+       */
+      queryTimezone?: (
+         sourceID: string,
+         source: NonNullable<BuildPlan["sources"]>[string],
+      ) => string | undefined;
+      /** The `#(materialize)` plans, by the author's sourceID. */
+      materializePlans?: Readonly<Record<string, MaterializePlan>>;
+   } = {},
 ): BoundTableTypeFinding[] {
    const sources = Object.entries(plan?.sources ?? {});
    const findings: BoundTableTypeFinding[] = [];
@@ -92,7 +106,20 @@ export function boundTableTypeFindings(
       );
       const mismatches = storedColumnTypeMismatches(binding.schema, declared);
       if (mismatches.length === 0) continue;
-      const handled = handlingOf(mismatches);
+      // A joined field stored in a `#(materialize)` table's record (an
+      // inlined join_one, a pair table) has no cast inside the record, so
+      // the served copy leaves its whole source live.
+      const recordColumns = new Set(
+         binding.kind === "materialize"
+            ? (readers.materializePlans?.[sourceID]?.columns ?? [])
+                 .filter((c) => c.join !== undefined)
+                 .map((c) => c.column)
+            : [],
+      );
+      const handled = handlingOf(mismatches, {
+         queryTimezone: readers.queryTimezone?.(sourceID, source),
+         recordColumns,
+      });
       findings.push({
          binding,
          sourceID,
@@ -117,8 +144,13 @@ export function boundTableTypeFindings(
  */
 function handlingOf(
    mismatches: readonly StoredColumnTypeMismatch[],
+   options: { queryTimezone?: string; recordColumns: ReadonlySet<string> },
 ): (m: StoredColumnTypeMismatch) => MismatchHandling {
-   const cast = new Set(serveTypePlan(mismatches).casts.map((c) => c.column));
+   const cast = new Set(
+      serveTypePlan(mismatches, { queryTimezone: options.queryTimezone })
+         .casts.map((c) => c.column)
+         .filter((c) => !options.recordColumns.has(c)),
+   );
    return (m) => (cast.has(m.column) ? "cast" : "live");
 }
 

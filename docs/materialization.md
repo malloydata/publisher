@@ -549,9 +549,10 @@ named query's. Every reader takes the column the same way, and the warning says 
 is read through a faithful cast where one gives live's values, and is never read as its stored type
 otherwise. A `#(materialize)` source's served copy leaves the column out, so only a query that reads
 it is answered live (one whose own measure or view reads it answers live as a whole). A persisted
-view or query, and a rollup with such a grain column or partial (a `min` or `max` over a field
-included), declines its table for the query (`MISSING_FIELD`), which is answered live. A rollup is
-named by its base source, and a view or query by its build source.
+view or query, and a rollup with such a grain column or partial (any partial, checked against the
+type its build source declares, whatever expression it aggregates), declines its table for the
+query (`MISSING_FIELD`), which is answered live. A rollup is named by its base source, and a view
+or query by its build source.
 
 **Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
