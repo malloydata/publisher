@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { PublisherClient } from "../api/client";
+import { PublisherApiError, PublisherClient } from "../api/client";
 import * as scheduleCommands from "../commands/schedule";
 
 describe("Schedule Commands", () => {
@@ -156,5 +156,64 @@ describe("Schedule Commands", () => {
     await expect(
       scheduleCommands.setSchedule(mockClient, "env", "orders", "bogus"),
     ).rejects.toThrow(/cron/);
+  });
+  test("setSchedule adds the publisher.json form to the server's PACKAGE_IS_VERSIONED refusal", async () => {
+    // A published version is immutable: the server refuses the PATCH, and the
+    // CLI says where a version's schedule is declared.
+    const mockClient = {
+      getPackage: mock(() => Promise.resolve({ versionId: "1.0.0" })),
+      updatePackage: mock(() =>
+        Promise.reject(
+          new PublisherApiError(
+            409,
+            "PACKAGE_IS_VERSIONED",
+            "Publisher API Error (409): Package orders has published versions, which are immutable.",
+          ),
+        ),
+      ),
+    } as unknown as PublisherClient;
+
+    await expect(
+      scheduleCommands.setSchedule(mockClient, "env", "orders", "0 6 * * *"),
+    ).rejects.toThrow(
+      /published versions, which are immutable\. .*publisher\.json.*"materialization": \{ "scope": "version", "schedule"/s,
+    );
+    expect(mockClient.updatePackage).toHaveBeenCalled();
+  });
+
+  test("clearSchedule adds the same hint to a PACKAGE_IS_VERSIONED refusal", async () => {
+    const mockClient = {
+      getPackage: mock(() =>
+        Promise.resolve({
+          versionId: "1.0.0",
+          materialization: { schedule: "0 6 * * *" },
+        }),
+      ),
+      updatePackage: mock(() =>
+        Promise.reject(
+          new PublisherApiError(409, "PACKAGE_IS_VERSIONED", "immutable."),
+        ),
+      ),
+    } as unknown as PublisherClient;
+
+    await expect(
+      scheduleCommands.clearSchedule(mockClient, "env", "orders"),
+    ).rejects.toThrow(/publisher\.json/);
+  });
+
+  test("a 409 with another reason passes through unchanged", async () => {
+    const refusal = new PublisherApiError(
+      409,
+      "PACKAGE_INSTALLED_FROM_LOCATION",
+      "installed from a location",
+    );
+    const mockClient = {
+      getPackage: mock(() => Promise.resolve({})),
+      updatePackage: mock(() => Promise.reject(refusal)),
+    } as unknown as PublisherClient;
+
+    await expect(
+      scheduleCommands.setSchedule(mockClient, "env", "orders", "0 6 * * *"),
+    ).rejects.toBe(refusal);
   });
 });

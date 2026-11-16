@@ -32,7 +32,7 @@ concurrency:
 jobs:
   lint:
     name: Typecheck
-    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +63,7 @@ jobs:
           bun run typecheck
   lint_format:
     name: Lint and check formatting
-    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +149,7 @@ jobs:
   # Bun bin entry).
   runtime_test:
     name: ${{ matrix.runtime }} test
-    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -221,11 +221,11 @@ jobs:
             # on the bundled entry file. This validates direct Bun execution of
             # the built server artifact without depending on Node.
             echo "→ bun run ./dist/server.mjs"
-            bun run ./dist/server.mjs --port ${{ matrix.port }} --server_root ./ \
+            bun run ./dist/server.mjs --port ${{ matrix.port }} --root ./ \
               > /tmp/server.log 2>&1 &
           else
             echo "→ npx malloy-publisher (uses #!/usr/bin/env node shebang)"
-            npx malloy-publisher --port ${{ matrix.port }} --server_root ./ \
+            npx malloy-publisher --port ${{ matrix.port }} --root ./ \
               > /tmp/server.log 2>&1 &
           fi
           echo $! > /tmp/server.pid
@@ -273,7 +273,7 @@ jobs:
   # that the bundled .mjs executes under Bun (which runtime_test covers).
   docker_smoke_test:
     name: Docker smoke test
-    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 45
     # id-token is used only on main, to write the donated runners' layer cache;
     # a pull request's token cannot impersonate the writer (it is bound to the
@@ -290,7 +290,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Authenticate as the layer-cache writer
-        if: vars.DONATED_RUNNERS == 'true' && github.ref == 'refs/heads/main'
+        if: vars.CREDIBLE_RUNNERS == 'true' && github.ref == 'refs/heads/main'
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/160497775026/locations/global/workloadIdentityPools/oss-github/providers/github
@@ -335,10 +335,10 @@ jobs:
           tags: malloy-publisher:smoke-test
           # The donated runners' registry cache when on them (GitHub's runners
           # cannot reach it), GitHub's cache otherwise. Only main writes.
-          cache-from: ${{ vars.DONATED_RUNNERS == 'true' && format('type=registry,ref={0}', env.LAYER_CACHE) || 'type=gha' }}
+          cache-from: ${{ vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0}', env.LAYER_CACHE) || 'type=gha' }}
           cache-to: >-
             ${{ github.ref != 'refs/heads/main' && '' ||
-                vars.DONATED_RUNNERS == 'true' && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) ||
+                vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) ||
                 'type=gha,mode=max' }}
       - name: Inspect image metadata
         run: |
@@ -376,8 +376,8 @@ jobs:
           # nothing, so a release built from an unchecked ref is not covered.
           env_json=$(docker inspect malloy-publisher:smoke-test \
             --format='{{json .Config.Env}}')
-          echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \
-            || { echo "✗ Image does not set PUBLISHER_NO_MCP_CONFIG=1"; exit 1; }
+          echo "$env_json" | jq -e 'index("PUBLISHER_MCP_CONFIG_FILE_ENABLED=false")' >/dev/null \
+            || { echo "✗ Image does not set PUBLISHER_MCP_CONFIG_FILE_ENABLED=false"; exit 1; }
           echo "✓ .mcp.json creation suppressed in the image"
           # The server runs as uid 1000, and the USER must stay numeric:
           # Kubernetes' runAsNonRoot cannot verify a named user. A new final
@@ -661,7 +661,7 @@ jobs:
   python_sdk_smoke_test:
     name: Python SDK smoke test
     needs: python_sdk_build
-    runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       PUBLISHER_PORT: "4010"
@@ -693,7 +693,7 @@ jobs:
       - name: Start the server
         working-directory: packages/server
         run: |
-          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --server_root ./ \
+          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --root ./ \
             > "$RUNNER_TEMP/server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/server.pid"
 
