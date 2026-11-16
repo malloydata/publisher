@@ -752,7 +752,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // A colocated table is looked up by the compiler under its own build id.
    const entityIdOf = (source: (typeof sources)[number], i: number) =>
       scenario.colocated?.includes(source.name) || colocatedMaterialize(source)
-         ? compilerBuildId(source, {})
+         ? compilerBuildId(source)
          : `h${i}`;
    sources.forEach((source, i) => {
       plan[source.sourceID] = {

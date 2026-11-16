@@ -237,12 +237,8 @@ export function runLoadGateText(
          plan: derived.plan,
          annotationFindings: derived.annotationFindings,
          incrementalDeclarations: derived.incrementalDeclarations,
-         ...(derived.materializePlans
-            ? { materializePlans: derived.materializePlans }
-            : {}),
-         ...(derived.modelGateLines
-            ? { modelGateLines: derived.modelGateLines }
-            : {}),
+         materializePlans: derived.materializePlans,
+         modelGateLines: derived.modelGateLines,
       },
       judgement,
    );

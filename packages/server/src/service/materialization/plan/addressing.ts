@@ -309,14 +309,12 @@ export function computeSourceEntityId(
  * under both (see `manifestForCompiler`). Sources folded apart share one
  * compiler key, whose entry is then either of their tables: the same rows.
  *
- * `connectionDigests` is unused: the target's key was computed under the
- * runtime's own digests, for the same connections Publisher resolves
- * (`build_targets_address_equality` pins the two forms equal). Kept so the
- * signature, and its callers, are unchanged.
+ * The target's key was computed under the runtime's own digests, for the
+ * same connections Publisher resolves (`build_targets_address_equality` pins
+ * the two forms equal).
  */
 export function compilerBuildId(
    source: PersistSource,
-   _connectionDigests: Record<string, string>,
    target?: BuildTarget,
 ): string {
    const resolved = buildTargetOf(source, target);

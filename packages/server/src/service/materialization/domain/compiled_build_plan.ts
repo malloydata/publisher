@@ -71,6 +71,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
    connectionTypes?: Record<string, string>;
    connections: Map<string, MalloyConnection>;
    /**
+    * The package is a published version of a `scope: "version"` package:
+    * every table name, `name=` included, is a readable name with its
+    * source's identity hash.
+    */
+   versionScoped?: boolean;
+   /**
     * What each moved source's address folds in (`foldDistinctTableNames` in
     * `plan/`), by sourceID: decided over the whole package before any
     * refusal. Pass it to every address computation of a plan source.

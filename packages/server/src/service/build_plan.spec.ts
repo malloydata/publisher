@@ -587,28 +587,6 @@ source: opps is raw -> { select: * } extend {
       expect(plan.sources["unset@m"].refresh).toBeNull();
    });
 
-   it("honors the sourceNames filter", () => {
-      const a = fakeSource({ name: "a", sourceEntityId: "bid-a" });
-      const b = fakeSource({ name: "b", sourceEntityId: "bid-b" });
-      const plan = deriveBuildPlan(
-         {
-            builds: [
-               {
-                  connectionName: "duckdb",
-                  order: ["a@m"],
-                  dependsOn: {},
-               },
-            ],
-            tables: persistTables({ "a@m": a, "b@m": b }),
-            connectionDigests: { duckdb: "dig" },
-         },
-         undefined,
-         ["a"],
-      );
-
-      expect(Object.keys(plan.sources)).toEqual(["a@m"]);
-   });
-
    it("carries the per-source package-relative modelPath", () => {
       const a = fakeSource({ name: "a", sourceEntityId: "bid-a" });
       const b = fakeSource({ name: "b", sourceEntityId: "bid-b" });

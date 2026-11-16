@@ -1494,7 +1494,7 @@ async function loadPackage(
       load,
       packageMetadata.materialization ?? null,
       // Only a published version's tables are named per version.
-      job.publishedVersion ? packageMetadata.scope : undefined,
+      !!job.publishedVersion && packageMetadata.scope === "version",
    );
    const loadEnd = performance.now();
    return {
@@ -1531,7 +1531,7 @@ async function finishWorkerBuildPlan(
    modelPaths: string[],
    load: LoadContext,
    materializationConfig: WirePackageMaterialization | null,
-   scope?: string | null,
+   versionScoped: boolean,
 ): Promise<WorkerBuildPlan | undefined> {
    if (!load.planParts || load.failed || load.planLeftToMainThread) {
       return undefined;
@@ -1566,7 +1566,7 @@ async function finishWorkerBuildPlan(
          finishBuildPlan(parts, {
             connectionDigests,
             connections,
-            versionScoped: scope === "version",
+            versionScoped,
          }),
          materializationConfig,
       );

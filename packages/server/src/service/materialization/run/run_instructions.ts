@@ -40,8 +40,9 @@ import {
 } from "../../versions/materialization_scope";
 import {
    computeSourceEntityId,
-   planTableFolds,
+   foldDistinctTableNames,
    sharedTables,
+   storedColumnNames,
    tierGateInputs,
 } from "../plan/build_plan";
 import {
@@ -139,7 +140,9 @@ function gateSources(
    const cleared = new Map<string, EligibilityTier>();
    // A compiled package's plan carries its folds; a hand-made one is decided
    // here, over every source.
-   const tableFolds = compiled.tableFolds ?? planTableFolds(compiled);
+   const tableFolds =
+      compiled.tableFolds ??
+      foldDistinctTableNames(compiled, storedColumnNames);
    // Two definitions writing one table (sharedTables): neither is built,
    // whether or not the other is rebuilt this run or carried.
    const shared = sharedTables({ ...compiled, tableFolds });

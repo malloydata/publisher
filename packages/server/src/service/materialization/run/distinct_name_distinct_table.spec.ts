@@ -21,7 +21,7 @@ import { deriveBuildPlanOutcome, sharedTables } from "../plan/build_plan";
 import { loadGateText } from "../plan/load_gate_text";
 import type { BuildInstruction } from "../domain/types";
 import { computeSourceEntityId } from "../plan/addressing";
-import { planTableFolds } from "../plan/build_plan";
+import { foldDistinctTableNames, storedColumnNames } from "../plan/build_plan";
 import {
    assertNoTableCollisions,
    indexInstructions,
@@ -258,7 +258,10 @@ describe("one table per stored projection", () => {
                order,
                CONNECTIONS,
             );
-            const tableFolds = planTableFolds(compiled);
+            const tableFolds = foldDistinctTableNames(
+               compiled,
+               storedColumnNames,
+            );
             const addresses = Object.values(compiled.tables).map(
                ({ source: s }) =>
                   computeSourceEntityId(
@@ -421,7 +424,10 @@ describe("a bare name between two schemas", () => {
          order.map((id) => [id]),
          CONNECTIONS,
       );
-      return { ...compiled, tableFolds: planTableFolds(compiled) };
+      return {
+         ...compiled,
+         tableFolds: foldDistinctTableNames(compiled, storedColumnNames),
+      };
    }
 
    for (const storage of [false, true]) {
