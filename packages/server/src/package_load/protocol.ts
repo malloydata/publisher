@@ -21,9 +21,10 @@
  * `LoadPackageError`, which `Package.loadViaWorker` rewraps as a 503 (there
  * is no in-process fallback).
  *
- *   main  ──▶ worker:  LoadPackageRequest, ShutdownRequest,
- *                      *Response (correlated by requestId)
- *   worker ──▶ main:   LoadPackageResult | LoadPackageError, ReadyMessage,
+ *   main  ──▶ worker:  LoadPackageRequest, CompileServedCopyRequest,
+ *                      ShutdownRequest, *Response (correlated by requestId)
+ *   worker ──▶ main:   LoadPackageResult | LoadPackageError,
+ *                      CompileServedCopyResult, ReadyMessage,
  *                      WorkerLogMessage, and the proxy requests
  *                      (connection metadata, schema fetches, non-file URLs)
  *
@@ -61,8 +62,10 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  *
  * 4: every field of a build plan's outcome is sent (`BuildPlanOutcome`), so
  * the pool reads none as missing.
+ *
+ * 5: the served-copy compile job ({@link CompileServedCopyRequest}).
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 4;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 5;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -375,6 +378,52 @@ export interface SerializedErrno {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// The served-copy compile job (main ──▶ worker ──▶ main)
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Compile one pass of a model's served copy (served_copy_serve.ts): the
+ * package's model over the re-rooted files, read in place of the package's
+ * own. The main thread writes the files and hydrates the `modelDef` that
+ * comes back; connections are proxied, as for a package load, against the
+ * served copy's own connections (the package's, and its storage
+ * destinations under their aliases).
+ */
+export interface CompileServedCopyRequest {
+   type: "compile-served-copy";
+   requestId: string;
+   /** Absolute path to the package directory on disk. */
+   packagePath: string;
+   /** Scopes the worker's schema cache, as {@link LoadPackageRequest.environmentName}. */
+   environmentName: string;
+   /** The model the copy is of, relative to the package. */
+   modelPath: string;
+   /** The connection an unnamed lookup resolves to. */
+   defaultConnectionName: string | null;
+   /** The re-rooted files, each keyed by its overlay key (`overlay_key.ts`). */
+   files: [string, string][];
+}
+
+/**
+ * A served-copy compile's outcome: the compiled `modelDef`, or the compile
+ * failure, in-band so the main thread reads it as the inline compile's
+ * failure (a `MalloyError` keeps its problems). A failure of the job itself
+ * (a timeout, a crash) rejects instead.
+ */
+export interface CompileServedCopyResult {
+   type: "compile-served-copy-result";
+   requestId: string;
+   /** The sender's {@link PACKAGE_LOAD_PROTOCOL_VERSION}. */
+   protocolVersion: number;
+   /** Set when the copy compiled. A `ModelDef`, wire-typed `unknown`. */
+   modelDef?: unknown;
+   /** Set when it did not. */
+   error?: SerializedError;
+   /** Wall-clock ms the compile took in the worker. */
+   compileDurationMs: number;
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Direction: worker ──▶ main (proxy connection metadata)
 // ──────────────────────────────────────────────────────────────────────
 
@@ -483,6 +532,7 @@ export interface ReadyMessage {
 
 export type MainToWorkerMessage =
    | LoadPackageRequest
+   | CompileServedCopyRequest
    | ConnectionMetadataResponse
    | SchemaForTablesResponse
    | SchemaForSqlResponse
@@ -492,6 +542,7 @@ export type MainToWorkerMessage =
 
 export type WorkerToMainMessage =
    | LoadPackageResult
+   | CompileServedCopyResult
    | LoadPackageError
    | ConnectionMetadataRequest
    | SchemaForTablesRequest

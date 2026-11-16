@@ -63,7 +63,11 @@ import {
    type Snapshot,
 } from "./materialization/domain/binding";
 import { servedCopyOutcomes } from "./materialization/domain/source_decline";
-import { deserializeError } from "../package_load/package_load_pool";
+import {
+   currentPackageLoadPool,
+   deserializeError,
+} from "../package_load/package_load_pool";
+import { compileServedCopyOnWorker } from "../package_load/served_copy_compile";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
 import { BuildManifest } from "./materialization/domain/types";
@@ -2591,6 +2595,9 @@ export class Model {
                ? this.serveDestinationConfig
                : undefined,
          pinned: () => this.pinNow(),
+         // Off this thread when a load worker is free; inline otherwise.
+         compileElsewhere: (args) =>
+            compileServedCopyOnWorker(currentPackageLoadPool(), args),
       });
    }
 
