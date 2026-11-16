@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { Package } from "../package";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { DuckDBConnection as BuildSession } from "@malloydata/db-duckdb";
@@ -21,6 +22,7 @@ import { tempBuildPlanPackages } from "../../test_helpers/incremental_test_harne
 import {
    createMocks,
    serviceWith,
+   setPackage,
 } from "../../test_helpers/materialization_service_harness";
 import {
    fakeSource,
@@ -191,6 +193,23 @@ describe("a run's instruments", () => {
             new AbortController().signal,
          );
    }
+
+   it("forgets the bound key checks of the tables a run is about to write, before it writes any", async () => {
+      const ctx = createMocks();
+      const forgotten: string[][] = [];
+      setPackage(ctx.environmentStore, {
+         getBuildPlan: () => null,
+         forgetKeyUniqueness: (ids: Iterable<string>) => {
+            forgotten.push([...ids]);
+         },
+      });
+      await stubbedRun(ctx)();
+      // A package that stopped implementing it would serve a check bound
+      // over rows this run rewrote (a refresh racing a rebind).
+      expect(forgotten).toHaveLength(1);
+      // The real package answers it, through its facade.
+      expect(typeof Package.prototype.forgetKeyUniqueness).toBe("function");
+   });
 
    it("publisher_materialization_run_duration_ms: one sample per run, by mode and outcome", async () => {
       const ctx = createMocks();

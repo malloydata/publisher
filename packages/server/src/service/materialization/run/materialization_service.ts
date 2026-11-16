@@ -1025,7 +1025,7 @@ export class MaterializationService {
          // table is written, so a run that fails part-way never leaves a
          // check bound over rows it did not read. This run's own commit binds
          // what it checks.
-         pkg.forgetKeyUniqueness?.(
+         pkg.forgetKeyUniqueness(
             instructions.map((instruction) => instruction.sourceEntityId),
          );
 

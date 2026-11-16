@@ -210,6 +210,8 @@ export function setPackage(
       getMalloyConnection: async () => ({}),
       // No bound manifestLocation by default, so seedFromBoundManifest no-ops.
       getPackageMetadata: () => ({}),
+      // Binds no key check, so there is none to forget.
+      forgetKeyUniqueness: () => undefined,
       ...pkgOverrides,
    };
    (environmentStore.getEnvironment as sinon.SinonStub).resolves({
