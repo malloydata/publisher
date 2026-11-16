@@ -119,7 +119,11 @@ describe("computeServeVerdicts", () => {
    });
 
    it("sends a gated stored source live, and keeps a gated colocated one", () => {
-      const gated = { gated: () => true };
+      // G3 with gated sources off: the policy keeps a colocated table's gate.
+      const gated = {
+         gated: () => true,
+         keepsGate: (_id: string, tier: string) => tier === "colocated",
+      };
       const [stored] = computeServeVerdicts(
          facts([plan("orders", STORAGE)], gated),
       );
@@ -136,7 +140,8 @@ describe("computeServeVerdicts", () => {
          gated: () => true,
          boundStorageNames: new Set(["orders", "other"]),
          servedStorageNames: new Set(["orders", "other"]),
-         storageKeepsOwnGate: (id: string) => id.startsWith("orders@"),
+         keepsGate: (id: string, tier: string) =>
+            tier === "colocated" || id.startsWith("orders@"),
       };
       const verdicts = computeServeVerdicts(
          facts([plan("orders", STORAGE), plan("other", STORAGE)], bound),
@@ -148,9 +153,11 @@ describe("computeServeVerdicts", () => {
    });
 
    it("serves a gated stored source when the served copy keeps its gates (R3), never a gated rollup", () => {
+      // Gated sources on: the served copy keeps every table's gate, and no
+      // rollup here was proven at plan.
       const keeps = {
          gated: () => true,
-         servedCopyKeepsGates: true,
+         keepsGate: (id: string) => !id.startsWith("orders_rollup"),
          boundStorageNames: new Set(["orders"]),
          servedStorageNames: new Set(["orders"]),
       };
@@ -186,8 +193,7 @@ describe("computeServeVerdicts", () => {
          computeServeVerdicts(
             facts([rollup], {
                gated: () => true,
-               servedCopyKeepsGates: true,
-               rollupKeepsGates: () => keeps,
+               keepsGate: () => keeps,
             }),
          )[0];
       expect(keeping(true)?.reason).not.toBe("row_level_gate");

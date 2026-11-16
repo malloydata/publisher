@@ -25,6 +25,7 @@ import {
    answerKeepsGates,
    GATE_LEGS,
    legMayPassGate,
+   SERVING_GATE_CONTEXT,
 } from "./materialization/domain/gate_policy";
 import { logger } from "../logger";
 import { sourceChain } from "./materialization/text/source_map";
@@ -97,10 +98,6 @@ export function variantsOf(
    args: { modelPath: string },
 ): Variant<LegAnswer>[] {
    const switches = gateSwitches();
-   // G3: the served copy goes past an entry-point gate when every table it
-   // reads keeps it (colocated, or `storage=` admitted past its own gate),
-   // even with `materialize.gatedSources` off.
-   const gateContext = { colocatedReadsKeepGates: true };
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -112,14 +109,14 @@ export function variantsOf(
          applicable: leg.applies(facts, pinned),
          keepsContracts:
             gateLeg !== undefined &&
-            legMayPassGate(gateLeg, switches, gateContext),
+            legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
          keepsContractsFor: (answer: LegAnswer) =>
             gateLeg !== undefined &&
             answerKeepsGates(
                gateLeg,
                answer.gateTablesRead ?? answer.tablesRead ?? [],
                switches,
-               gateContext,
+               SERVING_GATE_CONTEXT,
             ),
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);

@@ -15,8 +15,13 @@ import { gateSwitches, getPersistStorageMode } from "../../config";
 import { logger } from "../../logger";
 import { errMessage } from "../../utils";
 import type { Model } from "../model";
+import { collectEntryPointGates } from "../gate_classification";
 import { structsReachedFrom } from "../governance/ir/source_graph";
-import { legMayPassGate } from "./domain/gate_policy";
+import {
+   answerKeepsGates,
+   legMayPassGate,
+   SERVING_GATE_CONTEXT,
+} from "./domain/gate_policy";
 import { type Binding, pin, type Snapshot } from "./domain/binding";
 import { storageTablePath } from "./domain/storage_table_path";
 import type { FreshnessManifest } from "./domain/types";
@@ -264,6 +269,20 @@ export class ServeVerdicts {
          plan.sourceEligibility?.gateKept,
          (id) => buildPlan?.sources?.[id]?.sourceEntityId,
       );
+      // A `storage=` table's own gate, read off the bound bindings the router
+      // reads, or, not bound yet, by the bind's own rule.
+      const ownGateKept = (sourceID: string): boolean => {
+         const bound = storageBindings.filter((b) =>
+            b.sourceIDs?.includes(sourceID),
+         );
+         if (bound.length > 0) {
+            return bound.some((b) => b.ownGateKept === true);
+         }
+         return keptTables.has(
+            buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+         );
+      };
+      const switches = gateSwitches();
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(host.snapshot(), new Date());
       const reads = (
@@ -286,25 +305,28 @@ export class ServeVerdicts {
             );
             return reaching.length > 0 && reaching.every((root) => root.gated);
          },
-         // The storage tier's question: whether the served copy passes a
-         // gate for every table it may read. A colocated table passes under
-         // G3, which the verdict reads off the tier.
-         servedCopyKeepsGates: legMayPassGate("served", gateSwitches(), {
-            colocatedReadsKeepGates: false,
-         }),
-         // Read off the bound bindings, which the router reads too.
-         storageKeepsOwnGate: (sourceID) => {
-            const bound = storageBindings.filter((b) =>
-               b.sourceIDs?.includes(sourceID),
-            );
-            if (bound.length > 0) {
-               return bound.some((b) => b.ownGateKept === true);
+         // The router's own question, asked of the source's own table: a
+         // rollup's leg past a gate, with its variant proven at plan; the
+         // served copy over a table it keeps the gate on.
+         keepsGate: (sourceID, tier) => {
+            if (buildPlan?.sources?.[sourceID]?.origin === "preaggregate") {
+               return (
+                  legMayPassGate("rollup", switches, SERVING_GATE_CONTEXT) &&
+                  plan.rollupsKeepingGates.has(sourceID)
+               );
             }
-            return keptTables.has(
-               buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            return answerKeepsGates(
+               "served",
+               [
+                  {
+                     tier,
+                     ownGateKept: tier === "storage" && ownGateKept(sourceID),
+                  },
+               ],
+               switches,
+               SERVING_GATE_CONTEXT,
             );
          },
-         rollupKeepsGates: (sourceID) => plan.rollupsKeepingGates.has(sourceID),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(host.colocatedEntries() ?? {})),
@@ -640,29 +662,24 @@ export class ServeVerdicts {
          const model = models.get(modelPath);
          const modelDef = model?.getModelDef?.();
          if (!model || !modelDef) return undefined;
-         const gatedSources = new Set(
-            (model.getSources(true) ?? []).flatMap((source) =>
-               source.name &&
-               ((source.authorize?.length ?? 0) > 0 ||
-                  (source.accessFilter?.length ?? 0) > 0)
-                  ? [source.name]
-                  : [],
-            ),
-         );
-         const sourceRoot = (name: string, gated: boolean): void => {
+         // Gated as the router's veto finds it: the governor's walk of the
+         // entry point's own and inherited gates (`collectEntryPointGates`).
+         const gated = (struct: SourceDef): boolean =>
+            collectEntryPointGates(struct, modelDef, new Set(), true).length >
+            0;
+         for (const name of names) {
             const entry = modelDef.contents?.[name];
-            if (!entry || !isSourceDef(entry)) return;
+            if (!entry || !isSourceDef(entry)) continue;
             roots.push({
-               gated,
+               gated: gated(entry),
                ids: reachableSourceIDs(
                   structsReachedFrom([entry], modelDef),
                   modelDef,
                ),
             });
-         };
-         for (const name of names) sourceRoot(name, gatedSources.has(name));
+         }
          // A published named query reads its source, and whatever its
-         // pipeline names; it is gated as that source is.
+         // pipeline names; it is gated as its run target is.
          for (const name of queries ?? []) {
             const query = modelDef.contents?.[name] as
                | { type?: string; structRef?: unknown }
@@ -674,18 +691,16 @@ export class ServeVerdicts {
                   ? modelDef.contents?.[ref]
                   : (ref as SourceDef | undefined);
             const ids = reachableSourceIDs([query], modelDef);
-            if (base && isSourceDef(base)) {
+            const source = base && isSourceDef(base) ? base : undefined;
+            if (source) {
                for (const id of reachableSourceIDs(
-                  structsReachedFrom([base], modelDef),
+                  structsReachedFrom([source], modelDef),
                   modelDef,
                )) {
                   ids.add(id);
                }
             }
-            roots.push({
-               gated: typeof ref === "string" && gatedSources.has(ref),
-               ids,
-            });
+            roots.push({ gated: !!source && gated(source), ids });
          }
       }
       const reached =
