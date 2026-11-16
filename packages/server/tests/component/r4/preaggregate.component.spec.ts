@@ -648,6 +648,12 @@ source: scoped is duckdb.table('orders_raw') extend {
   #(preaggregate) grain=["category"]
   measure: scoped_total is amount.sum()
 }
+
+// Read no given, so the companion is never empty.
+source: open is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: open_total is amount.sum()
+}
 `,
          },
          seedSql,
@@ -658,7 +664,12 @@ source: scoped is duckdb.table('orders_raw') extend {
       await disposeScenarios();
    });
 
-   it("leaves out a rollup whose rows read a given, and answers live", async () => {
+   it("leaves out a rollup whose rows read a given it cannot re-apply, and answers live", async () => {
+      // Its where: reads `region`, which the grain does not keep
+      // (r4/rollup_gaps serves one whose grain does).
+      expect(
+         fixture.rollupRefusals.filter((r) => r.sourceName === "scoped"),
+      ).toEqual([{ reason: "reads_given", sourceName: "scoped" }]);
       expect(
          Object.keys(fixture.rollupTables).filter((n) =>
             n.startsWith("scoped__rollup__"),
