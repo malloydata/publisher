@@ -15,6 +15,7 @@
  * answers, and returns plans and refusals.
  */
 
+import { freshnessValueProblem } from "../../annotation_reader";
 import { createHash } from "crypto";
 import {
    CARRIED_KEYS,
@@ -344,6 +345,11 @@ function carriedPersistKeys(
          return {
             reason: `#(materialize) \`${group}\` takes properties, as \`${group}.<name>="…"\``,
          };
+      }
+      if (group === "freshness") {
+         const problem = freshnessValueProblem(declaration.tag.tag(group)!);
+         if (problem !== undefined)
+            return { reason: `#(materialize) ${problem}` };
       }
       for (const [property, value] of properties) {
          const text = value.text();

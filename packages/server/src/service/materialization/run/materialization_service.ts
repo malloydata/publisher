@@ -18,6 +18,7 @@ import {
    BadRequestError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
+   MaterializationConflictError,
    MaterializationNotFoundError,
    PackageVersionError,
 } from "../../../errors";
@@ -98,6 +99,11 @@ import {
    runTriggerOf,
    withRunTelemetry,
 } from "./run_telemetry";
+import {
+   declaredFreshnessIndex,
+   pastDeclaredWindow,
+   stampDeclaredFreshness,
+} from "./freshness_stamp";
 import {
    deriveSelfInstructions,
    type RenamedTable,
@@ -695,6 +701,22 @@ export class MaterializationService {
 
       const buildInstructions = options.buildInstructions;
       const orchestrated = buildInstructions !== undefined;
+      // A package or version bound to a host manifest serves the host's
+      // tables, and a run's own tables are never applied to it
+      // (Environment.loadRunManifest), so an auto-run would build tables it
+      // cannot serve. Refused before anything is built, as the scheduler
+      // skips it; a host building into tables it names (buildInstructions)
+      // is what such a package's runs are for.
+      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
+      if (!orchestrated && manifestLocation) {
+         const target =
+            version !== null
+               ? `Version ${version} of package ${packageName}`
+               : `Package ${packageName}`;
+         throw new MaterializationConflictError(
+            `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`,
+         );
+      }
       const versions = environment.getVersionService();
       const latest =
          version !== null && versions && !orchestrated && scope === "package"
@@ -1170,6 +1192,7 @@ export class MaterializationService {
             reader,
          );
          let recheck: Record<string, BuildInstruction>;
+         const freshness = declaredFreshnessIndex(pkg.getBuildPlan());
          ({
             instructions,
             carried,
@@ -1188,7 +1211,21 @@ export class MaterializationService {
                packagePath: pkg.getPackagePath(),
                ...(owned !== undefined ? { ownedVersion: owned } : {}),
             },
-            { forceRefresh: opts.forceRefresh ?? false },
+            {
+               forceRefresh: opts.forceRefresh ?? false,
+               pastWindow: (sourceEntityId, prior) =>
+                  pastDeclaredWindow(
+                     prior,
+                     freshness.factsAt(sourceEntityId),
+                     new Date(run.startedAt),
+                  ),
+               upstreams: {
+                  windowSecondsAt: (address) =>
+                     freshness.factsAt(address)?.freshnessWindowSeconds,
+                  upstreamsOf: (address) => freshness.upstreamsOf(address),
+                  at: new Date(run.startedAt),
+               },
+            },
          ));
          // A carried table at the author's `name=` is reused only while
          // it is still marked as this package's (table_ownership.ts).
@@ -1337,6 +1374,14 @@ export class MaterializationService {
          clearedTiers,
          hostInstructed: orchestrated,
          warehouseReach: opts.warehouseReach,
+         freshness: (() => {
+            const index = declaredFreshnessIndex(pkg.getBuildPlan());
+            return {
+               windowSecondsAt: (address: string) =>
+                  index.factsAt(address)?.freshnessWindowSeconds,
+               at: new Date(run.startedAt),
+            };
+         })(),
          // Auto-run only: Publisher owns every write to its tables, so it
          // can tell a joined table that has not changed since a check
          // passed. A host's tables are its own.
@@ -1421,9 +1466,20 @@ export class MaterializationService {
       const sourcesRefused =
          Object.keys(derivedRefused).length + instructedRefused;
       const durationMs = Date.now() - startedAt;
+      // A standalone run stamps its tables' declared freshness, as a host
+      // stamps the manifest it distributes; a host's run leaves it to the host.
+      const committedEntries = orchestrated
+         ? entries
+         : stampDeclaredFreshness(
+              entries,
+              declaredFreshnessIndex(pkg.getBuildPlan()),
+              new Set(Object.keys(carried)),
+              new Date(startedAt),
+              built.readFrom,
+           );
       const served = await this.collaborators.commitManifest(
          id,
-         entries,
+         committedEntries,
          failures,
          {
             // Recorded before any is dropped, so a crash between this
@@ -1474,7 +1530,7 @@ export class MaterializationService {
                  this.collaborators.autoLoadManifest(
                     environment,
                     packageName,
-                    entries,
+                    committedEntries,
                     versionId,
                     uniquenessChecks?.rollupKeys,
                     // A stop that landed during the load did not cut it
