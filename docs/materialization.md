@@ -944,6 +944,8 @@ See [configuration.md](configuration.md) for the env vars. Fire semantics:
 - **Caps fires per tick** (`…_MAX_FIRES_PER_TICK`) so a burst of due packages doesn't stampede; a capped package fires on a later tick.
 - **Coalesces** when a build is already active for the package (the in-flight build covers the occurrence).
 
+A package or version bound to a host manifest (one with a `manifestLocation`) refuses a local on-demand run with 409 before anything is built, since it serves the host's tables and never this server's (a run that passes `buildInstructions` is still accepted), and the scheduler skips it.
+
 > **Never set `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` on a control-plane-driven (orchestrated) worker.** A package serving live under a control plane has no `manifestLocation`, so the per-package skip does not cover it — the flag being off is the primary guard against the standalone scheduler double-driving refresh the control plane already owns.
 
 ## Manage it with the CLI

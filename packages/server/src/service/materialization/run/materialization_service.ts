@@ -18,6 +18,7 @@ import {
    BadRequestError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
+   MaterializationConflictError,
    MaterializationNotFoundError,
    PackageVersionError,
 } from "../../../errors";
@@ -700,6 +701,22 @@ export class MaterializationService {
 
       const buildInstructions = options.buildInstructions;
       const orchestrated = buildInstructions !== undefined;
+      // A package or version bound to a host manifest serves the host's
+      // tables, and a run's own tables are never applied to it
+      // (Environment.loadRunManifest), so an auto-run would build tables it
+      // cannot serve. Refused before anything is built, as the scheduler
+      // skips it; a host building into tables it names (buildInstructions)
+      // is what such a package's runs are for.
+      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
+      if (!orchestrated && manifestLocation) {
+         const target =
+            version !== null
+               ? `Version ${version} of package ${packageName}`
+               : `Package ${packageName}`;
+         throw new MaterializationConflictError(
+            `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`,
+         );
+      }
       const versions = environment.getVersionService();
       const latest =
          version !== null && versions && !orchestrated && scope === "package"

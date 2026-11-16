@@ -14,7 +14,9 @@ import {
 // A build settles at MANIFEST_FILE_READY or a failure/cancellation. For an
 // auto-run, MANIFEST_FILE_READY means the tables are built and the package
 // serves them: the manifest was loaded into it before the status moved (its
-// metadata says `autoLoad: "failed"` when that load did not take).
+// metadata says `autoLoad: "failed"` when that load did not take, as when a
+// host manifest was bound to the package while the run built). A package or
+// version already bound to a host manifest refuses the run up front (409).
 const SETTLED_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 const SUCCESS_STATUSES = ["MANIFEST_FILE_READY"];
 
@@ -89,7 +91,9 @@ export async function getMaterialization(
  * without it, return immediately with a status hint.
  *
  * Resolves to the process exit code the caller should set: 0, or
- * BUILT_NOT_SERVED_EXIT_CODE. A failed or timed-out build throws instead.
+ * BUILT_NOT_SERVED_EXIT_CODE. A failed or timed-out build throws instead,
+ * and so does a refused one: a package or version bound to a host manifest
+ * answers 409 and nothing is built, so the CLI exits 1, `--wait` or not.
  */
 export async function materialize(
   client: PublisherClient,
