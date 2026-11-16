@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT
 The storage tier builds by native per-engine **query-passthrough**
 (`postgres_query` / `bigquery_query` / `snowflake_query`) — the source warehouse
 computes and only results cross into the store. That passthrough is defined only
-for the foreign engines (BigQuery, Snowflake, Postgres). A DuckDB / DuckLake
+for the foreign engines (BigQuery, Snowflake, Postgres). A DuckDB
 source is already local to the build engine, so there is nothing to push down and
 no passthrough for it; the build refuses rather than silently doing the wrong
 thing.
@@ -68,3 +68,26 @@ A DuckDB source cannot be passed through into the store, so materializing it
 into `storage=lake` is refused.
 
 cites: its connection 'dk' is a 'duckdb' connection, which cannot be passed through to a 'storage=' build
+
+## Build refused
+
+The refusal names the fix.
+
+cites: drop 'storage=' to build it in its own connection
+
+## Query the refused source
+
+Nothing was built and nothing is bound, so the query is answered live from the
+DuckDB connection. (A live answer with no binding carries no `servedFrom`; that
+tag only names a bound tier or its fallback.)
+
+```malloy
+run: dk_daily -> { select: region, total; order_by: region asc }
+```
+
+Expect:
+
+| region | total |
+| ------ | ----- |
+| EU     | 200   |
+| US     | 100   |

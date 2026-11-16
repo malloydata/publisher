@@ -52,7 +52,7 @@ cites: partition= is not supported
 ## Build refused pws
 
 A build cannot start on a package that does not load; the failure carries the
-retired-key code, never a `partition_*` plan refusal, which the plan no longer
-produces.
+retired-key code, not a `partition_*` plan refusal.
 
 cites: [persist-retired-key]
+excludes: partition_

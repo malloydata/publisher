@@ -2630,9 +2630,8 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                };
                // The plan's second collection: sources compiled, EXAMINED and
                // refused, distinct from a source the plan never contained at all
-               // (which is an absence, and reads as "never examined"; the
-               // filtered pass-through that once produced one now fails the load,
-               // see host-binding-of-unplanned-source). An empty Expect table asserts
+               // (which is an absence, and reads as "never examined" — see
+               // host-binding-of-unplanned-source). An empty Expect table asserts
                // exactly that nothing was refused, which is the only way to pin
                // the absence side positively.
                const refused = Object.values(
