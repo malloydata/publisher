@@ -5,7 +5,6 @@ import { unrecordedAudit } from "../../access_record";
 import { BuildRunFailedError } from "./build_failure_class";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    BadRequestError,
@@ -17,9 +16,7 @@ import {
 import { MaterializationController } from "../../../controller/materialization.controller";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../../storage/DatabaseInterface";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { Environment } from "../../environment";
 import type { EnvironmentStore } from "../../environment_store";
 import { MaterializationScheduler } from "./materialization_scheduler";
@@ -38,6 +35,10 @@ import {
 import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { parsePackageName, VersionRef } from "../../identity";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
 
 // Materializations of published versions, end to end: real versions compiled
 // from real folders, real builds into a DuckDB file every version reaches (the
@@ -302,20 +303,14 @@ beforeEach(async () => {
    restoreSettings = installSettings({
       env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
    }).restore;
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "materialization-versions-")),
-   );
-   envPath = path.join(root, "env");
+   ({ root, envPath, db, repo } = await openTempStorage(
+      "materialization-versions-",
+      {
+         id: ENV_ID,
+         name: ENV,
+      },
+   ));
    sourcesPath = path.join(root, "sources");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-      [ENV_ID, ENV, envPath],
-   );
-   repo = createDuckDBRepository(db);
    reclaims = [];
    env = await newEnvironment();
    service = newService(env);
@@ -325,8 +320,7 @@ afterEach(async () => {
    for (const environment of environments.splice(0)) {
       await environment.closeAllConnections().catch(() => undefined);
    }
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
    restoreSettings();
 });
 

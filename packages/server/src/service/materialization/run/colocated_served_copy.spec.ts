@@ -3,7 +3,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { __setPackageLoadPoolForTests } from "../../../package_load/package_load_pool";
 import type {
@@ -11,8 +10,6 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { unrecordedAudit } from "../../access_record";
@@ -23,6 +20,10 @@ import { QueryPrivileges } from "../../model_query_request";
 import type { Package } from "../../package";
 import { storageBindingResolverFor } from "../../versions/materialization_scope";
 import { MaterializationService } from "./materialization_service";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
 
 /**
  * Colocated `#(materialize)` through real builds and the real router (phase 3
@@ -261,20 +262,14 @@ for (const tier of TIERS)
             },
          }).restore;
          await __setPackageLoadPoolForTests(null);
-         root = fs.realpathSync(
-            fs.mkdtempSync(path.join(os.tmpdir(), "colocated-served-")),
-         );
-         envPath = path.join(root, "env");
+         ({ root, envPath, db, repo } = await openTempStorage(
+            "colocated-served-",
+            {
+               id: ENV_ID,
+               name: ENV,
+            },
+         ));
          sourcesPath = path.join(root, "sources");
-         fs.mkdirSync(envPath);
-         db = new DuckDBConnection(":memory:");
-         await db.initialize();
-         await initializeSchema(db);
-         await db.run(
-            "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-            [ENV_ID, ENV, envPath],
-         );
-         repo = createDuckDBRepository(db);
          env = await Environment.create(ENV, envPath, [tier.config as never]);
          env.bindVersions(repo, ENV_ID, {
             downloaderFor: (_packageName, location) => async (stagingPath) => {
@@ -325,8 +320,7 @@ for (const tier of TIERS)
             );
          }
          await env.closeAllConnections().catch(() => undefined);
-         await db.close();
-         fs.rmSync(root, { recursive: true, force: true });
+         await disposeTempStorage({ db, root });
          modelOverride = undefined;
          restoreSettings();
          await __setPackageLoadPoolForTests(null);

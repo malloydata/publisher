@@ -16,12 +16,9 @@ import {
    spyOn,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
-import { initializeSchema } from "../storage/duckdb/schema";
 import { changedConnectionNames, Environment } from "./environment";
 import { Package } from "./package";
 import type { EnvironmentStore } from "./environment_store";
@@ -35,6 +32,10 @@ import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compi
 import { computeSourceEntityId } from "./materialization/plan/build_plan";
 import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../test_helpers/temp_storage";
 
 // Build plans of real packages loaded through a real Environment, around an
 // edit of the connection their persisted source reads.
@@ -135,20 +136,14 @@ beforeEach(async () => {
    restoreSettings = installSettings({
       env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
    }).restore;
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "environment-versions-")),
-   );
-   envPath = path.join(root, "env");
+   ({ root, envPath, db, repo } = await openTempStorage(
+      "environment-versions-",
+      {
+         id: ENV_ID,
+         name: "testEnv",
+      },
+   ));
    sourcesPath = path.join(root, "sources");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'testEnv', ?, now(), now())",
-      [ENV_ID, envPath],
-   );
-   repo = createDuckDBRepository(db);
 });
 
 afterEach(async () => {
@@ -157,8 +152,7 @@ afterEach(async () => {
    // kept firing with backoff into later spec files, against a deleted root.
    for (const env of opened.splice(0)) await env.closeAllConnections();
    restoreSettings();
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
 });
 
 /** The addresses the loaded package hands out (GET build-plan, validation). */

@@ -4,16 +4,17 @@
 import { Mutex } from "async-mutex";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../storage/DatabaseInterface";
-import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
 import { writePackageFiles } from "../../test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../test_helpers/temp_storage";
 
 // Two publishes of the SAME version id at once, against a real registry and
 // real version folders. The same content is one publish and one placement of
@@ -115,26 +116,19 @@ const modelOnDisk = (dirName: string) =>
    fs.readFileSync(path.join(envPath, PKG, dirName, "model.malloy"), "utf8");
 
 beforeEach(async () => {
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "version-same-id-race-")),
-   );
-   envPath = path.join(root, "env");
+   ({ root, envPath, db, repo } = await openTempStorage(
+      "version-same-id-race-",
+      {
+         id: ENV_ID,
+         name: "env",
+      },
+   ));
    sourcesPath = path.join(root, "sources");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'env', ?, now(), now())",
-      [ENV_ID, envPath],
-   );
-   repo = createDuckDBRepository(db);
    log = [];
 });
 
 afterEach(async () => {
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
 });
 
 // Both shapes: the package's first version (the publishes queue on the

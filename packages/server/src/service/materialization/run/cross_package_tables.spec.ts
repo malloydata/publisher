@@ -3,7 +3,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../access_record";
 import type {
@@ -11,8 +10,6 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
@@ -21,6 +18,10 @@ import { parsePackageName } from "../../identity";
 import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { MaterializationService } from "./materialization_service";
 import { ownedTableComment, TABLE_OWNED_ELSEWHERE } from "./table_ownership";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
 
 /**
  * Two packages of one environment, on one shared warehouse connection, each
@@ -73,11 +74,13 @@ describe("two packages on one warehouse connection", () => {
       restoreSettings = installSettings({
          env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
       }).restore;
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "cross-package-tables-")),
-      );
-      envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "cross-package-tables-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       for (const pkg of ["pa", "pb"]) {
          writePackageFiles(
             path.join(envPath, pkg),
@@ -85,14 +88,6 @@ describe("two packages on one warehouse connection", () => {
             { manifest: { name: pkg, description: "fixture" } },
          );
       }
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage("pa");
       await env.addPackage("pb");
@@ -106,8 +101,7 @@ describe("two packages on one warehouse connection", () => {
 
    afterEach(async () => {
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
    });
 

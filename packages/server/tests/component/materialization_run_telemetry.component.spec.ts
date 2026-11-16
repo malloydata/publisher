@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import * as sinon from "sinon";
 import { logger } from "../../src/logger";
@@ -16,14 +14,16 @@ import type {
    ResourceRepository,
 } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../src/storage/duckdb/schema";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../src/test_helpers/temp_storage";
 
 /**
  * The run and build telemetry of a real materialization run (plan section 5,
@@ -81,24 +81,17 @@ describe("materialization run telemetry, through a real build", () => {
       restoreSettings = installSettings({
          env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
       }).restore;
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "mat-run-telemetry-")),
-      );
-      const envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      const storage = await openTempStorage("mat-run-telemetry-", {
+         id: ENV_ID,
+         name: ENV,
+      });
+      ({ root, db, repo } = storage);
+      const { envPath } = storage;
       writePackageFiles(
          path.join(envPath, PKG),
          { "model.malloy": MODEL },
          { manifest: { name: PKG, description: "fixture" } },
       );
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage(PKG);
       service = new MaterializationService({
@@ -132,8 +125,7 @@ describe("materialization run telemetry, through a real build", () => {
       resetMaterializationTelemetryForTesting();
       await harness.shutdown();
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
    });
 

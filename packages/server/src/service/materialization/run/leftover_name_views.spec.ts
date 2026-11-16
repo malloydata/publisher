@@ -11,8 +11,6 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
@@ -39,6 +37,10 @@ import {
    storageTableSite,
    type TableSiteContext,
 } from "./table_site";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
 
 /**
  * The `name=` views earlier releases left (leftover_name_views.ts). Publisher
@@ -249,20 +251,14 @@ describe("leftover name= views through real builds", () => {
       // A load worker reads its settings when it spawns: a fresh pool, so
       // the package's build plan sees PUBLISHER_MATERIALIZE.
       await __setPackageLoadPoolForTests(null);
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "leftover-name-view-")),
-      );
-      envPath = path.join(root, "env");
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "leftover-name-view-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       sourcesPath = path.join(root, "sources");
-      fs.mkdirSync(envPath);
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       reclaims = [];
       env = await newEnvironment();
       service = newService(env);
@@ -270,8 +266,7 @@ describe("leftover name= views through real builds", () => {
 
    afterEach(async () => {
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
       // Nor does a later spec's worker inherit them.
       await __setPackageLoadPoolForTests(null);

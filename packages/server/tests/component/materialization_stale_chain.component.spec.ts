@@ -4,7 +4,6 @@
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { BuildPlanUnavailableError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
@@ -16,10 +15,9 @@ import type {
    ResourceRepository,
 } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { openTempStorage } from "../../src/test_helpers/temp_storage";
 
 /**
  * A chained `storage=` build's text is the package's files rewritten at the
@@ -77,11 +75,10 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
             PERSIST_STORAGE_MODE: "on",
          },
       }).restore;
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "stale-chain-")),
-      );
-      envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      ({ root, envPath, db, repo } = await openTempStorage("stale-chain-", {
+         id: ENV_ID,
+         name: ENV,
+      }));
       writePackageFiles(
          path.join(envPath, PKG),
          {
@@ -90,14 +87,6 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       admin = new PostgresConnection({ name: "admin", connectionString: url! });
       await admin.runSQL(`CREATE DATABASE ${catalog}`);
       await admin.runSQL(`CREATE DATABASE ${warehouse}`);

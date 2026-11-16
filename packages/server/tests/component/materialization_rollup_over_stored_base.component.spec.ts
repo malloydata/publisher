@@ -20,7 +20,6 @@
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
@@ -33,11 +32,13 @@ import type {
    ResourceRepository,
 } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { __setPackageLoadPoolForTests } from "../../src/package_load/package_load_pool";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../src/test_helpers/temp_storage";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -123,19 +124,13 @@ describe("a colocated rollup over a colocated #@ persist base", () => {
    }
 
    beforeEach(async () => {
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "rollup-over-base-")),
-      );
-      envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "rollup-over-base-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       statements = [];
       const runSQL = MalloyDuckDBConnection.prototype.runSQL;
       spy = spyOn(
@@ -158,8 +153,7 @@ describe("a colocated rollup over a colocated #@ persist base", () => {
    afterEach(async () => {
       spy?.mockRestore();
       await env?.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
    });
 
    async function build(
