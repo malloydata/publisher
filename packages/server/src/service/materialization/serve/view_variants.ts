@@ -483,17 +483,29 @@ export class PersistedViewServe {
          shape,
          redeclare: { sourceID: plan.sourceID },
          colocatedAlias: `${plan.buildSourceName}__built`,
-         emit: ({ gates, sourceName, sourceTimezone, stored }) =>
-            "typeText" in stored
-               ? // malloy-text: storedTypedSource's text, the author's gate and view notes (single lines), and names through identifier
-                 `${stored.typeText}
-${gates}source: ${identifier(sourceName)} is ${identifier(stored.name)} extend {${sourceTimezone}${stored.timeframes}
+         emit: (read) => {
+            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
+            const gates = read.gates;
+            // malloy-text: the source's own `timezone:` statement, its zone through stringLiteral
+            const zone = read.sourceTimezone;
+            const declared = `${gates}source: ${identifier(read.sourceName)} is ${identifier(read.stored.name)}`;
+            if ("typeText" in read.stored) {
+               // malloy-text: storedTypedSource's text, names through identifier
+               const typeText = read.stored.typeText;
+               // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
+               const timeframes = read.stored.timeframes;
+               return `${typeText}
+${declared} extend {${zone}${timeframes}
 ${viewBody}
-}`
-               : `${stored.importLine}
-${gates}source: ${identifier(sourceName)} is ${identifier(stored.name)} extend {${sourceTimezone}
+}`;
+            }
+            // malloy-text: the companion import, names through identifier and its file through doubleQuotedString
+            const importLine = read.stored.importLine;
+            return `${importLine}
+${declared} extend {${zone}
 ${viewBody}
-}`,
+}`;
+         },
       });
    }
 }
@@ -574,7 +586,6 @@ export async function compilePersistedResultVariant(args: {
       copySuffix: ".view-author.malloy",
       queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
       flags: VARIANT_FLAGS,
-      // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
       declare: ({ gates, sourceName, copyName, declaringURL, addFile }) => {
          if (table.binding) {
             const name = `${plan.buildSourceName}__stored`;

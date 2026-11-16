@@ -1732,14 +1732,12 @@ ${declaration}
          queryModelURL: ctx.queryModelURL,
          flags: flagLine(modelDef),
          declare: async ({
-            gates: authorGates,
+            gates,
             sourceName,
             copyName,
             declaringURL,
             addFile,
          }) => {
-            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
-            const gates = authorGates;
             // What the run target adds over the rollup's fields: an
             // extension's dimensions over the grain, and the views the
             // query reads, as the author wrote them.
@@ -2072,7 +2070,6 @@ function colocatedRollupSource(
    from: string | undefined,
 ): string {
    const built = `${plan.rollupSourceName}__built`;
-   // malloy-text: generated names through identifier, the companion's path through doubleQuotedString, and rollupStatements' own text
    return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(from ?? "")}
 source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
 }`;

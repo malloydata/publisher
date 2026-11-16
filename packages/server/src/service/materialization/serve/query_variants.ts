@@ -384,21 +384,29 @@ export class PersistedQueryServe {
                     alsoExported: [inlineTarget],
                  },
          colocatedAlias: `${plan.buildSourceName}__stored`,
-         emit: ({ gates, sourceTimezone, stored }) => {
+         emit: (read) => {
+            // malloy-text: the run target's own gate expressions, as the author wrote them, one per line (see gateLines)
+            const gates = read.gates;
+            // malloy-text: the run target's own `timezone:` statement, its zone through stringLiteral
+            const zone = read.sourceTimezone;
             // The run target's own time zone: on the stored source beside the
             // timeframes a `storage=` read truncates again, on the
             // redeclaration for a colocated table, read as built.
-            const storedSource =
-               "typeText" in stored
-                  ? `${stored.typeText}${sourceTimezone || stored.timeframes ? ` extend {${sourceTimezone}${stored.timeframes}\n}` : ""}`
-                  : stored.importLine;
-            const zone =
-               !("typeText" in stored) && sourceTimezone
-                  ? ` extend {${sourceTimezone}\n}`
-                  : "";
-            // malloy-text: storedTypedSource's text or the companion import, the run target's own gate lines, and names through identifier
+            let storedSource: string;
+            let redeclaredZone = "";
+            if ("typeText" in read.stored) {
+               // malloy-text: storedTypedSource's text, names through identifier
+               const typeText = read.stored.typeText;
+               // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
+               const timeframes = read.stored.timeframes;
+               storedSource = `${typeText}${zone || timeframes ? ` extend {${zone}${timeframes}\n}` : ""}`;
+            } else {
+               // malloy-text: the companion import, names through identifier and its file through doubleQuotedString
+               storedSource = read.stored.importLine;
+               if (zone) redeclaredZone = ` extend {${zone}\n}`;
+            }
             return `${storedSource}
-${gates}source: ${identifier(target)} is ${identifier(stored.name)}${zone}
+${gates}source: ${identifier(target)} is ${identifier(read.stored.name)}${redeclaredZone}
 ${queryText}`;
          },
       });
