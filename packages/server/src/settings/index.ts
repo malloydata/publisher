@@ -19,6 +19,7 @@ export const settings = {
 
 export {
    describeSource,
+   RetrievalSettingsError,
    SettingError,
    SettingsError,
    type SettingSource,

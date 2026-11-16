@@ -17,6 +17,7 @@ import {
    describeSource,
    referencedVariable,
    REGISTRY,
+   RetrievalSettingsError,
    settings,
    Settings,
    type SettingKey,
@@ -1388,18 +1389,29 @@ function retrievalInForce(file: unknown): RetrievalConfig | undefined {
             (match) => `retrieval.${match[1]}.`,
          ),
       );
-      const given = RETRIEVAL_LEAVES.filter(
+      const cited = RETRIEVAL_LEAVES.filter(
          (leaf) =>
             [...sections].some((section) => leaf.key.startsWith(section)) &&
             settings.isSet(leaf.key as SettingKey),
-      ).map((leaf) => {
+      );
+      if (cited.length === 0) throw error;
+      const given = cited.map((leaf) => {
          const from = describeSource(settings.source(leaf.key as SettingKey));
          return ignored.has(leaf.key)
             ? `${leaf.key} from ${from}, which a google or vertex provider does not read`
             : `${leaf.key} from ${from}`;
       });
-      if (given.length === 0) throw error;
-      throw new Error(`${error.message} Given: ${given.join("; ")}.`);
+      // The variables and flags among them that the block reads: they stay
+      // set when the file is moved aside.
+      const outside = cited
+         .filter((leaf) => !ignored.has(leaf.key))
+         .map((leaf) => settings.source(leaf.key as SettingKey))
+         .filter((source) => source.kind === "env" || source.kind === "flag")
+         .map(describeSource);
+      throw new RetrievalSettingsError(
+         `${error.message} Given: ${given.join("; ")}.`,
+         outside,
+      );
    }
 }
 

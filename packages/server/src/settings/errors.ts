@@ -57,3 +57,18 @@ export class SettingsError extends Error {
       this.name = "SettingsError";
    }
 }
+
+/**
+ * The `retrieval` block in force does not validate. `outside` names each
+ * variable and flag among the settings the message cites: moving the config
+ * file aside leaves those set, so a remedy that blames the file would mislead.
+ */
+export class RetrievalSettingsError extends Error {
+   constructor(
+      message: string,
+      readonly outside: readonly string[],
+   ) {
+      super(message);
+      this.name = "RetrievalSettingsError";
+   }
+}
