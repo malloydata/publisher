@@ -8,7 +8,6 @@
  * run records, over a model compiled from files.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { MalloyError } from "@malloydata/malloy";
 import { AccessDeniedError, BadRequestError } from "../errors";
 import { unrecordedAudit } from "./access_record";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -151,18 +150,24 @@ describe("a linear report's query cells under the model's gates", () => {
          expect(countOf(await run(cells.gated, { GROUPS: [] }))).toBe(0);
       });
 
-      // Known gap: the query path answers this caller a 403. When the cell path
-      // does too, this expectation flips.
-      it("known gap: refuses a caller who supplies no groups with the compiler's missing-given error, not a 403", async () => {
+      it("denies a caller who supplies no groups with the opaque 403 the query path gives, naming no given", async () => {
          const refused = await run(cells.gated).then(
             () => undefined,
             (err: unknown) => err,
          );
-         expect(refused).toBeInstanceOf(MalloyError);
-         expect(refused).not.toBeInstanceOf(AccessDeniedError);
-         expect((refused as Error).message).toContain(
-            "Given 'GROUPS' has no value and no default",
+         expect(refused).toBeInstanceOf(AccessDeniedError);
+         expect((refused as Error).message).not.toContain("GROUPS");
+         expect((refused as Error).message).toBe(
+            AccessDeniedError.forSource("gated").message,
          );
+      });
+
+      it("records nothing for a cell denied an unsupplied given", async () => {
+         const audit = unrecordedAudit();
+         await expect(
+            run(cells.gated, undefined, audit),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+         expect(audit.summary).toBeUndefined();
       });
 
       it("records the graft as a filtered decision, naming the filter and the given it read", async () => {
@@ -225,9 +230,11 @@ describe("a linear report's query cells under the model's gates", () => {
          await expect(
             run(cells.both, { ROLE: "guest", GROUPS: [1, 2] }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
+         // Past the lock, an unsupplied filter given is denied as the query
+         // path denies it.
          await expect(
             run(cells.both, { ROLE: "admin" }),
-         ).rejects.toBeInstanceOf(MalloyError);
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       });
 
       it("records a filtered decision carrying both gates", async () => {
@@ -284,10 +291,7 @@ describe("a linear report's query cells under the model's gates", () => {
          ).rejects.toBeInstanceOf(AccessDeniedError);
       });
 
-      // Known gap: a numeric filter value is not validated; building its
-      // clause throws a type error, which the cell path reports as a bad
-      // request. When the value is validated, this expectation tightens.
-      it("known gap: answers a numeric filter value with a bad request from a type error, not a validation message", async () => {
+      it("refuses a numeric filter value with a bad request naming the filter and the type it takes", async () => {
          const refused = await run(
             cells.refined,
             { ROLE: "admin" },
@@ -300,7 +304,15 @@ describe("a linear report's query cells under the model's gates", () => {
             (err: unknown) => err,
          );
          expect(refused).toBeInstanceOf(BadRequestError);
-         expect((refused as Error).message).toContain("toLowerCase");
+         expect((refused as Error).message).toBe(
+            'Filter "org" takes a string or an array of strings, not a number',
+         );
+      });
+
+      it("denies a refused caller a 403 before it validates a numeric filter value", async () => {
+         await expect(
+            run(cells.refined, { ROLE: "guest" }, undefined, { org: 2 }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       });
 
       it("answers an admitted caller missing a required filter with a bad request", async () => {
