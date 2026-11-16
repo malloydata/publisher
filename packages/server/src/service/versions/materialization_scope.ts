@@ -30,6 +30,11 @@ import {
 export interface ScopedPackage {
    getVersionId(): string | undefined;
    getPackageMetadata(): { scope?: string | null };
+   /**
+    * `getPackageMetadata().scope`, without building the rest of the
+    * metadata (its warnings pass); read in its place when present.
+    */
+   getMaterializationScope?(): string | null | undefined;
 }
 
 /**
@@ -40,7 +45,10 @@ export interface ScopedPackage {
 export function ownedVersionOf(pkg: ScopedPackage): string | undefined {
    const version = pkg.getVersionId();
    if (version === undefined) return undefined;
-   return pkg.getPackageMetadata().scope === "version" ? version : undefined;
+   const scope = pkg.getMaterializationScope
+      ? pkg.getMaterializationScope()
+      : pkg.getPackageMetadata().scope;
+   return scope === "version" ? version : undefined;
 }
 
 /**

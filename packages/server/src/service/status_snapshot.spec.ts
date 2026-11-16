@@ -425,17 +425,97 @@ describe("/status snapshot version rows", () => {
          sourceLocation: dir,
          promotion: "on-publish",
       });
-      const listed = async () =>
-         (await store!.getStatus()).environments[0].packages?.some(
+      const sales = async () =>
+         (await store!.getStatus()).environments[0].packages?.find(
             (p) => p.name === "sales",
-         ) ?? false;
-      // The write's own read failed: the committed version is not listed yet.
-      expect(await listed()).toBe(false);
+         );
+      // The write's own read failed, so no row names the committed version,
+      // but this server holds it loaded: it is listed, never absent (which
+      // would read to the control plane as a version to dispatch again).
+      expect(await sales()).toMatchObject({
+         versionId: "1.0.0",
+         loaded: true,
+         archiveStatus: "unarchive",
+         latestVersion: null,
+      });
 
-      await eventually(listed);
+      // Once a background read lands, the rows say the rest (its `latest`).
+      await eventually(async () => (await sales())?.latestVersion === "1.0.0");
       expect(comparable(await store!.getStatus())).toEqual(
          comparable(await store!.computeStatusFromListings()),
       );
+   });
+
+   it("keeps re-reading past the attempts it used to give up after", async () => {
+      await boot([{ name: "org", packages: ["anchor"] }], {
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+      });
+      const org = await environmentOf("org");
+      const versions = org.getVersionService() as VersionService<Package>;
+      const read = versions.versionRecords.bind(versions);
+      let failing = true;
+      sinon.stub(versions, "versionRecords").callsFake(async (name) => {
+         if (name === "sales" && failing) throw new Error("database busy");
+         return read(name);
+      });
+      const dir = source("sales", "1.0.0");
+      await versions.publish("sales", copyFrom(dir), {
+         sourceLocation: dir,
+         promotion: "on-publish",
+      });
+      const retry = org as unknown as {
+         statusVersionsRetry: ReturnType<typeof setTimeout> | undefined;
+         statusVersionsRetryAttempt: number;
+         retryStatusVersions(): Promise<void>;
+      };
+      // Far past the eighth attempt, where it used to stop for good: each
+      // failed re-read still schedules the next one.
+      for (const attempt of [8, 9, 30]) {
+         clearTimeout(retry.statusVersionsRetry);
+         retry.statusVersionsRetry = undefined;
+         retry.statusVersionsRetryAttempt = attempt;
+         await retry.retryStatusVersions();
+         expect(retry.statusVersionsRetry).toBeDefined();
+         expect(retry.statusVersionsRetryAttempt).toBe(attempt + 1);
+      }
+      failing = false;
+      clearTimeout(retry.statusVersionsRetry);
+      retry.statusVersionsRetry = undefined;
+      await retry.retryStatusVersions();
+      // It landed: nothing left to retry, and the backoff starts over.
+      expect(retry.statusVersionsRetry).toBeUndefined();
+      expect(retry.statusVersionsRetryAttempt).toBe(0);
+      expect(comparable(await store!.getStatus())).toEqual(
+         comparable(await store!.computeStatusFromListings()),
+      );
+   });
+
+   it("primes a new environment's version rows without reading any", async () => {
+      await boot([{ name: "org", packages: ["anchor"] }], {
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+      });
+      const repository = (
+         store as unknown as {
+            storageManager: {
+               getRepository(): { listVersionsByEnvironment: () => unknown };
+            };
+         }
+      ).storageManager.getRepository();
+      const listVersions = sinon.spy(repository, "listVersionsByEnvironment");
+      await store!.addEnvironment({
+         name: "fresh",
+         packages: [],
+         connections: [],
+      });
+      expect(listVersions.called).toBe(false);
+      const fresh = await environmentOf("fresh");
+      const versions = fresh.getVersionService() as VersionService<Package>;
+      const dir = source("sales", "1.0.0");
+      await versions.publish("sales", copyFrom(dir), {
+         sourceLocation: dir,
+         promotion: "on-publish",
+      });
+      await expectSnapshotEqualsFresh("a publish to a new environment");
    });
 
    it("re-reads a dirty package on the next write to any package", async () => {

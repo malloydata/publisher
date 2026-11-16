@@ -231,10 +231,25 @@ export function arrayQueryJoins(root: unknown): ArrayQueryJoin[] {
 const governsMemo = new WeakMap<object, boolean>();
 
 /**
+ * Record what {@link governsAccess} answers for `root`, computed over an
+ * equal value elsewhere: the package-load worker walks its own copy of a
+ * model's IR and ships the answer with it (`SerializedModel.governsAccess`),
+ * so the main thread never walks a model to learn that it governs nothing.
+ * The answer reads only the IR's content, which a structured clone keeps.
+ */
+export function noteGovernsAccess(root: unknown, governs: boolean): void {
+   if (isObject(root)) governsMemo.set(root, governs);
+}
+
+/**
  * Whether anything under `root` (a model definition, imports folded in)
  * carries an `#(authorize)`, `#(access_filter)`, `#(carries)` or
  * `#(classification)` note: a check of Publisher's reads what a query reads,
  * or which source it reaches, so a read it cannot follow matters here.
+ *
+ * Answering false walks every node, so it is answered once per object:
+ * memoized, and for a worker-compiled model noted at hydration from the
+ * worker's own walk ({@link noteGovernsAccess}).
  */
 export function governsAccess(root: unknown): boolean {
    if (!isObject(root)) return false;

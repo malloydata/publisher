@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `/status` keeps retrying a failed version read, and lists a loaded version meanwhile
+
+When `/status` cannot re-read a package's version rows from the database after a write, it now keeps retrying in the background until a read lands: 250 ms backing off to 30 s, then every 30 s. In 0.14.0 it gave up after eight attempts (about a minute), and a version committed in that window read as absent until the next write to the environment, so a control plane reconciling against `/status` dispatched it again. While the read is failing, a version this server holds loaded is listed even though no row read names it yet, with `loaded: true`, `archiveStatus: unarchive` and the `latestVersion` of the package's last successful read (`null` for a package new since then), as a version still publishing is listed. The rows already read stay listed as they were. An error is logged once the retries pass eight attempts, where the give-up was logged before.
+
 ## [Unreleased] — the v1 cutover conformance script runs again without NODE_ENV=test
 
 `bun scripts/v1-cutover-conformance.ts` runs again as the standalone CLI it is documented as. In 0.14.0 it exited 3 on every package unless `NODE_ENV=test` was set, because the harness took a connection-type test seam that is guarded to test processes. The script now answers without `NODE_ENV=test`, and without marking itself a test process. A CI job that set `NODE_ENV=test` to work around it can drop the variable.
@@ -134,6 +138,7 @@ The load failure is a 400, in the publish's response and in `/status` `loadError
 The body is unchanged, field for field, including `includeLoading=true`. Two differences in timing, neither of a field a reconcile reads: with inline fields on, a package entry's metadata (its warnings, `buildPlan`, description) is as of the last load, reload, bind or PATCH of that package, while `status` and the manifest-binding fields are read live on every poll as before; and a package registered from the config that nothing has loaded yet is no longer loaded, or listed, by a `/status` poll. Startup loads every configured package itself, so this is only a package registered and not yet loaded; the first request that names it, a listing of its environment, or a reload loads it as before. (A package whose startup load failed was not retried by polls before either.)
 
 The snapshot makes `/status` cheap with `PUBLISHER_PACKAGE_INLINE_FIELDS` on or off. With it on, the body still carries every entry's full metadata, about 357 KB per poll for 480 versions, so a fleet polling often may still want it `off` to save bandwidth.
+
 ## [0.14.0] — re-binding the same build manifest no longer recompiles the package
 
 Workers in Credible's dev fleet on 0.13.1 looped reloads: the control plane re-binds a version's build manifest whenever a heartbeat does not show it bound, and every such bind, even of the manifest the package was already serving, recompiled every model in the load pool and then every model's served copy on the main thread. With the main thread busy, `/status` heartbeats timed out, which made the control plane re-bind and reload again.
@@ -141,6 +146,7 @@ Workers in Credible's dev fleet on 0.13.1 looped reloads: the control plane re-b
 Binding a version (or a package loaded with a `manifestLocation`) to the manifest its models were last compiled against now fetches it and recompiles nothing; the binding is reported `bound` as before. A manifest that changed, a reload since, or another bind in between still recompiles. A `PATCH` that names a `manifestLocation` always reloads, as before, since it also applies the `publisher.json` it writes. When a package does recompile against a manifest, each model's served copy compiles once instead of starting, being discarded and starting again; a served copy with no table to read compiles nothing; and a source whose re-root does not compile is not recompiled or warned about again for the same model and tables (for ten minutes) — it keeps answering live, as it did. The served copy hands the event loop a turn between its compile passes.
 
 Answers are unchanged: the same sources are served from the same tables. No API, enum or metric value changes.
+
 ## [0.14.0] — less main-thread work per package load
 
 0.13.1 added a check to every package load that walked each model's whole compiled definition for joins inside array queries. That walk ran on the main thread, and it remembered every node it visited in a table that outlived the walk. The check now asks first whether a model governs access at all. A model that governs nothing is not walked for joins. A model that does is walked once, and the walk keeps nothing afterwards. A load that refused such a join still refuses it, with the same message.
@@ -191,7 +197,7 @@ No API, enum or metric value changes.
 
 ## [0.14.0] — a rollup a compile-time gate refuses now warns `preaggregate-not-built`
 
-This changes the meaning of a signal. A valid `#(preaggregate)` or `#@ preaggregate` rollup that a compile-time gate refuses alone, while the rest of the package loads, used to carry the `persist-source-refused` warning of a `#@ persist` source, though its author wrote no `#@ persist`. It now carries its own code, `preaggregate-not-built` (severity `warn`), with `subject` its base source (now also when the refusal left the rollup out of the plan's `sources`), and a message that names the base and the grain before the gate's reason: ``#(preaggregate) rollup of source "orders" at (category) is not built, so its measures are served live: …``, worded as the `preaggregate-reads-given` message. The gates are the ones that refuse a rollup in the build plan's `refusedSources` (tier `preaggregate`): a dialect whose connection creates no table, a table name another rollup's table holds, a base scoped by a given, a row-level gate on a v1 rollup's base, and the `storage=` destination gate. `persist-source-refused` now means a `#@ persist` source only.
+This changes the meaning of a signal. A valid `#(preaggregate)` or `#@ preaggregate` rollup that a compile-time gate refuses alone, while the rest of the package loads, used to carry the `persist-source-refused` warning of a `#@ persist` source, though its author wrote no `#@ persist`. It now carries its own code, `preaggregate-not-built` (severity `warn`), with `subject` its base source (now also when the refusal left the rollup out of the plan's `sources`), and a message that names the base and the grain before the gate's reason: `#(preaggregate) rollup of source "orders" at (category) is not built, so its measures are served live: …`, worded as the `preaggregate-reads-given` message. The gates are the ones that refuse a rollup in the build plan's `refusedSources` (tier `preaggregate`): a dialect whose connection creates no table, a table name another rollup's table holds, a base scoped by a given, a row-level gate on a v1 rollup's base, and the `storage=` destination gate. `persist-source-refused` now means a `#@ persist` source only.
 
 Nothing else changes: the same rollups are built or refused, the same queries are served or answered live, and `refusedSources` lists the same entries with the same reasons and messages. A rollup refusal that already had a code of its own keeps it (`preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given`, `preaggregate-over-stored-base` and the like), and `preaggregate-malformed` is unchanged. Who is affected: a client that matched `persist-source-refused` to find refused rollups. Match `preaggregate-not-built` as well; warning codes are open strings, so a client that does not know the new code should show it as it shows any other warning.
 
@@ -206,6 +212,7 @@ Three shapes of stored source had their tables built but were answered live, wit
 A colocated source bound with no recorded type for a big-integer column, on any dialect, now also gets a new package warning, `stored-native-schema-missing`, naming its big-integer columns and whether each is read as `INT64` or answered live. The next full rebuild records the types and clears it.
 
 API addition: the package warning code `stored-native-schema-missing`. No field or enum value is added.
+
 ## [0.14.0] — readable names for the tables Publisher names itself
 
 A table Publisher names itself (a `#@ persist` or `#(materialize)` source with no `name=`, a persisted view, a rollup, and every table under `scope: "version"`) now says what it is in a warehouse listing: `<package>__<file>__<source>[__v<version>]__p<8 hex>`, for example `ecommerce__orders__order_summary__pda155503` where the table used to be `order_summary__p3f9c2a1b`. `<file>` is the model's base name; a persisted view reads `<source>_<view>` and a rollup `<base>_by_<grain>`; the hex is a hash of the environment, package, model path, source and version, so packages and environments sharing a schema still never share a table. The name fits each warehouse's identifier limit (50 characters on Postgres, Redshift, MySQL, Trino and Presto), cutting the package and file before the source. A hosted deployment names its tables with the same prefix.
@@ -221,6 +228,7 @@ A table Publisher names itself (a `#@ persist` or `#(materialize)` source with n
 A `#(materialize)` table holds its zone-dependent values (a computed dimension such as `hour(ts)`, a truncation) as its build computed them, in its source's zone, its own or one it inherits. Read through a join, Malloy does not apply the joined source's `timezone:`, so a query that set no zone read the table in UTC while the table held, say, New York's values. The served copy answered it from the table and returned wrong rows: hours 16 to 21 where live gives 21 to 23 and 0 to 2. Such a query now answers live, with the `TIME_ZONE` reason.
 
 The rule, for every value a table stores that depends on the zone:
+
 - **The read zone.** A query reads its tables in the zone its first stage computes in: its own `timezone:`, else the zone its source sets or inherits, else the default. Every other zone it sets, in a later stage or a nest, is compared too. A table reached through a join is read in that same zone.
 - **The build zone.** Each table was built in its stored source's zone, read from the author's model, where a zone the source inherits is kept.
 - **Decided per column.** A query is answered live only when it reads one of the table's zone-dependent columns (a computed dimension the probe compiler did not clear, or a restated truncation) in another zone. A query that reads none, such as a measure of `amt` through the join, stays on the table.
@@ -245,6 +253,7 @@ Every lookup Publisher makes through a path a package author controls now resolv
 - **Data probe errors** (`GET …/databases`) name the file by its package-relative path with the connection's reason, rather than echoing the SQL the probe compiled; a path inside Malloy's escaped quotes is no longer mangled (`'bad.parquet/'`).
 
 No API change.
+
 ## [0.14.0] — an auto-run reports `MANIFEST_FILE_READY` only once its package serves the new tables
 
 A materialization auto-run used to report `MANIFEST_FILE_READY` and then load its manifest into the package. A caller that waited for `MANIFEST_FILE_READY` (the REST `GET …/materializations/{id}`, `malloy-pub materialize --wait`, the Console) and queried at once could be answered live, or from the previous table, until the load finished.
@@ -265,6 +274,7 @@ Also:
 - Other loaded versions that share the run's tables (`scope: "package"`) are rebound just after the run reports `MANIFEST_FILE_READY`, as before.
 - An orchestrated run never loads its manifest (the host distributes it), so for it nothing changes.
 - No status is added. `MANIFEST_ROWS_READY` now also spans the load, so a run can be seen there a little longer.
+
 ## [0.14.0] — `#@ persist` on a named query stores its result (`PUBLISHER_MATERIALIZE`)
 
 With `PUBLISHER_MATERIALIZE` on (the default), `#@ persist` on a top-level `query:` builds the query's result as a generated source, `<query>__query`, in the same companion as the file's persisted views, colocated or with `storage=`. Its table answers exactly the calls of the query, and answers them equal to live:
@@ -333,7 +343,7 @@ A model or notebook file that is itself a symlink out of the package is refused 
 
 A package's `publisher.json` is read only as a file inside the package, and never written through a link: a manifest that links out of the package (to anything or to nothing), a directory or an unreadable file answers that the manifest does not exist, and an invalid manifest's error no longer quotes its content. A PATCH of a package whose `publisher.json` leads outside the package answers 400; one that links inside the package is replaced by the file itself. A report write onto a planted link is refused the same way whatever it leads to.
 
-Copying a package (an install from a local location, an environment's packages at boot) now keeps symlinks as written, so a relative link inside the package keeps working in the copy. Before, the copy rewrote it to an absolute path into the source directory. A local install that relied on a relative link pointing *out* of the package (which the copy used to turn into an absolute path into the source tree) now gets a link that dangles in the copy, and the file it named is not served: copy that file into the package instead.
+Copying a package (an install from a local location, an environment's packages at boot) now keeps symlinks as written, so a relative link inside the package keeps working in the copy. Before, the copy rewrote it to an absolute path into the source directory. A local install that relied on a relative link pointing _out_ of the package (which the copy used to turn into an absolute path into the source tree) now gets a link that dangles in the copy, and the file it named is not served: copy that file into the package instead.
 
 What keeps working: imports between a package's own directories, `../` included (`import "../orders.malloy"` from a subfolder); a symlink inside the package that points inside it; a package mounted as a symlink under `--watch-env`; and virtual files such as a request's overlay and the generated companions. A model that imported a file from outside its package now fails to load with that message: copy the file into the package. SQL a model runs through DuckDB (`read_csv`, `read_parquet`, `read_text`) is not covered by this rule ([security-posture.md](docs/security-posture.md#known-gaps), gap 6).
 
@@ -360,6 +370,7 @@ What an operator sees on a server that did not set the switch before:
   - **Refused at load.** An invalid incremental refresh policy on a `#(materialize)` source or a persisted view, such as `refresh="incremental"` with no `watermark=`. This is the rule a v1 `#@ persist` source has always been held to, and as for one, the package fails to load: a package already published, or loaded from a control plane's storage, stops loading until it is fixed. An incremental declaration on a dialect incremental refresh does not support refuses that source alone instead (see above).
 
   Before upgrading, load each package that carries a v2 annotation or a persisted view on a server with `PUBLISHER_MATERIALIZE=true` and fix what it reports, or set `PUBLISHER_MATERIALIZE=false` (below) until you have. Packages with only v1 annotations on sources and measures are not refused by this change. The release policy counts a refused package as breaking; whether this ships in a minor or a patch release is the release cutter's call.
+
 - **Answers.** A query no table can answer is answered live, as before; the path report says which table a query read, and a `served-copy-not-served` warning says why a built source is not read. A persisted view's answer carries live's measure kinds, or is answered live (see "a persisted view's answer reports its measures as measures" above).
 
 To opt out, set `PUBLISHER_MATERIALIZE=false`: `#(materialize)` and `#(preaggregate)` are ignored again and the build plan is what it was before. Set it the same on every worker, and treat it as one-way in an environment: once on, leave it on rather than switching it off and back on.
@@ -554,7 +565,7 @@ When a rollup's build SQL changes with Malloy's (a symmetric sum now reads `CASE
 ## [0.13.0] — A cancelled run keeps the error it raced, and a failed shared table is built once
 
 - A materialization run that was cancelled while a real failure was in flight still records `error:
-  "Cancelled"`, and now also keeps that failure's message in its metadata as `errorAtCancel`, on the
+"Cancelled"`, and now also keeps that failure's message in its metadata as `errorAtCancel`, on the
   record only; the logs carry its code.
 - When a base and its `extend` share one table and its build fails, the second source takes the
   same failure (reason and `retryable`) without running the build again. The run's `failures` keep

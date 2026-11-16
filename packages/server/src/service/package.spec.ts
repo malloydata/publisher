@@ -344,6 +344,7 @@ describe("service/package", () => {
                      "model1.malloy",
                      {
                         getPath: () => "model1.malloy",
+                        getType: () => "model",
                         getModel: () => "foo",
                         getGivens: () => [],
                         getCompilationError: () => undefined,
