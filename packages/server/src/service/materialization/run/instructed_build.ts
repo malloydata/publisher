@@ -108,6 +108,7 @@ import {
 import { packageOwner } from "./table_mark_sql";
 import { atTableSite, type TableSiteContext } from "./table_site";
 import {
+   LockOrderError,
    withOwnedNameLock,
    assertTableOwnable,
    hasAuthorTableName,
@@ -613,15 +614,16 @@ export class InstructedBuild {
       if (!pkg) return;
       await this.seams
          .tableNotOwned?.(pkg.environmentName, pkg.packageName, ownedTarget)
-         .catch((retireErr) =>
+         .catch((retireErr) => {
+            if (retireErr instanceof LockOrderError) throw retireErr;
             logger.warn(
                "Could not retire a package's entries for a table it does not own",
                {
                   sourceName: persistSource.name,
                   error: errMessage(retireErr),
                },
-            ),
-         );
+            );
+         });
    }
 
    /**
@@ -1805,7 +1807,13 @@ export async function checkAndRecordKey(
    logContext: Record<string, unknown>,
    sourceID?: string,
 ): Promise<void> {
-   const record = await runCheck().catch(() => undefined);
+   let record: KeyCheckRecord | undefined;
+   try {
+      record = await runCheck();
+   } catch (err) {
+      logger.warn(messages.notRun, { ...logContext, error: errMessage(err) });
+      return;
+   }
    if (!record) {
       logger.warn(messages.notRun, logContext);
       return;

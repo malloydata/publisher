@@ -132,6 +132,8 @@ export async function withOwnedNameLock<T>(
    physicalTableName: string,
    fn: () => Promise<T>,
 ): Promise<T> {
+   // Nested, it would wait on itself for the same name.
+   assertNoOwnedNameHeld("owned-name");
    return OWNED_NAME_LOCK.withLock(
       tableIdentity(physicalTableName),
       async () => {
@@ -145,14 +147,23 @@ export async function withOwnedNameLock<T>(
    );
 }
 
+/** A lock taken out of the run's order (run/README.md); thrown under test. */
+export class LockOrderError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "LockOrderError";
+   }
+}
+
 /**
  * Refuse, under test, taking the `lock` lock while an owned-name lock is
- * held, which comes after it in the lock order; logged otherwise.
+ * held, which comes after it in the lock order; logged otherwise. A
+ * best-effort catch rethrows the refusal, so a test sees it.
  */
 export function assertNoOwnedNameHeld(lock: string): void {
    if (!ownedNameHolds.getStore()?.held) return;
    const message = `Lock order: the ${lock} lock was taken while an owned-name lock was held`;
-   if (externalEnv("NODE_ENV") === "test") throw new Error(message);
+   if (externalEnv("NODE_ENV") === "test") throw new LockOrderError(message);
    logger.error(message);
 }
 

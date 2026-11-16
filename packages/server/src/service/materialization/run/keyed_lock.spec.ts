@@ -4,7 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import { KeyedLock } from "./keyed_lock";
 import { TableClaims } from "./table_claims";
-import { withOwnedNameLock } from "./table_ownership";
+import { InstructedBuild } from "./instructed_build";
+import { LockOrderError, withOwnedNameLock } from "./table_ownership";
 
 /** Whether `promise` has settled by the time pending callbacks have run. */
 async function settled(promise: Promise<unknown>): Promise<boolean> {
@@ -108,5 +109,45 @@ describe("the owned-name lock", () => {
       await claims.withTableLock("env", "pkg", () =>
          withOwnedNameLock("analytics.summary", async () => {}),
       );
+   });
+
+   it("refuses a nested owned-name lock, under test, rather than waiting on itself", async () => {
+      await expect(
+         withOwnedNameLock("analytics.summary", () =>
+            withOwnedNameLock("analytics.summary", async () => {}),
+         ),
+      ).rejects.toThrow(LockOrderError);
+   });
+
+   it("lets a lock-order refusal through the retire's best-effort catch", async () => {
+      const claims = new TableClaims(() => ({}) as never);
+      const build = new InstructedBuild({
+         buildOneSource: async () => {
+            throw new Error("not built in this spec");
+         },
+         reclaimStorageTablesFromFailedRun: async () => {},
+         // A retire that takes the table lock, as the service's does.
+         tableNotOwned: (env, pkg) =>
+            claims.withTableLock(env, pkg, async () => {}),
+      });
+      const retire = (
+         build as unknown as {
+            retireNotOwned: (
+               run: unknown,
+               source: { name: string },
+               target: unknown,
+            ) => Promise<void>;
+         }
+      ).retireNotOwned.bind(build);
+      const run = {
+         buildMetadata: { context: { environment: "env", package: "pkg" } },
+      };
+      const target = { connectionName: "duckdb", physicalTableName: "t" };
+      // Out of order, under the name's lock: refused, not logged away.
+      await expect(
+         withOwnedNameLock("t", () => retire(run, { name: "s" }, target)),
+      ).rejects.toThrow(LockOrderError);
+      // Once the lock is let go, as the build retires: fine.
+      await retire(run, { name: "s" }, target);
    });
 });
