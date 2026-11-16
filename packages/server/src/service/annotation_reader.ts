@@ -17,6 +17,10 @@
  */
 
 import {
+   freshnessWindowSeconds,
+   isFreshnessFallback,
+} from "./materialization/domain/freshness";
+import {
    payloadOf,
    routeOf,
    type Annotations,
@@ -248,6 +252,31 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
 
 /** The keys of a `freshness` group (`freshness.window=`, `freshness.fallback=`). */
 const FRESHNESS_KEYS: ReadonlySet<string> = new Set(["window", "fallback"]);
+
+/**
+ * Why a `freshness` group's values cannot be read, or undefined: a window
+ * that is not a whole number and a unit (`s`, `m`, `h`, `d`, `w`), or a
+ * fallback other than `live`, `stale_ok`, `fail`. The one grammar every
+ * mechanism reads (materialization/domain/freshness.ts).
+ */
+export function freshnessValueProblem(group: {
+   has(...path: string[]): boolean;
+   text(...path: string[]): string | undefined;
+}): string | undefined {
+   if (group.has("window")) {
+      const window = group.text("window");
+      if (
+         window === undefined ||
+         freshnessWindowSeconds(window) === undefined
+      ) {
+         return 'has a freshness.window= that is not a whole number and a unit (s, m, h, d or w), such as freshness.window="24h"';
+      }
+   }
+   if (group.has("fallback") && !isFreshnessFallback(group.text("fallback"))) {
+      return "has a freshness.fallback= that is not one of live, stale_ok, fail";
+   }
+   return undefined;
+}
 
 /** The pre-aggregation directive's keys, on the same `#@` route. */
 const PREAGGREGATE_KEYS: ReadonlySet<string> = new Set([
@@ -516,6 +545,21 @@ export function readRouteTag(
               ? [tag.tag("freshness")]
               : [];
       for (const group of groups) {
+         // A value the publisher cannot read is invalid, on `#@ persist` as
+         // on every route that takes the group (`#(materialize)` and the
+         // rollup routes check theirs where they are planned).
+         if (route === "@" && group) {
+            const problem = freshnessValueProblem(group);
+            if (problem !== undefined) {
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: PERSIST_INVALID_CODE,
+                  message: `\`#@ persist\` ${problem}`,
+                  nested: true,
+               });
+            }
+         }
          for (const [key] of group?.entries() ?? []) {
             if (FRESHNESS_KEYS.has(key)) continue;
             const near = nearestKey(key, FRESHNESS_KEYS);

@@ -217,6 +217,44 @@ describe("stampDeclaredFreshness", () => {
       expect(stamped.C.dataAsOf).toBe(earlier);
    });
 
+   it("anchors a windowed table built over a carried table of unknown age at the epoch, never at the run's start", () => {
+      const index = declaredFreshnessIndex(
+         planOf({
+            base: { address: "A" },
+            down: {
+               address: "B",
+               freshness: { window: "1h" },
+               dependsOn: ["base"],
+            },
+         }),
+      );
+      const stamped = stampDeclaredFreshness(
+         { A: entry("A"), B: entry("B") },
+         index,
+         new Set(["A"]),
+         STARTED,
+      );
+      expect(stamped.B.dataAsOf).toBe(new Date(0).toISOString());
+   });
+
+   it("anchors a rollup at its base's anchor when it read the base's table", () => {
+      const earlier = "2026-11-16T11:00:00.000Z";
+      const index = declaredFreshnessIndex(
+         planOf({
+            base: { address: "A", freshness: { window: "1d" } },
+            rollup: { address: "R", freshness: { window: "2h" } },
+         }),
+      );
+      const stamped = stampDeclaredFreshness(
+         { A: entry("A", { dataAsOf: earlier }), R: entry("R") },
+         index,
+         new Set(["A"]),
+         STARTED,
+         new Map([["R", ["A"]]]),
+      );
+      expect(stamped.R.dataAsOf).toBe(earlier);
+   });
+
    it("clears the facts of a table that no longer declares any", () => {
       const index = declaredFreshnessIndex(planOf({ a: { address: "A" } }));
       const stamped = stampDeclaredFreshness(

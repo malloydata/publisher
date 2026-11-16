@@ -1202,6 +1202,12 @@ export class MaterializationService {
                      freshness.factsAt(sourceEntityId),
                      new Date(run.startedAt),
                   ),
+               upstreams: {
+                  windowSecondsAt: (address) =>
+                     freshness.factsAt(address)?.freshnessWindowSeconds,
+                  upstreamsOf: (address) => freshness.upstreamsOf(address),
+                  at: new Date(run.startedAt),
+               },
             },
          ));
          // A carried table at the author's `name=` is reused only while
@@ -1351,6 +1357,14 @@ export class MaterializationService {
          clearedTiers,
          hostInstructed: orchestrated,
          warehouseReach: opts.warehouseReach,
+         freshness: (() => {
+            const index = declaredFreshnessIndex(pkg.getBuildPlan());
+            return {
+               windowSecondsAt: (address: string) =>
+                  index.factsAt(address)?.freshnessWindowSeconds,
+               at: new Date(run.startedAt),
+            };
+         })(),
          // Auto-run only: Publisher owns every write to its tables, so it
          // can tell a joined table that has not changed since a check
          // passed. A host's tables are its own.

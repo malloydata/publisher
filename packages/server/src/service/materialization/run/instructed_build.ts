@@ -83,6 +83,7 @@ import {
    type PendingRefusal,
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
+import { freshnessOf } from "../domain/freshness";
 import {
    allSourcesRefusedError,
    BuildEnvironment,
@@ -418,6 +419,7 @@ export class InstructedBuild {
          buildMetadata,
          incremental,
          clearedTiers,
+         ...(options.freshness ? { freshness: options.freshness } : {}),
          index,
          // Once per run: it depends only on the plan.
          planFacts: {
@@ -766,7 +768,7 @@ export class InstructedBuild {
       if (!gated) return;
       const { instruction, sourceEntityId, target } = gated;
       const { compiled } = run;
-      const entry = await this.buildGatedSource(
+      const built = await this.buildGatedSource(
          run,
          (await overStoredBaseSource(run, persistSource, gated)) ??
             persistSource,
@@ -774,7 +776,13 @@ export class InstructedBuild {
          connection,
          gated,
       );
-      if (!entry) return;
+      if (!built) return;
+      const entry = withRollupUpstreamReuse(
+         run,
+         persistSource,
+         sourceEntityId,
+         built,
+      );
       run.builtSources.push(persistSource.name);
       reportSourceBuilt(
          {
@@ -1944,8 +1952,36 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
  *  - the compiled source has the rollup's own address, so it builds the
  *    same table.
  *
+ *  - with a declared window, the base's table is new enough
+ *    ({@link baseFreshEnough}), whoever instructed the run.
+ *
  * Records the base as what the rollup read, for its freshness anchor.
  */
+/**
+ * Whether a rollup with a declared window may read its base's table: the
+ * base was built in this run, or its data anchor is known and inside the
+ * rollup's window at the run's start. A table of unknown age is never read
+ * as if it were new; the rollup builds from the warehouse instead. A rollup
+ * that declares no window reads any current table of its base.
+ */
+function baseFreshEnough(
+   run: InstructedRun,
+   rollupAddress: string,
+   baseAddress: string,
+   baseEntry: ManifestEntry,
+): boolean {
+   const window = run.freshness?.windowSecondsAt(rollupAddress);
+   if (window === undefined) return true;
+   if (run.builtAddresses.has(baseAddress)) return true;
+   if (baseEntry.dataAsOf === undefined) return false;
+   return (
+      freshnessOf(
+         { dataAsOf: baseEntry.dataAsOf, freshnessWindowSeconds: window },
+         run.freshness!.at,
+      ) === "fresh"
+   );
+}
+
 async function overStoredBaseSource(
    run: InstructedRun,
    persistSource: PersistSource,
@@ -1977,6 +2013,9 @@ async function overStoredBaseSource(
    ) {
       return undefined;
    }
+   if (!baseFreshEnough(run, gated.sourceEntityId, baseAddress, baseEntry)) {
+      return undefined;
+   }
    let variant: PersistSource | undefined;
    try {
       variant = await table.overStoredBase();
@@ -2000,4 +2039,32 @@ async function overStoredBaseSource(
    }
    (run.readFrom ??= new Map()).set(gated.sourceEntityId, [baseAddress]);
    return variant;
+}
+
+/**
+ * A rollup's entry with `upstreamReuse` saying what its build read: `reused`
+ * when it built from its base's stored table ({@link overStoredBaseSource}),
+ * absent when it built from the warehouse. Its build source names the base
+ * only in the author's text, which the classification reads, so the
+ * classification alone would say `reused` either way, and the key checks
+ * over the base's rows (checkRollupKeys) would be skipped for a build that
+ * grouped exactly those rows. Any other entry is returned as built.
+ */
+function withRollupUpstreamReuse(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   address: string,
+   entry: ManifestEntry,
+): ManifestEntry {
+   if (run.compiled.tables[persistSource.sourceID]?.kind !== "rollup") {
+      return entry;
+   }
+   const {
+      upstreamReuse: _reuse,
+      upstreamRecomputeReason: _reason,
+      ...rest
+   } = entry;
+   return run.readFrom?.has(address)
+      ? { ...rest, upstreamReuse: "reused" }
+      : rest;
 }

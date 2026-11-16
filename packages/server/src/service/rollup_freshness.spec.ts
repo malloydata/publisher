@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A rollup's freshness: `freshness.window=` and `freshness.fallback=` on
- * `#(preaggregate)` and on `#@ preaggregate`, read as `#@ persist` reads them,
- * over what its base declares, then the model file and the package. A
- * malformed group fails the load with the route's own codes.
+ * Freshness declarations: a rollup's `freshness.window=` and
+ * `freshness.fallback=` on `#(preaggregate)` and on `#@ preaggregate`, read
+ * as `#@ persist` reads them, over what its base declares, then the model file
+ * and the package; and one grammar on every mechanism, where a malformed
+ * group fails the load with the route's own codes.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -170,6 +171,19 @@ source: plain is ${ROWS} extend {
       });
    }
 
+   it("two measures of one rollup with different windows in the two spellings", async () => {
+      await expect(
+         load(`${HEAD}
+source: plain is ${ROWS} extend {
+  #(preaggregate) grain=["category"] freshness.window="1h"
+  measure: total is amount.sum()
+  #@ preaggregate grain="category" freshness.window="2h"
+  measure: n is count()
+}
+`),
+      ).rejects.toThrow("[preaggregate-invalid]");
+   });
+
    for (const spelling of [
       '#(preaggregate) grain=["category"]',
       '#@ preaggregate grain="category"',
@@ -187,4 +201,77 @@ source: plain is ${ROWS} extend {
          ).rejects.toThrow("[preaggregate-invalid]");
       });
    }
+});
+
+describe("a malformed freshness value fails the load on every mechanism", () => {
+   const persisted = (line: string) => `${HEAD}
+${line}
+source: daily is ${ROWS} -> { group_by: category; aggregate: total is amount.sum() }
+`;
+   const cases: [string, string, string][] = [
+      [
+         "a window that is not a duration on #@ persist",
+         persisted('#@ persist freshness.window="a day"'),
+         "persist-invalid",
+      ],
+      [
+         "a fallback outside the three on #@ persist { … }",
+         persisted('#@ persist { freshness.fallback="serve_stale" }'),
+         "persist-invalid",
+      ],
+      [
+         "a window that is not a duration on #(materialize)",
+         `${HEAD}
+#(materialize) freshness.window="1.5h"
+source: m is ${ROWS} extend { dimension: big is amount > 0 }
+`,
+         "materialize-invalid",
+      ],
+      [
+         "a fallback outside the three on #(materialize)",
+         `${HEAD}
+#(materialize) freshness.fallback="serve_stale"
+source: m is ${ROWS} extend { dimension: big is amount > 0 }
+`,
+         "materialize-invalid",
+      ],
+      [
+         "a window that is not a duration on #@ persist on a view",
+         `${HEAD}
+source: v is ${ROWS} extend {
+  #@ persist freshness.window="soon"
+  view: by_category is { group_by: category; aggregate: total is amount.sum() }
+}
+`,
+         "persist-invalid",
+      ],
+      [
+         "a fallback outside the three on #@ persist on a named query",
+         `${HEAD}
+source: q is ${ROWS}
+#@ persist freshness.fallback="later"
+query: by_category is q -> { group_by: category; aggregate: total is amount.sum() }
+`,
+         "persist-invalid",
+      ],
+   ];
+   for (const [what, model, code] of cases) {
+      it(what, async () => {
+         await expect(load(model)).rejects.toThrow(`[${code}]`);
+      });
+   }
+
+   it("loads a well-formed window and fallback on every mechanism", async () => {
+      const pkg = await load(`${HEAD}
+#@ persist freshness.window="90s" freshness.fallback="stale_ok"
+source: daily is ${ROWS} -> { group_by: category; aggregate: total is amount.sum() }
+#(materialize) freshness.window="2w" freshness.fallback="fail"
+source: m is ${ROWS} extend { dimension: big is amount > 0 }
+`);
+      expect(
+         Object.values(pkg.getBuildPlan()?.sources ?? {})
+            .map((s) => s.freshness)
+            .filter(Boolean),
+      ).toHaveLength(2);
+   });
 });

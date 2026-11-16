@@ -91,6 +91,8 @@ interface GeneratedRollups {
     * from the warehouse, as it is planned).
     */
    overStoredBases(): Promise<ReadonlyMap<string, PersistSource>>;
+   /** The sourceIDs {@link overStoredBases} may hold: the reuse candidates. */
+   overStoredCandidates: ReadonlySet<string>;
 }
 
 /**
@@ -254,6 +256,7 @@ export async function tryCompileRollupCompanion(args: {
             text,
             overStoredBases: () =>
                (overStoredBases ??= compileOverStoredBases()),
+            overStoredCandidates: overStored.rollups,
          },
          refused,
       };

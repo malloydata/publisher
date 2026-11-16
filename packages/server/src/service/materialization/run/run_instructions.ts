@@ -12,6 +12,7 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
+import { freshnessOf } from "../domain/freshness";
 import type { PersistSource } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -646,6 +647,13 @@ export function deriveSelfInstructions(
    options: {
       forceRefresh?: boolean;
       pastWindow?: (sourceEntityId: string, prior: ManifestEntry) => boolean;
+      /**
+       * What a rebuilt table with a declared window reads: a carried table
+       * it reads (through the plan's edges, transitively) whose age is
+       * unknown or past that window is rebuilt too (see
+       * {@link rebuildStaleUpstreams}).
+       */
+      upstreams?: StaleUpstreamRule;
    } = {},
 ): {
    instructions: BuildInstruction[];
@@ -678,6 +686,8 @@ export function deriveSelfInstructions(
       naming,
    );
    const seen = new Set<string>();
+   // The instruction that would rebuild each carried table.
+   const carriedInstructions = new Map<string, BuildInstruction>();
    // Readable names this run writes, by where they live, and whose.
    const derived = new Map<string, string>();
 
@@ -769,6 +779,7 @@ export function deriveSelfInstructions(
          )
       ) {
          carried[sourceEntityId] = prior!;
+         carriedInstructions.set(sourceEntityId, instruction);
          // A table at the author's `name=` may have been written by
          // another package since (or before the mark existed).
          if (named && prior!.physicalTableName === logicalName) {
@@ -789,6 +800,16 @@ export function deriveSelfInstructions(
       instructions.push(instruction);
    }
 
+   if (options.upstreams) {
+      rebuildStaleUpstreams(
+         instructions,
+         carried,
+         carriedInstructions,
+         recheck,
+         options.upstreams,
+      );
+   }
+
    if (
       refusals.length > 0 &&
       instructions.length === 0 &&
@@ -798,6 +819,67 @@ export function deriveSelfInstructions(
    }
 
    return { instructions, carried, refused, cleared, recheck, renamed };
+}
+
+/** What {@link rebuildStaleUpstreams} reads. */
+export interface StaleUpstreamRule {
+   windowSecondsAt(sourceEntityId: string): number | undefined;
+   /** The tables a table at `sourceEntityId` is built from (the plan's edges). */
+   upstreamsOf(sourceEntityId: string): readonly string[];
+   /** The run's start, which a carried table is aged at. */
+   at: Date;
+}
+
+/**
+ * Rebuild, rather than carry, each table a rebuilt table with a declared
+ * window reads (transitively) whose age is unknown or past that window at
+ * the run's start: a rebuilt table is anchored at the oldest table it read
+ * (freshness_stamp.ts), so a table read at an unknown or stale age would
+ * leave it stale on arrival, or claim fresh rows it does not hold. The
+ * narrowest window over a path decides. Moves each such table from
+ * `carried` (and `recheck`) to `instructions`.
+ */
+function rebuildStaleUpstreams(
+   instructions: BuildInstruction[],
+   carried: Record<string, ManifestEntry>,
+   carriedInstructions: ReadonlyMap<string, BuildInstruction>,
+   recheck: Record<string, BuildInstruction>,
+   rule: StaleUpstreamRule,
+): void {
+   const narrowest = new Map<string, number>();
+   const queue: [string, number][] = [];
+   const visit = (address: string, window: number) => {
+      const seen = narrowest.get(address);
+      if (seen !== undefined && seen <= window) return;
+      narrowest.set(address, window);
+      queue.push([address, window]);
+   };
+   for (const instruction of instructions) {
+      const window = rule.windowSecondsAt(instruction.sourceEntityId);
+      if (window !== undefined) visit(instruction.sourceEntityId, window);
+   }
+   while (queue.length > 0) {
+      const [address, window] = queue.pop()!;
+      for (const upstream of rule.upstreamsOf(address)) {
+         const prior = carried[upstream];
+         if (prior !== undefined) {
+            const stale =
+               prior.dataAsOf === undefined ||
+               freshnessOf(
+                  { dataAsOf: prior.dataAsOf, freshnessWindowSeconds: window },
+                  rule.at,
+               ) !== "fresh";
+            // A fresh carried table's own anchor already covers what it read.
+            if (!stale) continue;
+            const instruction = carriedInstructions.get(upstream);
+            if (instruction === undefined) continue;
+            delete carried[upstream];
+            delete recheck[upstream];
+            instructions.push(instruction);
+         }
+         visit(upstream, window);
+      }
+   }
 }
 
 /**

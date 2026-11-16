@@ -122,10 +122,12 @@ function withoutFreshness(entry: ManifestEntry): ManifestEntry {
  * A standalone run's entries, each stamped from its table's declarations:
  * the declared window and fallback, and `dataAsOf`, the instant its data is
  * as of. A carried entry keeps its anchor. A built one is anchored at the
- * run's start, or at the oldest known anchor of a table it was built from,
- * directly or through others, when that is older (its rows are no newer than
- * what it read; a carried table that declares nothing has no known anchor
- * and adds none). An entry
+ * run's start, or at the oldest anchor of a stored table it was built from,
+ * directly or through others, when that is older: its rows are no newer than
+ * what it read. A table it read whose age is unknown (carried with no
+ * anchor) anchors it at the epoch, so it is past any window: a standalone
+ * run rebuilds such an upstream rather than read it for a windowed table
+ * (run_instructions.ts), so this is a guard, not a path. An entry
  * whose table declares nothing carries no facts, so it is never stale.
  */
 export function stampDeclaredFreshness(
@@ -155,9 +157,11 @@ export function stampDeclaredFreshness(
          ...index.upstreamsOf(address),
          ...(readFrom?.get(address) ?? []),
       ]) {
+         if (!entries[upstream]) continue;
          const at = anchorOf(upstream);
          const ms = at === undefined ? NaN : Date.parse(at);
-         if (!Number.isNaN(ms) && ms < oldest) oldest = ms;
+         // A table of unknown age is as old as can be, never new.
+         oldest = Math.min(oldest, Number.isNaN(ms) ? 0 : ms);
       }
       visiting.delete(address);
       const anchor = new Date(oldest).toISOString();

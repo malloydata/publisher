@@ -437,7 +437,15 @@ export class ManifestCommitter {
          const local = cached[sourceEntityId];
          if (!local) continue;
          // Local entry is the base; caller-supplied (defined) fields override it.
-         const merged: ManifestEntry = { ...local };
+         // Its freshness facts are left out: a standalone run stamped them,
+         // and on a host's run the host's facts are the only ones that hold.
+         const {
+            dataAsOf: _dataAsOf,
+            freshnessWindowSeconds: _window,
+            freshnessFallback: _fallback,
+            ...unstamped
+         } = local;
+         const merged: ManifestEntry = { ...unstamped };
          for (const [key, value] of Object.entries(ref)) {
             if (value !== undefined) {
                (merged as Record<string, unknown>)[key] = value;

@@ -714,29 +714,39 @@ its base go stale together unless the rollup says otherwise (see
 
 **A standalone run stamps the declared window.** Each entry of the manifest it commits carries
 `freshnessWindowSeconds`, `freshnessFallback` and `dataAsOf`, the same three fields a control plane
-stamps on the manifest it distributes, so the serve path ages the table the same way. A table built
-from another stored table (a chained build, or a rollup over its base's table) is anchored at that
-table's `dataAsOf` when it is older, since its rows are no newer than what it read. A table that
-declares nothing carries none of the three fields, as before.
+stamps on the manifest it distributes, so the serve path ages the table the same way. A table that
+declares nothing carries none of the three fields.
+
+**A table is never fresher than what it read.** A table built from another stored table (a chained
+build, or a rollup over its base's table) is anchored at that table's `dataAsOf` when it is older. A
+table of unknown age is never read as new: when a run rebuilds a table that declares a window, a
+carried table it reads through a chain, whose age is unknown (it declares nothing) or past that
+window, is rebuilt in the same run, and a rollup reads its base's table only when the base was built
+in this run or its `dataAsOf` is inside the rollup's window; otherwise the rollup builds from the
+warehouse.
 
 **A standalone run rebuilds a table past its window.** A run normally carries an unchanged table
 forward rather than rebuild it. A table past its declared window at the run's start is rebuilt
 instead, as is a windowed table whose entry has no `dataAsOf` (one built before tables were
 stamped); a table inside its window is carried, keeping its anchor and taking the window declared
-now. A run is what refreshes a table: nothing rebuilds it the moment its window passes. Trigger runs
-on demand or from a scheduler of your own; the package's `schedule` cron cannot be declared beside a
-freshness policy ([the publish gate](#the-persistence-policy-the-publish-gate)).
+now. A run is what refreshes a table: nothing rebuilds it the moment its window passes, and the
+package's `schedule` cron cannot be declared beside a freshness policy
+([the publish gate](#the-persistence-policy-the-publish-gate)). So on a standalone server a table
+with a window answers live (or stale, under `stale_ok`) once its window passes, until a run started
+on demand or by a scheduler of your own rebuilds it.
 
 **Under a control plane, the control plane's manifest decides.** A run with `buildInstructions`
 stamps nothing, and the manifest the package binds from `manifestLocation` is read as the control
 plane wrote it: its `freshnessWindowSeconds`, `freshnessFallback` and `dataAsOf` apply whatever the
-model declares. The plan reports each source's resolved declaration under `freshness` for the
+model declares. A reference the run fills in from this server's own records takes no freshness
+fields from them. The plan reports each source's resolved declaration under `freshness` for the
 control plane to stamp from.
 
-A window that is not a whole number and a unit fails the load on a rollup (`preaggregate-invalid`),
-as an unknown key in the group does (`preaggregate-unknown-key`). On `#@ persist` and
-`#(materialize)` such a window is carried as written, for a control plane to read, and a standalone
-run stamps no window for it.
+**One grammar, checked at load.** On every mechanism (`#@ persist`, including on a view or a named
+query, `#(materialize)`, `#(preaggregate)` and `#@ preaggregate`), a window that is not a whole
+number and a unit, or a fallback other than `live`, `stale_ok` or `fail`, fails the load with the
+route's `-invalid` code (`persist-invalid`, `materialize-invalid`, `preaggregate-invalid`), and a key
+in the group other than `window` and `fallback` with its unknown-key code.
 
 ## The persistence policy (the publish gate)
 

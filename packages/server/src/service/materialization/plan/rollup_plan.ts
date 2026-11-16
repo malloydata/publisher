@@ -571,8 +571,9 @@ export function planSourceRollups(
 
    // One table has one freshness: measures at one grain and placement that
    // declare different ones are malformed, and the rollup is not planned. A
-   // v1 line's conflict is v1 validation's to report
-   // (`conflicting_freshness`).
+   // conflict among v1 lines alone is v1 validation's to report
+   // (`conflicting_freshness`); one that a `#(preaggregate)` takes part in,
+   // which v1 validation does not see, is reported here.
    const plans: RollupVariantPlan[] = [];
    const baseFreshness = declaredBaseFreshness(def);
    for (const group of groups.values()) {
@@ -580,11 +581,11 @@ export function planSourceRollups(
          group.declarations.map((d) => d.freshness),
       );
       if ("conflict" in merged) {
-         if (!group.declarations.some((d) => d.v1)) {
+         if (!group.declarations.every((d) => d.v1)) {
             refused.push({
                tier: "malformed",
                code: PREAGGREGATE_INVALID_CODE,
-               message: `#(preaggregate) on source "${sourceName}" declares a different freshness.${merged.conflict}= on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same one`,
+               message: `rollups of source "${sourceName}" declare a different freshness.${merged.conflict}= on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same one`,
                sourceName,
             });
          }

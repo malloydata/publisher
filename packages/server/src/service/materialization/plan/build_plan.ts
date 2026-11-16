@@ -924,8 +924,13 @@ async function collectGeneratedRollups(
          kind: "rollup",
          ...plannedFacts(source, args.modelPath),
          rollup: plan,
-         overStoredBase: async () =>
-            (await generated.overStoredBases()).get(source.sourceID),
+         // Only a candidate: any other rollup keeps its place in the order.
+         ...(generated.overStoredCandidates.has(source.sourceID)
+            ? {
+                 overStoredBase: async () =>
+                    (await generated.overStoredBases()).get(source.sourceID),
+              }
+            : {}),
          gate: await classifyPersistSourceGate(
             source,
             modelDefOf(generated.model),

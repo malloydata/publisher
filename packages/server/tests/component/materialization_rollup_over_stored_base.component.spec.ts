@@ -35,6 +35,8 @@ import type {
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
 import { initializeSchema } from "../../src/storage/duckdb/schema";
+import { __setPackageLoadPoolForTests } from "../../src/package_load/package_load_pool";
+import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
 const ENV = "e1";
@@ -51,11 +53,14 @@ const RAW = `duckdb.sql("""
   ) AS t(cat, sub, amt, mark)
 """)`;
 
-function modelOf(rollupLine = '#@ preaggregate grain="cat"'): string {
+function modelOf(
+   rollupLine = '#@ preaggregate grain="cat"',
+   persistLine = "#@ persist",
+): string {
    return `##! experimental.persistence
 source: raw is ${RAW}
 
-#@ persist
+${persistLine}
 source: daily is raw -> {
   group_by: cat, sub
   aggregate: total is amt.sum(), n is count(), lo is amt.min()
@@ -73,6 +78,12 @@ source: plain is raw extend {
   measure: plain_total is amt.sum()
 }
 `;
+}
+
+/** Sleep until `ms` past `isoInstant`. */
+async function until(isoInstant: string, ms: number): Promise<void> {
+   const wait = Date.parse(isoInstant) + ms - Date.now();
+   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
 }
 
 const ROLLUP_QUERY =
@@ -317,9 +328,8 @@ describe("a colocated rollup over a colocated #@ persist base", () => {
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
       const rollup = rollupOf(m, "daily");
       expect(entries(m).map((e) => e.sourceName)).toEqual([rollup.sourceName]);
-      // Its `upstreamReuse` reads `reused` here too: the classification reads
-      // the author's text, where the base is persisted. The build reads the
-      // raw rows.
+      // It read the raw rows, and says so: no `upstreamReuse`.
+      expect(rollup.upstreamReuse).toBeUndefined();
       expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
       const served = await answer(ROLLUP_QUERY);
       expect(served.servedBy).toBe("rollup");
@@ -331,5 +341,265 @@ describe("a colocated rollup over a colocated #@ persist base", () => {
       const rollup = rollupOf(m, "plain");
       expect(rollup.upstreamReuse).toBeUndefined();
       expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+   });
+   describe("with freshness", () => {
+      /** Rebuild only the rollup: a new grain, the base unchanged. */
+      async function regrain(rollupLine: string, persistLine?: string) {
+         fs.writeFileSync(
+            path.join(envPath, PKG, "m.malloy"),
+            modelOf(rollupLine, persistLine),
+         );
+         await env.getPackage(parsePackageName(PKG), true);
+         statements.length = 0;
+      }
+      const entryOf = (m: Materialization, name: string) =>
+         entries(m).find((e) => e.sourceName === name)! as Entry & {
+            dataAsOf?: string;
+         };
+
+      it("builds a windowed rollup from the warehouse over a carried base of unknown age, and serves it", async () => {
+         await setUp(
+            modelOf('#@ preaggregate grain="cat" freshness.window="1h"'),
+         );
+         const first = await build();
+         expect(rollupOf(first, "daily").upstreamReuse).toBe("reused");
+         // The base declares nothing, so its carried entry has no anchor.
+         expect(entryOf(first, "daily").dataAsOf).toBeUndefined();
+         await regrain('#@ preaggregate grain="sub" freshness.window="1h"');
+         const started = Date.now();
+         const second = await build();
+         expect(second.metadata).toMatchObject({ sourcesReused: 2 });
+         const rollup = rollupOf(second, "daily") as Entry & {
+            dataAsOf?: string;
+         };
+         expect(rollup.upstreamReuse).toBeUndefined();
+         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(Date.parse(rollup.dataAsOf!)).toBeGreaterThanOrEqual(
+            started - 1000,
+         );
+         const served = await answer(
+            "run: daily -> { group_by: sub; aggregate: grand; order_by: sub }",
+         );
+         expect(served.servedBy).toBe("rollup");
+      });
+
+      it("builds a rollup whose window is narrower than its carried base's age from the warehouse, so it is served fresh rather than stale on arrival", async () => {
+         const base = '#@ persist freshness.window="1h"';
+         await setUp(
+            modelOf('#@ preaggregate grain="cat" freshness.window="2s"', base),
+         );
+         const first = await build();
+         const baseAnchor = entryOf(first, "daily").dataAsOf!;
+         await until(baseAnchor, 2500);
+         await regrain(
+            '#@ preaggregate grain="sub" freshness.window="2s"',
+            base,
+         );
+         const started = Date.now();
+         const second = await build();
+         // The base is inside its own window, so it is carried.
+         expect(entryOf(second, "daily").dataAsOf).toBe(baseAnchor);
+         const rollup = rollupOf(second, "daily") as Entry & {
+            dataAsOf?: string;
+         };
+         expect(rollup.upstreamReuse).toBeUndefined();
+         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(Date.parse(rollup.dataAsOf!)).toBeGreaterThanOrEqual(
+            started - 1000,
+         );
+         const served = await answer(
+            "run: daily -> { group_by: sub; aggregate: grand; order_by: sub }",
+         );
+         expect(served.servedBy).toBe("rollup");
+      });
+
+      it("builds a windowed rollup from a carried base inside its window, anchored at the base", async () => {
+         const base = '#@ persist freshness.window="1h"';
+         await setUp(
+            modelOf('#@ preaggregate grain="cat" freshness.window="1h"', base),
+         );
+         const first = await build();
+         const baseAnchor = entryOf(first, "daily").dataAsOf!;
+         await regrain(
+            '#@ preaggregate grain="sub" freshness.window="1h"',
+            base,
+         );
+         const second = await build();
+         const rollup = rollupOf(second, "daily") as Entry & {
+            dataAsOf?: string;
+         };
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+         expect(rollup.dataAsOf).toBe(baseAnchor);
+      });
+
+      it("rebuilds a carried upstream of unknown age that a rebuilt windowed #@ persist reads, so its anchor is true", async () => {
+         const chained = (where: string) => `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist
+source: daily is raw -> { group_by: cat, sub; aggregate: total is amt.sum() }
+
+#@ persist freshness.window="1h"
+source: summed is daily -> { ${where}group_by: cat; aggregate: grand is total.sum() }
+`;
+         await setUp(chained(""));
+         const first = await build();
+         expect(first.metadata).toMatchObject({ sourcesBuilt: 2 });
+         fs.writeFileSync(
+            path.join(envPath, PKG, "m.malloy"),
+            chained("where: cat != 'zz'; "),
+         );
+         await env.getPackage(parsePackageName(PKG), true);
+         statements.length = 0;
+         const started = Date.now();
+         const second = await build();
+         // `daily` is unchanged but of unknown age, so it is rebuilt too.
+         expect(second.metadata).toMatchObject({
+            sourcesBuilt: 2,
+            sourcesReused: 0,
+         });
+         const summed = entryOf(second, "summed");
+         expect(Date.parse(summed.dataAsOf!)).toBeGreaterThanOrEqual(
+            started - 1000,
+         );
+      });
+   });
+
+   it("builds from the warehouse on a host's run whose reference to the base is at another tier", async () => {
+      await setUp();
+      const first = await build();
+      const base = entries(first).find((e) => e.sourceName === "daily")!;
+      const rollup = rollupOf(first, "daily");
+      const host = (reference: Record<string, unknown>) =>
+         build({
+            buildInstructions: [
+               {
+                  sourceEntityId: rollup.sourceEntityId,
+                  materializedTableId: "host-rollup",
+                  physicalTableName: `host_rollup_${Math.random().toString(36).slice(2, 8)}`,
+                  realization: "COPY",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: base.sourceEntityId,
+                  physicalTableName: base.physicalTableName,
+                  connectionName: "duckdb",
+                  ...reference,
+               },
+            ],
+         });
+      // At the base's own tier, the host's reference is read.
+      statements.length = 0;
+      const same = await host({});
+      expect([same.status, same.error]).toEqual(["MANIFEST_FILE_READY", null]);
+      const read = rollupOf(same, "daily");
+      expect(read.upstreamReuse).toBe("reused");
+      expect(createdBy(read.physicalTableName)).toContain(
+         base.physicalTableName,
+      );
+      // At another tier, it is not: the rollup reads the warehouse.
+      statements.length = 0;
+      const moved = await host({ storageDestinationName: "lake" });
+      expect([moved.status, moved.error]).toEqual([
+         "MANIFEST_FILE_READY",
+         null,
+      ]);
+      const warehouse = rollupOf(moved, "daily");
+      expect(warehouse.upstreamReuse).toBeUndefined();
+      expect(createdBy(warehouse.physicalTableName)).toContain(RAW_MARK);
+   });
+   it("rebuilds a windowed table whose carried entry has no anchor", async () => {
+      await setUp();
+      const first = await build();
+      const daily = entries(first).find((e) => e.sourceName === "daily")!;
+      expect((daily as { dataAsOf?: string }).dataAsOf).toBeUndefined();
+      // The window does not move the address: the same table, now windowed.
+      fs.writeFileSync(
+         path.join(envPath, PKG, "m.malloy"),
+         modelOf(undefined, '#@ persist freshness.window="1h"'),
+      );
+      await env.getPackage(parsePackageName(PKG), true);
+      const started = Date.now();
+      const second = await build();
+      const rebuilt = entries(second).find(
+         (e) => e.sourceName === "daily",
+      )! as Entry & {
+         dataAsOf?: string;
+         freshnessWindowSeconds?: number;
+      };
+      expect(rebuilt.sourceEntityId).toBe(daily.sourceEntityId);
+      expect(second.metadata).toMatchObject({ sourcesReused: 1 });
+      expect(rebuilt.freshnessWindowSeconds).toBe(3600);
+      expect(Date.parse(rebuilt.dataAsOf!)).toBeGreaterThanOrEqual(
+         started - 1000,
+      );
+   });
+
+   it("builds a rollup over a gated base from the base's table, storing the warehouse build's rows, and answers each caller as live", async () => {
+      const restore = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+         },
+      }).restore;
+      // The package-load worker reads its settings when it starts.
+      await __setPackageLoadPoolForTests(null);
+      try {
+         await setUp(`##! experimental { persistence givens }
+given: CAT :: string
+source: raw is ${RAW}
+
+#(access_filter) cat = $CAT
+#@ persist
+source: daily is raw -> {
+  group_by: cat, sub
+  aggregate: total is amt.sum()
+} extend {
+  #@ preaggregate grain="cat"
+  measure: grand is total.sum()
+}
+`);
+         const plannedSources = Object.values(
+            (await env.getPackage(parsePackageName(PKG), false)).getBuildPlan()!
+               .sources,
+         );
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entries(m).find((e) => e.sourceName === "daily")!;
+         const rollup = rollupOf(m, "daily");
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).toContain(
+            base.physicalTableName,
+         );
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const planned = plannedSources.find(
+            (s) => s.sourceEntityId === rollup.sourceEntityId,
+         )!;
+         expect(
+            await rowsOf(`SELECT * FROM ${rollup.physicalTableName}`),
+         ).toEqual(await rowsOf(planned.sql));
+         for (const cat of ["a", "b", "zz"]) {
+            const result = await pkg.getModel("m.malloy")!.runQuery(
+               unrecordedAudit(),
+               {
+                  query: "run: daily -> { group_by: cat; aggregate: grand }",
+                  givens: { CAT: cat },
+               } as never,
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+            expect(result.compactResult).toEqual(
+               cat === "a"
+                  ? [{ cat: "a", grand: 3.5 }]
+                  : cat === "b"
+                    ? [{ cat: "b", grand: 4.25 }]
+                    : [],
+            );
+         }
+      } finally {
+         restore();
+         await __setPackageLoadPoolForTests(null);
+      }
    });
 });
