@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — parallel raw SQL on a DuckDB connection no longer returns empty or short results
+
+Raw SQL requests (`sqlQuery` and the other connection SQL endpoints) that ran in parallel on one DuckDB or DuckLake connection could each answer 200 with zero rows, or with fewer rows than the query selects, and no error. DuckDB closes a connection's open result when another statement starts on it, and the endpoints stream. A connection now runs one statement at a time, which DuckDB did already, so the only change is that the truncation is gone. A Publisher that proxies to another one (a `publisher` connection, as `cred dev` sets up) was affected through the remote's endpoint.
+
 ## [Unreleased] — materialization telemetry: standard log fields, refusal events, key-check and routing metrics
 
 **Log queries may need updating.** Materialization log lines now name the same things by the same fields: `runId`, `destinationName`, `error`, `environmentName`, `packageName`. Renamed:
