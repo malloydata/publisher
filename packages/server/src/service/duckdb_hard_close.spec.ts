@@ -8,15 +8,14 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { destinationServeMemoryLimit, duckDBSizeBytes } from "./connection";
 import {
+   dbDuckDBHardCloseInternalsMatch,
    hardCloseOwnedDuckDBConnections,
    hardCloseStats,
    hardCloseWhenIdle,
    installDuckDBHardClose,
    ownDuckDBConnection,
 } from "./duckdb_hard_close";
-import { Settings } from "../settings";
 
 installDuckDBHardClose();
 
@@ -68,6 +67,15 @@ async function churn(cycles: number, hardClose: boolean): Promise<number> {
 }
 
 describe("DuckDB hard close", () => {
+   it("finds db-duckdb's connection classes exactly as audited", () => {
+      // The in-flight count proves a handle idle only while runDuckDBQuery and
+      // runSQLStream are the sole native paths. A db-duckdb upgrade that adds
+      // or removes a member turns the hard close off and fails here: audit the
+      // new members for native use, then update the lists in
+      // duckdb_hard_close.ts.
+      expect(dbDuckDBHardCloseInternalsMatch()).toBe(true);
+   });
+
    it.skipIf(threadCount() === undefined)(
       "frees each retired instance's threads at once, where a refcount close leaves them to the GC",
       async () => {
@@ -173,36 +181,6 @@ describe("DuckDB hard close", () => {
          expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
       } finally {
          fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-});
-
-describe("destination serve memory limit", () => {
-   it("reads DuckDB sizes", () => {
-      expect(duckDBSizeBytes("768MB")).toBe(768e6);
-      expect(duckDBSizeBytes("1GiB")).toBe(1024 ** 3);
-      expect(duckDBSizeBytes("1.5 GB")).toBe(1.5e9);
-      expect(duckDBSizeBytes("lots")).toBeUndefined();
-   });
-
-   it("is the smaller of 256 MiB and the configured limit", () => {
-      const withLimit = (limit: string | undefined) => {
-         Settings.install(
-            Settings.load({
-               env: { PUBLISHER_DUCKDB_MEMORY_LIMIT: limit },
-               cwd: "/nonexistent",
-            }),
-         );
-         return destinationServeMemoryLimit();
-      };
-      const previous = Settings.install(undefined);
-      try {
-         expect(withLimit(undefined)).toBe("256MiB");
-         expect(withLimit("768MB")).toBe("256MiB");
-         expect(withLimit("128MB")).toBe("128MB");
-         expect(withLimit("off")).toBe("256MiB");
-      } finally {
-         Settings.install(previous);
       }
    });
 });

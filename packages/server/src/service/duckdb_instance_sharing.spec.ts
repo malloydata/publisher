@@ -20,6 +20,11 @@ import {
    withThreadCap,
 } from "./duckdb_instance_sharing";
 import { attachmentDigest } from "./connection";
+import {
+   hardCloseStats,
+   hardCloseWhenIdle,
+   installDuckDBHardClose,
+} from "./duckdb_hard_close";
 import { Environment } from "./environment";
 import { availableCpus, cgroupCpuLimit } from "../settings/registry/storage";
 import { installSettings } from "../test_helpers/settings_env";
@@ -362,6 +367,30 @@ describe("one shared in-memory DuckDB instance", () => {
          await b.connecting;
          await waitFor(() => held.closed());
          expect(DuckDBConnection.activeDBs[shareKeyOf(b)]).toBeUndefined();
+      } finally {
+         setDuckDBCloseWaitMsForTesting(undefined);
+      }
+   });
+   it("hard-closes a connection whose open settles after its close timed out", async () => {
+      installDuckDBHardClose();
+      setDuckDBCloseWaitMsForTesting(50);
+      try {
+         const a = open({ databasePath: ":memory:", workingDirectory: dir });
+         await a.runSQL("SELECT 1");
+         const held = holdConnects(a);
+         const b = open({ databasePath: ":memory:", workingDirectory: dir });
+         await b.close();
+         // Its open has not settled, so there is no handle to free yet.
+         const before = hardCloseStats();
+         hardCloseWhenIdle(b);
+         expect(hardCloseStats().disconnected).toBe(before.disconnected);
+         held.release();
+         await b.connecting;
+         // The deferred close detaches the handle, and the hard close lands.
+         await waitFor(
+            () => hardCloseStats().disconnected === before.disconnected + 1,
+         );
+         await a.close();
       } finally {
          setDuckDBCloseWaitMsForTesting(undefined);
       }

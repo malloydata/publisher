@@ -66,6 +66,24 @@ const onDrained = new WeakMap<object, () => void>();
 const detachedHandle = new WeakMap<object, NativeConnection>();
 /** The DuckDB connections each owner (a MalloyConfig) created. */
 const ownedBy = new WeakMap<object, Set<DuckDBConnection>>();
+/** Owners already released: a connection they create later is never freed. */
+const releasedOwners = new WeakSet<object>();
+/**
+ * Closed connections whose hard close found no handle yet: an open still in
+ * flight when the close timed out (duckdb_instance_sharing.ts), which detaches
+ * its handle only once it settles.
+ */
+const awaitingHandle = new WeakSet<object>();
+/**
+ * Notes a deferred connection collected before its calls drained (a stream its
+ * reader abandoned): its handle was left to the GC after all.
+ */
+const neverDrained = new FinalizationRegistry<string>((name) => {
+   logger.debug(
+      "A retired DuckDB connection was collected with a call still in flight; its native database was freed by the GC, not the hard close",
+      { connection: name },
+   );
+});
 
 let installed = false;
 let available = false;
@@ -78,17 +96,71 @@ export function hardCloseStats(): Readonly<typeof stats> {
 }
 
 /**
- * Whether db-duckdb still has the internals this module wraps. Checked once
- * at install; a mismatch leaves every close a refcount close.
+ * Every member of db-duckdb's `DuckDBConnection` and `DuckDBCommon`
+ * prototypes, as of the version this module was written against. The in-flight
+ * count is only a proof if `runDuckDBQuery` and `runSQLStream` are the sole
+ * paths to the native handle, so a release that adds a member (an Arrow read,
+ * a prepared statement) could open a path the count misses and race a
+ * disconnect. Any difference turns the hard close off; duckdb_hard_close.spec.ts
+ * fails on the upgrade, to be re-audited and the lists updated.
+ */
+const DUCKDB_CONNECTION_MEMBERS = [
+   "applyFinalBaseline",
+   "attachIfShareable",
+   "buildInstanceOptions",
+   "close",
+   "constructor",
+   "detachInstance",
+   "detachShareableFile",
+   "getDigest",
+   "idle",
+   "init",
+   "loadBaselineExtensions",
+   "loadExtension",
+   "runDuckDBQuery",
+   "runSQLStream",
+   "setup",
+   "setupOnce",
+   "shouldApplyEnableExternalAccessAtOpenTime",
+];
+const DUCKDB_COMMON_MEMBERS = [
+   "canPersist",
+   "canStream",
+   "constructor",
+   "dialectName",
+   "estimateQueryCost",
+   "fetchSelectSchema",
+   "fetchTableSchema",
+   "fillStructDefFromTypeMap",
+   "isPool",
+   "manifestTemporaryTable",
+   "readQueryOptions",
+   "runRawSQL",
+   "runSQL",
+   "schemaFromQuery",
+   "test",
+];
+
+function sameMembers(proto: object, expected: readonly string[]): boolean {
+   const actual = Object.getOwnPropertyNames(proto).sort();
+   return (
+      actual.length === expected.length &&
+      actual.every((name, i) => name === expected[i])
+   );
+}
+
+/**
+ * Whether db-duckdb's connection classes have exactly the members this module
+ * was audited against. Checked once at install; a mismatch leaves every close
+ * a refcount close.
  */
 export function dbDuckDBHardCloseInternalsMatch(): boolean {
-   const proto = DuckDBConnection.prototype as unknown as Partial<
-      Record<keyof Internals, unknown>
-   >;
+   const proto = DuckDBConnection.prototype;
+   const common = Object.getPrototypeOf(proto) as object | null;
    return (
-      typeof proto.runDuckDBQuery === "function" &&
-      typeof proto.runSQLStream === "function" &&
-      typeof proto.detachInstance === "function"
+      common !== null &&
+      sameMembers(proto, DUCKDB_CONNECTION_MEMBERS) &&
+      sameMembers(common, DUCKDB_COMMON_MEMBERS)
    );
 }
 
@@ -175,6 +247,14 @@ export function ownDuckDBConnection(
    connection: Connection,
 ): void {
    if (!(connection instanceof DuckDBConnection)) return;
+   if (releasedOwners.has(owner)) {
+      // A lookup on a generation already released (a model still holding
+      // it). Nothing will release it again, so this one is freed at GC.
+      logger.debug(
+         "A DuckDB connection was created on a released connection generation; it is freed at GC, not hard-closed",
+         { connection: connection.name },
+      );
+   }
    let owned = ownedBy.get(owner);
    if (!owned) {
       owned = new Set();
@@ -195,11 +275,15 @@ export function hardCloseWhenIdle(connection: DuckDBConnection): void {
    // Not closed: new work could still start on it. No handle: nothing was
    // captured (shareable mode, an open that never settled) or it is done.
    if (!internals.closed || !handle) {
+      if (internals.closed) awaitingHandle.add(connection);
       stats.skipped++;
       return;
    }
+   awaitingHandle.delete(connection);
    detachedHandle.delete(connection);
+   const token = {};
    const disconnect = () => {
+      neverDrained.unregister(token);
       try {
          handle.disconnectSync();
          stats.disconnected++;
@@ -216,7 +300,17 @@ export function hardCloseWhenIdle(connection: DuckDBConnection): void {
       return;
    }
    stats.deferred++;
+   neverDrained.register(connection, connection.name, token);
    onDrained.set(connection, disconnect);
+}
+
+/**
+ * Retry a hard close that found no handle because the connection's open was
+ * still in flight; called once a deferred close has detached it. A connection
+ * nobody asked to hard-close is left alone.
+ */
+export function hardCloseIfAwaitingHandle(connection: DuckDBConnection): void {
+   if (awaitingHandle.has(connection)) hardCloseWhenIdle(connection);
 }
 
 /**
@@ -225,6 +319,7 @@ export function hardCloseWhenIdle(connection: DuckDBConnection): void {
  */
 export function hardCloseOwnedDuckDBConnections(owner: object): void {
    const owned = ownedBy.get(owner);
+   releasedOwners.add(owner);
    if (!owned) return;
    ownedBy.delete(owner);
    for (const connection of owned) hardCloseWhenIdle(connection);
