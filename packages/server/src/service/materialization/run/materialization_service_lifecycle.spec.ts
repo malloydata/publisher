@@ -1407,7 +1407,7 @@ describe("runInBackground (terminal recording)", () => {
             // Reported as a late throw the record kept, never as the run's
             // failure.
             expect(logs.error.called).toBe(false);
-            expect(logs.warn.firstCall.args[0]).toBe(
+            expect((logs.warn.firstCall.args as unknown as [string])[0]).toBe(
                "Materialization run threw after its status was recorded; keeping it",
             );
          });
