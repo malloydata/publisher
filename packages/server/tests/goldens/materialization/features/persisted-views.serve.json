@@ -563,7 +563,8 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a"
+          "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -632,13 +633,14 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a colocated view",
       "servedBy": "view",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -701,7 +703,8 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88"
+          "tableId": "b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88",
+          "tier": "storage"
         },
         "warnings": []
       },

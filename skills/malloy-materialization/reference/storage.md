@@ -51,7 +51,7 @@ Routing is decided per query, not per source, so one source can serve some queri
 
 What the server reports:
 
-- `QueryResult.servedFrom`: `storage` when the tier answered, `live_fallback` when the tier was bound but a run-time store failure degraded the query to a live recompute, and empty for everything else (a colocated hit, no binding, or an ineligible query - three different things).
+- `QueryResult.servedFrom`: `storage` when the tier answered, `database` when a table in the source's own database did, `live_fallback` when the tier was bound but a run-time store failure degraded the query to a live recompute, and empty when no table answered (no binding, or an ineligible query; the path report says which).
 - The package's `storageServeBindings`, in its serving state at `GET /api/v0/environments/{env}/packages/{pkg}/status` (an older server: its entry in `GET /api/v0/status`, or the package read), lists the stored tables the package is currently bound to, with each entry's origin (`persist` or `preaggregate`). `manifestEntryCount` does not count them.
 - `publisher_query_route_total{leg, outcome, reason}` counts each leg the router considered (`used`, `skipped` with the path report's reason, `fallback` when a stored run failed and live answered), and each query's path report names the table that answered (`servedBy.via: served_copy`) or why each one was skipped.
 - A query's full result carries the SQL it ran; served from the store, its `FROM` names the destination and the physical table.

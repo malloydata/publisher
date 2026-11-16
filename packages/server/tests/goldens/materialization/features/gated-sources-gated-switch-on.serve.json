@@ -271,6 +271,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -350,6 +351,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -445,13 +447,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a row filter over a rollup",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -538,13 +541,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a lock admitting over a rollup",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -651,6 +655,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -745,6 +750,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

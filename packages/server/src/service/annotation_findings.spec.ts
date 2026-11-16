@@ -644,9 +644,9 @@ describe("the load failure for invalid materialization annotations", () => {
       );
       (
          materialization as unknown as {
-            annotationFindings: PackageAnnotationFinding[];
+            plan: { annotationFindings: PackageAnnotationFinding[] };
          }
-      ).annotationFindings = findings;
+      ).plan.annotationFindings = findings;
       return materialization.formatInvalidAnnotations();
    }
 

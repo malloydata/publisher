@@ -7,10 +7,12 @@
  *
  * - Plan asks {@link tableKeepsGates} before it builds a table over a gated
  *   source, so a table is never built that cannot be read past its gate
- *   (`gateEnforcedAtRead`, `rollupGateEnforcedAtRead`).
- * - The serve verdict asks {@link legMayPassGate} for the served copy and the
- *   plan's answer for a rollup, to say whether a gated entry point sends a
- *   table live (`row_level_gate`).
+ *   (`gateEnforcedAtRead`, `rollupGateEnforcedAtRead`, and a colocated
+ *   `#@ persist` source's own gate).
+ * - The serve verdict asks {@link answerKeepsGates} of a source's own table
+ *   on the served leg, and {@link legMayPassGate} with the plan's answer for a
+ *   rollup, to say whether a gated entry point sends a table live
+ *   (`row_level_gate`), exactly as the router decides it.
  * - The router asks {@link legMayPassGate} before it attempts a leg under an
  *   entry-point gate, and {@link answerKeepsGates} of the tables the answer
  *   read.
@@ -110,9 +112,8 @@ type Row = (t: GatedTable, s: GateSwitches) => boolean;
  */
 const ROWS: Record<GateKind, Row> = {
    // A v1 table is substituted by Malloy (colocated) or re-rooted by the
-   // served copy, which the router lets past a gate per leg. A colocated one
-   // is decided by plan's colocated tier check; a `storage=` one keeps its
-   // source's own row-level gate under G3, as a colocated one does.
+   // served copy, which the router lets past a gate per leg. Either tier
+   // keeps its source's own row-level gate under G3.
    persist: (t) => persistKeepsGates(t),
    // Read only through the served copy, which keeps the author's gates;
    // admitted only for the entry point's own row-level gate, with v2's
@@ -156,10 +157,10 @@ function materializedKeepsGates(t: GatedTable, s: GateSwitches): boolean {
 }
 
 function persistKeepsGates(t: GatedTable): boolean {
-   // G3 for a v1 `storage=` table, on the conditions a colocated one meets.
-   // The same maintainer-approved exception made ahead of the question-14
-   // review: the switch is not read, as it is not for v1 colocated.
-   return t.tier === "storage" && ownRowLevelGate(t);
+   // G3 for a v1 table, colocated (as since the v1 cutover) or `storage=` on
+   // the same conditions, the maintainer-approved exception made ahead of
+   // the question-14 review. No switch is read.
+   return ownRowLevelGate(t);
 }
 
 /**
@@ -181,11 +182,19 @@ type GateLeg = (typeof GATE_LEGS)[number];
 interface LegGateContext {
    /**
     * The v1 cutover's contracts at read (G3): a served answer reading only
-    * G3 tables keeps the gates even with the gated-sources switch off. Every
-    * model passes it; the serve verdict does not.
+    * G3 tables keeps the gates even with the gated-sources switch off
+    * ({@link SERVING_GATE_CONTEXT}).
     */
    readonly colocatedReadsKeepGates: boolean;
 }
+
+/**
+ * The context every model routes with, and the serve verdict judges with:
+ * G3 holds at read, so an answer reading only G3 tables keeps the gates.
+ */
+export const SERVING_GATE_CONTEXT: LegGateContext = {
+   colocatedReadsKeepGates: true,
+};
 
 /** A table an answer read, as the policy judges it. */
 export interface TableRead {

@@ -89,7 +89,9 @@ import {
 import type { RunManifestLoad } from "./materialization/domain/types";
 import { ApiConnection } from "./model";
 import { destinationOverlaps } from "./destination_overlap";
+import type { PackageMaterialization } from "./materialization";
 import { Package } from "./package";
+import { canonicalJson } from "./package_revision";
 import { applyLoadGates } from "./package_load_gates";
 import { resolvePatchedSettings } from "./package_patch";
 import { environmentResource, packageResource } from "../api_resource";
@@ -346,6 +348,21 @@ export type PackageListingOptions = {
    includeLoading?: boolean;
    operational?: boolean;
 };
+
+/**
+ * What a version binds from a set of entries, in one form whoever bound it:
+ * the colocated entries its models compile and bind over, and the `storage=`
+ * entries as {@link splitManifestEntries} gives them, keys sorted at every
+ * depth. A read of the store and a run's own load compare equal exactly when
+ * they bind the same, whatever key order the store (a jsonb column, say)
+ * gives back.
+ */
+function storeBindingSignature(
+   colocated: FreshnessManifest,
+   storage: Record<string, ManifestEntry>,
+): string {
+   return canonicalJson({ colocated, storage });
+}
 
 /**
  * At most this many build plans re-derive at once after a connection edit:
@@ -910,12 +927,14 @@ export class Environment {
     * live), never correctness; it must run before serve bindings are pushed.
     */
    private attachDestinationServeConfig(_package: Package): void {
-      _package.setServeDestinationConfig(() =>
-         this.getStorageDestinationMalloyConfig(),
-      );
+      _package
+         .materialization()
+         .setServeDestinationConfig(() =>
+            this.getStorageDestinationMalloyConfig(),
+         );
       // Live too: a destination configured after the load clears its
       // publish warning (P13) with no reload.
-      _package.setDeploymentFacts({
+      _package.materialization().setDeploymentFacts({
          destinationNames: () =>
             this.destinationsAuthoritative
                ? this.destinations.flatMap((d) => (d.name ? [d.name] : []))
@@ -931,11 +950,13 @@ export class Environment {
          },
       });
       // Live, like the config: a destination list swap needs no reload.
-      _package.setServeDestinationSchema((destinationName) =>
-         destinationSchemaOf(
-            this.destinations.find((d) => d.name === destinationName),
-         ),
-      );
+      _package
+         .materialization()
+         .setServeDestinationSchema((destinationName) =>
+            destinationSchemaOf(
+               this.destinations.find((d) => d.name === destinationName),
+            ),
+         );
    }
 
    /**
@@ -1010,7 +1031,7 @@ export class Environment {
       _package: Package,
       changed: ReadonlySet<string>,
    ): boolean {
-      const names = _package.planConnectionNames();
+      const names = _package.materialization().planConnectionNames();
       if (names === null) return true;
       for (const name of names) if (changed.has(name)) return true;
       return false;
@@ -1103,7 +1124,11 @@ export class Environment {
                   this.planRefreshBackoff.delete(next);
                   return;
                }
-               if (!next.lastBuildPlanRefreshFailedTransiently()) {
+               if (
+                  !next
+                     .materialization()
+                     .lastBuildPlanRefreshFailedTransiently()
+               ) {
                   // The plan compute itself failed (a model that no longer
                   // compiles, a connection that does not resolve): it fails
                   // the same way until the model or a connection changes, and
@@ -1158,12 +1183,12 @@ export class Environment {
    /** Drop every loaded model's memoized serve shape; the next query recompiles. */
    private invalidateCompiledLegs(): void {
       for (const _package of this.packages.values()) {
-         _package.invalidateCompiledLegs();
+         _package.materialization().invalidateCompiledLegs();
       }
       // Loaded versions too: they compiled against the destinations that just
       // changed.
       for (const [, , version] of this.versionService?.cache.entries() ?? []) {
-         version.invalidateCompiledLegs();
+         version.materialization().invalidateCompiledLegs();
       }
    }
 
@@ -2214,23 +2239,20 @@ export class Environment {
             packageName,
             servingReaderOf(pkg),
          );
+         const { tableNameManifest, storageEntries, signature } =
+            this.splitStoreEntries(pkg, rawEntries);
          if (pkg.getVersionId() !== undefined) {
-            this.storeBindingReads.set(pkg, JSON.stringify(rawEntries));
+            this.storeBindingReads.set(pkg, signature);
          }
          if (Object.keys(rawEntries).length === 0) return;
-         const { tableNameManifest, storageEntries } = splitManifestEntries(
-            rawEntries,
-            `local store (package ${packageName})`,
-            "store",
-         );
          if (Object.keys(tableNameManifest).length > 0) {
-            pkg.bindColocatedServeManifest(tableNameManifest);
+            pkg.materialization().bind({ colocated: tableNameManifest });
          }
          if (
             getPersistStorageMode() !== "off" &&
             Object.keys(storageEntries).length > 0
          ) {
-            pkg.bindStorageServeBindings(storageEntries);
+            pkg.materialization().bind({ storage: storageEntries });
          }
       } catch (err) {
          logger.warn(
@@ -3045,14 +3067,18 @@ export class Environment {
                      }
                      try {
                         const entries = await read(servingReaderOf(pkg));
-                        const signature = JSON.stringify(entries);
                         if (
                            options.onlyIfMoved &&
-                           this.storeBindingReads.get(pkg) === signature
+                           this.storeBindingReads.get(pkg) ===
+                              this.splitStoreEntries(pkg, entries, true)
+                                 .signature
                         ) {
                            return "done";
                         }
-                        await this.bindStoreEntries(pkg, entries);
+                        await this.bindStoreEntries(
+                           pkg,
+                           this.splitStoreEntries(pkg, entries),
+                        );
                         return "done";
                      } catch (error) {
                         if (
@@ -3122,16 +3148,16 @@ export class Environment {
    }
 
    /**
-    * Bind store entries to a package bound to no host manifest: the
-    * colocated ones recompile the models when there is something to
-    * substitute or clear, the `storage=` ones replace the storage bindings
-    * (unless the storage tier is off). A version remembers what it bound
-    * (see storeBindingReads).
+    * Store entries split by tier, as a bind reads them, with the signature
+    * of what they bind ({@link storeBindingSignature}). `quiet` for a split
+    * that only compares: its skipped entries are logged by the bind, if one
+    * follows.
     */
-   private async bindStoreEntries(
+   private splitStoreEntries(
       pkg: Package,
       entries: Record<string, ManifestEntry>,
-   ): Promise<boolean> {
+      quiet = false,
+   ): FetchedManifest & { signature: string } {
       const packageName = pkg.getPackageName();
       const versionId = pkg.getVersionId();
       const { tableNameManifest, storageEntries } = splitManifestEntries(
@@ -3142,20 +3168,43 @@ export class Environment {
          // From the store, with the key checks its newest run stands behind
          // (withRollupKeyRecords).
          "store",
+         { quiet },
       );
+      return {
+         tableNameManifest,
+         storageEntries,
+         signature: storeBindingSignature(tableNameManifest, storageEntries),
+      };
+   }
+
+   /**
+    * Bind store entries ({@link splitStoreEntries}) to a package bound to no
+    * host manifest: the colocated ones recompile the models when there is
+    * something to substitute or clear, the `storage=` ones replace the
+    * storage bindings (unless the storage tier is off). A version remembers
+    * what it bound (see storeBindingReads).
+    */
+   private async bindStoreEntries(
+      pkg: Package,
+      {
+         tableNameManifest,
+         storageEntries,
+         signature,
+      }: ReturnType<Environment["splitStoreEntries"]>,
+   ): Promise<boolean> {
       let reloaded = false;
       if (
          Object.keys(tableNameManifest).length > 0 ||
-         pkg.hasBoundTableNameManifest()
+         pkg.materialization().hasBoundTableNameManifest()
       ) {
          await pkg.reloadAllModels(tableNameManifest);
          reloaded = true;
       }
       if (getPersistStorageMode() !== "off") {
-         pkg.bindStorageServeBindings(storageEntries);
+         pkg.materialization().bind({ storage: storageEntries });
       }
-      if (versionId !== undefined) {
-         this.storeBindingReads.set(pkg, JSON.stringify(entries));
+      if (pkg.getVersionId() !== undefined) {
+         this.storeBindingReads.set(pkg, signature);
       }
       return reloaded;
    }
@@ -3196,12 +3245,15 @@ export class Environment {
          }
       }
       if (Object.keys(entries).length > 0) {
-         return this.bindStoreEntries(pkg, entries);
+         return this.bindStoreEntries(
+            pkg,
+            this.splitStoreEntries(pkg, entries),
+         );
       }
       if (!wasBound) return false;
       // Drop both tiers so nothing still routes to a materialized table.
       await pkg.reloadAllModels({});
-      pkg.bindStorageServeBindings({});
+      pkg.materialization().bind({ storage: {} });
       return true;
    }
 
@@ -3212,7 +3264,8 @@ export class Environment {
    ): Promise<void> {
       const packageName = loaded.getPackageName();
       const wasBound =
-         loaded.hasBoundTableNameManifest() || loaded.hasStorageServeBindings();
+         loaded.materialization().hasBoundTableNameManifest() ||
+         loaded.materialization().hasStorageServeBindings();
       const previous = loaded.getManifestLocation() ?? null;
       loaded.updateStoredMetadata({ manifestLocation: manifestPath });
       try {
@@ -4009,7 +4062,11 @@ export class Environment {
                "reload its models",
                async (pkg) => {
                   const has = Object.keys(manifest).length > 0;
-                  if (!has && !pkg.hasBoundTableNameManifest()) return;
+                  if (
+                     !has &&
+                     !pkg.materialization().hasBoundTableNameManifest()
+                  )
+                     return;
                   await pkg.reloadAllModels(manifest);
                },
             ),
@@ -4025,7 +4082,7 @@ export class Environment {
                );
             }
             const has = Object.keys(manifest).length > 0;
-            const had = pkg.hasBoundTableNameManifest();
+            const had = pkg.materialization().hasBoundTableNameManifest();
             if (!has && !had) return;
             await pkg.reloadAllModels(manifest);
          }),
@@ -4087,16 +4144,36 @@ export class Environment {
          }
          try {
             const has = Object.keys(params.colocated).length > 0;
-            if (has || pkg.hasBoundTableNameManifest()) {
+            if (has || pkg.materialization().hasBoundTableNameManifest()) {
                await pkg.reloadAllModels(params.colocated);
             }
          } catch (err) {
             return { loaded: false, step: "reload", error: errMessage(err) };
          }
          try {
-            pkg.bindStorageServeBindings(params.storage);
+            pkg.materialization().bind({ storage: params.storage });
          } catch (err) {
             return { loaded: false, step: "bind", error: errMessage(err) };
+         }
+         if (versionId !== undefined) {
+            // What the version now binds is the run's, which the store reads
+            // back once `commit` makes it MANIFEST_FILE_READY: so the run's
+            // rebind of its own version (rebindOwnVersionIfMoved) finds it
+            // unmoved and binds nothing again, while a store another process
+            // moved since still differs.
+            this.storeBindingReads.set(
+               pkg,
+               storeBindingSignature(
+                  params.colocated,
+                  splitManifestEntries(
+                     params.storage,
+                     `run (package ${packageName} version ${versionId})`,
+                     "store",
+                     // Compared, not bound: the load bound these above.
+                     { quiet: true },
+                  ).storageEntries,
+               ),
+            );
          }
          return { loaded: true };
       };
@@ -4164,11 +4241,11 @@ export class Environment {
             const { colocated, storage } = await read();
             if (
                Object.keys(colocated).length > 0 ||
-               pkg.hasBoundTableNameManifest()
+               pkg.materialization().hasBoundTableNameManifest()
             ) {
                await pkg.reloadAllModels(colocated);
             }
-            if (storage) pkg.bindStorageServeBindings(storage);
+            if (storage) pkg.materialization().bind({ storage: storage });
          }),
       );
    }
@@ -4214,12 +4291,12 @@ export class Environment {
          // `had*` reads before either tier applies, since each bind overwrites
          // what its guard reads.
          const hasStorage = Object.keys(storageEntries).length > 0;
-         const hadStorage = pkg.hasStorageServeBindings();
+         const hadStorage = pkg.materialization().hasStorageServeBindings();
 
          // Colocated substitution is resolved at compile time, so it needs a
          // recompile, skipped when there is nothing to substitute or clear.
          const hasColocated = Object.keys(tableNameManifest).length > 0;
-         const hadColocated = pkg.hasBoundTableNameManifest();
+         const hadColocated = pkg.materialization().hasBoundTableNameManifest();
 
          // Recompile first: it is the only step that can throw, and the catch
          // reports "no manifest applied", which would be false if the new
@@ -4231,13 +4308,13 @@ export class Environment {
             }));
 
          if (hasStorage || hadStorage) {
-            pkg.bindStorageServeBindings(storageEntries);
+            pkg.materialization().bind({ storage: storageEntries });
          }
 
          // Unconditionally bound, even for a manifest that binds nothing:
          // reporting `unbound` would be permanent drift to a caller that
          // rebinds on anything but `bound`. Entry counts distinguish empty.
-         pkg.markManifestBound(manifestLocation);
+         pkg.materialization().markManifestBound(manifestLocation);
          recordManifestBind("success");
          logger.info("Bound build manifest to package", {
             environmentName: this.environmentName,
@@ -4248,7 +4325,7 @@ export class Environment {
             recompiled,
          });
       } catch (err) {
-         pkg.markManifestBindFailed();
+         pkg.materialization().markManifestBindFailed();
          const timedOut =
             err instanceof Error && err.message.includes("Timed out after");
          recordManifestBind(timedOut ? "timeout" : "failure");
@@ -4598,8 +4675,8 @@ export class Environment {
          );
       } else if (clears) {
          const wasBound =
-            _package.hasBoundTableNameManifest() ||
-            _package.hasStorageServeBindings();
+            _package.materialization().hasBoundTableNameManifest() ||
+            _package.materialization().hasStorageServeBindings();
          // May recompile (which relints), so reported as loading.
          const recompiled = await this.trackPackageLoad(packageName, () =>
             this.bindLocalStoreOrLive(_package, wasBound),
@@ -5255,11 +5332,11 @@ export function extractPreambleFromSource(content: string): string {
  * not loaded or materializes nothing.
  */
 function servingVerdicts(pkg: Package | undefined): {
-   serveVerdicts?: ReturnType<Package["getServeVerdicts"]>;
+   serveVerdicts?: ReturnType<PackageMaterialization["serveVerdicts"]>;
 } {
    if (!pkg) return {};
    try {
-      const verdicts = pkg.getServeVerdicts();
+      const verdicts = pkg.materialization().serveVerdicts();
       return verdicts.length > 0 ? { serveVerdicts: verdicts } : {};
    } catch (error) {
       logger.warn("Could not compute serve verdicts", {

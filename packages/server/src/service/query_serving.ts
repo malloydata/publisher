@@ -25,6 +25,7 @@ import {
    answerKeepsGates,
    GATE_LEGS,
    legMayPassGate,
+   SERVING_GATE_CONTEXT,
 } from "./materialization/domain/gate_policy";
 import { logger } from "../logger";
 import { sourceChain } from "./materialization/text/source_map";
@@ -46,13 +47,14 @@ import {
 import type { BuildManifest } from "./materialization/domain/types";
 import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import type { PersistedViewServe } from "./materialization/serve/view_variants";
-import type {
-   Answer,
-   Leg,
-   LegAnswer,
-   LegContext,
-   LegKind,
-   QueryFacts,
+import {
+   type Answer,
+   type Leg,
+   type LegAnswer,
+   type LegContext,
+   type LegKind,
+   LIVE_ANSWER,
+   type QueryFacts,
 } from "./materialization/serve/leg";
 import {
    readPreparedQuery,
@@ -93,21 +95,9 @@ export function variantsOf(
    legs: readonly Leg[],
    facts: QueryFacts,
    pinned: Pinned,
-   args: {
-      modelPath: string;
-      /**
-       * The v1 cutover's contracts at read for colocated tables (G3): the
-       * served copy goes past an entry-point gate when every table it reads
-       * is colocated, even with `materialize.gatedSources` off, since a
-       * colocated table never leaves the author's warehouse.
-       */
-      colocatedKeepsContracts?: boolean;
-   },
+   args: { modelPath: string },
 ): Variant<LegAnswer>[] {
    const switches = gateSwitches();
-   const gateContext = {
-      colocatedReadsKeepGates: !!args.colocatedKeepsContracts,
-   };
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -119,14 +109,14 @@ export function variantsOf(
          applicable: leg.applies(facts, pinned),
          keepsContracts:
             gateLeg !== undefined &&
-            legMayPassGate(gateLeg, switches, gateContext),
+            legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
          keepsContractsFor: (answer: LegAnswer) =>
             gateLeg !== undefined &&
             answerKeepsGates(
                gateLeg,
                answer.gateTablesRead ?? answer.tablesRead ?? [],
                switches,
-               gateContext,
+               SERVING_GATE_CONTEXT,
             ),
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);
@@ -160,11 +150,7 @@ export function variantsOf(
 /** The answer the router's decision describes, before anything runs. */
 export function answerOf(route: RouteDecision<LegAnswer>): Answer {
    if (route.served !== "variant") {
-      return Object.freeze({
-         leg: "live",
-         considered: route.considered,
-         colocatedRead: new Set<string>(),
-      });
+      return Object.freeze({ ...LIVE_ANSWER, considered: route.considered });
    }
    return Object.freeze({
       leg: route.kind,

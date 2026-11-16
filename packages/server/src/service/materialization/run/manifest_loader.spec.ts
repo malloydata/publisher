@@ -3,11 +3,12 @@
 
 /// <reference types="bun-types" />
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
+import { logger } from "../../../logger";
 import { ManifestEntry } from "../domain/types";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 
@@ -254,5 +255,31 @@ describe("splitManifestEntries", () => {
          split.storageEntries.nameless,
          "an entry with no table name must not reach a serve binding either",
       ).toBeUndefined();
+   });
+
+   it("logs a skipped entry, unless the split is quiet", () => {
+      const entries = {
+         legacyFailed: {
+            sourceEntityId: "legacyFailed",
+            physicalTableName: "broken_v1",
+            error: "failed",
+         } as unknown as ManifestEntry,
+         nameless: { sourceEntityId: "nameless" } as unknown as ManifestEntry,
+      };
+      const warn = spyOn(logger, "warn");
+      try {
+         const quiet = splitManifestEntries(entries, "test", "store", {
+            quiet: true,
+         });
+         expect(warn.mock.calls.length).toBe(0);
+         const loud = splitManifestEntries(entries, "test", "store");
+         expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+            "Manifest entry records a failed source; skipping",
+            "Manifest entry has no physicalTableName; skipping",
+         ]);
+         expect(quiet).toEqual(loud);
+      } finally {
+         warn.mockRestore();
+      }
    });
 });

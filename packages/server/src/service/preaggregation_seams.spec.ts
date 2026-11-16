@@ -252,7 +252,7 @@ source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.s
          const sources = planSources(pkg);
          const authored = sources.find((s) => s.origin === "persist");
          const synthesized = sources.find((s) => s.origin === "preaggregate");
-         const ids = pkg.getPreaggregateEntityIds();
+         const ids = pkg.materialization().getPreaggregateEntityIds();
          expect(ids.size).toBe(1);
          expect(ids.has(synthesized!.sourceEntityId!)).toBe(true);
          expect(ids.has(authored!.sourceEntityId!)).toBe(false);
@@ -436,12 +436,14 @@ export { orders }
 `,
          });
          // One content address for both models' rollups: one table.
-         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         const rollupIds = [
+            ...pkg.materialization().getPreaggregateEntityIds(),
+         ];
          expect(rollupIds).toHaveLength(1);
          // Bound to a table that does not exist, so a routed query fails
          // naming it, and a live one would quietly answer from the base.
-         pkg.bindColocatedServeManifest(
-            Object.fromEntries(
+         pkg.materialization().bind({
+            colocated: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
                   {
@@ -450,7 +452,7 @@ export { orders }
                   },
                ]),
             ),
-         );
+         });
          const query =
             "run: orders -> { group_by: category; aggregate: total; order_by: category }";
          // With an index.malloy, only it is queryable: the curated surface.
@@ -485,10 +487,12 @@ source: notes is duckdb.sql("SELECT 1 AS id")
 export { notes }
 `,
          });
-         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         const rollupIds = [
+            ...pkg.materialization().getPreaggregateEntityIds(),
+         ];
          expect(rollupIds).toHaveLength(1);
-         pkg.bindColocatedServeManifest(
-            Object.fromEntries(
+         pkg.materialization().bind({
+            colocated: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
                   {
@@ -497,7 +501,7 @@ export { notes }
                   },
                ]),
             ),
-         );
+         });
          await expect(
             pkg.getModel("report.malloy")!.runQuery(unrecordedAudit(), {
                query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
@@ -526,7 +530,7 @@ source: orders is duckdb.sql("""
   measure: total is amount.sum()
 }
 `);
-         expect(pkg.getPreaggregateEntityIds().size).toBe(0);
+         expect(pkg.materialization().getPreaggregateEntityIds().size).toBe(0);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).map((w) => w.code),
          ).toContain("preaggregate-reads-given");
@@ -584,13 +588,15 @@ source: regions is duckdb.sql("""
   measure: region_count is count()
 }
 `);
-         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         const rollupIds = [
+            ...pkg.materialization().getPreaggregateEntityIds(),
+         ];
          expect(rollupIds).toHaveLength(1);
          // Deliberately a table that does not exist: if the entry ever reaches
          // the author's model this test fails loudly rather than passing on a
          // substitution that happened to work.
-         pkg.bindColocatedServeManifest(
-            Object.fromEntries(
+         pkg.materialization().bind({
+            colocated: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
                   {
@@ -599,8 +605,8 @@ source: regions is duckdb.sql("""
                   },
                ]),
             ),
-         );
-         expect(pkg.hasBoundTableNameManifest()).toBe(true);
+         });
+         expect(pkg.materialization().hasBoundTableNameManifest()).toBe(true);
          expect(
             await run(
                pkg,
@@ -725,16 +731,16 @@ source: orders is duckdb.sql("""
 
 /** Bind every rollup to a table that does not exist, so routing is observable. */
 function bindMissingRollupTables(pkg: Package) {
-   const rollupIds = [...pkg.getPreaggregateEntityIds()];
+   const rollupIds = [...pkg.materialization().getPreaggregateEntityIds()];
    expect(rollupIds.length).toBeGreaterThan(0);
-   pkg.bindColocatedServeManifest(
-      Object.fromEntries(
+   pkg.materialization().bind({
+      colocated: Object.fromEntries(
          rollupIds.map((id) => [
             id,
             { tableName: "no_such_rollup_table", connectionName: "duckdb" },
          ]),
       ),
-   );
+   });
 }
 
 // ---------------------------------------------------------------------------

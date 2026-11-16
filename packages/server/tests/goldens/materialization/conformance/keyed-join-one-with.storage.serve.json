@@ -91,6 +91,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -237,6 +238,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

@@ -253,8 +253,8 @@ describe("v1 cutover on: a stored column the extend block excepts", () => {
                ).map((r) => ({ name: r.column_name, type: r.column_type })),
             };
          }
-         f.pkg.bindColocatedServeManifest({});
-         f.pkg.bindColocatedServeManifest(entries as never);
+         f.pkg.materialization().bind({ colocated: {} });
+         f.pkg.materialization().bind({ colocated: entries as never });
          for (const p of f.pkg.getModelPaths())
             await f.pkg.getModel(p)?.prepareServedCopy();
          const served = await f.run("d.malloy", Q);

@@ -30,7 +30,6 @@ import { capabilitiesOf } from "../domain/dialect";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import type {
    BuildPlan,
-   FreshnessAwareManifestEntry,
    FreshnessManifest,
    ManifestEntry,
 } from "../domain/types";
@@ -323,7 +322,11 @@ export function deriveColocatedServeBindings(args: {
       if (!entry?.tableName) continue;
       const schema = plan
          ? plannedWithCaptured(plan.storedColumns, entry.schema)
-         : v1ColumnsOf(entry, () => args.v1Schema?.(sourceID));
+         : // What its build captured, else what its compiled output derives
+           // (a table built before the capture).
+           entry.schema?.length
+           ? entry.schema
+           : args.v1Schema?.(sourceID);
       if (!schema?.length) continue;
       // Built on another connection than the plan names (a manifest from
       // another configuration): not this source's table.
@@ -389,17 +392,6 @@ function plannedWithCaptured(
          (c) => !named.has(c.name) && ZONED_TIMESTAMP.test(c.type.trim()),
       ),
    ];
-}
-
-/**
- * A v1 colocated table's columns: what its build captured, else what its
- * compiled output derives (a table built before the capture).
- */
-function v1ColumnsOf(
-   entry: FreshnessAwareManifestEntry,
-   derive: () => StoredColumn[] | undefined,
-): StoredColumn[] | undefined {
-   return entry.schema?.length ? entry.schema : derive();
 }
 
 /**

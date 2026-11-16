@@ -1156,7 +1156,7 @@ describe("the rollup key record, bound for serving", () => {
          models: () => new Map(),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "ra@m": {
                name: "crew_a__rollup",
@@ -1351,10 +1351,10 @@ describe("the rollup key record, bound for serving", () => {
          },
       });
       expect(
-         materialization.materializedTableCatalog().bound.a?.keyUniqueness,
+         materialization.verdicts.tableCatalog().bound.a?.keyUniqueness,
       ).toEqual({ keyColumn: "k", unique: true });
       materialization.forgetKeyUniqueness(["a"]);
-      const bound = materialization.materializedTableCatalog().bound;
+      const bound = materialization.verdicts.tableCatalog().bound;
       expect(bound.a).toEqual({ tableName: "r_t" });
       expect(bound.b?.keyUniqueness?.unique).toBe(false);
    });
@@ -1374,7 +1374,7 @@ describe("the rollup key record, bound for serving", () => {
             measures: ["crew_size"],
          },
       });
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "r1@m": rollup("a", "crew"),
             "r2@m": rollup("b", "crew_ok"),
@@ -1409,7 +1409,7 @@ describe("the rollup key record, bound for serving", () => {
          models: () => new Map(),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "r1@m": {
                name: "segments__rollup",

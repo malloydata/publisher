@@ -80,13 +80,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an annotated output field and an annotated measure",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -150,13 +151,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored measure column re-aggregated",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -226,13 +228,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an annotated output field and an annotated measure",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -296,13 +299,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e6445a23f015408d62c8f05d74c67fb93f6c6445d24521d1b1d4a41fd0a4b924",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored measure column re-aggregated",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

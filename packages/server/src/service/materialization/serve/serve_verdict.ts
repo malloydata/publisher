@@ -147,26 +147,14 @@ export interface ServeVerdictFacts {
       modelPath?: string,
    ): boolean;
    /**
-    * Storage: the served copy keeps the author's gates and answers a gated
-    * entry point over a stored table, the gate grafted on it (R3,
-    * `materialize.gatedSources`), so {@link gated} alone does not mean live.
-    * Rollups are never served past a gate.
+    * Whether a query let past a gated entry point may be answered from this
+    * source's table, as the gate policy (`domain/gate_policy.ts`) decides it
+    * for the router: the served copy over a table it keeps the gate on (a
+    * colocated one, a `storage=` one admitted past its own gate, any under
+    * `materialize.gatedSources`), or a rollup whose variant keeps its base's
+    * gates.
     */
-   servedCopyKeepsGates?: boolean;
-   /**
-    * Storage: plan admitted this source's table past a stored source's own
-    * row-level gate under G3 (`SourceEligibility.gateKept`, by the table's
-    * content address, as the bind marks it), so the served copy answers its
-    * gated entry point from it as from a colocated table, and {@link gated}
-    * no longer means live.
-    */
-   storageKeepsOwnGate?(sourceID: string): boolean;
-   /**
-    * A `#(preaggregate)` rollup over a gated base whose gates the router
-    * grafts on its variant at read (R3 for rollups, row 1): a gated entry
-    * point is answered from it, so it is not `row_level_gate`.
-    */
-   rollupKeepsGates?(sourceID: string): boolean;
+   keepsGate(sourceID: string, tier: "colocated" | "storage"): boolean;
    /**
     * Why the bind refuses this source although the plan holds it (the
     * eligibility gate the bind applies, such as a rollup name two models
@@ -314,18 +302,10 @@ function verdictFor(
    // substitutes for it), so the served copy decides its verdict.
    const materialized = facts.materialize?.(sourceID);
 
-   // Colocated persist is substituted inside Malloy, gates and all, and a
-   // colocated `#(materialize)` table is read by the served copy past the
-   // gate under G3 (the plan builds a gated one only when it keeps the
-   // gate), as is a `storage=` table plan admitted past its own gate;
-   // other storage tables and rollups go through the router, which skips a
-   // gated entry point, unless the served copy keeps the gates (R3), or a
-   // `#(preaggregate)` rollup's variant keeps them (row 1).
+   // A gated entry point is answered from the table only when the gate
+   // policy keeps the gate on it, as the router asks it.
    if (
-      ((origin === "preaggregate" && !facts.rollupKeepsGates?.(sourceID)) ||
-         (tier === "storage" &&
-            !facts.servedCopyKeepsGates &&
-            !facts.storageKeepsOwnGate?.(sourceID))) &&
+      !facts.keepsGate(sourceID, tier) &&
       facts.gated(readID, readName, source.modelPath)
    ) {
       return live(

@@ -359,10 +359,11 @@ for (const tier of TIERS)
          expect(served.path?.servedBy).toMatchObject({
             kind: "materialized",
             tableId: address,
+            tier: "database",
             via: "served_copy",
          });
-         // The source's own warehouse: no storage hit.
-         expect(served.servedFrom ?? null).toBeNull();
+         // The source's own warehouse: a colocated hit, not a storage one.
+         expect(served.servedFrom).toBe("database");
       }
 
       it(
@@ -378,7 +379,10 @@ for (const tier of TIERS)
                   .sort(),
             ).toEqual(built.map((name) => [name, undefined]));
             expect(
-               (await pkg()).getServeVerdicts().map((v) => v.verdict),
+               (await pkg())
+                  .materialization()
+                  .serveVerdicts()
+                  .map((v) => v.verdict),
             ).toEqual(built.map(() => "serves"));
             for (const source of built) await expectServedEqualsLive(source);
             // A query that reads no stored table, but names a result column

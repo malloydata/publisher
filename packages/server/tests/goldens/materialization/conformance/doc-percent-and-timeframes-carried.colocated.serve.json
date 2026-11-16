@@ -74,13 +74,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored month, with its doc",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -150,13 +151,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored hour and week",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -230,13 +232,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a filter on a stored timeframe",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -298,13 +301,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a percent column selected",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -368,13 +372,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored month, with its doc",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -444,13 +449,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored hour and week",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -524,13 +530,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a filter on a stored timeframe",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -592,13 +599,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a percent column selected",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

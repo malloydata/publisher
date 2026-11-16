@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — every answer from a materialized table reports its tier: `servedFrom: "database"` and `path.servedBy.tier`
+
+A query answered from a table in the source's own database (the colocated tier) now reports `servedFrom: "database"`, where it reported `null` before. This covers a colocated `#@ persist` table Malloy substituted, a colocated `#(materialize)` table the served copy read, and a colocated rollup or persisted view. `storage` and `live_fallback` are unchanged, and `null` now means only that no materialized table answered. The path report's `servedBy` gains `tier` (`database` or `storage`) whenever a table answered, the same tier `servedFrom` names. The access record's `servedFrom`, the workload log's `served_from` and the `malloy.model.query.served_from` attribute on `malloy_model_query_duration` carry the new value too.
+
+- **Regenerate strict clients before upgrading.** A client generated from `api-doc.yaml` that validates enums rejects a response carrying the new value. This includes pydantic validators such as Credible's pycommon `QueryResult` and `DataManagementQueryResult`, which reject `servedFrom: "database"`, and a closed `servedBy` schema rejects `tier`. Regenerate the client from this release's `api-doc.yaml` before the server is upgraded.
+- **A client that treats any non-null `servedFrom` as a storage hit** now counts database hits as well. Compare against `"storage"` to keep counting the `storage=` tier alone.
+- **A dashboard that read colocated hits as live** sees them move from `null` to `database`, with no change in which table answered or what it returned.
+
 ## [Unreleased] — one freshness model on every mechanism, and a rollup builds from its base's stored table
 
 `freshness.window=` and `freshness.fallback=` now mean the same thing on `#@ persist`, `#(materialize)` and rollups, colocated and `storage=`, on a standalone server and under a control plane.
@@ -63,6 +71,10 @@ Step 2 of the configuration design. Every setting now has one name of each kind,
 - **On Kubernetes, set `enableServiceLinks: false` on the pod.** Kubernetes sets `<SERVICE>_PORT=tcp://…` for every Service in the namespace, so a Service named `publisher-mcp` sets `PUBLISHER_MCP_PORT`, now `mcp.port`'s variable, and startup fails. The message names the Service.
 - **A boolean flag takes no value.** `--allow-proxy-connections false` turns proxy connections on, as it did before; startup now warns that the `false` is ignored and names `--no-allow-proxy-connections`.
 - A secret has no flag, and is never logged or echoed in an error. `packageVersioning`, `packageInlineFields` and `modelPage` have no flag either: the design gives the two transition settings and the model page none.
+
+## [Unreleased] — a run's own published version is no longer reloaded a second time after its manifest commits
+
+An auto-run of a published version loads its manifest into that version before the run reports `MANIFEST_FILE_READY`, then checks whether the store moved since and rebinds the version if it did. That check compared against what the version last read from the store, which the run's own load never recorded, so it always found the store moved and recompiled the version a second time: the package's `servedRevision` changed again just after `MANIFEST_FILE_READY`. The run's load now records what it bound in the same form a read of the store is compared in: each entry as it is bound, with its table, connection, schemas, freshness and key checks. So a version reloads once per run and keeps the `servedRevision` it had at `MANIFEST_FILE_READY`. A version whose store another process moved in between is still rebound, as is one whose load failed. A package with no versions, and a version bound to a host's `manifestLocation`, are unchanged. Answers are unchanged.
 
 ## [Unreleased] — two packages spelling one `name=` differently no longer build it at once
 

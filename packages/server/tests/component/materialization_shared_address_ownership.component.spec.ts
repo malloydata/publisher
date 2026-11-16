@@ -243,7 +243,7 @@ describe.skipIf(process.platform === "win32")(
                return serve;
             },
          }));
-         pkg.setServeDestinationConfig(() => config);
+         pkg.materialization().setServeDestinationConfig(() => config);
       }
 
       beforeAll(async () => {

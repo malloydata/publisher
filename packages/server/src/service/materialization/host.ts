@@ -50,10 +50,11 @@ interface MaterializationPackage extends BuildPlanPackage {
    persistencePolicyWarnings(): string[];
    /**
     * Drop the bound rollup key checks (known limitation 29) of the tables at
-    * these content addresses, which a run is about to write. Optional: a
-    * stand-in package binds none.
+    * these content addresses, which a run is about to write. Required, so a
+    * package that stops implementing it fails to compile rather than
+    * silently serving a check over rows the run rewrote.
     */
-   forgetKeyUniqueness?(sourceEntityIds: Iterable<string>): void;
+   forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void;
    /**
     * The text a chained `storage=` build compiles on its destination alone:
     * the request's downstream, with each stored upstream the request carries

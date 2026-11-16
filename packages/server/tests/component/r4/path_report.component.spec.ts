@@ -58,6 +58,7 @@ source: daily is orders -> {
       // The served copy answers a v1 `storage=` table (the v1 cutover).
       expect(path?.servedBy).toEqual({
          kind: "materialized",
+         tier: "storage",
          tableId: daily,
          via: "served_copy",
       });

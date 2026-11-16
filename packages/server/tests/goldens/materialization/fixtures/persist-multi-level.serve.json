@@ -72,13 +72,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "count orders_base",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -127,13 +128,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "count orders_rollup",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -190,13 +192,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "count orders_base",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -245,13 +248,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "count orders_rollup",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

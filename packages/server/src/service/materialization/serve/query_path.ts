@@ -392,6 +392,8 @@ function pathTally(): PathTally {
       servedBy = {
          kind: t.kind,
          ...(t.tableId ? { tableId: t.tableId } : {}),
+         // The wire names the colocated tier by where it lives.
+         tier: t.tier === "colocated" ? "database" : "storage",
          ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
       };
    };
