@@ -845,12 +845,13 @@ describe("a path that goes out of the package and comes back", () => {
             );
          });
          expect(imp[0]).toBe(imp[1]);
-         // Where a link keeps its text the walk refuses at the sibling;
-         // where it was normalized when made (Windows) it never spells a
-         // step out, and leads to the package's own file. The pairs match
+         // Where a link keeps its text the walk refuses at the sibling. On
+         // Windows a relative text keeps its `..` (backslashed) and is
+         // refused too, but an absolute one was resolved when the link was
+         // made, and leads to the package's own file. The pairs match
          // either way.
-         const kept = linkTextKeptVerbatim();
-         if (kept) expect(imp[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+         const refused = linkTextKeptVerbatim() || form === "rel";
+         if (refused) expect(imp[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
          else expect(imp[0]).toStartWith("200");
 
          const model = await pair(`m${form}`, (dir, folder, via) => {
@@ -860,7 +861,8 @@ describe("a path that goes out of the package and comes back", () => {
             );
          });
          expect(model[0]).toBe(model[1]);
-         if (kept) expect(model[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
+         if (refused)
+            expect(model[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
          else expect(model[0]).toStartWith("200");
 
          const manifest = await pair(`j${form}`, (dir, folder, via) => {
@@ -871,7 +873,7 @@ describe("a path that goes out of the package and comes back", () => {
             );
          });
          expect(manifest[0]).toBe(manifest[1]);
-         if (kept) expect(manifest[0]).not.toStartWith("200");
+         if (refused) expect(manifest[0]).not.toStartWith("200");
          else expect(manifest[0]).toStartWith("200");
 
          const probe = await pair(`d${form}`, (dir, folder, via) => {
@@ -883,7 +885,7 @@ describe("a path that goes out of the package and comes back", () => {
          expect(probe[0]).toBe(probe[1]);
          expect(probe[0]).toStartWith("200");
          expect(probe[0]).toContain("real.csv");
-         if (kept) expect(probe[0]).not.toContain("d.csv");
+         if (refused) expect(probe[0]).not.toContain("d.csv");
          else expect(probe[0]).toContain("d.csv");
       });
    }
