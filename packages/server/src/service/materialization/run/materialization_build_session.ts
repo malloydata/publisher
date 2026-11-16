@@ -97,18 +97,12 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { PASSTHROUGH_SOURCE_TYPES } from "../domain/source_connection_type";
 import { STORAGE_DIALECT } from "../domain/dialect";
 
 type ApiConnection = components["schemas"]["Connection"];
 
 type WireColumn = components["schemas"]["Column"];
-
-/** Source warehouse types the native query-passthrough build supports. */
-const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
-   "bigquery",
-   "snowflake",
-   "postgres",
-];
 
 /**
  * Warehouse types the build can materialize INTO. Wider than

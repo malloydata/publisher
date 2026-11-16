@@ -16,9 +16,10 @@
  *   from the served copy, for a plain source, an extension, an extension
  *   table, a pair table, an inlined join, and a join from another source;
  * - the stored table holds every row, so no build bakes one caller's rows;
- * - what G3 does not admit stays refused and answers live: a `storage=`
- *   table, an inherited gate, a joined gate, and a given the build would
- *   substitute;
+ * - what G3 does not admit stays refused and answers live: an inherited
+ *   gate, a joined gate, and a given the build would substitute (a
+ *   `storage=` table under its own gate is admitted too, on the same
+ *   conditions: storage_g3_gates.component.spec.ts);
  * - removing the gate's re-proof denies the answer, and removing the
  *   re-applied gate makes the per-caller check fail.
  */
@@ -190,9 +191,10 @@ const CASES: Case[] = [
       via: "served_copy",
    },
    {
-      name: "a storage= table under its own gate, refused",
+      name: "a storage= table under its own gate, admitted as colocated (G3)",
       malloy: "run: gated_sto -> { group_by: region; aggregate: n }",
-      via: "live",
+      via: "served_copy",
+      rowsInCallersRegions: true,
    },
    {
       name: "a gated source whose build reads a given, refused",
@@ -275,11 +277,12 @@ describe("colocated #(materialize) past its own row-level gate under G3 (gated s
             "gated_pairs:serves",
             "locked:serves",
             "locked_rows:serves",
-            // An inherited gate, a joined gate, storage=, a given the build
-            // would substitute: refused as before.
+            // G3 on the storage tier, on the same conditions.
+            "gated_sto:serves",
+            // An inherited gate, a joined gate, a given the build would
+            // substitute: refused as before.
             "gated_ext_tbl:live:refused",
             "mat_joiner:live:refused",
-            "gated_sto:live:refused",
             "baked:live:refused",
          ].sort(),
       );
@@ -288,7 +291,7 @@ describe("colocated #(materialize) past its own row-level gate under G3 (gated s
             .filter((w) => w.code === "persist-source-refused")
             .map((w) => w.subject)
             .sort(),
-      ).toEqual(["baked", "gated_ext_tbl", "gated_sto", "mat_joiner"]);
+      ).toEqual(["baked", "gated_ext_tbl", "mat_joiner"]);
    });
 
    for (const kase of CASES) {
@@ -455,7 +458,7 @@ describe("colocated #(materialize) past its own row-level gate under G3 (gated s
 });
 
 describe("the same package with the gated-sources switch on, as before", () => {
-   it("serves the same gates, and the storage= table too", async () => {
+   it("serves the same gates, the storage= table among them", async () => {
       const restore = installSettings({
          env: { ...G3_ONLY, PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" },
       }).restore;

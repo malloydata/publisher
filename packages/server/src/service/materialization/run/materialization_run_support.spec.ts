@@ -655,6 +655,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             persistTables({ tier_up: up, tier_stored: stored }),
             { duckdb: "dig" },
+            undefined,
             (sourceID) =>
                sourceID === "tier_up" ? { destination: "lake2" } : undefined,
          ),
@@ -671,6 +672,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             persistTables({ tier_own: up }),
             { duckdb: "dig" },
+            undefined,
             () => ({
                destination: "duckdb",
             }),
@@ -686,15 +688,19 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          annotationFields: { storage: "lake" },
       });
       const off = withMode("off", () =>
-         chainedPlanFacts(persistTables({ tier_mode: stored }), {
-            duckdb: "dig",
-         }),
+         chainedPlanFacts(
+            persistTables({ tier_mode: stored }),
+            { duckdb: "dig" },
+            undefined,
+         ),
       );
       expect(off.declaredTiersByAddress?.tiermode).toEqual([null]);
       const writeOnly = withMode("write-only", () =>
-         chainedPlanFacts(persistTables({ tier_mode: stored }), {
-            duckdb: "dig",
-         }),
+         chainedPlanFacts(
+            persistTables({ tier_mode: stored }),
+            { duckdb: "dig" },
+            undefined,
+         ),
       );
       expect(writeOnly.declaredTiersByAddress?.tiermode).toEqual(["lake"]);
    });
@@ -710,9 +716,11 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          annotationFields: { storage: "lake" },
       });
       const facts = withMode("on", () =>
-         chainedPlanFacts(persistTables({ split_base: base, split_ext: ext }), {
-            duckdb: "dig",
-         }),
+         chainedPlanFacts(
+            persistTables({ split_base: base, split_ext: ext }),
+            { duckdb: "dig" },
+            undefined,
+         ),
       );
       expect([...(facts.declaredTiersByAddress?.splitab ?? [])].sort()).toEqual(
          ["lake", null].sort(),

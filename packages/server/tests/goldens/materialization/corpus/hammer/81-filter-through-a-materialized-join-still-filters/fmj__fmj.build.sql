@@ -13,23 +13,23 @@ SELECT region_id, region_name FROM public.fmj_regions
 -- ==== source north_orders
 -- sourceID: north_orders@<hammer>/fmj/fmj.malloy
 -- connection: orders_pg
--- sourceEntityId: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604
--- compiler key: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604 (the sourceEntityId)
+-- sourceEntityId: c316755ea23a8572000cf35157fcef1e7ec66531a8ad3effc91072d515674fca
+-- compiler key: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604
 -- build SQL:
 SELECT order_id, amount, region_id FROM public.fmj_orders
 
 -- ==== source broken_orders
 -- sourceID: broken_orders@<hammer>/fmj/fmj.malloy
 -- connection: orders_pg
--- sourceEntityId: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604
--- compiler key: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604 (the sourceEntityId)
+-- sourceEntityId: f876cebac232b0d36368548a60e71e8500d2c75ed9e1dd0da56eed67b1aac898
+-- compiler key: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604
 -- build SQL:
 SELECT order_id, amount, region_id FROM public.fmj_orders
 
 -- ==== source big_orders
 -- sourceID: big_orders@<hammer>/fmj/fmj.malloy
 -- connection: orders_pg
--- sourceEntityId: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604
--- compiler key: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604 (the sourceEntityId)
+-- sourceEntityId: 12947a8b49fa9f5f2081b0d2dcc7a398a3eb800823bf6f8e4494f89340a88e74
+-- compiler key: 20cbf8a728c69cdcdc50194c7da4b5e36de9e9fbaecdf74e229d32927e58c604
 -- build SQL:
 SELECT order_id, amount, region_id FROM public.fmj_orders

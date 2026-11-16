@@ -15,6 +15,7 @@ import { parsePackageName } from "../../src/service/identity";
 import type { Package } from "../../src/service/package";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 
 const DESTINATION_MISSING = "materialization-destination-missing";
 const CANNOT_HOLD_TABLE = "materialization-connection-cannot-hold-table";
@@ -95,6 +96,15 @@ function verdictOf(pkg: Package, sourceName: string) {
 }
 
 describe("a storage= destination the environment does not configure (P13)", () => {
+   // The sandbox stands in for a warehouse here: a `storage=` build cannot
+   // read the sandbox, and the plan would refuse the source before the
+   // destination is ever looked at.
+   let restoreTypes: () => void;
+   beforeEach(() => {
+      restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+   });
+   afterEach(() => restoreTypes());
+
    it("loads, warns with a code naming the source and destination, and serves live", async () => {
       const { pkg } = await load([]);
       // Unservable, not malformed: the source is still planned.

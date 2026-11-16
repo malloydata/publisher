@@ -36,7 +36,6 @@ import {
 import {
    findingSeverity,
    MATERIALIZATION_STORAGE_MODE_CODE,
-   PERSIST_NOT_BUILT_CODE,
    PERSIST_SOURCE_REFUSED_ALIAS_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
@@ -81,6 +80,7 @@ import {
    planCollisions,
    PREAGG_WARN_ONLY,
    preaggregateGateLines,
+   refusalCodeOf,
    relaxedCollision,
 } from "./plan/load_gate_text";
 import type { MaterializePlan } from "./domain/table_plans";
@@ -113,6 +113,7 @@ import {
 import {
    bindColocatedEntries,
    bindStorageEntries,
+   keptTableAddresses,
    deriveColocatedServeBindings,
    kindFromPlan,
    v1StoredColumnsOf,
@@ -309,6 +310,8 @@ export class PackageMaterialization {
    private rollupsKeepingGates = new Set<string>();
    /** The base and grain of each refused rollup, by its sourceID. */
    private refusedRollups: Record<string, RefusedRollup> = {};
+   /** See BuildPlanOutcome.compilerKeys. */
+   private compilerKeys: Record<string, string> = {};
    private annotationFindings: PackageAnnotationFinding[] = [];
    // Which sources may be served from a materialized table, decided at compile
    // where the compiled sources exist; binding does not recompile. `undefined`
@@ -441,6 +444,7 @@ export class PackageMaterialization {
             materializePlans,
             rollupsKeepingGates,
             refusedRollups,
+            compilerKeys,
          } = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
@@ -449,6 +453,7 @@ export class PackageMaterialization {
          this.rollupsKeepingGates = new Set(rollupsKeepingGates ?? []);
          // `?? {}`: an outcome a worker built before this field existed.
          this.refusedRollups = refusedRollups ?? {};
+         this.compilerKeys = compilerKeys ?? {};
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
          // `?? []`: an outcome a worker built before this field existed.
@@ -502,6 +507,7 @@ export class PackageMaterialization {
          this.incrementalPolicySources = [];
          this.rollupsKeepingGates = new Set();
          this.refusedRollups = {};
+         this.compilerKeys = {};
          recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${this.owner.packageName()}`,
@@ -625,10 +631,12 @@ export class PackageMaterialization {
          this.buildPlan?.sources ?? {},
       )) {
          if (!source.sourceEntityId) continue;
+         const compilerKey = this.compilerKeys[source.sourceEntityId];
          planned.set(sourceID, {
             sourceID,
             name: source.name,
             sourceEntityId: source.sourceEntityId,
+            ...(compilerKey ? { compilerKey } : {}),
             origin:
                source.origin === "preaggregate" ? "preaggregate" : "persist",
             ...(source.modelPath ? { modelPath: source.modelPath } : {}),
@@ -1200,6 +1208,7 @@ export class PackageMaterialization {
             colocatedSourceEligibility: this.colocatedSourceEligibility,
             incrementalPolicySources: this.incrementalPolicySources,
             buildConnectionNames: this.buildConnectionNames,
+            compilerKeys: this.compilerKeys,
          };
          let workerPlan: LoadPackageOutcome["buildPlan"];
          let poolFailed = false;
@@ -1412,7 +1421,9 @@ export class PackageMaterialization {
     * Warnings for the sources the compile-time gates refused. Not an
     * annotation finding: the annotation is well formed; the source it sits on
     * cannot be materialized. A `#@ persist` source's is coded
-    * {@link PERSIST_NOT_BUILT_CODE} and carries the gate's message verbatim,
+    * {@link PERSIST_NOT_BUILT_CODE} (a `#(materialize)` source's
+    * `materialize-not-built`, a persisted view's or query's its own) and
+    * carries the gate's message verbatim,
     * so there is one wording to maintain, and is repeated under its former
     * code, {@link PERSIST_SOURCE_REFUSED_ALIAS_CODE}, for one release. A rollup's is coded
     * {@link PREAGGREGATE_NOT_BUILT_CODE}, its message naming its base and
@@ -1449,7 +1460,11 @@ export class PackageMaterialization {
                  }
                : {
                     message: source.message,
-                    code: PERSIST_NOT_BUILT_CODE,
+                    // The route's own code: a `#(materialize)` source's, a
+                    // persisted view's or query's, else a source's.
+                    code: this.materializePlans[sourceID]
+                       ? "materialize-not-built"
+                       : refusalCodeOf(sourceID, source.name),
                     severity: "warn",
                  };
          if (source.modelPath) warning.model = source.modelPath;
@@ -1457,8 +1472,11 @@ export class PackageMaterialization {
          // `persist-not-built` was `persist-source-refused` until this
          // release, for exactly these gate refusals: each is repeated under
          // its former code, with the same message, for one release, then the
-         // alias is removed. Display surfaces show it once.
-         return warning.code === PERSIST_NOT_BUILT_CODE
+         // alias is removed. Display surfaces show it once. A refusal no
+         // earlier release raised (`storage_source_unsupported`) never
+         // carried the former code, so it is not repeated.
+         return source.tier !== "preaggregate" &&
+            source.reason !== "storage_source_unsupported"
             ? [warning, { ...warning, code: PERSIST_SOURCE_REFUSED_ALIAS_CODE }]
             : [warning];
       });
@@ -1679,6 +1697,12 @@ export class PackageMaterialization {
       }
       const servedCopy = this.servedCopyState(models);
       const materializeIDs = new Set(Object.keys(this.materializePlans));
+      // A table not bound yet is judged by the bind's own rule, so the
+      // verdict says what it will say once the table is bound.
+      const keptTables = keptTableAddresses(
+         this.sourceEligibility?.gateKept,
+         (id) => this.buildPlan?.sources?.[id]?.sourceEntityId,
+      );
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(this.snapshot(), new Date());
       const freshStorageNames = new Set(
@@ -1712,6 +1736,18 @@ export class PackageMaterialization {
          servedCopyKeepsGates: legMayPassGate("served", gateSwitches(), {
             colocatedReadsKeepGates: false,
          }),
+         // Read off the bound bindings, which the router reads too.
+         storageKeepsOwnGate: (sourceID) => {
+            const bound = this.storageBindings.filter((b) =>
+               b.sourceIDs?.includes(sourceID),
+            );
+            if (bound.length > 0) {
+               return bound.some((b) => b.ownGateKept === true);
+            }
+            return keptTables.has(
+               this.buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            );
+         },
          rollupKeepsGates: (sourceID) => this.rollupsKeepingGates.has(sourceID),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
@@ -2348,6 +2384,7 @@ export class PackageMaterialization {
 
    private persistenceCollisions(): {
       message: string;
+      enforced: string;
       code: string;
       subject: string;
    }[] {

@@ -13,13 +13,14 @@ import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import type { PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
-import { computeSourceEntityId } from "./addressing";
+import { computeSourceEntityId, type TableFolds } from "./addressing";
 import {
    assertBuildReadsNoCurrentTime,
    assertMaterializationEligible,
    assertRollupNameUnshared,
    assertTierEligible,
    gateEnforcedAtRead,
+   storageKeepsOwnGate,
    type TierGateInputs,
 } from "./materialization_eligibility";
 import {
@@ -38,6 +39,10 @@ import { deriveAnnotationFields } from "./persist_source_fields";
 interface EligibilityPlan {
    tables: Record<string, TablePlan>;
    connectionDigests: Record<string, string>;
+   /** The plan's table folds (CompiledBuildPlan.tableFolds). */
+   tableFolds?: TableFolds;
+   /** See `CompiledBuildPlan.connectionTypes`. */
+   connectionTypes?: Record<string, string>;
    /**
     * The package is a published version of a `scope: "version"` package:
     * every table name, `name=` included, is a readable name with its
@@ -65,6 +70,7 @@ const collidingRollupsByTables = new WeakMap<
 export function collidingRollups(compiled: {
    tables: Record<string, TablePlan>;
    connectionDigests: Record<string, string>;
+   tableFolds?: TableFolds;
 }): ReadonlyMap<string, string> {
    const memo = collidingRollupsByTables.get(compiled.tables);
    if (memo) return memo;
@@ -83,6 +89,7 @@ export function collidingRollups(compiled: {
             source,
             compiled.connectionDigests,
             target,
+            compiled.tableFolds,
          );
       } catch {
          // No address: the other gates refuse it on their own.
@@ -260,6 +267,7 @@ function sharedTableGroups(
             source,
             compiled.connectionDigests,
             table.target,
+            compiled.tableFolds,
          );
          target = physicalTarget(
             source,
@@ -479,6 +487,7 @@ export function tierGateInputs(compiled: EligibilityPlan): TierGateInputs {
    return {
       tables: compiled.tables,
       collidingRollups: collidingRollups(compiled),
+      connectionTypes: compiled.connectionTypes,
    };
 }
 
@@ -501,12 +510,19 @@ export type SourceEligibility = {
    eligible: string[];
    /** sourceID -> why it was refused; for the operator-facing log. */
    refused: Record<string, string>;
+   /**
+    * The eligible sourceIDs admitted past their own row-level gate under G3
+    * (`gateEnforcedAtRead`), whose bindings the router lets a served answer
+    * read past that gate. Absent, as in a record made before it: none.
+    */
+   gateKept?: string[];
 };
 
 export function collectSourceEligibility(
    compiled: EligibilityPlan,
 ): SourceEligibility {
    const eligible: string[] = [];
+   const gateKept: string[] = [];
    const refused: Record<string, string> = {};
    const gate = tierGateInputs(compiled);
    const shared = sharedTables(compiled);
@@ -518,17 +534,22 @@ export function collectSourceEligibility(
       }
       try {
          assertRollupNameUnshared(source, gate);
+         const kept = gateEnforcedAtRead(sourceID, compiled, true);
          assertMaterializationEligible(source, deriveAnnotationFields(source), {
-            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled, true),
+            gateEnforcedAtRead: kept,
+            connectionTypes: compiled.connectionTypes,
          });
          // A table built before this refusal existed is not served either.
          assertBuildReadsNoCurrentTime(source, gate);
          eligible.push(sourceID);
+         if (kept && storageKeepsOwnGate(source, compiled)) {
+            gateKept.push(sourceID);
+         }
       } catch (err) {
          refused[sourceID] = errMessage(err);
       }
    }
-   return { eligible, refused };
+   return { eligible, refused, gateKept };
 }
 
 /**
@@ -572,6 +593,7 @@ export function collectColocatedSourceEligibility(
                source,
                compiled.connectionDigests,
                target,
+               compiled.tableFolds,
             );
          } catch (idErr) {
             // No id to key the refusal under; the log is the only record that
@@ -600,6 +622,7 @@ export function collectColocatedSourceEligibility(
             source,
             compiled.connectionDigests,
             target,
+            compiled.tableFolds,
          );
       } catch (err) {
          logger.warn(

@@ -357,6 +357,7 @@ export class InstructedBuild {
             ...chainedPlanFacts(
                tables,
                connectionDigests,
+               compiled.tableFolds,
                // A host can imply a destination the annotation does not declare,
                // so the instruction decides a source's current tier.
                (sourceID, sourceEntityId) =>
@@ -384,7 +385,13 @@ export class InstructedBuild {
          ...(uniqueness ? { uniqueness } : {}),
          signal,
       };
-      assertNoTableCollisions(builds, tables, connectionDigests, index);
+      assertNoTableCollisions(
+         builds,
+         tables,
+         connectionDigests,
+         index,
+         compiled.tableFolds,
+      );
 
       let settled: ReturnType<typeof settleRefusals> = {
          refusalsInFailures: 0,
@@ -685,6 +692,7 @@ export class InstructedBuild {
          run.index,
          persistSource,
          compiled.connectionDigests,
+         compiled.tableFolds,
       );
       if (!resolved) return undefined;
       const { instruction, orchestrated } = resolved;
@@ -702,6 +710,7 @@ export class InstructedBuild {
             persistSource,
             compiled.connectionDigests,
             compiled.tables[persistSource.sourceID]?.target,
+            compiled.tableFolds,
          );
 
       // A colocated table is served by its address, so the bind refuses the
@@ -747,6 +756,7 @@ export class InstructedBuild {
          assertMaterializationEligible(
             persistSource,
             deriveAnnotationFields(persistSource),
+            { connectionTypes: run.compiled.connectionTypes },
          );
       }
 
@@ -937,6 +947,8 @@ export class InstructedBuild {
             );
          }
       } catch (buildErr) {
+         const refused = { run, persistSource, instruction, sourceEntityId };
+         if (refusedForItsConnection(refused, buildErr)) return undefined;
          // A build that ran, or an ownership refusal: that refusal is the
          // table's, so no source sharing it may write it, and each takes the
          // same reason. Any other check before the build (uniqueness, ...)
@@ -1049,9 +1061,10 @@ export class InstructedBuild {
  * Publisher chose (its readable name, hashed over the package and the
  * version, so no other package writes it), or a run that cannot say whose it
  * is. Decided by the instruction, not the source: every source sharing the
- * address builds the one instruction, named after the first of them, so a
- * sibling with no `name=` of its own writes that author's name too, and is
- * checked as the author's source is.
+ * address builds the one instruction. An auto-run gives each `name=` its own
+ * address (foldDistinctTableNames); an instruction a run is handed may still
+ * name one table for sources that differ, so a sibling with no `name=` of its
+ * own that writes an author's name is checked as the author's source is.
  */
 function authorNamedTarget(
    run: InstructedRun,
@@ -1094,6 +1107,7 @@ function authorNamedInstructions(
             run.index,
             source,
             run.compiled.connectionDigests,
+            run.compiled.tableFolds,
          )?.instruction;
          if (
             instruction?.physicalTableName === selfAssignTableName(source) &&
@@ -1210,6 +1224,38 @@ function settleRefusals(run: InstructedRun): {
 }
 
 /**
+ * Record a `storage=` source whose connection the build cannot read as
+ * refused, as the plan's gate would have (storage_build_strategy.ts), so the
+ * run goes on. Returns whether `err` was that refusal.
+ */
+function refusedForItsConnection(
+   source: {
+      run: InstructedRun;
+      persistSource: PersistSource;
+      instruction: BuildInstruction;
+      sourceEntityId: string;
+   },
+   err: unknown,
+): boolean {
+   if (
+      !(err instanceof MaterializationEligibilityError) ||
+      err.reason !== "storage_source_unsupported"
+   ) {
+      return false;
+   }
+   const { run, persistSource, instruction, sourceEntityId } = source;
+   recordPendingRefusal(
+      run,
+      persistSource,
+      instruction,
+      sourceEntityId,
+      err,
+      true,
+   );
+   return true;
+}
+
+/**
  * Record one source's gate refusal on `run`: counted and logged now, held
  * against its address until {@link settleRefusals} knows whether an eligible
  * sibling built that address.
@@ -1303,6 +1349,7 @@ function colocatedRefusalOn(
                source,
                compiled.connectionDigests,
                target,
+               compiled.tableFolds,
             );
          } catch {
             // No address, so no table it could share.
@@ -1403,6 +1450,7 @@ async function storedJoinOf(
          joined.source,
          compiled.connectionDigests,
          joined.target,
+         compiled.tableFolds,
       );
       const entry = run.entries[address];
       if (
@@ -1749,6 +1797,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          source,
          compiled.connectionDigests,
          table.target,
+         compiled.tableFolds,
       );
       const entry = run.entries[address];
       if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
@@ -1791,6 +1840,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          source,
          compiled.connectionDigests,
          target,
+         compiled.tableFolds,
       );
       const entry = run.entries[address];
       if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
@@ -1823,6 +1873,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          table.source,
          compiled.connectionDigests,
          table.target,
+         compiled.tableFolds,
       );
       const entry = run.entries[address];
       if (!entry || run.builtAddresses.has(address)) continue;

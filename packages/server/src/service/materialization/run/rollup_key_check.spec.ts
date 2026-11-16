@@ -989,7 +989,7 @@ describe("the rollup key record, bound for serving", () => {
                a: { ...entry, keyUniqueness: { parentKeys: { s: true } } },
             } as never,
             "store",
-            true,
+            "store",
          ).tableNameManifest.a?.keyUniqueness,
       ).toEqual({ parentKeys: { s: true } });
    });
@@ -1085,7 +1085,7 @@ describe("the rollup key record, bound for serving", () => {
       const fromStore = splitManifestEntries(
          { h: stored },
          "store",
-         true,
+         "store",
       ).storageEntries;
       const fromHost = splitManifestEntries(
          { h: stored },
@@ -1148,7 +1148,7 @@ describe("the rollup key record, bound for serving", () => {
          splitManifestEntries(
             { a: stored("a", false), b: stored("b", true) },
             "store",
-            true,
+            "store",
          ).storageEntries,
          {},
       );
@@ -1268,7 +1268,7 @@ describe("the rollup key record, bound for serving", () => {
    it("reaches the colocated manifest from the store, and never from a host's manifest", () => {
       const annotated = withRollupKeyRecords({ a: entry }, [committed()]);
       expect(
-         splitManifestEntries(annotated, "store", true).tableNameManifest.a
+         splitManifestEntries(annotated, "store", "store").tableNameManifest.a
             ?.keyUniqueness,
       ).toEqual({ keyColumn: "k", unique: true });
       expect(

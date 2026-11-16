@@ -19,6 +19,7 @@ import {
    deriveBuildPlanOutcome,
    refuseAloneInPlan,
    emptyBuildPlanParts,
+   planTableFolds,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanOutcome,
@@ -44,6 +45,7 @@ import {
 import { SourceMap } from "../text/source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { packageFiles } from "../text/package_files";
+import { resolveConnectionTypes } from "../../connection_type";
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
@@ -190,15 +192,21 @@ export async function compilePackageBuildPlan(
       },
    );
 
+   const versionScoped = versionOwnsTables(pkg);
+   // Before anything addresses a source: each author `name=` its own table,
+   // decided over every source before any is refused.
+   const tableFolds = planTableFolds({ ...parts, connectionDigests });
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name, or a source whose incremental declaration
    // this deployment cannot honour, must not build here either.
    const compiled = refuseCollidingMaterialize({
-      ...(versionOwnsTables(pkg) ? { versionScoped: true } : {}),
+      ...(versionScoped ? { versionScoped: true } : {}),
       builds: parts.builds,
       tables: parts.tables,
       connectionDigests,
+      connectionTypes: resolveConnectionTypes(connections),
       connections,
+      tableFolds,
       droppedPersistSources: parts.droppedPersistSources,
       annotationFindings: parts.annotationFindings,
       modelGateLines: parts.modelGateLines,

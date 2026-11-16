@@ -3,6 +3,7 @@
 
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
+import { recordConnectionType } from "./connection_type";
 import { nearMissGateLines } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
@@ -3740,7 +3741,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                if (connection instanceof DuckDBConnection) {
                   await applyExtensionSessionSettings(connection);
                }
-               return connection;
+               // The sandbox is a DuckDB connection the package owns, which a
+               // `storage=` build cannot read (materialization eligibility).
+               return recordConnectionType(connection, "duckdb");
             }
             // The *current* environment config, so a connection swap needs no reload.
             return getEnvironmentMalloyConfig().connections.lookupConnection(

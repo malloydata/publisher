@@ -51,6 +51,11 @@ import {
 import { routeReadsEnv } from "../../motly";
 import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
+import {
+   storageBuildReadsConnectionType,
+   unreadableSourceConnectionMessage,
+} from "../domain/source_connection_type";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 
 /**
  * What an eligible source carries into the build. Returned by the gate rather
@@ -74,9 +79,10 @@ import { rollupGateEnforcedAtRead } from "./rollup_plan";
  *  3. **No `#(authorize)` / `#(access_filter)` gate.** Both are evaluated per
  *     request and a table built once carries neither, so it would bypass
  *     them. Fails closed. The one exception is `gateEnforcedAtRead` (see
- *     {@link gateEnforcedAtRead}): a `#(materialize)` source read only through
- *     the served copy, which keeps the author's gates and has them grafted and
- *     re-proven on every query (R3). Every other check here still applies.
+ *     {@link gateEnforcedAtRead}): a source's own row-level gate, kept by the
+ *     served copy, which re-roots the author's text, gates included, and has
+ *     them grafted and re-proven on every query (R3, and G3 for a `storage=`
+ *     table as for a colocated one). Every other check here still applies.
  *
  *     Join reach is PARTIAL: the deep walk finds a gate on a plainly-joined
  *     source and under `annotations.inherits`, but NOT through an ANNOTATED
@@ -103,9 +109,13 @@ export function assertMaterializationEligible(
    options: {
       /** From {@link gateEnforcedAtRead}: skip only the gate refusal (3). */
       gateEnforcedAtRead?: boolean;
+      /** The plan's connection types (`TierGateInputs.connectionTypes`). */
+      connectionTypes?: TierGateInputs["connectionTypes"];
    } = {},
 ): void {
    const sourceName = persistSource.name;
+
+   assertStorageBuildReadsConnection(persistSource, options.connectionTypes);
 
    // Fail closed: an unreadable parameter surface is a refusal.
    let unbound: string[];
@@ -170,6 +180,33 @@ export function assertMaterializationEligible(
             `'storage=').`,
       });
    }
+}
+
+/**
+ * Refuse a `storage=` source whose connection the build cannot read. The build
+ * passes a query through to the source's warehouse and copies the result into
+ * the destination, which it can do for a passthrough warehouse and a DuckLake
+ * catalog only (`storageBuildReadsConnectionType`). The package's DuckDB
+ * sandbox, or an environment DuckDB connection, holds data the build's own
+ * session cannot reach, so the source is not built and is answered live.
+ *
+ * Decided from the connection's configured type, resolved through the package
+ * (the sandbox is the package's, every other connection the environment's),
+ * never from its name. A connection with no recorded type, or not resolved, is
+ * left to the build, which refuses that source alone
+ * (storage_build_strategy.ts).
+ */
+function assertStorageBuildReadsConnection(
+   persistSource: PersistSource,
+   connectionTypes: TierGateInputs["connectionTypes"],
+): void {
+   const type = connectionTypes?.[persistSource.connectionName];
+   if (type === undefined || storageBuildReadsConnectionType(type)) return;
+   recordEligibilityRefused("storage_source_unsupported");
+   throw new MaterializationEligibilityError({
+      reason: "storage_source_unsupported",
+      message: unreadableSourceConnectionMessage(persistSource, type),
+   });
 }
 
 /**
@@ -672,25 +709,32 @@ function walkForAuthorizeNotes(
 
 /**
  * Whether a gated source may be built because its gate is enforced when the
- * table is read (R3, contracts at read). True only when all hold:
+ * table is read (R3, contracts at read; G3). True only
+ * when all hold:
  *
- * - `materialize.enabled` is on, and either `materialize.gatedSources` is on,
- *   so the router lets the served copy past the gate, or the table is
- *   colocated, which the served copy reads past its own row-level gate under
- *   G3 as v1 colocated does; off, the managed tier never holds a gated
- *   source's columns (plan, question 14);
- * - the source is a `#(materialize)` source (a `materialize` table), so its table
- *   is read only through the served copy, which keeps the author's gates; the
- *   router keeps every other stored shape away from a gated entry point;
+ * - the source is a `#(materialize)` source (a `materialize` table) with
+ *   `materialize.enabled` on, colocated or `storage=`, or a v1 `#@ persist`
+ *   source asked about as `storage=` (a colocated one is decided by
+ *   {@link assertColocatedPersistNotAuthorizeGated}); never a persisted
+ *   view's or query's build, whose leg passes a gate only with
+ *   `materialize.gatedSources`. Its table is read past a gate only through
+ *   the served copy, which keeps the author's gates; the router keeps every
+ *   other stored shape away from a gated entry point;
  * - its gate is the entry point's own and classifies `row_level` against the
- *   author's model (the table's `gate`), the bar the colocated tier sets.
+ *   author's model (the table's `gate`), an attributed row filter or lock
+ *   with no row filter inherited from a source it extends: the bar the
+ *   colocated tier sets. Under G3 this holds on both tiers with
+ *   `materialize.gatedSources` off, by maintainer decision ahead of the
+ *   question-14 review; the managed tier then holds the gated source's
+ *   columns, every caller's rows.
  *
  * A rollup is asked {@link rollupGateEnforcedAtRead} instead (rows 1 and 21).
  *
  * The build, the serve bind and the host-instructed build all ask this one
  * question, so a table is never built that cannot be served, nor served
  * because it was built. A caller deciding a `storage=` table passes
- * `storage`, so the table is asked about as stored whatever the plan says.
+ * `storage`, so the table is asked about as stored whatever the plan says:
+ * it decides whether a v1 source is asked at all.
  */
 export function gateEnforcedAtRead(
    sourceID: string,
@@ -705,11 +749,25 @@ export function gateEnforcedAtRead(
       return rollupGateEnforcedAtRead(table.rollup);
    }
    // A `#(materialize)` source's gate is admitted only with `#(materialize)`'s
-   // own switch on beside the gated-sources switch, and only for the entry
-   // point's own row-level gate (the gate policy).
+   // own switch on, and only for the entry point's own row-level gate (the
+   // gate policy).
    const materialized = table?.materialize;
-   if (!materialized) return false;
-   const outcome = table.gate;
+   const outcome = table?.gate;
+   const gate = {
+      rowLevel: outcome?.classification === "row_level",
+      attributed: outcome?.attributed === true,
+      // The served copy cannot graft a row filter the entry point inherits.
+      inheritedRowFilter: outcome?.inheritedRowFilter === true,
+   };
+   if (!materialized) {
+      // A v1 `#@ persist` source, asked only as `storage=`. A persisted
+      // view's or query's build (its companion file) is not one.
+      if (!storage || isPersistedResultBuild(sourceID)) return false;
+      return tableKeepsGates(
+         { kind: "persist", tier: "storage", v1: true, gate },
+         gateSwitches(),
+      );
+   }
    return tableKeepsGates(
       {
          kind: "materialize",
@@ -720,14 +778,32 @@ export function gateEnforcedAtRead(
                ? "colocated"
                : "storage",
          v1: false,
-         gate: {
-            rowLevel: outcome?.classification === "row_level",
-            attributed: outcome?.attributed === true,
-            // The served copy cannot graft a row filter the entry point inherits.
-            inheritedRowFilter: outcome?.inheritedRowFilter === true,
-         },
+         gate,
       },
       gateSwitches(),
+   );
+}
+
+/** Whether `sourceID` is a persisted view's or query's generated build source. */
+function isPersistedResultBuild(sourceID: string): boolean {
+   return sourceID
+      .slice(sourceID.indexOf("@") + 1)
+      .endsWith(PERSISTED_VIEW_COMPANION_SUFFIX);
+}
+
+/**
+ * Whether a source's `storage=` table is read past its own row-level gate
+ * under G3: it is gated, and {@link gateEnforcedAtRead} admits it as stored.
+ * Its bindings carry `ownGateKept`, so a served answer reading it may pass
+ * that gate as one reading a colocated table may.
+ */
+export function storageKeepsOwnGate(
+   source: PersistSource,
+   plan: Parameters<typeof gateEnforcedAtRead>[1],
+): boolean {
+   return (
+      referencesAuthorize(source) &&
+      gateEnforcedAtRead(source.sourceID, plan, true)
    );
 }
 
@@ -766,6 +842,12 @@ export interface TierGateInputs {
     * with the message to report (`collidingRollups` in build_plan.ts).
     */
    collidingRollups?: ReadonlyMap<string, string>;
+   /**
+    * Each connection's configured type, by name, resolved through the
+    * package (`CompiledBuildPlan.connectionTypes`): whether a `storage=`
+    * build can read a source.
+    */
+   connectionTypes?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -879,6 +961,7 @@ export function assertTierEligible(
       }
       assertMaterializationEligible(source, annotationFields, {
          gateEnforcedAtRead: gateEnforcedAtRead(source.sourceID, plan, true),
+         connectionTypes: plan?.connectionTypes,
       });
       assertBuildReadsNoCurrentTime(source, plan);
       return;
@@ -916,6 +999,29 @@ export function assertTierEligible(
             `gate, and only with PUBLISHER_MATERIALIZE on. The source serves ` +
             `live. Turn that setting on, or use '#@ persist', whose colocated ` +
             `table keeps the gate through Malloy's build manifest.`,
+      });
+   }
+   // A persisted view's or query's table over a gated source is read past
+   // the gate only by its own leg, which passes a gate only with
+   // PUBLISHER_MATERIALIZE_GATED_SOURCES on (the view leg; the query leg
+   // never). Off, the table would be built and never read past the gate, so
+   // it is refused, on this tier as on `storage=`; on, it is built as before.
+   if (
+      isPersistedResultBuild(source.sourceID) &&
+      !gateSwitches().gatedSources &&
+      referencesAuthorize(source)
+   ) {
+      recordEligibilityRefused("authorize");
+      throw new MaterializationEligibilityError({
+         reason: "authorize",
+         message:
+            `'${source.name}' cannot be materialized (colocated): the ` +
+            `source it reads is protected by an #(authorize) or ` +
+            `#(access_filter) gate, and a persisted view's or query's table ` +
+            `is read past a gate only with ` +
+            `PUBLISHER_MATERIALIZE_GATED_SOURCES on, so it would be built and ` +
+            `never read. It is not built, and its queries are answered live, ` +
+            `as on 'storage='.`,
       });
    }
    assertBuildReadsNoCurrentTime(source, plan);

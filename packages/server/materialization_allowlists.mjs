@@ -162,7 +162,13 @@ export const RATCHET_DIALECT_LITERALS = {
    // Connection types (FederatedSourceType, the storage destination types),
    // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 9,
+      count: 7,
+      step: "table",
+   },
+   // PASSTHROUGH_SOURCE_TYPES, connection types a `storage=` build reads,
+   // whose `postgres` and `snowflake` share a dialect's spelling.
+   "service/materialization/domain/source_connection_type.ts": {
+      count: 2,
       step: "table",
    },
    // TABLE_PATH_OPTIONS, the incremental probe's per-dialect table-path
