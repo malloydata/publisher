@@ -88,11 +88,27 @@ const neverDrained = new FinalizationRegistry<string>((name) => {
 let installed = false;
 let available = false;
 
-/** Counters for tests and diagnostics. */
-const stats = { disconnected: 0, deferred: 0, skipped: 0, failed: 0 };
+/**
+ * Where a connection's hard close stands: skipped (still open, or no handle
+ * yet), deferred (waiting for its calls to drain), disconnected, or failed.
+ */
+export type HardCloseOutcome =
+   | "skipped"
+   | "deferred"
+   | "disconnected"
+   | "failed";
 
-export function hardCloseStats(): Readonly<typeof stats> {
-   return { ...stats };
+const outcomes = new WeakMap<object, HardCloseOutcome>();
+
+/**
+ * The latest outcome of `connection`'s hard close, or undefined if none was
+ * requested. Per connection, so a reader is never confused by another
+ * connection retired meanwhile.
+ */
+export function hardCloseOutcome(
+   connection: DuckDBConnection,
+): HardCloseOutcome | undefined {
+   return outcomes.get(connection);
 }
 
 /**
@@ -276,7 +292,7 @@ export function hardCloseWhenIdle(connection: DuckDBConnection): void {
    // captured (shareable mode, an open that never settled) or it is done.
    if (!internals.closed || !handle) {
       if (internals.closed) awaitingHandle.add(connection);
-      stats.skipped++;
+      outcomes.set(connection, "skipped");
       return;
    }
    awaitingHandle.delete(connection);
@@ -286,9 +302,9 @@ export function hardCloseWhenIdle(connection: DuckDBConnection): void {
       neverDrained.unregister(token);
       try {
          handle.disconnectSync();
-         stats.disconnected++;
+         outcomes.set(connection, "disconnected");
       } catch (error) {
-         stats.failed++;
+         outcomes.set(connection, "failed");
          logger.warn("Failed to disconnect a retired DuckDB connection", {
             connection: connection.name,
             error: error instanceof Error ? error.message : String(error),
@@ -299,7 +315,7 @@ export function hardCloseWhenIdle(connection: DuckDBConnection): void {
       disconnect();
       return;
    }
-   stats.deferred++;
+   outcomes.set(connection, "deferred");
    neverDrained.register(connection, connection.name, token);
    onDrained.set(connection, disconnect);
 }

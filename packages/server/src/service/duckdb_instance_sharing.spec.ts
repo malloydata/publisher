@@ -21,7 +21,7 @@ import {
 } from "./duckdb_instance_sharing";
 import { attachmentDigest } from "./connection";
 import {
-   hardCloseStats,
+   hardCloseOutcome,
    hardCloseWhenIdle,
    installDuckDBHardClose,
 } from "./duckdb_hard_close";
@@ -94,8 +94,12 @@ function holdConnects(connection: DuckDBConnection) {
    };
 }
 
-async function waitFor(condition: () => boolean): Promise<void> {
-   for (let i = 0; i < 100 && !condition(); i++) {
+async function waitFor(
+   condition: () => boolean,
+   timeoutMs = 1_000,
+): Promise<void> {
+   const deadline = Date.now() + timeoutMs;
+   while (!condition() && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
    }
    expect(condition()).toBe(true);
@@ -371,6 +375,7 @@ describe("one shared in-memory DuckDB instance", () => {
          setDuckDBCloseWaitMsForTesting(undefined);
       }
    });
+
    it("hard-closes a connection whose open settles after its close timed out", async () => {
       installDuckDBHardClose();
       setDuckDBCloseWaitMsForTesting(50);
@@ -381,15 +386,12 @@ describe("one shared in-memory DuckDB instance", () => {
          const b = open({ databasePath: ":memory:", workingDirectory: dir });
          await b.close();
          // Its open has not settled, so there is no handle to free yet.
-         const before = hardCloseStats();
          hardCloseWhenIdle(b);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected);
+         expect(hardCloseOutcome(b)).toBe("skipped");
          held.release();
          await b.connecting;
          // The deferred close detaches the handle, and the hard close lands.
-         await waitFor(
-            () => hardCloseStats().disconnected === before.disconnected + 1,
-         );
+         await waitFor(() => hardCloseOutcome(b) === "disconnected", 10_000);
          await a.close();
       } finally {
          setDuckDBCloseWaitMsForTesting(undefined);

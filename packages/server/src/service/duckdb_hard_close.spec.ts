@@ -11,7 +11,7 @@ import * as path from "path";
 import {
    dbDuckDBHardCloseInternalsMatch,
    hardCloseOwnedDuckDBConnections,
-   hardCloseStats,
+   hardCloseOutcome,
    hardCloseWhenIdle,
    installDuckDBHardClose,
    ownDuckDBConnection,
@@ -96,7 +96,6 @@ describe("DuckDB hard close", () => {
       const { connection, dir } = ownInstance();
       try {
          await connection.runSQL("SELECT 1");
-         const before = hardCloseStats();
          const query = connection.runSQL(
             "SELECT count(*) AS n FROM range(300000000) t(x) WHERE x % 7 = 0",
          );
@@ -104,12 +103,11 @@ describe("DuckDB hard close", () => {
          await new Promise((resolve) => setTimeout(resolve, 50));
          await connection.close();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().deferred).toBe(before.deferred + 1);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected);
+         expect(hardCloseOutcome(connection)).toBe("deferred");
 
          const result = await query;
          expect(Number(result.rows[0].n)).toBe(42857143);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
+         expect(hardCloseOutcome(connection)).toBe("disconnected");
       } finally {
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -118,7 +116,6 @@ describe("DuckDB hard close", () => {
    it("waits for a stream being read, and disconnects when its reader returns", async () => {
       const { connection, dir } = ownInstance();
       try {
-         const before = hardCloseStats();
          const stream = connection.runSQLStream(
             "SELECT x FROM range(100000) t(x)",
             { rowLimit: 100000 },
@@ -127,13 +124,13 @@ describe("DuckDB hard close", () => {
          expect(first.done).toBe(false);
          await connection.close();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().deferred).toBe(before.deferred + 1);
+         expect(hardCloseOutcome(connection)).toBe("deferred");
 
          // The reader goes on after the close, and stops early.
          const second = await stream.next();
          expect(second.done).toBe(false);
          await stream.return?.(undefined);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
+         expect(hardCloseOutcome(connection)).toBe("disconnected");
       } finally {
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -149,11 +146,9 @@ describe("DuckDB hard close", () => {
          );
          const query = model.loadQuery("run: s -> { aggregate: c }");
          expect((await query.run()).data.toObject()).toEqual([{ c: 1 }]);
-
-         const before = hardCloseStats();
          await connection.close();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
+         expect(hardCloseOutcome(connection)).toBe("disconnected");
 
          // The compiled query, and a fresh compile against the same model,
          // both refuse with an error rather than reaching the freed database.
@@ -170,15 +165,14 @@ describe("DuckDB hard close", () => {
       const { connection, dir } = ownInstance();
       try {
          await connection.runSQL("SELECT 1");
-         const before = hardCloseStats();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().skipped).toBe(before.skipped + 1);
+         expect(hardCloseOutcome(connection)).toBe("skipped");
          expect((await connection.runSQL("SELECT 2 AS n")).rows).toEqual([
             { n: 2 },
          ]);
          await connection.close();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
+         expect(hardCloseOutcome(connection)).toBe("disconnected");
       } finally {
          fs.rmSync(dir, { recursive: true, force: true });
       }
