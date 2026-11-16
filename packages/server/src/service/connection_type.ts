@@ -49,8 +49,9 @@ export function recordConnectionsAsForTests(
  * standalone CLI (scripts/v1-cutover-conformance.ts), and marking that
  * process a test would change what it answers (package_lifecycle.ts throws on
  * an illegal move under `NODE_ENV=test` where production logs it). Only
- * test_helpers/conformance may import it; connection_type_seam.spec.ts fails
- * the build when anything else does.
+ * test_helpers/conformance may import it: connection_type.spec.ts fails when
+ * anything else names it, src/import_direction.spec.ts when a production
+ * module imports test_helpers/, and build.ts when the bundle carries it.
  */
 export function recordConnectionsAsForConformanceHarness(
    types: Record<string, string>,

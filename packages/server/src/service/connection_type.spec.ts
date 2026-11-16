@@ -42,10 +42,15 @@ describe("recordConnectionsAsForTests", () => {
    it("records under NODE_ENV=test until restored", () => {
       process.env.NODE_ENV = "test";
       const restore = recordConnectionsAsForTests({ duckdb: "postgres" });
-      expect(
-         connectionTypeOf(recordConnectionType({ name: "duckdb" }, "duckdb")),
-      ).toBe("postgres");
-      restore();
+      try {
+         expect(
+            connectionTypeOf(
+               recordConnectionType({ name: "duckdb" }, "duckdb"),
+            ),
+         ).toBe("postgres");
+      } finally {
+         restore();
+      }
       expect(
          connectionTypeOf(recordConnectionType({ name: "duckdb" }, "duckdb")),
       ).toBe("duckdb");
@@ -56,8 +61,9 @@ describe("recordConnectionsAsForConformanceHarness", () => {
    it("records without NODE_ENV, for the standalone conformance CLI", () => {
       const nodeEnv = process.env.NODE_ENV;
       delete process.env.NODE_ENV;
+      let restore = (): void => {};
       try {
-         const restore = recordConnectionsAsForConformanceHarness({
+         restore = recordConnectionsAsForConformanceHarness({
             duckdb: "postgres",
          });
          expect(
@@ -65,20 +71,26 @@ describe("recordConnectionsAsForConformanceHarness", () => {
                recordConnectionType({ name: "duckdb" }, "duckdb"),
             ),
          ).toBe("postgres");
-         restore();
       } finally {
+         restore();
          process.env.NODE_ENV = nodeEnv;
       }
    });
 
    /**
     * The ratchet. The harness's door skips the `NODE_ENV` guard, so only the
-    * conformance harness may reach it, and the guarded door only specs and
-    * test helpers. A module under src/ that names either anywhere else fails
-    * here: a recorded type decides whether a `storage=` source is built, so
-    * no production path may change it.
+    * conformance harness (and specs) may reach it, and the guarded door only
+    * specs and test helpers. A module under src/ that names either anywhere
+    * else fails here: a recorded type decides whether a `storage=` source is
+    * built, so no production path may change it.
+    *
+    * A name scan, so it targets accidental use: a named import or call. It
+    * does not see computed access (`ns["record" + "..."]`); build.ts covers
+    * that by failing a bundle that carries the export's name, and
+    * import_direction.spec.ts by refusing any production import of
+    * test_helpers/.
     */
-   it("is imported only by test_helpers/conformance, and the guarded seam only by specs and test helpers", () => {
+   it("is named only by test_helpers/conformance and specs, and the guarded seam only by specs and test helpers", () => {
       const srcDir = path.join(SERVER_DIR, "src");
       const files = fs
          .readdirSync(srcDir, { recursive: true, encoding: "utf8" })
@@ -92,7 +104,7 @@ describe("recordConnectionsAsForConformanceHarness", () => {
          if (
             text.includes("recordConnectionsAsForConformanceHarness") &&
             !f.startsWith("test_helpers/conformance/") &&
-            f !== "service/connection_type.spec.ts"
+            !isSpec(f)
          ) {
             offenders.push(`${f}: recordConnectionsAsForConformanceHarness`);
          }

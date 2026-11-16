@@ -23,7 +23,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — the v1 cutover conformance script runs again without NODE_ENV=test
 
-`bun scripts/v1-cutover-conformance.ts` (plan question 15) runs again as the standalone CLI it is documented as. In 0.14.0 it exited 3 on every package unless `NODE_ENV=test` was set, because the harness took a connection-type test seam that is guarded to test processes. The harness now takes that seam through its own entry point, which no production module may import, so the script answers without `NODE_ENV=test`, and with the server's production behaviour. A CI job that set `NODE_ENV=test` to work around it can drop the variable.
+`bun scripts/v1-cutover-conformance.ts` runs again as the standalone CLI it is documented as. In 0.14.0 it exited 3 on every package unless `NODE_ENV=test` was set, because the harness took a connection-type test seam that is guarded to test processes. The script now answers without `NODE_ENV=test`, and without marking itself a test process. A CI job that set `NODE_ENV=test` to work around it can drop the variable.
 
 ## [0.14.0] — a `storage=` table under its source's own row-level gate is built and served with the gate re-applied, as a colocated one is
 
