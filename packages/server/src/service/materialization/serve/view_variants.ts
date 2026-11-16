@@ -464,96 +464,157 @@ export class PersistedViewServe {
          return { error: "no context" };
       }
       const shape = await viewShape(author, modelDef, plan, localName);
-      const modelPath = this.host.modelPath();
-      const modelFile = path.join(packagePath, modelPath);
-      const destinations = this.host.serveDestinationConfig();
-      const config =
-         table.binding && destinations
-            ? servedCopyConfig(
-                 packageConfig,
-                 destinations(),
-                 new Set([table.binding.destinationName]),
-              )
-            : packageConfig;
       const view = viewDeclaration(plan.viewName, shape);
       if ("refusal" in view) return { refusal: view.refusal };
-      // A stored column whose type or value does not serve as live's is read
-      // through the served copy's faithful cast (a date truncation a build
-      // stored as a TIMESTAMP, a big integer as HUGEINT), or refuses the
-      // variant.
-      const read = table.binding
-         ? storedColumnCasts(table.binding.schema, shape)
-         : { casts: new Map<string, ColumnCast>() };
-      if ("refusal" in read) return { refusal: read.refusal };
-      const { casts } = read;
       // malloy-text: viewDeclaration's text, every value through identifier or noteSource
       const viewBody = view.text;
-      // The source's own time zone, on the variant's source: a `storage=`
-      // read truncates each stored truncation again, and a later stage
-      // truncates a stored timestamp, each in the zone live computes it in,
-      // never UTC.
-      const sourceTimezone = shape.sourceTimezone
-         ? `\n  timezone: ${stringLiteral(shape.sourceTimezone)}`
-         : "";
-      return compileDeclaringFileVariant({
+      return compilePersistedResultVariant({
          packagePath,
-         modelPath,
          packageConfig,
-         config,
          modelDef,
-         sourceID: plan.sourceID,
-         copySuffix: ".view-author.malloy",
-         queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
-         flags: VARIANT_FLAGS,
-         declare: ({
-            gates: authorGates,
-            sourceName: source,
-            copyName,
-            declaringURL,
-            addFile,
-         }) => {
-            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
-            const gates = authorGates;
-            if (table.binding) {
-               const typeName = `${plan.buildSourceName}__type`;
-               const stored = `${plan.buildSourceName}__stored`;
-               const { typeText, timeframes } = storedTypedSource({
-                  columns: shape.columns,
-                  casts,
-                  binding: table.binding,
-                  typeName,
-                  stored,
-               });
-               // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
-               const restated = timeframes;
-               // malloy-text: storedTypedSource's text, the author's gate and view notes (single lines), and names through identifier
-               return `${typeText}
-${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${sourceTimezone}${restated}
+         modelPath: this.host.modelPath(),
+         destinations: this.host.serveDestinationConfig(),
+         companionPlans: () => ({
+            views: this.host.planModelPersistedViews(modelDef).plans,
+            queries: this.host.planModelPersistedQueries(modelDef).plans,
+         }),
+         plan,
+         table,
+         shape,
+         redeclare: { sourceID: plan.sourceID },
+         colocatedAlias: `${plan.buildSourceName}__built`,
+         emit: ({ gates, sourceName, sourceTimezone, stored }) =>
+            "typeText" in stored
+               ? // malloy-text: storedTypedSource's text, the author's gate and view notes (single lines), and names through identifier
+                 `${stored.typeText}
+${gates}source: ${identifier(sourceName)} is ${identifier(stored.name)} extend {${sourceTimezone}${stored.timeframes}
 ${viewBody}
-}`;
-            }
-            // The companion over the copy, so its build SQL (and so its
-            // address) is the one the build plan computed.
-            const text = generatePersistedResultFile(
-               this.host
-                  .planModelPersistedViews(modelDef)
-                  .plans.filter((p) => p.declaringURL === declared.url),
-               this.host
-                  .planModelPersistedQueries(modelDef)
-                  .plans.filter((p) => p.declaringURL === declared.url),
-               copyName,
-            );
-            if (!text) return { error: "no companion" };
-            const companion = persistedViewCompanionHref(declaringURL.href);
-            addFile(new URL(companion), text);
-            const built = `${plan.buildSourceName}__built`;
-            return `import { ${identifier(built)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}
-${gates}source: ${identifier(source)} is ${identifier(built)} extend {${sourceTimezone}
+}`
+               : `${stored.importLine}
+${gates}source: ${identifier(sourceName)} is ${identifier(stored.name)} extend {${sourceTimezone}
 ${viewBody}
-}`;
-         },
+}`,
       });
    }
+}
+
+/**
+ * Compile a persisted result's variant, the view leg's and the query leg's
+ * alike: the source it reads redeclared over its table in an overlay of its
+ * own declaring file, so it keeps the author's `sourceID` and every gate the
+ * governor keys on it finds its graft target, as the served copy keeps it by
+ * re-rooting the author's own file. A `storage=` table is read through a
+ * typed source, each stored column whose type or value does not serve as
+ * live's through the served copy's faithful cast (or the variant is refused);
+ * a colocated one through its build source, imported from the companion over
+ * the copy so its address is the one the build plan computed. `emit` writes
+ * the leg's own declarations over that stored source.
+ */
+export async function compilePersistedResultVariant(args: {
+   packagePath: string;
+   packageConfig: ModelConnectionInput;
+   modelDef: ModelDef;
+   modelPath: string;
+   destinations: (() => MalloyConfig) | undefined;
+   /** Every persisted view and named query the model sees: the companion's. */
+   companionPlans(): {
+      views: readonly PersistedViewPlan[];
+      queries: readonly PersistedQueryPlan[];
+   };
+   plan: { buildSourceName: string; declaringURL: string };
+   table: ResolvedTable;
+   shape: ViewShape;
+   /** What the variant redeclares: a source by `sourceID`, or its declaring file. */
+   redeclare:
+      | { sourceID: string; alsoRedeclared?: string[] }
+      | {
+           declaringURL: string;
+           alsoRedeclared: string[];
+           alsoExported?: string[];
+        };
+   /** The name a colocated build source is imported under. */
+   colocatedAlias: string;
+   emit(read: {
+      gates: string;
+      sourceName: string;
+      /** The source's own `timezone:` statement, or "". */
+      sourceTimezone: string;
+      stored:
+         | { name: string; typeText: string; timeframes: string }
+         | { name: string; importLine: string };
+   }): string;
+}): Promise<CompiledVariant> {
+   const { packagePath, packageConfig, plan, table, shape } = args;
+   const read = table.binding
+      ? storedColumnCasts(table.binding.schema, shape)
+      : { casts: new Map<string, ColumnCast>() };
+   if ("refusal" in read) return { refusal: read.refusal };
+   // The source's own time zone: a `storage=` read truncates each stored
+   // truncation again, and a later stage truncates a stored timestamp, each
+   // in the zone live computes it in, never UTC.
+   const sourceTimezone = shape.sourceTimezone
+      ? `\n  timezone: ${stringLiteral(shape.sourceTimezone)}`
+      : "";
+   const modelFile = path.join(packagePath, args.modelPath);
+   const config =
+      table.binding && args.destinations
+         ? servedCopyConfig(
+              packageConfig,
+              args.destinations(),
+              new Set([table.binding.destinationName]),
+           )
+         : packageConfig;
+   return compileDeclaringFileVariant({
+      packagePath,
+      modelPath: args.modelPath,
+      packageConfig,
+      config,
+      modelDef: args.modelDef,
+      ...args.redeclare,
+      copySuffix: ".view-author.malloy",
+      queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
+      flags: VARIANT_FLAGS,
+      // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
+      declare: ({ gates, sourceName, copyName, declaringURL, addFile }) => {
+         if (table.binding) {
+            const name = `${plan.buildSourceName}__stored`;
+            const { typeText, timeframes } = storedTypedSource({
+               columns: shape.columns,
+               casts: read.casts,
+               binding: table.binding,
+               typeName: `${plan.buildSourceName}__type`,
+               stored: name,
+            });
+            return args.emit({
+               gates,
+               sourceName,
+               sourceTimezone,
+               stored: { name, typeText, timeframes },
+            });
+         }
+         const ownFile = (p: { declaringURL: string }) =>
+            p.declaringURL === plan.declaringURL;
+         const { views, queries } = args.companionPlans();
+         const text = generatePersistedResultFile(
+            views.filter(ownFile),
+            queries.filter(ownFile),
+            copyName,
+         );
+         if (!text) return { error: "no companion" };
+         const companion = persistedViewCompanionHref(declaringURL.href);
+         addFile(new URL(companion), text);
+         const name = args.colocatedAlias;
+         return args.emit({
+            gates,
+            sourceName,
+            sourceTimezone,
+            stored: {
+               name,
+               importLine: `import { ${identifier(name)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}`,
+            },
+         });
+      },
+   });
 }
 
 /**

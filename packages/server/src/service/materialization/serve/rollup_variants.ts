@@ -1616,10 +1616,7 @@ export class RollupVariantServe {
       const blanked = await authorFiles.blanked(this.host.modelDef());
       if (!blanked) return { error: "a `#@` line could not be left out" };
       for (const [url, file] of blanked) overlay.set(url, file);
-      const built = `${plan.rollupSourceName}__built`;
-      const declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, this.host.modelDef())}
-}
+      const declaration = `${colocatedRollupSource(plan, this.host.modelDef(), servedName, relativeImport(queryModelURL, companion.href))}
 ${sourceOverRollup(plan, use, servedName, "")}`;
       const modelText = queryModelText(
          this.host.modelDef(),
@@ -1785,10 +1782,7 @@ ${gates}${over}`;
             );
             if (!text) return { error: "no companion" };
             addFile(companion, text);
-            const built = `${plan.rollupSourceName}__built`;
-            return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(declaringURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
-}
+            return `${colocatedRollupSource(plan, modelDef, servedName, relativeImport(declaringURL, companion.href))}
 ${gates}${over}`;
          },
       });
@@ -2064,6 +2058,24 @@ async function variantAdditions(
    // malloy-text: each line above is a name through identifier, or the author's own text marked where it is read
    const text = lines.length > 0 ? ` extend {\n${lines.join("\n")}\n}` : "";
    return { text, views: declared };
+}
+
+/**
+ * A colocated rollup's served source: its build source imported from the
+ * rollup companion (`from`, relative to the importing file), so the build
+ * manifest substitutes its table, extended with the rollup's merged measures.
+ */
+function colocatedRollupSource(
+   plan: RollupVariantPlan,
+   modelDef: unknown,
+   servedName: string,
+   from: string | undefined,
+): string {
+   const built = `${plan.rollupSourceName}__built`;
+   // malloy-text: generated names through identifier, the companion's path through doubleQuotedString, and rollupStatements' own text
+   return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(from ?? "")}
+source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
+}`;
 }
 
 /** The rollup's own `sourceID`, as its build companion declares it. */
