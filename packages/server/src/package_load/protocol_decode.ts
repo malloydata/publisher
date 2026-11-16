@@ -18,7 +18,11 @@
  * inside it (see protocol.ts).
  */
 
-import type { LoadPackageResult, SerializedModel } from "./protocol";
+import type {
+   CompileServedCopyResult,
+   LoadPackageResult,
+   SerializedModel,
+} from "./protocol";
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
 /**
@@ -235,12 +239,8 @@ export function decodeSerializedModel(raw: unknown): SerializedModel {
  * Check a `load-package-result` message: its protocol version first, then its
  * envelope and every model in it. Returns the same object.
  */
-export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
-   if (!isRecord(raw)) {
-      throw new PackageLoadProtocolError(
-         `a load-package-result must be an object, got ${kindOf(raw)}`,
-      );
-   }
+/** Refuse a message from a worker on another protocol version. */
+function checkProtocolVersion(raw: Record<string, unknown>): void {
    if (raw.protocolVersion !== PACKAGE_LOAD_PROTOCOL_VERSION) {
       throw new PackageLoadProtocolError(
          `the worker speaks protocol version ${JSON.stringify(raw.protocolVersion) ?? "undefined"}, ` +
@@ -248,6 +248,38 @@ export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
             `was built from a different revision than the server`,
       );
    }
+}
+
+/**
+ * Check a served-copy compile's result envelope: its protocol version, and
+ * exactly one of a `modelDef` object or an `error`.
+ */
+export function checkCompileServedCopyResult(
+   raw: unknown,
+): CompileServedCopyResult {
+   if (!isRecord(raw)) {
+      throw new PackageLoadProtocolError(
+         `a compile-served-copy-result must be an object, got ${kindOf(raw)}`,
+      );
+   }
+   checkProtocolVersion(raw);
+   const compiled = isRecord(raw.modelDef);
+   const failed = isRecord(raw.error) && typeof raw.error.message === "string";
+   if (compiled === failed || typeof raw.compileDurationMs !== "number") {
+      throw new PackageLoadProtocolError(
+         `a compile-served-copy-result must carry exactly one of a modelDef or an error, and its compileDurationMs`,
+      );
+   }
+   return raw as unknown as CompileServedCopyResult;
+}
+
+export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
+   if (!isRecord(raw)) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result must be an object, got ${kindOf(raw)}`,
+      );
+   }
+   checkProtocolVersion(raw);
    if (!isRecord(raw.packageMetadata)) {
       throw new PackageLoadProtocolError(
          `a load-package-result has packageMetadata of kind ${kindOf(raw.packageMetadata)}; expected object`,
