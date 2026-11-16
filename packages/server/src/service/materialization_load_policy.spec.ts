@@ -133,7 +133,7 @@ const MISTAKES: Mistake[] = [
          persist: ['#@ persist { nmae="t" }', "persist-unknown-key"],
          materialize: [
             '#(materialize) freshness.windw="1h"',
-            "materialize-invalid",
+            "materialize-unknown-key",
          ],
          preaggregate: [
             '#(preaggregate) grain=["category"] freshness.windw="1h"',
@@ -160,8 +160,8 @@ const MISTAKES: Mistake[] = [
             '#@ preaggregate grain="category',
             "preaggregate-unparseable",
          ],
-         view: ['#@ persist name="t', "persist-view-invalid"],
-         query: ['#@ persist name="t', "persist-query-invalid"],
+         view: ['#@ persist name="t', "persist-view-unparseable"],
+         query: ['#@ persist name="t', "persist-query-unparseable"],
       },
    },
    {
@@ -208,16 +208,75 @@ const MISTAKES: Mistake[] = [
    },
 ];
 
+/**
+ * Mistakes only some routes can make, each with the one code it fails with:
+ * a key one route retired, a `name=` the DDL cannot take, and an
+ * incremental refresh on a result that is rebuilt whole.
+ */
+const ROUTE_MISTAKES: [
+   route: string,
+   name: string,
+   line: string,
+   code: string,
+][] = [
+   [
+      "persist",
+      "a retired realization=",
+      '#@ persist name="t" realization="COPY"',
+      "persist-retired-key",
+   ],
+   [
+      "view",
+      "a retired realization=",
+      '#@ persist realization="COPY"',
+      "persist-retired-key",
+   ],
+   [
+      "materialize",
+      "a retired sharing=",
+      '#(materialize) sharing="package"',
+      "materialize-retired-key",
+   ],
+   [
+      "materialize",
+      "a retired schedule=",
+      '#(materialize) schedule="0 * * * *"',
+      "materialize-retired-key",
+   ],
+   [
+      "persist",
+      "an unsafe name=",
+      '#@ persist name="t; drop"',
+      "persist-invalid",
+   ],
+   ["persist", "an unquoted name=", "#@ persist name=t", "persist-invalid"],
+   [
+      "query",
+      'a lone refresh="incremental"',
+      '#@ persist refresh="incremental"',
+      "persist-query-invalid",
+   ],
+];
+
 /** Every (mistake, route) pair, with a package name of its own. */
-const CASES = MISTAKES.flatMap((mistake, m) =>
-   Object.entries(mistake.lines).map(([route, [line, code]], r) => ({
-      label: `${mistake.name} on ${ROUTES[route].name}`,
+const CASES = [
+   ...MISTAKES.flatMap((mistake, m) =>
+      Object.entries(mistake.lines).map(([route, [line, code]], r) => ({
+         label: `${mistake.name} on ${ROUTES[route].name}`,
+         route,
+         pkg: `case${m}x${r}`,
+         model: ROUTES[route].model(line),
+         code,
+      })),
+   ),
+   ...ROUTE_MISTAKES.map(([route, name, line, code], i) => ({
+      label: `${name} on ${ROUTES[route].name}`,
       route,
-      pkg: `case${m}x${r}`,
+      pkg: `route${i}`,
       model: ROUTES[route].model(line),
       code,
    })),
-);
+];
 
 /** A package each route loads cleanly with: the same shape, no annotation. */
 const GOOD = (route: string) => ROUTES[route].model("");
@@ -389,7 +448,11 @@ describe("the load-versus-refused policy", () => {
          ],
       ];
       const rows: [string, string][] = [
-         ...CASES.map((c) => [c.label, c.model] as [string, string]),
+         // A table name is also checked on the raw text before the models
+         // compile (assertPersistNamesQuoted), which a run does not re-read.
+         ...CASES.filter((c) => !/ name=$/.test(c.label.split(" on ")[0])).map(
+            (c) => [c.label, c.model] as [string, string],
+         ),
          ...NEAR_MISSES,
       ];
       for (const [label, model] of rows) {

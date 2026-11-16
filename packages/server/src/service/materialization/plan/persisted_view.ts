@@ -77,6 +77,7 @@ import { type AnnotationNote, type AnnotationsDef } from "../../annotations";
 import {
    byCodepoint,
    PERSIST_VIEW_INVALID_CODE,
+   PERSIST_VIEW_UNPARSEABLE_CODE,
    RECOGNIZED_PERSIST_KEYS,
    readRouteTag,
    routeOfNote,
@@ -208,7 +209,7 @@ function planSourcePersistedViews(
          : undefined;
       if (unparseable !== undefined) {
          refuse(`its \`#@\` line does not parse (${unparseable})`, {
-            malformed: PERSIST_VIEW_INVALID_CODE,
+            malformed: PERSIST_VIEW_UNPARSEABLE_CODE,
          });
          continue;
       }

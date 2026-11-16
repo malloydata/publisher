@@ -47,6 +47,7 @@ export const BUILD_KINDS = [
    "persist",
    "rollup",
    "view",
+   "query",
    "pair",
 ] as const;
 export type BuildKind = (typeof BUILD_KINDS)[number];

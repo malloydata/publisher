@@ -2,17 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { ModelCompilationError } from "../../../errors";
+import { BadRequestError } from "../../../errors";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
 describe("assertPersistNamesQuoted", () => {
-   it("throws ModelCompilationError on a bare (unquoted) persist name", () => {
+   it("throws BadRequestError (persist-invalid) on a bare (unquoted) persist name", () => {
       expect(() =>
          assertPersistNamesQuoted(
             `#@ persist name=engaged_events\nsource: engaged_events is x -> { select: * }`,
             "m.malloy",
          ),
-      ).toThrow(ModelCompilationError);
+      ).toThrow(BadRequestError);
    });
 
    it("tolerates whitespace around = but still flags an unquoted value", () => {
@@ -54,7 +54,7 @@ describe("assertPersistNamesQuoted", () => {
    it("ignores non-persist annotations and persist lines with no name field", () => {
       expect(() =>
          assertPersistNamesQuoted(
-            `# number=2\n#@ persist realization="COPY"\nsource: x is y -> { select: * }`,
+            `# number=2\n#@ persist storage="lake"\nsource: x is y -> { select: * }`,
             "m.malloy",
          ),
       ).not.toThrow();

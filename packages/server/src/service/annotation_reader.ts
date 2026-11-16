@@ -245,7 +245,6 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "persist",
    "name",
    "storage",
-   "realization",
    "refresh",
    "watermark",
    "merge_key",
@@ -328,6 +327,14 @@ const PARTITION_RETIRED =
    "unpartitioned. It was a layout choice only, so the cost is scan time; " +
    "what each caller sees is unchanged";
 
+/** The rewrite for a `sharing=` on a materialization route. */
+const SHARING_RETIRED =
+   "set materialization.scope in publisher.json; a source no longer chooses its own sharing";
+
+/** The rewrite for a `schedule=` on a materialization route. */
+const SCHEDULE_RETIRED =
+   "set materialization.schedule in publisher.json; a source no longer sets its own schedule";
+
 /**
  * The materialization v2 routes. Each is read only with the materialize switch
  * on (`PUBLISHER_MATERIALIZE`); off, nothing reads them and the near-miss scan
@@ -366,17 +373,21 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
       payload: "tag",
       keys: new Set([...PERSIST_KEYS, ...PREAGGREGATE_KEYS]),
       retiredKeys: {
-         sharing:
-            "set materialization.scope in publisher.json; a source no longer chooses its own sharing",
-         schedule:
-            "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
+         sharing: SHARING_RETIRED,
+         schedule: SCHEDULE_RETIRED,
          partition: PARTITION_RETIRED,
+         realization:
+            "remove it: every table is built by CREATE TABLE AS SELECT",
       },
    },
    materialize: {
       payload: "tag",
       keys: MATERIALIZE_KEYS,
-      retiredKeys: { partition: PARTITION_RETIRED },
+      retiredKeys: {
+         sharing: SHARING_RETIRED,
+         schedule: SCHEDULE_RETIRED,
+         partition: PARTITION_RETIRED,
+      },
    },
    preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
    "!": { payload: "tag" },
@@ -414,6 +425,8 @@ export const PERSIST_INVALID_CODE = "persist-invalid";
 export const PREAGGREGATE_INVALID_CODE = "preaggregate-invalid";
 export const PERSIST_VIEW_INVALID_CODE = "persist-view-invalid";
 export const PERSIST_QUERY_INVALID_CODE = "persist-query-invalid";
+export const PERSIST_VIEW_UNPARSEABLE_CODE = "persist-view-unparseable";
+export const PERSIST_QUERY_UNPARSEABLE_CODE = "persist-query-unparseable";
 /** Two sources an author's `name=` puts on one table. */
 export const MATERIALIZATION_TABLE_COLLISION_CODE =
    "materialization-table-collision";

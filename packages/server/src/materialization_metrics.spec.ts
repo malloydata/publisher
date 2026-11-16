@@ -178,6 +178,7 @@ describe("materialization_metrics", () => {
          "persist",
          "rollup",
          "view",
+         "query",
          "pair",
       ]);
       expect([...BUILD_TIERS]).toEqual(["colocated", "storage"]);
@@ -206,16 +207,16 @@ describe("materialization_metrics", () => {
       expect(INCREMENTAL_STEP_REASONS).toHaveLength(14);
 
       // build_total: failure_class is none for the four other outcomes, and
-      // one of the four failure classes when failed: 5 x 2 x (4 + 4) = 80.
+      // one of the four failure classes when failed: 6 x 2 x (4 + 4) = 96.
       const failedClasses = FAILURE_CLASSES.length - 1;
       const notFailed = BUILD_OUTCOMES.length - 1;
       expect(
          BUILD_KINDS.length * BUILD_TIERS.length * (notFailed + failedClasses),
-      ).toBe(80);
-      // build_duration_ms: 5 x 2 x 2 = 20; build_read_bytes: 2.
+      ).toBe(96);
+      // build_duration_ms: 6 x 2 x 2 = 24; build_read_bytes: 2.
       expect(
          BUILD_KINDS.length * BUILD_TIERS.length * BUILD_METHODS.length,
-      ).toBe(20);
+      ).toBe(24);
       expect(BUILD_TIERS.length).toBe(2);
    });
 

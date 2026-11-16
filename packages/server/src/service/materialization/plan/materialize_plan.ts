@@ -315,7 +315,7 @@ function carriedPersistKeys(
    declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
 ):
    | { persist: Record<string, string>; watermarks?: string[] }
-   | { reason: string } {
+   | { reason: string; code?: string } {
    const persist: Record<string, string> = {};
    let watermarks: string[] | undefined;
    for (const key of CARRIED_KEYS) {
@@ -360,6 +360,7 @@ function carriedPersistKeys(
          if (group === "freshness" && !FRESHNESS_PROPERTIES.has(property)) {
             return {
                reason: `#(materialize) \`freshness.${property}\` is not a key it reads; use freshness.window= or freshness.fallback=`,
+               code: MATERIALIZE_UNKNOWN_KEY_CODE,
             };
          }
          if (!PLAIN_PROPERTY.test(property) || text === undefined) {
@@ -1490,7 +1491,7 @@ function invalidValuesOf(declaration: ReadDeclaration): Declined | undefined {
    const carried = carriedPersistKeys(declaration);
    if ("reason" in carried) {
       return new Declined(carried.reason, {
-         malformed: MATERIALIZE_INVALID_CODE,
+         malformed: carried.code ?? MATERIALIZE_INVALID_CODE,
       });
    }
    if ("refused" in placementOf(declaration.tag)) {
@@ -1766,7 +1767,7 @@ function placedPersistOf(
    const carried = carriedPersistKeys(declaration);
    if ("reason" in carried) {
       return new Declined(carried.reason, {
-         malformed: MATERIALIZE_INVALID_CODE,
+         malformed: carried.code ?? MATERIALIZE_INVALID_CODE,
       });
    }
    const { persist } = carried;

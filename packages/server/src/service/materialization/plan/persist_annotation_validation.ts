@@ -13,7 +13,8 @@
  * other effect.
  */
 
-import { ModelCompilationError } from "../../../errors";
+import { BadRequestError } from "../../../errors";
+import { codedLine, PERSIST_INVALID_CODE } from "../../annotation_reader";
 import type { Annotations } from "@malloydata/malloy";
 import { hasEnvReference, routeReadsEnv } from "../../motly";
 import { hasReservedTableSuffix } from "../domain/table_name";
@@ -83,7 +84,8 @@ export function tableNameProblem(name: string): string | undefined {
 /**
  * Reject `#@ persist name=<value>` annotations whose name is unusable or unsafe.
  *
- * Both failures are fatal at publish/load (HTTP 424):
+ * Both are invalid annotations (`persist-invalid`), which fail the publish
+ * and the load (HTTP 400), one line per offending annotation:
  *  - Unquoted: the build plan silently drops a bare value, so the source would
  *    serve but never materialize.
  *  - Quoted but not {@link SAFE_NAME_PATH}: the value is inlined into DDL, so it
@@ -92,7 +94,7 @@ export function tableNameProblem(name: string): string | undefined {
  * Scans raw source lines rather than compiled annotations, because the tag
  * parser discards whether the value was quoted.
  *
- * @throws {ModelCompilationError} listing every offending annotation.
+ * @throws {BadRequestError} listing every offending annotation.
  */
 export function assertPersistNamesQuoted(
    modelSource: string,
@@ -116,28 +118,33 @@ export function assertPersistNamesQuoted(
          }
       }
    }
-   if (unquoted.length > 0) {
-      throw new ModelCompilationError({
-         message:
+   // One line per mistake, each ending with its code, as every load failure.
+   const lines = [
+      ...unquoted.map((line) =>
+         codedLine(
             `${modelPath}: persist annotation name must be quoted. Write a quoted ` +
-            `value like name="engaged_events" (or a dialect table path such as ` +
-            `name="my_dataset.engaged_events"), not a bare value -- an unquoted ` +
-            `persist name is dropped from the build plan, so the source would ` +
-            `publish but never materialize. Offending annotation(s): ` +
-            `${unquoted.join("; ")}.`,
-      });
-   }
-   if (unsafe.length > 0) {
-      throw new ModelCompilationError({
-         message:
-            `${modelPath}: persist annotation name must be a plain identifier path -- ` +
-            `dot-separated segments of letters, digits, underscores, and hyphens ` +
-            `(e.g. name="engaged_events", name="my_dataset.engaged_events", or a ` +
-            `hyphenated container path name="my-proj.mydataset.engaged_events"). ` +
-            `The name is inlined into the materialization table DDL, so a value ` +
-            `containing a quote, backtick, semicolon, or space is rejected. ` +
-            `Offending annotation(s): ${unsafe.join("; ")}.`,
-      });
+               `value like name="engaged_events" (or a dialect table path such as ` +
+               `name="my_dataset.engaged_events"), not a bare value: an unquoted ` +
+               `persist name is dropped from the build plan, so the source would ` +
+               `publish but never materialize. Offending annotation: ${line}`,
+            PERSIST_INVALID_CODE,
+         ),
+      ),
+      ...unsafe.map((line) =>
+         codedLine(
+            `${modelPath}: persist annotation name must be a plain identifier path, ` +
+               `dot-separated segments of letters, digits, underscores, and hyphens ` +
+               `(e.g. name="engaged_events", name="my_dataset.engaged_events", or a ` +
+               `hyphenated container path name="my-proj.mydataset.engaged_events"). ` +
+               `The name is inlined into the materialization table DDL, so a value ` +
+               `containing a quote, backtick, semicolon, or space is rejected. ` +
+               `Offending annotation: ${line}`,
+            PERSIST_INVALID_CODE,
+         ),
+      ),
+   ];
+   if (lines.length > 0) {
+      throw new BadRequestError(lines.join("\n"));
    }
 }
 

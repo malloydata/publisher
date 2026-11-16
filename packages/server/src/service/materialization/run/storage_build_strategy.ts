@@ -794,7 +794,7 @@ export class StorageBuildStrategy
          connectionName: persistSource.connectionName,
          storageDestinationName: result.storageDestinationName,
          schema: result.schema,
-         realization: instruction.realization,
+         realization: "COPY",
          rowCount: result.rowCount,
          // A refresh reports the APPLY's duration, not the session setup. A
          // SKIP reports null rather than skewing the series as a fast build.

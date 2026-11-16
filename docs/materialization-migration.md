@@ -164,10 +164,11 @@ unchanged ([the served copy](materialization.md#the-served-copy-materialization-
   for example, is malformed rather than a default table: the publish and the load fail with
   `materialize-unknown-key`, naming the key it was likely meant to be, on every load path, a
   package already published included. A `#(materialize)` line that does not parse (`name="t` with
-  no closing quote) fails the same way, as `materialize-unparseable`. `partition=` is retired on
-  both forms: on `#(materialize)` it is `materialize-retired-key` (on `#@ persist`,
-  `persist-retired-key`), and the load fails until it is removed. v1's `realization=` has no v2
-  form. A misspelled route, such as `#(materialise)`, fails the load as
+  no closing quote) fails the same way, as `materialize-unparseable`. `partition=`, `sharing=` and
+  `schedule=` are retired on both forms: on `#(materialize)` each is `materialize-retired-key` (on
+  `#@ persist`, `persist-retired-key`), and the load fails until it is removed. `realization=` is
+  retired on `#@ persist` too (`persist-retired-key`; every table is built by CREATE TABLE AS
+  SELECT), and has no v2 form. A misspelled route, such as `#(materialise)`, fails the load as
   `materialization-near-miss`.
 
 ## What stays the same
@@ -586,7 +587,7 @@ has the full list.
 ## What is not migrated
 
 - **`#@ persist` on a view** and **`#@ -persist`**: these are the v2 spellings already.
-- **`realization=`** has no v2 form; on `#(materialize)` it is `materialize-unknown-key`.
+- **`realization=`** is retired: on `#@ persist` it is `persist-retired-key`, and on `#(materialize)`, which never read it, `materialize-unknown-key`. Remove it; every table is built by CREATE TABLE AS SELECT.
 - **`partition=`** is retired on both forms, and fails the publish and the load; remove it.
 - **An incremental source on a DuckDB origin**: refused alone and answered live
   (`materialize-not-built`), as v1 refuses it (`persist-not-built`). Say `refresh="full"`.

@@ -232,7 +232,7 @@ export class ColocatedTier
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
          connectionName: persistSource.connectionName,
-         realization: instruction.realization,
+         realization: "COPY",
          ...ledgerFields(incrementalRefresh?.lineage, seededThrough),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.

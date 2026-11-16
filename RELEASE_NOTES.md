@@ -21,6 +21,20 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — one code per mistake on every materialization route, `realization=` retired, and a persisted query reports as `query`
+
+Every case below still fails the publish and the load; only the code it fails with, or the code it is counted under, changes.
+
+- **An unknown `freshness.` key on `#(materialize)`** (`freshness.windw=`) fails with `materialize-unknown-key`, where it failed with `materialize-invalid`, as an unknown key already does on `#@ persist` and `#(preaggregate)`.
+- **A `#@ persist` line on a view or a named query that does not parse** fails with `persist-view-unparseable` or `persist-query-unparseable`, where it failed with `persist-view-invalid` or `persist-query-invalid`. Both codes are new.
+- **An unsafe or unquoted `#@ persist name=`** (`name="t; drop"`, `name=t`) fails with one line per offending annotation, each ending `[persist-invalid]`, as a 400. Before, it was one uncoded compile error (a 424).
+- **`sharing=` and `schedule=` on `#(materialize)`** fail with `materialize-retired-key`, where they failed with `materialize-unknown-key`, as they already do on `#@ persist`.
+- **A named query with a lone `refresh="incremental"`** fails with `persist-query-invalid`, as one with `watermark=` or `merge_key=` already does: a query's result is rebuilt whole.
+- **`realization=` on `#@ persist` is retired.** Any value, `"COPY"` included, now fails the publish and the load with `persist-retired-key` ("remove it: every table is built by CREATE TABLE AS SELECT"). **A package that wrote `realization=` now fails to load** until the key is removed. Nothing read it: every table was already built with CREATE TABLE AS SELECT. The build instruction's `realization` field stays on the wire but is now optional, absent meaning `COPY`; `SNAPSHOT` is still refused. A manifest entry's `realization` is retained and is always `COPY`.
+- **A persisted named query reports as `query`, not `view`:** `publisher_materialization_build_total{kind}` and `…_build_duration_ms{kind}` gain the value `query` (the build total's series bound goes from 80 to 96), and the serving legs' decline codes for a persisted query are `query_missing_field`, `query_not_built` and `query_stale`, where they were the view's `view_*`. The route label and the path report already said `query`. Table names are unchanged, so nothing rebuilds.
+- `api-doc.yaml` documents the codes; its `annotationFields` text no longer says an unrecognized `#@ persist` key rides through: it fails the load.
+- **Service team:** sync the codes above (`materialize-unknown-key`, `persist-view-unparseable`, `persist-query-unparseable`, `persist-invalid`, `materialize-retired-key`, `persist-retired-key`, `persist-query-invalid`), the optional `BuildInstruction.realization`, and the `kind="query"` metric value.
+
 ## [Unreleased] — one refusal record for every materialization declaration that is not built
 
 Every valid materialization declaration Publisher does not build is now one record in the build plan's `refusedSources`, with a bounded `RefusedSource.reason`, whatever its mechanism: `#@ persist`, `#(materialize)`, a persisted view or named query, and a rollup (`#(preaggregate)` or `#@ preaggregate`). Before, only a `#@ persist` source a compile-time gate refused (and a rollup the eligibility gate refused) had one; the rest were package warnings alone. Each is still answered live, the package still loads, and each still carries one `warn` package warning, now under its mechanism's code: `persist-not-built`, `materialize-not-built`, `persist-view-not-built`, `persist-query-not-built` or `preaggregate-not-built`.

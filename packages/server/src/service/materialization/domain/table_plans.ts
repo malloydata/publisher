@@ -77,6 +77,18 @@ export function isPersistedResultSourceID(sourceID: string): boolean {
    );
 }
 
+/**
+ * Whether `sourceID` is a persisted named query's generated build source
+ * (`<query>__query`), not a persisted view's. Its table keeps the name it
+ * always had; only how it is reported changes.
+ */
+export function isPersistedQuerySourceID(sourceID: string): boolean {
+   return (
+      isPersistedResultSourceID(sourceID) &&
+      (splitSourceID(sourceID)?.name.endsWith("__query") ?? false)
+   );
+}
+
 /** One `#@ persist` view, as planned. */
 export interface PersistedViewPlan {
    /** Tells a view's plan from a named query's (`kind: "query"`). */

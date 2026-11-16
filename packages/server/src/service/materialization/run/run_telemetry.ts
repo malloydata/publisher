@@ -37,7 +37,10 @@ import {
    recordBuildReadBytes,
 } from "../../../materialization_metrics";
 import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../domain/table_plans";
+import {
+   isPersistedQuerySourceID,
+   PERSISTED_VIEW_COMPANION_SUFFIX,
+} from "../domain/table_plans";
 import type {
    BuildInstruction,
    BuildPlan,
@@ -83,6 +86,8 @@ export function buildKindOf(
    sourceID: string | undefined,
 ): BuildKind {
    if (sourceID === undefined) return "persist";
+   // A persisted query's table is planned as a view's; it reports as a query.
+   if (isPersistedQuerySourceID(sourceID)) return "query";
    const table = compiled.tables[sourceID];
    if (table) return table.kind;
    if (sourceID.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) return "view";
