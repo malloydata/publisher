@@ -56,6 +56,25 @@ describe("measureRefusalKey", () => {
       });
    });
 
+   it("names the companion of a Windows-style URL, with no drive needed to read it", () => {
+      expect(
+         measureRefusalKey(
+            "orders@file:///D:/pkg/m.malloy",
+            "orders",
+            "total",
+            "time_zone",
+         ).sourceID,
+      ).toBe("orders.total@file:///D:/pkg/m.malloy.preaggregate.malloy");
+      expect(
+         measureRefusalKey(
+            "orders@file:///pkg/m.malloy",
+            "orders",
+            "total",
+            "time_zone",
+         ).sourceID,
+      ).toBe("orders.total@file:///pkg/m.malloy.preaggregate.malloy");
+   });
+
    it("names the companion of a Windows path as the planner does", () => {
       const win = (p: string) => pathToFileURL(p, { windows: true }).href;
       expect(
