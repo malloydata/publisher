@@ -56,8 +56,9 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  *
  * 2: `SerializedModel.entities`, the model's entities plan
  * (`LoadPackageRequest.withEntities`).
+ * 3: `SerializedModel.governsAccess`.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 2;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 3;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -228,6 +229,13 @@ export interface SerializedModel {
     * then plans it itself.
     */
    entities?: ModelEntitiesPlan;
+   /**
+    * Whether `modelDef` governs access (`governsAccess` in
+    * governance/ir/array_query.ts), answered here so the main thread never
+    * walks a model that governs nothing; it notes this on the hydrated
+    * `modelDef`. Absent when the model did not compile.
+    */
+   governsAccess?: boolean;
 }
 
 export type { SerializedNotebookCell } from "./notebook_cell_wire";
