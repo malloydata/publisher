@@ -62,7 +62,11 @@ async function compile(
    }).restore;
    // One file for both spellings: its path is in the build's SQL.
    const pkg = await packages.create({
-      "m.malloy": text.replace("'t.csv'", `'${csvPath}'`),
+      // Forward slashes: a backslash in a Malloy string is an escape.
+      "m.malloy": text.replace(
+         "'t.csv'",
+         `'${csvPath.split(path.sep).join("/")}'`,
+      ),
    });
    return {
       compiled: await compilePackageBuildPlan(pkg),

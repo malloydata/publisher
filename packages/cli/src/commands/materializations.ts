@@ -87,6 +87,9 @@ export async function getMaterialization(
  * table names, builds every persist source, and auto-loads the manifest,
  * settling at MANIFEST_FILE_READY. With `wait`, poll until the run settles;
  * without it, return immediately with a status hint.
+ *
+ * Resolves to the process exit code the caller should set: 0, or
+ * BUILT_NOT_SERVED_EXIT_CODE. A failed or timed-out build throws instead.
  */
 export async function materialize(
   client: PublisherClient,
@@ -99,7 +102,7 @@ export async function materialize(
     pollIntervalMs?: number;
     timeoutMs?: number;
   } = {},
-): Promise<void> {
+): Promise<number> {
   const created = await client.createMaterialization(
     environmentName,
     packageName,
@@ -118,7 +121,7 @@ export async function materialize(
     logInfo(
       `Run "malloy-pub get materialization ${id} --environment ${environmentName} --package ${packageName}" to check status.`,
     );
-    return;
+    return 0;
   }
 
   const settledStatuses = SETTLED_STATUSES;
@@ -148,11 +151,10 @@ export async function materialize(
           metadata.autoLoadError ?? current.error ?? "the manifest load failed",
         )}`,
       );
-      process.exitCode = BUILT_NOT_SERVED_EXIT_CODE;
-      return;
+      return BUILT_NOT_SERVED_EXIT_CODE;
     }
     logSuccess(`Materialization ${id} ready: ${current.status}`);
-    return;
+    return 0;
   }
 
   // Non-success: throw so the CLI exits non-zero. The index.ts action's catch
