@@ -91,7 +91,7 @@ import {
    buildSourceIntoStorage,
    dropStorageTable,
    oneFileModel,
-   withStorageDestinationSession,
+   withDestinationSession,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
@@ -399,7 +399,7 @@ export class StorageBuildStrategy
       table: string,
    ): Promise<KeyCheckRecord | undefined> {
       try {
-         return await withStorageDestinationSession(site, (session) =>
+         return await withDestinationSession(site, (session) =>
             runRollupKeyCheck(
                check,
                session as unknown as MalloyConnection,
