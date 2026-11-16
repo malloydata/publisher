@@ -6,7 +6,20 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import { parse } from "yaml";
 import type { components } from "./api";
-import { deriveBuildPlan } from "./service/materialization/plan/build_plan";
+import {
+   deriveBuildPlan as wirePlanOf,
+   planAddresses,
+} from "./service/materialization/plan/build_plan";
+
+/** {@link wirePlanOf} over a hand-made plan, its addresses computed. */
+function deriveBuildPlan(
+   plan: Omit<Parameters<typeof wirePlanOf>[0], "addresses">,
+   ...rest: Parameters<typeof wirePlanOf> extends [unknown, ...infer R]
+      ? R
+      : never
+): ReturnType<typeof wirePlanOf> {
+   return wirePlanOf({ ...plan, addresses: planAddresses(plan) }, ...rest);
+}
 
 /**
  * `BuildPlan.omittedSources` is what lets a host retire a table safely, so a

@@ -20,7 +20,7 @@ import { tempBuildPlanPackages } from "../test_helpers/incremental_test_harness"
 import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compile";
 import {
    deriveBuildPlanOutcome,
-   type CompiledBuildPlan,
+   type FinishedBuildPlan,
 } from "./materialization/plan/build_plan";
 import { deriveSelfInstructions } from "./materialization/run/run_instructions";
 
@@ -52,7 +52,7 @@ afterEach(async () => {
 async function compile(
    text: string,
    v2: boolean,
-): Promise<{ compiled: CompiledBuildPlan; packagePath: string }> {
+): Promise<{ compiled: FinishedBuildPlan; packagePath: string }> {
    restore?.();
    restore = installSettings({
       env: {
@@ -62,7 +62,11 @@ async function compile(
    }).restore;
    // One file for both spellings: its path is in the build's SQL.
    const pkg = await packages.create({
-      "m.malloy": text.replace("'t.csv'", `'${csvPath}'`),
+      // Forward slashes: a backslash in a Malloy string is an escape.
+      "m.malloy": text.replace(
+         "'t.csv'",
+         `'${csvPath.split(path.sep).join("/")}'`,
+      ),
    });
    return {
       compiled: await compilePackageBuildPlan(pkg),
@@ -82,7 +86,7 @@ interface PlannedRollup {
    preaggregate: PlannedSource["preaggregate"];
 }
 
-function rollupsOf(compiled: CompiledBuildPlan): Record<string, PlannedRollup> {
+function rollupsOf(compiled: FinishedBuildPlan): Record<string, PlannedRollup> {
    const { plan } = deriveBuildPlanOutcome(compiled, null);
    const out: Record<string, PlannedRollup> = {};
    for (const s of Object.values(plan?.sources ?? {})) {
@@ -97,7 +101,7 @@ function rollupsOf(compiled: CompiledBuildPlan): Record<string, PlannedRollup> {
    return out;
 }
 
-function codesOf(compiled: CompiledBuildPlan): string[] {
+function codesOf(compiled: FinishedBuildPlan): string[] {
    return (compiled.annotationFindings ?? [])
       .map((f) => f.code)
       .filter((c) => c.startsWith("preaggregate-"))

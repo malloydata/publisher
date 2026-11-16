@@ -1017,29 +1017,14 @@ export class ModelServing {
          }),
       );
 
-      // Bad givens surface as Malloy `runtime-given-*` errors, mapped to
-      // a 400 (the prefix is a pinned coupling to Malloy's error codes;
-      // also in environment.ts). But a grafted gate's givens bind in the
-      // same prepare/run, and Malloy's message names the missing one,
-      // which `docs/authorize.md` promises a denied caller never sees. So
-      // when a gate applied and a name it reads went unsupplied, refuse
-      // with the opaque 403, ahead of the `MalloyError` rethrow.
-      const gateDenial = isGivenBindingFailure(err)
-         ? this.host.governor.unboundGateDenial(
-              governed.runnable,
-              givens,
-              governed.compiledSource ?? sourceName ?? "unknown",
-              this.host.governor.authorizeReferencedGivenNames,
-           )
-         : undefined;
-      if (gateDenial) {
-         logger.debug("Gate given unbound; denying opaquely", {
-            packageName: this.host.packageName,
-            modelPath: this.host.modelPath,
-            error: err instanceof Error ? err.message : String(err),
-         });
-         throw gateDenial;
-      }
+      // Ahead of the `MalloyError` rethrow; see unboundGateGivenDenial.
+      const gateDenial = this.unboundGateGivenDenial(
+         err,
+         governed.runnable,
+         givens,
+         governed.compiledSource ?? sourceName ?? "unknown",
+      );
+      if (gateDenial) throw gateDenial;
 
       return mapRunError(err, {
          packageName: this.host.packageName,
@@ -1231,6 +1216,40 @@ export class ModelServing {
       };
    }
 
+   /**
+    * The opaque 403 for a run that failed binding its givens, when a gate
+    * grafted onto `runnable` reads a given the caller did not supply, else
+    * undefined. Bad givens surface as Malloy `runtime-given-*` errors, mapped
+    * to a 400 (the prefix is a pinned coupling to Malloy's error codes; also
+    * in environment.ts). But a grafted gate's givens bind in the same
+    * prepare, before any SQL runs, and Malloy's message names the missing
+    * one, which `docs/authorize.md` promises a denied caller never sees.
+    * Shared by the query path and a notebook cell.
+    */
+   private unboundGateGivenDenial(
+      err: unknown,
+      runnable: QueryMaterializer,
+      givens: Record<string, unknown> | undefined,
+      label: string,
+   ): AccessDeniedError | undefined {
+      if (!isGivenBindingFailure(err)) return undefined;
+      const governor = this.host.governor;
+      const denial = governor.unboundGateDenial(
+         runnable,
+         givens,
+         label,
+         governor.authorizeReferencedGivenNames,
+      );
+      if (denial) {
+         logger.debug("Gate given unbound; denying opaquely", {
+            packageName: this.host.packageName,
+            modelPath: this.host.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+      return denial;
+   }
+
    // ---- A notebook cell -------------------------------------------------
 
    /** Run one notebook cell: governed and run on its own compile, not routed. */
@@ -1403,7 +1422,20 @@ export class ModelServing {
                );
             },
          },
-      );
+      ).catch(async (err: unknown) => {
+         // As on the query path: an unsupplied gate given fails the prepare,
+         // before any SQL runs, and answers the opaque 403.
+         if (!isGivenBindingFailure(err)) throw err;
+         const label =
+            (await governor
+               .resolveAuthorizeSourceFromRunnable(cellRunnable)
+               .catch(() => undefined)) ??
+            extractRunTargetSourceName(cell.text) ??
+            "unknown";
+         throw (
+            this.unboundGateGivenDenial(err, cellRunnable, givens, label) ?? err
+         );
+      });
       const query = (await runnableToExecute.getPreparedQuery())._query;
       const queryName = (query as NamedQueryDef).as || query.name;
       try {

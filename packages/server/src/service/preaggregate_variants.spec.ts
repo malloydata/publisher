@@ -29,6 +29,16 @@ import { installSettings } from "../test_helpers/settings_env";
 import { tempBuildPlanPackages } from "../test_helpers/incremental_test_harness";
 import { usePackageLoadPool } from "../test_helpers/temp_package";
 import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compile";
+import { recordConnectionsAsForTests } from "./connection_type";
+
+// The package sandbox stands in for a warehouse in these fixtures: a
+// `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
+// source on it (storage_source_unsupported).
+let restoreConnectionTypes: () => void;
+beforeAll(() => {
+   restoreConnectionTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+});
+afterAll(() => restoreConnectionTypes());
 
 const buildPlanPackages = tempBuildPlanPackages();
 

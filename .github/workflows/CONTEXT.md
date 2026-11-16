@@ -52,6 +52,15 @@ a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
 `workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
 `PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
 
+`main-thread-regression.yml` is the main-thread regression check
+(`packages/server/tests/perf/main-thread/README.md`): a storm-lite A/B of two server builds on
+one runner, added after Publisher 0.13.1 pinned the worker's main thread
+(https://github.com/ms2data/service/issues/7795). On a PR that touches `packages/server/**`
+or `bun.lock` it compares the PR's head with its merge base; nightly, and as `release.yml`'s
+gate, it compares `main` with the anchor release in `anchor.json`. It holds no secret but stays on GitHub-hosted
+`ubuntu-latest`, where its absolute budgets were calibrated, and it is **not a required check yet**: its flake rate on PRs decides
+that. It path-filters, which is only safe because it is not required (see below).
+
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
 `BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.
@@ -254,6 +263,13 @@ ref. `build-python-sdk` calls `python-sdk.yml` with it too, and `publish-python-
 built (see *Publishing to PyPI*). `publish-packages` triggers the two other npm trains (see below).
 `gh-release` cuts the tag, and
 only after npm and Docker have both succeeded.
+
+**`main-thread-check` runs first.** `prepare` needs it, so a release whose `main` fails the
+main-thread regression check stops before any branch is cut or anything is published, and a
+re-dispatch after a fix starts clean. It adds about ten minutes to a release. A release that must
+ship while the check itself is known to be wrong is dispatched with
+`skip_main_thread_check=true`: the job still runs and passes with a warning, rather than being
+skipped, because a skipped job would also skip every job downstream of `prepare`.
 
 **The release branch is also the post-release PR.** `prepare` rewrites every `## [Unreleased]`
 heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs stamp`) in the same

@@ -52,7 +52,7 @@ import { splitManifestEntries } from "./manifest_loader";
 import { deriveServeBindings } from "../domain/binding";
 import { storedKeyChecksOf } from "../plan/rollup_plan";
 import type { BuildEnvironment } from "./materialization_run_support";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { storageDestinationRoot } from "../../connection_config";
@@ -131,11 +131,11 @@ async function scenario(model: string) {
       },
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
-   const builder = new SourceBuilder(async () => {
+   const storage: Parameters<typeof buildSource>[1] = async () => {
       throw new Error("no storage in this spec");
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -170,22 +170,18 @@ async function scenario(model: string) {
             ? rollupKeyRecordsIn({ [INLINE_UNIQUENESS_KEY]: relied })
             : undefined,
       );
-      const result = await build.run(
+      const result = await build.run({
          compiled,
          environment,
-         rebuild ? [instruction] : [],
-         rebuild ? {} : previous.entries,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-         "recompute",
-         ledger,
-      );
+         instructions: rebuild ? [instruction] : [],
+         seedEntries: rebuild ? {} : previous.entries,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+         warehouseReach: "recompute",
+         uniqueness: ledger,
+      });
       expect(result.failures).toEqual({});
       previous = { entries: result.entries, metadata: result.uniquenessChecks };
       return result;
@@ -460,7 +456,7 @@ async function storedScenario(
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    // The stored rows: the base's, so a duplicate in it reaches the table.
-   const builder = new SourceBuilder(async (request) => {
+   const storage: Parameters<typeof buildSource>[1] = async (request) => {
       const table = request.instruction.physicalTableName;
       // Its own alias: the scenario's connection may be shared, and the
       // check attaches the file as `lake` in a session of its own.
@@ -485,9 +481,9 @@ async function storedScenario(
          ],
          ...(stacked ? { upstreamReuse: "reused" } : {}),
       } as ManifestEntry;
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -511,22 +507,18 @@ async function storedScenario(
             ? rollupKeyRecordsIn({ [INLINE_UNIQUENESS_KEY]: previous.metadata })
             : undefined,
       );
-      const result = await build.run(
+      const result = await build.run({
          compiled,
          environment,
-         rebuild ? [instruction] : [],
-         rebuild ? {} : previous.entries,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-         "recompute",
-         ledger,
-      );
+         instructions: rebuild ? [instruction] : [],
+         seedEntries: rebuild ? {} : previous.entries,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+         warehouseReach: "recompute",
+         uniqueness: ledger,
+      });
       expect(result.failures).toEqual({});
       previous = { entries: result.entries, metadata: result.uniquenessChecks };
       return result;
@@ -720,11 +712,11 @@ describe("a colocated rollup over a base that is itself stored", () => {
             },
             getEnvironmentPath: () => pkg.getPackagePath(),
          } as unknown as BuildEnvironment;
-         const builder = new SourceBuilder(async () => {
+         const storage: Parameters<typeof buildSource>[1] = async () => {
             throw new Error("no storage in this spec");
-         });
+         };
          const build = new InstructedBuild({
-            buildOneSource: (...a) => builder.build(...a),
+            buildOneSource: (options) => buildSource(options, storage),
             reclaimStorageTablesFromFailedRun: async () => {},
          });
          const run = (
@@ -732,22 +724,18 @@ describe("a colocated rollup over a base that is itself stored", () => {
             seed: Record<string, ManifestEntry>,
             id: string,
          ) =>
-            build.run(
+            build.run({
                compiled,
                environment,
                instructions,
-               seed,
-               new AbortController().signal,
-               false,
-               undefined,
-               undefined,
-               undefined,
-               [],
-               undefined,
-               false,
-               "recompute",
-               new UniquenessLedger(undefined, id, undefined),
-            );
+               seedEntries: seed,
+               signal: new AbortController().signal,
+               strict: false,
+               priorRefusals: [],
+               hostInstructed: false,
+               warehouseReach: "recompute",
+               uniqueness: new UniquenessLedger(undefined, id, undefined),
+            });
          // The stored base holds a duplicate the warehouse no longer has.
          await duckdb.runSQL("INSERT INTO crew_src VALUES (1, 9)");
          const first = await run(

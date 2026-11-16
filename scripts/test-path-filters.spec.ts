@@ -384,6 +384,7 @@ describe("the roster this file checks", () => {
     const files = [...new Set(WORKFLOW_INVOCATIONS.map((i) => i.pkg))].sort();
     expect(files).toEqual([
       ".github/workflows/connection-integration-tests.yml",
+      ".github/workflows/main-thread-regression.yml",
     ]);
   });
 });

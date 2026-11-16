@@ -34,6 +34,7 @@ warehouse SQL, run store, clock, metrics and logs live.
 | `manifest_loader.ts`                | A fetched build manifest, split by tier                                                                                                                                                 | `environment.ts`, the committer                                                                       |
 | `materialization_run_support.ts`    | What a build needs from the plan about stored tables, and the environment surface it reads                                                                                              | most of `run/`, the controller                                                                        |
 | `table_claims.ts`                   | Which tables an active run writes, so two runs never write one at once                                                                                                                  | the service                                                                                           |
+| `keyed_lock.ts`                     | One mutex per key                                                                                                                                                                       | table claims, table ownership                                                                         |
 | `table_ownership.ts`                | Who owns a table an auto-run writes at an author's name                                                                                                                                 | the instructed build, the service, the reclaimer                                                      |
 | `table_site.ts`                     | Where a table's marks are read: its connection, or a session on its destination                                                                                                         | table ownership, the instructed build, the service, the reclaimer, leftover views                     |
 | `table_mark_sql.ts`                 | The marks on a table and on a leftover `name=` view, and reading them back                                                                                                              | table ownership, leftover views, table sites, the instructed build, the service, the reclaimer        |
@@ -45,6 +46,23 @@ warehouse SQL, run store, clock, metrics and logs live.
 | `error_code.ts`                     | An error reduced to a code a log may carry                                                                                                                                              | the strategies, the build session, telemetry                                                          |
 | `cron_evaluator.ts`                 | Evaluating a 5-field cron expression in UTC                                                                                                                                             | the scheduler, the facade, package skills                                                             |
 | `tier.ts`                           | The tier port (`TierAdapter`): building, dropping and key-checking a table where it lives; the colocated build's request; each tier's site                                              | the source build, the instructed build, the reclaimer, the two tier adapters                          |
+
+## Lock order
+
+A run's locks are taken in one order, so no two callers wait on each other:
+
+1. The owned-name lock (`table_ownership.ts`), on builds at one author's
+   `name=`: held from the ownership check until the table's mark is written. A table its package cannot prove its own retires
+   the package's entries while it is held (`tableNotOwned`), which takes the
+   locks below.
+2. The version lock (`VersionService.withVersionLock`).
+3. The package lock (`withPackageLock`).
+4. The table lock (`TableClaims.withTableLock`), per package.
+
+One exception: a package's first versioned publish takes its version's lock
+under the package lock (`VersionService.publish`, then `publishStaged`).
+Nothing takes the package lock under a version lock, so the two cannot
+deadlock. Nothing checks the order at run time.
 
 ## Dependency rule
 

@@ -56,11 +56,18 @@ function recorder(answer: (sql: string) => Rows = () => []): {
 }
 
 function normalize(sql: string): string {
-   return sql
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(/_fmt_preflight_\d+/g, "_fmt_preflight_N")
-      .replace(/sslrootcert=[^\s']+/g, "sslrootcert=<ambient-bundle>");
+   return (
+      sql
+         .replace(/\s+/g, " ")
+         .trim()
+         .replace(/_fmt_preflight_\d+/g, "_fmt_preflight_N")
+         // A path with a backslash (Windows) is quoted, libpq-style, inside the
+         // SQL literal: sslrootcert=''D:\\Temp\\….pem''.
+         .replace(
+            /sslrootcert=(?:''(?:[^'\\]|\\.)*''|[^\s']+)/g,
+            "sslrootcert=<ambient-bundle>",
+         )
+   );
 }
 
 /** Answers the preflight's lookup of the metadata schema: the catalog exists. */

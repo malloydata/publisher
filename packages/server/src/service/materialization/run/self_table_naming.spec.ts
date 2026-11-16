@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import path from "path";
+import { pathToFileURL } from "url";
 import {
    compiledWith,
    fakeSource,
@@ -632,17 +634,26 @@ describe("two sources whose readable names meet", () => {
    });
 });
 
+/**
+ * A package root that is absolute on every OS (on Windows, on the current
+ * drive), and the file URL Publisher gives a model under it: pathToFileURL, as
+ * model_runtime builds it. A hand-spelled `file:///pkg/…` has no drive, so
+ * Windows cannot read it as a path at all.
+ */
+const PKG_ROOT = path.resolve("/pkg");
+const fileURL = (rel: string) => pathToFileURL(path.join(PKG_ROOT, rel)).href;
+
 describe("a source's file", () => {
-   /** `name`, declared in `file` (a URL path), under package root `/pkg`. */
+   /** `name`, declared in package-relative `file`, under PKG_ROOT. */
    const declared = (name: string, file: string, sourceEntityId: string) =>
       Object.assign(fakeSource({ name, sourceEntityId }), {
-         sourceID: `${name}@file://${file}`,
+         sourceID: `${name}@${fileURL(file)}`,
       });
-   const naming: SelfTableNaming = { ...PKG, packagePath: "/pkg" };
+   const naming: SelfTableNaming = { ...PKG, packagePath: PKG_ROOT };
 
    it("is the model that declares it, whatever model imports it or in what order", () => {
       const build = (lastImporter: string, order: string[]) => {
-         const orders = declared("orders", "/pkg/models/a.malloy", "a1");
+         const orders = declared("orders", "models/a.malloy", "a1");
          return deriveSelfInstructions(
             bySourceID(compiledWith({ orders }, [order]), {
                [orders.sourceID]: lastImporter,
@@ -660,10 +671,11 @@ describe("a source's file", () => {
    });
 
    it("reads a percent-encoded path, and a generated companion as its author's file", () => {
-      const spaced = declared("orders", "/pkg/my%20models/b%20c.malloy", "a1");
+      // pathToFileURL percent-encodes the spaces: `my%20models/b%20c.malloy`.
+      const spaced = declared("orders", "my models/b c.malloy", "a1");
       const view = declared(
          "orders__by_month__view",
-         "/pkg/m.malloy.persist-view.malloy",
+         "m.malloy.persist-view.malloy",
          "a2",
       );
       const r = names(
@@ -680,8 +692,8 @@ describe("a source's file", () => {
    });
 
    it("names a shared table by the declaring paths, not the importers'", () => {
-      const zeta = declared("zeta", "/pkg/a.malloy", "a1");
-      const alpha = declared("alpha", "/pkg/b.malloy", "a1");
+      const zeta = declared("zeta", "a.malloy", "a1");
+      const alpha = declared("alpha", "b.malloy", "a1");
       const r = deriveSelfInstructions(
          bySourceID(compiledWith({ zeta, alpha }, [["alpha", "zeta"]]), {
             [zeta.sourceID]: "z.malloy",
@@ -788,13 +800,13 @@ describe("a forced refresh (every scheduled fire)", () => {
 describe("a recorded readable name another source now takes fresh", () => {
    const legacy = Object.assign(
       fakeSource({ name: "orders_legacy", sourceEntityId: "aaa" }),
-      { sourceID: "orders_legacy@file:///pkg/m.malloy" },
+      { sourceID: `orders_legacy@${fileURL("m.malloy")}` },
    );
    const fresh = Object.assign(
       fakeSource({ name: "orders", sourceEntityId: "ccc" }),
-      { sourceID: "orders@file:///pkg/m.malloy" },
+      { sourceID: `orders@${fileURL("m.malloy")}` },
    );
-   const naming: SelfTableNaming = { ...PKG, packagePath: "/pkg" };
+   const naming: SelfTableNaming = { ...PKG, packagePath: PKG_ROOT };
    // The table `orders` built at address `aaa`, before it was renamed.
    const ordersTable = deriveSelfInstructions(
       compiledWith({ fresh }, [["fresh"]]),

@@ -102,12 +102,14 @@ import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
+import { governsAccess } from "../service/governance/ir/array_query";
+import { recordConnectionType } from "../service/connection_type";
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
+   finishBuildPlan,
    mergeBuildPlanParts,
-   refuseAloneInPlan,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanParts,
@@ -586,10 +588,13 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                         port.postMessage(req);
                      },
                   );
-                  const proxy = new ProxyConnection(
-                     response.metadata,
-                     job.requestId,
-                     job.environmentName,
+                  const proxy = recordConnectionType(
+                     new ProxyConnection(
+                        response.metadata,
+                        job.requestId,
+                        job.environmentName,
+                     ),
+                     response.metadata.connectionType,
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
@@ -1053,6 +1058,7 @@ async function compileMalloyModel(
       renderTagResultsDigest,
       preaggregateCompanion,
       entities,
+      governsAccess: governsAccess(modelDef),
    };
 }
 
@@ -1334,6 +1340,7 @@ async function compileNotebookModel(
          checked && checked.warnings.length > 0
             ? checked.warnings.map((w) => w.message)
             : undefined,
+      governsAccess: modelDef ? governsAccess(modelDef) : undefined,
    };
 }
 
@@ -1490,7 +1497,7 @@ async function loadPackage(
       load,
       packageMetadata.materialization ?? null,
       // Only a published version's tables are named per version.
-      job.publishedVersion ? packageMetadata.scope : undefined,
+      !!job.publishedVersion && packageMetadata.scope === "version",
    );
    const loadEnd = performance.now();
    return {
@@ -1527,7 +1534,7 @@ async function finishWorkerBuildPlan(
    modelPaths: string[],
    load: LoadContext,
    materializationConfig: WirePackageMaterialization | null,
-   scope?: string | null,
+   versionScoped: boolean,
 ): Promise<WorkerBuildPlan | undefined> {
    if (!load.planParts || load.failed || load.planLeftToMainThread) {
       return undefined;
@@ -1559,15 +1566,12 @@ async function finishWorkerBuildPlan(
          (name) => digestSkipped.push(name),
       );
       const outcome = deriveBuildPlanOutcome(
-         // The sources refused alone, in the order compilePackageBuildPlan
-         // refuses them (a collision first).
-         refuseAloneInPlan({
-            ...parts,
+         finishBuildPlan(parts, {
             connectionDigests,
-            ...(scope === "version" ? { versionScoped: true } : {}),
+            connections,
+            versionScoped,
          }),
          materializationConfig,
-         scope,
       );
       return {
          ok: true,

@@ -9,6 +9,7 @@
  * worker compiles from its own file map.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import type { KeyCheckCompiler } from "../domain/key_check";
 import { modelDefOf, primaryKeyOf } from "../../governance/ir/compiled_model";
 import { MODEL_FILE_SUFFIX } from "../../../constants";
@@ -17,17 +18,15 @@ import { recordConnectionDigestSkipped } from "../../../materialization_metrics"
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
-   refuseAloneInPlan,
    emptyBuildPlanParts,
-   planTableFolds,
+   finishBuildPlan,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanOutcome,
    type BuildPlanPackage,
-   type CompiledBuildPlan,
+   type FinishedBuildPlan,
 } from "./build_plan";
 import { loadGateText } from "./load_gate_text";
-import { refuseCollidingMaterialize } from "./eligibility_collect";
 import {
    joinOneKey,
    joinOneKeysOf,
@@ -60,7 +59,7 @@ export async function compilePackageBuildPlan(
        */
       keepIncrementalUnbuildable?: boolean;
    } = {},
-): Promise<CompiledBuildPlan> {
+): Promise<FinishedBuildPlan> {
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
    const joinOneKeys = new Set<string>();
@@ -93,7 +92,7 @@ export async function compilePackageBuildPlan(
       // a turn between models so requests are not held for the whole plan.
       // Checked after the yield, so a cancel that lands during it is seen.
       await yielder.maybeYield();
-      if (signal?.aborted) throw new Error("Build cancelled");
+      if (signal?.aborted) throw new BuildCancelledError();
 
       const authorFiles = packageFiles(
          pkg.getPackagePath(),
@@ -191,27 +190,16 @@ export async function compilePackageBuildPlan(
       },
    );
 
-   const versionScoped = versionOwnsTables(pkg);
-   // Before anything addresses a source: each author `name=` its own table,
-   // decided over every source before any is refused.
-   const tableFolds = planTableFolds({ ...parts, connectionDigests });
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name, or a source whose incremental declaration
    // this deployment cannot honour, must not build here either.
-   const compiled = refuseCollidingMaterialize({
-      ...(versionScoped ? { versionScoped: true } : {}),
-      builds: parts.builds,
-      tables: parts.tables,
+   return finishBuildPlan(parts, {
       connectionDigests,
       connections,
-      tableFolds,
-      droppedPersistSources: parts.droppedPersistSources,
-      annotationFindings: parts.annotationFindings,
-      modelGateLines: parts.modelGateLines,
-      ...(keyCheckCompilers.size > 0 ? { keyCheckCompilers } : {}),
-      omittedSources: parts.omittedSources,
+      versionScoped: versionOwnsTables(pkg),
+      keyCheckCompilers,
+      keepIncrementalUnbuildable,
    });
-   return keepIncrementalUnbuildable ? compiled : refuseAloneInPlan(compiled);
 }
 
 /**
@@ -228,7 +216,6 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
-      versionOwnsTables(pkg) ? "version" : undefined,
    );
 }
 
@@ -238,26 +225,21 @@ export async function computePackageBuildPlan(
  * when the files carry no invalid materialization annotation.
  */
 export function runLoadGateText(
-   compiled: CompiledBuildPlan,
+   compiled: FinishedBuildPlan,
    pkg: BuildPlanPackage,
    judgement: { versionScoped: boolean; enforceCollisions: boolean },
 ): string {
    const derived = deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
-      judgement.versionScoped ? "version" : undefined,
    );
    return loadGateText(
       {
          plan: derived.plan,
          annotationFindings: derived.annotationFindings,
          incrementalDeclarations: derived.incrementalDeclarations,
-         ...(derived.materializePlans
-            ? { materializePlans: derived.materializePlans }
-            : {}),
-         ...(derived.modelGateLines
-            ? { modelGateLines: derived.modelGateLines }
-            : {}),
+         materializePlans: derived.materializePlans,
+         modelGateLines: derived.modelGateLines,
       },
       judgement,
    );

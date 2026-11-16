@@ -423,16 +423,22 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       // Hold the publish's compile, with the package lock held.
       let release!: () => void;
       const gate = new Promise<void>((resolve) => (release = resolve));
+      // Resolved once the publish is inside its compile: waiting for it,
+      // rather than a fixed sleep, keeps a slow machine from starting the read
+      // before the publish has taken the package lock.
+      let reachedGate!: () => void;
+      const atGate = new Promise<void>((resolve) => (reachedGate = resolve));
       const create = Package.create.bind(Package);
       const spy = spyOn(Package, "create").mockImplementationOnce(
          async (...args: Parameters<typeof Package.create>) => {
+            reachedGate();
             await gate;
             return create(...args);
          },
       );
       try {
          const publishing = publish(env, source("1.0.0", 1));
-         await new Promise((resolve) => setTimeout(resolve, 20));
+         await atGate;
          // The package has no version yet, and no folder of its own to load.
          const reading = env.getPackage(parsePackageName(PKG));
          await new Promise((resolve) => setTimeout(resolve, 20));

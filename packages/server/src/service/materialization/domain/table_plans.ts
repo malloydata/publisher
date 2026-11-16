@@ -63,6 +63,20 @@ export function splitSourceID(
    return match ? { name: match[1], url: match[2] } : undefined;
 }
 
+/** Appended to a declaring file's URL to name its persisted-view companion. */
+export const PERSISTED_VIEW_COMPANION_SUFFIX = ".persist-view.malloy";
+
+/**
+ * Whether `sourceID` is declared in a persisted-view companion: a persisted
+ * view's or named query's generated build source.
+ */
+export function isPersistedResultSourceID(sourceID: string): boolean {
+   return (
+      splitSourceID(sourceID)?.url.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX) ??
+      false
+   );
+}
+
 /** One `#@ persist` view, as planned. */
 export interface PersistedViewPlan {
    /** Tells a view's plan from a named query's (`kind: "query"`). */

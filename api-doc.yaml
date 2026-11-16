@@ -10705,6 +10705,7 @@ components:
               not_duckdb_portable,
               public_surface_unknown,
               read_only_dialect,
+              storage_source_unsupported,
               env_reference,
               rollup_name_collision,
               empty_storage,
@@ -10729,10 +10730,13 @@ components:
             a given, which has no read-time re-application to put the term back),
             `read_only_dialect` (a colocated `#@ persist` on a source whose
             dialect cannot create tables; SQL Server today, whose connection
-            reports `canPersist: false`), `rollup_name_collision` (a
-            pre-aggregation rollup whose generated name, and so its table, is
-            also another model's rollup with different content; neither builds
-            or serves, and each model answers from its base), and
+            reports `canPersist: false`), `storage_source_unsupported`
+            (`storage=` on a source whose connection the build cannot pass
+            through to a destination, e.g. the package's DuckDB sandbox; it
+            is not built and is answered live), `rollup_name_collision`
+            (retained on the enum and no longer produced: a rollup's generated
+            name digests its declaring source, so no two rollups share one),
+            and
             `current_time` (a `#@ persist` whose build reads the current
             time, `now`: in its persisted query, a view it runs, the
             `where:`, a field or a join of the source that query reads, or

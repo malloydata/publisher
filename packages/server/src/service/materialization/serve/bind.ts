@@ -77,7 +77,12 @@ export function bindStorageEntries(args: {
    destinationSchema?: (destinationName: string) => string | undefined;
    /** The plan's eligible sourceIDs, and why each other was refused; undefined when unknown. */
    eligibility:
-      | { eligible: readonly string[]; refused: Record<string, string> }
+      | {
+           eligible: readonly string[];
+           refused: Record<string, string>;
+           /** The eligible sourceIDs admitted past their own gate (G3). */
+           gateKept?: readonly string[];
+        }
       | undefined;
    /** Each binding's kind, from the plan (see {@link kindFromPlan}). */
    kindOf: (binding: Binding) => BindingKind;
@@ -112,8 +117,12 @@ export function bindStorageEntries(args: {
       sourceIDsFor,
    );
    const eligible = new Set(eligibility?.eligible ?? []);
+   const keptTables = keptTableAddresses(
+      eligibility?.gateKept,
+      (id) => plan?.sources?.[id]?.sourceEntityId,
+   );
    const declined: StorageBindDecline[] = [];
-   const bindings = derived.flatMap((derivedBinding) => {
+   const admittedBindings = derived.flatMap((derivedBinding) => {
       const binding = { ...derivedBinding, kind: args.kindOf(derivedBinding) };
       const ids = binding.sourceIDs ?? [];
       const admitted = ids.filter((id) => eligible.has(id));
@@ -142,7 +151,41 @@ export function bindStorageEntries(args: {
       });
       return [];
    });
+   // The table, not the name, is what G3 admits: every name a G3 table is
+   // bound under is marked, since every one reads that one table (an
+   // extension that shares its base's table re-roots the base). So any
+   // sharer of a gate-kept source's content address counts as G3, an
+   // ungated sharer included: a gated entry point that joins an ungated
+   // sharer is served from the table because a gated sibling stores into
+   // it. Nothing leaks: the SQL, and so the rows, are identical, and
+   // `govern()` grafts and proves the entry point's own gate on the answer
+   // as on live. A rollup or a view is never marked (their legs pass a gate
+   // only with the switch).
+   const bindings = admittedBindings.map((binding) =>
+      keptTables.has(binding.virtualHandle) &&
+      (binding.kind === "persist" || binding.kind === "materialize")
+         ? { ...binding, ownGateKept: true }
+         : binding,
+   );
    return { bindings, otherDefinition, declined };
+}
+
+/**
+ * The tables (content addresses) plan admitted past a stored source's own
+ * row-level gate under G3: the address of every `gateKept` source. The one
+ * rule both the bind (which marks each binding of such a table
+ * `ownGateKept`) and the serve verdict (for a table not bound yet) read.
+ */
+export function keptTableAddresses(
+   gateKept: readonly string[] | undefined,
+   addressOf: (sourceID: string) => string | undefined,
+): Set<string> {
+   const out = new Set<string>();
+   for (const id of gateKept ?? []) {
+      const address = addressOf(id);
+      if (address) out.add(address);
+   }
+   return out;
 }
 
 /** One colocated entry the bind declined, for the facade's log and counter. */

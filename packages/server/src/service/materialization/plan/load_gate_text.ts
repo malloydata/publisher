@@ -29,8 +29,12 @@ import type {
    PreaggregateViolationCode,
 } from "./preaggregation_validation";
 import type { components } from "../../../api";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
-import type { MaterializePlan } from "../domain/table_plans";
+import {
+   isPersistedResultSourceID,
+   type MaterializePlan,
+} from "../domain/table_plans";
+import { PERSIST_VIEW_NOT_BUILT } from "./persisted_view";
+import { PERSIST_QUERY_NOT_BUILT } from "./persisted_query";
 import {
    authorNameOf,
    describeMembers,
@@ -97,9 +101,9 @@ export function relaxedCollision(
          finding.route !== "@"
             ? "materialize-not-built"
             : finding.message.startsWith("#@ persist on view")
-              ? "persist-view-not-built"
+              ? PERSIST_VIEW_NOT_BUILT
               : finding.message.startsWith("#@ persist on query")
-                ? "persist-query-not-built"
+                ? PERSIST_QUERY_NOT_BUILT
                 : PERSIST_NOT_BUILT_CODE,
       message: finding.message.replace(
          " is invalid: ",
@@ -124,11 +128,10 @@ export function invalidFindingLines(
 }
 
 /** The not-built code of a planned source: a persisted view's, a query's, or a source's. */
-function refusalCodeOf(sourceID: string, name: string): string {
-   const url = sourceID.slice(sourceID.indexOf("@") + 1);
-   if (url.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) {
-      if (name.endsWith("__view")) return "persist-view-not-built";
-      if (name.endsWith("__query")) return "persist-query-not-built";
+export function refusalCodeOf(sourceID: string, name: string): string {
+   if (isPersistedResultSourceID(sourceID)) {
+      if (name.endsWith("__view")) return PERSIST_VIEW_NOT_BUILT;
+      if (name.endsWith("__query")) return PERSIST_QUERY_NOT_BUILT;
    }
    return PERSIST_NOT_BUILT_CODE;
 }

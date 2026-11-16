@@ -471,7 +471,7 @@ program
         options.pollInterval,
         "--poll-interval",
       );
-      await materializationCommands.materialize(
+      process.exitCode = await materializationCommands.materialize(
         client,
         options.environment,
         options.package,

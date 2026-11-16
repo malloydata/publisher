@@ -15,12 +15,8 @@
  * result: the package surface (a hidden file, a source derived from one, a
  * raw `connection.sql`), `#(authorize)` on a source and on one derived from
  * it, a row-level `#(access_filter)` graft, givens a cell reads, and givens it
- * leaves unbound.
- *
- * One difference is expected, and both sides of it refuse: a row-level gate
- * whose given has no value. The cell route compiles the graft and fails on
- * the missing value (400, "Given … has no value"); the query route denies the
- * source (403, "Access denied"). Neither runs anything.
+ * leaves unbound. A row-level gate whose given has no value is denied alike,
+ * with the opaque 403, before either route runs anything.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -89,15 +85,6 @@ const outcomeOf = (
         }
       : { refused: status, message: body.message };
 
-/** The one expected difference: an unbound row-level given, refused both ways. */
-const unboundRowLevelGiven = (a: Outcome, b: Outcome) =>
-   "refused" in a &&
-   "refused" in b &&
-   a.refused === 400 &&
-   /has no value and no default/.test(a.message ?? "") &&
-   b.refused === 403 &&
-   /^Access denied for source/.test(b.message ?? "");
-
 describe("A .malloy report's cell: cell route vs query route (E2E)", () => {
    let env: PackageEnv;
    const pkgUrl = (pkg: string, sub: string) => env.api(sub, pkg);
@@ -118,7 +105,7 @@ describe("A .malloy report's cell: cell route vs query route (E2E)", () => {
 
    it("refuses and answers alike, cell by cell", async () => {
       const differences: unknown[] = [];
-      const seen = { answered: 0, refused: 0, expectedDifference: 0 };
+      const seen = { answered: 0, refused: 0, unboundGateDenied: 0 };
       for (const [pkg, { givens }] of Object.entries(CASES)) {
          const reports = (await (
             await fetch(pkgUrl(pkg, "/reports"))
@@ -146,9 +133,7 @@ describe("A .malloy report's cell: cell route vs query route (E2E)", () => {
                   );
                   const a = outcomeOf(viaCell.status, await viaCell.json());
                   const b = outcomeOf(viaQuery.status, await viaQuery.json());
-                  if (unboundRowLevelGiven(a, b)) {
-                     seen.expectedDifference++;
-                  } else if (JSON.stringify(a) !== JSON.stringify(b)) {
+                  if (JSON.stringify(a) !== JSON.stringify(b)) {
                      differences.push({
                         pkg,
                         reportPath,
@@ -159,6 +144,16 @@ describe("A .malloy report's cell: cell route vs query route (E2E)", () => {
                      });
                   } else if ("refused" in a) {
                      seen.refused++;
+                     // The row-filtered source with no GROUPS: the cell route
+                     // used to answer 400 naming the missing given.
+                     if (
+                        a.refused === 403 &&
+                        pkg === "report-cell-governance" &&
+                        /^run: gated\b/.test(cells[i].text) &&
+                        !("GROUPS" in given)
+                     ) {
+                        seen.unboundGateDenied++;
+                     }
                   } else {
                      seen.answered++;
                   }
@@ -170,6 +165,7 @@ describe("A .malloy report's cell: cell route vs query route (E2E)", () => {
       // Both kinds of outcome were exercised, governance refusals included.
       expect(seen.answered).toBeGreaterThan(40);
       expect(seen.refused).toBeGreaterThan(40);
-      expect(seen.expectedDifference).toBeGreaterThan(0);
+      // An unbound row-level given was among them, denied alike.
+      expect(seen.unboundGateDenied).toBeGreaterThan(0);
    });
 });

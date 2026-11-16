@@ -19,7 +19,7 @@ import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 
 const packages = tempBuildPlanPackages();
 let restore: () => void;
@@ -105,7 +105,7 @@ async function scenario() {
    } as unknown as BuildEnvironment;
    // The storage tier, stood in for by the scenario's own database: the SQL
    // it is handed for the table is written there, so its columns can be read.
-   const builder = new SourceBuilder(async (request) => {
+   const storage: Parameters<typeof buildSource>[1] = async (request) => {
       const table = request.instruction.physicalTableName;
       await duckdb.runSQL(
          `CREATE OR REPLACE TABLE ${table} AS ${request.storedBuildSQL}`,
@@ -117,9 +117,9 @@ async function scenario() {
          connectionName: "duckdb",
          storageDestinationName: "lake",
       } as ManifestEntry;
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const addressOf = (name: string) => {
@@ -139,21 +139,17 @@ async function scenario() {
          ...(destination ? { destination } : {}),
       }) as BuildInstruction;
    const run = (instructions: BuildInstruction[]) =>
-      build.run(
+      build.run({
          compiled,
          environment,
          instructions,
-         {},
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-         "recompute",
-      );
+         seedEntries: {},
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+         warehouseReach: "recompute",
+      });
    const columns = async (table: string) =>
       (
          (await duckdb.runSQL(`DESCRIBE ${table}`)).rows as {

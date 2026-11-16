@@ -278,7 +278,10 @@ source: orders is raw_p -> { select: id, org_id } extend {
       );
    });
 
-   describe("a gated source's hidden columns land in the destination only with the switch on (question 14)", () => {
+   // G3 on the storage tier, a maintainer-approved exception made ahead of the
+   // question-14 review: a source's own row-level gate is kept at read on
+   // either tier, so its hidden columns land in the destination either way.
+   describe("a gated source's hidden columns land in the destination under its own row-level gate, switch on or off (G3)", () => {
       const GATED = `##! experimental { access_modifiers givens }
 given: GROUPS :: string[]
 source: raw is duckdb.sql("select 1 as id, 'acme' as org_id, 2.5 as amount")
@@ -290,7 +293,7 @@ source: orders is raw include { internal: org_id; private: id; public: * }
 
       for (const on of [true, false]) {
          it(
-            `gated serving ${on ? "on: planned with its hidden columns" : "off: refused, nothing built"}`,
+            `gated serving ${on ? "on" : "off"}: planned with its hidden columns`,
             async () => {
                settings({
                   PERSIST_STORAGE_MODE: "on",
@@ -304,16 +307,9 @@ source: orders is raw include { internal: org_id; private: id; public: * }
                ]);
                const outcome = deriveBuildPlanOutcome(c, null);
                const [sourceID] = Object.keys(materializePlansIn(c) ?? {});
-               if (on) {
-                  expect(outcome.sourceEligibility.eligible).toEqual([
-                     sourceID,
-                  ]);
-               } else {
-                  expect(outcome.sourceEligibility.eligible).toEqual([]);
-                  expect(outcome.plan?.refusedSources?.[sourceID]?.reason).toBe(
-                     "authorize",
-                  );
-               }
+               expect(outcome.sourceEligibility.eligible).toEqual([sourceID]);
+               expect(outcome.sourceEligibility.gateKept).toEqual([sourceID]);
+               expect(outcome.plan?.refusedSources?.[sourceID]).toBeUndefined();
             },
             { timeout: 30000 },
          );

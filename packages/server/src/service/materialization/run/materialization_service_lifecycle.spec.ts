@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
@@ -574,10 +575,12 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.executeInstructedBuild.calledOnce).toBe(true);
       // Caller instructions pass straight through; nothing is carried/reused.
       // (arg[1] is the environment; instructions are arg[2], seed entries arg[3].)
-      expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual(
+      expect(svc.executeInstructedBuild.firstCall.args[0].instructions).toEqual(
          instructions,
       );
-      expect(svc.executeInstructedBuild.firstCall.args[3]).toEqual({});
+      expect(svc.executeInstructedBuild.firstCall.args[0].seedEntries).toEqual(
+         {},
+      );
       // The manifest is committed with both collections: entries (arg 1) and
       // failures (arg 2), metadata last. Pinned positionally because these are
       // sinon args -- asserting the metadata alone would keep passing if a later
@@ -624,7 +627,7 @@ describe("runBuild (branch behavior)", () => {
       // arg[1] is environment (the storage build session), so the seed
       // (carried) entries are arg[3]. connectionName is carried through so the
       // seed can be quoted for the upstream's dialect (see quoteSeedTablePath).
-      expect(svc.executeInstructedBuild.firstCall.args[3]).toEqual({
+      expect(svc.executeInstructedBuild.firstCall.args[0].seedEntries).toEqual({
          "up-1": {
             sourceEntityId: "up-1",
             physicalTableName: "upstream_tbl",
@@ -632,7 +635,7 @@ describe("runBuild (branch behavior)", () => {
          },
       });
       // strictUpstreams flows through as the strict flag (6th arg).
-      expect(svc.executeInstructedBuild.firstCall.args[5]).toBe(true);
+      expect(svc.executeInstructedBuild.firstCall.args[0].strict).toBe(true);
       // Reused upstreams are counted as carried, not built.
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "orchestrated",
@@ -659,11 +662,11 @@ describe("runBuild (branch behavior)", () => {
          },
          new AbortController().signal,
       );
-      const args = svc.executeInstructedBuild.firstCall.args;
-      expect(args[5]).toBe(true);
-      expect(args[12]).toBe("refuse");
+      const [options] = svc.executeInstructedBuild.firstCall.args;
+      expect(options.strict).toBe(true);
+      expect(options.warehouseReach).toBe("refuse");
       // A host's build relies on no earlier uniqueness check.
-      expect(args[13]).toBeUndefined();
+      expect(options.uniqueness).toBeUndefined();
    });
 
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
@@ -767,9 +770,9 @@ describe("runBuild (branch behavior)", () => {
          refusedSources: refused,
       });
       // Named in the error of a run whose every instructed source failed.
-      expect(svc.executeInstructedBuild.firstCall.args[9]).toEqual([
-         refused.gated,
-      ]);
+      expect(
+         svc.executeInstructedBuild.firstCall.args[0].priorRefusals,
+      ).toEqual([refused.gated]);
    });
 
    it("counts auto-run's refusals and carried sources once each, between run.started and run.finished", async () => {
@@ -1294,7 +1297,7 @@ describe("runInBackground (terminal recording)", () => {
       const bg = background();
       bg.runInBackground("bg-own", async () => {
          bg.runningAbortControllers.get("bg-own")!.abort();
-         throw new Error("Build cancelled");
+         throw new BuildCancelledError();
       });
       await flush();
 
@@ -1364,6 +1367,93 @@ describe("runInBackground (terminal recording)", () => {
       }
    });
 
+   describe("a run whose record is already terminal when it throws", () => {
+      /** The logger's error, warn and info, stubbed for one test. */
+      function stubLogs() {
+         const stubs = {
+            error: sinon.stub(logger, "error"),
+            warn: sinon.stub(logger, "warn"),
+            info: sinon.stub(logger, "info"),
+         };
+         return {
+            ...stubs,
+            restore: () => Object.values(stubs).forEach((s) => s.restore()),
+         };
+      }
+
+      const terminal: MaterializationStatus[] = [
+         "MANIFEST_FILE_READY",
+         "CANCELLED",
+         "FAILED",
+      ];
+      for (const status of terminal) {
+         it(`keeps ${status} when the run throws after it was recorded`, async () => {
+            ctx.repository.getMaterializationById.resolves(
+               makeMaterialization({ status: "PENDING" }),
+            );
+            const logs = stubLogs();
+            try {
+               background().runInBackground("bg-late", async () => {
+                  // The terminal write lands (this process's commit, or
+                  // another process's stop) before the run's own late throw.
+                  ctx.repository.getMaterializationById.resolves(
+                     makeMaterialization({ status }),
+                  );
+                  throw new Error("late failure");
+               });
+               await flush();
+            } finally {
+               logs.restore();
+            }
+
+            expect(ctx.repository.updateMaterialization.called).toBe(false);
+            // Reported as a late throw the record kept, never as the run's
+            // failure.
+            expect(logs.error.called).toBe(false);
+            expect((logs.warn.firstCall.args as unknown as [string])[0]).toBe(
+               "Materialization run threw after its status was recorded; keeping it",
+            );
+         });
+      }
+
+      it("keeps a CANCELLED another process recorded when this one is aborted too", async () => {
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({ status: "CANCELLED", error: "Cancelled" }),
+         );
+         const bg = background();
+         const logs = stubLogs();
+         try {
+            bg.runInBackground("bg-both", async () => {
+               bg.runningAbortControllers.get("bg-both")!.abort();
+               throw new Error("deadlock detected");
+            });
+            await flush();
+         } finally {
+            logs.restore();
+         }
+
+         expect(ctx.repository.updateMaterialization.called).toBe(false);
+         expect(logs.error.called).toBe(false);
+      });
+
+      it("still records FAILED when the record cannot be read", async () => {
+         ctx.repository.getMaterializationById.rejects(new Error("db down"));
+         const warnStub = sinon.stub(logger, "warn");
+         try {
+            background().runInBackground("bg-unread", async () => {
+               throw new Error("boom");
+            });
+            await flush();
+         } finally {
+            warnStub.restore();
+         }
+
+         expect(
+            ctx.repository.updateMaterialization.firstCall.args[1],
+         ).toMatchObject({ status: "FAILED", error: "boom" });
+      });
+   });
+
    it("keeps a DSN out of the run-level log and redacts it from the record", async () => {
       // A whole-run throw has no connection to redact against, but a connect
       // failure while resolving the package's connections echoes the DSN.
@@ -1403,18 +1493,19 @@ describe("transition (state machine)", () => {
       id: string,
       next: MaterializationStatus,
    ) => Promise<unknown> {
-      return (
-         ctx.service as unknown as {
+      const { lifecycle } = ctx.service as unknown as {
+         lifecycle: {
             transition: (
                id: string,
                next: MaterializationStatus,
             ) => Promise<unknown>;
-         }
-      ).transition.bind(ctx.service);
+         };
+      };
+      return lifecycle.transition.bind(lifecycle);
    }
 
    it("throws MaterializationNotFoundError when the record is gone", async () => {
-      ctx.repository.getMaterializationById.resolves(undefined);
+      ctx.repository.getMaterializationById.resolves(null);
       await expect(
          transition()("mat-1", "MANIFEST_ROWS_READY"),
       ).rejects.toThrow(MaterializationNotFoundError);

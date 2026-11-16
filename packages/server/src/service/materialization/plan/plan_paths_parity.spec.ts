@@ -56,14 +56,63 @@ source: a is raw extend { where: id > 0 }
 
 /** What both paths must agree on, order-free. */
 function judged(outcome: BuildPlanOutcome) {
+   const sorted = (values: Iterable<string>) => [...values].sort();
    return {
       planned: Object.values(outcome.plan?.sources ?? {})
          .map((s) => s.name)
          .sort(),
+      refused: Object.values(outcome.plan?.refusedSources ?? {})
+         .map((r) => `${r.name}:${r.tier}:${r.reason}`)
+         .sort(),
       findings: outcome.annotationFindings
          .map((f) => `${f.tier}:${f.code}:${f.subject ?? ""}`)
          .sort(),
+      sourceEligibility: {
+         eligible: sorted(outcome.sourceEligibility.eligible),
+         refused: sorted(Object.keys(outcome.sourceEligibility.refused)),
+         gateKept: sorted(outcome.sourceEligibility.gateKept ?? []),
+      },
+      colocatedSourceEligibility: {
+         eligible: sorted(outcome.colocatedSourceEligibility.eligibleEntityIds),
+         refused: sorted(
+            Object.keys(outcome.colocatedSourceEligibility.refused),
+         ),
+      },
+      compilerKeys: Object.entries(outcome.compilerKeys).sort(),
    };
+}
+
+/** Both paths' outcomes for `model`, `publisher.json` holding `manifest`. */
+async function bothPaths(
+   packages: ReturnType<typeof tempBuildPlanPackages>,
+   model: string,
+   manifest: Record<string, unknown> = {},
+   published?: { versionId: string; scope: string },
+) {
+   const pkg = await packages.create(
+      model,
+      published
+         ? {
+              getPackageMetadata: () => ({ scope: published.scope }),
+              getVersionId: () => published.versionId,
+           }
+         : {},
+   );
+   await fs.writeFile(
+      path.join(pkg.getPackagePath(), "publisher.json"),
+      JSON.stringify({ name: "pkg", description: "fixture", ...manifest }),
+   );
+   const main = await computePackageBuildPlan(pkg);
+   const loaded = await getPackageLoadPool().loadPackage({
+      packagePath: pkg.getPackagePath(),
+      packageName: "pkg",
+      environmentName: "e",
+      malloyConfig: pkg.getMalloyConfig(),
+      defaultConnectionName: "duckdb",
+      computeBuildPlan: true,
+      ...(published ? { publishedVersion: true } : {}),
+   });
+   return { main, worker: loaded.buildPlan };
 }
 
 describe("the load worker and compilePackageBuildPlan plan alike", () => {
@@ -73,26 +122,31 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
 
    for (const [name, model] of SHAPES) {
       it(name, async () => {
-         const pkg = await packages.create(model);
-         await fs.writeFile(
-            path.join(pkg.getPackagePath(), "publisher.json"),
-            JSON.stringify({ name: "pkg", description: "fixture" }),
-         );
-         const main = await computePackageBuildPlan(pkg);
-         const loaded = await getPackageLoadPool().loadPackage({
-            packagePath: pkg.getPackagePath(),
-            packageName: "pkg",
-            environmentName: "e",
-            malloyConfig: pkg.getMalloyConfig(),
-            defaultConnectionName: "duckdb",
-            computeBuildPlan: true,
-         });
-         const worker = loaded.buildPlan;
+         const { main, worker } = await bothPaths(packages, model);
          expect(worker?.ok).toBe(true);
          if (!worker?.ok) return;
          expect(judged(worker.outcome)).toEqual(judged(main));
       });
    }
+
+   it("a published version of a scope: version package", async () => {
+      // Two `name=` the same: each a readable name of its own per version,
+      // so no collision on either path.
+      const { main, worker } = await bothPaths(
+         packages,
+         SHAPES[1][1],
+         { materialization: { scope: "version" } },
+         { versionId: "1.0.0", scope: "version" },
+      );
+      expect(worker?.ok).toBe(true);
+      if (!worker?.ok) return;
+      expect(judged(worker.outcome)).toEqual(judged(main));
+      expect(
+         main.annotationFindings.filter(
+            (f) => f.code === "materialization-table-collision",
+         ),
+      ).toEqual([]);
+   });
 
    it("judges a collision before an unbuildable incremental declaration", async () => {
       const pkg = await packages.create(SHAPES[0][1]);

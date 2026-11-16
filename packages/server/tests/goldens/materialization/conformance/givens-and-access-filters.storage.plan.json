@@ -44,36 +44,7 @@
       "scoped@<pkg>/m.malloy": "m.malloy"
     }
   },
-  "loadWarnings": [
-    {
-      "code": "persist-not-built",
-      "message": "Source 'gated_ext' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "gated_ext"
-    },
-    {
-      "code": "persist-source-refused",
-      "message": "Source 'gated_ext' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "gated_ext"
-    },
-    {
-      "code": "persist-not-built",
-      "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "gated"
-    },
-    {
-      "code": "persist-source-refused",
-      "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "gated"
-    }
-  ],
+  "loadWarnings": [],
   "wirePlan": {
     "graphs": [
       {
@@ -98,25 +69,92 @@
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {
+    "refusedSources": {},
+    "sources": {
       "gated@<pkg>/m.malloy": {
-        "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "annotationFields": {
+          "name": "gated",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
         "modelPath": "m.malloy",
         "name": "gated",
-        "reason": "authorize",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
         "sourceID": "gated@<pkg>/m.malloy",
-        "tier": "storage"
+        "sql": "sha256:1c11c4f32b8df464"
       },
       "gated_ext@<pkg>/m.malloy": {
-        "message": "Source 'gated_ext' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "annotationFields": {
+          "name": "scoped",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
         "modelPath": "m.malloy",
         "name": "gated_ext",
-        "reason": "authorize",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
         "sourceID": "gated_ext@<pkg>/m.malloy",
-        "tier": "storage"
-      }
-    },
-    "sources": {
+        "sql": "sha256:9c53cda73d07f582",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          }
+        ]
+      },
       "scoped@<pkg>/m.malloy": {
         "annotationFields": {
           "name": "scoped",

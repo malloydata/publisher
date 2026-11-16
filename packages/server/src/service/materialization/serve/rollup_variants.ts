@@ -160,7 +160,7 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
-import { bigIntegerReadOf } from "../stored_column_types";
+import { bigIntegerReadOf, storedTypeServesAs } from "../stored_column_types";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import { type Binding, type Pinned } from "../domain/binding";
@@ -330,6 +330,11 @@ export class RollupVariantServe {
    /** Bumped when the context or the destinations change: a graft cache scope. */
    private generation = 0;
    private compiled = new Map<string, Promise<CompiledVariant>>();
+   /**
+    * Compiled variants whose failure was warned about: each is cached for its
+    * binding, so every later attempt would repeat the same warning.
+    */
+   private warnedFailures = new WeakSet<CompiledVariant>();
    /** The snapshot bindings {@link compiled} was compiled over. */
    private compiledFor: readonly Binding[] | undefined;
    private planMemo?: {
@@ -922,7 +927,8 @@ export class RollupVariantServe {
          table,
       );
       if (!variant.materializer) {
-         logger.warn(
+         this.warnCompileFailure(
+            variant,
             "A #(preaggregate) join-to-rollup variant did not compile",
             {
                modelPath: this.host.modelPath(),
@@ -1062,7 +1068,8 @@ export class RollupVariantServe {
       // query that reads one does not compile over the copy.
       const leftOutHere = basis.leftOut.length > 0;
       if (!variant.materializer) {
-         logger.warn(
+         this.warnCompileFailure(
+            variant,
             "A #(preaggregate) join-to-rollup variant in a storage destination did not compile",
             {
                modelPath: this.host.modelPath(),
@@ -1207,11 +1214,15 @@ export class RollupVariantServe {
       if (variant.refusal) throw storedReadSkip(variant.refusal);
       if (!variant.materializer) {
          // A generated model that does not compile is a publisher bug.
-         logger.warn("A #(preaggregate) rollup variant did not compile", {
-            modelPath: this.host.modelPath(),
-            rollup: plan.rollupSourceName,
-            error: variant.error,
-         });
+         this.warnCompileFailure(
+            variant,
+            "A #(preaggregate) rollup variant did not compile",
+            {
+               modelPath: this.host.modelPath(),
+               rollup: plan.rollupSourceName,
+               error: variant.error,
+            },
+         );
          throw new LegDecline(
             "rollup_missing_field",
             "the query does not compile against the rollup",
@@ -1466,6 +1477,20 @@ export class RollupVariantServe {
          ? this.host.catalog()?.planned.get(sourceID)
          : undefined;
       return planned ? { sourceEntityId: planned.sourceEntityId } : undefined;
+   }
+
+   /** Warn once per compiled variant that failed, then log at debug. */
+   private warnCompileFailure(
+      variant: CompiledVariant,
+      message: string,
+      fields: Record<string, unknown>,
+   ): void {
+      if (this.warnedFailures.has(variant)) {
+         logger.debug(message, fields);
+         return;
+      }
+      this.warnedFailures.add(variant);
+      logger.warn(message, fields);
    }
 
    private compiledVariant(
@@ -2121,14 +2146,34 @@ function storedRollupReads(
    }
    for (const m of plan.rollupMeasures) {
       for (const p of m.partials) {
-         const refusal = read(
-            { name: p.column, notes: [], kind: "measure" },
-            m.name,
-         );
+         const refusal =
+            partialTypeRefusal(p, stored.get(p.column), m.name) ??
+            read({ name: p.column, notes: [], kind: "measure" }, m.name);
          if (refusal) return { refusal };
       }
    }
    return { columns, casts };
+}
+
+/**
+ * Why a `sum` or `count` partial stored as a non-numeric type cannot merge,
+ * or undefined. A `min` or `max` partial takes its argument's type, which the
+ * merge's compile checks.
+ */
+function partialTypeRefusal(
+   partial: RollupVariantPlan["rollupMeasures"][number]["partials"][number],
+   storedColumn: { type: string } | undefined,
+   measureName: string,
+): string | undefined {
+   const aggregate = partial.leaf.aggregate;
+   if (
+      !storedColumn ||
+      (aggregate !== "sum" && aggregate !== "count") ||
+      storedTypeServesAs(storedColumn.type, "number") !== false
+   ) {
+      return undefined;
+   }
+   return `the stored \`${measureName}\` (${storedColumn.type}) cannot be read as live's number`;
 }
 
 /**

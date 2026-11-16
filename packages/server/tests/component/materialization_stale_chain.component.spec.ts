@@ -249,14 +249,11 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
 
       // The test hook: the save, and the reload it fails, land as the run
       // starts building, after both of its stale checks passed.
-      const hooked = service as unknown as Record<
-         string,
-         (...args: unknown[]) => Promise<unknown>
-      >;
+      const hooked = service.collaborators;
       const executeInstructedBuild = hooked.executeInstructedBuild;
-      hooked.executeInstructedBuild = async (...args: unknown[]) => {
+      hooked.executeInstructedBuild = async (...args) => {
          await makeStale();
-         return executeInstructedBuild.apply(service, args);
+         return executeInstructedBuild(...args);
       };
       let second: Materialization;
       try {

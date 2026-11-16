@@ -408,10 +408,13 @@ describe("the build loop: one ownership decision per shared table", () => {
       const built: string[] = [];
       const retired: string[] = [];
       const build = new InstructedBuild({
-         buildOneSource: (async (
-            source: { name: string },
-            instruction: BuildInstruction,
-         ): Promise<ManifestEntry> => {
+         buildOneSource: (async ({
+            persistSource: source,
+            instruction,
+         }: {
+            persistSource: { name: string };
+            instruction: BuildInstruction;
+         }): Promise<ManifestEntry> => {
             built.push(source.name);
             return {
                sourceEntityId: ADDRESS,
@@ -435,10 +438,10 @@ describe("the build loop: one ownership decision per shared table", () => {
          getEnvironmentPath: () => "/tmp/env",
       } as unknown as BuildEnvironment;
       const run = () =>
-         build.run(
+         build.run({
             compiled,
             environment,
-            [
+            instructions: [
                {
                   sourceEntityId: ADDRESS,
                   materializedTableId: "local-shared",
@@ -446,11 +449,11 @@ describe("the build loop: one ownership decision per shared table", () => {
                   realization: "COPY",
                },
             ],
-            {},
-            new AbortController().signal,
-            false,
-            { environmentId: ENV_ID, packageName: PKG },
-         );
+            seedEntries: {},
+            signal: new AbortController().signal,
+            strict: false,
+            owner: { environmentId: ENV_ID, packageName: PKG },
+         });
       return { run, built, probes, statements, retired };
    }
 
