@@ -34,7 +34,7 @@ import {
 } from "./inline_uniqueness";
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 
 const packages = tempBuildPlanPackages();
 let restore: () => void;
@@ -132,7 +132,7 @@ async function scenario(model: string) {
    // The storage tier, stood in for by the scenario's own database: the
    // build SQL it is handed (the warehouse recompute a `storage=` build
    // copies) is written to the table there, so the stored rows can be read.
-   const builder = new SourceBuilder(async (request) => {
+   const storage: Parameters<typeof buildSource>[1] = async (request) => {
       const table = request.instruction.physicalTableName;
       await duckdb.runSQL(
          `CREATE OR REPLACE TABLE ${table} AS ${request.storedBuildSQL}`,
@@ -144,9 +144,9 @@ async function scenario(model: string) {
          connectionName: "duckdb",
          storageDestinationName: "lake",
       } as ManifestEntry;
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const sourceIdOf = (name: string) =>
@@ -196,22 +196,18 @@ async function scenario(model: string) {
             : undefined,
          `run-${runs}`,
       );
-      const result = await build.run(
+      const result = await build.run({
          compiled,
          environment,
-         rebuild.map(instruction),
-         carried,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-         "recompute",
-         ledger,
-      );
+         instructions: rebuild.map(instruction),
+         seedEntries: carried,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+         warehouseReach: "recompute",
+         uniqueness: ledger,
+      });
       if (Object.keys(result.failures).length === 0) {
          previous = {
             entries: result.entries,

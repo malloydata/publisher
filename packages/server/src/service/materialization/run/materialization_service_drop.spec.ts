@@ -676,8 +676,10 @@ describe("reclaimStorageTablesFromFailedRun", () => {
       );
 
       expect(said(infoLog, /Keeping a table from a failed run/)).toBe(true);
-      expect(said(infoLog, /Reclaimed a table/)).toBe(false);
-      expect(said(warnLog, /Failed to reclaim/)).toBe(false);
+      expect(said(infoLog, /Dropped a materialized storage table/)).toBe(false);
+      expect(said(warnLog, /Failed to drop a materialized storage table/)).toBe(
+         false,
+      );
    });
 
    it("does attempt the drop when nothing references the table", async () => {
@@ -688,8 +690,8 @@ describe("reclaimStorageTablesFromFailedRun", () => {
 
       expect(said(infoLog, /Keeping a table from a failed run/)).toBe(false);
       expect(
-         said(warnLog, /Failed to reclaim/) ||
-            said(infoLog, /Reclaimed a table/),
+         said(warnLog, /Failed to drop a materialized storage table/) ||
+            said(infoLog, /Dropped a materialized storage table/),
       ).toBe(true);
    });
 

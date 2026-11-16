@@ -33,6 +33,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
+import { routeOfNote } from "../../annotation_reader";
 import { parseRouteTag, routeHasKey } from "../../motly";
 
 /** A route's parsed tag. */
@@ -118,6 +119,25 @@ export function declares(
    ...path: string[]
 ): boolean {
    return routeHasKey(annotations, route, ...path);
+}
+
+/**
+ * Whether a source's own notes (its statement's, not the ones it inherits)
+ * declare `#@ persist`: a `#@` line that writes another key (a v1
+ * `preaggregate`) does not.
+ */
+export function notesDeclarePersist(
+   notes: readonly { text: string; at?: unknown }[],
+): boolean {
+   const own = notes.filter((note) => routeOfNote(note.text) === "@");
+   if (own.length === 0) return false;
+   return declares(
+      new Annotations({ notes: own } as ConstructorParameters<
+         typeof Annotations
+      >[0]),
+      "@",
+      "persist",
+   );
 }
 
 /**

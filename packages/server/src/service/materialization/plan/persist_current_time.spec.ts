@@ -252,6 +252,7 @@ source: ok is ev -> { select: * } extend { where: ts < now }
             ]),
          ),
          connectionDigests: {},
+         addresses: {},
       });
       const refusedID = sources["p"].sourceID;
       expect(eligibility.refused[refusedID]).toContain(

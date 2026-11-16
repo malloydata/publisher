@@ -8,7 +8,8 @@ import {
    collectModelBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
-   deriveBuildPlan,
+   deriveBuildPlan as wirePlanOf,
+   planAddresses,
    emptyBuildPlanParts,
    plannedSources,
    projectToStoredColumns,
@@ -33,6 +34,16 @@ import {
    sourcesIn,
 } from "../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../test_helpers/settings_env";
+
+/** {@link wirePlanOf} over a hand-made plan, its addresses computed. */
+function deriveBuildPlan(
+   plan: Omit<Parameters<typeof wirePlanOf>[0], "addresses">,
+   ...rest: Parameters<typeof wirePlanOf> extends [unknown, ...infer R]
+      ? R
+      : never
+): ReturnType<typeof wirePlanOf> {
+   return wirePlanOf({ ...plan, addresses: planAddresses(plan) }, ...rest);
+}
 
 describe("source builds from getBuildTargets", () => {
    // a <- b <- c, plus `a_ext`, which extends `a` without changing its SQL and
@@ -585,28 +596,6 @@ source: opps is raw -> { select: * } extend {
       });
       // Unset refresh is null on the wire.
       expect(plan.sources["unset@m"].refresh).toBeNull();
-   });
-
-   it("honors the sourceNames filter", () => {
-      const a = fakeSource({ name: "a", sourceEntityId: "bid-a" });
-      const b = fakeSource({ name: "b", sourceEntityId: "bid-b" });
-      const plan = deriveBuildPlan(
-         {
-            builds: [
-               {
-                  connectionName: "duckdb",
-                  order: ["a@m"],
-                  dependsOn: {},
-               },
-            ],
-            tables: persistTables({ "a@m": a, "b@m": b }),
-            connectionDigests: { duckdb: "dig" },
-         },
-         undefined,
-         ["a"],
-      );
-
-      expect(Object.keys(plan.sources)).toEqual(["a@m"]);
    });
 
    it("carries the per-source package-relative modelPath", () => {

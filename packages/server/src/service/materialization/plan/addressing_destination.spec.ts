@@ -133,12 +133,12 @@ describe("P12: the storage destination in the content address", () => {
 
    it("never moves the compiler's own key", () => {
       withSettings({ PERSIST_STORAGE_MODE: "on" });
-      const before = compilerBuildId(sources.stored, digests);
+      const before = compilerBuildId(sources.stored);
       withSettings({
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
-      expect(compilerBuildId(sources.stored, digests)).toBe(before);
+      expect(compilerBuildId(sources.stored)).toBe(before);
    });
 });
 

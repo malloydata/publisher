@@ -57,10 +57,15 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  *
  * 2: `SerializedModel.entities`, the model's entities plan
  * (`LoadPackageRequest.withEntities`).
+ *
  * 3: `SerializedModel.governsAccess`.
- * 4: the served-copy compile job ({@link CompileServedCopyRequest}).
+ *
+ * 4: every field of a build plan's outcome is sent (`BuildPlanOutcome`), so
+ * the pool reads none as missing.
+ *
+ * 5: the served-copy compile job ({@link CompileServedCopyRequest}).
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 4;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 5;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)

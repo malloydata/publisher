@@ -7,7 +7,8 @@
  * compilation and before any build, so a refusal costs no warehouse work.
  * Each gate throws a
  * `MaterializationEligibilityError` (HTTP 422) naming the source and the
- * reason, and counts the refusal (`recordEligibilityRefused`).
+ * reason, and counts nothing: a plan counts each refused source once, at its
+ * verdict (`planVerdicts`).
  *
  * Surface: `assertTierEligible`, the gate for the tier a source builds into
  * (the storage gate `assertMaterializationEligible`, or the colocated gate
@@ -29,7 +30,6 @@ import type { PersistSource } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
 import { MaterializationEligibilityError } from "../../../errors";
-import { recordEligibilityRefused } from "../../../materialization_metrics";
 import type { AnnotationNote } from "../../annotations";
 import { parseAuthorizeAnnotation } from "../../authorize";
 import {
@@ -37,9 +37,10 @@ import {
    deriveAnnotationFields,
    deriveColumns,
 } from "./persist_source_fields";
-import type {
-   PersistSourceGateOutcome,
-   TablePlan,
+import {
+   isPersistedResultSourceID,
+   type PersistSourceGateOutcome,
+   type TablePlan,
 } from "../domain/table_plans";
 import {
    buildReadsCurrentTime,
@@ -55,7 +56,6 @@ import {
    storageBuildReadsConnectionType,
    unreadableSourceConnectionMessage,
 } from "../domain/source_connection_type";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 
 /**
  * What an eligible source carries into the build. Returned by the gate rather
@@ -122,7 +122,6 @@ export function assertMaterializationEligible(
    try {
       unbound = unboundParameterNames(persistSource);
    } catch (err) {
-      recordEligibilityRefused("free_parameter");
       throw new MaterializationEligibilityError({
          reason: "free_parameter",
          message:
@@ -135,7 +134,6 @@ export function assertMaterializationEligible(
       });
    }
    if (unbound.length > 0) {
-      recordEligibilityRefused("free_parameter");
       throw new MaterializationEligibilityError({
          reason: "free_parameter",
          message:
@@ -150,7 +148,6 @@ export function assertMaterializationEligible(
 
    const classified = admitGivenPositions(persistSource);
    if (!classified.ok) {
-      recordEligibilityRefused(classified.reason);
       throw new MaterializationEligibilityError({
          reason: classified.reason,
          message:
@@ -167,7 +164,6 @@ export function assertMaterializationEligible(
    );
 
    if (!options.gateEnforcedAtRead && referencesAuthorize(persistSource)) {
-      recordEligibilityRefused("authorize");
       throw new MaterializationEligibilityError({
          reason: "authorize",
          message:
@@ -202,7 +198,6 @@ function assertStorageBuildReadsConnection(
 ): void {
    const type = connectionTypes?.[persistSource.connectionName];
    if (type === undefined || storageBuildReadsConnectionType(type)) return;
-   recordEligibilityRefused("storage_source_unsupported");
    throw new MaterializationEligibilityError({
       reason: "storage_source_unsupported",
       message: unreadableSourceConnectionMessage(persistSource, type),
@@ -240,7 +235,6 @@ function assertMergeKeyScopeResolvable(
          term.columns.some((name) => !stored.has(name)),
    );
    if (unscopable.length === 0) return;
-   recordEligibilityRefused("merge_key_scope_unresolved");
    throw new MaterializationEligibilityError({
       reason: "merge_key_scope_unresolved",
       message:
@@ -281,7 +275,6 @@ function assertNoInheritedGivenWhere(
 ): void {
    const inherited = inheritedGivenWhereRefusal(persistSource);
    if (inherited === undefined) return;
-   recordEligibilityRefused("inherited_where_with_given");
    throw new MaterializationEligibilityError({
       reason: "inherited_where_with_given",
       message:
@@ -343,7 +336,6 @@ export function assertColocatedPersistNotAuthorizeGated(
       !annotationFields.storage &&
       READ_ONLY_DIALECTS.has(persistSource.dialectName)
    ) {
-      recordEligibilityRefused("read_only_dialect");
       const what =
          origin === "preaggregate"
             ? `Pre-aggregation rollup '${sourceName}'`
@@ -375,7 +367,6 @@ export function assertColocatedPersistNotAuthorizeGated(
       // stripped its base's read-time terms, it would aggregate across every
       // caller and serve that to all of them.
       if (origin === "preaggregate") {
-         recordEligibilityRefused("preaggregate_over_dynamic_source");
          throw new MaterializationEligibilityError({
             reason: "preaggregate_over_dynamic_source",
             message:
@@ -389,7 +380,6 @@ export function assertColocatedPersistNotAuthorizeGated(
                `source that is not caller-scoped.`,
          });
       }
-      recordEligibilityRefused("given_in_persisted_query");
       const what = `Source '${sourceName}'`;
       throw new MaterializationEligibilityError({
          reason: "given_in_persisted_query",
@@ -428,7 +418,6 @@ export function assertColocatedPersistNotAuthorizeGated(
    if (origin === "preaggregate" && options.gateEnforcedAtRead) return;
 
    if (origin === "persist" && gateOutcome?.inheritedRowFilter) {
-      recordEligibilityRefused("authorize");
       throw new MaterializationEligibilityError({
          reason: "authorize",
          message: inheritedRowFilterRefusal(sourceName, "colocated"),
@@ -447,7 +436,6 @@ export function assertColocatedPersistNotAuthorizeGated(
 
    // Same "authorize" reason as the storage gate, different cause: this pass
    // cannot prove the gate is the entry point's own row filter.
-   recordEligibilityRefused("authorize");
    const gated =
       origin === "preaggregate"
          ? `the source '${sourceName}' rolls up is protected by an ` +
@@ -762,7 +750,7 @@ export function gateEnforcedAtRead(
    if (!materialized) {
       // A v1 `#@ persist` source, asked only as `storage=`. A persisted
       // view's or query's build (its companion file) is not one.
-      if (!storage || isPersistedResultBuild(sourceID)) return false;
+      if (!storage || isPersistedResultSourceID(sourceID)) return false;
       return tableKeepsGates(
          { kind: "persist", tier: "storage", v1: true, gate },
          gateSwitches(),
@@ -782,13 +770,6 @@ export function gateEnforcedAtRead(
       },
       gateSwitches(),
    );
-}
-
-/** Whether `sourceID` is a persisted view's or query's generated build source. */
-function isPersistedResultBuild(sourceID: string): boolean {
-   return sourceID
-      .slice(sourceID.indexOf("@") + 1)
-      .endsWith(PERSISTED_VIEW_COMPANION_SUFFIX);
 }
 
 /**
@@ -838,40 +819,11 @@ export interface TierGateInputs {
       >
    >;
    /**
-    * Rollups refused for sharing a table with a different rollup, by sourceID,
-    * with the message to report (`collidingRollups` in build_plan.ts).
-    */
-   collidingRollups?: ReadonlyMap<string, string>;
-   /**
     * Each connection's configured type, by name, resolved through the
     * package (`CompiledBuildPlan.connectionTypes`): whether a `storage=`
     * build can read a source.
     */
    connectionTypes?: Readonly<Record<string, string>>;
-}
-
-/**
- * Refuse a pre-aggregation rollup whose generated name, and so its table, is
- * also another model's rollup with different content.
- *
- * A rollup's name folds only its base's name and grain, so two models that each
- * declare a same-named base and pre-aggregate it at one grain produce one name.
- * Built, the second would overwrite the first; served, one model's queries
- * would read the other's rollup. `#@ preaggregate` has no `name=` to fix it
- * with, so neither is built or served, and each model's queries answer from its
- * base.
- */
-export function assertRollupNameUnshared(
-   source: PersistSource,
-   plan: TierGateInputs | undefined,
-): void {
-   const message = plan?.collidingRollups?.get(source.sourceID);
-   if (message === undefined) return;
-   recordEligibilityRefused("rollup_name_collision");
-   throw new MaterializationEligibilityError({
-      reason: "rollup_name_collision",
-      message,
-   });
 }
 
 /**
@@ -891,7 +843,6 @@ export function assertRollupNameUnshared(
  */
 export function assertPlacementNamed(source: PersistSource): void {
    if (!declaresEmptyStorage(source)) return;
-   recordEligibilityRefused("empty_storage");
    throw new MaterializationEligibilityError({
       reason: "empty_storage",
       message: `'${source.name}' cannot be materialized: ${EMPTY_STORAGE_REASON}.`,
@@ -919,7 +870,6 @@ export function assertTierEligible(
    // write a table into the source warehouse its author never named, so it is
    // refused and serves live.
    if (routeReadsEnv(source.annotations, "@")) {
-      recordEligibilityRefused("env_reference");
       throw new MaterializationEligibilityError({
          reason: "env_reference",
          message:
@@ -930,7 +880,6 @@ export function assertTierEligible(
             `Move the value out of the model.`,
       });
    }
-   assertRollupNameUnshared(source, plan);
    if (storage) {
       // Admitted at read but for a row filter it inherits: say so, rather
       // than the generic gate refusal.
@@ -953,7 +902,6 @@ export function assertTierEligible(
             true,
          )
       ) {
-         recordEligibilityRefused("authorize");
          throw new MaterializationEligibilityError({
             reason: "authorize",
             message: inheritedRowFilterRefusal(source.name, "storage"),
@@ -988,7 +936,6 @@ export function assertTierEligible(
       referencesAuthorize(source) &&
       !gateEnforcedAtRead(source.sourceID, plan)
    ) {
-      recordEligibilityRefused("authorize");
       throw new MaterializationEligibilityError({
          reason: "authorize",
          message:
@@ -1007,11 +954,10 @@ export function assertTierEligible(
    // never). Off, the table would be built and never read past the gate, so
    // it is refused, on this tier as on `storage=`; on, it is built as before.
    if (
-      isPersistedResultBuild(source.sourceID) &&
+      isPersistedResultSourceID(source.sourceID) &&
       !gateSwitches().gatedSources &&
       referencesAuthorize(source)
    ) {
-      recordEligibilityRefused("authorize");
       throw new MaterializationEligibilityError({
          reason: "authorize",
          message:
@@ -1043,7 +989,6 @@ export function assertBuildReadsNoCurrentTime(
    const table = plan?.tables?.[source.sourceID];
    if (table?.rollup || table?.materialize) return;
    if (!buildReadsCurrentTime(source)) return;
-   recordEligibilityRefused("current_time");
    throw new MaterializationEligibilityError({
       reason: "current_time",
       message:

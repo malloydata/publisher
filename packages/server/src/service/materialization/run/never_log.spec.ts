@@ -191,23 +191,22 @@ describe("incremental refresh logs never carry a watermark value", () => {
                ledger?: LedgerEntry;
             }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
-         { runSQL: params.runSQL },
-         params.manifest ?? new Manifest(),
-         {
+         connection: { runSQL: params.runSQL },
+         manifest: params.manifest ?? new Manifest(),
+         environment: {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
             getEnvironmentPath: () => "/tmp/env",
          },
-         {},
-         undefined,
-         params.context,
+         builtEntries: {},
+         incremental: params.context,
          // The content address, which is the ledger's key.
-         "abcdef1234567890",
-      );
+         contentSourceEntityId: "abcdef1234567890",
+      });
    }
 
    it("logs an applied delta without its range", async () => {
@@ -301,32 +300,38 @@ describe("build failure logs never carry the driver's message", () => {
       const ctx = createMocks({
          buildOneSource: sinon
             .stub()
-            .callsFake(async (_s, i: BuildInstruction) => {
-               if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
-                  throw Object.assign(new Error(DRIVER_MESSAGE), {
-                     code: "22018",
-                  });
-               }
-               return {
-                  sourceEntityId: i.sourceEntityId,
-                  physicalTableName: "t2",
-                  connectionName: "duckdb",
-               };
-            }) as never,
+            .callsFake(
+               async ({
+                  instruction: i,
+               }: {
+                  instruction: BuildInstruction;
+               }) => {
+                  if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
+                     throw Object.assign(new Error(DRIVER_MESSAGE), {
+                        code: "22018",
+                     });
+                  }
+                  return {
+                     sourceEntityId: i.sourceEntityId,
+                     physicalTableName: "t2",
+                     connectionName: "duckdb",
+                  };
+               },
+            ) as never,
       });
       const result = (await (
          ctx.service.collaborators as unknown as {
             executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
          }
-      ).executeInstructedBuild(
+      ).executeInstructedBuild({
          compiled,
-         {
+         environment: {
             getApiConnection: () => {
                throw new Error("no config");
             },
             getEnvironmentPath: () => "/tmp/env",
          },
-         [
+         instructions: [
             {
                sourceEntityId: "a1aaaaaaaaaaaaaa",
                materializedTableId: "mt-1",
@@ -340,10 +345,10 @@ describe("build failure logs never carry the driver's message", () => {
                realization: "COPY",
             },
          ],
-         {},
-         new AbortController().signal,
-         false,
-      )) as { failures: Record<string, { reason: string }> };
+         seedEntries: {},
+         signal: new AbortController().signal,
+         strict: false,
+      })) as { failures: Record<string, { reason: string }> };
 
       expect(result.failures["a1aaaaaaaaaaaaaa"].reason).toContain(ROW_VALUE);
       const failed = logged.find(

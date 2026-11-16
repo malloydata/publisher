@@ -20,7 +20,7 @@ import { tempBuildPlanPackages } from "../test_helpers/incremental_test_harness"
 import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compile";
 import {
    deriveBuildPlanOutcome,
-   type CompiledBuildPlan,
+   type FinishedBuildPlan,
 } from "./materialization/plan/build_plan";
 import { deriveSelfInstructions } from "./materialization/run/run_instructions";
 
@@ -52,7 +52,7 @@ afterEach(async () => {
 async function compile(
    text: string,
    v2: boolean,
-): Promise<{ compiled: CompiledBuildPlan; packagePath: string }> {
+): Promise<{ compiled: FinishedBuildPlan; packagePath: string }> {
    restore?.();
    restore = installSettings({
       env: {
@@ -86,7 +86,7 @@ interface PlannedRollup {
    preaggregate: PlannedSource["preaggregate"];
 }
 
-function rollupsOf(compiled: CompiledBuildPlan): Record<string, PlannedRollup> {
+function rollupsOf(compiled: FinishedBuildPlan): Record<string, PlannedRollup> {
    const { plan } = deriveBuildPlanOutcome(compiled, null);
    const out: Record<string, PlannedRollup> = {};
    for (const s of Object.values(plan?.sources ?? {})) {
@@ -101,7 +101,7 @@ function rollupsOf(compiled: CompiledBuildPlan): Record<string, PlannedRollup> {
    return out;
 }
 
-function codesOf(compiled: CompiledBuildPlan): string[] {
+function codesOf(compiled: FinishedBuildPlan): string[] {
    return (compiled.annotationFindings ?? [])
       .map((f) => f.code)
       .filter((c) => c.startsWith("preaggregate-"))

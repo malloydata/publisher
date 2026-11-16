@@ -1806,6 +1806,7 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`;
          tables: { [source.sourceID]: { source, kind: "persist" } as never },
          connectionDigests: {},
          connectionTypes: { duckdb: "duckdb" },
+         addresses: {},
       });
       expect(out.eligible).toEqual([]);
       expect(out.refused[source.sourceID]).toContain(

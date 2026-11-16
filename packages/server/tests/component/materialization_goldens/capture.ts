@@ -178,11 +178,7 @@ export function addressesOf(compiled: CompiledBuildPlan): SourceAddressing[] {
       try {
          keys.set(
             source.sourceID,
-            compilerBuildId(
-               source,
-               digests,
-               compiled.tables[source.sourceID]?.target,
-            ),
+            compilerBuildId(source, compiled.tables[source.sourceID]?.target),
          );
       } catch {
          // Unkeyable: reported below.

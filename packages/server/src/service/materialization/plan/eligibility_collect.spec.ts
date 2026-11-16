@@ -1,19 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { PersistSource } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import { MaterializationEligibilityError } from "../../../errors";
 import { planPackages } from "../../../test_helpers/materialization_fixture";
 import { BASE } from "../../../test_helpers/materialize_spec_models";
-import type { TablePlan } from "../domain/table_plans";
-import { collidingRollups } from "./eligibility_collect";
-import { assertTierEligible } from "./materialization_eligibility";
+import { computeSourceEntityId } from "./addressing";
+import { deriveBuildPlanOutcome } from "./build_plan";
 
 /**
- * The plan-wide collision checks in `eligibility_collect.ts`: two rollups
- * that would share one table, and a `#(materialize)` table another source
- * also writes, refused with its `#@ persist` partner.
+ * The plan-wide collision checks in `eligibility_collect.ts`: rollups that
+ * never share one table, and a `#(materialize)` table another source also
+ * writes, refused with its `#@ persist` partner.
  */
 
 const packages = planPackages({}, { keepIncrementalUnbuildable: true });
@@ -27,94 +24,34 @@ source: orders is duckdb.sql("SELECT ${id} AS id, ${id * 10} AS amount, '${categ
   measure: total is amount.sum()
 }`;
 
-/** `source`, answering `name` for its name and itself for everything else. */
-function renamed(source: PersistSource, name: string): PersistSource {
-   return new Proxy(source, {
-      get: (target, prop) =>
-         prop === "name" ? name : Reflect.get(target, prop, target),
-   });
-}
-
-describe("collidingRollups", () => {
-   async function twoModelsRollups() {
-      const { c } = await packages.plan({
-         "a.malloy": rollupModel(1, "A"),
-         "b.malloy": rollupModel(2, "B"),
-      });
-      const rollups = Object.entries(c.tables).filter(([, t]) => t.rollup);
-      expect(rollups).toHaveLength(2);
-      return { c, rollups };
-   }
-
+describe("rollups of same-named bases in two models", () => {
    it(
-      "finds none among two models' same-named bases, whose rollup names carry the declaring model",
+      "get distinct names, addresses and tables, so neither is refused",
       async () => {
-         const { c, rollups } = await twoModelsRollups();
+         const { c } = await packages.plan({
+            "a.malloy": rollupModel(1, "A"),
+            "b.malloy": rollupModel(2, "B"),
+         });
+         const rollups = Object.entries(c.tables).filter(([, t]) => t.rollup);
+         expect(rollups).toHaveLength(2);
+         // A rollup's name digests its declaring sourceID, so two models'
+         // rollups of one base name and grain never share a table.
          const names = rollups.map(([, t]) => t.source.name);
          expect(new Set(names).size).toBe(2);
-         expect(collidingRollups(c).size).toBe(0);
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "refuses both rollups of one physical table with different contents, naming each model",
-      async () => {
-         const { c, rollups } = await twoModelsRollups();
-         const tables: Record<string, TablePlan> = Object.fromEntries(
-            rollups.map(([id, t]) => [
-               id,
-               { ...t, source: renamed(t.source, "orders__rollup__category") },
-            ]),
+         const addresses = rollups.map(([id]) =>
+            computeSourceEntityId(
+               c.tables[id].source,
+               c.connectionDigests,
+               c.tables[id].target,
+               c.tableFolds,
+            ),
          );
-         const colliding = collidingRollups({
-            tables,
-            connectionDigests: c.connectionDigests,
-            tableFolds: c.tableFolds,
-         });
-         expect([...colliding.keys()].sort()).toEqual(
-            rollups.map(([id]) => id).sort(),
-         );
-         for (const message of colliding.values()) {
-            expect(message).toBe(
-               "Pre-aggregation rollup 'orders__rollup__category' is generated " +
-                  "by more than one model (a.malloy, b.malloy) from different " +
-                  "sources with the same name and grain, so they would share " +
-                  "one table. Neither is built or served from it; each model's " +
-                  "queries answer from its base. Rename one of the base sources.",
-            );
+         expect(new Set(addresses).size).toBe(2);
+         const outcome = deriveBuildPlanOutcome(c, null);
+         for (const [id] of rollups) {
+            expect(outcome.plan?.refusedSources?.[id]).toBeUndefined();
+            expect(outcome.plan?.sources[id]).toBeDefined();
          }
-
-         const [[id, table]] = Object.entries(tables);
-         let refused: unknown;
-         try {
-            assertTierEligible(table.source, false, {
-               tables,
-               collidingRollups: colliding,
-            });
-         } catch (err) {
-            refused = err;
-         }
-         expect(refused).toBeInstanceOf(MaterializationEligibilityError);
-         expect((refused as MaterializationEligibilityError).reason).toBe(
-            "rollup_name_collision",
-         );
-         expect((refused as Error).message).toBe(colliding.get(id)!);
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "shares one table, legitimately, between two entries with one content address",
-      async () => {
-         const { c, rollups } = await twoModelsRollups();
-         const [id, table] = rollups[0];
-         const colliding = collidingRollups({
-            tables: { [id]: table, [`${id}#again`]: table },
-            connectionDigests: c.connectionDigests,
-            tableFolds: c.tableFolds,
-         });
-         expect(colliding.size).toBe(0);
       },
       { timeout: 30000 },
    );
