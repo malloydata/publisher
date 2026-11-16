@@ -1,0 +1,40 @@
+name: Donated runner smoke
+
+# Checks both donated-runner labels: the machine, Docker and compose, the package caches, and that
+# private addresses are unreachable.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [credible-ubuntu-24.04, credible-ubuntu-24.04-ondemand]
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 20
+    steps:
+      - name: Machine
+        run: |
+          echo "runner: $RUNNER_NAME"
+          nproc && free -g && df -h "$GITHUB_WORKSPACE"
+          . /etc/os-release && echo "$PRETTY_NAME"
+      - name: Docker, compose and the Docker Hub mirror
+        run: |
+          docker info --format 'dockerd {{.ServerVersion}}'
+          docker run --rm alpine:3.20 echo "pull ok"
+          printf 'services:\n  hello:\n    image: busybox:1.36\n    command: echo compose ok\n' > compose.yaml
+          docker compose up --abort-on-container-exit
+      - name: Package caches
+        run: |
+          grep -h -E "index-url|registry=" ~/.config/pip/pip.conf ~/.npmrc | sed -E 's/(oauth2accesstoken:)[^@]*/\1***/'
+          python3 -m pip download --no-deps -d /tmp/pip six==1.16.0
+          npm view left-pad version
+      - name: No private addresses
+        run: |
+          if curl -s --max-time 5 -o /dev/null http://10.0.0.2; then echo "reached a private address" && exit 1; fi
+          echo "private addresses blocked"
