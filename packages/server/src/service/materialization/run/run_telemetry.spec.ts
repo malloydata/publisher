@@ -233,22 +233,22 @@ describe("run telemetry through the build loop", () => {
                executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
             }
          )
-            .executeInstructedBuild(
+            .executeInstructedBuild({
                compiled,
-               {
+               environment: {
                   getApiConnection: () => {
                      throw new Error("no config");
                   },
                   getEnvironmentPath: () => "/tmp/env",
                },
-               [
+               instructions: [
                   instruction("a1aaaaaaaaaaaaaa", "s1_v1"),
                   instruction("a2bbbbbbbbbbbbbb", "s2_v1"),
                ],
-               {},
-               (opts.abort ?? new AbortController()).signal,
-               false,
-            )
+               seedEntries: {},
+               signal: (opts.abort ?? new AbortController()).signal,
+               strict: false,
+            })
             .then(
                (value) => ({ value }),
                (error: unknown) => ({ error }),
@@ -273,8 +273,9 @@ describe("run telemetry through the build loop", () => {
    it("counts and logs each built source once, with its duration and bytes", async () => {
       const build = sinon
          .stub()
-         .callsFake(async (_s, i: BuildInstruction) =>
-            entryFor(i.sourceEntityId),
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) =>
+               entryFor(i.sourceEntityId),
          );
       const { telemetry } = await runLoop(build, { mode: "auto" });
 
@@ -326,13 +327,16 @@ describe("run telemetry through the build loop", () => {
    });
 
    it("leaves a host-assigned table name off the event, and does not time a skipped refresh", async () => {
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) =>
-         entryFor(i.sourceEntityId, {
-            buildDurationMs: null,
-            refresh: "none",
-            queryCostBytes: null,
-         }),
-      );
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) =>
+               entryFor(i.sourceEntityId, {
+                  buildDurationMs: null,
+                  refresh: "none",
+                  queryCostBytes: null,
+               }),
+         );
       await runLoop(build, { mode: "orchestrated" });
 
       expect(
@@ -360,10 +364,15 @@ describe("run telemetry through the build loop", () => {
    it("counts a failed source once, by its class, and logs its code and never its message", async () => {
       const message =
          "Permission denied: INSERT INTO t SELECT 'PLANTED_VALUE' FROM x";
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-         if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") throw new Error(message);
-         return entryFor(i.sourceEntityId);
-      });
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) => {
+               if (i.sourceEntityId === "a1aaaaaaaaaaaaaa")
+                  throw new Error(message);
+               return entryFor(i.sourceEntityId);
+            },
+         );
       const { telemetry } = await runLoop(build);
 
       expect(
@@ -407,14 +416,20 @@ describe("run telemetry through the build loop", () => {
    });
 
    it("counts a billed read lost once, however the strategy wrapped it", async () => {
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-         if (i.sourceEntityId === "a2bbbbbbbbbbbbbb") {
-            throw new Error("Failed to materialize", {
-               cause: new BilledReadNotCapturedError("read billed, rows lost"),
-            });
-         }
-         return entryFor(i.sourceEntityId);
-      });
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) => {
+               if (i.sourceEntityId === "a2bbbbbbbbbbbbbb") {
+                  throw new Error("Failed to materialize", {
+                     cause: new BilledReadNotCapturedError(
+                        "read billed, rows lost",
+                     ),
+                  });
+               }
+               return entryFor(i.sourceEntityId);
+            },
+         );
       await runLoop(build);
 
       const points = await harness.collectAttributes(
@@ -492,8 +507,9 @@ describe("run telemetry through the build loop", () => {
    it("counts a source the eligibility gate refuses once, as refused, and does not build it", async () => {
       const build = sinon
          .stub()
-         .callsFake(async (_s, i: BuildInstruction) =>
-            entryFor(i.sourceEntityId),
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) =>
+               entryFor(i.sourceEntityId),
          );
       const { telemetry } = await runLoop(build, { gateFirst: true });
 
@@ -531,15 +547,19 @@ describe("run telemetry through the build loop", () => {
    });
 
    it("fails a refusal thrown from inside the build as deterministic, with its reason as the code", async () => {
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-         if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
-            throw new MaterializationEligibilityError({
-               message: "not eligible",
-               reason: "free_parameter",
-            });
-         }
-         return entryFor(i.sourceEntityId);
-      });
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) => {
+               if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
+                  throw new MaterializationEligibilityError({
+                     message: "not eligible",
+                     reason: "free_parameter",
+                  });
+               }
+               return entryFor(i.sourceEntityId);
+            },
+         );
       await runLoop(build);
       expect(
          await harness.collectCounter("publisher_materialization_build_total", {
@@ -653,17 +673,21 @@ describe("run telemetry review findings", () => {
          [["base", "ext"], ["other"]],
          new Map([["duckdb", connection]]),
       );
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-         if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
-            throw new Error("Permission denied");
-         }
-         return {
-            sourceEntityId: i.sourceEntityId,
-            physicalTableName: `${i.sourceEntityId}_t`,
-            connectionName: "duckdb",
-            buildDurationMs: 10,
-         };
-      });
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) => {
+               if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
+                  throw new Error("Permission denied");
+               }
+               return {
+                  sourceEntityId: i.sourceEntityId,
+                  physicalTableName: `${i.sourceEntityId}_t`,
+                  connectionName: "duckdb",
+                  buildDurationMs: 10,
+               };
+            },
+         );
       const service = new MaterializationService(ctx.environmentStore, {
          buildOneSource: build as never,
       });
@@ -673,15 +697,15 @@ describe("run telemetry review findings", () => {
             service.collaborators as unknown as {
                executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
             }
-         ).executeInstructedBuild(
+         ).executeInstructedBuild({
             compiled,
-            {
+            environment: {
                getApiConnection: () => {
                   throw new Error("no config");
                },
                getEnvironmentPath: () => "/tmp/env",
             },
-            [
+            instructions: [
                {
                   sourceEntityId: "a1aaaaaaaaaaaaaa",
                   materializedTableId: "mt-1",
@@ -695,10 +719,10 @@ describe("run telemetry review findings", () => {
                   realization: "COPY",
                },
             ],
-            {},
-            new AbortController().signal,
-            false,
-         ),
+            seedEntries: {},
+            signal: new AbortController().signal,
+            strict: false,
+         }),
       )) as {
          failures: Record<
             string,
@@ -713,8 +737,8 @@ describe("run telemetry review findings", () => {
             .getCalls()
             .filter(
                (c) =>
-                  (c.args[1] as BuildInstruction).sourceEntityId ===
-                  "a1aaaaaaaaaaaaaa",
+                  (c.args[0] as { instruction: BuildInstruction }).instruction
+                     .sourceEntityId === "a1aaaaaaaaaaaaaa",
             ),
       ).toHaveLength(1);
       // The run's record holds one failure for the address, named for the

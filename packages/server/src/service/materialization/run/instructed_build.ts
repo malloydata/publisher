@@ -117,7 +117,7 @@ import {
    TableOwnershipError,
    type OwnedTableTarget,
 } from "./table_ownership";
-import type { SourceBuilder } from "./source_build";
+import type { SourceBuildOptions } from "./source_build";
 import {
    buildKindOf,
    buildTierOf,
@@ -213,6 +213,51 @@ function upstreamsBySourceID(
    return out;
 }
 
+/** One instructed run: what {@link InstructedBuild.run} reads. */
+interface InstructedBuildOptions {
+   compiled: CompiledBuildPlan;
+   environment: BuildEnvironment;
+   instructions: BuildInstruction[];
+   seedEntries: Record<string, ManifestEntry>;
+   signal: AbortSignal;
+   strict?: boolean;
+   /** Used only to reclaim this run's storage tables on failure. */
+   owner?: { environmentId: string; packageName: string };
+   buildMetadata?: BuildQueryMetadata;
+   /** Undefined leaves every source on the full-rebuild path. */
+   incremental?: IncrementalRunContext;
+   /**
+    * Auto-run refusals, named in the error of a run whose every instructed
+    * source failed so it accounts for every unbuilt source.
+    */
+   priorRefusals?: RefusedSource[];
+   /**
+    * Tiers auto-run already cleared (see deriveSelfInstructions); a listed
+    * source is not asserted again.
+    */
+   clearedTiers?: ReadonlyMap<string, EligibilityTier>;
+   /**
+    * The host instructed this run (orchestrated): a host-supplied upstream
+    * entry at the wrong tier is refused, not recomputed (see
+    * ChainedPlanFacts.hostInstructed).
+    */
+   hostInstructed?: boolean;
+   /** What a strict build does with the warehouse recompute. */
+   warehouseReach?: WarehouseReach;
+   /**
+    * Auto-run only: the inline uniqueness checks' passes, read from the run
+    * before and recorded for the run after (inline_uniqueness.ts). Undefined
+    * runs every check as compiled.
+    */
+   uniqueness?: UniquenessLedger;
+   /**
+    * The package's runs, from its own records: what tells a table at a
+    * `name=` this package wrote from anyone else's (table_ownership.ts).
+    * Absent: no such table is ever recognized, and every one refuses.
+    */
+   packageRuns?: () => Promise<Materialization[]>;
+}
+
 /**
  * The instructed tier: a run's build loop, shared by auto-run and orchestrated
  * builds. It walks the instructions in dependency order, gates each source,
@@ -226,21 +271,14 @@ export class InstructedBuild {
           * One source's build. The service passes this, and the failed-run
           * reclaim, from its run collaborators, so a spec can hand it either.
           */
-         buildOneSource: SourceBuilder["build"];
+         buildOneSource: (
+            options: SourceBuildOptions,
+         ) => Promise<ManifestEntry>;
          reclaimStorageTablesFromFailedRun: (
             builtThisRun: ManifestEntry[],
             environment: BuildEnvironment,
             owner: { environmentId: string; packageName: string },
          ) => Promise<void>;
-         /**
-          * The package's runs, from its own records: what tells a table at a
-          * `name=` this package wrote from anyone else's (table_ownership.ts).
-          * Absent: no such table is ever recognized, and every one refuses.
-          */
-         packageRuns?: (
-            environmentName: string,
-            packageName: string,
-         ) => Promise<Materialization[]>;
          /**
           * An auto-run refused a table at the author's `name=` because it is
           * not provably this package's (table_ownership.ts): the package's
@@ -296,35 +334,7 @@ export class InstructedBuild {
     * order. Returns the full entry map (carried + freshly built). The package
     * was compiled by the caller; this runs outside the package lock.
     */
-   async run(
-      compiled: CompiledBuildPlan,
-      environment: BuildEnvironment,
-      instructions: BuildInstruction[],
-      seedEntries: Record<string, ManifestEntry>,
-      signal: AbortSignal,
-      strict = false,
-      // Used only to reclaim this run's storage tables on failure.
-      owner?: { environmentId: string; packageName: string },
-      buildMetadata?: BuildQueryMetadata,
-      // Undefined leaves every source on the full-rebuild path.
-      incremental?: IncrementalRunContext,
-      // Auto-run refusals, named in the error of a run whose every instructed
-      // source failed so it accounts for every unbuilt source.
-      priorRefusals: RefusedSource[] = [],
-      // Tiers auto-run already cleared (see deriveSelfInstructions); a listed
-      // source is not asserted again.
-      clearedTiers?: ReadonlyMap<string, EligibilityTier>,
-      // The host instructed this run (orchestrated): a host-supplied upstream
-      // entry at the wrong tier is refused, not recomputed (see
-      // ChainedPlanFacts.hostInstructed).
-      hostInstructed = false,
-      // What a strict build does with the warehouse recompute.
-      warehouseReach: WarehouseReach = "recompute",
-      // Auto-run only: the inline uniqueness checks' passes, read from the
-      // run before and recorded for the run after (inline_uniqueness.ts).
-      // Undefined runs every check as compiled.
-      uniqueness?: UniquenessLedger,
-   ): Promise<{
+   async run(options: InstructedBuildOptions): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
       /**
@@ -343,6 +353,23 @@ export class InstructedBuild {
       /** The run metadata value for the uniqueness checks, when any ran. */
       uniquenessChecks?: ReturnType<UniquenessLedger["toMetadata"]>;
    }> {
+      const {
+         compiled,
+         environment,
+         instructions,
+         seedEntries,
+         signal,
+         strict = false,
+         owner,
+         buildMetadata,
+         incremental,
+         priorRefusals = [],
+         clearedTiers,
+         hostInstructed = false,
+         warehouseReach = "recompute",
+         uniqueness,
+         packageRuns,
+      } = options;
       const { builds, tables, connectionDigests, connections } = compiled;
       const index = indexInstructions(instructions);
       const run: InstructedRun = {
@@ -384,6 +411,7 @@ export class InstructedBuild {
          writtenTargets: new Map(),
          failedTargets: new Map(),
          ...(uniqueness ? { uniqueness } : {}),
+         ...(packageRuns ? { packageRuns } : {}),
          signal,
       };
       assertNoTableCollisions(
@@ -501,7 +529,7 @@ export class InstructedBuild {
       target: OwnedTableTarget,
       connection: MalloyConnection,
    ): Promise<string[] | undefined> {
-      const packageRuns = this.seams.packageRuns;
+      const packageRuns = run.packageRuns;
       const pkg = runPackageOf(run);
       const owner = packageOwnerOf(run);
       let reached = false;
@@ -518,10 +546,7 @@ export class InstructedBuild {
                async () =>
                   !!packageRuns &&
                   !!pkg &&
-                  packageRecordsName(
-                     await packageRuns(pkg.environmentName, pkg.packageName),
-                     target,
-                  ),
+                  packageRecordsName(await packageRuns(), target),
             );
             if (!ownView) return undefined;
             // This package's own view from an earlier release: replaced by
@@ -906,23 +931,22 @@ export class InstructedBuild {
          );
 
          buildStartedAt = performance.now();
-         entry = await this.seams.buildOneSource(
+         entry = await this.seams.buildOneSource({
             persistSource,
             instruction,
             connection,
-            run.manifest,
-            run.environment,
-            run.entries,
-            run.buildMetadata,
-            run.incremental,
+            manifest: run.manifest,
+            environment: run.environment,
+            builtEntries: run.entries,
+            buildMetadata: run.buildMetadata,
+            incremental: run.incremental,
             // The CONTENT address, distinct from the instruction's
             // caller-assigned identity: the ledger is keyed by it so a
             // boundary can never be read against different SQL.
-            sourceEntityId,
-            run.planFacts,
-            // Passed only when set, so a seam's recorded call is unchanged.
-            ...(replacesView ? ([replacesView] as const) : []),
-         );
+            contentSourceEntityId: sourceEntityId,
+            planFacts: run.planFacts,
+            ...(replacesView ? { replacesView } : {}),
+         });
          // A manifest travels without its build plan, so this is the only
          // signal that a table belongs to a rollup in no model file; served as
          // an ordinary binding it would be silently dropped (see

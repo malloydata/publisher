@@ -43,6 +43,7 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets } from "../../../pg_helpers";
+import type { Materialization } from "../../../storage/DatabaseInterface";
 import { addressSQL, computeSourceEntityId } from "../plan/build_plan";
 import {
    sourcesInBuildOrder,
@@ -81,6 +82,8 @@ export interface InstructedRun {
    buildMetadata?: BuildQueryMetadata;
    incremental?: IncrementalRunContext;
    clearedTiers?: ReadonlyMap<string, EligibilityTier>;
+   /** See InstructedBuildOptions.packageRuns. */
+   packageRuns?: () => Promise<Materialization[]>;
    planFacts: ChainedPlanFacts;
    index: InstructionIndex;
    manifest: Manifest;

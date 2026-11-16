@@ -231,20 +231,16 @@ describe("the build loop's instruments", () => {
          ctx.service.collaborators as unknown as {
             executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
          }
-      ).executeInstructedBuild(
+      ).executeInstructedBuild({
          compiled,
          environment,
          instructions,
-         seed,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-      );
+         seedEntries: seed,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+      });
    }
 
    const instruction = (

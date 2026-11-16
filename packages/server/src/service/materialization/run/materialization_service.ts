@@ -105,7 +105,7 @@ import {
    writeTargetsFor,
 } from "./run_instructions";
 import { packageRelativeText } from "../../../package_relative_text";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryUnownedTables } from "./table_ownership";
@@ -150,8 +150,10 @@ export interface RunCollaborators {
    ): IncrementalRunContext | undefined;
    /** The instructed build loop ({@link InstructedBuild.run}). */
    executeInstructedBuild: InstructedBuild["run"];
-   /** One source's build ({@link SourceBuilder.build}). */
-   buildOneSource: SourceBuilder["build"];
+   /** One source's build ({@link buildSource}). */
+   buildOneSource: (
+      options: Parameters<typeof buildSource>[0],
+   ) => ReturnType<typeof buildSource>;
    /** The storage tier's build ({@link StorageBuildStrategy.build}). */
    buildOneSourceIntoStorage: StorageBuildStrategy["build"];
    /** A chained storage build on its stored parents. */
@@ -371,11 +373,6 @@ export class MaterializationService {
                   this.collaborators.buildOneSource(...a),
                reclaimStorageTablesFromFailedRun: (...a) =>
                   this.collaborators.reclaimStorageTablesFromFailedRun(...a),
-               packageRuns: async (environmentName, packageName) =>
-                  (await this.repository.listMaterializations(
-                     await this.resolveEnvironmentId(environmentName),
-                     packageName,
-                  )) ?? [],
                tableNotOwned: async (environmentName, packageName, target) => {
                   await this.claims.markHeldElsewhere(
                      await this.resolveEnvironmentId(environmentName),
@@ -389,10 +386,10 @@ export class MaterializationService {
                   );
                },
             }).run(...args),
-         buildOneSource: (...args) =>
-            new SourceBuilder((request) =>
+         buildOneSource: (options) =>
+            buildSource(options, (request) =>
                this.collaborators.buildOneSourceIntoStorage(request),
-            ).build(...args),
+            ),
          buildOneSourceIntoStorage: (request) => storage.build(request),
          buildDownstreamViaParents: (...args) =>
             storage.buildDownstreamViaParents(...args),
@@ -1339,9 +1336,9 @@ export class MaterializationService {
          refused: derivedRefused,
          cleared: clearedTiers,
       } = derived;
-      return await this.collaborators.executeInstructedBuild(
+      return await this.collaborators.executeInstructedBuild({
          compiled,
-         withChainBuildText(
+         environment: withChainBuildText(
             environment,
             pkg,
             // A version's files never change; only the unversioned package
@@ -1352,12 +1349,12 @@ export class MaterializationService {
                   false),
          ),
          instructions,
-         carried,
+         seedEntries: carried,
          signal,
-         opts.strictUpstreams ?? false,
+         strict: opts.strictUpstreams ?? false,
          // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
-         orchestrated ? { environmentId, packageName } : undefined,
-         {
+         owner: orchestrated ? { environmentId, packageName } : undefined,
+         buildMetadata: {
             // Optional: a lighter package surface resolves without a
             // package-level layer.
             packageMaterialization: pkg.getMaterializationConfig?.() ?? null,
@@ -1372,14 +1369,14 @@ export class MaterializationService {
             },
          },
          incremental,
-         Object.values(derivedRefused),
+         priorRefusals: Object.values(derivedRefused),
          clearedTiers,
-         orchestrated,
-         opts.warehouseReach,
+         hostInstructed: orchestrated,
+         warehouseReach: opts.warehouseReach,
          // Auto-run only: Publisher owns every write to its tables, so it
          // can tell a joined table that has not changed since a check
          // passed. A host's tables are its own.
-         orchestrated
+         uniqueness: orchestrated
             ? undefined
             : await (async () => {
                  const prior = opts.forceRefresh
@@ -1395,7 +1392,8 @@ export class MaterializationService {
                     prior ? rollupKeyRecordsIn(prior) : undefined,
                  );
               })(),
-      );
+         packageRuns: target.runs,
+      });
    }
 
    /**
