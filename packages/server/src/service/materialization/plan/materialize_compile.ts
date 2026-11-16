@@ -10,6 +10,7 @@
  * against the author's edits.
  */
 
+import { tierOf } from "./refusal_key";
 import type { RefusedReason } from "../domain/types";
 import {
    hiddenAccess,
@@ -360,14 +361,16 @@ async function withoutLeakedBuilds(
       refused.push({
          sourceName: plan.sourceName,
          sourceID: plan.sourceID,
-         refused: {
-            reason:
-               givenReadTerms(plan).length > 0
-                  ? "given_in_persisted_query"
-                  : leftOutWindowTerms(plan.readTimeTerms).length > 0
-                    ? "current_time"
-                    : "no_stored_columns",
-            tier: tierOf(plan),
+         outcome: {
+            refused: {
+               reason:
+                  givenReadTerms(plan).length > 0
+                     ? "given_in_persisted_query"
+                     : leftOutWindowTerms(plan.readTimeTerms).length > 0
+                       ? "current_time"
+                       : "no_stored_columns",
+               tier: tierOf(plan.persist.storage),
+            },
          },
          reason:
             givenReadTerms(plan).length > 0 ||
@@ -868,7 +871,12 @@ async function withBuildCopies(
             sourceName: copied.plan.sourceName,
             sourceID: copied.plan.sourceID,
             reason: copied.reason,
-            refused: { reason: copied.refusal, tier: tierOf(copied.plan) },
+            outcome: {
+               refused: {
+                  reason: copied.refusal,
+                  tier: tierOf(copied.plan.persist.storage),
+               },
+            },
          });
          continue;
       }
@@ -1087,11 +1095,6 @@ async function liftedColumnsOf(
  * outside local files, a term the build cannot leave out of another file, or
  * a model file that could not be read.
  */
-/** Where a planned source builds its table. */
-function tierOf(plan: MaterializePlan): "colocated" | "storage" {
-   return plan.persist.storage !== undefined ? "storage" : "colocated";
-}
-
 function copyRefusal(
    plan: MaterializePlan,
    ctx: Pick<CopyContext, "modelFile" | "text" | "unreadable">,
@@ -1449,7 +1452,12 @@ function nextRound(
       ctx.refuse({
          sourceName: plan.sourceName,
          sourceID: plan.sourceID,
-         refused: { reason: "generated_build_failed", tier: tierOf(plan) },
+         outcome: {
+            refused: {
+               reason: "generated_build_failed",
+               tier: tierOf(plan.persist.storage),
+            },
+         },
          reason:
             "its generated build did not compile, so it is not built " +
             `(a Publisher bug; please report it): ${firstProblem(error)}`,

@@ -27,7 +27,6 @@ import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import { errMessage } from "../../utils";
 import type { Model } from "../model";
 import {
-   projectRefusals,
    type BuildPlanPackage,
    type ColocatedSourceEligibility,
    type RefusalNotices,
@@ -38,7 +37,6 @@ import { computePackageBuildPlan } from "./plan/build_plan_compile";
 import {
    incrementalPolicySourcesOf,
    loadGateText,
-   relaxedCollision,
 } from "./plan/load_gate_text";
 import type { IncrementalPolicySource } from "./plan/incremental_policy";
 import type { MaterializePlan } from "./domain/table_plans";
@@ -185,24 +183,15 @@ export class PlanLifecycle {
          const outcome = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
-         // A collision this deployment refuses alone, rather than failing
-         // the load, is a refusal record like any other.
-         const relaxed = projectRefusals(
-            outcome.plan,
-            outcome.annotationFindings.map((f) =>
-               relaxedCollision(f, getPersistCollisionEnforce()),
-            ),
-            outcome.refusalNotices,
-         );
-         this.buildPlan = relaxed.plan;
+         this.buildPlan = outcome.plan;
          this.materializePlans = outcome.materializePlans;
          this.rollupsKeepingGates = new Set(outcome.rollupsKeepingGates);
          this.refusedRollups = outcome.refusedRollups;
-         this.refusalNotices = relaxed.refusalNotices;
+         this.refusalNotices = outcome.refusalNotices;
          this.compilerKeys = outcome.compilerKeys;
          this.failed = false;
          this.servingPlanWhileUnavailable = null;
-         this.annotationFindings = relaxed.annotationFindings;
+         this.annotationFindings = outcome.annotationFindings;
          this.sourceEligibility = outcome.sourceEligibility;
          this.colocatedSourceEligibility = outcome.colocatedSourceEligibility;
          this.buildConnectionNames = new Set(outcome.buildConnectionNames);

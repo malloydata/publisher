@@ -7,6 +7,7 @@
  * and the per-tier eligibility records the serve side requires.
  */
 
+import { refusalKey, tierOf } from "./refusal_key";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
@@ -332,11 +333,12 @@ export function refuseCollidingMaterialize<
             `overwrite the other and one source would read the other's rows; ` +
             `give each source a distinct name=`;
          const model = compiled.tables[member.sourceID]?.modelPath ?? "";
-         const tier =
+         const tier = tierOf(
             destination ===
-            compiled.tables[member.sourceID]?.source.connectionName
-               ? ("colocated" as const)
-               : ("storage" as const);
+               compiled.tables[member.sourceID]?.source.connectionName
+               ? undefined
+               : destination,
+         );
          // An author's names collide: invalid, unless the deployment opts
          // out (PERSIST_COLLISION_ENFORCE=false, applied where the package
          // loads), which refuses each source alone. A `#@ persist` partner is
@@ -349,8 +351,10 @@ export function refuseCollidingMaterialize<
                        sourceName: compiled.tables[member.sourceID].source.name,
                        sourceID: member.sourceID,
                        reason,
-                       malformedCode: MATERIALIZATION_TABLE_COLLISION_CODE,
-                       refused: { reason: "table_name_collision", tier },
+                       outcome: {
+                          malformed: MATERIALIZATION_TABLE_COLLISION_CODE,
+                          whenRelaxed: { reason: "table_name_collision", tier },
+                       },
                     },
                     model,
                  )
@@ -361,12 +365,12 @@ export function refuseCollidingMaterialize<
                     message: `${collisionSubjectOf(member.sourceID, compiled.tables[member.sourceID].source.name)} is invalid: ${reason}.`,
                     subject: compiled.tables[member.sourceID].source.name,
                     model,
-                    refused: {
-                       sourceID: member.sourceID,
-                       name: compiled.tables[member.sourceID].source.name,
-                       reason: "table_name_collision",
+                    refused: refusalKey(
+                       member.sourceID,
+                       compiled.tables[member.sourceID].source.name,
+                       "table_name_collision",
                        tier,
-                    },
+                    ),
                  },
          );
       }

@@ -22,6 +22,7 @@
  * It imports nothing from `service/model.ts`, so the load worker can run it.
  */
 
+import { refusalKey, tierOf } from "./refusal_key";
 import type { KeyCheckCompiler } from "../domain/key_check";
 import {
    exploreOf,
@@ -45,6 +46,7 @@ import {
    nearMissGateLines,
    PREAGG_WARN_ONLY,
    preaggregateGateLines,
+   relaxedCollision,
 } from "./load_gate_text";
 import {
    validateModelPreaggregation,
@@ -62,7 +64,7 @@ import {
    persistUnparseableFinding,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
-import { declares } from "./declaration";
+import { declares, destinationOf, readNotesIfAny } from "./declaration";
 import { persistDeclarationProblems } from "./persist_annotation_validation";
 import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
@@ -113,7 +115,6 @@ import {
    persistQueryInvalidFindings,
    persistQueryKeyFindings,
    persistQueryNotBuiltFinding,
-   persistQueryStorage,
    type DeclaredPersistQuery,
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
@@ -122,7 +123,10 @@ import { tryCompileRollupCompanion } from "./rollup_compile";
 import { compileV1BuildCompanion } from "./v1_build_companion";
 import { measureRefusalKey, rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
-import { getMaterializeEnabled } from "../../../config";
+import {
+   getMaterializeEnabled,
+   getPersistCollisionEnforce,
+} from "../../../config";
 import { resolveConnectionTypes } from "../../connection_type";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import {
@@ -1021,7 +1025,11 @@ async function collectGeneratedPersistedViews(
             addAnnotationFinding(
                parts,
                persistedViewRefusalFinding(
-                  { ...plan, reason: readsAGiven, refusal: "reads_given" },
+                  {
+                     ...plan,
+                     reason: readsAGiven,
+                     outcome: { refused: "reads_given" },
+                  },
                   args.modelPath,
                ),
             );
@@ -1154,12 +1162,18 @@ function collectPersistQueryFindings(
                   query.name,
                   query.declaringURL,
                   "materialization_off",
-                  persistQueryStorage(query),
+                  queryStorage(query),
                ),
             ),
          );
       }
    }
+}
+
+/** The destination a persisted query's `#@ persist storage=` names. */
+function queryStorage(query: DeclaredPersistQuery): string | undefined {
+   const tag = readNotesIfAny(query.notes, "@");
+   return tag ? destinationOf(tag, "persist") : undefined;
 }
 
 /** The inline run target of the named query `name`, when it has one. */
@@ -1312,7 +1326,19 @@ function v1RollupRefusals(
 ): PackageAnnotationFinding[] {
    return violations.flatMap((violation) => {
       const reason = PREAGG_WARN_ONLY.get(violation.code);
-      if (reason === undefined || violation.sourceID === undefined) return [];
+      if (reason === undefined) return [];
+      if (violation.sourceID === undefined) {
+         // Never silent: a refusal with no source to key it by is reported.
+         logger.warn(
+            "A #@ preaggregate refusal names no compiled source; it is not recorded",
+            {
+               modelPath,
+               sourceName: violation.sourceName,
+               code: violation.code,
+            },
+         );
+         return [];
+      }
       return [
          {
             route: "@",
@@ -1798,7 +1824,6 @@ export type RefusalNotices = Record<string, { code: string; subject?: string }>;
 export function projectRefusals(
    plan: BuildPlan | null,
    findings: readonly PackageAnnotationFinding[],
-   notices: Readonly<RefusalNotices>,
 ): {
    plan: BuildPlan | null;
    annotationFindings: PackageAnnotationFinding[];
@@ -1808,7 +1833,7 @@ export function projectRefusals(
    const refusedSources: Record<string, WireRefusedSource> = {
       ...(plan?.refusedSources ?? {}),
    };
-   const refusalNotices: RefusalNotices = { ...notices };
+   const refusalNotices: RefusalNotices = {};
    let moved = false;
    for (const finding of findings) {
       const key = finding.refused;
@@ -1920,10 +1945,13 @@ export function deriveBuildPlanOutcome(
       compiled.builds.length === 0 && !compiled.omittedSources.length
          ? null
          : deriveBuildPlan(compiled, materializationConfig, verdicts);
+   // A collision this deployment refuses alone, rather than failing the
+   // load, is a refusal record like any other.
    const { plan, annotationFindings, refusalNotices } = projectRefusals(
       derived,
-      compiled.annotationFindings,
-      {},
+      compiled.annotationFindings.map((f) =>
+         relaxedCollision(f, getPersistCollisionEnforce()),
+      ),
    );
    return {
       plan,
@@ -2006,8 +2034,13 @@ function refuseIncrementalUnbuildable<
       dropped.add(sourceID);
       const model = compiled.tables[sourceID]?.modelPath ?? "";
       const plan = compiled.tables[sourceID]?.materialize;
-      const storage = declaredStorage(source);
-      const tier = storage !== undefined ? "storage" : "colocated";
+      const tier = tierOf(declaredStorage(source));
+      const refused = refusalKey(
+         sourceID,
+         source.name,
+         "incremental_unsupported",
+         tier,
+      );
       findings.push(
          plan
             ? materializeRefusalFinding(
@@ -2015,22 +2048,25 @@ function refuseIncrementalUnbuildable<
                     sourceName: plan.sourceName,
                     sourceID,
                     reason,
-                    refused: { reason: "incremental_unsupported", tier },
+                    outcome: {
+                       refused: { reason: "incremental_unsupported", tier },
+                    },
                  },
                  model,
               )
             : view
               ? {
                    ...persistedViewRefusalFinding(
-                      { ...view, sourceID, reason },
+                      {
+                         ...view,
+                         sourceID,
+                         reason,
+                         outcome: { refused: "incremental_unsupported" },
+                      },
                       model,
                    ),
-                   refused: {
-                      sourceID,
-                      name: source.name,
-                      tier,
-                      reason: "incremental_unsupported",
-                   },
+                   // Keyed by the source the plan holds.
+                   refused,
                 }
               : {
                    route: "@",
@@ -2039,12 +2075,7 @@ function refuseIncrementalUnbuildable<
                    message: `#@ persist source "${source.name}" is not built, so it is answered live: ${reason}.`,
                    subject: source.name,
                    model,
-                   refused: {
-                      sourceID,
-                      name: source.name,
-                      tier,
-                      reason: "incremental_unsupported",
-                   },
+                   refused,
                 },
       );
    }

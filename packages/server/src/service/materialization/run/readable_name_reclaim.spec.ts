@@ -65,7 +65,9 @@ async function reclaim(
    forgotten: string[];
    records: Map<string, Record<string, unknown> | null>;
    rebinds: number;
+   occasions: string[];
 }> {
+   const occasions: string[] = [];
    let rebinds = 0;
    const dropped: string[] = [];
    const forgotten: string[] = [];
@@ -104,13 +106,14 @@ async function reclaim(
          _en,
          _p,
          _id,
-         _occasion,
+         occasion,
          entries,
          _ref,
          _conn,
          _views,
          skipped,
       ) => {
+         occasions.push(occasion);
          for (const e of entries) {
             if (options.skip?.includes(e.physicalTableName)) {
                skipped?.push(e);
@@ -125,7 +128,7 @@ async function reclaim(
       rebinds += 1;
       return options.bound ?? true;
    });
-   return { dropped, forgotten, records, rebinds };
+   return { dropped, forgotten, records, rebinds, occasions };
 }
 
 const withRenamed = { mode: "auto", [RENAMED_TABLES_KEY]: [renamed] };
@@ -136,6 +139,7 @@ describe("reclaiming a table a readable name replaced", () => {
       const now = run("now", { a1: entry(NEW) }, { metadata: withRenamed });
       const r = await reclaim([old, now], "now");
       expect(r.dropped).toEqual([OLD]);
+      expect(r.occasions).toEqual(["reclaim"]);
       expect(r.forgotten).toEqual([OLD]);
       expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toBeUndefined();
    });

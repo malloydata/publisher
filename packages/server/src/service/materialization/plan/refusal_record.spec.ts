@@ -69,7 +69,6 @@ describe("projectRefusals", () => {
       const { plan, annotationFindings, refusalNotices } = projectRefusals(
          null,
          [kept, refusal, finding()],
-         {},
       );
       expect(annotationFindings).toEqual([kept]);
       const id = refusal.refused!.sourceID;
@@ -94,7 +93,7 @@ describe("projectRefusals", () => {
 
    it("leaves a plan alone when no finding refuses anything", () => {
       const plan: BuildPlan = { graphs: [], sources: {} };
-      const out = projectRefusals(plan, [], {});
+      const out = projectRefusals(plan, []);
       expect(out.plan).toBe(plan);
       expect(out.refusalNotices).toEqual({});
    });
@@ -104,7 +103,7 @@ describe("projectRefusals", () => {
          tier: "malformed",
          code: "materialization-table-collision",
       });
-      const out = projectRefusals(null, [collision], {});
+      const out = projectRefusals(null, [collision]);
       expect(out.plan).toBeNull();
       expect(out.annotationFindings).toEqual([collision]);
    });
@@ -198,8 +197,9 @@ describe("assertPersistNamesQuoted", () => {
       }
       const lines = message.split("\n");
       expect(lines).toHaveLength(2);
-      expect(lines[0]).toContain("must be quoted");
-      expect(lines[1]).toContain("plain identifier path");
+      // In the order the file writes them.
+      expect(lines[0]).toContain("plain identifier path");
+      expect(lines[1]).toContain("must be quoted");
       for (const line of lines) expect(line).toEndWith(". [persist-invalid]");
    });
 });

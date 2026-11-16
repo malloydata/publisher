@@ -207,7 +207,10 @@ import {
    type ApiSecureGivenSummary,
    summarizeSecureGivens,
 } from "./secure_givens";
-import { assertPersistNamesQuoted } from "./materialization/plan/persist_annotation_validation";
+import {
+   persistNameProblems,
+   type PersistNameProblem,
+} from "./materialization/plan/persist_annotation_validation";
 import {
    applyLoadGates,
    assertOutcomeStagesAvailable,
@@ -513,6 +516,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       "Time taken to load a Malloy package",
       { buckets: LOAD_DURATION_BUCKETS_MS },
    );
+
+   /** The `#@ persist name=` mistakes the raw text of its models shows. */
+   private persistNameProblems: PersistNameProblem[] = [];
 
    constructor(
       environmentName: string,
@@ -1495,6 +1501,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       let models: Map<string, Model>;
       let renderTagWarnings: ApiPackageWarning[];
       let hydrationTimings: { hydrateMs: number; renderValidationMs: number };
+      const nameProblems: PersistNameProblem[] = [];
       try {
          ({
             models,
@@ -1511,17 +1518,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             },
             "throw",
             async (sm) => {
-               // Reject an unquoted `#@ persist name=`: it is dropped from the
-               // build plan, so the source would never materialize. Reads the
-               // raw source, the ground truth for quoting. `.malloy` only,
-               // because `#@ persist` cannot appear in a `.malloynb`; widen this
-               // if that changes, to keep the identifier-injection check.
+               // An unquoted or unsafe `#@ persist name=`, read from the raw
+               // source, the ground truth for quoting; the load gate fails
+               // with every one, beside the package's other invalid
+               // annotations. `.malloy` only, because `#@ persist` cannot
+               // appear in a `.malloynb`; widen this if that changes, to keep
+               // the identifier-injection check.
                if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
                   const modelSource = await readPackageURL(
                      packagePath,
                      pathToFileURL(path.join(packagePath, sm.modelPath)),
                   );
-                  assertPersistNamesQuoted(modelSource, sm.modelPath);
+                  nameProblems.push(
+                     ...persistNameProblems(modelSource, sm.modelPath),
+                  );
                }
             },
          ));
@@ -1550,6 +1560,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          modelPolicy,
       );
       pkg.dryRun = dryRun;
+      pkg.persistNameProblems = nameProblems;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
       let buildPlanMs: Awaited<
          ReturnType<PackageMaterialization["applyLoadBuildPlan"]>
@@ -2389,12 +2400,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * and the load.
     */
    public formatInvalidAnnotations(): string {
-      return [
+      return this.withNameProblems([
          this.mz.formatInvalidAnnotations(),
          ...this.materializationNearMissLines(),
-      ]
-         .filter(Boolean)
-         .join("\n");
+      ]);
    }
 
    /** A misspelled materialization route or directive, one line each. */
@@ -2411,9 +2420,30 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * the same text off the plan they derive (plan/load_gate_text.ts).
     */
    public formatLoadGateText(): string {
-      return [
+      return this.withNameProblems([
          this.mz.formatLoadGateText(),
          ...this.materializationNearMissLines(),
+      ]);
+   }
+
+   /**
+    * `text`'s lines with the raw-text `name=` problems first, less the plan's
+    * own line for a name the raw text already reports unsafe: one line per
+    * mistake.
+    */
+   private withNameProblems(text: string[]): string {
+      const unsafe = this.persistNameProblems.flatMap((p) =>
+         p.unsafeValue !== undefined
+            ? [`its name= "${p.unsafeValue}" is not a plain identifier path`]
+            : [],
+      );
+      return [
+         ...this.persistNameProblems.map((p) => p.line),
+         ...text
+            .filter(Boolean)
+            .join("\n")
+            .split("\n")
+            .filter((line) => !unsafe.some((u) => line.includes(u))),
       ]
          .filter(Boolean)
          .join("\n");

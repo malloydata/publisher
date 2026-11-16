@@ -15,6 +15,7 @@
  * answers, and returns plans and refusals.
  */
 
+import { refusalKey, tierOf } from "./refusal_key";
 import { freshnessValueProblem } from "../../annotation_reader";
 import { createHash } from "crypto";
 import {
@@ -165,15 +166,23 @@ export interface MaterializeRefusal {
    sourceID?: string;
    reason: string;
    /**
-    * Set when the declaration is invalid (it does not parse, has an unknown
-    * or retired key, a bad value or a contradictory combination): the
-    * finding is `malformed` under this code and fails the publish and the
-    * load, rather than the `unservable` `materialize-not-built` of a valid
-    * declaration Publisher cannot build.
+    * `malformed`: the declaration is invalid (it does not parse, has an
+    * unknown or retired key, a bad value or a contradictory combination), so
+    * the finding is `malformed` under this code and fails the publish and the
+    * load; `whenRelaxed` is its refusal where the deployment refuses it alone
+    * instead (a collision under `PERSIST_COLLISION_ENFORCE=false`).
+    * `refused`: a valid declaration Publisher cannot build, its reason and
+    * tier in `refusedSources`.
     */
-   malformedCode?: string;
-   /** A valid declaration's refusal: its reason and tier in `refusedSources`. */
-   refused?: { reason: RefusedReason; tier: "colocated" | "storage" };
+   outcome:
+      | { malformed: string; whenRelaxed?: TierRefusal }
+      | { refused: TierRefusal };
+}
+
+/** A refusal's reason, and the tier the table would have been built in. */
+interface TierRefusal {
+   reason: RefusedReason;
+   tier: "colocated" | "storage";
 }
 
 /** The Malloy atomic types a stored column can hold. */
@@ -1241,14 +1250,15 @@ export function planModelMaterialize(
             sourceName: name,
             sourceID: def.sourceID,
             reason: planned.reason,
-            ...(planned.malformedCode
-               ? { malformedCode: planned.malformedCode }
-               : {
-                    refused: {
-                       reason: planned.refusal ?? "inline_unsupported",
-                       tier: declaredTier(def, ctx.contents),
+            outcome:
+               "malformed" in planned.outcome
+                  ? planned.outcome
+                  : {
+                       refused: {
+                          reason: planned.outcome.refused,
+                          tier: declaredTier(def, ctx.contents),
+                       },
                     },
-                 }),
          });
       } else if (planned) {
          plans.push(planned);
@@ -1275,15 +1285,10 @@ type PlannedDef = SourceDefLike & { sourceID: string };
  * which a publish refuses it with, or a valid one's refusal reason.
  */
 class Declined {
-   readonly malformedCode?: string;
-   readonly refusal?: RefusedReason;
    constructor(
       readonly reason: string,
-      code: { malformed: string } | { refused: RefusedReason },
-   ) {
-      if ("malformed" in code) this.malformedCode = code.malformed;
-      else this.refusal = code.refused;
-   }
+      readonly outcome: { malformed: string } | { refused: RefusedReason },
+   ) {}
 }
 
 /** Where a declaration that is not planned would have built its table. */
@@ -1294,11 +1299,11 @@ function declaredTier(
    try {
       const declaration = readMaterializeDeclaration(def, contents);
       const placed = declaration ? placementOf(declaration.tag) : undefined;
-      return placed &&
-         !("refused" in placed) &&
-         placed.placement.tier === "storage"
-         ? "storage"
-         : "colocated";
+      return tierOf(
+         placed && !("refused" in placed) && placed.placement.tier === "storage"
+            ? placed.placement.destination
+            : undefined,
+      );
    } catch {
       return "colocated";
    }
@@ -2013,25 +2018,25 @@ export function materializeRefusalFinding(
    refusal: MaterializeRefusal,
    model: string,
 ): PackageAnnotationFinding {
+   const { outcome, sourceName, sourceID } = refusal;
+   const key = "malformed" in outcome ? outcome.whenRelaxed : outcome.refused;
    return {
       route: MATERIALIZE_ROUTE,
-      tier: refusal.malformedCode ? "malformed" : "unservable",
-      code: refusal.malformedCode ?? MATERIALIZE_NOT_BUILT_CODE,
-      message: refusal.malformedCode
-         ? `#(materialize) on source "${refusal.sourceName}" is invalid: ` +
-           `${refusal.reason}.`
-         : `#(materialize) on source "${refusal.sourceName}" is not built, ` +
-           `so the source is served live: ${refusal.reason}.`,
-      subject: refusal.sourceName,
-      model,
-      ...(refusal.refused && refusal.sourceID
+      ...("malformed" in outcome
          ? {
-              refused: {
-                 sourceID: refusal.sourceID,
-                 name: refusal.sourceName,
-                 ...refusal.refused,
-              },
+              tier: "malformed" as const,
+              code: outcome.malformed,
+              message: `#(materialize) on source "${sourceName}" is invalid: ${refusal.reason}.`,
            }
+         : {
+              tier: "unservable" as const,
+              code: MATERIALIZE_NOT_BUILT_CODE,
+              message: `#(materialize) on source "${sourceName}" is not built, so the source is served live: ${refusal.reason}.`,
+           }),
+      subject: sourceName,
+      model,
+      ...(key && sourceID
+         ? { refused: refusalKey(sourceID, sourceName, key.reason, key.tier) }
          : {}),
    };
 }

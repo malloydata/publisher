@@ -8549,8 +8549,7 @@ components:
             answered did not, and `path.servedBy.tier` names the same tier this
             field does. The server also logs a
             `served copy cannot answer this query` line at DEBUG, carrying the
-            error that declined the query, at most once a minute per model and
-            decline code, with how many it left out since.
+            error that declined the query and its decline code.
 
             ⚠️ **`live_fallback` here is not `manifestBindingStatus`'s.** On this
             field it means the store failed at run time; `manifestBindingStatus`
@@ -10522,8 +10521,9 @@ components:
             source it would have had (`<source>__<view>__view@…` or
             `<query>__query@…`), a `#(materialize)` source by its own
             sourceID, and a rollup measure refused before its rollup is
-            planned by the measure's path on its base
-            (`<base>.<measure>@<model>`).
+            planned by the measure's path on its base, its grain and its
+            destination (`<base>.<measure>[<grain>]@<model>.preaggregate.malloy`,
+            `[<grain> in <destination>]` for a `storage=` one).
           additionalProperties:
             $ref: "#/components/schemas/RefusedSource"
         omittedSources:

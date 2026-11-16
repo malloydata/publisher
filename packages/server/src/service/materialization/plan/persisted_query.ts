@@ -28,12 +28,7 @@ import {
    type RefusalKey,
 } from "../../annotation_reader";
 import { ownLevelNotes, type AnnotationNote } from "../../annotations";
-import {
-   declares,
-   placementOf,
-   readNotes,
-   readNotesIfAny,
-} from "./declaration";
+import { declares, readNotes, readNotesIfAny } from "./declaration";
 import { persistDeclarationProblems } from "./persist_annotation_validation";
 
 /** The package warning for a persisted query that is not built, or not served. */
@@ -227,19 +222,6 @@ export function persistQueryInvalidFindings(
       subject: query.name,
       model,
    }));
-}
-
-/** The destination a persisted query's `storage=` names, when it names one. */
-export function persistQueryStorage(
-   query: Pick<DeclaredPersistQuery, "notes">,
-): string | undefined {
-   const tag = readNotesIfAny(query.notes, "@");
-   const placed = tag ? placementOf(tag, "persist") : undefined;
-   return placed &&
-      !("refused" in placed) &&
-      placed.placement.tier === "storage"
-      ? placed.placement.destination
-      : undefined;
 }
 
 /** The workaround a not-built persisted query's warning names. */

@@ -86,6 +86,7 @@ import {
    type WarehouseReach,
    withChainBuildText,
 } from "./materialization_run_support";
+import type { QueryContext } from "../../query_metadata";
 import { packageOwner } from "./table_mark_sql";
 import { Reclaimer, RENAMED_TABLES_KEY } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
@@ -235,6 +236,20 @@ interface RunScope {
    orchestrated: boolean;
    mode: MaterializationMode;
    startedAt: number;
+}
+
+/** The query context every statement of a run carries. */
+function runQueryContext(run: RunScope): QueryContext {
+   const { id, environmentName, packageName, opts } = run;
+   return {
+      queryClass: "materialize",
+      environment: environmentName,
+      package: packageName,
+      // The caller's trigger wins: it can express a publish.
+      trigger: opts.runContext?.trigger ?? opts.trigger?.toLowerCase(),
+      // Always set, so a run's statements group in query history.
+      runId: opts.runContext?.runId ?? id,
+   };
 }
 
 /** What a run's failure handling reads, set as the run goes. */
@@ -1239,7 +1254,14 @@ export class MaterializationService {
                carried,
                instructions,
                packageOwner(environmentName, packageName),
-               tableSiteContext({ compiled, environment }),
+               tableSiteContext({
+                  compiled,
+                  environment,
+                  buildMetadata: {
+                     packageMaterialization: pkg.getMaterializationConfig(),
+                     context: runQueryContext(run),
+                  },
+               }),
             );
          }
       }
@@ -1332,8 +1354,7 @@ export class MaterializationService {
       derived: RunInstructions,
       incremental: IncrementalRunContext | undefined,
    ): Promise<InstructedBuildResult> {
-      const { id, environmentName, packageName, opts, signal, orchestrated } =
-         run;
+      const { id, packageName, opts, signal, orchestrated } = run;
       const { environmentId, environment, versionId, pkg, compiled } = target;
       const {
          instructions,
@@ -1363,15 +1384,7 @@ export class MaterializationService {
             // Optional: a lighter package surface resolves without a
             // package-level layer.
             packageMaterialization: pkg.getMaterializationConfig(),
-            context: {
-               queryClass: "materialize",
-               environment: environmentName,
-               package: packageName,
-               // The caller's trigger wins: it can express a publish.
-               trigger: opts.runContext?.trigger ?? opts.trigger?.toLowerCase(),
-               // Always set, so a build's statements group in query history.
-               runId: opts.runContext?.runId ?? id,
-            },
+            context: runQueryContext(run),
          },
          incremental,
          priorRefusals: Object.values(derivedRefused),

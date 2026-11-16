@@ -8,7 +8,7 @@
         "refused": {
           "name": "by_column.total",
           "reason": "access_filter",
-          "sourceID": "by_column.total@<pkg>/m.malloy.preaggregate.malloy",
+          "sourceID": "by_column.total[region,status]@<pkg>/m.malloy.preaggregate.malloy",
           "tier": "preaggregate"
         },
         "route": "preaggregate",
@@ -22,7 +22,7 @@
         "refused": {
           "name": "by_lock.total",
           "reason": "access_filter",
-          "sourceID": "by_lock.total@<pkg>/m.malloy.preaggregate.malloy",
+          "sourceID": "by_lock.total[status]@<pkg>/m.malloy.preaggregate.malloy",
           "tier": "preaggregate"
         },
         "route": "preaggregate",
@@ -295,20 +295,20 @@
     "omittedFiles": [],
     "omittedSources": [],
     "refusedSources": {
-      "by_column.total@<pkg>/m.malloy.preaggregate.malloy": {
+      "by_column.total[region,status]@<pkg>/m.malloy.preaggregate.malloy": {
         "message": "#(preaggregate) on measure \"total\" of source \"by_column\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
         "modelPath": "m.malloy",
         "name": "by_column.total",
         "reason": "access_filter",
-        "sourceID": "by_column.total@<pkg>/m.malloy.preaggregate.malloy",
+        "sourceID": "by_column.total[region,status]@<pkg>/m.malloy.preaggregate.malloy",
         "tier": "preaggregate"
       },
-      "by_lock.total@<pkg>/m.malloy.preaggregate.malloy": {
+      "by_lock.total[status]@<pkg>/m.malloy.preaggregate.malloy": {
         "message": "#(preaggregate) on measure \"total\" of source \"by_lock\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
         "modelPath": "m.malloy",
         "name": "by_lock.total",
         "reason": "access_filter",
-        "sourceID": "by_lock.total@<pkg>/m.malloy.preaggregate.malloy",
+        "sourceID": "by_lock.total[status]@<pkg>/m.malloy.preaggregate.malloy",
         "tier": "preaggregate"
       }
     },

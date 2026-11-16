@@ -42,6 +42,8 @@ import {
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
 import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
+import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
+import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -642,6 +644,8 @@ describe("reclaiming an archived version's tables", () => {
          [DETAIL_V1, "host_v1", TABLE_V1, TABLE_V2].sort(),
       );
 
+      resetMaterializationTelemetryForTesting();
+      const harness = await startMetricsHarness();
       const deleted = await env
          .getVersionService()!
          .deleteVersion(PKG, "1.0.0");
@@ -649,6 +653,13 @@ describe("reclaiming an archived version's tables", () => {
 
       // The cleanup runs after the delete answers.
       await Promise.all(reclaims);
+      // A version's reclaim counts its drops as a reclaim, never a delete.
+      const drops = await harness.collectAttributes(
+         "publisher_materialization_drop_tables_total",
+      );
+      await harness.shutdown();
+      expect(drops.length).toBeGreaterThan(0);
+      for (const d of drops) expect(d).toMatchObject({ occasion: "reclaim" });
       expect((await tablesIn(env)).sort()).toEqual(
          ["host_v1", TABLE_V2].sort(),
       );

@@ -97,6 +97,7 @@ import {
    refusalRecord,
    reportRetainedStorageTables,
    selfAssignTableName,
+   statementRunOptions,
 } from "./materialization_run_support";
 import {
    dropOwnNameView,
@@ -1251,10 +1252,18 @@ function packageOwnerOf(run: InstructedRun): string {
  * build holds, when given), or the destination the run builds into.
  */
 export function tableSiteContext(
-   run: Pick<InstructedRun, "compiled" | "environment">,
+   run: Pick<InstructedRun, "compiled" | "environment" | "buildMetadata">,
    connection?: MalloyConnection,
 ): TableSiteContext {
+   const context = run.buildMetadata?.context;
    return {
+      // The run's own statements carry its metadata, as its builds do.
+      ...(context
+         ? {
+              runOptions: (name: string) =>
+                 statementRunOptions(run.environment, name, context),
+           }
+         : {}),
       connectionFor: (name) =>
          (connection && connection.name === name ? connection : undefined) ??
          run.compiled.connections.get(name),

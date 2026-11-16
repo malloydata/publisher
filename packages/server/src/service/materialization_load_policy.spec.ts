@@ -323,6 +323,31 @@ describe("the load-versus-refused policy", () => {
    usePackageLoadPool();
    afterAll(() => settings.restore());
 
+   it(
+      "names every name= mistake in every file, beside the package's other invalid annotations",
+      async () => {
+         const envPath = path.join(root, "env");
+         writePackageFiles(
+            path.join(envPath, "names"),
+            {
+               "a.malloy": ROUTES.persist.model("#@ persist name=bare"),
+               "b.malloy": ROUTES.persist.model('#@ persist name="t; drop"'),
+               "c.malloy": ROUTES.persist.model('#@ persist nmae="t"'),
+            },
+            { manifest: { name: "names", description: "fixture" } },
+         );
+         const env = await Environment.create("testEnv", envPath, []);
+         const error = await failure(() => env.addPackage("names"));
+         const lines = error.message.split("\n");
+         expect(lines.filter((l) => l.startsWith("a.malloy:"))).toHaveLength(1);
+         expect(lines.filter((l) => l.startsWith("b.malloy:"))).toHaveLength(1);
+         expect(lines.some((l) => l.endsWith("[persist-unknown-key]"))).toBe(
+            true,
+         );
+      },
+      { timeout: 60000 },
+   );
+
    describe("the same mistake fails the load the same way on every annotation", () => {
       it(
          "on a first load: what a publish and a control-plane worker load run",

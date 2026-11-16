@@ -29,7 +29,7 @@ import {
 import { errMessage } from "../../../utils";
 import { parseEnvironmentName, parsePackageName } from "../../identity";
 import type { ApiConnection } from "../../model";
-import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
+import type { QueryMetadata } from "../../query_metadata";
 import { resolveEnvironmentId } from "../../resolve_environment";
 import {
    isVersionOwnedRun,
@@ -44,7 +44,7 @@ import { ColocatedTier } from "./colocated_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
    BuildEnvironment,
-   connectionMetadataLayers,
+   statementRunOptions,
    isActiveRun,
    redactConnectionSecrets,
    tableKeyOf,
@@ -189,21 +189,12 @@ function dropRunSQLOptions(
    packageName: string,
    materializationId: string,
 ): { queryMetadata?: QueryMetadata } {
-   const connectionLayers = connectionMetadataLayers(
-      environment,
-      connectionName,
-   );
-   const resolved = mergeQueryMetadata({
-      connection: connectionLayers.default,
-      enforced: connectionLayers.enforced,
-      context: {
-         queryClass: "ops",
-         environment: environmentName,
-         package: packageName,
-         runId: materializationId,
-      },
+   return statementRunOptions(environment, connectionName, {
+      queryClass: "ops",
+      environment: environmentName,
+      package: packageName,
+      runId: materializationId,
    });
-   return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
 }
 
 /**

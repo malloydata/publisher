@@ -84,38 +84,16 @@ const SKIP_MESSAGE: Record<LegKind, string> = {
 };
 
 /**
- * A leg's skip is logged at most once a minute per model, leg and decline
- * code, carrying how many like it were left out since: a skip repeats on
- * every query of a dashboard, and the path report and
- * `publisher_query_route_total` already say why each one was skipped.
+ * A leg's skip, at debug: it repeats on every query of a dashboard, and the
+ * path report and `publisher_query_route_total` already say why.
  */
-const SKIP_LOG_INTERVAL_MS = 60_000;
-const SKIP_LOG_KEYS_MAX = 1_000;
-const skipLogs = new Map<string, { at: number; suppressed: number }>();
-
 function logSkip(kind: LegKind, modelPath: string, err: unknown): void {
    if (!logger.isDebugEnabled()) return;
-   const code = isDeclineOf(err, DECLINING_LEG[kind]) ? err.code : "error";
-   const key = `${modelPath}\u0000${kind}\u0000${code}`;
-   const now = Date.now();
-   const last = skipLogs.get(key);
-   if (last && now - last.at < SKIP_LOG_INTERVAL_MS) {
-      last.suppressed++;
-      return;
-   }
-   if (!last && skipLogs.size >= SKIP_LOG_KEYS_MAX) skipLogs.clear();
-   skipLogs.set(key, { at: now, suppressed: 0 });
    logger.debug(SKIP_MESSAGE[kind], {
       modelPath,
-      code,
+      code: isDeclineOf(err, DECLINING_LEG[kind]) ? err.code : "error",
       error: err instanceof Error ? err.message : String(err),
-      ...(last?.suppressed ? { suppressed: last.suppressed } : {}),
    });
-}
-
-/** Visible for tests: forget which skips were logged. */
-export function resetSkipLogSamplingForTesting(): void {
-   skipLogs.clear();
 }
 
 /**

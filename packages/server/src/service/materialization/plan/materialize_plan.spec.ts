@@ -926,7 +926,9 @@ source: orders is orders_raw -> { select: * }
             sourceName: "empty",
             sourceID: "empty@file:///pkg/m.malloy",
             reason: "the source has no dimension to store",
-            refused: { reason: "no_stored_columns", tier: "colocated" },
+            outcome: {
+               refused: { reason: "no_stored_columns", tier: "colocated" },
+            },
          },
       ]);
    });
@@ -962,11 +964,13 @@ source: orders is orders_raw -> { select: * }
       expect(reason('#(materialize) storage="a\n')).toContain("does not parse");
       // Both are malformed, which fails the load: a value of the wrong shape
       // (materialize-invalid) and a line that does not parse.
-      expect(
-         refusal('#(materialize) storage=["a", "b"]\n')?.malformedCode,
-      ).toBe("materialize-invalid");
+      expect(refusal('#(materialize) storage=["a", "b"]\n')?.outcome).toEqual({
+         malformed: "materialize-invalid",
+      });
       const unparseable = refusal('#(materialize) storage="a\n');
-      expect(unparseable?.malformedCode).toBe("materialize-unparseable");
+      expect(unparseable?.outcome).toEqual({
+         malformed: "materialize-unparseable",
+      });
       expect(materializeRefusalFinding(unparseable!, "m.malloy")).toMatchObject(
          { tier: "malformed", code: "materialize-unparseable" },
       );

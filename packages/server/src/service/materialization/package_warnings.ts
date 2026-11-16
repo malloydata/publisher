@@ -163,10 +163,13 @@ export function persistRefusalWarnings(
    refusedRollups: Record<string, RefusedRollup>,
    materializePlans: Record<string, MaterializePlan>,
    notices: RefusalNotices = {},
+   /** Only the records it keeps; every one when absent. */
+   only: (sourceID: string) => boolean = () => true,
 ): ApiPackageWarning[] {
    const refused = plan?.refusedSources;
    if (!refused) return [];
    return Object.entries(refused).flatMap(([sourceID, source]) => {
+      if (!only(sourceID)) return [];
       const notice = notices[sourceID];
       if (notice) {
          return [

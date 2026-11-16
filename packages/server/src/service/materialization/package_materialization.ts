@@ -158,15 +158,12 @@ export class PackageMaterialization {
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
-   private boundTypeFindingsMemo:
-      | {
-           bindings: readonly Binding[];
-           plan: BuildPlan | null;
-           findings: readonly BoundTableTypeFinding[];
-        }
-      | undefined;
-   /** The bound tables whose type mismatches were counted and logged. */
-   private readonly typeMismatchesLogged = new Set<string>();
+   /**
+    * The type findings of the bound `storage=` tables a model's own
+    * `#@ persist` check does not make ({@link boundTableTypeFindings}), as of
+    * the last publish.
+    */
+   private boundTypeFindings: readonly BoundTableTypeFinding[] = [];
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
       | undefined;
@@ -654,8 +651,33 @@ export class PackageMaterialization {
          this.setServedCopyContextOn(model);
          void model.prepareServedCopy();
       }
-      // Counted and logged at the bind, as a model's own tables are.
-      this.boundTypeFindings();
+      this.bindTypeFindings(bindings);
+   }
+
+   /**
+    * Read the bound tables' type findings once per publish, counting and
+    * logging each table's mismatched columns there, as a model's own are.
+    */
+   private bindTypeFindings(bindings: readonly Binding[]): void {
+      this.boundTypeFindings = boundTableTypeFindings(
+         bindings,
+         this.plan.buildPlan,
+      );
+      for (const finding of this.boundTypeFindings) {
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+         logger.warn(
+            "Stored column types do not match the declared Malloy types",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               packageName: this.owner.packageName(),
+               source: finding.subject,
+               kind: finding.binding.kind,
+               columns: finding.mismatches,
+            },
+         );
+      }
    }
 
    /**
@@ -745,21 +767,8 @@ export class PackageMaterialization {
 
    /** The refusal warnings a planner's finding made (see annotationFindingWarnings). */
    findingRefusalWarnings(): ApiPackageWarning[] {
-      const notices = this.plan.refusalNotices;
-      const plan = this.plan.buildPlan;
-      if (!plan?.refusedSources) return [];
-      return warnings.persistRefusalWarnings(
-         {
-            ...plan,
-            refusedSources: Object.fromEntries(
-               Object.entries(plan.refusedSources).filter(
-                  ([id]) => notices[id],
-               ),
-            ),
-         },
-         {},
-         {},
-         notices,
+      return this.persistRefusalWarnings(
+         (id) => id in this.plan.refusalNotices,
       );
    }
 
@@ -771,12 +780,15 @@ export class PackageMaterialization {
       );
    }
 
-   persistRefusalWarnings(): ApiPackageWarning[] {
+   persistRefusalWarnings(
+      only?: (sourceID: string) => boolean,
+   ): ApiPackageWarning[] {
       return warnings.persistRefusalWarnings(
          this.plan.buildPlan,
          this.plan.refusedRollups,
          this.plan.materializePlans,
          this.plan.refusalNotices,
+         only,
       );
    }
 
@@ -794,44 +806,8 @@ export class PackageMaterialization {
    storedColumnTypeWarnings(): ApiPackageWarning[] {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
-         this.boundTypeFindings(),
+         this.boundTypeFindings,
       );
-   }
-
-   /**
-    * The type findings of the bound `storage=` tables a model's own
-    * `#@ persist` check does not make ({@link boundTableTypeFindings}),
-    * memoized on the snapshot and the plan. Each table's mismatched columns
-    * are counted and logged once, as a model's own are.
-    */
-   private boundTypeFindings(): readonly BoundTableTypeFinding[] {
-      const { bindings } = this.snapshot();
-      const plan = this.plan.buildPlan;
-      const memo = this.boundTypeFindingsMemo;
-      if (memo && memo.bindings === bindings && memo.plan === plan) {
-         return memo.findings;
-      }
-      const findings = boundTableTypeFindings(bindings, plan);
-      this.boundTypeFindingsMemo = { bindings, plan, findings };
-      for (const finding of findings) {
-         const key = `${finding.binding.kind}\u0000${finding.binding.virtualHandle}`;
-         if (this.typeMismatchesLogged.has(key)) continue;
-         this.typeMismatchesLogged.add(key);
-         for (const m of finding.mismatches) {
-            recordStoredColumnTypeMismatch("serve", m.declaredType);
-         }
-         logger.warn(
-            "Stored column types do not match the declared Malloy types",
-            {
-               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
-               packageName: this.owner.packageName(),
-               source: finding.subject,
-               kind: finding.binding.kind,
-               columns: finding.mismatches,
-            },
-         );
-      }
-      return findings;
    }
 
    nativeSchemaWarnings(): ApiPackageWarning[] {

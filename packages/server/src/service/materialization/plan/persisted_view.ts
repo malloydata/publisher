@@ -73,6 +73,7 @@
  * `persisted_view_compile.ts`.
  */
 
+import { refusalKey, tierOf } from "./refusal_key";
 import { type AnnotationNote, type AnnotationsDef } from "../../annotations";
 import {
    byCodepoint,
@@ -119,14 +120,12 @@ export interface PersistedViewRefusal {
    viewName: string;
    reason: string;
    /**
-    * Set when the declaration is invalid (it cannot be read as written, or
-    * says something no view can mean): the finding is `malformed` under this
-    * code and fails the load, rather than the `persist-view-not-built`
-    * refusal of a valid one.
+    * `malformed`: the declaration is invalid (it cannot be read as written, or
+    * says something no view can mean), so the finding is `malformed` under
+    * this code and fails the load. `refused`: a valid one Publisher refuses
+    * alone (`persist-view-not-built`), its reason in `refusedSources`.
     */
-   code?: string;
-   /** A valid declaration's refusal reason (`refusedSources`). */
-   refusal?: RefusedReason;
+   outcome: { malformed: string } | { refused: RefusedReason };
    /** The destination its `storage=` names, when it names one. */
    storage?: string;
 }
@@ -199,9 +198,7 @@ function planSourcePersistedViews(
             sourceName: declared.name,
             viewName,
             reason,
-            ...("malformed" in code
-               ? { code: code.malformed }
-               : { refusal: code.refused }),
+            outcome: code,
          });
       // A `#@ persist` line that does not parse is invalid, never dropped.
       const unparseable = writesPersistLine(notes)
@@ -319,7 +316,7 @@ export function planModelPersistedViews(
             sourceName: p.sourceName,
             viewName: p.viewName,
             reason: `its generated build source \`${p.buildSourceName}\` collides with another persisted view's; rename one of them`,
-            refusal: "build_name_collision",
+            outcome: { refused: "build_name_collision" },
             ...(p.storage !== undefined ? { storage: p.storage } : {}),
          });
       }
@@ -335,25 +332,21 @@ export function planModelPersistedViews(
 export function persistedViewRefusalFinding(
    refusal: Pick<
       PersistedViewRefusal,
-      | "sourceID"
-      | "sourceName"
-      | "viewName"
-      | "reason"
-      | "code"
-      | "refusal"
-      | "storage"
+      "sourceID" | "sourceName" | "viewName" | "reason" | "outcome" | "storage"
    >,
    model: string,
 ): PackageAnnotationFinding {
    // malloy-text: names quoted in a finding's message, not generated Malloy
    const on = `#@ persist on view "${refusal.viewName}" of source "${refusal.sourceName}"`;
-   if (refusal.code !== undefined) {
+   const subject = `${refusal.sourceName} -> ${refusal.viewName}`;
+   const { outcome } = refusal;
+   if ("malformed" in outcome) {
       return {
          route: "@",
          tier: "malformed",
-         code: refusal.code,
+         code: outcome.malformed,
          message: `${on} is invalid: ${refusal.reason}.`,
-         subject: `${refusal.sourceName} -> ${refusal.viewName}`,
+         subject,
          model,
       };
    }
@@ -362,18 +355,14 @@ export function persistedViewRefusalFinding(
       tier: "unservable",
       code: PERSIST_VIEW_NOT_BUILT,
       message: `${on} is not built, so the view is served live: ${refusal.reason}.`,
-      subject: `${refusal.sourceName} -> ${refusal.viewName}`,
+      subject,
       model,
-      ...(refusal.refusal
-         ? {
-              refused: resultRefusalKey(
-                 persistedViewBuildName(refusal.sourceName, refusal.viewName),
-                 splitSourceID(refusal.sourceID)?.url ?? "",
-                 refusal.refusal,
-                 refusal.storage,
-              ),
-           }
-         : {}),
+      refused: resultRefusalKey(
+         persistedViewBuildName(refusal.sourceName, refusal.viewName),
+         splitSourceID(refusal.sourceID)?.url ?? "",
+         outcome.refused,
+         refusal.storage,
+      ),
    };
 }
 
@@ -387,12 +376,12 @@ function resultRefusalKey(
    reason: RefusedReason,
    storage: string | undefined,
 ): RefusalKey {
-   return {
-      sourceID: `${buildSourceName}@${persistedViewCompanionHref(declaringURL)}`,
-      name: buildSourceName,
-      tier: storage !== undefined ? "storage" : "colocated",
+   return refusalKey(
+      `${buildSourceName}@${persistedViewCompanionHref(declaringURL)}`,
+      buildSourceName,
       reason,
-   };
+      tierOf(storage),
+   );
 }
 
 /** A persisted query the planner would not build. */

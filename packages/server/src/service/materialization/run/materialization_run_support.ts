@@ -48,7 +48,11 @@ import {
    type TableFolds,
 } from "../plan/build_plan";
 import { declaredStorage } from "../plan/persist_source_fields";
-import { type QueryContext, type QueryMetadata } from "../../query_metadata";
+import {
+   mergeQueryMetadata,
+   type QueryContext,
+   type QueryMetadata,
+} from "../../query_metadata";
 import type { components } from "../../../api";
 import { getPersistStorageMode } from "../../../config";
 import { escapeSQL } from "../../connection";
@@ -718,6 +722,25 @@ export function connectionMetadataLayers(
       });
       return { default: null, enforced: null };
    }
+}
+
+/**
+ * The query metadata a run's own statement on `connectionName` carries (an
+ * ownership probe, a mark, a drop): the connection's layers under the run's
+ * context. Fails open, as a build's does.
+ */
+export function statementRunOptions(
+   environment: BuildEnvironment,
+   connectionName: string,
+   context: QueryContext,
+): { queryMetadata?: QueryMetadata } {
+   const layers = connectionMetadataLayers(environment, connectionName);
+   const resolved = mergeQueryMetadata({
+      connection: layers.default,
+      enforced: layers.enforced,
+      context,
+   });
+   return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
 }
 
 /**

@@ -1273,7 +1273,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       model,
       viewRefusals,
       rollupRefusals: (rollups?.refused ?? []).map((r) => ({
-         reason: r.refused?.reason ?? r.code,
+         reason: r.tier === "unservable" ? r.refused.reason : r.code,
          sourceName: r.sourceName,
       })),
       materializePlans: Object.fromEntries(

@@ -461,7 +461,13 @@ export async function tryCompilePersistedViewCompanion(args: {
             args.materializer,
          );
          if (reason === undefined) plans.push(plan);
-         else refused.push({ ...plan, ...reason });
+         else {
+            refused.push({
+               ...plan,
+               reason: reason.reason,
+               outcome: { refused: reason.refusal },
+            });
+         }
       }
       const plannedQueries = planModelPersistedQueries(
          args.modelDef,
@@ -501,7 +507,9 @@ export async function tryCompilePersistedViewCompanion(args: {
          const reason =
             "a source-level `#@` line in its files could not be set aside, so its build would read a stored table";
          const refusal = "generated_build_failed" as const;
-         for (const plan of plans) refused.push({ ...plan, reason, refusal });
+         for (const plan of plans) {
+            refused.push({ ...plan, reason, outcome: { refused: refusal } });
+         }
          for (const plan of queries) {
             refusedQueries.push(queryRefusalOf(plan, { reason, refusal }));
          }

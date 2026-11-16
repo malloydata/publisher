@@ -65,6 +65,7 @@
  * readers are `governance/ir/source_graph.ts`'s single walk).
  */
 
+import { refusalKey } from "./refusal_key";
 import { keyCheckPipeline } from "../text/key_check_text";
 import {
    primaryKeyOf,
@@ -231,38 +232,44 @@ export function rollupGateEnforcedAtRead(plan: unknown): boolean {
    );
 }
 
-/** Why a declaration was not planned. */
-export interface RollupRefusal {
-   tier: "malformed" | "unservable";
+/**
+ * Why a declaration was not planned: an invalid one (`malformed`, which fails
+ * the load), or a valid one refused alone with its refusal record.
+ */
+export type RollupRefusal = {
    code: string;
    message: string;
    /** The base source's name in the planning model. */
    sourceName: string;
    measure?: string;
-   /** A valid declaration's refusal record (`refusedSources`). */
-   refused?: RefusalKey;
-}
+} & ({ tier: "malformed" } | { tier: "unservable"; refused: RefusalKey });
 
 /**
  * The refusal record of a rollup declaration refused before its rollup is
- * planned: keyed by the measure's path on its base (the base alone for a
- * refusal of every rollup on it) in the base file's rollup companion, where
- * no author source is declared.
+ * planned: named by the measure's path on its base (the base alone for a
+ * refusal of every rollup on it), and keyed, in the base file's rollup
+ * companion where no author source is declared, by that name and the table
+ * it would have had (its grain and destination), so two refused
+ * declarations on one measure are two records.
  */
 export function measureRefusalKey(
    baseSourceID: string,
    baseName: string,
    measure: string | undefined,
    reason: RefusedReason,
+   table?: { grain: readonly string[]; storage?: string },
 ): RefusalKey {
    const url = splitSourceID(baseSourceID)?.url ?? "";
    const name = measure !== undefined ? `${baseName}.${measure}` : baseName;
-   return {
-      sourceID: `${name}@${rollupCompanionURLOf(url)?.href ?? url}`,
+   const at = table
+      ? `[${[...table.grain].sort().join(",")}${table.storage !== undefined ? ` in ${table.storage}` : ""}]`
+      : "";
+   return refusalKey(
+      `${name}${at}@${rollupCompanionURLOf(url)?.href ?? url}`,
       name,
-      tier: "preaggregate",
       reason,
-   };
+      "preaggregate",
+   );
 }
 
 interface FieldLike {
@@ -770,7 +777,7 @@ interface RollupFacts {
    joinsRead(path: readonly string[]): string[] | undefined;
    unservable(
       reason: RefusedReason,
-      measure: string,
+      decl: Declaration,
       why: string,
    ): RollupRefusal;
 }
@@ -848,15 +855,21 @@ function rollupFactsOf(
    };
    const unservable = (
       reason: RefusedReason,
-      measure: string,
+      decl: Declaration,
       why: string,
    ): RollupRefusal => ({
       tier: "unservable",
       code: PREAGGREGATE_NOT_BUILT_CODE,
-      message: `#(preaggregate) on measure "${measure}" of source "${sourceName}" is not built, so the measure is served live: ${why}.`,
+      message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}" is not built, so the measure is served live: ${why}.`,
       sourceName,
-      measure,
-      refused: measureRefusalKey(node.sourceID, declaredName, measure, reason),
+      measure: decl.measure,
+      refused: measureRefusalKey(
+         node.sourceID,
+         declaredName,
+         decl.measure,
+         reason,
+         decl,
+      ),
    });
 
    return {
@@ -895,7 +908,7 @@ function declarationRefusal(
       if (decl.v1) return "skip";
       return unservable(
          "hidden_field",
-         decl.measure,
+         decl,
          "the measure is not public, and a rollup would publish it",
       );
    }
@@ -935,7 +948,7 @@ function declarationRefusal(
    if (timeRead) {
       return unservable(
          "current_time",
-         decl.measure,
+         decl,
          `${timeRead}, which a rollup would fix at build time while a live query reads it again at every read`,
       );
    }
@@ -946,7 +959,7 @@ function declarationRefusal(
             : `no source in the same zone that joins it is stored in \`${decl.storage}\`, the only place a join reads a rollup there from`;
       return unservable(
          "time_zone",
-         decl.measure,
+         decl,
          `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (${noJoin}), so its table would cost a build no query reads`,
       );
    }
@@ -965,7 +978,7 @@ function declarationRefusal(
       if (decl.v1) return "skip";
       return unservable(
          "hidden_field",
-         decl.measure,
+         decl,
          `its grain dimension \`${hiddenGrain}\` is not public, and a rollup would publish it`,
       );
    }
@@ -975,7 +988,7 @@ function declarationRefusal(
    if (gate.declared && !(ctx.readUnderGates ?? rollupsServeGatedBases(decl))) {
       return unservable(
          "access_filter",
-         decl.measure,
+         decl,
          decl.storage !== undefined && gateSwitches().gatedSources
             ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
             : "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
@@ -986,7 +999,7 @@ function declarationRefusal(
    if (gate.declared && gate.joinGated) {
       return unservable(
          "access_filter",
-         decl.measure,
+         decl,
          "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
       );
    }
@@ -1000,7 +1013,7 @@ function declarationRefusal(
    if (ungated.length > 0) {
       return unservable(
          "access_filter",
-         decl.measure,
+         decl,
          // malloy-text: a warning message for a person, not Malloy
          `the source's access filter reads ${ungated.map((g) => `\`${g}\``).join(", ")}, which the grain does not keep, so the rollup's rows could not be filtered per caller`,
       );
@@ -1030,7 +1043,7 @@ function rollupMeasureOf(
            }
          : unservable(
               "unreadable_measure",
-              decl.measure,
+              decl,
               `its definition is outside what #(preaggregate) reads (${d.detail})`,
            );
    }
@@ -1079,7 +1092,7 @@ function rollupMeasureOf(
       if (joinProblem) break;
    }
    if (joinProblem) {
-      return unservable("join_level", decl.measure, joinProblem);
+      return unservable("join_level", decl, joinProblem);
    }
    const columns =
       d.leaves.length === 1
@@ -1089,7 +1102,7 @@ function rollupMeasureOf(
    if (clash) {
       return unservable(
          "name_clash",
-         decl.measure,
+         decl,
          `the source already has a field named \`${clash}\`, the column its partial is stored as`,
       );
    }
@@ -1316,7 +1329,7 @@ export function rollupRefusalFinding(
          ? `${refusal.sourceName}.${refusal.measure}`
          : refusal.sourceName,
       model,
-      ...(refusal.refused ? { refused: refusal.refused } : {}),
+      ...(refusal.tier === "unservable" ? { refused: refusal.refused } : {}),
    };
 }
 
