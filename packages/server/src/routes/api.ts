@@ -688,6 +688,28 @@ function registerPackageRoutes(
          ),
       );
    }
+   // Runs a count per planned source against the warehouse, so it is
+   // admission-controlled like a query, and a POST because it is not a free read.
+   app.post(
+      `${pkg}/build-plan/estimates`,
+      querySlots.middleware,
+      apiRoute((req, res) => {
+         // A client that goes away cancels the count in flight: its slot is
+         // released on `close`, so the statement must not outlive it.
+         const disconnected = new AbortController();
+         res.on("close", () => {
+            if (!res.writableFinished)
+               disconnected.abort(new Error("client disconnected"));
+         });
+         return packageController.estimatePackageBuildPlan(
+            req.params.environmentName,
+            req.params.packageName,
+            req.body,
+            versionRefOf(req),
+            disconnected.signal,
+         );
+      }),
+   );
    app.get(
       `${pkg}/agents`,
       apiRoute((req) =>

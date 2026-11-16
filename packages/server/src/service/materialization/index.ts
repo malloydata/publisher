@@ -16,6 +16,11 @@
 
 export { PackageMaterialization } from "./package_materialization";
 export { nearMissGateLines } from "./plan/load_gate_text";
+export {
+   estimatePackageRowCounts,
+   type BuildPlanEstimates,
+} from "./estimate/row_count_estimate";
+export { connectionMetadataLayers } from "./run/materialization_run_support";
 export { MaterializationService } from "./run/materialization_service";
 export { Reclaimer } from "./run/reclaimer";
 export { MaterializationScheduler } from "./run/materialization_scheduler";

@@ -157,6 +157,15 @@ export const RATCHET_DIALECT_LITERALS = {
       count: 1,
       step: "table",
    },
+   // UNCOUNTABLE_DIALECTS, the row-count estimate's dialects that cannot count
+   // a build query as a derived table: a deny-list like READ_ONLY_DIALECTS,
+   // so an unknown dialect is counted.
+   // TODO(phase 6): fold into the dialect table, or share a deny-list home
+   // with READ_ONLY_DIALECTS, and drop this entry.
+   "service/materialization/estimate/row_count_estimate.ts": {
+      count: 1,
+      step: "table",
+   },
    // Connection types (FederatedSourceType, the storage destination types),
    // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling.
    "service/materialization/run/materialization_build_session.ts": {

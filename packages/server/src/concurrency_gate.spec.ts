@@ -166,7 +166,7 @@ describe("compile and sqlSource are admission-controlled", () => {
 
 /**
  * Which routes carry the gate, read from the route table itself: every route
- * that compiles, runs SQL, or runs a query, on both the current and the legacy
+ * that compiles, runs SQL, runs a query or estimates a build plan, on both the current and the legacy
  * prefix, and nothing else.
  */
 describe("the concurrency gate guards exactly the routes that do database work", () => {
@@ -191,6 +191,8 @@ describe("the concurrency gate guards exactly the routes that do database work",
             // The report save compiles, then writes under the package lock
             // across a full reload. Its GET twin reads and is ungated.
             `PUT ${pkg}/models/*?`,
+            // A count per planned source against the warehouse.
+            `POST ${pkg}/build-plan/estimates`,
             `POST ${pkg}/models/*?/query`,
             `POST ${pkg}/models/*?/compile`,
             `GET ${pkg}/notebooks/*/cells/:cellIndex`,

@@ -1670,6 +1670,23 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.getBuildPlan();
    }
 
+   /**
+    * Which planned sources the storage-destination gate (the strictest) admits,
+    * by sourceID; undefined when the plan could not be derived. Read by the
+    * row-count estimate, which counts only what this admits.
+    *
+    * TODO(phase 6): this record is the storage verdict, which now also refuses
+    * for reasons that say nothing about caller scoping (a connection that
+    * cannot pass through to a `storage=` build, so every DuckDB source; a
+    * shared table; a build reading the current time). The estimate reads any
+    * refusal as "gated", so it refuses every colocated DuckDB source and
+    * row_count_estimate_load.spec.ts fails. Decide which verdict answers "is
+    * the build query caller-scoped".
+    */
+   public getSourceEligibility(): SourceEligibility | undefined {
+      return this.mz.plan.sourceEligibility;
+   }
+
    /** Whether the build plan could not be derived at load, so `getBuildPlan` says nothing. */
    public isBuildPlanUnavailable(): boolean {
       return this.mz.isBuildPlanUnavailable();
