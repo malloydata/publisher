@@ -11,7 +11,7 @@ import * as path from "path";
 import {
    dbDuckDBHardCloseInternalsMatch,
    hardCloseOwnedDuckDBConnections,
-   hardCloseStats,
+   hardCloseOutcome,
    hardCloseWhenIdle,
    installDuckDBHardClose,
    ownDuckDBConnection,
@@ -49,7 +49,17 @@ function ownInstance(): { connection: DuckDBConnection; dir: string } {
 }
 
 /** Open, use and retire `cycles` instances; the thread growth across them. */
+/**
+ * Open, use and retire `cycles` instances; the thread growth across them.
+ *
+ * Every retired connection and its native handle stays reachable until the
+ * count is taken, as a model or a served copy can keep one in production. A
+ * refcount close then holds each instance's pool by construction, rather than
+ * until whenever a GC happens to finalize the handle (which can run during
+ * the loop on a slow runner), and a hard close must free it anyway.
+ */
 async function churn(cycles: number, hardClose: boolean): Promise<number> {
+   const held: { connection: DuckDBConnection; handle: unknown }[] = [];
    const before = threadCount()!;
    for (let i = 0; i < cycles; i++) {
       const { connection, dir } = ownInstance();
@@ -59,11 +69,22 @@ async function churn(cycles: number, hardClose: boolean): Promise<number> {
       await connection.runSQL(
          "SELECT count(*) FROM range(2000000) t(x) WHERE x % 7 = 0",
       );
+      held.push({
+         connection,
+         handle: (connection as unknown as { connection: unknown }).connection,
+      });
       await connection.close();
       if (hardClose) hardCloseOwnedDuckDBConnections(owner);
       fs.rmSync(dir, { recursive: true, force: true });
    }
-   return threadCount()! - before;
+   const grew = threadCount()! - before;
+   // Free what the refcount close left, so the next test starts clean.
+   if (!hardClose) {
+      for (const { handle } of held) {
+         (handle as { disconnectSync(): void }).disconnectSync();
+      }
+   }
+   return grew;
 }
 
 describe("DuckDB hard close", () => {
@@ -80,13 +101,13 @@ describe("DuckDB hard close", () => {
       "frees each retired instance's threads at once, where a refcount close leaves them to the GC",
       async () => {
          const cycles = 20;
-         // No GC is forced: a refcount close keeps every pool alive until one
-         // happens to run, a hard close never needs one.
+         // The retired handles stay reachable throughout (see churn), so no
+         // GC can free a pool: only the hard close does.
          const hard = await churn(cycles, true);
          expect(hard).toBeLessThan(4);
          // The mutation check, run in-place: the same loop without the hard
-         // close grows by the instances it leaves (three workers each). If this
-         // stops growing, the test above proves nothing.
+         // close keeps every instance (three workers each). If this stops
+         // growing, the test above proves nothing.
          const soft = await churn(cycles, false);
          expect(soft).toBeGreaterThan(cycles);
       },
@@ -96,7 +117,6 @@ describe("DuckDB hard close", () => {
       const { connection, dir } = ownInstance();
       try {
          await connection.runSQL("SELECT 1");
-         const before = hardCloseStats();
          const query = connection.runSQL(
             "SELECT count(*) AS n FROM range(300000000) t(x) WHERE x % 7 = 0",
          );
@@ -104,12 +124,11 @@ describe("DuckDB hard close", () => {
          await new Promise((resolve) => setTimeout(resolve, 50));
          await connection.close();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().deferred).toBe(before.deferred + 1);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected);
+         expect(hardCloseOutcome(connection)).toBe("deferred");
 
          const result = await query;
          expect(Number(result.rows[0].n)).toBe(42857143);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
+         expect(hardCloseOutcome(connection)).toBe("disconnected");
       } finally {
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -118,7 +137,6 @@ describe("DuckDB hard close", () => {
    it("waits for a stream being read, and disconnects when its reader returns", async () => {
       const { connection, dir } = ownInstance();
       try {
-         const before = hardCloseStats();
          const stream = connection.runSQLStream(
             "SELECT x FROM range(100000) t(x)",
             { rowLimit: 100000 },
@@ -127,13 +145,13 @@ describe("DuckDB hard close", () => {
          expect(first.done).toBe(false);
          await connection.close();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().deferred).toBe(before.deferred + 1);
+         expect(hardCloseOutcome(connection)).toBe("deferred");
 
          // The reader goes on after the close, and stops early.
          const second = await stream.next();
          expect(second.done).toBe(false);
          await stream.return?.(undefined);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
+         expect(hardCloseOutcome(connection)).toBe("disconnected");
       } finally {
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -149,11 +167,9 @@ describe("DuckDB hard close", () => {
          );
          const query = model.loadQuery("run: s -> { aggregate: c }");
          expect((await query.run()).data.toObject()).toEqual([{ c: 1 }]);
-
-         const before = hardCloseStats();
          await connection.close();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
+         expect(hardCloseOutcome(connection)).toBe("disconnected");
 
          // The compiled query, and a fresh compile against the same model,
          // both refuse with an error rather than reaching the freed database.
@@ -170,15 +186,14 @@ describe("DuckDB hard close", () => {
       const { connection, dir } = ownInstance();
       try {
          await connection.runSQL("SELECT 1");
-         const before = hardCloseStats();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().skipped).toBe(before.skipped + 1);
+         expect(hardCloseOutcome(connection)).toBe("skipped");
          expect((await connection.runSQL("SELECT 2 AS n")).rows).toEqual([
             { n: 2 },
          ]);
          await connection.close();
          hardCloseWhenIdle(connection);
-         expect(hardCloseStats().disconnected).toBe(before.disconnected + 1);
+         expect(hardCloseOutcome(connection)).toBe("disconnected");
       } finally {
          fs.rmSync(dir, { recursive: true, force: true });
       }
