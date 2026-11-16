@@ -40,8 +40,10 @@ import {
 } from "../../versions/materialization_scope";
 import {
    computeSourceEntityId,
-   planTableFolds,
+   foldDistinctTableNames,
+   planAddresses,
    sharedTables,
+   storedColumnNames,
    tierGateInputs,
 } from "../plan/build_plan";
 import {
@@ -139,10 +141,17 @@ function gateSources(
    const cleared = new Map<string, EligibilityTier>();
    // A compiled package's plan carries its folds; a hand-made one is decided
    // here, over every source.
-   const tableFolds = compiled.tableFolds ?? planTableFolds(compiled);
+   const tableFolds =
+      compiled.tableFolds ??
+      foldDistinctTableNames(compiled, storedColumnNames);
    // Two definitions writing one table (sharedTables): neither is built,
    // whether or not the other is rebuilt this run or carried.
-   const shared = sharedTables({ ...compiled, tableFolds });
+   const shared = sharedTables({
+      ...compiled,
+      tableFolds,
+      addresses:
+         compiled.addresses ?? planAddresses({ ...compiled, tableFolds }),
+   });
    for (const build of compiled.builds) {
       for (const persistSource of sourcesInBuildOrder(build, compiled.tables)) {
          if (include && !include.has(persistSource.name)) continue;
@@ -527,6 +536,77 @@ function freshTableNames(
 }
 
 /**
+ * The table name an auto-run gives one source, and what decided it: whether
+ * the author chose it (`name=`), the source's prior entry and whether it is in
+ * the same destination, and the name Publisher gave it before readable names
+ * when the run moves it off that name.
+ */
+function tableNameDecision(
+   compiled: CompiledBuildPlan,
+   persistSource: PersistSource,
+   sourceEntityId: string,
+   destination: string | undefined,
+   priorEntries: Record<string, ManifestEntry>,
+   fresh: string,
+   takenByAnother: ReturnType<typeof freshTableNames>["takenByAnother"],
+   naming: SelfTableNaming | undefined,
+): {
+   named: boolean;
+   prior: ManifestEntry | undefined;
+   sameDestination: boolean;
+   previous: string | undefined;
+   renaming: boolean;
+   tableName: string;
+} {
+   // Orchestrated builds use the host-supplied `physicalTableName`. A
+   // storage build replaces its table atomically (`CREATE OR REPLACE` in
+   // ONE transaction), and a colocated one swaps it in, so a rebuild
+   // never empties the table it serves and no generation is needed.
+   const named =
+      !!naming &&
+      naming.ownedVersion === undefined &&
+      hasAuthorTableName(compiled, persistSource);
+   const prior = priorEntries[sourceEntityId];
+   const sameDestination =
+      !!prior?.physicalTableName &&
+      (prior.storageDestinationName ?? undefined) === destination;
+   // The table an earlier run built under the name Publisher gave it
+   // before readable names (see previousTableName).
+   const previous =
+      naming && sameDestination && !named
+         ? previousTableName(compiled, persistSource, naming)
+         : undefined;
+   const renaming =
+      previous !== undefined &&
+      prior!.physicalTableName === previous &&
+      previous !== fresh;
+   // Sticky: a table an earlier run built under a readable name keeps it,
+   // so a moved or renamed file, or a source that comes to share the
+   // address, does not rebuild it under another (see keepsReadableName).
+   const tableName =
+      naming &&
+      !named &&
+      sameDestination &&
+      !renaming &&
+      keepsReadableName(
+         prior!.physicalTableName,
+         fresh,
+         naming,
+         compiled,
+         persistSource,
+      ) &&
+      !takenByAnother(
+         persistSource,
+         destination,
+         prior!.physicalTableName,
+         sourceEntityId,
+      )
+         ? prior!.physicalTableName
+         : fresh;
+   return { named, prior, sameDestination, previous, renaming, tableName };
+}
+
+/**
  * Derive auto-run's own build instructions. Each persist source (respecting
  * `sourceNames`) gets a self-assigned physical name and COPY realization,
  * unless its sourceEntityId is unchanged since `priorEntries`, in which case
@@ -598,52 +678,17 @@ export function deriveSelfInstructions(
       if (seen.has(sourceEntityId)) continue;
       seen.add(sourceEntityId);
 
-      // Orchestrated builds use the host-supplied `physicalTableName`. A
-      // storage build replaces its table atomically (`CREATE OR REPLACE` in
-      // ONE transaction), and a colocated one swaps it in, so a rebuild
-      // never empties the table it serves and no generation is needed.
-      const named =
-         !!naming &&
-         naming.ownedVersion === undefined &&
-         hasAuthorTableName(compiled, persistSource);
-      const prior = priorEntries[sourceEntityId];
-      const sameDestination =
-         !!prior?.physicalTableName &&
-         (prior.storageDestinationName ?? undefined) === destination;
-      const fresh = freshNames.get(sourceEntityId)!;
-      // The table an earlier run built under the name Publisher gave it
-      // before readable names (see previousTableName).
-      const previous =
-         naming && sameDestination && !named
-            ? previousTableName(compiled, persistSource, naming)
-            : undefined;
-      const renaming =
-         previous !== undefined &&
-         prior!.physicalTableName === previous &&
-         previous !== fresh;
-      // Sticky: a table an earlier run built under a readable name keeps it,
-      // so a moved or renamed file, or a source that comes to share the
-      // address, does not rebuild it under another (see keepsReadableName).
-      const tableName =
-         naming &&
-         !named &&
-         sameDestination &&
-         !renaming &&
-         keepsReadableName(
-            prior!.physicalTableName,
-            fresh,
-            naming,
+      const { named, prior, sameDestination, previous, renaming, tableName } =
+         tableNameDecision(
             compiled,
             persistSource,
-         ) &&
-         !takenByAnother(
-            persistSource,
-            destination,
-            prior!.physicalTableName,
             sourceEntityId,
-         )
-            ? prior!.physicalTableName
-            : fresh;
+            destination,
+            priorEntries,
+            freshNames.get(sourceEntityId)!,
+            takenByAnother,
+            naming,
+         );
       if (naming && !named) {
          const key = tableKeyOf(
             persistSource.connectionName,
@@ -682,7 +727,7 @@ export function deriveSelfInstructions(
       // table reclaimed once the run commits and is served.
       const logicalName =
          renaming && deltaEligible && !incremental?.forceRefresh
-            ? previous
+            ? previous!
             : tableName;
 
       const instruction: BuildInstruction = {

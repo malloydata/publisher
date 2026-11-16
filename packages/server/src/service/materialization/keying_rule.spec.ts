@@ -45,8 +45,6 @@ const ALLOWED: Record<string, Record<string, string>> = {
    "plan/build_plan.ts": {
       "const plan = planByName.get(source.name);":
          "generated #(materialize) build sources by name within one generated companion, where each name is unique; migrate with the rollup plans",
-      "if (include && !include.has(source.name)) continue;":
-         "a scoped run's sourceNames filter is a caller request by name",
    },
    "run/storage_build_strategy.ts": {
       "names[b.sourceName] = b.sourceIDs;":

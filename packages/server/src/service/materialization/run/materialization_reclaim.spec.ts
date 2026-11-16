@@ -806,9 +806,11 @@ describe("reclaiming an archived version's tables", () => {
       ).rejects.toThrow();
       await (
          service as unknown as {
-            transition(id: string, next: string): Promise<unknown>;
+            lifecycle: {
+               transition(id: string, next: string): Promise<unknown>;
+            };
          }
-      ).transition(running.id, "MANIFEST_ROWS_READY");
+      ).lifecycle.transition(running.id, "MANIFEST_ROWS_READY");
       expect(await statusOf(running.id)).toBe("MANIFEST_ROWS_READY");
    });
 
@@ -911,9 +913,11 @@ describe("reclaiming an archived version's tables", () => {
       // It can still settle.
       await (
          service as unknown as {
-            transition(id: string, next: string): Promise<unknown>;
+            lifecycle: {
+               transition(id: string, next: string): Promise<unknown>;
+            };
          }
-      ).transition(running.id, "MANIFEST_ROWS_READY");
+      ).lifecycle.transition(running.id, "MANIFEST_ROWS_READY");
       expect(await statusOf(running.id)).toBe("MANIFEST_ROWS_READY");
    });
 

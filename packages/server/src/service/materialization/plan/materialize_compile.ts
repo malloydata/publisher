@@ -44,7 +44,6 @@ import {
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
    settledChains,
-   splitSourceID,
    withoutParent,
 } from "./build_file_generator";
 import {
@@ -56,11 +55,12 @@ import {
    planModelMaterialize,
    type MaterializeRefusal,
 } from "./materialize_plan";
-import { type MaterializePlan } from "../domain/table_plans";
+import { splitSourceID, type MaterializePlan } from "../domain/table_plans";
 import type { TermUse } from "../domain/read_time_terms";
 import {
    compileInMemory,
    companionOmissions,
+   declaredInModel,
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
@@ -204,14 +204,8 @@ async function planWithProbes(
    args: CompanionArgs,
    modelFile: string,
 ): Promise<ReturnType<typeof planModelMaterialize>> {
-   const declaredHere = (declaringURL: string) => {
-      try {
-         return path.resolve(fileURLToPath(declaringURL)) === modelFile;
-      } catch {
-         // Not a local file (a host, another scheme): planned.
-         return true;
-      }
-   };
+   // Not a local file (a host, another scheme): planned.
+   const declaredHere = declaredInModel(modelFile, true);
    const probed = args.probe
       ? await probeMaterializeDimensions(
            args.probe,
@@ -726,10 +720,7 @@ async function copyDeclaredBuilds(
          name,
       ]),
    );
-   const urlOf = (id: string) => {
-      const at = id.indexOf("@");
-      return at < 0 ? undefined : id.slice(at + 1);
-   };
+   const urlOf = (id: string) => splitSourceID(id)?.url;
    const targets = await generated.runtime.getBuildTargets(generated.model);
    const groups = [
       ...targets.connections.flatMap((c) =>
@@ -751,7 +742,7 @@ async function copyDeclaredBuilds(
          const url = urlOf(id);
          const owner = url === undefined ? undefined : ownerByURL.get(url);
          if (owner === undefined) continue;
-         const name = id.slice(0, id.indexOf("@"));
+         const name = splitSourceID(id)!.name;
          const names = out.get(owner) ?? [];
          if (!names.includes(name)) names.push(name);
          out.set(owner, names.sort());
@@ -1343,86 +1334,101 @@ async function compileContained(
          };
       } catch (error) {
          if (!(error instanceof CompanionCompileError)) throw error;
-         const failing = failingSourceOf(error, plans);
-         const plan =
-            failing === undefined ? undefined : planOf(plans, failing);
-         // In a chained copy, a problem in another source's declaration
-         // (one that reads the parent and does not compile over its re-root)
-         // is that source's: the copy leaves it out, empty, and keeps the
-         // chain.
-         const omitted =
-            plan?.buildsOver &&
-            (omissionRounds.get(plan.sourceID) ?? 0) < MAX_OMISSION_ROUNDS
-               ? copyOmissions(error, copies.get(plan.sourceID), plan)
-               : [];
-         if (plan?.buildsOver && omitted.length > 0) {
-            omissionRounds.set(
-               plan.sourceID,
-               (omissionRounds.get(plan.sourceID) ?? 0) + 1,
-            );
-            logger.warn(
-               "A chained #(materialize) build copy leaves out declarations that do not compile over the parent's build source",
-               {
-                  modelPath: args.modelPath,
-                  sourceName: plan.sourceName,
-                  omitted: omitted.map((o) => splitSourceID(o.sourceID)?.name),
-               },
-            );
-            input = plans.map((p) =>
-               p === plan && p.buildsOver
-                  ? {
-                       ...p,
-                       buildsOver: {
-                          ...p.buildsOver,
-                          omit: [
-                             ...(p.buildsOver.omit ?? []),
-                             ...omitted.map((o) => o.declaration),
-                          ],
-                       },
-                    }
-                  : p,
-            );
-         } else if (plan?.buildsOver) {
-            logger.warn(
-               "An extension table of a #(materialize) model did not compile over its parent's build source; it builds over the raw chain",
-               {
-                  modelPath: args.modelPath,
-                  sourceName: plan.sourceName,
-                  error: error.message,
-               },
-            );
-            input = plans.map((p) => (p === plan ? withoutParent(p) : p));
-         } else if (plan) {
-            logger.error(
-               "A #(materialize) source's generated build did not compile; it is not built, and the model's other sources are",
-               {
-                  modelPath: args.modelPath,
-                  sourceName: plan.sourceName,
-                  error: error.message,
-               },
-            );
-            refuse({
-               sourceName: plan.sourceName,
-               sourceID: plan.sourceID,
-               reason:
-                  "its generated build did not compile, so it is not built " +
-                  `(a Publisher bug; please report it): ${firstProblem(error)}`,
-            });
-            input = plans.filter((p) => p !== plan);
-         } else if (plans.some((p) => p.buildsOver)) {
-            // No source to blame: every extension builds over the raw chain,
-            // as it did before P10, with the same rows.
-            logger.warn(
-               "Extension tables of a #(materialize) model did not compile over their parents' build sources; they build over the raw chain",
-               { modelPath: args.modelPath, error: error.message },
-            );
-            input = plans.map(withoutParent);
-         } else {
-            throw error.error;
-         }
+         input = nextRound(error, plans, copies, {
+            modelPath: args.modelPath,
+            omissionRounds,
+            refuse,
+         });
       }
    }
    throw new Error(
       "the generated #(materialize) companion did not settle on sources that compile",
    );
+}
+
+/**
+ * The plans the next round of {@link compileContained} compiles, after
+ * `error` in this round's: the failing chained copy leaves the declarations
+ * its problems lie in out, or builds over the raw chain; any other failing
+ * source is refused alone; a failure no source can be told for sends every
+ * extension to the raw chain. One that still cannot be told throws.
+ */
+function nextRound(
+   error: CompanionCompileError,
+   plans: MaterializePlan[],
+   copies: Map<string, BuildCopy>,
+   ctx: {
+      modelPath: string;
+      omissionRounds: Map<string, number>;
+      refuse: (refusal: MaterializeRefusal) => void;
+   },
+): MaterializePlan[] {
+   const { modelPath, omissionRounds } = ctx;
+   const failing = failingSourceOf(error, plans);
+   const plan = failing === undefined ? undefined : planOf(plans, failing);
+   // In a chained copy, a problem in another source's declaration (one that
+   // reads the parent and does not compile over its re-root) is that
+   // source's: the copy leaves it out, empty, and keeps the chain.
+   const omitted =
+      plan?.buildsOver &&
+      (omissionRounds.get(plan.sourceID) ?? 0) < MAX_OMISSION_ROUNDS
+         ? copyOmissions(error, copies.get(plan.sourceID), plan)
+         : [];
+   if (plan?.buildsOver && omitted.length > 0) {
+      omissionRounds.set(
+         plan.sourceID,
+         (omissionRounds.get(plan.sourceID) ?? 0) + 1,
+      );
+      logger.warn(
+         "A chained #(materialize) build copy leaves out declarations that do not compile over the parent's build source",
+         {
+            modelPath,
+            sourceName: plan.sourceName,
+            omitted: omitted.map((o) => splitSourceID(o.sourceID)?.name),
+         },
+      );
+      const omit = omitted.map((o) => o.declaration);
+      return plans.map((p) =>
+         p === plan && p.buildsOver
+            ? {
+                 ...p,
+                 buildsOver: {
+                    ...p.buildsOver,
+                    omit: [...(p.buildsOver.omit ?? []), ...omit],
+                 },
+              }
+            : p,
+      );
+   }
+   if (plan?.buildsOver) {
+      logger.warn(
+         "An extension table of a #(materialize) model did not compile over its parent's build source; it builds over the raw chain",
+         { modelPath, sourceName: plan.sourceName, error: error.message },
+      );
+      return plans.map((p) => (p === plan ? withoutParent(p) : p));
+   }
+   if (plan) {
+      logger.error(
+         "A #(materialize) source's generated build did not compile; it is not built, and the model's other sources are",
+         { modelPath, sourceName: plan.sourceName, error: error.message },
+      );
+      ctx.refuse({
+         sourceName: plan.sourceName,
+         sourceID: plan.sourceID,
+         reason:
+            "its generated build did not compile, so it is not built " +
+            `(a Publisher bug; please report it): ${firstProblem(error)}`,
+      });
+      return plans.filter((p) => p !== plan);
+   }
+   if (plans.some((p) => p.buildsOver)) {
+      // No source to blame: every extension builds over the raw chain, as it
+      // did before P10, with the same rows.
+      logger.warn(
+         "Extension tables of a #(materialize) model did not compile over their parents' build sources; they build over the raw chain",
+         { modelPath, error: error.message },
+      );
+      return plans.map(withoutParent);
+   }
+   throw error.error;
 }

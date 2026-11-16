@@ -25,8 +25,10 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import {
    collectModelBuildPlan,
-   deriveBuildPlan,
+   deriveBuildPlan as wirePlanOf,
+   planAddresses,
    deriveBuildPlanOutcome,
+   finishBuildPlan,
    emptyBuildPlanParts,
    plannedSources,
    type BuildPlanParts,
@@ -41,6 +43,16 @@ import {
    sourcesIn,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
+
+/** {@link wirePlanOf} over a hand-made plan, its addresses computed. */
+function deriveBuildPlan(
+   plan: Omit<Parameters<typeof wirePlanOf>[0], "addresses">,
+   ...rest: Parameters<typeof wirePlanOf> extends [unknown, ...infer R]
+      ? R
+      : never
+): ReturnType<typeof wirePlanOf> {
+   return wirePlanOf({ ...plan, addresses: planAddresses(plan) }, ...rest);
+}
 
 const duckdb = new DuckDBConnection("duckdb", ":memory:");
 const connections = new FixedConnectionMap(
@@ -137,7 +149,12 @@ async function plan(
 /** The wire plan a package load would keep from `parts`. */
 function wirePlan(parts: BuildPlanParts) {
    return deriveBuildPlanOutcome(
-      { ...parts, connectionDigests: { duckdb: "digest" } },
+      finishBuildPlan(parts, {
+         connectionDigests: { duckdb: "digest" },
+         connections: new Map(),
+         versionScoped: false,
+         keepIncrementalUnbuildable: true,
+      }),
       null,
    ).plan;
 }

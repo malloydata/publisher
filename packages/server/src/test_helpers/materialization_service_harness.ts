@@ -71,8 +71,26 @@ export function createMocks(
       getActiveMaterialization: sandbox.stub(),
       createMaterialization: sandbox.stub(),
       updateMaterialization: sandbox.stub(),
+      updateMaterializationFrom: sandbox.stub(),
       deleteMaterialization: sandbox.stub(),
    } as unknown as MockRepo;
+   // The conditional write, as the store makes it, over the status the read
+   // stub answers (null: the run is gone), through the write stub a spec
+   // configures. A read stub that answers nothing, or throws, lets it land.
+   repository.updateMaterializationFrom.callsFake(
+      async (id, updates, fromStatuses) => {
+         const current = await Promise.resolve(
+            repository.getMaterializationById(id),
+         ).catch(() => undefined);
+         if (
+            current === null ||
+            (current && !fromStatuses.includes(current.status))
+         ) {
+            return null;
+         }
+         return repository.updateMaterialization(id, updates);
+      },
+   );
 
    const storageManager = { getRepository: () => repository };
 

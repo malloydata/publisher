@@ -411,10 +411,7 @@ export function chainedPlanFacts(
             undefined,
             tableFolds,
          );
-         compilerKeyBySourceId[sourceID] = compilerBuildId(
-            source,
-            connectionDigests,
-         );
+         compilerKeyBySourceId[sourceID] = compilerBuildId(source);
       } catch {
          // Unrenderable (unbound parameter, given): no address to group by.
          // The eligibility gate refuses it on its own path.
@@ -943,10 +940,21 @@ export function redactConnectionSecrets(
 
 /** Classify a thrown build error as cancelled (cooperative abort) or failed. */
 export function outcomeFor(
-   _err: unknown,
    signal: AbortSignal | undefined,
 ): "failed" | "cancelled" {
    return signal?.aborted ? "cancelled" : "failed";
+}
+
+/** A run that can write nothing more. */
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
+
+/** Whether a run with `status` has not settled: it may still write. */
+export function isActiveRun(status: string): boolean {
+   return !TERMINAL_RUN_STATUSES.has(status);
 }
 
 /**

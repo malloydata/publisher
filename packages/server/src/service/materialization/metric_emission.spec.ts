@@ -34,7 +34,11 @@ import {
    PackageMaterialization,
    type PackageMaterializationOwner,
 } from "./package_materialization";
-import { computePackageBuildPlan } from "./plan/build_plan_compile";
+import {
+   compilePackageBuildPlan,
+   computePackageBuildPlan,
+} from "./plan/build_plan_compile";
+import { deriveBuildPlanOutcome } from "./plan/build_plan";
 import {
    createTableWithDeclaredTypes,
    issuePassthroughRead,
@@ -74,14 +78,21 @@ afterAll(() => packages.cleanup());
 
 /**
  * How many times `publisher_materialization_eligibility_refused_total` counts
- * ONE refused source while a package's build plan is derived. Today the
- * derivation judges a source on more than one pass and each pass counts it.
+ * ONE refused source while a package's build plan is derived: once, at the
+ * plan's one verdict for its table.
  */
-const ELIGIBILITY_REFUSALS_PER_REFUSED_SOURCE = 3;
+const ELIGIBILITY_REFUSALS_PER_REFUSED_SOURCE = 1;
 
 const NOW_SOURCE = `##! experimental.persistence
 #@ persist
 source: recent is duckdb.sql("select 1 as id, now() as at") -> { where: at > now() - 1 day; select: id }
+`;
+
+const BLANK_STORAGE_SOURCE = `##! experimental.persistence
+source: orders is duckdb.sql("select 1 as id, 'a' as category")
+
+#@ persist storage=""
+source: by_category is orders -> { group_by: category; aggregate: n is count() }
 `;
 
 const ONE_PERSIST_SOURCE = `##! experimental.persistence
@@ -92,7 +103,7 @@ source: by_category is orders -> { group_by: category; aggregate: n is count() }
 `;
 
 describe("publisher_materialization_eligibility_refused_total", () => {
-   it("counts one refused source once per pass that judges it", async () => {
+   it("counts one refused source once per plan", async () => {
       const pkg = await packages.create(NOW_SOURCE);
       const outcome = await computePackageBuildPlan(pkg);
       expect(
@@ -108,6 +119,46 @@ describe("publisher_materialization_eligibility_refused_total", () => {
             "publisher_materialization_eligibility_refused_total",
          ),
       ).toBe(ELIGIBILITY_REFUSALS_PER_REFUSED_SOURCE);
+   }, 30_000);
+
+   it("counts a source under its wire refusal, when the gates disagree", async () => {
+      // A blank `storage=` is refused for its placement on the wire, and is
+      // colocated to every other gate.
+      const pkg = await packages.create(BLANK_STORAGE_SOURCE);
+      const outcome = await computePackageBuildPlan(pkg);
+      const refused = Object.values(outcome.plan?.refusedSources ?? {});
+      expect(refused.map((r) => r.reason)).toEqual(["empty_storage"]);
+      expect(
+         await harness.collectAttributes(
+            "publisher_materialization_eligibility_refused_total",
+         ),
+      ).toEqual([{ reason: "empty_storage" }]);
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_eligibility_refused_total",
+         ),
+      ).toBe(1);
+   }, 30_000);
+
+   it("counts no source the plan does not refuse", async () => {
+      // Colocated and buildable on the package's DuckDB sandbox, which a
+      // `storage=` build cannot pass through: the storage gate's verdict
+      // (only whether it may be served from a stored table) is not a refusal.
+      const pkg = await packages.create(ONE_PERSIST_SOURCE);
+      const compiled = await compilePackageBuildPlan(pkg);
+      const outcome = deriveBuildPlanOutcome(
+         { ...compiled, connectionTypes: { duckdb: "duckdb" } },
+         null,
+      );
+      expect(outcome.plan?.refusedSources ?? {}).toEqual({});
+      expect(Object.values(outcome.sourceEligibility.refused)).toEqual([
+         expect.stringContaining("cannot be passed through"),
+      ]);
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_eligibility_refused_total",
+         ),
+      ).toBe(0);
    }, 30_000);
 });
 
@@ -231,20 +282,16 @@ describe("the build loop's instruments", () => {
          ctx.service.collaborators as unknown as {
             executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
          }
-      ).executeInstructedBuild(
+      ).executeInstructedBuild({
          compiled,
          environment,
          instructions,
-         seed,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-      );
+         seedEntries: seed,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+      });
    }
 
    const instruction = (

@@ -52,22 +52,25 @@ describe("buildOneSource", () => {
       };
       return (
          ctx.service.collaborators as unknown as {
-            buildOneSource: (
-               s: unknown,
-               i: BuildInstruction,
-               c: unknown,
-               m: Manifest,
-               env: unknown,
-               built: Record<string, unknown>,
-               buildMetadata?: unknown,
-            ) => Promise<{ sourceEntityId: string; physicalTableName: string }>;
+            buildOneSource: (options: {
+               persistSource: unknown;
+               instruction: BuildInstruction;
+               connection: unknown;
+               manifest: Manifest;
+               environment: unknown;
+               builtEntries: Record<string, unknown>;
+               buildMetadata?: unknown;
+            }) => Promise<{
+               sourceEntityId: string;
+               physicalTableName: string;
+            }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
          connection,
          manifest,
-         {
+         environment: {
             getApiConnection: () => {
                if (metadata?.connection) {
                   return { queryMetadata: metadata.connection };
@@ -76,8 +79,9 @@ describe("buildOneSource", () => {
             },
             getEnvironmentPath: () => "/tmp/env",
          },
-         {}, // builtEntries — colocated build with no prior storage upstreams
-         metadata
+         // A colocated build with no prior storage upstreams.
+         builtEntries: {},
+         buildMetadata: metadata
             ? {
                  packageMaterialization: metadata.package
                     ? {
@@ -89,7 +93,7 @@ describe("buildOneSource", () => {
                  context: metadata.context ?? { queryClass: "materialize" },
               }
             : undefined,
-      );
+      });
    }
 
    it("tags every statement of the build with the resolved metadata", async () => {
@@ -333,24 +337,25 @@ describe("buildOneSource", () => {
          ctx.service.collaborators as unknown as {
             buildOneSource: (...a: unknown[]) => Promise<unknown>;
          }
-      ).buildOneSource(
-         down,
-         {
+      ).buildOneSource({
+         persistSource: down,
+         // No destination: colocated.
+         instruction: {
             sourceEntityId: "downdowndowndown",
             materializedTableId: "mt",
             physicalTableName: "down_v1",
             realization: "COPY",
-         }, // no destination ⇒ colocated
-         { runSQL },
+         },
+         connection: { runSQL },
          manifest,
-         {
+         environment: {
             getApiConnection: () => {
                throw new Error("unused in the colocated build");
             },
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries,
-      );
+      });
       const [buildRender, compareRender] = seenManifests;
       expect(buildRender?.entries?.up_storage).toBeUndefined();
       expect(buildRender?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
@@ -447,21 +452,18 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
                upstreamRecomputeReason?: string;
             }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
-         { runSQL: sinon.stub().resolves(undefined) },
+         connection: { runSQL: sinon.stub().resolves(undefined) },
          manifest,
-         {
+         environment: {
             getApiConnection: () => ({}),
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries,
-         undefined,
-         undefined,
-         undefined,
          planFacts,
-      );
+      });
    }
 
    it("reused when the upstream's address is in the manifest, even as a thin reference with no name", async () => {

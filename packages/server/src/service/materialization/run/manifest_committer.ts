@@ -14,7 +14,6 @@
  * the run; the run's record says what is served.
  */
 
-import type { Mutex } from "async-mutex";
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
 import { logger } from "../../../logger";
@@ -124,12 +123,16 @@ export class ManifestCommitter {
          host: MaterializationHost;
          lifecycle: RunLifecycle;
          /**
-          * The package's table lock (`TableClaims.lockFor`), under which
-          * another run marks this one's entries superseded: the final write
-          * re-reads and keeps those marks under it. Absent in tests that
-          * drive one run.
+          * The package's table lock (`TableClaims.withTableLock`), under
+          * which another run marks this one's entries superseded: the final
+          * write re-reads and keeps those marks under it. Absent in tests
+          * that drive one run.
           */
-         tableLock?: (environmentId: string, packageName: string) => Mutex;
+         withTableLock?: (
+            environmentId: string,
+            packageName: string,
+            fn: () => Promise<void>,
+         ) => Promise<void>;
       },
    ) {}
 
@@ -181,9 +184,11 @@ export class ManifestCommitter {
          ...(Object.keys(failures).length > 0 ? { failures } : {}),
          strict: false,
       };
-      await this.deps.lifecycle.transition(id, "MANIFEST_ROWS_READY", {
-         manifest,
-      });
+      const rowsReady = await this.deps.lifecycle.transition(
+         id,
+         "MANIFEST_ROWS_READY",
+         { manifest },
+      );
       // The first call writes; every later one (a late finish after a timeout,
       // the catch below, the trailing call) awaits that same write, so a write
       // that throws is rethrown to each of them and the run settles FAILED.
@@ -201,6 +206,8 @@ export class ManifestCommitter {
          // Keep the superseded-table marks another run left on this record
          // while it was MANIFEST_ROWS_READY (markSuperseded, markHeldElsewhere),
          // read and written under the same table lock they are made under.
+         // The one read of the record per finish, and under the lock: the
+         // marks may have changed since MANIFEST_ROWS_READY.
          const write = async () => {
             const current = await this.repository.getMaterializationById(id);
             const superseded = current?.metadata?.[SUPERSEDED_TABLES_KEY];
@@ -217,13 +224,12 @@ export class ManifestCommitter {
                ...(served.error !== undefined ? { error: served.error } : {}),
             });
          };
-         const record = this.deps.tableLock
-            ? await this.repository.getMaterializationById(id)
-            : undefined;
-         if (this.deps.tableLock && record) {
-            await this.deps
-               .tableLock(record.environmentId, record.packageName)
-               .runExclusive(write);
+         if (this.deps.withTableLock && rowsReady) {
+            await this.deps.withTableLock(
+               rowsReady.environmentId,
+               rowsReady.packageName,
+               write,
+            );
          } else {
             await write();
          }
@@ -384,6 +390,8 @@ export class ManifestCommitter {
       packageName: string,
       reader: ServingReader = {},
    ): Promise<Record<string, ManifestEntry>> {
+      // Read fresh each time, under the slot's lock the caller holds: what a
+      // rebind binds is the store as of the bind, not as of the run's start.
       return storageBindingResolverFor(
          this.repository,
          environmentId,

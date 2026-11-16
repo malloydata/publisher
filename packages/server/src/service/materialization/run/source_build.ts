@@ -367,186 +367,199 @@ function classifyStoredUpstreams(
 /** The colocated tier's adapter: a delta, else a full rebuild. */
 const COLOCATED = new ColocatedTier();
 
+/** One source's build: what {@link buildSource} reads. */
+export interface SourceBuildOptions {
+   persistSource: PersistSource;
+   instruction: BuildInstruction;
+   connection: MalloyConnection;
+   manifest: Manifest;
+   environment: BuildEnvironment;
+   builtEntries: Record<string, ManifestEntry>;
+   buildMetadata?: BuildQueryMetadata;
+   /** Absent leaves the full-rebuild path. */
+   incremental?: IncrementalRunContext;
+   /**
+    * The content address, NOT the caller-assigned
+    * `instruction.sourceEntityId`. Recorded on the covered_through ledger and
+    * COMPARED on every read, so a boundary is never read against different
+    * SQL: a changed source seeds instead of deltaing onto a stale table. It
+    * is not part of the ledger key, so a boundary stays findable across
+    * versions.
+    */
+   contentSourceEntityId?: string;
+   /** The default knows nothing; only test seams rely on it. */
+   planFacts?: ChainedPlanFacts;
+   /**
+    * Statements that drop this package's own leftover `name=` view at the
+    * table's name, run first in the build's own transaction (DuckDB,
+    * Postgres; leftover_name_views.ts).
+    */
+   replacesView?: string[];
+}
+
 /**
  * One source's build, whatever its tier: render its SQL over the run's
  * manifest, decide once how its stored upstreams are read, resolve the query
  * metadata every statement carries, then hand it to its tier's adapter (see
- * tier.ts).
+ * tier.ts): the colocated tier here, the `storage=` tier through `storage`
+ * (StorageBuildStrategy, through the service's collaborators). Records and
+ * returns the manifest entry. A colocated COPY uses a staging table and an
+ * atomic rename for crash-safety; the staging name derives from the
+ * sourceEntityId.
  */
-export class SourceBuilder {
-   constructor(
-      /** The storage tier (StorageBuildStrategy, through the service's collaborators). */
-      private readonly storage: (
-         request: StorageBuildRequest,
-      ) => Promise<ManifestEntry>,
-   ) {}
+export async function buildSource(
+   options: SourceBuildOptions,
+   storage: (request: StorageBuildRequest) => Promise<ManifestEntry>,
+): Promise<ManifestEntry> {
+   const {
+      persistSource,
+      instruction,
+      connection,
+      manifest,
+      environment,
+      builtEntries,
+      buildMetadata,
+      incremental,
+      contentSourceEntityId,
+      planFacts = NO_PLAN_FACTS,
+      replacesView,
+   } = options;
+   const physicalTableName = instruction.physicalTableName;
+   const rendered = renderBuildSQL(
+      persistSource,
+      instruction,
+      manifest,
+      environment,
+      builtEntries,
+      planFacts,
+   );
+   const { isStorageBuild, buildSQL } = rendered;
 
-   /**
-    * Build a single instructed source into its assigned physical table.
-    * COPY uses a staging table + atomic rename for crash-safety; the staging
-    * name derives from the sourceEntityId. Records and returns the manifest entry.
-    */
-   async build(
-      persistSource: PersistSource,
-      instruction: BuildInstruction,
-      connection: MalloyConnection,
-      manifest: Manifest,
-      environment: BuildEnvironment,
-      builtEntries: Record<string, ManifestEntry>,
-      buildMetadata?: BuildQueryMetadata,
-      // Absent leaves the full-rebuild path.
-      incremental?: IncrementalRunContext,
-      // The content address, NOT the caller-assigned
-      // `instruction.sourceEntityId`. Recorded on the covered_through ledger and
-      // COMPARED on every read, so a boundary is never read against different
-      // SQL: a changed source seeds instead of deltaing onto a stale table. It is
-      // not part of the ledger key, so a boundary stays findable across versions.
-      contentSourceEntityId?: string,
-      // The default knows nothing; only test seams rely on it.
-      planFacts: ChainedPlanFacts = NO_PLAN_FACTS,
-      // Statements that drop this package's own leftover `name=` view at the
-      // table's name, run first in the build's own transaction (DuckDB,
-      // Postgres; leftover_name_views.ts).
-      replacesView?: string[],
-   ): Promise<ManifestEntry> {
-      const physicalTableName = instruction.physicalTableName;
-      const rendered = renderBuildSQL(
+   const { reuse, sqlInlinesStored, lift } = classifyStoredUpstreams(
+      persistSource,
+      instruction,
+      manifest,
+      builtEntries,
+      contentSourceEntityId,
+      planFacts,
+      rendered,
+   );
+
+   // Every statement of this build carries the same metadata so query history
+   // shows it as one unit of work. Resolved before the storage branch so both
+   // paths attribute identically (a `storage=` build applies it itself).
+   const runOptions = buildRunSQLOptions(
+      persistSource,
+      environment,
+      buildMetadata,
+   );
+
+   // `storage=` build into a DuckDB/DuckLake destination via a build-scoped
+   // session (never the source or serve connection), capturing the
+   // authoritative schema for the serve transform.
+   if (isStorageBuild) {
+      // An upstream nothing supplied can only be recomputed, which strict
+      // forbids. The build SQL was rendered permissively, so the refusal is
+      // made here from the strict render (`compilerMissing`).
+      if (manifest.strict && reuse.missing.length > 0) {
+         recordChainedStorageBuild("strict_refused");
+         // Typed, so the failure can be attributed to an upstream that
+         // failed earlier in this run (see build_failure_class.ts).
+         throw new ChainedUpstreamMissingError(
+            reuse.missing,
+            `Failed to materialize source '${persistSource.name}' into ` +
+               `storage destination '${instruction.destination}': persisted ` +
+               `upstream ${reuse.missing.map((n) => `'${n}'`).join(", ")} is ` +
+               `not in this build's manifest (neither built in this run nor ` +
+               `supplied by reference), and strict upstreams forbid ` +
+               `recomputing it from raw`,
+         );
+      }
+      // Stack on the parent exactly when the build SQL inlined a stored
+      // table (the two renders differ). The walk alone must not decide: a
+      // declared join the query never reads needs no chained attempt.
+      const dependsOnStorageUpstream = sqlInlinesStored;
+      // Materialize every column the source declares, hidden ones
+      // included (`private:`, `internal:`), which the served copy hides
+      // again; a column `except:` drops is left out. Refuses the build
+      // (422) if the column surface can't be determined.
+      return storage({
          persistSource,
          instruction,
          manifest,
          environment,
+         storedBuildSQL: projectToStoredColumns(persistSource, buildSQL),
+         // Unprojected, for a delta: it projects outermost, around its range
+         // predicate, since the projection may not carry the watermark.
+         buildSQL,
          builtEntries,
-         planFacts,
-      );
-      const { isStorageBuild, buildSQL } = rendered;
-
-      const { reuse, sqlInlinesStored, lift } = classifyStoredUpstreams(
-         persistSource,
-         instruction,
-         manifest,
-         builtEntries,
+         dependsOnStorageUpstream,
+         // Reported when the build does not stack on a parent.
+         baseReuse: reuse.fields,
+         queryMetadata: runOptions.queryMetadata,
+         packageName: buildMetadata?.context.package,
+         incremental,
          contentSourceEntityId,
          planFacts,
-         rendered,
-      );
-
-      // Every statement of this build carries the same metadata so query history
-      // shows it as one unit of work. Resolved before the storage branch so both
-      // paths attribute identically (a `storage=` build applies it itself).
-      const runOptions = this.buildRunSQLOptions(
-         persistSource,
-         environment,
-         buildMetadata,
-      );
-
-      // `storage=` build into a DuckDB/DuckLake destination via a build-scoped
-      // session (never the source or serve connection), capturing the
-      // authoritative schema for the serve transform.
-      if (isStorageBuild) {
-         // An upstream nothing supplied can only be recomputed, which strict
-         // forbids. The build SQL was rendered permissively, so the refusal is
-         // made here from the strict render (`compilerMissing`).
-         if (manifest.strict && reuse.missing.length > 0) {
-            recordChainedStorageBuild("strict_refused");
-            // Typed, so the failure can be attributed to an upstream that
-            // failed earlier in this run (see build_failure_class.ts).
-            throw new ChainedUpstreamMissingError(
-               reuse.missing,
-               `Failed to materialize source '${persistSource.name}' into ` +
-                  `storage destination '${instruction.destination}': persisted ` +
-                  `upstream ${reuse.missing.map((n) => `'${n}'`).join(", ")} is ` +
-                  `not in this build's manifest (neither built in this run nor ` +
-                  `supplied by reference), and strict upstreams forbid ` +
-                  `recomputing it from raw`,
-            );
-         }
-         // Stack on the parent exactly when the build SQL inlined a stored
-         // table (the two renders differ). The walk alone must not decide: a
-         // declared join the query never reads needs no chained attempt.
-         const dependsOnStorageUpstream = sqlInlinesStored;
-         // Materialize every column the source declares, hidden ones
-         // included (`private:`, `internal:`), which the served copy hides
-         // again; a column `except:` drops is left out. Refuses the build
-         // (422) if the column surface can't be determined.
-         return this.storage({
-            persistSource,
-            instruction,
-            manifest,
-            environment,
-            storedBuildSQL: projectToStoredColumns(persistSource, buildSQL),
-            // Unprojected, for a delta: it projects outermost, around its range
-            // predicate, since the projection may not carry the watermark.
-            buildSQL,
-            builtEntries,
-            dependsOnStorageUpstream,
-            // Reported when the build does not stack on a parent.
-            baseReuse: reuse.fields,
-            queryMetadata: runOptions.queryMetadata,
-            packageName: buildMetadata?.context.package,
-            incremental,
-            contentSourceEntityId,
-            planFacts,
-            lift,
-            ...(replacesView ? { replacesView } : {}),
-         });
-      }
-
-      // Incremental refresh: a source with `refresh="incremental"` and a usable
-      // watermark advances by a bounded delta; anything else gets `undefined`
-      // and falls through to the CTAS. One narrowing, so the incremental
-      // touchpoints never disagree.
-      const request: ColocatedBuildRequest = {
-         persistSource,
-         instruction,
-         connection,
-         manifest,
-         buildSQL,
-         runOptions,
-         upstreamReuse: reuse.fields,
-         incrementalRefresh: sourceIncrementalRefresh(
-            incremental,
-            persistSource,
-            { physicalTableName, sourceEntityId: contentSourceEntityId },
-         ),
+         lift,
          ...(replacesView ? { replacesView } : {}),
-      };
-      return COLOCATED.build(request);
+      });
    }
 
-   /**
-    * The `RunSQLOptions` for one source's build statements. Layers, least
-    * specific first: connection default, the model's declaration (via
-    * {@link resolveQueryMetadata}), then the run's context naming the source.
-    *
-    * Fails OPEN: a build must not fail over metadata, so an unresolvable
-    * connection contributes no default and a dropped property is logged and
-    * metered rather than thrown.
-    */
-   private buildRunSQLOptions(
-      persistSource: PersistSource,
-      environment: BuildEnvironment,
-      buildMetadata: BuildQueryMetadata | undefined,
-   ): { queryMetadata?: QueryMetadata } {
-      if (!buildMetadata) return {};
-      const connectionLayers = connectionMetadataLayers(
-         environment,
-         persistSource.connectionName,
-      );
-      const resolved = mergeQueryMetadata({
-         connection: connectionLayers.default,
-         enforced: connectionLayers.enforced,
-         model: resolveQueryMetadata(
-            persistSource,
-            buildMetadata.packageMaterialization,
-         ),
-         context: { ...buildMetadata.context, source: persistSource.name },
+   // Incremental refresh: a source with `refresh="incremental"` and a usable
+   // watermark advances by a bounded delta; anything else gets `undefined`
+   // and falls through to the CTAS. One narrowing, so the incremental
+   // touchpoints never disagree.
+   const request: ColocatedBuildRequest = {
+      persistSource,
+      instruction,
+      connection,
+      manifest,
+      buildSQL,
+      runOptions,
+      upstreamReuse: reuse.fields,
+      incrementalRefresh: sourceIncrementalRefresh(incremental, persistSource, {
+         physicalTableName,
+         sourceEntityId: contentSourceEntityId,
+      }),
+      ...(replacesView ? { replacesView } : {}),
+   };
+   return COLOCATED.build(request);
+}
+
+/**
+ * The `RunSQLOptions` for one source's build statements. Layers, least
+ * specific first: connection default, the model's declaration (via
+ * {@link resolveQueryMetadata}), then the run's context naming the source.
+ *
+ * Fails OPEN: a build must not fail over metadata, so an unresolvable
+ * connection contributes no default and a dropped property is logged and
+ * metered rather than thrown.
+ */
+function buildRunSQLOptions(
+   persistSource: PersistSource,
+   environment: BuildEnvironment,
+   buildMetadata: BuildQueryMetadata | undefined,
+): { queryMetadata?: QueryMetadata } {
+   if (!buildMetadata) return {};
+   const connectionLayers = connectionMetadataLayers(
+      environment,
+      persistSource.connectionName,
+   );
+   const resolved = mergeQueryMetadata({
+      connection: connectionLayers.default,
+      enforced: connectionLayers.enforced,
+      model: resolveQueryMetadata(
+         persistSource,
+         buildMetadata.packageMaterialization,
+      ),
+      context: { ...buildMetadata.context, source: persistSource.name },
+   });
+   if (resolved.drops.length > 0) {
+      logger.warn("Dropped query-metadata properties for a build", {
+         sourceName: persistSource.name,
+         drops: resolved.drops,
       });
-      if (resolved.drops.length > 0) {
-         logger.warn("Dropped query-metadata properties for a build", {
-            sourceName: persistSource.name,
-            drops: resolved.drops,
-         });
-      }
-      return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
    }
+   return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
 }

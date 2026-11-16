@@ -26,11 +26,12 @@ import type {
 } from "@malloydata/malloy";
 import * as path from "path";
 import { getMaterializeEnabled } from "../../../config";
-import { fileURLToPath, pathToFileURL } from "url";
+import { pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
 import {
    companionOmissions,
+   declaredInModel,
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
@@ -103,13 +104,7 @@ export async function tryCompileRollupCompanion(args: {
             // v1 lines are always planned; `#(preaggregate)` only with its switch.
             readsPreaggregateDeclarations: getMaterializeEnabled(),
          },
-         (declaringURL) => {
-            try {
-               return path.resolve(fileURLToPath(declaringURL)) === modelFile;
-            } catch {
-               return true;
-            }
-         },
+         declaredInModel(modelFile, true),
       );
       refused = planned.refused;
       plannedNames = planned.plans.map((p) => p.rollupSourceName);

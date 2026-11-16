@@ -449,21 +449,18 @@ export class PackageMaterialization {
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
          this.buildPlan = plan;
-         this.materializePlans = materializePlans ?? {};
-         this.rollupsKeepingGates = new Set(rollupsKeepingGates ?? []);
-         // `?? {}`: an outcome a worker built before this field existed.
-         this.refusedRollups = refusedRollups ?? {};
-         this.compilerKeys = compilerKeys ?? {};
+         this.materializePlans = materializePlans;
+         this.rollupsKeepingGates = new Set(rollupsKeepingGates);
+         this.refusedRollups = refusedRollups;
+         this.compilerKeys = compilerKeys;
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
-         // `?? []`: an outcome a worker built before this field existed.
-         this.annotationFindings = (annotationFindings ?? []).map((f) =>
+         this.annotationFindings = annotationFindings.map((f) =>
             relaxedCollision(f, getPersistCollisionEnforce()),
          );
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
-         // `?? []`: an outcome a worker built before this field existed.
-         this.buildConnectionNames = new Set(buildConnectionNames ?? []);
+         this.buildConnectionNames = new Set(buildConnectionNames);
          // A persisted view's plan entry is its generated build source; its
          // findings name the author's view and the source it is declared on.
          const persistedViews = new Map<
@@ -1224,21 +1221,11 @@ export class PackageMaterialization {
                     {
                        plan: workerPlan.outcome.plan,
                        annotationFindings:
-                          workerPlan.outcome.annotationFindings ?? [],
+                          workerPlan.outcome.annotationFindings,
                        incrementalDeclarations:
-                          workerPlan.outcome.incrementalDeclarations ?? {},
-                       ...(workerPlan.outcome.materializePlans
-                          ? {
-                               materializePlans:
-                                  workerPlan.outcome.materializePlans,
-                            }
-                          : {}),
-                       ...(workerPlan.outcome.modelGateLines
-                          ? {
-                               modelGateLines:
-                                  workerPlan.outcome.modelGateLines,
-                            }
-                          : {}),
+                          workerPlan.outcome.incrementalDeclarations,
+                       materializePlans: workerPlan.outcome.materializePlans,
+                       modelGateLines: workerPlan.outcome.modelGateLines,
                     },
                     {
                        enforceCollisions: getPersistCollisionEnforce(),
