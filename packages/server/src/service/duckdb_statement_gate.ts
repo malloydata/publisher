@@ -15,11 +15,24 @@
  *
  * Wraps the same two entry points as duckdb_hard_close.ts, and is installed
  * first so the hard close counts a queued statement as in flight too.
+ *
+ * Holds to know: a stream nobody finishes or returns holds the gate, and so does
+ * a consumer that runs another statement on the same connection inside its
+ * `for await` (its only consumer, stream_helpers.ts, drains with `for await`).
+ * Calling `idle()` between a stream's `setup()` and its `acquire()` would
+ * deadlock; Publisher only calls `shutdown("close")`.
+ *
+ * Upstream fix: `@malloydata/db-duckdb` (malloydata/malloy) should serialize
+ * statements per native connection, or hold the connection for a stream's life,
+ * and `runSQLStream` should throw on abort instead of returning quietly.
+ * Delete this module, and its install in connection.ts, once a release does.
  */
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Mutex } from "async-mutex";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { logger } from "../logger";
+import { dbDuckDBHardCloseInternalsMatch } from "./duckdb_hard_close";
 
 interface Internals {
    setup(): Promise<void>;
@@ -29,10 +42,11 @@ interface Internals {
 
 const gates = new WeakMap<object, Mutex>();
 /**
- * The connection whose gate the running async context already holds: a stream's
- * own split-off statements run inside it and must not queue behind it.
+ * The connection whose gate the running async context holds, released once the
+ * stream is done: a stream's own split-off statements run inside it and must not
+ * queue behind it, but work it started without waiting inherits the context.
  */
-const holding = new AsyncLocalStorage<object>();
+const holding = new AsyncLocalStorage<{ connection: object; held: boolean }>();
 let installed = false;
 
 function gateOf(connection: object): Mutex {
@@ -48,12 +62,20 @@ function gateOf(connection: object): Mutex {
 export function installDuckDBStatementGate(): void {
    if (installed) return;
    installed = true;
+   if (!dbDuckDBHardCloseInternalsMatch()) {
+      logger.warn(
+         "DuckDB statement gate is off (parallel statements on one connection can truncate a stream): @malloydata/db-duckdb's internals changed shape",
+      );
+      return;
+   }
    const proto = DuckDBConnection.prototype as unknown as Internals;
    const runDuckDBQuery = proto.runDuckDBQuery;
    const runSQLStream = proto.runSQLStream;
 
    proto.runDuckDBQuery = function (this: Internals, sql: string) {
-      if (holding.getStore() === this) return runDuckDBQuery.call(this, sql);
+      const hold = holding.getStore();
+      if (hold?.held && hold.connection === this)
+         return runDuckDBQuery.call(this, sql);
       return gateOf(this).runExclusive(() => runDuckDBQuery.call(this, sql));
    };
 
@@ -66,19 +88,27 @@ export function installDuckDBStatementGate(): void {
       // would queue behind a stream that is waiting for it.
       await this.setup();
       const release = await gateOf(this).acquire();
-      const inner = runSQLStream.call(this, sql, options);
+      const hold = { connection: this, held: true };
       try {
-         for (;;) {
-            const step = await holding.run(this, () => inner.next());
-            if (step.done) return;
-            yield step.value;
+         // A signal that fired while waiting: end without running the statement.
+         if (
+            (options as { abortSignal?: AbortSignal } | undefined)?.abortSignal
+               ?.aborted
+         )
+            return;
+         const inner = runSQLStream.call(this, sql, options);
+         try {
+            for (;;) {
+               const step = await holding.run(hold, () => inner.next());
+               if (step.done) return;
+               yield step.value;
+            }
+         } finally {
+            await holding.run(hold, () => inner.return?.(undefined));
          }
       } finally {
-         try {
-            await holding.run(this, () => inner.return?.(undefined));
-         } finally {
-            release();
-         }
+         hold.held = false;
+         release();
       }
    };
 }

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { streamSqlWithBudget } from "../stream_helpers";
 import { installDuckDBStatementGate } from "./duckdb_statement_gate";
 
 installDuckDBStatementGate();
@@ -90,6 +91,45 @@ describe("concurrent statements on one DuckDB connection", () => {
          "SELECT v FROM gate_scratch",
       ].join("\n-- hack: split on this\n");
       expect(await drain(connection, sql)).toBe(1);
+   });
+
+   it("rejects a stream whose signal fires while it waits at the gate", async () => {
+      const slow = drain(connection, "SELECT * FROM t", async (n) => {
+         if (n % 100 === 0) await sleep(2);
+      });
+      await sleep(5);
+      await expect(
+         streamSqlWithBudget(
+            connection,
+            "SELECT * FROM t",
+            { ...ALL, abortSignal: AbortSignal.timeout(30) },
+            { maxRows: 0, maxBytes: 0 },
+         ),
+      ).rejects.toThrow();
+      expect(await slow).toBe(ROWS);
+   });
+
+   it("does not run a statement whose signal fired before it got the gate", async () => {
+      const slow = drain(connection, "SELECT * FROM t", async (n) => {
+         if (n % 100 === 0) await sleep(2);
+      });
+      await sleep(5);
+      let rows = 0;
+      for await (const _row of connection.runSQLStream("SELECT * FROM t", {
+         ...ALL,
+         abortSignal: AbortSignal.timeout(30),
+      })) {
+         rows++;
+      }
+      expect(rows).toBe(0);
+      expect(await slow).toBe(ROWS);
+   });
+
+   it("releases the gate when a stream throws", async () => {
+      await expect(
+         drain(connection, "SELECT * FROM no_such_table"),
+      ).rejects.toThrow();
+      expect(await drain(connection, "SELECT * FROM t")).toBe(ROWS);
    });
 
    it("serves a first statement and a first stream issued together", async () => {

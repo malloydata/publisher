@@ -101,6 +101,8 @@ export async function streamSqlWithBudget(
    }
 
    if (overflowMessage) throw new PayloadTooLargeError(overflowMessage);
+   // A driver ends quietly on abort; without this a timed-out query answers 200 with the rows it had.
+   externalSignal?.throwIfAborted();
 
    return { rows, totalRows: rows.length };
 }
