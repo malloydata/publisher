@@ -360,11 +360,10 @@ describe("a path that goes out of the package and comes back", () => {
 
    it("refuses both, relative or absolute, without looking at what it passes through", async () => {
       // Where a link keeps its text (POSIX) the walk refuses at the outside
-      // directory. Where the text was normalized when the link was made
-      // (Windows) the absolute form names the package's own file and reads
-      // it, but the relative one is still `../pkg/lib/real.malloy`: a step
-      // out of the package and back, which is refused as on POSIX. Either
-      // way, present and absent answer alike.
+      // directory. On Windows a relative text keeps its `..` (backslashed),
+      // so it is refused there too, but an absolute one was resolved when
+      // the link was made: it names the package's own file and reads it.
+      // Either way, present and absent answer alike.
       const kept = linkTextKeptVerbatim();
       const lstat = spyOn(fs.promises, "lstat");
       try {
@@ -537,25 +536,16 @@ describe("a link whose text steps .. past a file, or through a missing name", ()
                "ENOENT",
             );
          } else {
-            // Windows normalizes a link's text when it is made, and not every
-            // text alike (a target that does not resolve may be kept), so each
-            // expectation reads the text that link actually holds: a step
-            // past the file is ENOTDIR, a missing first name ENOENT, and a
-            // text collapsed to the package directory itself EISDIR.
-            for (const [name, target] of [
-               ["after-file", afterFile],
-               ["after-missing", afterMissing],
+            // Windows keeps a relative link's `..` (with backslashes), so the
+            // walk stops where it does on POSIX. After the missing name the
+            // open fails there, ENOENT. After the file it opens `f.md\..`,
+            // whose `..` Win32 collapses by name before the open, as Windows
+            // itself resolves such a path: the package directory, EISDIR.
+            // Neither reads anything.
+            for (const [target, code] of [
+               [afterFile, "EISDIR"],
+               [afterMissing, "ENOENT"],
             ] as const) {
-               const steps = fs
-                  .readlinkSync(path.join(pkg6, name))
-                  .split(/[\\/]/)
-                  .filter((s) => s !== "" && s !== ".");
-               const code =
-                  steps[0] === "f.md" && steps.length > 1
-                     ? "ENOTDIR"
-                     : steps[0] === "missing"
-                       ? "ENOENT"
-                       : "EISDIR";
                expect(await outcome(pkg6, target)).toContain(code);
                expect(() => readPackageURLSync(pkg6, target)).toThrow(code);
             }

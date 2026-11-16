@@ -845,11 +845,11 @@ describe("a path that goes out of the package and comes back", () => {
             );
          });
          expect(imp[0]).toBe(imp[1]);
-         // Where a link keeps its text the walk refuses at the sibling.
-         // Where it was normalized when made (Windows) the absolute form
-         // names the package's own file, but the relative one is still
-         // `../<pkg>/…`: out of the package and back, refused as on POSIX.
-         // The pairs match either way.
+         // Where a link keeps its text the walk refuses at the sibling. On
+         // Windows a relative text keeps its `..` (backslashed) and is
+         // refused too, but an absolute one was resolved when the link was
+         // made, and leads to the package's own file. The pairs match
+         // either way.
          const refused = linkTextKeptVerbatim() || form === "rel";
          if (refused) expect(imp[0]).toContain(IMPORT_OUTSIDE_PACKAGE_MESSAGE);
          else expect(imp[0]).toStartWith("200");
