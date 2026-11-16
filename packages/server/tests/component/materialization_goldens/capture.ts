@@ -18,6 +18,7 @@
 
 import { makeDigest, type PersistSource } from "@malloydata/malloy";
 import { spyOn } from "bun:test";
+import { PackageLoadPool } from "../../../src/package_load/package_load_pool";
 import * as fs from "fs";
 import { fileURLToPath } from "url";
 import {
@@ -99,8 +100,9 @@ function onDisk(url: string): string | undefined {
 /**
  * Record every overlay handed to `createModelRuntime` while `run` runs: the
  * build plan's companions and build copies, and the served copy's and the
- * variants' generated files. Calls run sequentially in these specs, so what
- * `run` triggers is what is recorded.
+ * variants' generated files; and the files of each served-copy pass a load
+ * worker takes instead. Calls run sequentially in these specs, so what `run`
+ * triggers is what is recorded.
  */
 export async function recordingOverlays<T>(
    into: GeneratedFiles,
@@ -113,10 +115,23 @@ export async function recordingOverlays<T>(
          return original(...args);
       },
    );
+   const offered = PackageLoadPool.prototype.compileServedCopy;
+   const offThread = spyOn(
+      PackageLoadPool.prototype,
+      "compileServedCopy",
+   ).mockImplementation(function (
+      this: PackageLoadPool,
+      ...args: Parameters<typeof offered>
+   ) {
+      const taken = offered.apply(this, args);
+      if (taken) into.addAll(args[0].files);
+      return taken;
+   });
    try {
       return await run();
    } finally {
       spy.mockRestore();
+      offThread.mockRestore();
    }
 }
 

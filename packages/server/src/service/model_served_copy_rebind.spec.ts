@@ -6,7 +6,8 @@
  * bind (ms2data/service#7795: every manifest bind recompiled every model on
  * the main thread). Driven through the real `Model` over a real in-memory
  * DuckDB, counting the copy's Malloy compiles at `GeneratedFiles.loadModel`,
- * the one seam every pass compiles through.
+ * the one seam every inline pass compiles through, and at the load worker
+ * pool for a pass a worker takes.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -30,6 +31,7 @@ import { installSettings } from "../test_helpers/settings_env";
 import { materializationFixture } from "../test_helpers/materialization_fixture";
 import type { Binding } from "./materialization/domain/binding";
 import { GeneratedFiles } from "./materialization/text/generated_files";
+import { PackageLoadPool } from "../package_load/package_load_pool";
 import { SourceMap } from "./materialization/text/source_map";
 import {
    compileInputOf,
@@ -102,14 +104,23 @@ const STORED = "CREATE OR REPLACE TABLE mz_rebind AS SELECT 60 AS total";
 describe("a served copy compiles once per thing it is compiled from", () => {
    let restore: (() => void) | undefined;
    let compiles: ReturnType<typeof spyOn>;
+   let offThread: ReturnType<typeof spyOn>;
+   /** The copy's compiles: inline, and those a load worker took. */
+   const compileCount = () =>
+      compiles.mock.calls.length +
+      offThread.mock.results.filter(
+         (r: { value: unknown }) => r.value !== undefined,
+      ).length;
    beforeEach(() => {
       restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },
       }).restore;
       compiles = spyOn(GeneratedFiles.prototype, "loadModel");
+      offThread = spyOn(PackageLoadPool.prototype, "compileServedCopy");
    });
    afterEach(() => {
       compiles.mockRestore();
+      offThread.mockRestore();
       restore?.();
       restore = undefined;
    });
@@ -121,11 +132,11 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       );
       model.setServeBindings([BINDING]);
       await model.prepareServedCopy();
-      const first = compiles.mock.calls.length;
+      const first = compileCount();
       expect(first).toBeGreaterThan(0);
       expect(model.servedCopyProblems()).toEqual([]);
       expect(await total(model)).toBe(60);
-      const afterQuery = compiles.mock.calls.length;
+      const afterQuery = compileCount();
 
       // What every bind of the same manifest does to each model.
       for (let i = 0; i < 5; i++) {
@@ -133,7 +144,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
          model.setServeDestinationConfig(destinations);
          await model.prepareServedCopy();
       }
-      expect(compiles.mock.calls.length).toBe(afterQuery);
+      expect(compileCount()).toBe(afterQuery);
       // And it still answers from the table.
       expect(await total(model)).toBe(60);
    });
@@ -142,11 +153,11 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       const { model, dir, connMap, plans } = await buildModel(PLAIN, STORED);
       model.setServeBindings([BINDING]);
       await model.prepareServedCopy();
-      let seen = compiles.mock.calls.length;
+      let seen = compileCount();
       const recompiled = async () => {
          await model.prepareServedCopy();
-         const more = compiles.mock.calls.length > seen;
-         seen = compiles.mock.calls.length;
+         const more = compileCount() > seen;
+         seen = compileCount();
          return more;
       };
 
@@ -183,7 +194,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       model.setServeBindings([asOf("2026-01-01T00:00:00.000Z")]);
       await model.prepareServedCopy();
       expect(await total(model)).toBe(60);
-      const seen = compiles.mock.calls.length;
+      const seen = compileCount();
       expect(seen).toBeGreaterThan(0);
 
       // A new data-as-of instant, a new window or fallback, the router's own
@@ -202,9 +213,9 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       };
       model.setServeBindings([last]);
       await model.prepareServedCopy();
-      expect(compiles.mock.calls.length).toBe(seen);
+      expect(compileCount()).toBe(seen);
       expect(await total(model)).toBe(60);
-      expect(compiles.mock.calls.length).toBe(seen);
+      expect(compileCount()).toBe(seen);
 
       // An answer reports the bindings pinned now, not those it compiled over.
       const copy = (model as unknown as { servedCopy: ServedCopyServe })
@@ -215,7 +226,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       expect(answer.bindings).toEqual([last]);
       expect(answer.bindings[0]).toBe(last);
       expect(answer.tablesRead[0]).toBe(last);
-      expect(compiles.mock.calls.length).toBe(seen);
+      expect(compileCount()).toBe(seen);
    });
 
    it("recompiles for every binding field the compile reads", async () => {
@@ -225,12 +236,12 @@ describe("a served copy compiles once per thing it is compiled from", () => {
          .runSQL("CREATE OR REPLACE TABLE mz_rebind_b AS SELECT 60 AS total");
       model.setServeBindings([BINDING]);
       await model.prepareServedCopy();
-      let seen = compiles.mock.calls.length;
+      let seen = compileCount();
       const recompiledFor = async (b: Binding) => {
          model.setServeBindings([b]);
          await model.prepareServedCopy();
-         const more = compiles.mock.calls.length > seen;
-         seen = compiles.mock.calls.length;
+         const more = compileCount() > seen;
+         seen = compileCount();
          return more;
       };
       const changes: Partial<Binding>[] = [
@@ -282,7 +293,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       }).restore;
       model.setServeBindings([BINDING]);
       await model.prepareServedCopy();
-      expect(compiles).not.toHaveBeenCalled();
+      expect(compileCount()).toBe(0);
       expect(model.servedCopySourceIDs()).toEqual(new Set());
       expect(model.servedCopyProblems()).toEqual([]);
    });
@@ -321,7 +332,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       {
          model.setServeBindings([failing]);
          await model.prepareServedCopy();
-         const first = compiles.mock.calls.length;
+         const first = compileCount();
          expect(first).toBeGreaterThan(0);
          expect(steppedBack()).toBe(1);
          const problems = model.servedCopyProblems();
@@ -336,7 +347,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
          // plan): the same step back, with no compile and no second warning.
          model.setServedCopyContext(dir, connMap, {});
          await model.prepareServedCopy();
-         expect(compiles.mock.calls.length).toBe(first);
+         expect(compileCount()).toBe(first);
          expect(steppedBack()).toBe(1);
          expect(model.servedCopyProblems()).toEqual(problems);
          expect(model.servedCopySourceIDs()).toEqual(new Set());
@@ -350,7 +361,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
             );
          model.setServeBindings([{ ...failing, tablePath: "mz_rebind_3" }]);
          await model.prepareServedCopy();
-         expect(compiles.mock.calls.length).toBeGreaterThan(first);
+         expect(compileCount()).toBeGreaterThan(first);
          expect(steppedBack()).toBe(2);
       }
    });
@@ -359,11 +370,11 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       const { model, connMap } = await failingModel();
       model.setServeBindings([FAILING]);
       await model.prepareServedCopy();
-      let seen = compiles.mock.calls.length;
+      let seen = compileCount();
       const recompiled = async () => {
          await model.prepareServedCopy();
-         const more = compiles.mock.calls.length > seen;
-         seen = compiles.mock.calls.length;
+         const more = compileCount() > seen;
+         seen = compileCount();
          return more;
       };
       // A destination list swap (Environment.invalidateCompiledLegs).
@@ -388,10 +399,10 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       // The live copy fails and remembers it.
       model.setServeBindings([FAILING]);
       await model.prepareServedCopy();
-      let seen = compiles.mock.calls.length;
+      let seen = compileCount();
       const compiled = () => {
-         const more = compiles.mock.calls.length > seen;
-         seen = compiles.mock.calls.length;
+         const more = compileCount() > seen;
+         seen = compileCount();
          return more;
       };
       // Each preview compiles for itself, though the live copy's failure is

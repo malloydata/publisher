@@ -337,6 +337,20 @@ interface ServedCopyHost {
     * Absent, nothing is bound.
     */
    pinned?(): Pinned;
+   /**
+    * Compile one pass's files off this thread (the load worker) and hydrate
+    * the compiled model here, in a runtime over `config`. Resolves undefined
+    * when it cannot (no worker free now, or the job failed), and the pass
+    * compiles inline; rejects with the compile's failure as the inline
+    * compile throws it. Absent: every pass compiles inline.
+    */
+   compileElsewhere?(args: {
+      packagePath: string;
+      modelPath: string;
+      config: MalloyConfig;
+      /** The pass's files, by overlay key. */
+      files: ReadonlyMap<string, string>;
+   }): Promise<Awaited<ReturnType<CopyLoad>> | undefined>;
 }
 
 interface Compiled {
@@ -2094,8 +2108,9 @@ export class ServedCopyServe {
       // fields on; and one more each that keeps every inlined join as written
       // and drops the pair tables.
       const maxPasses = 3 * state.candidates.length + 3;
-      // Each pass is a full compile on the main thread: hand the loop a turn
-      // between them, so a long ladder does not hold it throughout.
+      // A pass compiled inline is a full compile on the main thread: hand
+      // the loop a turn between them, so a long ladder does not hold it
+      // throughout.
       const yielder = createEventLoopYielder();
       for (let pass = 0; pass <= maxPasses; pass++) {
          if (pass > 0) await yielder.maybeYield();
@@ -2160,22 +2175,7 @@ export class ServedCopyServe {
                   .map((b) => b.destinationName),
             ),
          );
-         const compiler = packageFiles(
-            packagePath,
-            this.host.modelPath(),
-            config,
-         );
-         const load = async (files: ReadonlyMap<string, string>) => {
-            const { runtime, materializer: m } =
-               await compiler.loadModel(files);
-            const model = await m.getModel();
-            return {
-               materializer: m,
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               def: modelDefOf(model as any),
-               runtime: runtime as unknown as GraftRuntime,
-            };
-         };
+         const load = this.passLoader(packagePath, config);
          const loaded = await this.loadCopy(state, copy, overlay, load, lift);
          if (loaded === "retry") continue;
          if (loaded === "failed") {
@@ -2230,6 +2230,34 @@ export class ServedCopyServe {
          rerooted: [],
          aliased: [],
          problems,
+      };
+   }
+
+   /**
+    * How a pass's files are compiled into a model: on the host's other
+    * thread when it takes them ({@link ServedCopyHost.compileElsewhere}),
+    * else here, as `packagePath`'s model over them with `config`'s
+    * connections.
+    */
+   private passLoader(packagePath: string, config: MalloyConfig): CopyLoad {
+      const modelPath = this.host.modelPath();
+      const compiler = packageFiles(packagePath, modelPath, config);
+      return async (files) => {
+         const elsewhere = await this.host.compileElsewhere?.({
+            packagePath,
+            modelPath,
+            config,
+            files: keyedOverlay(files),
+         });
+         if (elsewhere) return elsewhere;
+         const { runtime, materializer } = await compiler.loadModel(files);
+         const model = await materializer.getModel();
+         return {
+            materializer,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            def: modelDefOf(model as any),
+            runtime: runtime as unknown as GraftRuntime,
+         };
       };
    }
 
