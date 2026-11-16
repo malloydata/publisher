@@ -8,6 +8,7 @@ import {
    getFreePort,
    spawnServer,
    type SpawnedServer,
+   tempDir,
 } from "../../harness/spawn_server";
 
 /**
@@ -45,11 +46,17 @@ afterEach(async () => {
    while (cleanups.length) await cleanups.pop()?.();
 });
 
-/** Each attempt is gone: process exited, the root the harness made removed. */
+/**
+ * Each attempt is gone: process exited, the root the harness made removed.
+ * Windows can hold a just-exited process's directories busy past the
+ * harness's removal retries, so the root is checked elsewhere only.
+ */
 function expectGone(attempts: SpawnedServer[]): void {
    for (const attempt of attempts) {
       expect(attempt.exited()).toBe(true);
-      expect(fs.existsSync(attempt.serverRoot)).toBe(false);
+      if (process.platform !== "win32") {
+         expect(fs.existsSync(attempt.serverRoot)).toBe(false);
+      }
    }
 }
 
@@ -111,5 +118,56 @@ describe("spawnServer on a port taken before the server bound it", () => {
          `Port ${blocker.port} in use; pass --port <n>`,
       );
       expect(attempts).toHaveLength(1);
+   });
+
+   it("does not retry a boot on a caller's server root", async () => {
+      const blocker = await occupyPort();
+      cleanups.push(blocker.release);
+      const root = tempDir("port-retry-root-");
+      cleanups.push(root.cleanup);
+      const attempts: SpawnedServer[] = [];
+      const server = await spawnServer({
+         config,
+         serverRoot: root.dir,
+         pickPort: pickerTaking(blocker.port, (n) => n === 1),
+         onAttempt: (a) => attempts.push(a),
+      });
+      cleanups.push(() => server.stop());
+
+      expect(await server.waitForExit()).not.toBe(0);
+      expect(server.output()).toContain(`Port ${blocker.port} in use`);
+      expect(attempts).toHaveLength(1);
+   });
+
+   it("stops the boot when onAttempt throws", async () => {
+      const attempts: SpawnedServer[] = [];
+      const boot = spawnServer({
+         config,
+         onAttempt: (a) => {
+            attempts.push(a);
+            throw new Error("hook failed");
+         },
+      });
+
+      await expect(boot).rejects.toThrow("hook failed");
+      expectGone(attempts);
+   });
+});
+
+describe("spawnServer under a quiet LOG_LEVEL", () => {
+   it("returns once the server holds its ports, without the listening lines", async () => {
+      const started = Date.now();
+      const server = await spawnServer({
+         config,
+         env: { LOG_LEVEL: "error" },
+      });
+      cleanups.push(() => server.stop());
+      const elapsed = Date.now() - started;
+
+      expect(server.exited(), server.output().slice(-2000)).toBe(false);
+      expect(server.output()).not.toContain("listening at");
+      // The settle wait gives up at 90 s; a boot takes a few.
+      expect(elapsed).toBeLessThan(45_000);
+      await server.waitUntilServing();
    });
 });

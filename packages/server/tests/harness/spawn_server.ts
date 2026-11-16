@@ -128,15 +128,61 @@ const PORT_ATTEMPTS = 3;
 const portInUseLine = (port: number, flag: string) =>
    `Port ${port} in use; pass ${flag} <n>`;
 
-/** Both listening lines `main_server.ts` logs once its listeners bind. */
+/**
+ * Both listening lines `main_server.ts` logs once its listeners bind. They are
+ * info-level, so a quieter LOG_LEVEL leaves them out; see `settled`.
+ */
 const bothListening = (log: string) =>
    log.includes("Publisher server listening at") &&
    log.includes("MCP server listening at");
 
-export interface SpawnServerOptions {
+/** Whether something accepts a TCP connection on 127.0.0.1:`port`. */
+function accepts(port: number): Promise<boolean> {
+   return new Promise((resolve) => {
+      const socket = net.connect({ port, host: "127.0.0.1" });
+      const done = (ok: boolean) => {
+         socket.destroy();
+         resolve(ok);
+      };
+      socket.setTimeout(1_000, () => done(false));
+      socket.once("connect", () => done(true));
+      socket.once("error", () => done(false));
+   });
+}
+
+/**
+ * Resolves once `server` has exited or holds both its ports. The listening
+ * lines and PUBLISHER_READY say so at the default log level, and the lines
+ * also cover ports moved through `args` or `env`; a connection to both ports
+ * covers a quieter LOG_LEVEL. A port lost to another process accepts a
+ * connection too, but the server exits within milliseconds of failing to
+ * bind, so connections must succeed on two polls in a row with the process
+ * still up.
+ */
+async function settled(server: SpawnedServer): Promise<void> {
+   let connectedPolls = 0;
+   await pollUntil(
+      async () => {
+         if (server.exited()) return true;
+         if (bothListening(server.output())) return true;
+         if (server.stderr().includes("PUBLISHER_READY")) return true;
+         const both =
+            (await accepts(server.restPort)) && (await accepts(server.mcpPort));
+         connectedPolls = both && !server.exited() ? connectedPolls + 1 : 0;
+         return connectedPolls >= 2;
+      },
+      90_000,
+      100,
+   );
+}
+
+interface SpawnServerOptions {
    env?: Record<string, string | undefined>;
    serverRoot?: string;
+   /** Written as JSON to the root's `publisher.config.json`. */
    config?: unknown;
+   /** Written verbatim to the root's `publisher.config.json`, for a file that must not parse. */
+   configText?: string;
    args?: string[];
    /** The process cwd, where `.mcp.json` would land. Defaults to packages/server. */
    cwd?: string;
@@ -151,17 +197,18 @@ export interface SpawnServerOptions {
 /**
  * `bun src/server.ts` as a real process on free ports (unless given), REST
  * bound to loopback, with an empty server root unless `serverRoot` is given.
- * `config` is written to the root's `publisher.config.json`. `env` is merged
- * over this process's; a key set to `undefined` is removed.
+ * `config` (as JSON) or `configText` (verbatim) is written to the root's
+ * `publisher.config.json`. `env` is merged over this process's; a key set to
+ * `undefined` is removed.
  *
  * A free port is picked by binding and releasing it, so another process can
  * take it before the server binds. When a port this harness picked is lost
  * that way, the server exits with its port-in-use line and the harness boots
- * again on fresh ports (a fresh root too, unless `serverRoot` was given), up
- * to three times. A port the caller pinned is never replaced: a collision on
- * it is returned as the exited server, for the caller to assert on. With any
- * port picked here, the call returns once both listeners have bound or the
- * process has exited.
+ * again on fresh ports and a fresh root, up to three times. It does not when
+ * the caller pinned the port, or passed `serverRoot` (the losing boot may
+ * have half-written storage there, so a second boot would not be a first
+ * one): the exited server is returned, for the caller to assert on. When it
+ * may retry, the call returns once the server holds both ports or has exited.
  */
 export async function spawnServer(
    options: SpawnServerOptions = {},
@@ -174,24 +221,29 @@ export async function spawnServer(
          mcpPort = await pickPort();
       }
       const { server, drained } = launch(options, restPort, mcpPort);
-      options.onAttempt?.(server);
-      const picked = [
-         options.restPort === undefined && portInUseLine(restPort, "--port"),
-         options.mcpPort === undefined && portInUseLine(mcpPort, "--mcp_port"),
-      ].filter((line): line is string => line !== false);
-      if (picked.length === 0) return server;
-
-      // Settled once both listeners hold their ports, or the process is gone.
-      await pollUntil(
-         () => server.exited() || bothListening(server.output()),
-         90_000,
-         50,
-      );
-      // 'exit' can beat the last of the output, so read it once the pipes close.
-      if (server.exited()) await pollUntil(drained, 5_000, 20);
+      const retryable =
+         options.serverRoot === undefined
+            ? [
+                 options.restPort === undefined &&
+                    portInUseLine(restPort, "--port"),
+                 options.mcpPort === undefined &&
+                    portInUseLine(mcpPort, "--mcp_port"),
+              ].filter((line): line is string => line !== false)
+            : [];
+      try {
+         options.onAttempt?.(server);
+         if (retryable.length === 0) return server;
+         await settled(server);
+         // 'exit' can beat the last of the output, so read it once the pipes close.
+         if (server.exited()) await pollUntil(drained, 5_000, 20);
+      } catch (error) {
+         // A throw here must not leave the process or its root behind.
+         await server.stop();
+         throw error;
+      }
       const lostRace =
          server.exited() &&
-         picked.some((line) => server.output().includes(line));
+         retryable.some((line) => server.output().includes(line));
       if (!lostRace) return server;
       await server.stop();
       if (attempt === PORT_ATTEMPTS) {
@@ -215,10 +267,15 @@ function launch(
    const serverRoot =
       options.serverRoot ??
       fs.mkdtempSync(path.join(os.tmpdir(), "spawned-root-"));
-   if (options.config !== undefined) {
+   const configText =
+      options.configText ??
+      (options.config === undefined
+         ? undefined
+         : JSON.stringify(options.config));
+   if (configText !== undefined) {
       fs.writeFileSync(
          path.join(serverRoot, "publisher.config.json"),
-         JSON.stringify(options.config),
+         configText,
       );
    }
    const env: Record<string, string> = {};
@@ -249,6 +306,14 @@ function launch(
    proc.on("exit", (code) => (exitCode = code));
    let closed = false;
    proc.on("close", () => (closed = true));
+   // A spawn that fails (ENOENT: no `bun` on PATH) emits only 'error'; it is
+   // the process's end, so record it as one rather than wait out a timeout.
+   proc.on("error", (error) => {
+      all += `spawn failed: ${error.message}\n`;
+      err += `spawn failed: ${error.message}\n`;
+      if (exitCode === undefined) exitCode = null;
+      closed = true;
+   });
    const exited = () => exitCode !== undefined;
    const baseUrl = `http://127.0.0.1:${restPort}`;
    const tail = () => `\n--- server log tail ---\n${all.slice(-4000)}`;
