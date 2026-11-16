@@ -59,12 +59,18 @@ function sourceNotes(annotations: unknown, depth = 0): NoteLike[] {
    ];
 }
 
+/** One note's identity: the file it was parsed in and where it starts. */
+export function noteSpanKey(url: string, range: NoteRange): string {
+   return `${url}#${range.start.line}:${range.start.character}`;
+}
+
 /**
  * The source-level `#@` notes of every source `modelDef` reaches, by the URL
  * of the file each was parsed in. Undefined when a note carries no span.
  */
 function persistNoteSpans(
    modelDef: unknown,
+   keep?: ReadonlySet<string>,
 ): Map<string, NoteSpan[]> | undefined {
    const byFile = new Map<string, NoteSpan[]>();
    const seen = new Set<string>();
@@ -74,9 +80,10 @@ function persistNoteSpans(
          if (routeOfNote(note.text) !== "@") continue;
          if (!note.at) return undefined;
          const r = note.at.range;
-         const key = `${note.at.url}#${r.start.line}:${r.start.character}`;
+         const key = noteSpanKey(note.at.url, r);
          if (seen.has(key)) continue;
          seen.add(key);
+         if (keep?.has(key)) continue;
          const spans = byFile.get(note.at.url) ?? [];
          spans.push({ text: note.text, range: r });
          byFile.set(note.at.url, spans);
@@ -129,15 +136,18 @@ export function blankNoteSpans(
 /**
  * The author's files with every source-level `#@` note blanked, keyed for an
  * overlay, for each file of `modelDef` that carries one: empty when none
- * does, the common case. `readText` reads a file by URL (the reader the
+ * does, the common case. A note in `keep` is left as written (a rollup built
+ * over its base's stored table keeps the base's own `#@ persist`). `readText` reads a file by URL (the reader the
  * companion compiles with). Undefined when a file cannot be read or a span
  * does not hold its note.
  */
 export async function persistBlankedFiles(
    modelDef: unknown,
    readText: (url: string) => string | undefined | Promise<string | undefined>,
+   /** Notes left as written, by {@link noteSpanKey}. */
+   keep?: ReadonlySet<string>,
 ): Promise<Map<string, string> | undefined> {
-   const spans = persistNoteSpans(modelDef);
+   const spans = persistNoteSpans(modelDef, keep);
    if (!spans) return undefined;
    const out = new Map<string, string>();
    for (const [url, notes] of spans) {

@@ -632,6 +632,14 @@ export type TablePlan = TablePlanFacts &
            kind: Extract<TableKind, "rollup">;
            rollup: RollupPlan;
            materialize?: undefined;
+           /**
+            * The rollup as compiled over its base's stored table, at the same
+            * address: set for a colocated rollup over a colocated
+            * `#@ persist` base, and compiled on the first call
+            * (rollup_compile.ts). A run builds from it only when its build
+            * manifest holds the base's table (instructed_build.ts).
+            */
+           overStoredBase?: () => Promise<PersistSource | undefined>;
         }
    );
 

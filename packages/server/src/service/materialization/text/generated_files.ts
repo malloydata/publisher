@@ -169,12 +169,15 @@ export class GeneratedFiles {
    }
 
    /**
-    * The files `modelDef` reads with every source-level `#@` note blanked,
-    * by overlay key; undefined when a note cannot be blanked safely
-    * (`persist_blanking.ts`).
+    * The files `modelDef` reads with every source-level `#@` note blanked
+    * but those in `keep`, by overlay key; undefined when a note cannot be
+    * blanked safely (`persist_blanking.ts`).
     */
-   blanked(modelDef: unknown): Promise<Map<string, string> | undefined> {
-      return persistBlankedFiles(modelDef, (url) => this.readIfAny(url));
+   blanked(
+      modelDef: unknown,
+      keep?: ReadonlySet<string>,
+   ): Promise<Map<string, string> | undefined> {
+      return persistBlankedFiles(modelDef, (url) => this.readIfAny(url), keep);
    }
 
    /** Load `entry` over the author files and `overlay`; nothing compiled yet. */
