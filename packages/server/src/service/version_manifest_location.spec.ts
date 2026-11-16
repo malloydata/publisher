@@ -30,6 +30,10 @@ import { unrecordedAudit } from "./access_record";
 import { Environment } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
 import { MaterializationService } from "./materialization/run/materialization_service";
+import {
+   internalErrorToHttpError,
+   MaterializationConflictError,
+} from "../errors";
 import { parsePackageName, VersionRef } from "./identity";
 import { QueryPrivileges } from "./model_query_request";
 import type { Package } from "./package";
@@ -213,6 +217,16 @@ function writeManifest(
 const tableOf = (pkg: Package, id: string) =>
    pkg.getBuildManifestEntries()?.[id]?.tableName;
 
+/** A MaterializationService over `env`, as main_server.ts wires it. */
+function materializationService(): MaterializationService {
+   const store = {
+      storageManager: { getRepository: () => repo },
+      getEnvironment: async () => env,
+      getLoadedEnvironments: () => [env],
+   } as unknown as EnvironmentStore;
+   return new MaterializationService(store);
+}
+
 /** A run, once it has ended and its service stopped tracking it. */
 async function settled(
    service: MaterializationService,
@@ -311,21 +325,19 @@ describe("a version's manifestLocation is its registry row's", () => {
       expect(resolver).not.toHaveBeenCalled();
    });
 
-   it("keeps serving the host's tables after a local materialization of it", async () => {
+   it("does not serve a run's tables when a host manifest is bound while it builds", async () => {
       const id = await publishLive("1.0.0");
       const host = writeManifest("host.json", id, "summary_host");
-      await versions().setManifest(PKG, "1.0.0", host);
-      const pkg = await loadedVersion("1.0.0");
-      await storeTables(pkg);
-      expect(await total(pkg)).toBe(42);
-
-      // A run on this server builds `summary` and commits its rows.
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore;
-      const service = new MaterializationService(store);
+      const service = materializationService();
+      // The manifest is bound after the run is created, before it loads.
+      const internal = env as unknown as {
+         loadRunManifest: Environment["loadRunManifest"];
+      };
+      const original = internal.loadRunManifest.bind(env);
+      spyOn(internal, "loadRunManifest").mockImplementation(async (params) => {
+         await versions().setManifest(PKG, "1.0.0", host);
+         return original(params);
+      });
       const run = await settled(
          service,
          (
@@ -334,16 +346,35 @@ describe("a version's manifestLocation is its registry row's", () => {
             })
          ).id,
       );
+      // Built and committed, but not served, as a load that did not take.
       expect(run.status).toBe("MANIFEST_FILE_READY");
       const built = (run.manifest as { entries?: Record<string, unknown> })
          ?.entries;
       expect(Object.keys(built ?? {})).toContain(id);
-      expect(run.metadata?.autoLoad).toBe("loaded");
+      expect(run.metadata?.autoLoad).toBe("failed");
+      expect(String(run.metadata?.autoLoadError)).toContain("host manifest");
 
-      // What the version serves is still the host's.
+      // What the version serves is the host's.
+      const pkg = await loadedVersion("1.0.0");
+      await storeTables(pkg);
       expect(pkg.getManifestLocation()).toBe(host);
       expect(tableOf(pkg, id)).toBe('"summary_host"');
       expect(await total(pkg)).toBe(42);
+   });
+
+   it("serves what the local store holds as soon as its manifest is cleared", async () => {
+      const id = await publishLive("1.0.0");
+      localStore = { [id]: entryFor(id, "summary_local") };
+      const host = writeManifest("host.json", id, "summary_host");
+      await versions().setManifest(PKG, "1.0.0", host);
+      const pkg = await loadedVersion("1.0.0");
+      await storeTables(pkg);
+      expect(await total(pkg)).toBe(42);
+
+      await versions().setManifest(PKG, "1.0.0", null);
+      expect(pkg.getManifestLocation()).toBeNull();
+      expect(tableOf(pkg, id)).toBe('"summary_local"');
+      expect(await total(pkg)).toBe(7);
    });
 
    it("is bound from the local run store when bound to no manifest", async () => {
@@ -362,9 +393,6 @@ describe("a version's manifestLocation is its registry row's", () => {
 
       // Resident: the publish binds it once, and the read that follows sees
       // it bound.
-      await publish("1.0.0", host);
-      expect(binds).toHaveBeenCalledTimes(1);
-      // Naming it again binds nothing.
       await publish("1.0.0", host);
       expect(binds).toHaveBeenCalledTimes(1);
 
@@ -407,5 +435,82 @@ describe("a version's manifestLocation is its registry row's", () => {
       expect(reloaded.getManifestLocation()).toBeNull();
       await storeTables(reloaded);
       expect(await total(reloaded)).toBe(1);
+   });
+});
+
+describe("a local run of a host-bound package or version", () => {
+   it("is refused with a 409 for a version bound to a host manifest, before anything is built", async () => {
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      await versions().setManifest(PKG, "1.0.0", host);
+      const refused = await materializationService()
+         .createMaterialization(ENV, PKG, {
+            versionId: VersionRef.parse("1.0.0"),
+         })
+         .catch((error: unknown) => error);
+      expect(refused).toBeInstanceOf(MaterializationConflictError);
+      expect(internalErrorToHttpError(refused as Error).status).toBe(409);
+      expect((refused as Error).message).toContain(
+         "a local run would build tables it cannot serve",
+      );
+      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
+   });
+
+   it("is refused with a 409 for an unversioned package bound to a host manifest", async () => {
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      writePackageFiles(
+         path.join(root, "env", "solo"),
+         { "m.malloy": MODEL },
+         { manifest: { name: "solo", manifestLocation: host } },
+      );
+      const refused = await materializationService()
+         .createMaterialization(ENV, "solo", {})
+         .catch((error: unknown) => error);
+      expect(refused).toBeInstanceOf(MaterializationConflictError);
+      expect(internalErrorToHttpError(refused as Error).status).toBe(409);
+      expect((refused as Error).message).toContain("Package solo is bound");
+   });
+
+   it("runs, and serves what it built, once the manifest is cleared", async () => {
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      await versions().setManifest(PKG, "1.0.0", host);
+      await versions().setManifest(PKG, "1.0.0", null);
+      const service = materializationService();
+      const run = await settled(
+         service,
+         (
+            await service.createMaterialization(ENV, PKG, {
+               versionId: VersionRef.parse("1.0.0"),
+            })
+         ).id,
+      );
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      expect(run.metadata?.autoLoad).toBe("loaded");
+      const pkg = await loadedVersion("1.0.0");
+      expect(tableOf(pkg, id)).toBeString();
+      expect(tableOf(pkg, id)).not.toBe('"summary_host"');
+   });
+
+   it("serves what the local store holds as soon as an unversioned package's manifest is cleared", async () => {
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      writePackageFiles(
+         path.join(root, "env", "solo"),
+         { "m.malloy": MODEL },
+         { manifest: { name: "solo", manifestLocation: host } },
+      );
+      const solo = await env.getPackage(parsePackageName("solo"), false);
+      const soloId = Object.values(solo.getBuildPlan()?.sources ?? {})[0]
+         ?.sourceEntityId as string;
+      localStore = { [soloId]: entryFor(soloId, "summary_local") };
+      await storeTables(solo);
+      expect(solo.getManifestLocation()).toBe(host);
+
+      await env.updatePackage("solo", { name: "solo", manifestLocation: null });
+      expect(solo.getManifestLocation()).toBeNull();
+      expect(tableOf(solo, soloId)).toBe('"summary_local"');
+      expect(await total(solo)).toBe(7);
    });
 });

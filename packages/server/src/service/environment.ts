@@ -3052,24 +3052,7 @@ export class Environment {
                         ) {
                            return "done";
                         }
-                        const { tableNameManifest, storageEntries } =
-                           splitManifestEntries(
-                              entries,
-                              `local store (package ${packageName} version ${versionId})`,
-                              // From the store, with the key checks its
-                              // newest run stands behind (withRollupKeyRecords).
-                              "store",
-                           );
-                        if (
-                           Object.keys(tableNameManifest).length > 0 ||
-                           pkg.hasBoundTableNameManifest()
-                        ) {
-                           await pkg.reloadAllModels(tableNameManifest);
-                        }
-                        if (getPersistStorageMode() !== "off") {
-                           pkg.bindStorageServeBindings(storageEntries);
-                        }
-                        this.storeBindingReads.set(pkg, signature);
+                        await this.bindStoreEntries(pkg, entries);
                         return "done";
                      } catch (error) {
                         if (
@@ -3138,6 +3121,85 @@ export class Environment {
       return "after its build";
    }
 
+   /**
+    * Bind store entries to a package bound to no host manifest: the
+    * colocated ones recompile the models when there is something to
+    * substitute or clear, the `storage=` ones replace the storage bindings
+    * (unless the storage tier is off). A version remembers what it bound
+    * (see storeBindingReads).
+    */
+   private async bindStoreEntries(
+      pkg: Package,
+      entries: Record<string, ManifestEntry>,
+   ): Promise<boolean> {
+      const packageName = pkg.getPackageName();
+      const versionId = pkg.getVersionId();
+      const { tableNameManifest, storageEntries } = splitManifestEntries(
+         entries,
+         versionId !== undefined
+            ? `local store (package ${packageName} version ${versionId})`
+            : `local store (package ${packageName})`,
+         // From the store, with the key checks its newest run stands behind
+         // (withRollupKeyRecords).
+         "store",
+      );
+      let reloaded = false;
+      if (
+         Object.keys(tableNameManifest).length > 0 ||
+         pkg.hasBoundTableNameManifest()
+      ) {
+         await pkg.reloadAllModels(tableNameManifest);
+         reloaded = true;
+      }
+      if (getPersistStorageMode() !== "off") {
+         pkg.bindStorageServeBindings(storageEntries);
+      }
+      if (versionId !== undefined) {
+         this.storeBindingReads.set(pkg, JSON.stringify(entries));
+      }
+      return reloaded;
+   }
+
+   /**
+    * After its host manifest is cleared, bind what this server's own store
+    * holds for the package (or version), so tables already built here serve
+    * at once; with none, or when the store cannot be read, revert it to
+    * live. `wasBound`: it served bound tables before the clear. Says whether
+    * the models were recompiled. The caller holds the package's (or
+    * version's) lock.
+    */
+   private async bindLocalStoreOrLive(
+      pkg: Package,
+      wasBound: boolean,
+   ): Promise<boolean> {
+      let entries: Record<string, ManifestEntry> = {};
+      if (this.storageBindingResolver) {
+         try {
+            entries = await this.storageBindingResolver(
+               pkg.getPackageName(),
+               servingReaderOf(pkg),
+            );
+         } catch (error) {
+            logger.warn(
+               "Could not read the local store after clearing a manifest; serving live",
+               {
+                  packageName: pkg.getPackageName(),
+                  versionId: pkg.getVersionId(),
+                  error: errMessage(error),
+               },
+            );
+         }
+      }
+      if (Object.keys(entries).length > 0) {
+         return this.bindStoreEntries(pkg, entries);
+      }
+      if (!wasBound) return false;
+      // Drop both tiers so nothing still routes to a materialized table.
+      await pkg.reloadAllModels({});
+      pkg.bindStorageServeBindings({});
+      return true;
+   }
+
    /** Rebind a loaded version to a build manifest, or revert it to live. */
    private async bindVersionManifest(
       loaded: Package,
@@ -3153,11 +3215,13 @@ export class Environment {
             await this.trackPackageLoad(packageName, () =>
                this.bindManifest(loaded, manifestPath),
             );
-         } else if (wasBound) {
-            await this.trackPackageLoad(packageName, async () => {
-               await loaded.reloadAllModels({});
-               loaded.bindStorageServeBindings({});
-            });
+         } else {
+            // Cleared: what this server's own store holds for it now serves,
+            // at once, else it serves live. Inline rather than through
+            // rebindVersionFromStore, whose version lock the caller holds.
+            await this.trackPackageLoad(packageName, () =>
+               this.bindLocalStoreOrLive(loaded, wasBound),
+            );
          }
       } catch (error) {
          // The models still use the previous binding, so the metadata says so.
@@ -3977,8 +4041,9 @@ export class Environment {
     *
     * A package or version bound to a host manifest (`manifestLocation`)
     * serves the host's tables: the run's entries, neither tier, are applied
-    * to it. The run still commits its rows, and counts as loaded, as one for
-    * a version not loaded does; it changes nothing that is served.
+    * to it. Creating such a run is refused up front (409); this holds when a
+    * manifest is bound while one runs. The run still commits its rows, and
+    * says it was not served, as one whose bind did not take does.
     */
    public async loadRunManifest(params: {
       packageName: string;
@@ -4004,13 +4069,16 @@ export class Environment {
                  };
          }
          // With a manifestLocation the host is authoritative, for both tiers.
-         if (pkg.getManifestLocation()) {
-            logger.info(
-               "Auto-run: committed without changing what is served: the " +
-                  "package is bound to a host manifest (host authoritative)",
-               { packageName, versionId },
-            );
-            return { loaded: true };
+         const manifestLocation = pkg.getManifestLocation();
+         if (manifestLocation) {
+            return {
+               loaded: false,
+               step: "bind",
+               error:
+                  `bound to a host manifest (${manifestLocation}) while the ` +
+                  `run built: its tables are served from that manifest, so ` +
+                  `this run's tables are not served`,
+            };
          }
          try {
             const has = Object.keys(params.colocated).length > 0;
@@ -4510,13 +4578,10 @@ export class Environment {
             : undefined,
       });
 
-      // Apply a manifestLocation change now: a URI rebinds, null/empty
-      // reverts to live.
-      const revertsBinding =
-         body.manifestLocation !== undefined &&
-         !body.manifestLocation &&
-         (_package.hasBoundTableNameManifest() ||
-            _package.hasStorageServeBindings());
+      // Apply a manifestLocation change now: a URI rebinds, null/empty binds
+      // what this server's own store holds, else reverts to live.
+      const clears =
+         body.manifestLocation !== undefined && !body.manifestLocation;
       if (body.manifestLocation) {
          // May recompile, so reported as loading.
          await this.trackPackageLoad(packageName, () =>
@@ -4526,12 +4591,15 @@ export class Environment {
                "always",
             ),
          );
-      } else if (revertsBinding) {
-         // Drop both tiers so nothing still routes to a materialized table.
-         await this.trackPackageLoad(packageName, async () => {
-            await _package.reloadAllModels({});
-            _package.bindStorageServeBindings({});
-         });
+      } else if (clears) {
+         const wasBound =
+            _package.hasBoundTableNameManifest() ||
+            _package.hasStorageServeBindings();
+         // May recompile (which relints), so reported as loading.
+         const recompiled = await this.trackPackageLoad(packageName, () =>
+            this.bindLocalStoreOrLive(_package, wasBound),
+         );
+         if (!recompiled) await _package.relintReports();
       } else {
          // The surface may have changed with no file changing.
          await _package.relintReports();
