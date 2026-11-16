@@ -144,10 +144,12 @@ async function buildAndBindColocated(
    if (!source) {
       throw new Error(`persist source '${sourceName}' not in build plan`);
    }
-   pkg.bindColocatedServeManifest({
-      [source.sourceEntityId]: {
-         tableName: physicalTableName,
-         connectionName: "duckdb",
+   pkg.materialization().bind({
+      colocated: {
+         [source.sourceEntityId]: {
+            tableName: physicalTableName,
+            connectionName: "duckdb",
+         },
       },
    });
 }

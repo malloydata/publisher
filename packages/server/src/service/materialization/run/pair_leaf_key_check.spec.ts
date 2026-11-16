@@ -265,7 +265,10 @@ describe("a pair table's leaf key check, on a build", () => {
    // that fails part-way, or a rewrite that brings a NULL or repeated leaf
    // key, never leaves a pass bound over rows it did not check.
    it("is forgotten on the models' colocated bindings when a run is about to write the table", () => {
-      const model = {};
+      const model = {
+         setServedCopyContext: () => {},
+         prepareServedCopy: async () => {},
+      };
       const materialization = new PackageMaterialization({
          models: () => new Map([["m.malloy", model]]),
          packageName: () => "pkg",

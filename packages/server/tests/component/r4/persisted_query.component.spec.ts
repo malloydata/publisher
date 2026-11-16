@@ -385,7 +385,8 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
       expect(fixture.verdicts).toContain("by_carrier__query:serves");
       expect(fixture.verdicts).toContain("inline_target__query:serves");
       const verdict = fixture.pkg
-         .getServeVerdicts()
+         .materialization()
+         .serveVerdicts()
          .find((v) => v.sourceName === "by_carrier__query");
       expect(verdict?.message).toContain("The persisted query `by_carrier`");
    });

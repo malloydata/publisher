@@ -58,7 +58,10 @@ function holding(
       models: () => new Map(),
       packageName: () => "pkg",
    } as unknown as PackageMaterializationOwner);
-   Object.assign(materialization, { buildPlan: plan, refusedRollups });
+   materialization.buildPlan = plan;
+   Object.assign((materialization as unknown as { plan: object }).plan, {
+      refusedRollups,
+   });
    return materialization;
 }
 

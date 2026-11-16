@@ -231,9 +231,9 @@ for (const gated of [false, true]) {
          for (const [name, q, callers] of QUERIES) {
             it(`${binding}: ${name}, each caller as live`, async () => {
                await fixture.rebind();
-               fixture.pkg.bindStorageServeBindings(
-                  entriesFor(fixture.stored, binding) as never,
-               );
+               fixture.pkg.materialization().bind({
+                  storage: entriesFor(fixture.stored, binding) as never,
+               });
                await fixture.pkg.getModel("m.malloy")?.prepareServedCopy();
                for (const [i, g] of callers.entries()) {
                   const l = live.get(`${name}#${i}`)!;

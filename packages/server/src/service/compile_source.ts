@@ -68,6 +68,7 @@ import { VersionRef } from "./identity";
 import { Model } from "./model";
 import { ModelPolicy } from "./model_policy";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
+import type { PackageMaterialization } from "./materialization";
 import { Package } from "./package";
 import {
    carriesArtifactTag,
@@ -225,7 +226,9 @@ interface CompileContext extends CompileRequest {
    pkg: Package;
    gateModel: Model | undefined;
    hasExactGateModel: boolean;
-   boundManifestEntries: ReturnType<Package["getBuildManifestEntries"]>;
+   boundManifestEntries: ReturnType<
+      PackageMaterialization["getBuildManifestEntries"]
+   >;
    runtime: Runtime;
    /** Append-scope text that may be a document, gated cell by cell. */
    documentCandidate: boolean;
@@ -508,8 +511,8 @@ async function openCompileContext(
    // would show base-table SQL that diverges from what runs, or name a table
    // past its window that execution no longer reads. The package dry-run
    // keeps the bound entries, as the reload it mirrors does.
-   const boundManifestEntries = pkg.getBuildManifestEntries();
-   const freshManifestEntries = pkg.getFreshBuildManifest();
+   const boundManifestEntries = pkg.materialization().getBuildManifestEntries();
+   const freshManifestEntries = pkg.materialization().getFreshBuildManifest();
    const runtime = new Runtime({
       urlReader: interceptingReader,
       config: pkg.getMalloyConfig(),
@@ -631,7 +634,7 @@ async function resolveGateModel(
             modelName,
             pkg.getMalloyConfig(),
             {
-               buildManifest: pkg.getBuildManifestEntries(),
+               buildManifest: pkg.materialization().getBuildManifestEntries(),
                overlay: withTarget,
                // Built outside the Package to decide the text's gates; it
                // runs no query, and carries no Package curation.
@@ -662,7 +665,9 @@ async function resolveGateModel(
                modelName,
                pkg.getMalloyConfig(),
                {
-                  buildManifest: pkg.getBuildManifestEntries(),
+                  buildManifest: pkg
+                     .materialization()
+                     .getBuildManifestEntries(),
                   // Gates only, as for the overlay model above.
                   policy: ModelPolicy.standalone(),
                },

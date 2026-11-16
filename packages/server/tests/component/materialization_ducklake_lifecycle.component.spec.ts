@@ -249,7 +249,7 @@ describe.skipIf(process.platform === "win32")(
                return serve;
             },
          }));
-         pkg.setServeDestinationConfig(() => config);
+         pkg.materialization().setServeDestinationConfig(() => config);
       }
 
       beforeAll(async () => {
@@ -884,7 +884,7 @@ class LakeFixture {
             return this.serve;
          },
       }));
-      this.pkg.setServeDestinationConfig(() => config);
+      this.pkg.materialization().setServeDestinationConfig(() => config);
    }
 
    async setUp(): Promise<void> {
@@ -1381,12 +1381,10 @@ source: events is warehouse.sql("""
          // 6). Plan the package again on this thread, as a load the worker
          // left no plan for does.
          await (
-            lake.pkg as unknown as {
-               materialization: {
-                  applyLoadBuildPlan(plan: undefined): Promise<unknown>;
-               };
+            lake.pkg.materialization() as unknown as {
+               applyLoadBuildPlan(plan: undefined): Promise<unknown>;
             }
-         ).materialization.applyLoadBuildPlan(undefined);
+         ).applyLoadBuildPlan(undefined);
       });
       afterAll(async () => {
          await lake.tearDown();

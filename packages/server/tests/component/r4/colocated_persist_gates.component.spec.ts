@@ -217,12 +217,10 @@ describe("R4: colocated #@ persist past its own row-level gate, and its column s
       // The package's colocated eligibility refuses the inherited gate and
       // the joined one, so neither is built or bound.
       const eligibility = (
-         pkg.pkg as unknown as {
-            materialization: {
-               colocatedSourceEligibility?: { refused: Record<string, string> };
-            };
+         pkg.pkg.materialization() as unknown as {
+            colocatedSourceEligibility?: { refused: Record<string, string> };
          }
-      ).materialization.colocatedSourceEligibility;
+      ).colocatedSourceEligibility;
       const refusedNames = Object.values(eligibility?.refused ?? {})
          .map((why) => /Source '([^']+)'/.exec(why)?.[1])
          .sort();

@@ -817,8 +817,10 @@ source: raw is duckdb.sql("""
       "is inert for a plain persist source, and the package still loads",
       async () => {
          const pkg = await loadPackage(`${RAW}#@ persist name="t"\n${ROLLUP}`);
-         expect(pkg.incrementalPolicyWarnings()).toEqual([]);
-         expect(pkg.formatInvalidIncrementalPolicy()).toBe("");
+         expect(pkg.materialization().incrementalPolicyWarnings()).toEqual([]);
+         expect(pkg.materialization().formatInvalidIncrementalPolicy()).toBe(
+            "",
+         );
       },
       { timeout: 30000 },
    );
@@ -890,7 +892,9 @@ source: raw is duckdb.sql("""
          expect(
             warnings.filter((w) => w.code === "persist-source-refused"),
          ).toEqual([]);
-         expect(pkg.formatInvalidIncrementalPolicy()).toBe("");
+         expect(pkg.materialization().formatInvalidIncrementalPolicy()).toBe(
+            "",
+         );
          // Not built: neither planned nor in the run's plan.
          expect(Object.values(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
          // Answered live, with live's rows.

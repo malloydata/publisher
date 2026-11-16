@@ -78,7 +78,7 @@ describe("a package's serve verdicts", () => {
          "orders.malloy": ORDERS,
          "index.malloy": `import "orders.malloy"\nexport { orders_public }\n`,
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders).toMatchObject({
          tier: "colocated",
          verdict: "not_built",
@@ -102,7 +102,7 @@ describe("a package's serve verdicts", () => {
 
    it("finds every source reached when nothing is curated", async () => {
       loaded = await loadTempPackage({ "orders.malloy": ORDERS });
-      const verdicts = loaded.pkg.getServeVerdicts();
+      const verdicts = loaded.pkg.materialization().serveVerdicts();
       // orders_public extends a persisted source, so it inherits #@ persist.
       expect(verdicts.map((v) => [v.sourceName, v.verdict])).toEqual([
          ["orders", "not_built"],
@@ -127,7 +127,7 @@ source: joined is ${ROWS} extend {
 export { by_region, joined }
 `,
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.staging.verdict).toBe("not_built");
       expect(verdicts.orders.verdict).toBe("not_built");
    });
@@ -140,7 +140,7 @@ query: top_regions is staging -> { group_by: region; aggregate: t is total.sum()
 export { orders_public, top_regions }
 `,
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.staging.verdict).toBe("not_built");
       expect(
          (loaded.pkg.getPackageMetadata().warnings ?? []).some(
@@ -168,7 +168,9 @@ source: secure_orders is orders -> { select: * }
             "orders.malloy": GATED,
             "index.malloy": `import "orders.malloy"\nexport { secure_orders }\n`,
          });
-         expect(byName(loaded.pkg.getServeVerdicts()).orders).toMatchObject({
+         expect(
+            byName(loaded.pkg.materialization().serveVerdicts()).orders,
+         ).toMatchObject({
             tier: "storage",
             verdict: "live",
             reason: "row_level_gate",
@@ -188,7 +190,9 @@ source: secure_orders is orders -> { select: * }
             ),
             "index.malloy": `import "orders.malloy"\nexport { secure_orders }\n`,
          });
-         expect(byName(loaded.pkg.getServeVerdicts()).orders).toMatchObject({
+         expect(
+            byName(loaded.pkg.materialization().serveVerdicts()).orders,
+         ).toMatchObject({
             tier: "storage",
             verdict: "not_built",
          });
@@ -200,9 +204,9 @@ source: secure_orders is orders -> { select: * }
          }).restore;
          // Nothing curated: `orders` itself is queryable, with no gate.
          loaded = await loadTempPackage({ "orders.malloy": GATED });
-         expect(byName(loaded.pkg.getServeVerdicts()).orders.verdict).toBe(
-            "not_built",
-         );
+         expect(
+            byName(loaded.pkg.materialization().serveVerdicts()).orders.verdict,
+         ).toBe("not_built");
       });
    });
 
@@ -234,7 +238,7 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
          "orders.malloy": ORDERS,
          "index.malloy": `import "orders.malloy"\nexport { orders_public }\n`,
       });
-      const first = loaded.pkg.getServeVerdicts();
+      const first = loaded.pkg.materialization().serveVerdicts();
       const models = [
          ...(
             loaded.pkg as unknown as { models: Map<string, object> }
@@ -245,7 +249,7 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       );
       try {
          for (let i = 0; i < 3; i++) {
-            expect(loaded.pkg.getServeVerdicts()).toEqual(first);
+            expect(loaded.pkg.materialization().serveVerdicts()).toEqual(first);
          }
          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
       } finally {
@@ -260,10 +264,12 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
          (s) => s.name === "orders",
       );
       expect(orders).toBeDefined();
-      loaded.pkg.bindColocatedServeManifest({
-         [orders!.sourceEntityId]: { tableName: "orders_t" },
+      loaded.pkg.materialization().bind({
+         colocated: {
+            [orders!.sourceEntityId]: { tableName: "orders_t" },
+         },
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders.verdict).toBe("serves");
       expect(verdicts.staging.verdict).toBe("not_built");
    });
@@ -278,7 +284,7 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
             '#@ persist name="orders_t" storage="lake"',
          ),
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders).toMatchObject({
          tier: "storage",
          verdict: "live",
@@ -327,15 +333,13 @@ describe("the deployment facts (P13) on the memoized path-report verdicts", () =
    it("re-reads a fact that changes under a loaded package, with no reload", async () => {
       loaded = await loadTempPackage({ "orders.malloy": ORDERS });
       let canHold: boolean | undefined = true;
-      loaded.pkg.setDeploymentFacts({
+      loaded.pkg.materialization().setDeploymentFacts({
          destinationNames: () => [],
          connectionCanHoldTable: () => canHold,
       });
-      const materialization = (
-         loaded.pkg as unknown as { materialization: PackageMaterialization }
-      ).materialization;
+      const materialization = loaded.pkg.materialization();
       const reasons = () =>
-         [...(materialization.materializedTableCatalog().sourceVerdicts ?? [])]
+         [...(materialization.verdicts.tableCatalog().sourceVerdicts ?? [])]
             .filter(([, v]) => v.sourceName === "orders")
             .map(([, v]) => v.reason);
 

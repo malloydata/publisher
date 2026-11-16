@@ -269,15 +269,7 @@ describe("re-deriving after a connection edit", () => {
       // The re-derivation fails (as a model that no longer compiles would).
       spyOn(Package.prototype, "refreshBuildPlan").mockImplementationOnce(
          function (this: Package) {
-            return (
-               this as unknown as {
-                  materialization: {
-                     refreshBuildPlan(
-                        d: () => Promise<unknown>,
-                     ): Promise<boolean>;
-                  };
-               }
-            ).materialization.refreshBuildPlan(async () => {
+            return this.materialization().refreshBuildPlan(async () => {
                throw new Error("does not compile");
             });
          },
@@ -300,13 +292,7 @@ describe("re-deriving after a connection edit", () => {
       const v1 = (await publish(env, source("1.0.0"))).loaded;
       const [before] = planned(v1);
       v1.markBuildPlanStale();
-      const derived = await (
-         v1 as unknown as {
-            materialization: {
-               refreshBuildPlan(d: () => Promise<unknown>): Promise<boolean>;
-            };
-         }
-      ).materialization.refreshBuildPlan(async () => ({
+      const derived = await v1.materialization().refreshBuildPlan(async () => ({
          ok: true,
          durationMs: 0,
          digestSkipped: [],
@@ -321,7 +307,7 @@ describe("re-deriving after a connection edit", () => {
                   model: "m.malloy",
                },
             ],
-         },
+         } as never,
       }));
       expect(derived).toBe(false);
       expect(v1.isBuildPlanUnavailable()).toBe(true);
@@ -374,7 +360,7 @@ describe("re-deriving after a connection edit", () => {
          },
       ]);
 
-      expect(v1.isBuildPlanStale()).toBe(false);
+      expect(v1.materialization().isBuildPlanStale()).toBe(false);
       expect(refreshes).not.toHaveBeenCalled();
       refreshes.mockRestore();
    });
@@ -439,52 +425,43 @@ describe("a failed re-derivation", () => {
    function failNextRefresh() {
       spyOn(Package.prototype, "refreshBuildPlan").mockImplementationOnce(
          function (this: Package) {
-            return (
-               this as unknown as {
-                  materialization: {
-                     refreshBuildPlan(
-                        d: () => Promise<unknown>,
-                     ): Promise<boolean>;
-                  };
-               }
-            ).materialization.refreshBuildPlan(async () => {
+            return this.materialization().refreshBuildPlan(async () => {
                throw new Error("load worker timed out");
             });
          },
       );
    }
 
-   type Internals = {
-      materialization: {
-         sourceEligibility: unknown;
-         colocatedSourceEligibility: unknown;
-         servingPlanWhileUnavailable: unknown;
-         buildConnectionNames: ReadonlySet<string>;
-      };
-   };
+   /** The facade's plan lifecycle, whose fields these specs read. */
+   function internals(pkg: Package): {
+      sourceEligibility: unknown;
+      colocatedSourceEligibility: unknown;
+      servingPlanWhileUnavailable: unknown;
+      buildConnectionNames: ReadonlySet<string>;
+   } {
+      return (
+         pkg.materialization() as unknown as {
+            plan: ReturnType<typeof internals>;
+         }
+      ).plan;
+   }
 
    function colocated(pkg: Package): {
       eligibleEntityIds: Set<string>;
       refused: Record<string, string>;
    } {
-      return (
-         pkg as unknown as {
-            materialization: {
-               colocatedSourceEligibility: {
-                  eligibleEntityIds: Set<string>;
-                  refused: Record<string, string>;
-               };
-            };
-         }
-      ).materialization.colocatedSourceEligibility;
+      return pkg.materialization().colocatedSourceEligibility as {
+         eligibleEntityIds: Set<string>;
+         refused: Record<string, string>;
+      };
    }
 
    it("keeps what serving reads, so bindings and a host's rebind keep serving while run creation is refused", async () => {
       const env = await newEnvironment();
       const v1 = (await publish(env, source("1.0.0"))).loaded;
-      const internals = (v1 as unknown as Internals).materialization;
+      const state = internals(v1);
       const planBefore = v1.getBuildPlan();
-      const storageBefore = internals.sourceEligibility;
+      const storageBefore = state.sourceEligibility;
       const [address] = planned(v1);
       expect(storageBefore).toBeDefined();
       expect(colocated(v1).eligibleEntityIds.has(address)).toBe(true);
@@ -497,8 +474,8 @@ describe("a failed re-derivation", () => {
       // No route or run sees the pre-edit plan...
       expect(v1.getBuildPlan()).toBeNull();
       // ...but binding still matches entries as it did before the edit.
-      expect(internals.sourceEligibility).toBe(storageBefore);
-      expect(internals.servingPlanWhileUnavailable).toBe(planBefore);
+      expect(state.sourceEligibility).toBe(storageBefore);
+      expect(state.servingPlanWhileUnavailable).toBe(planBefore);
       // Except a colocated table on the connection the edit changed: it was
       // built through that connection as it was, and would be read through it
       // as it is now, so it serves live until the plan is re-derived.
@@ -558,13 +535,7 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
          if (this !== v1) return original.apply(this, args);
          calls++;
          if (calls > 1) return original.apply(this, args);
-         return (
-            this as unknown as {
-               materialization: {
-                  refreshBuildPlan(d: () => Promise<unknown>): Promise<boolean>;
-               };
-            }
-         ).materialization.refreshBuildPlan(async () => ({
+         return this.materialization().refreshBuildPlan(async () => ({
             ok: false,
             error: "Malloy compile failed",
             durationMs: 0,
@@ -576,7 +547,9 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       await editConnection(env, "SELECT 6");
       await v1.whenBuildPlanCurrent();
       expect(v1.isBuildPlanUnavailable()).toBe(true);
-      expect(v1.lastBuildPlanRefreshFailedTransiently()).toBe(false);
+      expect(v1.materialization().lastBuildPlanRefreshFailedTransiently()).toBe(
+         false,
+      );
 
       // Past the first backoff (2s): no retry recompiles it.
       await new Promise((resolve) => setTimeout(resolve, 2_500));
@@ -624,10 +597,7 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       }
       expect(v1.isBuildPlanUnavailable()).toBe(false);
       expect(planned(v1)).toEqual(await compiled(v1));
-      expect(
-         (v1 as unknown as Internals).materialization
-            .servingPlanWhileUnavailable,
-      ).toBeNull();
+      expect(internals(v1).servingPlanWhileUnavailable).toBeNull();
    }, 30_000);
 
    it("re-derives when a connection a skipped source needed is created", async () => {
@@ -635,8 +605,7 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       const v1 = (await publish(env, source("1.0.0"))).loaded;
       // As a source whose connection did not resolve leaves it: named in the
       // plan's build connections, absent from its sources.
-      (v1 as unknown as Internals).materialization.buildConnectionNames =
-         new Set(["duck", "late"]);
+      internals(v1).buildConnectionNames = new Set(["duck", "late"]);
       const refreshes = spyOn(Package.prototype, "refreshBuildPlan");
 
       await editConnection(env, "SELECT 1", [

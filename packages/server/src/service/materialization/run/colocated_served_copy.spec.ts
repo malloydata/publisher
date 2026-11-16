@@ -378,7 +378,10 @@ for (const tier of TIERS)
                   .sort(),
             ).toEqual(built.map((name) => [name, undefined]));
             expect(
-               (await pkg()).getServeVerdicts().map((v) => v.verdict),
+               (await pkg())
+                  .materialization()
+                  .serveVerdicts()
+                  .map((v) => v.verdict),
             ).toEqual(built.map(() => "serves"));
             for (const source of built) await expectServedEqualsLive(source);
             // A query that reads no stored table, but names a result column

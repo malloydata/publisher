@@ -488,10 +488,10 @@ describe("given-reading where: by where it is written, through a real package", 
       it(`${c.name}: ${c.path.kind}`, async () => {
          const plans =
             (
-               fixture.pkg as unknown as {
-                  materialization?: { materializePlans?: MaterializePlans };
+               fixture.pkg.materialization() as unknown as {
+                  materializePlans?: MaterializePlans;
                }
-            ).materialization?.materializePlans ?? {};
+            ).materializePlans ?? {};
          const plan = Object.entries(plans).find(
             ([id]) => nameOf(id) === c.source,
          )?.[1];
@@ -554,10 +554,10 @@ describe("given-reading where: by where it is written, through a real package", 
    it("#(materialize) storage=, a zone-dependent dimension on a base: stored as built, a timezone: query answered live", async () => {
       const plans =
          (
-            fixture.pkg as unknown as {
-               materialization?: { materializePlans?: MaterializePlans };
+            fixture.pkg.materialization() as unknown as {
+               materializePlans?: MaterializePlans;
             }
-         ).materialization?.materializePlans ?? {};
+         ).materializePlans ?? {};
       const plan = Object.entries(plans).find(
          ([id]) => nameOf(id) === "ms_zone",
       )?.[1];

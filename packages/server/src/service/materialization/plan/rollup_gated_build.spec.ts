@@ -120,12 +120,10 @@ for (const gated of [true, false]) {
             : "plans nothing to report a verdict on",
          () => {
             const verdicts = (
-               pkg as unknown as {
-                  materialization: {
-                     serveVerdicts(): { sourceName: string; reason?: string }[];
-                  };
+               pkg.materialization() as unknown as {
+                  serveVerdicts(): { sourceName: string; reason?: string }[];
                }
-            ).materialization
+            )
                .serveVerdicts()
                .filter((v) => v.sourceName.startsWith("gated__rollup__"));
             expect(verdicts.length).toBe(gated ? 1 : 0);

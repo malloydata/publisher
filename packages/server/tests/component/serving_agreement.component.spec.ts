@@ -96,7 +96,7 @@ source: orders is duckdb.sql("""
 
 /** Build every planned rollup (one table per address) and bind it colocated. */
 async function buildRollups(pkg: Package): Promise<string> {
-   const ids = [...pkg.getPreaggregateEntityIds()];
+   const ids = [...pkg.materialization().getPreaggregateEntityIds()];
    expect(ids).toHaveLength(1);
    const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
       (s) => s.sourceEntityId === ids[0],
@@ -108,9 +108,11 @@ async function buildRollups(pkg: Package): Promise<string> {
    await connection.runSQL(
       `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
    );
-   pkg.bindColocatedServeManifest({
-      [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
-   } as never);
+   pkg.materialization().bind({
+      colocated: {
+         [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
+      } as never,
+   });
    return ids[0];
 }
 
@@ -143,7 +145,8 @@ describe("a rollup on a source an index.malloy re-exports", () => {
       }
       // The verdict agrees with the path report.
       const verdicts = pkg
-         .getServeVerdicts()
+         .materialization()
+         .serveVerdicts()
          .filter((v) => v.origin === "preaggregate");
       expect(verdicts.length).toBeGreaterThan(0);
       expect(verdicts.every((v) => v.verdict === "serves")).toBe(true);
@@ -174,7 +177,7 @@ describe("a #@ preaggregate measure reused in a persisted query", () => {
       expect(pkg.getModel("index.malloy")?.preaggregateViolations()).toEqual(
          [],
       );
-      expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+      expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe("");
       expect(planEntry(pkg, "daily").origin).not.toBe("preaggregate");
    });
 
@@ -215,9 +218,11 @@ async function buildDaily(pkg: Package, table: string): Promise<string> {
       "duck",
    )) as DuckDBConnection;
    await connection.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
-   pkg.bindColocatedServeManifest({
-      [entry.sourceEntityId]: { tableName: table, connectionName: "duck" },
-   } as never);
+   pkg.materialization().bind({
+      colocated: {
+         [entry.sourceEntityId]: { tableName: table, connectionName: "duck" },
+      } as never,
+   });
    return entry.sourceEntityId;
 }
 
@@ -259,7 +264,10 @@ describe("serving after a connection edit and a rebuild", () => {
          via: "served_copy",
       });
       expect(
-         pkg.getServeVerdicts().find((v) => v.sourceName === "daily"),
+         pkg
+            .materialization()
+            .serveVerdicts()
+            .find((v) => v.sourceName === "daily"),
       ).toMatchObject({ verdict: "serves" });
    });
 });
@@ -377,8 +385,8 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
          };
       }
    }
-   pkg.bindColocatedServeManifest(colocated as never);
-   pkg.bindStorageServeBindings(stored as never);
+   pkg.materialization().bind({ colocated: colocated as never });
+   pkg.materialization().bind({ storage: stored as never });
 }
 
 describe("the verdicts, path report, preview and warnings agree on one package", () => {
@@ -396,11 +404,11 @@ describe("the verdicts, path report, preview and warnings agree on one package",
          "index.malloy": AGREEMENT_INDEX,
       });
       const { lake, config } = lakeDestination(rootDir);
-      pkg.setServeDestinationConfig(() => config);
+      pkg.materialization().setServeDestinationConfig(() => config);
       const preview = await pkg.previewServeVerdicts();
       await buildAll(pkg, lake);
 
-      const verdicts = pkg.getServeVerdicts();
+      const verdicts = pkg.materialization().serveVerdicts();
       const verdictOf = (name: string) => {
          const found = verdicts.filter(
             (v) => v.sourceName === name && v.origin === "persist",

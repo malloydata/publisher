@@ -215,17 +215,15 @@ async function loadRows(
          rows[s.name] = [`refused ${s.reason}`];
       }
       const verdicts = (
-         pkg as unknown as {
-            materialization: {
-               serveVerdicts(): {
-                  sourceName: string;
-                  tier: string;
-                  verdict: string;
-                  reason?: string;
-               }[];
-            };
+         pkg.materialization() as unknown as {
+            serveVerdicts(): {
+               sourceName: string;
+               tier: string;
+               verdict: string;
+               reason?: string;
+            }[];
          }
-      ).materialization.serveVerdicts();
+      ).serveVerdicts();
       for (const v of verdicts) {
          const key = v.sourceName;
          if (!rows[key]) continue;

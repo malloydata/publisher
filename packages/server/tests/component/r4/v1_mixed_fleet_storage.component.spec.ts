@@ -83,8 +83,8 @@ async function bindStored(
    fixture: Fixture,
    entries: Record<string, Record<string, unknown>>,
 ) {
-   fixture.pkg.bindColocatedServeManifest({});
-   fixture.pkg.bindStorageServeBindings(entries as never);
+   fixture.pkg.materialization().bind({ colocated: {} });
+   fixture.pkg.materialization().bind({ storage: entries as never });
    for (const modelPath of fixture.pkg.getModelPaths()) {
       await fixture.pkg.getModel(modelPath)?.prepareServedCopy();
    }
