@@ -83,10 +83,12 @@ import {
    type PendingRefusal,
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
+import { freshnessOf } from "../domain/freshness";
 import {
    allSourcesRefusedError,
    BuildEnvironment,
    chainedPlanFacts,
+   upstreamEntryIsCurrent,
    isReclaimableStorageTable,
    manifestExcludingStorage,
    physicalTargetKey,
@@ -388,6 +390,8 @@ export class InstructedBuild {
       refusedBesideBuilt: Record<string, RefusedSource>;
       /** The run metadata value for the uniqueness checks, when any ran. */
       uniquenessChecks?: ReturnType<UniquenessLedger["toMetadata"]>;
+      /** See {@link InstructedRun.readFrom}. */
+      readFrom?: ReadonlyMap<string, readonly string[]>;
    }> {
       const {
          compiled,
@@ -415,6 +419,7 @@ export class InstructedBuild {
          buildMetadata,
          incremental,
          clearedTiers,
+         ...(options.freshness ? { freshness: options.freshness } : {}),
          index,
          // Once per run: it depends only on the plan.
          planFacts: {
@@ -463,29 +468,7 @@ export class InstructedBuild {
          refusedBesideBuilt: {},
       };
       try {
-         for (const build of builds) {
-            const connection = connections.get(build.connectionName);
-            if (!connection) {
-               throw new BadRequestError(
-                  `Connection '${build.connectionName}' not found`,
-               );
-            }
-            for (const persistSource of sourcesInBuildOrder(build, tables)) {
-               if (signal.aborted) throw new BuildCancelledError();
-               await withSpan(
-                  "publisher.materialization.build_source",
-                  // Nested under the run's span, which names the package.
-                  { "malloy.source": persistSource.name },
-                  () =>
-                     this.buildInstructedSource(
-                        run,
-                        persistSource,
-                        build.connectionName,
-                        connection,
-                     ),
-               );
-            }
-         }
+         await this.buildEveryTable(run, builds, tables, connections);
 
          settled = settleRefusals(run);
 
@@ -547,6 +530,7 @@ export class InstructedBuild {
          ...(uniqueness?.toMetadata()
             ? { uniquenessChecks: uniqueness.toMetadata() }
             : {}),
+         ...(run.readFrom ? { readFrom: run.readFrom } : {}),
       };
    }
 
@@ -669,6 +653,82 @@ export class InstructedBuild {
    }
 
    /**
+    * Build every planned table in the plan's order, then each rollup that may
+    * read its base's stored table, so a base this run builds is there to
+    * read. Nothing a run builds reads a rollup's table.
+    */
+   private async buildEveryTable(
+      run: InstructedRun,
+      builds: CompiledBuildPlan["builds"],
+      tables: CompiledBuildPlan["tables"],
+      connections: CompiledBuildPlan["connections"],
+   ): Promise<void> {
+      const deferred: {
+         persistSource: PersistSource;
+         connectionName: string;
+         connection: MalloyConnection;
+      }[] = [];
+      for (const build of builds) {
+         const connection = connections.get(build.connectionName);
+         if (!connection) {
+            throw new BadRequestError(
+               `Connection '${build.connectionName}' not found`,
+            );
+         }
+         for (const persistSource of sourcesInBuildOrder(build, tables)) {
+            // A rollup that may read its base's stored table builds once
+            // every other table has, so a base this run builds is there
+            // to read. Nothing a run builds reads a rollup's table.
+            const table = tables[persistSource.sourceID];
+            if (table?.kind === "rollup" && table.overStoredBase) {
+               deferred.push({
+                  persistSource,
+                  connectionName: build.connectionName,
+                  connection,
+               });
+               continue;
+            }
+            await this.buildInRun(
+               run,
+               persistSource,
+               build.connectionName,
+               connection,
+            );
+         }
+      }
+      for (const later of deferred) {
+         await this.buildInRun(
+            run,
+            later.persistSource,
+            later.connectionName,
+            later.connection,
+         );
+      }
+   }
+
+   /** One source's turn in the run's loop, under its span. */
+   private async buildInRun(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      connectionName: string,
+      connection: MalloyConnection,
+   ): Promise<void> {
+      if (run.signal?.aborted) throw new BuildCancelledError();
+      await withSpan(
+         "publisher.materialization.build_source",
+         // Nested under the run's span, which names the package.
+         { "malloy.source": persistSource.name },
+         () =>
+            this.buildInstructedSource(
+               run,
+               persistSource,
+               connectionName,
+               connection,
+            ),
+      );
+   }
+
+   /**
     * The build Manifest and entry map a run starts from: every carried-forward
     * entry, so references to an upstream this run does not rebuild resolve.
     */
@@ -722,14 +782,21 @@ export class InstructedBuild {
       if (!gated) return;
       const { instruction, sourceEntityId, target } = gated;
       const { compiled } = run;
-      const entry = await this.buildGatedSource(
+      const built = await this.buildGatedSource(
          run,
-         persistSource,
+         (await overStoredBaseSource(run, persistSource, gated)) ??
+            persistSource,
          graphConnectionName,
          connection,
          gated,
       );
-      if (!entry) return;
+      if (!built) return;
+      const entry = withRollupUpstreamReuse(
+         run,
+         persistSource,
+         sourceEntityId,
+         built,
+      );
       run.builtSources.push(persistSource.name);
       reportSourceBuilt(
          {
@@ -1880,4 +1947,142 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          sourceID,
       );
    }
+}
+
+/**
+ * The source a colocated rollup builds from when this run holds its base's
+ * table: the rollup compiled over that table (rollup_compile.ts), so its
+ * build reads the table rather than the warehouse, through the build
+ * manifest as any chained build does. Only when every one of these holds,
+ * otherwise undefined and the rollup builds from the warehouse as planned:
+ *
+ *  - the rollup builds colocated, and its base is a colocated `#@ persist`
+ *    source (the plan offers the compile only then);
+ *  - the run's entries hold the base's table at the address the plan gives
+ *    it, built this run or carried under the reuse rules, colocated and at
+ *    the tier the base declares now. The colocated gate refused nothing on
+ *    that address, or it would not be built or carried, and a table's rows
+ *    do not depend on any gate: each is applied when a query reads it;
+ *  - the compiled source has the rollup's own address, so it builds the
+ *    same table.
+ *
+ *  - with a declared window, the base's table is new enough
+ *    ({@link baseFreshEnough}), whoever instructed the run.
+ *
+ * Records the base as what the rollup read, for its freshness anchor.
+ */
+/**
+ * Whether a rollup with a declared window may read its base's table: the
+ * base was built in this run, or its data anchor is known and inside the
+ * rollup's window at the run's start. A table of unknown age is never read
+ * as if it were new; the rollup builds from the warehouse instead. A rollup
+ * that declares no window reads any current table of its base.
+ */
+function baseFreshEnough(
+   run: InstructedRun,
+   rollupAddress: string,
+   baseAddress: string,
+   baseEntry: ManifestEntry,
+): boolean {
+   const window = run.freshness?.windowSecondsAt(rollupAddress);
+   if (window === undefined) return true;
+   if (run.builtAddresses.has(baseAddress)) return true;
+   if (baseEntry.dataAsOf === undefined) return false;
+   return (
+      freshnessOf(
+         { dataAsOf: baseEntry.dataAsOf, freshnessWindowSeconds: window },
+         run.freshness!.at,
+      ) === "fresh"
+   );
+}
+
+async function overStoredBaseSource(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
+): Promise<PersistSource | undefined> {
+   const { compiled } = run;
+   const table = compiled.tables[persistSource.sourceID];
+   if (table?.kind !== "rollup" || !table.overStoredBase) return undefined;
+   if (gated.instruction.destination) return undefined;
+   const baseID = table.rollup.baseSourceID;
+   const base = baseID === undefined ? undefined : compiled.tables[baseID];
+   if (!base || base.kind !== "persist") return undefined;
+   let baseAddress: string;
+   try {
+      baseAddress = computeSourceEntityId(
+         base.source,
+         compiled.connectionDigests,
+         base.target,
+         compiled.tableFolds,
+      );
+   } catch {
+      return undefined;
+   }
+   const baseEntry = run.entries[baseAddress];
+   if (
+      !baseEntry?.physicalTableName ||
+      baseEntry.storageDestinationName ||
+      !upstreamEntryIsCurrent(baseAddress, baseEntry, run.planFacts)
+   ) {
+      return undefined;
+   }
+   if (!baseFreshEnough(run, gated.sourceEntityId, baseAddress, baseEntry)) {
+      return undefined;
+   }
+   let variant: PersistSource | undefined;
+   try {
+      variant = await table.overStoredBase();
+   } catch {
+      return undefined;
+   }
+   if (!variant) return undefined;
+   try {
+      if (
+         computeSourceEntityId(
+            variant,
+            compiled.connectionDigests,
+            undefined,
+            compiled.tableFolds,
+         ) !== gated.sourceEntityId
+      ) {
+         return undefined;
+      }
+   } catch {
+      return undefined;
+   }
+   (run.readFrom ??= new Map()).set(gated.sourceEntityId, [baseAddress]);
+   return variant;
+}
+
+/**
+ * A colocated rollup's entry with `upstreamReuse` saying what its build read: `reused`
+ * when it built from its base's stored table ({@link overStoredBaseSource}),
+ * absent when it built from the warehouse. Its build source names the base
+ * only in the author's text, which the classification reads, so the
+ * classification alone would say `reused` either way, and the key checks
+ * over the base's rows (checkRollupKeys) would be skipped for a build that
+ * grouped exactly those rows. Any other entry is returned as built.
+ */
+function withRollupUpstreamReuse(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   address: string,
+   entry: ManifestEntry,
+): ManifestEntry {
+   // A `storage=` build reports what it stacked on itself (stackOnParents).
+   if (
+      run.compiled.tables[persistSource.sourceID]?.kind !== "rollup" ||
+      entry.storageDestinationName
+   ) {
+      return entry;
+   }
+   const {
+      upstreamReuse: _reuse,
+      upstreamRecomputeReason: _reason,
+      ...rest
+   } = entry;
+   return run.readFrom?.has(address)
+      ? { ...rest, upstreamReuse: "reused" }
+      : rest;
 }

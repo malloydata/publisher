@@ -285,8 +285,9 @@ export class ManifestCommitter {
       // package's lock, after the load (see commit).
       finish: (served: Served) => Promise<void> = async () => {},
    ): Promise<void> {
-      // Bound un-gated: freshness is stamped only on the control plane's wire
-      // manifest. A failed source mirrored into `entries` (the
+      // Bound with the freshness facts the run stamped from its tables'
+      // declarations (freshness_stamp.ts), as a host's manifest binds with
+      // the ones it stamps. A failed source mirrored into `entries` (the
       // `ManifestEntry.error` deprecation window) names the previous
       // generation's real table under auto-run's stable names, so binding it
       // would serve stale rows as fresh; skip it.
@@ -317,6 +318,7 @@ export class ManifestCommitter {
                ...boundSchemaOf(entry.schema),
                ...boundNativeSchemaOf(entry.nativeSchema),
                ...(keyUniqueness ? { keyUniqueness } : {}),
+               ...freshnessFactsOf(entry),
             };
          }
       }
@@ -435,7 +437,15 @@ export class ManifestCommitter {
          const local = cached[sourceEntityId];
          if (!local) continue;
          // Local entry is the base; caller-supplied (defined) fields override it.
-         const merged: ManifestEntry = { ...local };
+         // Its freshness facts are left out: a standalone run stamped them,
+         // and on a host's run the host's facts are the only ones that hold.
+         const {
+            dataAsOf: _dataAsOf,
+            freshnessWindowSeconds: _window,
+            freshnessFallback: _fallback,
+            ...unstamped
+         } = local;
+         const merged: ManifestEntry = { ...unstamped };
          for (const [key, value] of Object.entries(ref)) {
             if (value !== undefined) {
                (merged as Record<string, unknown>)[key] = value;
@@ -660,4 +670,22 @@ export function referenceManifestToEntries(
       };
    }
    return entries;
+}
+
+/** An entry's freshness facts, each only when set (manifest_loader.ts reads the same). */
+function freshnessFactsOf(
+   entry: ManifestEntry,
+): Pick<
+   FreshnessManifest[string],
+   "dataAsOf" | "freshnessWindowSeconds" | "freshnessFallback"
+> {
+   return {
+      ...(entry.dataAsOf !== undefined ? { dataAsOf: entry.dataAsOf } : {}),
+      ...(entry.freshnessWindowSeconds !== undefined
+         ? { freshnessWindowSeconds: entry.freshnessWindowSeconds }
+         : {}),
+      ...(entry.freshnessFallback !== undefined
+         ? { freshnessFallback: entry.freshnessFallback }
+         : {}),
+   };
 }

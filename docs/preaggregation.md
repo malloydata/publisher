@@ -354,7 +354,25 @@ Two things are specific to rollups:
 
 **A rollup that has never been built costs nothing but latency.** Queries compile against the rollup and the base together, and until a table exists the base answers everything. You will not see an error, only the performance you had before.
 
-**A stale rollup is skipped, not served.** When a rollup's table falls outside its freshness window it drops out of the serving set and queries recompute from the base. The answer is the same either way, which is what makes a refresh schedule a cost decision rather than a correctness one.
+**A stale rollup is skipped, not served.** When a rollup's table falls outside its freshness window it drops out of the serving set and queries recompute from the base, unless its fallback is `stale_ok`. The answer is the same either way, which is what makes a refresh schedule a cost decision rather than a correctness one.
+
+**A rollup builds from its base's table when it can.** A colocated rollup over a colocated `#@ persist` base reads the base's stored table rather than the warehouse, when the run building it holds that table: built earlier in the same run, or carried forward from an earlier one. Such a rollup builds after every other table in the run, so a base the run builds is there to read; any other rollup keeps its place. The stored rows are the ones a build from the warehouse stores, its `upstreamReuse` reads `reused`, and its `dataAsOf` is the base's when that is older. A rollup with a freshness window reads a carried base only when the base's `dataAsOf` is known and inside the rollup's window, so a rollup is never fresher than the rows it holds; otherwise it builds from the warehouse, and its entry has no `upstreamReuse`. A colocated rollup over a base that is not persisted, or is stored in a destination, builds from the warehouse; a rollup in a `storage=` destination builds as that destination's chained builds do.
+
+### Freshness
+
+A rollup takes `freshness.window=` and `freshness.fallback=`, with the same meaning as on `#@ persist` ([materialization.md](materialization.md#freshness-a-window-and-a-fallback)), on either spelling:
+
+```malloy
+source: orders is duckdb.table('orders.parquet') extend {
+  #(preaggregate) grain=["category"] freshness.window="1h" freshness.fallback="stale_ok"
+  measure: total is amount.sum()
+
+  #@ preaggregate grain="order_day" freshness.window="6h"
+  measure: order_count is count()
+}
+```
+
+Each key resolves on its own: the rollup's own declaration, then its base's own `#@ persist` or `#(materialize)` declaration, then the model file's, then the package's. Undeclared, a rollup goes stale with its base. Measures stored in one rollup (one grain and placement) share one table, so they share one freshness: a measure that says nothing takes the others', and two that disagree fail the load (`preaggregate-invalid`; windows compare as durations, so `24h` and `1d` agree). A key in the group other than `window` and `fallback` fails the load with `preaggregate-unknown-key`, and a window that is not a whole number and a unit (`s`, `m`, `h`, `d`, `w`), or a fallback other than `live`, `stale_ok` or `fail`, with `preaggregate-invalid`.
 
 ## What it costs
 

@@ -100,7 +100,16 @@ import {
    placementOf,
    readNotes,
    readNotesIfAny,
+   readRouteIfAny,
 } from "./declaration";
+import { Annotations } from "@malloydata/malloy";
+import type { DeclaredFreshness } from "../domain/freshness";
+import {
+   mergeRollupFreshness,
+   readFreshnessGroup,
+   rollupSourceFreshness,
+} from "./freshness_declaration";
+import { tagFreshnessLayer } from "./plan_layers";
 import { malloyIdentifiers } from "../../query_text";
 import {
    classifyWhereTerms,
@@ -303,6 +312,8 @@ interface Declaration {
    grain: string[];
    storage?: string;
    namespace?: string;
+   /** Its `freshness` group (freshness_declaration.ts). */
+   freshness?: DeclaredFreshness;
    /**
     * Read from a v1 `#@ preaggregate` line: a finding v1's
     * own validation already reports with the same code is not reported again.
@@ -347,9 +358,18 @@ function readDeclaration(
    if (unknown.length > 0) {
       return refuse(
          "preaggregate-unknown-key",
-         `has ${unknown.map((k) => `\`${k}=\``).join(", ")}, which it does not read; it reads grain=, storage= and namespace=`,
+         `has ${unknown.map((k) => `\`${k}=\``).join(", ")}, which it does not read; it reads grain=, storage=, namespace= and freshness.window= / freshness.fallback=`,
       );
    }
+   const fresh = readFreshnessGroup(tag, ["freshness"]);
+   if ("unknownKeys" in fresh) {
+      return refuse(
+         "preaggregate-unknown-key",
+         `has ${fresh.unknownKeys.map((k) => `\`freshness.${k}=\``).join(", ")}, which it does not read; use freshness.window= or freshness.fallback=`,
+      );
+   }
+   if ("invalid" in fresh)
+      return refuse(PREAGGREGATE_INVALID_CODE, fresh.invalid);
    const items = tag.array("grain");
    if (!items) {
       return refuse(
@@ -406,6 +426,7 @@ function readDeclaration(
       ),
       ...(storage !== undefined ? { storage } : {}),
       ...(namespace !== undefined ? { namespace } : {}),
+      ...(fresh.freshness ? { freshness: fresh.freshness } : {}),
    };
 }
 
@@ -500,7 +521,11 @@ export function planSourceRollups(
    // Group by grain and placement: ten measures at one grain are one table.
    const groups = new Map<
       string,
-      { decl: Declaration; measures: RollupMeasure[] }
+      {
+         decl: Declaration;
+         measures: RollupMeasure[];
+         declarations: Declaration[];
+      }
    >();
    const decomposed = new Map<string, ReturnType<typeof decomposeMeasure>>();
    for (const decl of declarations) {
@@ -532,22 +557,69 @@ export function planSourceRollups(
          `storage=${decl.storage ?? ""}`,
          `namespace=${decl.namespace ?? ""}`,
       ].join("\u0000");
-      const group = groups.get(key) ?? { decl, measures: [] };
+      const group = groups.get(key) ?? {
+         decl,
+         measures: [],
+         declarations: [],
+      };
       if (!group.measures.some((m) => m.name === decl.measure)) {
          group.measures.push(measure);
       }
+      group.declarations.push(decl);
       groups.set(key, group);
    }
 
-   const plans: RollupVariantPlan[] = [...groups.values()].map((group) =>
-      rollupPlanOf(group, node, facts, ctx),
-   );
+   // One table has one freshness: measures at one grain and placement that
+   // declare different ones are malformed, and the rollup is not planned. A
+   // conflict among v1 lines alone is v1 validation's to report
+   // (`conflicting_freshness`); one that a `#(preaggregate)` takes part in,
+   // which v1 validation does not see, is reported here.
+   const plans: RollupVariantPlan[] = [];
+   const baseFreshness = declaredBaseFreshness(def);
+   for (const group of groups.values()) {
+      const merged = mergeRollupFreshness(
+         group.declarations.map((d) => d.freshness),
+      );
+      if ("conflict" in merged) {
+         if (!group.declarations.every((d) => d.v1)) {
+            refused.push({
+               tier: "malformed",
+               code: PREAGGREGATE_INVALID_CODE,
+               message: `rollups of source "${sourceName}" declare a different freshness.${merged.conflict}= on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same one`,
+               sourceName,
+            });
+         }
+         continue;
+      }
+      const freshness = rollupSourceFreshness(merged.freshness, baseFreshness);
+      plans.push({
+         ...rollupPlanOf(group, node, facts, ctx),
+         ...(freshness ? { freshness } : {}),
+      });
+   }
    plans.sort(
       (a, b) =>
          a.grainDimensions.length - b.grainDimensions.length ||
          byCodepoint(a.rollupSourceName, b.rollupSourceName),
    );
    return { plans, refused };
+}
+
+/**
+ * The base's own source-level freshness: its `#@ persist` line's, else its
+ * `#(materialize)` declaration's, field by field. A rollup inherits it under
+ * its own (freshness_declaration.ts), so a rollup and its base go stale
+ * together unless the rollup says otherwise.
+ */
+function declaredBaseFreshness(def: SourceLike): DeclaredFreshness | undefined {
+   if (!def.annotations) return undefined;
+   const annotations = new Annotations(
+      def.annotations as ConstructorParameters<typeof Annotations>[0],
+   );
+   return rollupSourceFreshness(
+      tagFreshnessLayer(readRouteIfAny(annotations, "@")),
+      tagFreshnessLayer(readRouteIfAny(annotations, "materialize")),
+   );
 }
 
 /**
@@ -622,6 +694,9 @@ function rollupDeclarationsOf(
                measure: name,
                grain: grain.dimensions,
                v1: true,
+               ...(grain.freshness !== undefined
+                  ? { freshness: grain.freshness }
+                  : {}),
                ...(grain.storage !== undefined
                   ? { storage: grain.storage }
                   : {}),
