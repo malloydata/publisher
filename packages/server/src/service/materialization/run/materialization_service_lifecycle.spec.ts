@@ -1364,6 +1364,63 @@ describe("runInBackground (terminal recording)", () => {
       }
    });
 
+   describe("a run whose record is already terminal when it throws", () => {
+      const terminal: MaterializationStatus[] = [
+         "MANIFEST_FILE_READY",
+         "CANCELLED",
+         "FAILED",
+      ];
+      for (const status of terminal) {
+         it(`keeps ${status} when the run throws after it was recorded`, async () => {
+            ctx.repository.getMaterializationById.resolves(
+               makeMaterialization({ status: "PENDING" }),
+            );
+            background().runInBackground("bg-late", async () => {
+               // The terminal write lands (this process's commit, or another
+               // process's stop) before the run's own late throw.
+               ctx.repository.getMaterializationById.resolves(
+                  makeMaterialization({ status }),
+               );
+               throw new Error("late failure");
+            });
+            await flush();
+
+            expect(ctx.repository.updateMaterialization.called).toBe(false);
+         });
+      }
+
+      it("keeps a CANCELLED another process recorded when this one is aborted too", async () => {
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({ status: "CANCELLED", error: "Cancelled" }),
+         );
+         const bg = background();
+         bg.runInBackground("bg-both", async () => {
+            bg.runningAbortControllers.get("bg-both")!.abort();
+            throw new Error("deadlock detected");
+         });
+         await flush();
+
+         expect(ctx.repository.updateMaterialization.called).toBe(false);
+      });
+
+      it("still records FAILED when the record cannot be read", async () => {
+         ctx.repository.getMaterializationById.rejects(new Error("db down"));
+         const warnStub = sinon.stub(logger, "warn");
+         try {
+            background().runInBackground("bg-unread", async () => {
+               throw new Error("boom");
+            });
+            await flush();
+         } finally {
+            warnStub.restore();
+         }
+
+         expect(
+            ctx.repository.updateMaterialization.firstCall.args[1],
+         ).toMatchObject({ status: "FAILED", error: "boom" });
+      });
+   });
+
    it("keeps a DSN out of the run-level log and redacts it from the record", async () => {
       // A whole-run throw has no connection to redact against, but a connect
       // failure while resolving the package's connections echoes the DSN.

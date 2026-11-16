@@ -191,23 +191,39 @@ export class RunLifecycle {
                      ? { errorAtCancel: message }
                      : {}),
                };
-               let metadata: Record<string, unknown> | undefined;
-               if (Object.keys(extra).length > 0) {
-                  // Its own try: a failed read must never cost the status
-                  // transition, which would leave the run active and block
-                  // the package's next one.
-                  try {
-                     const current =
-                        await this.repository().getMaterializationById(id);
-                     metadata = { ...(current?.metadata ?? {}), ...extra };
-                  } catch (readErr) {
-                     logger.warn(
-                        "Could not read a run's metadata; recording its status without " +
-                           Object.keys(extra).join(" or "),
-                        { materializationId: id, error: errMessage(readErr) },
-                     );
-                  }
+               // The settle is a transition like any other: a record already
+               // terminal (this run's manifest committed before a late throw,
+               // or another process stopped it) is kept. Its own try: a failed
+               // read must never cost the status write, which would leave the
+               // run active and block the package's next one.
+               let read = false;
+               let current: Materialization | null = null;
+               try {
+                  current = await this.repository().getMaterializationById(id);
+                  read = true;
+               } catch (readErr) {
+                  logger.warn(
+                     Object.keys(extra).length > 0
+                        ? "Could not read a run's metadata; recording its status without " +
+                             Object.keys(extra).join(" or ")
+                        : "Could not read a run's record; recording its status unchecked",
+                     { materializationId: id, error: errMessage(readErr) },
+                  );
                }
+               if (
+                  current &&
+                  !VALID_TRANSITIONS[current.status].includes(next)
+               ) {
+                  logger.info(
+                     "Materialization run settled after its status was recorded; keeping it",
+                     { materializationId: id, status: current.status, code },
+                  );
+                  return;
+               }
+               const metadata =
+                  read && Object.keys(extra).length > 0
+                     ? { ...(current?.metadata ?? {}), ...extra }
+                     : undefined;
                await this.repository().updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
