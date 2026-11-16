@@ -223,9 +223,22 @@ async function main(): Promise<number> {
       }
    }
 
+   // An anchor baseline brings the ranges it was calibrated at (anchor.json).
+   const anchor = (await Bun.file(path.join(HERE, "anchor.json")).json()) as {
+      commit: string;
+      calibrated?: {
+         statusP90Ms: [number, number];
+         maxBlockMs: [number, number];
+      };
+   };
+   const baselineSha = baselineSpec.startsWith("git:")
+      ? git(["rev-parse", "--verify", `${baselineSpec.slice(4)}^{commit}`])
+      : undefined;
    const verdict = judge(results.baseline, results.candidate, limits, {
       cpus: os.availableParallelism(),
       expectCpus: flag("expect-cpus") ? Number(flag("expect-cpus")) : undefined,
+      baselineRange:
+         baselineSha === anchor.commit ? anchor.calibrated : undefined,
    });
    const summary = summarize(verdict, results.baseline, results.candidate, {
       baseline: baselineSpec,
@@ -240,6 +253,17 @@ async function main(): Promise<number> {
       appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
    }
    console.log(`\n${summary}\nresults: ${out}`);
+   if (verdict.outcome === "invalid" && process.env.GITHUB_ACTIONS) {
+      const why = verdict.checks
+         .filter((c) => c.outcome === "invalid")
+         .map((c) => `${c.name}: ${c.value}`)
+         .join("; ")
+         .replace(/\s+/g, " ")
+         .slice(0, 400);
+      console.log(
+         `::error title=Main-thread check INVALID (not a performance verdict)::${why}`,
+      );
+   }
    return verdict.outcome === "pass" ? 0 : verdict.outcome === "fail" ? 1 : 2;
 }
 

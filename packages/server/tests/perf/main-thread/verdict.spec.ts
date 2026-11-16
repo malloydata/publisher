@@ -191,10 +191,10 @@ describe("judge at the limits", () => {
 
    it("keeps the documented limits", () => {
       expect(DEFAULT_LIMITS).toEqual({
-         cpuPerOpRatio: 1.5,
-         statusP90Ratio: 2,
+         cpuPerOpRatio: 1.3,
+         statusP90Ratio: 1.6,
          statusP90RatioFloorMs: 150,
-         statusP90BudgetMs: 1600,
+         statusP90BudgetMs: 1000,
          maxBlockBudgetMs: 3000,
          rebindCompiles: 0,
          statusLoads: 0,
@@ -202,22 +202,22 @@ describe("judge at the limits", () => {
       });
    });
 
-   it("passes exactly 1.5x CPU and fails just over", () => {
-      const at = judge([run()], [run({ cpuPerOpMs: 90 })]);
+   it("passes exactly 1.3x CPU and fails just over", () => {
+      const at = judge([run()], [run({ cpuPerOpMs: 78 })]);
       expect(outcomeOf(at, "main-thread CPU per op vs baseline")).toBe("pass");
-      const over = judge([run()], [run({ cpuPerOpMs: 90.1 })]);
+      const over = judge([run()], [run({ cpuPerOpMs: 78.1 })]);
       expect(outcomeOf(over, "main-thread CPU per op vs baseline")).toBe(
          "fail",
       );
    });
 
-   it("passes exactly 1600 ms p90 and 3000 ms block, fails just over", () => {
-      const at = judge([run()], [run({ status: p90(1600), maxBlockMs: 3000 })]);
+   it("passes exactly 1000 ms p90 and 3000 ms block, fails just over", () => {
+      const at = judge([run()], [run({ status: p90(1000), maxBlockMs: 3000 })]);
       expect(outcomeOf(at, "/status p90 under the storm")).toBe("pass");
       expect(outcomeOf(at, "longest event-loop block")).toBe("pass");
       const over = judge(
          [run()],
-         [run({ status: p90(1601), maxBlockMs: 3001 })],
+         [run({ status: p90(1001), maxBlockMs: 3001 })],
       );
       expect(outcomeOf(over, "/status p90 under the storm")).toBe("fail");
       expect(outcomeOf(over, "longest event-loop block")).toBe("fail");
@@ -305,7 +305,7 @@ describe("judge at the limits", () => {
       );
    });
 
-   it("is invalid on the wrong runner, or a baseline far over budget", () => {
+   it("is invalid on the wrong runner", () => {
       expect(
          judge([run()], [run()], DEFAULT_LIMITS, { cpus: 2, expectCpus: 4 })
             .outcome,
@@ -314,15 +314,45 @@ describe("judge at the limits", () => {
          judge([run()], [run()], DEFAULT_LIMITS, { cpus: 4, expectCpus: 4 })
             .outcome,
       ).toBe("pass");
-      expect(judge([run({ status: p90(5000) })], [run()]).outcome).toBe(
-         "invalid",
-      );
-      expect(judge([run({ maxBlockMs: 3500 })], [run()]).outcome).toBe(
-         "invalid",
-      );
    });
 
-   it("compares every op type, but only notes one a side never serves", () => {
+   it("is invalid when an anchor baseline runs beyond twice its calibrated range", () => {
+      const baselineRange = {
+         statusP90Ms: [689, 1213] as [number, number],
+         maxBlockMs: [727, 2124] as [number, number],
+      };
+      const ok = judge([run({ status: p90(2426) })], [run()], DEFAULT_LIMITS, {
+         baselineRange,
+      });
+      expect(ok.outcome).toBe("pass");
+      const slow = judge(
+         [run({ status: p90(2427) })],
+         [run()],
+         DEFAULT_LIMITS,
+         {
+            baselineRange,
+         },
+      );
+      expect(slow.outcome).toBe("invalid");
+      const blocked = judge(
+         [run({ maxBlockMs: 4249 })],
+         [run()],
+         DEFAULT_LIMITS,
+         {
+            baselineRange,
+         },
+      );
+      expect(blocked.outcome).toBe("invalid");
+      // No range (a merge-base baseline): nothing to compare it with.
+      expect(judge([run({ status: p90(5000) })], [run()]).outcome).toBe("pass");
+   });
+
+   it("is invalid when the indexed load's window counted no QueryModel build", () => {
+      const none = run({ indexedLoad: { ...run().indexedLoad, builds: 0 } });
+      expect(judge([run()], [none]).outcome).toBe("invalid");
+   });
+
+   it("compares every op type, notes one only the baseline lacks, refuses one only the candidate lacks", () => {
       const fewer = run({
          ops: {
             load: { ok: 40, failed: {} },
@@ -345,8 +375,10 @@ describe("judge at the limits", () => {
       const v = judge([noRoute], [route]);
       expect(v.outcome).toBe("pass");
       expect(
-         v.checks.find((c) => c.name === "ops only one side serves")?.value,
+         v.checks.find((c) => c.name === "ops the baseline does not serve")
+            ?.value,
       ).toContain("entities");
+      expect(judge([route], [noRoute]).outcome).toBe("invalid");
    });
 });
 

@@ -127,16 +127,19 @@ storm), is invalid rather than a pass.
 ## The verdict
 
 Each side's figure is the median over its rounds. The two counts fail if any
-round is over. On `ubuntu-latest` (`verdict.ts` has the ranges): 0.12.6's
-`/status` p90 under this storm is 0.8 to 1.3 s, which is why the budget is
-1600 ms rather than the 500 ms a laptop suggests; 0.13.1's is 2 to 2.7 s, and
-`main` with the #7795 fixes 0.17 to 0.24 s.
+round is over. On `ubuntu-latest` (`verdict.ts` has the ranges), over 45 A/B
+jobs: null and fixed pairs stayed at or under 1.13x CPU and 1.40x p90, 0.13.1
+at or over 1.33x and 1.80x, hence 1.3x and 1.6x. `/status` p90 under this storm
+is 0.15 to 0.33 s on `main` with the #7795 fixes, 1.3 to 2.4 s on 0.13.1, and
+0.7 to 1.2 s on 0.12.6, so a null A/B of 0.12.6 itself (calibration only) runs
+with `--limits '{"statusP90BudgetMs":1600}'`. If PR runs show noise, the p90
+ratio moves to 1.75x before the CPU ratio moves.
 
 | check | kind | limit | catches |
 |---|---|---|---|
-| main-thread CPU per op vs baseline | relative | 1.5x | more synchronous work per load, bind or poll (0.13.1's `formatArrayQueryJoins`, its governor tick, its served-copy compiles) |
-| `/status` p90 vs baseline | relative | 2x, once the candidate's p90 is over 150 ms | a heartbeat that does more per poll or waits behind more main-thread work |
-| `/status` p90 under the storm | absolute | 1600 ms | the same, when the baseline is as bad |
+| main-thread CPU per op vs baseline | relative | 1.3x | more synchronous work per load, bind or poll (0.13.1's `formatArrayQueryJoins`, its governor tick, its served-copy compiles) |
+| `/status` p90 vs baseline | relative | 1.6x, once the candidate's p90 is over 150 ms | a heartbeat that does more per poll or waits behind more main-thread work |
+| `/status` p90 under the storm | absolute | 1000 ms | the same, when the baseline is as bad |
 | longest event-loop block | absolute | 3000 ms | a gross stall: one synchronous section of seconds (0.12.5's storm went silent for 47 s). It does not separate 0.13.1 from 0.12.6, whose longest blocks overlap at 1 to 2 s on a CI runner |
 | main-thread Malloy compiles on an identical re-bind | absolute | 0 | re-binding the manifest a version already holds and translating Malloy on the main thread for it: 0.13.1's served-copy recompile, and 0.12.0 to 0.12.5's `compileErrorOf` |
 | loads started by `/status` | absolute | 0 | a heartbeat that starts a package load |
@@ -152,12 +155,17 @@ A run is **invalid** (exit 2), not a pass or a fail, when:
 - the probe saw no load dispatch, a hook did not take, or a positive control
   counted nothing;
 - a re-bind or the indexed load failed;
-- an op type succeeded more than 10% (or 3) more often on one side. An op one
-  side never serves, like `/entities` before 0.12.1, is noted and not compared;
+- an op type succeeded more than 10% (or 3) more often on one side, or the
+  baseline serves an op the candidate never answers OK. An op only the baseline
+  never serves, like `/entities` before 0.12.1, is noted and not compared;
 - the runner is not the calibrated kind (`--expect-cpus 4` in CI);
 - a quiet check never got quiet;
-- the baseline itself is far over budget (`/status` p90 over three times its
-  budget, or a block over 3000 ms): an overloaded runner or a bad baseline.
+- the indexed load's window counted no QueryModel build (its positive control);
+- the baseline is the anchor and ran beyond twice the `/status` p90 or block
+  ranges `anchor.json` records for it: an overloaded or different runner.
+
+An invalid verdict emits `::error title=Main-thread check INVALID (not a
+performance verdict)`. A CPU-count invalid does not clear on a re-run.
 
 A harness error (a failed install, a server that never booted, a fixture one
 side cannot load) exits 2 too, with an `::error` titled *Main-thread harness
@@ -177,6 +185,9 @@ jobs.
   in a PR of its own; moving it is the deliberate act of accepting today's cost.
 - **Absolute budgets** hold on every run, so a main that is already bad, as main
   was when this landed, cannot pass by being compared with itself.
+- **What that means for a release:** `main` is measured against the anchor, so
+  main-thread growth above about 1.3x blocks a release even when it is wanted,
+  until the anchor moves forward, in a PR of its own.
 
 ## Reading a failure
 

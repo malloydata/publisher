@@ -38,26 +38,39 @@ export interface RunEnv {
    cpus?: number;
    /** When set (CI), a different CPU count makes the run invalid. */
    expectCpus?: number;
+   /**
+    * When the baseline is the anchor release: the ranges it measured on the
+    * calibrated runner (anchor.json). A baseline median beyond twice their
+    * top means the runner, not the candidate, changed.
+    */
+   baselineRange?: {
+      statusP90Ms: [number, number];
+      maxBlockMs: [number, number];
+   };
 }
 
 // Calibrated on GitHub-hosted ubuntu-latest (4 vCPU), 3 A/B jobs each of
 // 0.12.6 vs 0.13.1, 0.12.6 vs 0.12.6 and 0.12.6 vs the three
 // ms2data/service#7795 fixes merged, two rounds a side (README.md):
 //  - /status p90, with the indexed package placed (18 A/Bs on main after
-//    #1779): 0.12.6 689-1213 ms, main 149-332, 0.13.1 1345-2415. 500 ms would
-//    fail 0.12.6 itself on this runner; 1600 sits above it, so 0.13.1 fails
-//    it in most runs, not all (its re-bind compiles fail every run). Before
-//    the indexed package: 0.12.6 373-728, 0.13.1 1516-2392.
+//    #1779): 0.12.6 689-1213 ms, main 149-332, 0.13.1 1345-2415. The budget
+//    is 1000 ms: main has 3x headroom, 0.13.1 is over it in every run, and
+//    0.12.6 is often over it too, which is why a null A/B of 0.12.6 runs
+//    with `--limits '{"statusP90BudgetMs":1600}'`. Before the indexed
+//    package: 0.12.6 373-728, 0.13.1 1516-2392.
+//  - ratios over 45 A/Bs: null and fixed pairs at most 1.13x CPU and 1.40x
+//    p90; 0.13.1 at least 1.33x CPU and 1.80x p90, so 1.3x and 1.6x. If PR
+//    runs show noise, the p90 ratio moves to 1.75x before the CPU one moves.
 //  - longest block: 0.12.6 724-2211 ms, fixed 854-1778, 0.13.1 963-2211. It
 //    does not separate them (the common cost is hydrating the large generated
 //    package), so it only guards against a gross stall, like 0.12.5's 47 s.
 //  - indexed load: 0.12.0, 0.12.6, 0.13.1 and main build 4 QueryModels on
 //    the main thread; 0.12.1 and 0.12.5 build 256 (252 fingerprints).
 export const DEFAULT_LIMITS: Limits = {
-   cpuPerOpRatio: 1.5,
-   statusP90Ratio: 2,
+   cpuPerOpRatio: 1.3,
+   statusP90Ratio: 1.6,
    statusP90RatioFloorMs: 150,
-   statusP90BudgetMs: 1600,
+   statusP90BudgetMs: 1000,
    maxBlockBudgetMs: 3000,
    rebindCompiles: 0,
    statusLoads: 0,
@@ -165,6 +178,11 @@ export function judge(
          if ((r.quietMs ?? []).some((q) => q < 0)) {
             problems.push("the server never went quiet before a quiet check");
          }
+         if (r.indexedLoad?.ok && (r.indexedLoad.builds ?? 0) < 1) {
+            problems.push(
+               "the indexed load's window counted no QueryModel build, so its zero proves nothing",
+            );
+         }
          if (!r.indexedLoad?.ok) {
             problems.push(
                "the quiet load of the indexed package did not succeed",
@@ -184,8 +202,9 @@ export function judge(
    validity("baseline", baseline);
    validity("candidate", candidate);
    // The same workload on both sides: every op type answered OK about as
-   // often. An op one side never answers OK (a route that build predates,
-   // like /entities before 0.12.1) is noted, not compared.
+   // often. An op the baseline never answers OK (a route it predates, like
+   // /entities before 0.12.1) is noted, not compared; one the baseline serves
+   // and the candidate never does is a different workload.
    const ops = new Set(
       [...baseline, ...candidate].flatMap((r) => Object.keys(r.ops)),
    );
@@ -194,9 +213,12 @@ export function judge(
    for (const op of [...ops].sort()) {
       const b = med(baseline, (r) => r.ops[op]?.ok ?? 0);
       const c = med(candidate, (r) => r.ops[op]?.ok ?? 0);
-      if (b === 0 || c === 0) {
-         if (b !== c)
-            absent.push(`${op} (baseline ${b} ok, candidate ${c} ok)`);
+      if (b === 0) {
+         if (c !== 0) absent.push(`${op} (baseline 0 ok, candidate ${c} ok)`);
+         continue;
+      }
+      if (c === 0) {
+         mismatched.push(`${op}: baseline ${b} ok, candidate none`);
          continue;
       }
       if (Math.abs(c - b) > Math.max(3, 0.1 * b)) {
@@ -216,7 +238,7 @@ export function judge(
    }
    if (absent.length) {
       checks.push({
-         name: "ops only one side serves",
+         name: "ops the baseline does not serve",
          kind: "validity",
          outcome: "pass",
          value: absent.join("; "),
@@ -224,23 +246,24 @@ export function judge(
       });
    }
 
-   // A baseline far outside what it measures on the calibrated runner means
-   // the runner, not the candidate, is what changed.
-   const bBlock = med(baseline, (r) => r.maxBlockMs);
-   const bP90s = med(baseline, (r) => r.status.p90);
-   if (
-      bP90s > 3 * limits.statusP90BudgetMs ||
-      bBlock > limits.maxBlockBudgetMs
-   ) {
-      checks.push({
-         name: "the baseline ran as calibrated",
-         kind: "validity",
-         outcome: "invalid",
-         value: `baseline /status p90 ${ms(bP90s)}, longest block ${ms(bBlock)}`,
-         limit: `p90 <= ${ms(3 * limits.statusP90BudgetMs)} and block <= ${ms(limits.maxBlockBudgetMs)}`,
-         detail:
-            "The baseline itself is over budget: an overloaded runner or a bad baseline. Re-run; if it repeats, the baseline needs looking at.",
-      });
+   // An anchor baseline far outside what it measured on the calibrated
+   // runner means the runner, not the candidate, changed.
+   if (env.baselineRange) {
+      const bBlock = med(baseline, (r) => r.maxBlockMs);
+      const bP90s = med(baseline, (r) => r.status.p90);
+      const p90Top = 2 * env.baselineRange.statusP90Ms[1];
+      const blockTop = 2 * env.baselineRange.maxBlockMs[1];
+      if (bP90s > p90Top || bBlock > blockTop) {
+         checks.push({
+            name: "the anchor baseline ran as calibrated",
+            kind: "validity",
+            outcome: "invalid",
+            value: `baseline /status p90 ${ms(bP90s)}, longest block ${ms(bBlock)}`,
+            limit: `p90 <= ${ms(p90Top)} and block <= ${ms(blockTop)} (2x its calibrated top, anchor.json)`,
+            detail:
+               "The anchor ran far slower than it did when calibrated: an overloaded or different runner. Re-run; if it repeats, recalibrate.",
+         });
+      }
    }
 
    const bCpu = med(baseline, (r) => r.cpuPerOpMs);

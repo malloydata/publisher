@@ -496,7 +496,15 @@ after the merge (the first command in step 3).
   job summary. A harness error (titled *Main-thread harness error (not a
   performance verdict)*) or a flake → *Re-run failed jobs*. A real FAIL → fix
   `main` and dispatch again. Dispatch with `-f skip_main_thread_check=true` only
-  when the check itself is known to be wrong.
+  when the check itself is known to be wrong. An INVALID verdict (its own
+  `::error`, *Main-thread check INVALID*) says nothing about `main`: a re-run
+  clears a busy runner, but **not** a runner-CPU-count INVALID (the runner is
+  not the 4-vCPU kind the budgets were calibrated on). That one needs
+  `skip_main_thread_check=true` for this release, or a recalibration.
+- **The gate fails on legitimate growth.** `main` is measured against the
+  anchor release (`packages/server/tests/perf/main-thread/anchor.json`), so
+  main-thread growth above about 1.3x that is wanted still blocks the release.
+  Move the anchor forward in a PR of its own, then dispatch again.
 - **Only `build-python-sdk` or `publish-python-sdk` is red** → npm and Docker are
   unaffected; neither job is in `gh-release`'s `needs`. *Re-run failed jobs*:
   the publish job skips a version PyPI already holds, and reuses the verified

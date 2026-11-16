@@ -149,7 +149,7 @@ jobs:
             baseline="git:$IN_BASELINE"
           else
             # The anchor by commit, after checking its tag still names it.
-            tagged=$(git rev-parse "$anchor^{commit}")
+            tagged=$(git rev-parse -q --verify "$anchor^{commit}" || true)
             if [ "$tagged" != "$anchor_commit" ]; then
               echo "::error title=Main-thread harness error (not a performance verdict)::$anchor is $tagged, but anchor.json pins $anchor_commit"
               exit 2

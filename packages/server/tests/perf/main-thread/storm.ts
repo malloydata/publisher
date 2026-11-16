@@ -310,6 +310,26 @@ async function waitQuiet(s: Server, limitMs = 120_000): Promise<number> {
    return -1;
 }
 
+/**
+ * Close the current probe window once the server has been quiet for two
+ * seconds (up to two minutes), keeping everything it counted until then.
+ */
+async function settle(s: Server, limitMs = 120_000): Promise<ProbeSnapshot> {
+   const start = Date.now();
+   let last = await readProbe(s);
+   let quietFor = 0;
+   while (Date.now() - start < limitMs && quietFor < 2) {
+      await Bun.sleep(1000);
+      const now = await readProbe(s);
+      const moved =
+         now.compiles !== last.compiles ||
+         now.queryModelBuilds !== last.queryModelBuilds;
+      quietFor = moved ? 0 : quietFor + 1;
+      last = now;
+   }
+   return readProbe(s, true);
+}
+
 async function readProbe(s: Server, reset = false): Promise<ProbeSnapshot> {
    const r = await fetch(reset ? `${s.probe}/reset` : s.probe, {
       method: reset ? "POST" : "GET",
@@ -696,8 +716,9 @@ async function storm(o: StormOptions, set: FixtureSet): Promise<void> {
             `${s.api}/environments/${ip.env}/packages`,
             { name: ip.pkg, location: ip.dir },
          );
-         await Bun.sleep(1000);
-         const loaded = await readProbe(s, true);
+         // The load's own after-work (entities, warnings) counts too: wait
+         // for quiet rather than a fixed second, without closing the window.
+         const loaded = await settle(s);
          let entitiesOk = true;
          for (let i = 0; i < 3; i++) {
             const e = await call("GET", `${pkgUrl(ip)}/entities`);
