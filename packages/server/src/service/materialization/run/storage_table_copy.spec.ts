@@ -1,0 +1,182 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   spyOn,
+} from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import type { components } from "../../../api";
+import { BadRequestError } from "../../../errors";
+import * as connection from "../../connection";
+import { copyStorageTable } from "./storage_table_load";
+
+type ApiConnection = components["schemas"]["Connection"];
+
+/**
+ * Copying a stored table from one DuckLake catalog (or the same one) into a
+ * destination: the refusals before anything is attached, and the copy itself,
+ * which keeps the source's partition layout. The attaches are pointed at file
+ * catalogs here, since the real ones need a Postgres catalog database.
+ */
+
+function lakeConnection(name: string): ApiConnection {
+   return {
+      name,
+      type: "ducklake",
+      ducklakeConnection: {
+         storage: { bucketUrl: `gs://bucket/${name}` },
+         catalog: {
+            postgresConnection: { host: "h", databaseName: "d", userName: "u" },
+         },
+      },
+   } as ApiConnection;
+}
+
+const base = {
+   destinationName: "dest",
+   destinationConnection: lakeConnection("dest"),
+   schemaName: "main",
+   tableName: "copied",
+   source: {
+      catalogName: "src",
+      connection: lakeConnection("src"),
+      schemaName: "main",
+      tableName: "events",
+   },
+   mode: "create" as const,
+};
+
+describe("copyStorageTable refuses before attaching", () => {
+   it("copies only between DuckLake catalogs, either way round", async () => {
+      const postgres = { name: "pg", type: "postgres" } as ApiConnection;
+      await expect(
+         copyStorageTable({ ...base, destinationConnection: postgres }),
+      ).rejects.toThrow(BadRequestError);
+      await expect(
+         copyStorageTable({
+            ...base,
+            source: { ...base.source, connection: postgres },
+         }),
+      ).rejects.toThrow("Only a DuckLake catalog");
+   });
+
+   it("takes plain identifiers only, on either side", async () => {
+      await expect(
+         copyStorageTable({ ...base, tableName: 'x"; DROP TABLE y; --' }),
+      ).rejects.toThrow("plain identifiers");
+      await expect(
+         copyStorageTable({
+            ...base,
+            source: { ...base.source, schemaName: "a.b" },
+         }),
+      ).rejects.toThrow(BadRequestError);
+   });
+});
+
+describe("copyStorageTable on file catalogs", () => {
+   let dir: string;
+   const spies: { mockRestore(): void }[] = [];
+
+   /** Attach `alias` to the file catalog named for the connection's catalog. */
+   const attachFile =
+      (readOnly: boolean) =>
+      async (
+         session: DuckDBConnection,
+         alias: string,
+         config: components["schemas"]["DucklakeConnection"],
+      ) => {
+         const name = config.storage?.bucketUrl?.split("/").pop() ?? alias;
+         await session.runSQL("INSTALL ducklake");
+         await session.runSQL("LOAD ducklake");
+         await session.runSQL(
+            `ATTACH 'ducklake:${join(dir, `${name}.ducklake`)}' AS "${alias}" ` +
+               `(DATA_PATH '${join(dir, name)}/'${readOnly ? ", READ_ONLY" : ""})`,
+         );
+      };
+
+   beforeAll(() => {
+      dir = mkdtempSync(join(tmpdir(), "storage-table-copy-"));
+   });
+   afterAll(() => {
+      rmSync(dir, { recursive: true, force: true });
+   });
+
+   beforeEach(async () => {
+      spies.push(
+         spyOn(connection, "attachDuckLakeReadWrite").mockImplementation(
+            attachFile(false),
+         ),
+         spyOn(connection, "attachDuckLakeReadOnly").mockImplementation(
+            attachFile(true),
+         ),
+      );
+      // The source catalog: a partitioned table of three rows.
+      const seed = new DuckDBConnection("seed", join(dir, "seed.duckdb"));
+      try {
+         await attachFile(false)(
+            seed,
+            "src",
+            lakeConnection("src").ducklakeConnection!,
+         );
+         await seed.runSQL(
+            "CREATE OR REPLACE TABLE src.main.events AS SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'a')) AS v(id, kind)",
+         );
+         await seed.runSQL(
+            "ALTER TABLE src.main.events SET PARTITIONED BY (kind)",
+         );
+         await seed.runSQL("DETACH src");
+      } finally {
+         await seed.close();
+      }
+   });
+   afterEach(() => {
+      for (const spy of spies.splice(0)) spy.mockRestore();
+   });
+
+   it("copies a table across catalogs, with its rows, columns and partition layout", async () => {
+      const result = await copyStorageTable(base);
+      expect(result).toEqual({
+         rowCount: 3,
+         columns: [
+            { name: "id", type: "INTEGER" },
+            { name: "kind", type: "VARCHAR" },
+         ],
+         partitionedBy: [{ column: "kind", transform: "identity" }],
+      });
+   });
+
+   it("copies within one catalog to another name", async () => {
+      const result = await copyStorageTable({
+         ...base,
+         destinationName: "src",
+         destinationConnection: lakeConnection("src"),
+         tableName: "events_copy",
+      });
+      expect(result.rowCount).toBe(3);
+      expect(result.partitionedBy).toEqual([
+         { column: "kind", transform: "identity" },
+      ]);
+   });
+
+   it("refuses to copy a partitioned table onto itself, whatever its case", async () => {
+      await expect(
+         copyStorageTable({
+            ...base,
+            destinationName: "src",
+            destinationConnection: lakeConnection("src"),
+            tableName: "EVENTS",
+            mode: "replace",
+         }),
+      ).rejects.toThrow("cannot be copied onto itself");
+   });
+});
