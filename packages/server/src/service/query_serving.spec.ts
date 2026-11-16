@@ -378,7 +378,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
             authorRunnable: runnable,
          },
          pinned,
-         { modelPath: "m.malloy", colocatedKeepsContracts: true },
+         { modelPath: "m.malloy" },
       ).find((c) => c.kind === "served")!;
    const withG3 = async <T>(run: () => Promise<T>): Promise<T> => {
       const { restore } = installSettings({

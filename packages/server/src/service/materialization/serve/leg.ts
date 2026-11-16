@@ -155,8 +155,20 @@ export interface LegContext {
 export function makeLegs(p: Pinned, ctx: LegContext): readonly Leg[] {
    const legs: Leg[] = [];
    const { persistedViews, persistedQueries, rollupVariants, servedCopy } = ctx;
-   if (persistedViews) legs.push(viewLeg(persistedViews));
-   if (persistedQueries) legs.push(queryLeg(persistedQueries));
+   if (persistedViews) {
+      legs.push(
+         persistedResultLeg("view", persistedViews, (text) =>
+            persistedViews.calledView(text),
+         ),
+      );
+   }
+   if (persistedQueries) {
+      legs.push(
+         persistedResultLeg("query", persistedQueries, (text) =>
+            persistedQueries.calledQuery(text),
+         ),
+      );
+   }
    if (rollupVariants) legs.push(rollupLeg(rollupVariants));
    if (servedCopy?.hasBindings(p.snapshot)) legs.push(servedLeg(servedCopy));
    return legs;
@@ -168,15 +180,22 @@ function pinnedManifest(p: Pinned): BuildManifest | undefined {
 }
 
 /**
- * A persisted view first (R1): applicable only when the text calls one, so a
- * look-alike or a nest never costs a compile.
+ * A persisted view (R1), then a persisted named query by exact call (`run:
+ * q`, `run: q -> { … }`): each applicable only when the text calls one, so a
+ * look-alike or a nest never costs a compile. The gate policy has no row for
+ * the query leg, so it is never tried past an entry-point gate: a persisted
+ * query is never built over a gated source.
  */
-function viewLeg(views: PersistedViewServe): Leg {
+function persistedResultLeg(
+   kind: "view" | "query",
+   serve: Pick<PersistedViewServe | PersistedQueryServe, "attempt">,
+   called: (text: string) => unknown,
+): Leg {
    return {
-      kind: "view",
-      applies: (q) => !!views.calledView(q.queryString),
+      kind,
+      applies: (q) => !!called(q.queryString),
       attempt: async (q, p) => {
-         const answer = await views.attempt({
+         const answer = await serve.attempt({
             queryString: q.queryString,
             givens: q.givens,
             authorRunnable: q.authorRunnable,
@@ -189,36 +208,8 @@ function viewLeg(views: PersistedViewServe): Leg {
             shapeBindings: answer.binding ? [answer.binding] : [],
             virtualMap: answer.virtualMap,
             graftScope: answer.graftScope,
-            viewTable: answer.table,
-         };
-      },
-   };
-}
-
-/**
- * A persisted named query by exact call (`run: q`, `run: q -> { … }`), after
- * the view leg. The gate policy has no row for it, so it is never tried past
- * an entry-point gate: a persisted query is never built over a gated source.
- */
-function queryLeg(queries: PersistedQueryServe): Leg {
-   return {
-      kind: "query",
-      applies: (q) => !!queries.calledQuery(q.queryString),
-      attempt: async (q, p) => {
-         const answer = await queries.attempt({
-            queryString: q.queryString,
-            givens: q.givens,
-            authorRunnable: q.authorRunnable,
-            pinned: p,
-            buildManifest: pinnedManifest(p),
-         });
-         return {
-            runnable: answer.runnable,
-            tablesRead: answer.binding ? [answer.binding] : undefined,
-            shapeBindings: answer.binding ? [answer.binding] : [],
-            virtualMap: answer.virtualMap,
-            graftScope: answer.graftScope,
-            viewTable: { ...answer.table, kind: "query" },
+            viewTable:
+               kind === "query" ? { ...answer.table, kind } : answer.table,
          };
       },
    };

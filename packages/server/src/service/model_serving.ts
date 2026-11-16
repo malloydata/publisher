@@ -618,12 +618,7 @@ export class ModelServing {
                authorRunnable: runnable,
             },
             pinned,
-            {
-               modelPath: this.host.modelPath,
-               // G3: a colocated table is read past a row-level gate (it
-               // never leaves the author's warehouse).
-               colocatedKeepsContracts: true,
-            },
+            { modelPath: this.host.modelPath },
          ),
          async () => {
             // Cheap short-circuit for gate-free models. Safe, unlike
@@ -690,18 +685,8 @@ export class ModelServing {
       const governor = this.host.governor;
       const compiledSource =
          await governor.resolveAuthorizeSourceFromRunnable(runnable);
-      const governRequest: GovernRequest = {
+      const governRequest = governRequestOf({
          givens,
-         bypassAuthorize,
-         boundary:
-            admitted.boundary === "deferred"
-               ? { compiledSource, query }
-               : undefined,
-         callerRegion: admitted.callerRegion,
-         recompile: (mm: ModelMaterializer) =>
-            mm.loadRestrictedQuery(queryString),
-         // The caller's OWN text, not the synthesized/injected `queryString`.
-         callerQueryText: query,
          ceiling: {
             audit: ctx.audit,
             source: () => compiledSource ?? sourceName,
@@ -719,11 +704,25 @@ export class ModelServing {
          // gate is re-proven there. Any other routed shape carries no
          // annotations and is never reached past a row-level gate (the
          // router's veto).
-         graftScope:
-            answer.leg === "live" ? undefined : answer.answer.graftScope,
-         routedPastEntryPointGate:
-            answer.leg !== "live" && answer.pastEntryPointGate,
-      };
+         graft: {
+            recompile: (mm: ModelMaterializer) =>
+               mm.loadRestrictedQuery(queryString),
+            graftScope:
+               answer.leg === "live" ? undefined : answer.answer.graftScope,
+         },
+         query: {
+            bypassAuthorize,
+            boundary:
+               admitted.boundary === "deferred"
+                  ? { compiledSource, query }
+                  : undefined,
+            callerRegion: admitted.callerRegion,
+            // The caller's OWN text, not the synthesized/injected `queryString`.
+            callerQueryText: query,
+            routedPastEntryPointGate:
+               answer.leg !== "live" && answer.pastEntryPointGate,
+         },
+      });
       const { runnable: governed, decision } = await governor.govern(
          governRequest,
          // The LIVE compile keeps the caller's joins; a routed one does not.
@@ -1609,9 +1608,17 @@ export class ModelServing {
               )
             : undefined;
       const { runnable, decision } = await governor.govern(
-         {
+         governRequestOf({
             givens,
-            ...(cell.modelMaterializer
+            ceiling: {
+               audit,
+               source: async (governed) =>
+                  (await governor.resolveAuthorizeSourceFromRunnable(
+                     governed,
+                  )) ?? extractRunTargetSourceName(cell.text),
+            },
+            // No materializer to recompile against: a row-level gate denies.
+            graft: cell.modelMaterializer
                ? {
                     recompile: ownScopeBinder
                        ? ownScopeBinder.recompile
@@ -1620,17 +1627,8 @@ export class ModelServing {
                     proveGraft: ownScopeBinder?.prove,
                     graftScope,
                  }
-               : // No materializer to recompile against, so a
-                 // row-level gate denies.
-                 { bypassAuthorize: false }),
-            ceiling: {
-               audit,
-               source: async (governed) =>
-                  (await governor.resolveAuthorizeSourceFromRunnable(
-                     governed,
-                  )) ?? extractRunTargetSourceName(cell.text),
-            },
-         },
+               : undefined,
+         }),
          { runnable: runnableToExecute },
       );
       return { runnable, decision, readGivenNames: cellReadGivenNames };
@@ -1717,5 +1715,35 @@ function statementUsage(
       metered: input.meteredConnection,
       environment: input.environment,
       package: packageName,
+   };
+}
+
+/**
+ * The one request `govern()` judges, for a routed query and a notebook cell
+ * alike: the caller's givens, the ceiling over the audit, and how a graft
+ * recompiles on the scope it lands on. A subject with nothing to recompile
+ * gives up the bypass, so a row-level gate denies; a query adds its boundary,
+ * its caller's text and region, and whether it was routed past a gate.
+ */
+function governRequestOf(r: {
+   givens: GovernRequest["givens"];
+   ceiling: NonNullable<GovernRequest["ceiling"]>;
+   graft:
+      | Pick<GovernRequest, "recompile" | "proveGraft" | "graftScope">
+      | undefined;
+   query?: Pick<
+      GovernRequest,
+      | "bypassAuthorize"
+      | "boundary"
+      | "callerRegion"
+      | "callerQueryText"
+      | "routedPastEntryPointGate"
+   >;
+}): GovernRequest {
+   return {
+      givens: r.givens,
+      ...(r.graft ?? { bypassAuthorize: false }),
+      ...r.query,
+      ceiling: r.ceiling,
    };
 }

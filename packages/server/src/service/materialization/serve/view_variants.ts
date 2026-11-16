@@ -703,7 +703,7 @@ export async function readStoredVariant(args: {
 }
 
 /** The flags every generated variant file declares. */
-export const VARIANT_FLAGS =
+const VARIANT_FLAGS =
    "##! experimental { access_modifiers givens persistence virtual_source }";
 
 /** What the variant reproduces of the view's result. */
