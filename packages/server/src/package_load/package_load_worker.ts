@@ -102,6 +102,7 @@ import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
+import { governsAccess } from "../service/governance/ir/array_query";
 import { recordConnectionType } from "../service/connection_type";
 import {
    collectModelBuildPlan,
@@ -1057,6 +1058,7 @@ async function compileMalloyModel(
       renderTagResultsDigest,
       preaggregateCompanion,
       entities,
+      governsAccess: governsAccess(modelDef),
    };
 }
 
@@ -1338,6 +1340,7 @@ async function compileNotebookModel(
          checked && checked.warnings.length > 0
             ? checked.warnings.map((w) => w.message)
             : undefined,
+      governsAccess: modelDef ? governsAccess(modelDef) : undefined,
    };
 }
 

@@ -359,10 +359,9 @@ describe("R4 harness drift: colocated tables agree with a real run", () => {
       expect(rowDifference(harness.live, served)).toBeUndefined();
    });
 
-   // Last: it writes a marker row into the `#@ persist` tables. A colocated
-   // `#@ persist` table is read through the build manifest, which the path
-   // does not report, so the marker is what shows a side reads its table.
-   it("known gap in the harness: answers a colocated #@ persist source from its table, where the harness answers it live", async () => {
+   // Last: it writes a marker row into the `#@ persist` tables, so the
+   // marker shows that each side reads its table and not the warehouse.
+   it("answers a colocated #@ persist source from its table as the harness does", async () => {
       const query =
          "run: by_cat_v1 -> { group_by: cat; aggregate: t is total.sum(); order_by: cat }";
       const marker = "INSERT INTO %t VALUES ('zz', 99.0)";
@@ -376,12 +375,16 @@ describe("R4 harness drift: colocated tables agree with a real run", () => {
       await r4v1.duckdb.runSQL(
          marker.replace("%t", await harnessTable(r4v1, "r4_by_cat_v1_")),
       );
-      expect((await ask(f!, query)).map((r) => r.cat)).toContain("zz");
-      // Known gap: the harness binds the table but never reads it, so its
-      // served answer is live's. When the harness reads it, this flips.
+      const served = await ask(f!, query);
+      expect(served.map((r) => r.cat)).toContain("zz");
+      const path = await servedBy(f!, query);
+      expect(path).toEqual({ kind: "materialized", via: "served_copy" });
       const harness = await r4v1.run({ name: "persist", malloy: query });
-      expect(harness.served.map((r) => r.cat)).not.toContain("zz");
-      expect(harness.servedBy?.kind).toBe("live");
+      expect(harness.servedVia).toBe("served_copy");
+      // A `#@ persist` table, not live: the path's kind for a stored table.
+      expect(harness.servedBy?.kind).toBe(path.kind);
+      expect(harness.live.map((r) => r.cat)).not.toContain("zz");
+      expect(rowDifference(harness.served, served)).toBeUndefined();
    });
 });
 

@@ -10,6 +10,7 @@ import {
    arrayQueryJoins,
    forEachFieldPath,
    governsAccess,
+   noteGovernsAccess,
    type ArrayQueryJoin,
 } from "./array_query";
 
@@ -243,5 +244,25 @@ describe("governsAccess", () => {
             ),
          ).toBe(governs);
       }
+   });
+
+   it("answers what the load worker noted for an object, without walking it", () => {
+      const governed = {
+         contents: { s: { notes: [{ text: "#(authorize) false" }] } },
+      };
+      const walked = structuredClone(governed);
+      expect(governsAccess(walked)).toBe(true);
+      // Noted, the object is not read: a getter on its only key would throw.
+      const noted = {};
+      Object.defineProperty(noted, "contents", {
+         enumerable: true,
+         get() {
+            throw new Error("walked");
+         },
+      });
+      noteGovernsAccess(noted, false);
+      expect(governsAccess(noted)).toBe(false);
+      noteGovernsAccess(governed, true);
+      expect(governsAccess(governed)).toBe(true);
    });
 });

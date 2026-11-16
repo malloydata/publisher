@@ -1019,6 +1019,11 @@ export class EnvironmentStore
    private async bindVersionRegistry(
       environment: Environment,
       environmentId: string,
+      /**
+       * The environment's row was created just now, so no version names it:
+       * there is nothing to read for `/status` or to keep when cleaning up.
+       */
+      newRow: boolean = false,
    ): Promise<void> {
       const repository = this.storageManager.getRepository();
       const environmentName = environment.getEnvironmentName();
@@ -1082,13 +1087,18 @@ export class EnvironmentStore
       });
       if (alreadyBound) return;
       // Before any poll can list this environment's versions: /status reads
-      // them from memory from here on.
-      await environment.primeStatusVersions();
+      // them from memory from here on. A new row has none, so a create reads
+      // no version row (two database round trips fewer on every create).
+      if (newRow) {
+         environment.primeStatusVersionsEmpty();
+      } else {
+         await environment.primeStatusVersions();
+      }
       try {
          const owned = new Map<string, Set<string>>();
-         for (const version of await repository.listVersionsByEnvironment(
-            environmentId,
-         )) {
+         for (const version of newRow
+            ? []
+            : await repository.listVersionsByEnvironment(environmentId)) {
             const dirs = owned.get(version.packageName) ?? new Set<string>();
             dirs.add(version.dirName);
             owned.set(version.packageName, dirs);
@@ -1158,7 +1168,11 @@ export class EnvironmentStore
       // Its version rules as soon as it has a row: the environment is already
       // served, and a publish to it needs them. A sync below that fails must
       // not leave it without them.
-      await this.bindVersionRegistry(environment, dbEnvironment.id);
+      await this.bindVersionRegistry(
+         environment,
+         dbEnvironment.id,
+         dbEnvironment.created,
+      );
 
       const connectionFailures = await this.addConnections(
          environment,
@@ -1215,7 +1229,7 @@ export class EnvironmentStore
    private async addEnvironmentMetadata(
       environment: Environment,
       repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<{ id: string; name: string }> {
+   ): Promise<{ id: string; name: string; created: boolean }> {
       const environmentName = environment.metadata?.name;
       if (!environmentName) {
          throw new Error("Environment name is required but not found");
@@ -1232,7 +1246,7 @@ export class EnvironmentStore
       const existingEnvironment =
          await repository.getEnvironmentByName(environmentName);
 
-      let dbEnvironment: { id: string; name: string };
+      let dbEnvironment: { id: string; name: string; created: boolean };
       if (existingEnvironment) {
          const updateData = {
             description: environmentDescription,
@@ -1240,9 +1254,14 @@ export class EnvironmentStore
          };
 
          await repository.updateEnvironment(existingEnvironment.id, updateData);
-         dbEnvironment = { id: existingEnvironment.id, name: environmentName };
+         dbEnvironment = {
+            id: existingEnvironment.id,
+            name: environmentName,
+            created: false,
+         };
       } else {
-         dbEnvironment = await repository.createEnvironment(environmentData);
+         const created = await repository.createEnvironment(environmentData);
+         dbEnvironment = { id: created.id, name: created.name, created: true };
       }
 
       return dbEnvironment;
