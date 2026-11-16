@@ -645,26 +645,22 @@ export class StorageBuildStrategy
       }
    }
 
-   /** On an isolated read-write session with the destination attached. */
-   async checkKey(
+   /**
+    * On an isolated read-write session with the destination attached; a
+    * destination it cannot reach throws, which the caller reads as unknown.
+    */
+   checkKey(
       site: StorageSite,
       check: KeyCheck,
       table: string,
    ): Promise<KeyCheckRecord | undefined> {
-      try {
-         return await withDestinationSession(
-            site,
-            { purpose: "view" },
-            (session) =>
-               runRollupKeyCheck(
-                  check,
-                  session as unknown as MalloyConnection,
-                  table,
-               ),
-         );
-      } catch {
-         return undefined;
-      }
+      return withDestinationSession(site, { purpose: "view" }, (session) =>
+         runRollupKeyCheck(
+            check,
+            session as unknown as MalloyConnection,
+            table,
+         ),
+      );
    }
 
    /**

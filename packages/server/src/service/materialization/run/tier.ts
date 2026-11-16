@@ -60,7 +60,8 @@ export interface TierAdapter<Request, Site> {
    drop(site: Site, table: DroppedTable): Promise<void>;
    /**
     * Run a key check over a table at `site`: what it found, or undefined
-    * when it did not run (the key then reads as unknown).
+    * when it did not run. A throw is read as the same: the key is unknown and
+    * the build goes on (instructed_build.ts, checkAndRecordKey).
     */
    checkKey(
       site: Site,
