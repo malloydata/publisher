@@ -79,6 +79,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -149,6 +150,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -218,13 +220,14 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b"
+          "tableId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "the view called",
       "servedBy": "view",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {
@@ -288,6 +291,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

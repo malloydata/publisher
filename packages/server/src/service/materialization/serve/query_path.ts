@@ -392,6 +392,7 @@ function pathTally(): PathTally {
       servedBy = {
          kind: t.kind,
          ...(t.tableId ? { tableId: t.tableId } : {}),
+         tier: t.tier,
          ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
       };
    };

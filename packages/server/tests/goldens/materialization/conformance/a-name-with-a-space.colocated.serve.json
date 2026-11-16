@@ -74,13 +74,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the spaced column",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -144,13 +145,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "5af4cda2cb1755ea8666a6d3d3846c41477f2dbc3de37ef4b5618385021eb460",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the spaced column",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     }
   ]

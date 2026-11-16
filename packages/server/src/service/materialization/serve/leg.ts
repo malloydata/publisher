@@ -292,40 +292,32 @@ export function answeredWith(
 }
 
 /**
- * How a query's answer was ultimately produced, once it reached a stored
- * table at all. `storage` = served from a stored table through `virtual()`.
- * `live_fallback` = it routed, then a run-time store failure degraded it to
- * the live warehouse (a success the caller cannot distinguish from a storage
- * hit, which is exactly why it is reported separately; on the error metric,
- * the live retry failed too). Absent means no stored table answered.
+ * Which tier answered a query, when a stored table did: `storage`, a table in
+ * a `storage=` destination read through `virtual()`; `colocated`, a table in
+ * the source's own warehouse (Malloy's substitution, the served copy over a
+ * colocated table, a colocated rollup or persisted view); `live_fallback`, a
+ * routed answer whose stored run failed and degraded to live (a success that
+ * must NOT count as a storage hit). Absent means no stored table answered.
  */
-export type ServedFrom = "storage" | "live_fallback";
+export type ServedFrom = "storage" | "colocated" | "live_fallback";
 
-/**
- * `servedFrom` for the answer: a storage hit, a storage run that fell back
- * live (`live_fallback`, a success that must NOT count as a storage hit), or
- * undefined for everything else.
- */
+/** `servedFrom` for the answer, the same tier the path report's `servedBy` names. */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
-   if (answer.leg === "live") return undefined;
+   if (answer.leg === "live") {
+      return answer.colocatedRead.size > 0 ? "colocated" : undefined;
+   }
    if (answer.runFailed) return "live_fallback";
    const { tablesRead, virtualMap } = answer.answer;
-   // A served-copy answer that read only colocated `#(materialize)` tables
-   // read the source's own warehouse, as a colocated `#@ persist` answer
-   // does, which reports no storage hit; its path report names the table.
-   if (
-      answer.leg === "served" &&
-      tablesRead !== undefined &&
-      tablesRead.length > 0 &&
-      tablesRead.every(isColocated)
-   ) {
-      return undefined;
+   if (answer.leg === "served") {
+      return tablesRead !== undefined &&
+         tablesRead.length > 0 &&
+         tablesRead.every(isColocated)
+         ? "colocated"
+         : "storage";
    }
-   // A `storage=` persisted view or `#(preaggregate)` rollup reads the
-   // storage tier too, through `virtual()`.
-   return answer.leg === "served" || virtualMap !== undefined
-      ? "storage"
-      : undefined;
+   // A `storage=` persisted view or rollup reads through `virtual()`; a
+   // colocated one through the build manifest.
+   return virtualMap !== undefined ? "storage" : "colocated";
 }
 
 /**

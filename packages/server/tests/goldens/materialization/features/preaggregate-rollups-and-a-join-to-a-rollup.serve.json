@@ -463,13 +463,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "8ee590c7caa5a8e27b612492f2abec261baa65e65ea067328c7af3a037c1effc"
+          "tableId": "8ee590c7caa5a8e27b612492f2abec261baa65e65ea067328c7af3a037c1effc",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "a colocated rollup",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {
@@ -532,7 +533,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "14db554405415a132affe4fd532e2a9bb42a117547176c6284f76a93f28d2356"
+          "tableId": "14db554405415a132affe4fd532e2a9bb42a117547176c6284f76a93f28d2356",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -601,13 +603,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "8ee590c7caa5a8e27b612492f2abec261baa65e65ea067328c7af3a037c1effc"
+          "tableId": "8ee590c7caa5a8e27b612492f2abec261baa65e65ea067328c7af3a037c1effc",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "a declared view",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {

@@ -515,8 +515,8 @@ view or join its base declares, say) is left as written and serves live, and its
 verdict says why.
 
 Each answer's path report says which happened: an answer read from the lake
-carries `servedBy` with `via: "served_copy"`, and a live answer carries no
-`servedFrom`.
+carries `servedBy` with `via: "served_copy"` and `servedFrom: "storage"`, and
+a live answer carries no `servedFrom`.
 
 Fallback means turning the feature on can never make a query wrong — at worst it
 serves live, exactly as it would with the feature off.
@@ -821,8 +821,9 @@ Everything you need is on the package status and the logs:
     was unreachable, kept distinct from the shape limits so a store outage is not
     read as an un-carriable query.
   - `malloy_model_query_duration` tags a routed query with
-    `served_from=storage`, or `served_from=live_fallback` when a run-time store
-    failure degraded it to live (so a fallback never counts as a storage hit).
+    `served_from=storage` or `served_from=colocated` by the tier that answered,
+    or `served_from=live_fallback` when a run-time store failure degraded it to
+    live (so a fallback never counts as a storage hit).
     Note this attribute follows `QueryResult.servedFrom`'s vocabulary, not the
     counter's directly above it — so `served_from=live_fallback` and
     `outcome=live_fallback` are different events despite sitting two bullets

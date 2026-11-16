@@ -87,13 +87,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored array-query result",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -168,13 +169,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a caller's array query over a stored array",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -246,13 +248,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored array-query result",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {
@@ -327,13 +330,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a caller's array query over a stored array",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     }
   ]

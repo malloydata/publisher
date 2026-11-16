@@ -80,13 +80,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the colocated source alone",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -150,6 +151,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -284,13 +286,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the colocated source alone",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {
@@ -354,6 +357,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

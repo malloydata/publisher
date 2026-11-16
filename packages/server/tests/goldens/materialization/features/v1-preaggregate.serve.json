@@ -77,13 +77,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "a covered grain",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -146,13 +147,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "the timeframe grain",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -355,13 +357,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "a covered grain",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {
@@ -424,13 +427,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
+          "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "the timeframe grain",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {

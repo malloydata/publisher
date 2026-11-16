@@ -141,6 +141,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -240,6 +241,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -330,6 +332,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -434,6 +437,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -533,6 +537,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -639,13 +644,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a colocated extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -751,6 +757,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -850,6 +857,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -940,6 +948,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -1044,6 +1053,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -1143,6 +1153,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -1249,13 +1260,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a colocated extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     }
   ]

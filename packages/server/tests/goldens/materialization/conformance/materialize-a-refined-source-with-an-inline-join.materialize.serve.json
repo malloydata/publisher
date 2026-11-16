@@ -80,6 +80,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -232,6 +233,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -302,6 +304,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -454,6 +457,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

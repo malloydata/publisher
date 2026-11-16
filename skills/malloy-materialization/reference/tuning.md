@@ -51,7 +51,7 @@ The history is where cost lives. Each run records its trigger, timing, and per s
 
 Look across several runs, not one: the pattern over the recent history (how often it rebuilds, how long each source takes, what reuses) is the signal.
 
-- **For `storage=` tables, how queries were routed.** `publisher_query_route_total{leg, outcome, reason}` on the metrics endpoint counts each serving leg the router considered: `used` when it answered, `skipped` with the reason, and `fallback` when its stored run failed and live answered, and each query response's `servedFrom` says it per query. Nothing equivalent exists for a table built in the source's own warehouse: there, "rarely queried" is a judgement from the model and the user's knowledge, not a measured metric. Say so when it matters.
+- **For `storage=` tables, how queries were routed.** `publisher_query_route_total{leg, outcome, reason}` on the metrics endpoint counts each serving leg the router considered: `used` when it answered, `skipped` with the reason, and `fallback` when its stored run failed and live answered, and each query response's `servedFrom` says it per query. For a table built in the source's own warehouse there is no route counter, but each response's `servedFrom` reads `colocated` when one answered, so a log of responses measures it. Say so when it matters.
 
 ## Step 3: Analyze and recommend
 

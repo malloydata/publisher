@@ -93,6 +93,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -171,6 +172,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -255,6 +257,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -410,13 +413,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a joined dimension, colocated",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -494,6 +498,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -572,6 +577,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -656,6 +662,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -811,13 +818,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223",
+          "tier": "colocated",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a joined dimension, colocated",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     }
   ]

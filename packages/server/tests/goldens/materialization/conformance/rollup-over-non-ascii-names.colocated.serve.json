@@ -88,13 +88,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
+          "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "by the non-ASCII grain",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "off"
     },
     {
@@ -163,13 +164,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
+          "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "by the non-ASCII grain",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     }
   ]

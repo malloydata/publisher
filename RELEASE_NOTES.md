@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — every answer from a materialized table reports its tier: `servedFrom: "colocated"` and `path.servedBy.tier`
+
+A query answered from a table in the source's own warehouse now reports `servedFrom: "colocated"`, where it reported `null` before. This covers a colocated `#@ persist` table Malloy substituted, a colocated `#(materialize)` table the served copy read, and a colocated rollup or persisted view. `storage` and `live_fallback` are unchanged, and `null` now means only that no materialized table answered. The path report's `servedBy` gains `tier` (`colocated` or `storage`) whenever a table answered, the same tier `servedFrom` names. The access record's `servedFrom`, the workload log's `served_from` and the `malloy.model.query.served_from` attribute on `malloy_model_query_duration` carry the new value too.
+
+- **A client that treats any non-null `servedFrom` as a storage hit** now counts colocated hits as well. Compare against `"storage"` to keep counting the `storage=` tier alone.
+- **A strict client of the `servedFrom` enum** must accept `colocated`. A client that reads `servedBy` with a closed schema must accept `tier`.
+- **A dashboard that read colocated hits as live** sees them move from `null` to `colocated`, with no change in which table answered or what it returned.
+
 ## [Unreleased] — `publisher_materialization_eligibility_refused_total` counts each source a build plan refuses, once per derivation
 
 A build plan now decides each planned table's eligibility once, and the counter counts exactly the sources in the plan's `refusedSources`: each one once per derivation of the plan, under the reason recorded there. Before, the derivation judged a source on several passes (the wire plan's `refusedSources`, the bind's storage eligibility, its colocated eligibility, and the colocated sibling check), and each pass counted it again, so one refused source typically added 3. A source the plan does not refuse is no longer counted at all: a colocated `#@ persist` that builds and serves from its own warehouse, but could not be served from a storage destination (on a DuckDB, MySQL or Trino connection, `storage_source_unsupported`), used to tick the counter on every derivation and now does not.

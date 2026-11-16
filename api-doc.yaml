@@ -8520,14 +8520,18 @@ components:
             exactly that many rows is a complete answer.
         servedFrom:
           type: ["string", "null"]
-          enum: [storage, live_fallback, null]
+          enum: [storage, colocated, live_fallback, null]
           description: >-
-            How this answer was produced, when the query reached the storage
-            routing decision at all.
+            Which tier answered this query, when a materialized table did.
 
             `storage` — served from a materialized table in a `storage=`
             destination, via the virtual-source transform. The source's own
             warehouse was not queried.
+
+            `colocated` — served from a materialized table in the source's own
+            warehouse: a colocated `#@ persist` table Malloy substituted, a
+            colocated `#(materialize)` table the served copy read, or a
+            colocated rollup or persisted view.
 
             `live_fallback` — the query DID route to storage and the store then
             failed underneath it, and the source's freshness fallback allowed it
@@ -8538,45 +8542,12 @@ components:
             `publisher_query_route_total` the same event is the answering leg's
             `outcome="fallback", reason="RUN_FAILED"`.
 
-            **This field describes the `storage=` tier and nothing else.** It
-            records how the storage routing decision came out, so it says nothing
-            about the colocated `#@ persist` tier, which answers a query by
-            substituting the materialized table into the model and never reaches
-            that decision.
-
-            **Null is three different outcomes**, and they are worth telling
-            apart because two of them mean materialization worked and one means
-            it silently did not:
-
-            1. The query never had a storage binding to consider — every query on
-               a deployment with no `storage=` sources, which is the default.
-            2. It was answered from a **colocated** materialized table. The
-               query never reached the routing decision, so a fully materialized
-               answer reports the same null a fully live one does.
-            3. The served copy did **not answer** this query, so it was served
-               live. The query DID reach the routing decision and the tier
-               declined it — a storage-tier miss, reported identically to "no
-               materialization exists anywhere."
-
-            Case 3 is the one that costs time, because nothing about this field
-            distinguishes it from case 1. `path`, the path report, does: it names
-            the table that answered in every tier, and why each table that could
-            have answered did not. The server also logs one
+            Null means no materialized table answered: the query was served
+            live. `path`, the path report, says why each table that could have
+            answered did not, and `path.servedBy.tier` names the same tier this
+            field does. The server also logs one
             `served copy cannot answer this query` line at DEBUG per declined
-            query, carrying the error that declined it. It is not hypothetical —
-            a source warehouse that folds unquoted identifiers to upper case once
-            made every query on every `storage=` source in a package miss, and
-            the whole tier reported null for months while looking exactly like a
-            deployment that had never enabled it.
-
-            For the colocated tier there is no per-query signal at all. The
-            package-grain fields are the nearest thing —
-            `manifestBindingStatus`, `manifestEntryCount` and
-            `storageServeBindings` — but read what each actually claims:
-            `bound` reports that the bind ran to completion, explicitly NOT that
-            any query routes to a materialized table, and `manifestEntryCount`
-            counts colocated entries only, so a package whose sources are all
-            `storage=` reports 0 while being fully bound.
+            query, carrying the error that declined it.
 
             ⚠️ **`live_fallback` here is not `manifestBindingStatus`'s.** On this
             field it means the store failed at run time; `manifestBindingStatus`
@@ -8634,9 +8605,7 @@ components:
             materialized table that served it (or `live`), every materialized
             table on the queried source's chain with the reason each one that
             did not answer was skipped, and nearby tables the query could not
-            use. Unlike `servedFrom`, it covers the colocated `#@ persist` tier
-            and pre-aggregation rollups as well as `storage=`, so a null
-            `servedFrom` no longer hides whether a table answered.
+            use, for every tier.
 
             Absent only when the report could not be assembled; the query's
             answer never depends on it.
@@ -8771,6 +8740,13 @@ components:
         tableId:
           type: string
           description: The table that answered. Absent when `kind` is `live`.
+        tier:
+          type: string
+          enum: [colocated, storage]
+          description: >-
+            Where the table that answered lives: `colocated`, the source's own
+            warehouse, or `storage`, a `storage=` destination. The same tier the
+            query result's `servedFrom` reports. Absent when `kind` is `live`.
         dataAsOf:
           type: string
           format: date-time

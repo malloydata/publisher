@@ -80,6 +80,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -150,6 +151,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -220,6 +222,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -296,6 +299,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -436,6 +440,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -506,6 +511,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -576,6 +582,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -652,6 +659,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

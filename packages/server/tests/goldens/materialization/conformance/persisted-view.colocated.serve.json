@@ -259,13 +259,14 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "the view called",
       "servedBy": "view",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {
@@ -328,13 +329,14 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
+          "tier": "colocated"
         },
         "warnings": []
       },
       "query": "a later stage after the view",
       "servedBy": "view",
-      "servedFrom": null,
+      "servedFrom": "colocated",
       "switch": "on"
     },
     {
