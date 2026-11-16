@@ -50,7 +50,9 @@ A `storage=` source whose connection the build cannot pass a query through to, s
 
 The build plan's `refusedSources[].reason` and the `publisher_materialization_eligibility_refused_total` metric's `reason` label gain one value, `storage_source_unsupported`. A client that switches on the reason should handle it. No answer changes: these sources were never built.
 
-A compile-time refusal of a generated source now carries its route's own warning code, as this one does: a `#(materialize)` source's is `materialize-not-built`, a persisted view's `persist-view-not-built`, and a persisted query's `persist-query-not-built`. A gated `#(materialize) storage=` source used to warn `persist-not-built`. The repeat under the former code, `persist-source-refused`, is unchanged.
+A compile-time refusal of a generated source now carries its route's own warning code, as this one does: a `#(materialize)` source's is `materialize-not-built`, a persisted view's `persist-view-not-built`, and a persisted query's `persist-query-not-built`. A gated `#(materialize) storage=` source used to warn `persist-not-built`. The repeat under the former code, `persist-source-refused`, is unchanged for the refusals that carried it before. A `storage_source_unsupported` refusal, which no earlier release raised, is not repeated.
+
+A run that reaches a DuckLake source on a catalog other than its destination's, for example from a host's instruction, now refuses that source alone with `storage_source_unsupported` instead of failing it. The plan still admits a DuckLake source, because the destination's catalog is not known at plan time.
 
 ## [Unreleased] — a v1 `#@ persist` over `now` answers live instead of serving a stale snapshot
 

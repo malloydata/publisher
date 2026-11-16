@@ -1471,8 +1471,11 @@ export class PackageMaterialization {
          // `persist-not-built` was `persist-source-refused` until this
          // release, for exactly these gate refusals: each is repeated under
          // its former code, with the same message, for one release, then the
-         // alias is removed. Display surfaces show it once.
-         return source.tier !== "preaggregate"
+         // alias is removed. Display surfaces show it once. A refusal no
+         // earlier release raised (`storage_source_unsupported`) never
+         // carried the former code, so it is not repeated.
+         return source.tier !== "preaggregate" &&
+            source.reason !== "storage_source_unsupported"
             ? [warning, { ...warning, code: PERSIST_SOURCE_REFUSED_ALIAS_CODE }]
             : [warning];
       });

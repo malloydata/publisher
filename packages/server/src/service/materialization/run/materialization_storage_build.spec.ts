@@ -711,4 +711,66 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
          expect(write.called).toBe(false);
       });
    }
+
+   // A DuckLake source builds only into its own catalog: another catalog is
+   // refused alone, with the same reason, rather than failing the run.
+   const catalogAt = (host: string) => ({
+      catalog: {
+         postgresConnection: { host, port: 5432, databaseName: "lake" },
+      },
+      storage: { bucketUrl: "gs://managed-tier/org_a" },
+   });
+   const DESTINATION_AT_A = {
+      name: "shared",
+      type: "ducklake",
+      ducklakeConnection: catalogAt("catalog-a.internal"),
+   };
+
+   it("refuses a DuckLake source on another catalog, writing nothing", async () => {
+      const environment = buildEnvironmentStub({
+         connections: {
+            duckdb: {
+               name: "duckdb",
+               type: "ducklake",
+               ducklakeConnection: catalogAt("catalog-b.internal"),
+            },
+         },
+         destinations: { shared: DESTINATION_AT_A },
+      });
+      const { run, write } = callInto(environment);
+
+      let error: unknown;
+      try {
+         await run();
+      } catch (caught) {
+         error = caught;
+      }
+
+      expect(error).toBeInstanceOf(MaterializationEligibilityError);
+      expect((error as MaterializationEligibilityError).reason).toBe(
+         "storage_source_unsupported",
+      );
+      expect((error as Error).message).toContain(
+         "a DuckLake catalog other than the destination's",
+      );
+      expect(write.called).toBe(false);
+   });
+
+   it("admits a DuckLake source on the destination's own catalog", async () => {
+      const environment = buildEnvironmentStub({
+         connections: {
+            duckdb: {
+               name: "duckdb",
+               type: "ducklake",
+               ducklakeConnection: catalogAt("catalog-a.internal"),
+            },
+         },
+         destinations: { shared: DESTINATION_AT_A },
+      });
+      const { run, write } = callInto(environment);
+
+      await run();
+
+      expect(write.called).toBe(true);
+   });
 });

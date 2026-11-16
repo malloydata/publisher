@@ -133,6 +133,7 @@ import {
 function storageSourceConnection(
    environment: { getApiConnection(name: string): ApiConnection },
    persistSource: PersistSource,
+   destinationConnection: ApiConnection,
 ): ApiConnection {
    let connection: ApiConnection | undefined;
    try {
@@ -140,7 +141,14 @@ function storageSourceConnection(
    } catch (err) {
       if (!(err instanceof ConnectionNotFoundError)) throw err;
    }
-   if (connection?.type && storageBuildReadsConnectionType(connection.type)) {
+   const type = connection?.type;
+   if (
+      connection &&
+      type &&
+      storageBuildReadsConnectionType(type) &&
+      // A DuckLake source builds only into its own catalog.
+      (type !== "ducklake" || isSameCatalog(connection, destinationConnection))
+   ) {
       return connection;
    }
    recordEligibilityRefused("storage_source_unsupported");
@@ -148,7 +156,7 @@ function storageSourceConnection(
       reason: "storage_source_unsupported",
       message: unreadableSourceConnectionMessage(
          persistSource,
-         connection ? (connection.type ?? "unknown") : undefined,
+         connection ? (type ?? "unknown") : undefined,
       ),
    });
 }
@@ -449,15 +457,16 @@ export class StorageBuildStrategy
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
       const destinationName = instruction.destination!;
-      const sourceConnection = storageSourceConnection(
-         environment,
-         persistSource,
-      );
       // From the destination list, never the connection list: an unconfigured
       // destination must fail (422) rather than resolve a same-named connection
       // and write a tenant's own warehouse.
       const destinationConnection =
          environment.getStorageDestination(destinationName);
+      const sourceConnection = storageSourceConnection(
+         environment,
+         persistSource,
+         destinationConnection,
+      );
 
       const { incrementalRefresh, refresh } = await this.refreshOf(
          params,

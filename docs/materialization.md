@@ -177,11 +177,14 @@ below.
 
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
-everyone. A source a compile-time gate refuses is also a package warning, code
-`persist-not-built` (severity `warn`), carrying the gate's message, with `subject` the source. The
-code was `persist-source-refused`; for one release every `persist-not-built` warning is repeated
-with that old code and the same message, so a reader that matches the old code keeps working, and
-then the repeat is removed. A rollup a gate
+everyone. A source a compile-time gate refuses is also a package warning (severity `warn`),
+carrying the gate's message, with `subject` the source, under its route's not-built code:
+`persist-not-built` for a `#@ persist` source, `materialize-not-built` for a `#(materialize)`
+source, `persist-view-not-built` for a persisted view and `persist-query-not-built` for a persisted
+query (each of the last two with `subject` its generated source). The code was
+`persist-source-refused`; for one release each such warning is repeated with that old code and the
+same message, so a reader that matches the old code keeps working, and then the repeat is removed.
+A refusal no earlier release raised, `storage_source_unsupported`, is not repeated. A rollup a gate
 refuses is `preaggregate-not-built` instead, with `subject` its base and a message naming its base,
 its grain and the gate's reason.
 
@@ -497,7 +500,9 @@ connection included, is refused at load with reason `storage_source_unsupported`
 base): it is not built, its queries are answered live, the route's `*-not-built` warning names the
 connection, and a run builds the rest of the package. Drop `storage=` to build it in its own
 connection, or put the source on a warehouse connection. The decision is the connection's
-configured type, never its name.
+configured type, never its name. A DuckLake source on a catalog other than its destination's is
+admitted by the plan, which does not know the destination's catalog, and refused by the run with the
+same reason; that source alone is not built, and the run builds the rest.
 
 ### Stored column types follow the model, not the warehouse
 
@@ -620,7 +625,7 @@ Warnings about the deployment rather than one item carry codes of their own, suc
 
 Renamed and retired codes:
 
-- `persist-source-refused` is now `persist-not-built`. For one release each gate refusal that used to carry `persist-source-refused` is repeated under it, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed. The refusals new in this release carry `persist-not-built` only.
+- `persist-source-refused` is now the route's not-built code: `persist-not-built`, `materialize-not-built`, `persist-view-not-built` or `persist-query-not-built`. For one release each gate refusal that used to carry `persist-source-refused` is repeated under it, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed. A refusal no earlier release raised, `storage_source_unsupported`, carries only its route's code, without the repeat.
 - `preaggregate-malformed` is no longer produced: the same mistake is `preaggregate-invalid` or `preaggregate-unparseable`, and fails the load.
 - The API keeps three reasons it no longer produces: `RefusedSource.reason` `empty_storage` and `env_reference`, and `OmittedSource.reason` `persist_annotation_unparseable`.
 

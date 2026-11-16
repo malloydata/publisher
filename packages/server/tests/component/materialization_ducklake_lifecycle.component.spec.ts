@@ -2302,11 +2302,8 @@ source: sb_sales is sb_raw extend {
                "persist-query-not-built:sb_query__query",
                "persist-view-not-built:sb_viewed__by_cat__view",
                "preaggregate-not-built:sb_sales",
-               // The former code, repeated for one release.
-               "persist-source-refused:sb_daily",
-               "persist-source-refused:sb_orders",
-               "persist-source-refused:sb_query__query",
-               "persist-source-refused:sb_viewed__by_cat__view",
+               // No repeat under the former `persist-source-refused`: no
+               // earlier release raised this refusal.
             ].sort(),
          );
          const plan = lake.pkg.getBuildPlan();

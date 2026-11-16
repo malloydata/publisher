@@ -35,7 +35,8 @@ export function storageBuildReadsConnectionType(type: string): boolean {
  * (`storage_source_unsupported`), for the plan's gate and the build's
  * fail-closed check alike: `type` is the connection's configured type, or
  * undefined when the environment holds no connection of that name (the
- * package's sandbox).
+ * package's sandbox). `ducklake` reaches here only from the build, for a
+ * catalog other than the destination's.
  */
 export function unreadableSourceConnectionMessage(
    source: { name: string; connectionName: string },
@@ -45,12 +46,15 @@ export function unreadableSourceConnectionMessage(
       type === undefined
          ? `is not one of the environment's connections (the package's own ` +
            `DuckDB sandbox is not)`
-         : `is a '${type}' connection`;
+         : type === "ducklake"
+           ? `is a DuckLake catalog other than the destination's`
+           : `is a '${type}' connection`;
    return (
       `Source '${source.name}' cannot be materialized into a storage ` +
       `destination: its connection '${source.connectionName}' ${what}, ` +
       `which cannot be passed through to a 'storage=' build (it reads ` +
-      `${PASSTHROUGH_SOURCE_TYPES.join(", ")} and DuckLake sources only). ` +
+      `${PASSTHROUGH_SOURCE_TYPES.join(", ")} sources, and a DuckLake ` +
+      `source into its own catalog only). ` +
       `The source is not built and is answered live. Drop 'storage=' to ` +
       `build it in its own connection, or put the source on a warehouse ` +
       `connection.`

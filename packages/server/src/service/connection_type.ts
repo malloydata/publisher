@@ -13,6 +13,8 @@
  * in the package-load worker, from the metadata the main thread sends.
  */
 
+import { externalEnv } from "../settings/external";
+
 const recorded = new WeakMap<object, string>();
 
 /** Test seam layers: connection name -> the type to record instead. */
@@ -26,11 +28,19 @@ const overrides: Map<string, string>[] = [];
  * hand, and some component specs fake a Postgres passthrough over a DuckDB
  * one. Recorded on the main thread, which also answers the package-load
  * worker's connection metadata, so both plan paths see it. Layers stack;
- * the latest wins.
+ * the latest wins. Throws outside a test process (`NODE_ENV=test`, which
+ * `bun test` sets).
  */
 export function recordConnectionsAsForTests(
    types: Record<string, string>,
 ): () => void {
+   // Never in production: a recorded type decides whether a `storage=`
+   // source is built, so only a test process may change it.
+   if (externalEnv("NODE_ENV") !== "test") {
+      throw new Error(
+         "recordConnectionsAsForTests is a test seam: it runs only under NODE_ENV=test",
+      );
+   }
    const layer = new Map(Object.entries(types));
    overrides.push(layer);
    return () => {

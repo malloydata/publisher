@@ -162,13 +162,39 @@ describe.skipIf(!url)(
             JSON.stringify({ name: "pa", version: "1.0.0", description: "x" }),
          );
          fs.writeFileSync(path.join(dir.dir, "model.malloy"), MODEL);
+         // A second package whose `storage=` source is on a DuckLake
+         // connection to the destination's own catalog: admitted at plan.
+         const lakePkg = tempDir("sbx-lakepkg-");
+         dirs.push(lakePkg);
+         fs.writeFileSync(
+            path.join(lakePkg.dir, "publisher.json"),
+            JSON.stringify({ name: "pl", version: "1.0.0", description: "x" }),
+         );
+         fs.writeFileSync(
+            path.join(lakePkg.dir, "model.malloy"),
+            [
+               "##! experimental.persistence",
+               '#@ persist storage="lake"',
+               'source: lk_stored is lk.sql("SELECT 1 AS x") -> { select: x }',
+               "",
+            ].join("\n"),
+         );
+         const lakeCatalog = {
+            catalog: {
+               postgresConnection: { ...pg, databaseName: catalog },
+            },
+            storage: { bucketUrl: lake.dir },
+         };
          server = await spawnServer({
             config: {
                frozenConfig: false,
                environments: [
                   {
                      name: "e1",
-                     packages: [{ name: "pa", location: dir.dir }],
+                     packages: [
+                        { name: "pa", location: dir.dir },
+                        { name: "pl", location: lakePkg.dir },
+                     ],
                      connections: [
                         {
                            name: "pg",
@@ -176,6 +202,14 @@ describe.skipIf(!url)(
                            postgresConnection: {
                               ...pg,
                               databaseName: warehouse,
+                           },
+                        },
+                        {
+                           name: "lk",
+                           type: "ducklake",
+                           ducklakeConnection: {
+                              ...lakeCatalog,
+                              readOnly: false,
                            },
                         },
                      ],
@@ -266,6 +300,25 @@ describe.skipIf(!url)(
                   w.code?.endsWith("-not-built"),
             ),
          ).toEqual([]);
+      });
+
+      it("admits a storage= source on a DuckLake connection to the destination's own catalog", async () => {
+         const plan = (
+            (await (
+               await fetch(
+                  `${server.baseUrl}/api/v0/environments/e1/packages/pl`,
+               )
+            ).json()) as {
+               buildPlan?: {
+                  sources?: Record<string, { name: string }>;
+                  refusedSources?: Record<string, { reason?: string }>;
+               };
+            }
+         ).buildPlan;
+         expect(Object.values(plan?.sources ?? {}).map((s) => s.name)).toEqual([
+            "lk_stored",
+         ]);
+         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
       });
 
       it("builds the Postgres sibling and the colocated source, and fails nothing", () => {
