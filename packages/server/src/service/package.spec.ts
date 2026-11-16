@@ -614,9 +614,12 @@ describe("service/package", () => {
    // WHETHER the source may be served frozen — that is decided by compiling the
    // model. These assert the gate that enforces it, because the failure is silent:
    // an admitted binding for a `given`-filtered source serves one caller's rows to
-   // everyone, and no error is raised. Scenarios
-   // `host-binding-honors-row-level-access` and `host-binding-of-unplanned-source`
-   // prove it end to end; these keep it from being refactored away.
+   // everyone, and no error is raised. Scenario
+   // `host-binding-honors-row-level-access` proves it end to end for a refused
+   // source. A source the plan never contained has no end-to-end route any more
+   // (the filtered pass-through that produced one fails the load, scenario
+   // `host-binding-of-unplanned-source`), so these are its only guard and keep
+   // the gate from being refactored away.
    describe("bindStorageServeBindings eligibility gate", () => {
       /** A structurally complete manifest entry — the shape a host sends. */
       const entry = (sourceName: string, table: string) => ({

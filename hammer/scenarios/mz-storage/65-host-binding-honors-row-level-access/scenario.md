@@ -132,9 +132,10 @@ Expect:
 
 The positive half, and what separates this scenario from
 `host-binding-of-unplanned-source`: `scoped_rollup` was compiled, EXAMINED, and
-refused — with the tier it would have built under and the reason. There, the source
-is in neither collection, because Malloy never admitted it as a persist source at
-all, and the bind path can only report that it was never examined.
+refused — with the tier it would have built under and the reason. There, Malloy
+would never admit the source as a persist source at all, so it would be in neither
+collection; the publisher fails that package's load instead, so no binding for it
+can be made.
 
 Expect:
 

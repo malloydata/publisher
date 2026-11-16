@@ -19,7 +19,9 @@ no passthrough for it; the build refuses rather than silently doing the wrong
 thing.
 
 This pins that guardrail: a `#@ persist storage=lake` source reading a declared
-DuckDB connection is refused at build time. (A genuine cross-dialect *success*
+DuckDB connection is refused when the build is planned
+(`storage_source_unsupported`), before anything runs, and the build fails naming
+the connection and the fix. (A genuine cross-dialect *success*
 case — Postgres alongside BigQuery/Snowflake — needs foreign-engine credentials
 the harness doesn't wire, so it's out of this harness's reach; only Postgres is
 available here.)
@@ -49,9 +51,20 @@ source: dk_daily is dk_orders -> {
 }
 ```
 
+## Build refusals
+
+The plan examines the source and refuses it under the storage tier, with the
+reason.
+
+Expect:
+
+| source   | tier    | reason                     |
+| -------- | ------- | -------------------------- |
+| dk_daily | storage | storage_source_unsupported |
+
 ## Build refused
 
-A DuckDB source has no query-passthrough into the store, so materializing it into
-`storage=lake` is refused.
+A DuckDB source cannot be passed through into the store, so materializing it
+into `storage=lake` is refused.
 
-cites: passthrough
+cites: its connection 'dk' is a 'duckdb' connection, which cannot be passed through to a 'storage=' build
