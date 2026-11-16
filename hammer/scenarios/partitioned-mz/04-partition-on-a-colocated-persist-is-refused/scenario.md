@@ -8,12 +8,13 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# `partition=` on a colocated persist is refused at publish
+# `partition=` on a colocated persist fails the publish and the load
 
 A colocated `#@ persist` writes into the customer's own warehouse, where the
 publisher never laid a table out. `partition=` is retired everywhere, so here it
-is refused at publish exactly as on a `storage=` source
-(`partition-on-a-storage-persist-is-refused`), not by a gate of its own.
+is an invalid annotation (`persist-retired-key`) exactly as on a `storage=`
+source (`partition-on-a-storage-persist-is-refused`), not a gate of its own: the
+publish and the load fail, with a message that says to remove it.
 
 ## Publisher
 
@@ -38,20 +39,20 @@ source: raw is orders_pg.sql('SELECT order_id, org_id, amount FROM public.pws_or
 source: orders is raw -> { select: * }
 ```
 
-## Warns pws
+## Rejected pws
 
-cites: partition= is not supported
+The configured package does not load, so it is not served.
 
 ## Republish refused pws
 
+The author-in-the-loop publish is refused, naming the key and the fix.
+
 cites: partition= is not supported
 
-## Build refusals (pkg=pws)
+## Build refused pws
 
-No eligibility gate refuses it: the retired key is refused at publish, never as
-a `partition_*` plan refusal, which the plan no longer produces.
+A build cannot start on a package that does not load; the failure carries the
+retired-key code, not a `partition_*` plan refusal.
 
-Expect:
-
-| source |
-| ------ |
+cites: [persist-retired-key]
+excludes: partition_
