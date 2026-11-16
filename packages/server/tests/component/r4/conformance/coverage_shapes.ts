@@ -119,7 +119,7 @@ source: typed is duckdb.sql("""
    {
       name: "rollup over a base with an array column",
       about: "A #(preaggregate) rollup over a base carrying an array column outside its grain (v1 #@ preaggregate refuses that base as a fan-out join and fails the load: r4/coverage_refusals)",
-      variants: ["materialize"],
+      variants: ["materialize", "materialize_colocated"],
       files: {
          "m.malloy": `${HEADER}
 
@@ -200,7 +200,12 @@ source: bestellungen is orders_raw extend {
    {
       name: "array queries under persist",
       about: "##! experimental.array_queries: a persisted query that stores an array query's result, and a persisted source that stores the array a caller's array query reads",
-      variants: ["colocated", "storage", "materialize"],
+      variants: [
+         "colocated",
+         "storage",
+         "materialize",
+         "materialize_colocated",
+      ],
       files: {
          "m.malloy": `##! experimental { persistence array_queries }
 
