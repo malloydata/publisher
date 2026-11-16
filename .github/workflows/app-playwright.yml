@@ -112,7 +112,7 @@ jobs:
         run: bunx playwright test --config=playwright.config.ts
         env:
           CI: "true"
-          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "false"
 
       - name: Upload Playwright report
         if: always()
@@ -142,7 +142,7 @@ jobs:
         run: bunx playwright test --config=playwright.config.ts --output=test-results-model-viewer tests/playwright/model-page-literals.spec.ts tests/playwright/model-page-givens.spec.ts tests/playwright/model-viewer.spec.ts
         env:
           CI: "true"
-          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "false"
           PUBLISHER_MODEL_PAGE: viewer
           EXPECT_MODEL_PAGE: viewer
 

@@ -3,7 +3,7 @@
 
 // Spawns the REAL Publisher server from source (`bun src/server.ts`) on isolated
 // ports and an isolated server root, pointed at a generated config. Waits for
-// operationalState === "serving". `PERSIST_STORAGE_MODE` is read at startup, so
+// operationalState === "serving". `PUBLISHER_PERSIST_STORAGE_MODE` is read at startup, so
 // each mode needs its own server instance.
 
 import path from "path";
@@ -78,7 +78,7 @@ export interface ServerOptions {
    mode: PersistStorageMode;
    /**
     * Extra environment variables for the spawned server, beyond
-    * `PERSIST_STORAGE_MODE` (which is set from `mode`). Lets a scenario boot a
+    * `PUBLISHER_PERSIST_STORAGE_MODE` (which is set from `mode`). Lets a scenario boot a
     * publisher with a deployment flag like `PERSIST_COLLISION_ENFORCE=true` that,
     * like the mode, is fixed at process start.
     */
@@ -106,16 +106,18 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       "bun",
       "run",
       "./dist/server.mjs",
-      "--server_root",
+      // The settings' derived names (docs/configuration.md), so every
+      // scenario starts a publisher the way the reference documents.
+      "--root",
       opts.serverRoot,
       "--config",
       opts.configPath,
       "--port",
       String(opts.port),
-      "--mcp_port",
+      "--mcp-port",
       String(opts.mcpPort),
    ];
-   if (opts.init !== false) args.push("--init");
+   if (opts.init !== false) args.push("--initialize-storage");
 
    log.step(
       `starting Publisher server (mode=${opts.mode}) on ${baseUrl} [mcp ${opts.mcpPort}]`,
@@ -123,19 +125,23 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
 
    const logSink = opts.logFile ? Bun.file(opts.logFile).writer() : null;
    // Every listener goes on HOST, the interface the port allocator probes; an
-   // inherited MCP_HOST would move MCP elsewhere. An inherited admin port would
+   // inherited MCP host would move MCP elsewhere. An inherited admin port would
    // be the same fixed port for every publisher, the collision this harness
    // allocates ports to avoid, so only a scenario's own env can turn it on.
+   // Today's names for what the harness sets go too: an old name that differs
+   // from its new one fails startup.
    const inherited: Record<string, string | undefined> = { ...process.env };
    delete inherited.PUBLISHER_ADMIN_PORT;
+   delete inherited.MCP_HOST;
+   delete inherited.PERSIST_STORAGE_MODE;
    const proc: Subprocess = Bun.spawn(args, {
       cwd: serverDir,
       env: {
          ...inherited,
          NODE_ENV: "production",
-         PERSIST_STORAGE_MODE: opts.mode,
+         PUBLISHER_PERSIST_STORAGE_MODE: opts.mode,
          PUBLISHER_HOST: HOST,
-         MCP_HOST: HOST,
+         PUBLISHER_MCP_HOST: HOST,
          ...opts.extraEnv,
       },
       stdout: opts.inheritStdio ? "inherit" : "pipe",

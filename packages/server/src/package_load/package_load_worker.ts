@@ -48,6 +48,7 @@ import {
 } from "../constants";
 import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import { HackyDataStylesAccumulator } from "../data_styles";
+import { overlayKey } from "../service/overlay_key";
 import { PackageManifestError } from "../errors";
 import { deserializeError, serializeError } from "./error_wire";
 import {
@@ -116,6 +117,8 @@ import {
    type WirePackageMaterialization,
 } from "../service/materialization/plan/build_plan";
 import type {
+   CompileServedCopyRequest,
+   CompileServedCopyResult,
    ConnectionMetadata,
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -514,7 +517,12 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 // to the main thread
 // ──────────────────────────────────────────────────────────────────────
 
-function makeWorkerUrlReader(job: LoadPackageRequest): {
+function makeWorkerUrlReader(
+   job: Pick<
+      LoadPackageRequest,
+      "packagePath" | "requestId" | "overlay" | "replacement"
+   >,
+): {
    readURL: (url: URL) => Promise<string>;
 } {
    // The replacement and the overlay, by resolved path; the replacement wins.
@@ -560,7 +568,12 @@ function makeWorkerUrlReader(job: LoadPackageRequest): {
  * lookups of one name share one metadata RPC, since a compile fans out many
  * lookups before any resolves.
  */
-function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
+function buildWorkerMalloyConfig(
+   job: Pick<
+      LoadPackageRequest,
+      "packagePath" | "requestId" | "defaultConnectionName" | "environmentName"
+   >,
+): MalloyConfig {
    const proxies = new Map<string, ProxyConnection>();
    const inflight = new Map<string, Promise<ProxyConnection>>();
 
@@ -1621,8 +1634,69 @@ port.on("message", (message: MainToWorkerMessage) => {
       void runJob(message);
       return;
    }
+   if (message.type === "compile-served-copy") {
+      inFlightJobs.add(message.requestId);
+      void runServedCopyJob(message);
+      return;
+   }
    dispatchMainResponse(message);
 });
+
+/**
+ * Compile one pass of a served copy (see CompileServedCopyRequest): the
+ * package's model over the re-rooted files, as `packageFiles(...).loadModel`
+ * compiles it on the main thread. Its failure is the result, in-band.
+ */
+async function compileServedCopy(
+   job: CompileServedCopyRequest,
+): Promise<CompileServedCopyResult> {
+   const start = performance.now();
+   const done = (
+      outcome: Pick<CompileServedCopyResult, "modelDef" | "error">,
+   ): CompileServedCopyResult => ({
+      type: "compile-served-copy-result",
+      requestId: job.requestId,
+      protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
+      ...outcome,
+      compileDurationMs: performance.now() - start,
+   });
+   try {
+      const files = new Map(job.files);
+      const packageReader = makeWorkerUrlReader(job);
+      const urlReader = new HackyDataStylesAccumulator({
+         readURL: async (url: URL): Promise<string> =>
+            files.get(overlayKey(url)) ?? packageReader.readURL(url),
+      });
+      const runtime = new Runtime({
+         urlReader,
+         config: buildWorkerMalloyConfig(job),
+      });
+      // Not a `file://` template, which parses host=`D:` on Windows.
+      const modelURL = pathToFileURL(path.join(job.packagePath, job.modelPath));
+      const model = await runtime
+         .loadModel(modelURL, { importBaseURL: new URL(".", modelURL) })
+         .getModel();
+      return done({ modelDef: model._modelDef });
+   } catch (error) {
+      return done({ error: serializeError(error) });
+   }
+}
+
+async function runServedCopyJob(job: CompileServedCopyRequest): Promise<void> {
+   const context: JobContext = {
+      jobId: job.requestId,
+      packagePath: job.packagePath,
+      refusals: {},
+   };
+   try {
+      port.postMessage(
+         await jobContext.run(context, () => compileServedCopy(job)),
+      );
+   } finally {
+      inFlightJobs.delete(job.requestId);
+      maybeExit();
+   }
+}
 
 async function runJob(job: LoadPackageRequest): Promise<void> {
    const context: JobContext = {

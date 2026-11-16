@@ -221,11 +221,11 @@ jobs:
             # on the bundled entry file. This validates direct Bun execution of
             # the built server artifact without depending on Node.
             echo "→ bun run ./dist/server.mjs"
-            bun run ./dist/server.mjs --port ${{ matrix.port }} --server_root ./ \
+            bun run ./dist/server.mjs --port ${{ matrix.port }} --root ./ \
               > /tmp/server.log 2>&1 &
           else
             echo "→ npx malloy-publisher (uses #!/usr/bin/env node shebang)"
-            npx malloy-publisher --port ${{ matrix.port }} --server_root ./ \
+            npx malloy-publisher --port ${{ matrix.port }} --root ./ \
               > /tmp/server.log 2>&1 &
           fi
           echo $! > /tmp/server.pid
@@ -376,8 +376,8 @@ jobs:
           # nothing, so a release built from an unchecked ref is not covered.
           env_json=$(docker inspect malloy-publisher:smoke-test \
             --format='{{json .Config.Env}}')
-          echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \
-            || { echo "✗ Image does not set PUBLISHER_NO_MCP_CONFIG=1"; exit 1; }
+          echo "$env_json" | jq -e 'index("PUBLISHER_MCP_CONFIG_FILE_ENABLED=false")' >/dev/null \
+            || { echo "✗ Image does not set PUBLISHER_MCP_CONFIG_FILE_ENABLED=false"; exit 1; }
           echo "✓ .mcp.json creation suppressed in the image"
           # The server runs as uid 1000, and the USER must stay numeric:
           # Kubernetes' runAsNonRoot cannot verify a named user. A new final
@@ -693,7 +693,7 @@ jobs:
       - name: Start the server
         working-directory: packages/server
         run: |
-          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --server_root ./ \
+          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --root ./ \
             > "$RUNNER_TEMP/server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/server.pid"
 

@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PublisherClient } from "../api/client.js";
-import { PackageScopeEnum } from "../api/generated";
+import { PublisherApiError, PublisherClient } from "../api/client.js";
+import { type Package, PackageScopeEnum } from "../api/generated";
 import { logInfo, logOutput, logSuccess } from "../utils/logger.js";
 
 /**
@@ -23,6 +23,9 @@ export async function viewSchedule(
   const orchestrated = Boolean(pkg?.manifestLocation);
 
   logOutput(`Package:   ${packageName}`);
+  if (pkg?.versionId) {
+    logOutput(`Version:   ${pkg.versionId}`);
+  }
   logOutput(`Scope:     ${scope}`);
   logOutput(`Schedule:  ${schedule ?? "(none: publish / on-demand only)"}`);
   logOutput(`Freshness: ${hasFreshness ? "set" : "(none)"}`);
@@ -30,6 +33,35 @@ export async function viewSchedule(
     logInfo(
       "Control-plane managed (manifestLocation set): the standalone scheduler does not fire this package.",
     );
+  }
+}
+
+/**
+ * Send a schedule PATCH, adding to a 409 PACKAGE_IS_VERSIONED where a published
+ * version's schedule is declared. The server judges: a version is immutable,
+ * and its schedule is part of its content, so it refuses the PATCH.
+ */
+async function patchSchedule(
+  client: PublisherClient,
+  environmentName: string,
+  packageName: string,
+  body: Package,
+): Promise<void> {
+  try {
+    await client.updatePackage(environmentName, packageName, body);
+  } catch (error) {
+    if (
+      error instanceof PublisherApiError &&
+      error.status === 409 &&
+      error.reason === "PACKAGE_IS_VERSIONED"
+    ) {
+      throw new Error(
+        `${error.message} A version's schedule is declared in its publisher.json as ` +
+          `\`"materialization": { "scope": "version", "schedule": "<cron>" }\`: ` +
+          `set it there, bump \`version\`, and publish the new version.`,
+      );
+    }
+    throw error;
   }
 }
 
@@ -47,6 +79,9 @@ export async function viewSchedule(
  * so it is never silent. Everything else in the block that the caller is not
  * changing is resent verbatim. An empty cron is rejected up front: every server
  * rule is truthiness-guarded, so `""` would otherwise skip them all and persist.
+ *
+ * Only a package with no published versions takes a schedule this way; the
+ * server refuses a published version (see patchSchedule).
  */
 export async function setSchedule(
   client: PublisherClient,
@@ -65,7 +100,7 @@ export async function setSchedule(
       `Replacing the existing freshness policy on ${packageName} with a schedule (a package cannot have both).`,
     );
   }
-  await client.updatePackage(environmentName, packageName, {
+  await patchSchedule(client, environmentName, packageName, {
     name: packageName,
     description: current?.description,
     scope: PackageScopeEnum.Version,
@@ -107,7 +142,7 @@ export async function clearSchedule(
     logInfo(`No schedule set on ${packageName}; nothing to clear.`);
     return;
   }
-  await client.updatePackage(environmentName, packageName, {
+  await patchSchedule(client, environmentName, packageName, {
     name: packageName,
     description: current?.description,
     // Carried for the same reason as in setSchedule: clearing a schedule must
