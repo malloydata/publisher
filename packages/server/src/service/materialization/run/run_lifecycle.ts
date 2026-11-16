@@ -148,13 +148,42 @@ export class RunLifecycle {
             const message = redactPgSecrets(errMessage(err));
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
+            const code = errorCodeOf(err);
+            // The settle is a transition like any other: a record already
+            // terminal (this run's manifest committed before a late throw, or
+            // another process stopped it) is kept, and the late throw is not
+            // reported as the run's failure. A failed read must never cost the
+            // status write, which would leave the run active and block the
+            // package's next one, so the run is then settled unchecked.
+            let read = false;
+            let current: Materialization | null = null;
+            try {
+               current = await this.repository().getMaterializationById(id);
+               read = true;
+            } catch (readErr) {
+               logger.warn(
+                  "Could not read a run's record; recording its status unchecked",
+                  { materializationId: id, error: errMessage(readErr) },
+               );
+            }
+            if (current && !VALID_TRANSITIONS[current.status].includes(next)) {
+               logger.warn(
+                  "Materialization run threw after its status was recorded; keeping it",
+                  {
+                     materializationId: id,
+                     status: current.status,
+                     code,
+                     stack: stackFrames(err),
+                  },
+               );
+               return;
+            }
             // A background throw answers no request, so log it (with the
             // stack's frames) or it is invisible in the server's output,
             // unless the run's own `materialization.run.finished` reported it
             // already. Its code, never its message: a whole-run failure joins
             // its sources' driver errors, which can quote SQL or a value. The
             // message is on the run's record either way.
-            const code = errorCodeOf(err);
             if (runFailureReported(err)) {
                // Logged once already, by the run.
             } else if (cancelled) {
@@ -191,35 +220,6 @@ export class RunLifecycle {
                      ? { errorAtCancel: message }
                      : {}),
                };
-               // The settle is a transition like any other: a record already
-               // terminal (this run's manifest committed before a late throw,
-               // or another process stopped it) is kept. Its own try: a failed
-               // read must never cost the status write, which would leave the
-               // run active and block the package's next one.
-               let read = false;
-               let current: Materialization | null = null;
-               try {
-                  current = await this.repository().getMaterializationById(id);
-                  read = true;
-               } catch (readErr) {
-                  logger.warn(
-                     Object.keys(extra).length > 0
-                        ? "Could not read a run's metadata; recording its status without " +
-                             Object.keys(extra).join(" or ")
-                        : "Could not read a run's record; recording its status unchecked",
-                     { materializationId: id, error: errMessage(readErr) },
-                  );
-               }
-               if (
-                  current &&
-                  !VALID_TRANSITIONS[current.status].includes(next)
-               ) {
-                  logger.info(
-                     "Materialization run settled after its status was recorded; keeping it",
-                     { materializationId: id, status: current.status, code },
-                  );
-                  return;
-               }
                const metadata =
                   read && Object.keys(extra).length > 0
                      ? { ...(current?.metadata ?? {}), ...extra }

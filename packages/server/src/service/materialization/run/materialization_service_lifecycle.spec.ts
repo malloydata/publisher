@@ -1365,6 +1365,19 @@ describe("runInBackground (terminal recording)", () => {
    });
 
    describe("a run whose record is already terminal when it throws", () => {
+      /** The logger's error, warn and info, stubbed for one test. */
+      function stubLogs() {
+         const stubs = {
+            error: sinon.stub(logger, "error"),
+            warn: sinon.stub(logger, "warn"),
+            info: sinon.stub(logger, "info"),
+         };
+         return {
+            ...stubs,
+            restore: () => Object.values(stubs).forEach((s) => s.restore()),
+         };
+      }
+
       const terminal: MaterializationStatus[] = [
          "MANIFEST_FILE_READY",
          "CANCELLED",
@@ -1375,17 +1388,28 @@ describe("runInBackground (terminal recording)", () => {
             ctx.repository.getMaterializationById.resolves(
                makeMaterialization({ status: "PENDING" }),
             );
-            background().runInBackground("bg-late", async () => {
-               // The terminal write lands (this process's commit, or another
-               // process's stop) before the run's own late throw.
-               ctx.repository.getMaterializationById.resolves(
-                  makeMaterialization({ status }),
-               );
-               throw new Error("late failure");
-            });
-            await flush();
+            const logs = stubLogs();
+            try {
+               background().runInBackground("bg-late", async () => {
+                  // The terminal write lands (this process's commit, or
+                  // another process's stop) before the run's own late throw.
+                  ctx.repository.getMaterializationById.resolves(
+                     makeMaterialization({ status }),
+                  );
+                  throw new Error("late failure");
+               });
+               await flush();
+            } finally {
+               logs.restore();
+            }
 
             expect(ctx.repository.updateMaterialization.called).toBe(false);
+            // Reported as a late throw the record kept, never as the run's
+            // failure.
+            expect(logs.error.called).toBe(false);
+            expect(logs.warn.firstCall.args[0]).toBe(
+               "Materialization run threw after its status was recorded; keeping it",
+            );
          });
       }
 
@@ -1394,13 +1418,19 @@ describe("runInBackground (terminal recording)", () => {
             makeMaterialization({ status: "CANCELLED", error: "Cancelled" }),
          );
          const bg = background();
-         bg.runInBackground("bg-both", async () => {
-            bg.runningAbortControllers.get("bg-both")!.abort();
-            throw new Error("deadlock detected");
-         });
-         await flush();
+         const logs = stubLogs();
+         try {
+            bg.runInBackground("bg-both", async () => {
+               bg.runningAbortControllers.get("bg-both")!.abort();
+               throw new Error("deadlock detected");
+            });
+            await flush();
+         } finally {
+            logs.restore();
+         }
 
          expect(ctx.repository.updateMaterialization.called).toBe(false);
+         expect(logs.error.called).toBe(false);
       });
 
       it("still records FAILED when the record cannot be read", async () => {
