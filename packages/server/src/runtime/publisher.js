@@ -232,10 +232,19 @@
       } else {
          iframe.style.height = "0px"; // will be sized via postMessage
       }
-      if (options.allow) iframe.allow = options.allow;
+      // The page can save a file, open a link in a new tab, and use the
+      // clipboard and full screen. Never top navigation, which would move the
+      // host page away, or modal dialogs, and an opened tab keeps the sandbox:
+      // in Firefox one that escaped it could redirect the host page. Same as
+      // Publisher's own viewer (DataAppViewer).
+      // A host passes its own `allow`, or "" for none, to replace the default.
+      iframe.allow =
+         options.allow !== undefined
+            ? options.allow
+            : "clipboard-write; fullscreen";
       iframe.setAttribute(
          "sandbox",
-         "allow-scripts allow-same-origin allow-forms",
+         "allow-scripts allow-same-origin allow-forms allow-downloads allow-popups",
       );
 
       // Resize listener

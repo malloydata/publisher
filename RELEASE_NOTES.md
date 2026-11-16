@@ -39,6 +39,10 @@ Step 2 of the configuration design. Every setting now has one name of each kind,
 - **A boolean flag takes no value.** `--allow-proxy-connections false` turns proxy connections on, as it did before; startup now warns that the `false` is ignored and names `--no-allow-proxy-connections`.
 - A secret has no flag, and is never logged or echoed in an error. `packageVersioning`, `packageInlineFields` and `modelPage` have no flag either: the design gives the two transition settings and the model page none.
 
+## [Unreleased] — a framed data app can save files, copy, go full screen and open new tabs
+
+The frame that the Console's data app viewer and `Publisher.embed` create now adds `allow-downloads allow-popups` to its sandbox and delegates `clipboard-write; fullscreen`, so a page can save a file, open a link in a new tab, copy text and go full screen. A tab it opens keeps the sandbox: in Firefox a tab that escaped it could redirect the host page. Hosts that call `Publisher.embed` get this on upgrade with no change of their own. A host that passes `allow` replaces the default, and `allow: ""` turns it off; the sandbox tokens are not configurable. Top navigation and modal dialogs stay off.
+
 ## [Unreleased] — two packages spelling one `name=` differently no longer build it at once
 
 Auto-runs that build a table at an author's `name=` take a per-name lock from the ownership check until the table's ownership mark is written, so a second package building the same name waits and then sees the first one's mark. The lock was keyed by the name's last segment lower-cased but not unquoted, so `analytics."summary"` and `analytics.summary`, which can name one table, took different locks: two packages could both find the name free and both build it, and each serve whichever wrote last. The lock is now keyed the way the run's table claims identify a table (its last segment, unquoted, without letter case), so those spellings wait for each other. The lock serializes builds within one server process only: replicas that share a warehouse are not covered. No API, enum or metric value changes.

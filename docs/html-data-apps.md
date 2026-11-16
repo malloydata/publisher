@@ -306,10 +306,16 @@ Options:
 | `src` | string (required) | URL of the page to embed |
 | `token` | string | Appended to `src` as an `embed_token` query parameter for the embedded page to read |
 | `height` | number or string | Fixed height (`number` is treated as pixels). Omit it to auto-size. |
-| `allow` | string | Value for the iframe's `allow` attribute (permissions policy) |
+| `allow` | string | Value for the iframe's `allow` attribute (permissions policy). Defaults to `clipboard-write; fullscreen`; pass `""` for none |
 
-The iframe is sandboxed with `allow-scripts allow-same-origin allow-forms`. When
-you omit `height`, the embedded page measures its own content and posts its
+The iframe is sandboxed with `allow-scripts allow-same-origin allow-forms
+allow-downloads allow-popups`: the embedded page can save a file, open a link in
+a new tab, and through the default `allow` copy text and go full screen. A tab it
+opens keeps the sandbox, so the opened site's own dialogs do nothing; in Firefox
+a tab that escaped it could redirect your page. Served from another origin
+than your page, it cannot navigate your page or open a dialog over it; from the
+same origin the sandbox is no boundary, since the page can reach your document.
+When you omit `height`, the embedded page measures its own content and posts its
 height to the host, which resizes the iframe to match; the host only accepts
 those messages from the iframe it created. You do not write any of that wiring,
 it ships in the runtime. If your embedded page sets `body { min-height: 100vh }`

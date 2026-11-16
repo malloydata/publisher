@@ -22,7 +22,7 @@ SPDX-License-Identifier: MIT
 </script>
 ```
 
-`embed(selector, options)` returns `{ iframe, destroy() }`. Options: `src` (required), `token` (a signed token for cross-origin auth, appended as `embed_token`), `height` (omit to auto-size; a number is treated as pixels), and `allow` (the iframe permissions policy).
+`embed(selector, options)` returns `{ iframe, destroy() }`. Options: `src` (required), `token` (a signed token for cross-origin auth, appended as `embed_token`), `height` (omit to auto-size; a number is treated as pixels), and `allow` (the iframe permissions policy; `clipboard-write; fullscreen` when omitted, `""` for none).
 
 ## Sizing and the resize contract
 
@@ -46,5 +46,5 @@ Test embedded, not just standalone: the Publisher console renders a package's ap
 
 ## Guardrails (v1)
 
-- The iframe is sandboxed (`allow-scripts allow-same-origin allow-forms`). Design for that: no top-level navigation, no popups.
+- The iframe is sandboxed (`allow-scripts allow-same-origin allow-forms allow-downloads allow-popups`), with `clipboard-write` and `fullscreen` allowed. A download, a link in a new tab, a copy and full screen work; the opened tab keeps the sandbox, so its own dialogs do nothing and Chromium won't show a PDF in it: link a PDF with `download`. Top-level navigation and `alert`, `confirm`, `prompt` and `print` do not: drive dialogs in-page.
 - Embedded author JavaScript runs with the viewing user's data authority, so treat everything under `public/` as strictly first-party code: do not load untrusted third-party scripts, and do not move query results off to other hosts. Tighter per-embed isolation is planned.
