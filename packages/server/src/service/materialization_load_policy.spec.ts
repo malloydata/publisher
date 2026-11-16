@@ -136,7 +136,7 @@ const MISTAKES: Mistake[] = [
             "materialize-invalid",
          ],
          preaggregate: [
-            '#(preaggregate) grain=["category"] freshness.window="1h"',
+            '#(preaggregate) grain=["category"] freshness.windw="1h"',
             "preaggregate-unknown-key",
          ],
          v1Preaggregate: [

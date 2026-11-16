@@ -87,6 +87,7 @@ import {
    allSourcesRefusedError,
    BuildEnvironment,
    chainedPlanFacts,
+   upstreamEntryIsCurrent,
    isReclaimableStorageTable,
    manifestExcludingStorage,
    physicalTargetKey,
@@ -388,6 +389,8 @@ export class InstructedBuild {
       refusedBesideBuilt: Record<string, RefusedSource>;
       /** The run metadata value for the uniqueness checks, when any ran. */
       uniquenessChecks?: ReturnType<UniquenessLedger["toMetadata"]>;
+      /** See {@link InstructedRun.readFrom}. */
+      readFrom?: ReadonlyMap<string, readonly string[]>;
    }> {
       const {
          compiled,
@@ -462,6 +465,11 @@ export class InstructedBuild {
          refusalsInFailures: 0,
          refusedBesideBuilt: {},
       };
+      const deferred: {
+         persistSource: PersistSource;
+         connectionName: string;
+         connection: MalloyConnection;
+      }[] = [];
       try {
          for (const build of builds) {
             const connection = connections.get(build.connectionName);
@@ -471,20 +479,33 @@ export class InstructedBuild {
                );
             }
             for (const persistSource of sourcesInBuildOrder(build, tables)) {
-               if (signal.aborted) throw new BuildCancelledError();
-               await withSpan(
-                  "publisher.materialization.build_source",
-                  // Nested under the run's span, which names the package.
-                  { "malloy.source": persistSource.name },
-                  () =>
-                     this.buildInstructedSource(
-                        run,
-                        persistSource,
-                        build.connectionName,
-                        connection,
-                     ),
+               // A rollup that may read its base's stored table builds once
+               // every other table has, so a base this run builds is there
+               // to read. Nothing a run builds reads a rollup's table.
+               const table = tables[persistSource.sourceID];
+               if (table?.kind === "rollup" && table.overStoredBase) {
+                  deferred.push({
+                     persistSource,
+                     connectionName: build.connectionName,
+                     connection,
+                  });
+                  continue;
+               }
+               await this.buildInRun(
+                  run,
+                  persistSource,
+                  build.connectionName,
+                  connection,
                );
             }
+         }
+         for (const later of deferred) {
+            await this.buildInRun(
+               run,
+               later.persistSource,
+               later.connectionName,
+               later.connection,
+            );
          }
 
          settled = settleRefusals(run);
@@ -547,6 +568,7 @@ export class InstructedBuild {
          ...(uniqueness?.toMetadata()
             ? { uniquenessChecks: uniqueness.toMetadata() }
             : {}),
+         ...(run.readFrom ? { readFrom: run.readFrom } : {}),
       };
    }
 
@@ -668,6 +690,28 @@ export class InstructedBuild {
       return replacesView;
    }
 
+   /** One source's turn in the run's loop, under its span. */
+   private async buildInRun(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      connectionName: string,
+      connection: MalloyConnection,
+   ): Promise<void> {
+      if (run.signal?.aborted) throw new BuildCancelledError();
+      await withSpan(
+         "publisher.materialization.build_source",
+         // Nested under the run's span, which names the package.
+         { "malloy.source": persistSource.name },
+         () =>
+            this.buildInstructedSource(
+               run,
+               persistSource,
+               connectionName,
+               connection,
+            ),
+      );
+   }
+
    /**
     * The build Manifest and entry map a run starts from: every carried-forward
     * entry, so references to an upstream this run does not rebuild resolve.
@@ -724,7 +768,8 @@ export class InstructedBuild {
       const { compiled } = run;
       const entry = await this.buildGatedSource(
          run,
-         persistSource,
+         (await overStoredBaseSource(run, persistSource, gated)) ??
+            persistSource,
          graphConnectionName,
          connection,
          gated,
@@ -1880,4 +1925,79 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          sourceID,
       );
    }
+}
+
+/**
+ * The source a colocated rollup builds from when this run holds its base's
+ * table: the rollup compiled over that table (rollup_compile.ts), so its
+ * build reads the table rather than the warehouse, through the build
+ * manifest as any chained build does. Only when every one of these holds,
+ * otherwise undefined and the rollup builds from the warehouse as planned:
+ *
+ *  - the rollup builds colocated, and its base is a colocated `#@ persist`
+ *    source (the plan offers the compile only then);
+ *  - the run's entries hold the base's table at the address the plan gives
+ *    it, built this run or carried under the reuse rules, colocated and at
+ *    the tier the base declares now. The colocated gate refused nothing on
+ *    that address, or it would not be built or carried, and a table's rows
+ *    do not depend on any gate: each is applied when a query reads it;
+ *  - the compiled source has the rollup's own address, so it builds the
+ *    same table.
+ *
+ * Records the base as what the rollup read, for its freshness anchor.
+ */
+async function overStoredBaseSource(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
+): Promise<PersistSource | undefined> {
+   const { compiled } = run;
+   const table = compiled.tables[persistSource.sourceID];
+   if (table?.kind !== "rollup" || !table.overStoredBase) return undefined;
+   if (gated.instruction.destination) return undefined;
+   const baseID = table.rollup.baseSourceID;
+   const base = baseID === undefined ? undefined : compiled.tables[baseID];
+   if (!base || base.kind !== "persist") return undefined;
+   let baseAddress: string;
+   try {
+      baseAddress = computeSourceEntityId(
+         base.source,
+         compiled.connectionDigests,
+         base.target,
+         compiled.tableFolds,
+      );
+   } catch {
+      return undefined;
+   }
+   const baseEntry = run.entries[baseAddress];
+   if (
+      !baseEntry?.physicalTableName ||
+      baseEntry.storageDestinationName ||
+      !upstreamEntryIsCurrent(baseAddress, baseEntry, run.planFacts)
+   ) {
+      return undefined;
+   }
+   let variant: PersistSource | undefined;
+   try {
+      variant = await table.overStoredBase();
+   } catch {
+      return undefined;
+   }
+   if (!variant) return undefined;
+   try {
+      if (
+         computeSourceEntityId(
+            variant,
+            compiled.connectionDigests,
+            undefined,
+            compiled.tableFolds,
+         ) !== gated.sourceEntityId
+      ) {
+         return undefined;
+      }
+   } catch {
+      return undefined;
+   }
+   (run.readFrom ??= new Map()).set(gated.sourceEntityId, [baseAddress]);
+   return variant;
 }

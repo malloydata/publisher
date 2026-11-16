@@ -614,7 +614,9 @@ function tableNameDecision(
  *
  * An INCREMENTAL source is exempt from carry-forward: unchanged SQL says
  * nothing about whether its DATA moved, so carrying it would never reach its
- * delta. The ledger decides instead, and "nothing new" is a cheap skip.
+ * delta. The ledger decides instead, and "nothing new" is a cheap skip. So is
+ * a table past its declared freshness window (`pastWindow`): carried, it
+ * would stay past it until a host or a forced run rebuilt it.
  *
  * A source the eligibility gate refuses is returned in `refused`. It throws
  * instead when `sourceNames` targets it, or when every authored source the
@@ -637,9 +639,14 @@ export function deriveSelfInstructions(
    naming?: SelfTableNaming,
    /**
     * Rebuild every source (a scheduled fire, `forceRefresh`): nothing is
-    * carried. `priorEntries` still decide each table's name.
+    * carried. `priorEntries` still decide each table's name. `pastWindow`
+    * names a prior table past its declared freshness window, which is
+    * rebuilt rather than carried (freshness_stamp.ts); absent, none is.
     */
-   options: { forceRefresh?: boolean } = {},
+   options: {
+      forceRefresh?: boolean;
+      pastWindow?: (sourceEntityId: string, prior: ManifestEntry) => boolean;
+   } = {},
 ): {
    instructions: BuildInstruction[];
    carried: Record<string, ManifestEntry>;
@@ -754,6 +761,7 @@ export function deriveSelfInstructions(
          !deltaEligible &&
          !options.forceRefresh &&
          sameDestination &&
+         !options.pastWindow?.(sourceEntityId, prior!) &&
          samePath(
             prior!.physicalTableName,
             logicalName,

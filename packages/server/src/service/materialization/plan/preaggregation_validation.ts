@@ -28,6 +28,8 @@ import {
    type AnnotatableMeasure,
 } from "./preaggregation_annotation";
 import { classifyMeasureAdditivity } from "./preaggregation_classifier";
+import type { DeclaredFreshness } from "../domain/freshness";
+import { mergeRollupFreshness } from "./freshness_declaration";
 
 /**
  * Why a declaration is refused. Stable identifiers so callers can count and
@@ -48,8 +50,10 @@ export type PreaggregateViolationCode =
    | "unknown_key"
    | "unparseable"
    | "env_reference"
+   | "invalid_freshness"
    | "conflicting_namespace"
    | "conflicting_storage"
+   | "conflicting_freshness"
    | "namespace_with_storage"
    | "non_additive_measure"
    | "non_public_measure"
@@ -314,6 +318,7 @@ export function validateSourcePreaggregation(
    const grains: GrainPlacements = {
       namespaces: new Map(),
       storages: new Map(),
+      freshness: new Map(),
       text: new Map(),
    };
    for (const field of fields) {
@@ -362,6 +367,8 @@ export function validateSourcePreaggregation(
 interface GrainPlacements {
    namespaces: Map<string, Map<string, string>>;
    storages: Map<string, Map<string, string>>;
+   /** Each measure's freshness group at a grain, in field order. */
+   freshness: Map<string, { measure: string; freshness: DeclaredFreshness }[]>;
    text: Map<string, string>;
 }
 
@@ -481,6 +488,13 @@ function fieldViolations(
          grains.storages.set(key, placed);
          grains.text.set(key, grain.text);
       }
+      if (grain.freshness !== undefined && additivity.additive) {
+         const key = grain.dimensions.join("\u0000");
+         const declared = grains.freshness.get(key) ?? [];
+         declared.push({ measure: name, freshness: grain.freshness });
+         grains.freshness.set(key, declared);
+         grains.text.set(key, grain.text);
+      }
    }
 }
 
@@ -519,6 +533,22 @@ function grainPlacementViolations(
          code: "conflicting_storage",
          sourceName,
          message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different storage destinations: ${choices}. One grain is one rollup table, so it can only be built into one of them. Give every measure at this grain the same \`storage=\`, or move one to a different grain.`,
+      });
+   }
+
+   // And for freshness: one table has one window and one fallback.
+   for (const [key, declared] of grains.freshness) {
+      const merged = mergeRollupFreshness(declared.map((d) => d.freshness));
+      if (!("conflict" in merged)) continue;
+      const field = merged.conflict;
+      const choices = declared
+         .filter((d) => d.freshness[field] !== undefined)
+         .map((d) => `\`${d.freshness[field]}\` (on \`${d.measure}\`)`)
+         .join(", ");
+      violations.push({
+         code: "conflicting_freshness",
+         sourceName,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different \`freshness.${field}=\`: ${choices}. One grain is one rollup table, so it has one freshness. Give every measure at this grain the same \`freshness.${field}=\`, or move one to a different grain.`,
       });
    }
 

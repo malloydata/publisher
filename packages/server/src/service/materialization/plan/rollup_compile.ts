@@ -8,15 +8,22 @@
  * resolves while it never shows up in `getModelPaths()`, the API or the
  * package's own compile.
  *
- * **Built over the author's rows, never over a stored base** (pinned in
- * preaggregate_variants.spec.ts). The
- * companion reads the author's files with every source-level `#@` line blanked
- * (positions kept), so Malloy's planner sees no persisted source under a
- * rollup: a rollup never chains onto its base's table. That is what lets a
- * rollup over a `#@ persist storage=` base build at all (the chained storage
- * build lifts a downstream's definition from its file, and a rollup has
- * none), and it reads the same rows the live query reads. The content address
- * is unchanged by the blanking: Malloy keys a target on its fully inlined SQL.
+ * **Planned over the author's rows** (pinned in preaggregate_variants.spec.ts).
+ * The companion reads the author's files with every source-level `#@` line
+ * blanked (positions kept), so Malloy's planner sees no persisted source under
+ * a rollup: the plan's addresses, edges and SQL are the author's rows'. That
+ * is what lets a rollup over a `#@ persist storage=` base build at all (the
+ * chained storage build lifts a downstream's definition from its file, and a
+ * rollup has none). The content address is unchanged by the blanking: Malloy
+ * keys a target on its fully inlined SQL.
+ *
+ * **Built over a colocated base's stored table when a run holds it.** A
+ * colocated rollup over a colocated `#@ persist` base has a second compile,
+ * made only when a run asks ({@link GeneratedRollups.overStoredBases}), with
+ * the base's own `#@ persist` kept: the run builds the rollup from that
+ * source, at the same address, only when its build manifest holds the base's
+ * table (instructed_build.ts), so the build reads the table, not the
+ * warehouse. The rows are the base's rows either way.
  */
 
 import type {
@@ -50,6 +57,20 @@ import {
    ROLLUP_COMPANION_SUFFIX,
 } from "../text/read_text";
 import type { ParentKeyCheck, RollupVariantPlan } from "../domain/table_plans";
+import type { PersistSource } from "@malloydata/malloy";
+import {
+   ownLevelNotes,
+   type AnnotationsDef,
+   type NotePosition,
+} from "../../annotations";
+import { routeOfNote } from "../../annotation_reader";
+import {
+   notesDeclarePersist,
+   placementOf,
+   readNotesIfAny,
+} from "./declaration";
+import { noteSpanKey } from "../text/persist_blanking";
+import { plannedSources } from "./addressing";
 import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
 
@@ -60,6 +81,54 @@ interface GeneratedRollups {
    materializer: ModelMaterializer;
    runtime: Runtime;
    text: string;
+   /**
+    * The rollups that may be built over their base's stored table, by sourceID,
+    * each as the companion compiled over the author's files with its base's
+    * own `#@ persist` kept ({@link overStoredBaseNotes}), so Malloy's planner
+    * reads the base's table through a run's build manifest. Compiled once, on
+    * the first call: a plan never builds, so only a run pays for it. Empty
+    * when no rollup qualifies or the compile fails (each rollup then builds
+    * from the warehouse, as it is planned).
+    */
+   overStoredBases(): Promise<ReadonlyMap<string, PersistSource>>;
+}
+
+/**
+ * The notes to keep for the rollups that may read their base's stored table:
+ * a colocated rollup over a base whose own notes declare a colocated
+ * `#@ persist`. A rollup in a `storage=` destination, or over a base built
+ * into one, reads the author's rows as planned: a destination cannot be read
+ * from the base's warehouse.
+ */
+function overStoredBaseNotes(
+   map: SourceMap,
+   plans: readonly RollupVariantPlan[],
+   companionHref: string,
+): { keep: Set<string>; rollups: Set<string> } {
+   const keep = new Set<string>();
+   // By the sourceID the companion declares each rollup under.
+   const rollups = new Set<string>();
+   for (const plan of plans) {
+      if (plan.storage !== undefined) continue;
+      const node = map.node(plan.baseSourceID);
+      const def = node?.def as { annotations?: AnnotationsDef } | undefined;
+      const own = ownLevelNotes(def?.annotations).filter(
+         (n) => routeOfNote(n.text) === "@",
+      );
+      if (!notesDeclarePersist(own)) continue;
+      const tag = readNotesIfAny(own, "@");
+      const placed = tag ? placementOf(tag, "persist") : undefined;
+      if (!placed || !("placement" in placed)) continue;
+      if (placed.placement.tier !== "colocated") continue;
+      const spans = own.flatMap((n) => {
+         const at = (n as { at?: NotePosition }).at;
+         return at ? [noteSpanKey(at.url, at.range)] : [];
+      });
+      if (spans.length !== own.length) continue;
+      for (const span of spans) keep.add(span);
+      rollups.add(`${plan.rollupSourceName}@${companionHref}`);
+   }
+   return { keep, rollups };
 }
 
 /** Where the rollup companion for `modelPath` lives, as an absolute URL. */
@@ -139,6 +208,43 @@ export async function tryCompileRollupCompanion(args: {
          overlay,
       );
       await compileRollupKeyChecks(planned.plans, materializer, args.modelPath);
+      const overStored = overStoredBaseNotes(
+         SourceMap.of(args.modelDef),
+         planned.plans,
+         url.href,
+      );
+      let overStoredBases:
+         | Promise<ReadonlyMap<string, PersistSource>>
+         | undefined;
+      const compileOverStoredBases = async (): Promise<
+         ReadonlyMap<string, PersistSource>
+      > => {
+         const out = new Map<string, PersistSource>();
+         if (overStored.rollups.size === 0) return out;
+         try {
+            const kept = await files.blanked(args.modelDef, overStored.keep);
+            if (!kept) return out;
+            kept.set(url.href, text);
+            const compiled = await files.compile(url, kept);
+            const targets = await compiled.runtime.getBuildTargets(
+               compiled.model,
+            );
+            for (const source of plannedSources(targets)) {
+               if (overStored.rollups.has(source.sourceID)) {
+                  out.set(source.sourceID, source);
+               }
+            }
+         } catch (error) {
+            logger.warn(
+               "The rollups of a model build from the warehouse: their companion over the bases' stored tables did not compile",
+               {
+                  modelPath: args.modelPath,
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+         }
+         return out;
+      };
       return {
          generated: {
             plans: planned.plans,
@@ -146,6 +252,8 @@ export async function tryCompileRollupCompanion(args: {
             materializer,
             runtime,
             text,
+            overStoredBases: () =>
+               (overStoredBases ??= compileOverStoredBases()),
          },
          refused,
       };

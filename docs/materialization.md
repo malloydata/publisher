@@ -354,9 +354,9 @@ access decision, so the grant table's freshness is the revocation latency — an
 - **Do not refresh a grant table incrementally.** A revocation is usually a deleted row, and a
   [delta](#incremental-refresh) reads only rows its watermark admits — a deleted row is never
   re-read, so the stored grant survives every run. Rebuild it in full, or `reseed` it.
-- **The window is enforced from the freshness fields a control plane stamps on the manifest it
-  distributes.** A standalone Publisher's own post-build load binds its entries un-gated, so there
-  the window does not bound anything and only a rebuild does.
+- **The window holds on a standalone server and under a control plane alike.** A standalone run
+  stamps the declared window on the manifest it commits, as a control plane stamps the manifest it
+  distributes ([Freshness](#freshness-a-window-and-a-fallback)).
 
 The same rule serves an entry point declared as a plain extension: `source: visible is opps extend
 { join_one: … ; where: g.user_id = $USER_ID }` inherits `#@ persist`, builds nothing new (its build
@@ -467,9 +467,8 @@ serving set and the query recomputes live, correctly filtered — whether or not
 That is a ceiling no refresh cadence can offer: a build that fails, or a scheduler that is off, leaves
 a schedule-only source serving its old decisions indefinitely. The cost is that `freshness` is
 [mutually exclusive with `schedule`](#the-persistence-policy-the-publish-gate), which is why advice
-framed around a cron steers away from it — for a gated source, take the ceiling. (The window is
-enforced from the freshness fields a control plane stamps on the manifest it distributes; a standalone
-Publisher's own post-build load binds its entries un-gated.)
+framed around a cron steers away from it — for a gated source, take the ceiling. (The window holds
+on a standalone server too: see [Freshness](#freshness-a-window-and-a-fallback).)
 
 **A full rebuild is the refresh that actually re-reads the gate column.** A source with no incremental
 declaration rebuilds its whole table on every run, so every run recomputes the values the gate filters
@@ -684,6 +683,60 @@ and the source's other views, and every other source's, keep serving from storag
 entry is `live` with that view's compile error. When the served copy cannot re-root the source at
 all (the table lacks a column the source needs, say), every view of the source is `live`, each
 with the reason.
+
+## Freshness: a window and a fallback
+
+A stored table can say how old its data may be before a query stops reading it:
+
+```malloy
+#@ persist freshness.window="24h" freshness.fallback="live"
+source: daily is orders -> { group_by: order_date; aggregate: total is amount.sum() }
+```
+
+The two keys mean the same thing on every mechanism (`#@ persist`, `#(materialize)` and a rollup's
+`#(preaggregate)` or `#@ preaggregate`), on both tiers (colocated and `storage=`), and whether a
+standalone run or a control plane built the table.
+
+- **`freshness.window`** is how old the table's data may be: a whole number and one unit, `s`, `m`,
+  `h`, `d` or `w` (`90s`, `30m`, `24h`, `7d`). A table is aged from the instant its data is as of
+  (the start of the run that built it), not from when the build finished. Age equal to the window is
+  still fresh.
+- **`freshness.fallback`** is what a query does once the table is past its window: `live` answers
+  from the warehouse, `stale_ok` keeps reading the table, and `fail` answers live as `live` does.
+  Either way the path report names the table with `STALE` when it did not answer. A table with no
+  window is never stale.
+
+Each key resolves on its own, most specific first: the source's own declaration, then the model
+file's (`## freshness.window="…"`, or inside `## materialization { … }`), then `materialization.freshness`
+in `publisher.json`. A rollup's own declaration comes first, then its base's own, so a rollup and
+its base go stale together unless the rollup says otherwise (see
+[preaggregation.md](preaggregation.md#freshness)).
+
+**A standalone run stamps the declared window.** Each entry of the manifest it commits carries
+`freshnessWindowSeconds`, `freshnessFallback` and `dataAsOf`, the same three fields a control plane
+stamps on the manifest it distributes, so the serve path ages the table the same way. A table built
+from another stored table (a chained build, or a rollup over its base's table) is anchored at that
+table's `dataAsOf` when it is older, since its rows are no newer than what it read. A table that
+declares nothing carries none of the three fields, as before.
+
+**A standalone run rebuilds a table past its window.** A run normally carries an unchanged table
+forward rather than rebuild it. A table past its declared window at the run's start is rebuilt
+instead, as is a windowed table whose entry has no `dataAsOf` (one built before tables were
+stamped); a table inside its window is carried, keeping its anchor and taking the window declared
+now. A run is what refreshes a table: nothing rebuilds it the moment its window passes. Trigger runs
+on demand or from a scheduler of your own; the package's `schedule` cron cannot be declared beside a
+freshness policy ([the publish gate](#the-persistence-policy-the-publish-gate)).
+
+**Under a control plane, the control plane's manifest decides.** A run with `buildInstructions`
+stamps nothing, and the manifest the package binds from `manifestLocation` is read as the control
+plane wrote it: its `freshnessWindowSeconds`, `freshnessFallback` and `dataAsOf` apply whatever the
+model declares. The plan reports each source's resolved declaration under `freshness` for the
+control plane to stamp from.
+
+A window that is not a whole number and a unit fails the load on a rollup (`preaggregate-invalid`),
+as an unknown key in the group does (`preaggregate-unknown-key`). On `#@ persist` and
+`#(materialize)` such a window is carried as written, for a control plane to read, and a standalone
+run stamps no window for it.
 
 ## The persistence policy (the publish gate)
 

@@ -285,8 +285,9 @@ export class ManifestCommitter {
       // package's lock, after the load (see commit).
       finish: (served: Served) => Promise<void> = async () => {},
    ): Promise<void> {
-      // Bound un-gated: freshness is stamped only on the control plane's wire
-      // manifest. A failed source mirrored into `entries` (the
+      // Bound with the freshness facts the run stamped from its tables'
+      // declarations (freshness_stamp.ts), as a host's manifest binds with
+      // the ones it stamps. A failed source mirrored into `entries` (the
       // `ManifestEntry.error` deprecation window) names the previous
       // generation's real table under auto-run's stable names, so binding it
       // would serve stale rows as fresh; skip it.
@@ -317,6 +318,7 @@ export class ManifestCommitter {
                ...boundSchemaOf(entry.schema),
                ...boundNativeSchemaOf(entry.nativeSchema),
                ...(keyUniqueness ? { keyUniqueness } : {}),
+               ...freshnessFactsOf(entry),
             };
          }
       }
@@ -660,4 +662,22 @@ export function referenceManifestToEntries(
       };
    }
    return entries;
+}
+
+/** An entry's freshness facts, each only when set (manifest_loader.ts reads the same). */
+function freshnessFactsOf(
+   entry: ManifestEntry,
+): Pick<
+   FreshnessManifest[string],
+   "dataAsOf" | "freshnessWindowSeconds" | "freshnessFallback"
+> {
+   return {
+      ...(entry.dataAsOf !== undefined ? { dataAsOf: entry.dataAsOf } : {}),
+      ...(entry.freshnessWindowSeconds !== undefined
+         ? { freshnessWindowSeconds: entry.freshnessWindowSeconds }
+         : {}),
+      ...(entry.freshnessFallback !== undefined
+         ? { freshnessFallback: entry.freshnessFallback }
+         : {}),
+   };
 }

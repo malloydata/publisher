@@ -274,13 +274,15 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
 
 /**
  * `#(preaggregate)`'s keys (materialization v2, A1): the grain it stores a
- * measure at, and where (a `storage=` destination, or a `namespace=` in the
- * source's own warehouse). A closed set: any other key is malformed.
+ * measure at, where (a `storage=` destination, or a `namespace=` in the
+ * source's own warehouse), and its `freshness` group, as on `#@ persist`. A
+ * closed set: any other key is malformed.
  */
 export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
    "grain",
    "storage",
    "namespace",
+   "freshness",
 ]);
 
 /**

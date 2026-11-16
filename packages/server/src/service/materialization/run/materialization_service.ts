@@ -99,6 +99,11 @@ import {
    withRunTelemetry,
 } from "./run_telemetry";
 import {
+   declaredFreshnessIndex,
+   pastDeclaredWindow,
+   stampDeclaredFreshness,
+} from "./freshness_stamp";
+import {
    deriveSelfInstructions,
    type RenamedTable,
    validateInstructions,
@@ -1170,6 +1175,7 @@ export class MaterializationService {
             reader,
          );
          let recheck: Record<string, BuildInstruction>;
+         const freshness = declaredFreshnessIndex(pkg.getBuildPlan());
          ({
             instructions,
             carried,
@@ -1188,7 +1194,15 @@ export class MaterializationService {
                packagePath: pkg.getPackagePath(),
                ...(owned !== undefined ? { ownedVersion: owned } : {}),
             },
-            { forceRefresh: opts.forceRefresh ?? false },
+            {
+               forceRefresh: opts.forceRefresh ?? false,
+               pastWindow: (sourceEntityId, prior) =>
+                  pastDeclaredWindow(
+                     prior,
+                     freshness.factsAt(sourceEntityId),
+                     new Date(run.startedAt),
+                  ),
+            },
          ));
          // A carried table at the author's `name=` is reused only while
          // it is still marked as this package's (table_ownership.ts).
@@ -1421,9 +1435,20 @@ export class MaterializationService {
       const sourcesRefused =
          Object.keys(derivedRefused).length + instructedRefused;
       const durationMs = Date.now() - startedAt;
+      // A standalone run stamps its tables' declared freshness, as a host
+      // stamps the manifest it distributes; a host's run leaves it to the host.
+      const committedEntries = orchestrated
+         ? entries
+         : stampDeclaredFreshness(
+              entries,
+              declaredFreshnessIndex(pkg.getBuildPlan()),
+              new Set(Object.keys(carried)),
+              new Date(startedAt),
+              built.readFrom,
+           );
       const served = await this.collaborators.commitManifest(
          id,
-         entries,
+         committedEntries,
          failures,
          {
             // Recorded before any is dropped, so a crash between this
@@ -1474,7 +1499,7 @@ export class MaterializationService {
                  this.collaborators.autoLoadManifest(
                     environment,
                     packageName,
-                    entries,
+                    committedEntries,
                     versionId,
                     uniquenessChecks?.rollupKeys,
                     // A stop that landed during the load did not cut it

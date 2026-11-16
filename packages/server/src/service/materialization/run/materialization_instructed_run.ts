@@ -197,6 +197,12 @@ export interface InstructedRun
    failedTargets?: Map<string, { sourceEntityId: string; err: unknown }>;
    /** The run's cancellation: a source failing after it is `cancelled`. */
    signal?: AbortSignal;
+   /**
+    * Tables built from a stored table the plan's edges do not name (a rollup
+    * over its base's table), by address: what each read, for its freshness
+    * anchor (freshness_stamp.ts).
+    */
+   readFrom?: Map<string, string[]>;
 }
 
 /** One source the colocated gate refuses, as colocatedRefusalOn reports it. */
