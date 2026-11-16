@@ -797,6 +797,41 @@ source: by_category is orders -> {
          ).toBe(false);
       });
 
+      it("refuses a colocated #(materialize) source's own row-level gate with v2's switch off, naming the served copy and the #@ persist alternative", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         for (const gated of ["true", "false"]) {
+            const env = {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: gated,
+            };
+            expect(withEnv(env, () => gateEnforcedAtRead(id, inputs(id)))).toBe(
+               false,
+            );
+            const refused = withEnv(env, () =>
+               refusal(() => assertTierEligible(source, false, inputs(id))),
+            );
+            expect(refused).toBeInstanceOf(MaterializationEligibilityError);
+            expect(refused.reason).toBe("authorize");
+            expect(refused.message).toContain("(colocated '#(materialize)')");
+            expect(refused.message).toContain("PUBLISHER_MATERIALIZE on");
+            expect(refused.message).toContain("'#@ persist'");
+         }
+      });
+
+      it("builds the same gated source colocated as a #@ persist, whose gate Malloy's build manifest keeps", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         withEnv(
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            () =>
+               assertTierEligible(source, false, inputs(id, undefined, false)),
+         );
+      });
+
       it("admits a v1 #@ persist storage= source's own row-level gate under G3, whatever the switches, and nothing more", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
