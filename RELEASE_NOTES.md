@@ -21,6 +21,13 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `publisher_materialization_eligibility_refused_total` counts each refused source once per build plan
+
+A build plan now decides each planned table's eligibility once, and counts a refused source once, under the reason its first refusal gave (its tier's gate on the wire plan, else the storage gate, else the colocated gate). Before, the plan judged a source on several passes (the wire plan's `refusedSources`, the bind's storage eligibility, its colocated eligibility, and the colocated sibling check), and each pass counted it again, so one refused source typically added 3 to the counter. A run's own re-check of eligibility, which still refuses whatever the plan refuses, no longer counts at all.
+
+- **Expect the counter to drop**, typically to about a third, with no change in what is refused, built or served. A dashboard or alert on its rate should be re-baselined; compare `sum by (reason)` before and after across the upgrade, rather than the raw rate.
+- **What to compare.** The count of refused sources a plan reports (`refusedSources` on the build plan, and the package warnings) is unchanged, and the counter now matches it per plan derivation. A package derived more than once (a reload, a re-derivation when its connections change) still counts again each time.
+
 ## [Unreleased] — a run that finished or was cancelled is no longer overwritten as FAILED by a late error
 
 A materialization run whose record was already terminal when its background work threw now keeps that status. Before, the settle wrote FAILED (or CANCELLED) over whatever the record held: a run whose manifest had committed (`MANIFEST_FILE_READY`) and then threw in a later step, or a run another process had already stopped (`CANCELLED`), was rewritten as FAILED with the late error's message. The settle now goes through the same state-machine check as every other status change, so it writes only over a run that is still `PENDING` or `MANIFEST_ROWS_READY`. When the record cannot be read at all, the failure is still recorded, so a run is never left holding its package's slot. A cancelled run still records `"Cancelled"`, and `errorAtCancel` and `errorRetryable` are unchanged.

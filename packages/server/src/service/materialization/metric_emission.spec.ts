@@ -74,10 +74,10 @@ afterAll(() => packages.cleanup());
 
 /**
  * How many times `publisher_materialization_eligibility_refused_total` counts
- * ONE refused source while a package's build plan is derived. Today the
- * derivation judges a source on more than one pass and each pass counts it.
+ * ONE refused source while a package's build plan is derived: once, at the
+ * plan's one verdict for its table.
  */
-const ELIGIBILITY_REFUSALS_PER_REFUSED_SOURCE = 3;
+const ELIGIBILITY_REFUSALS_PER_REFUSED_SOURCE = 1;
 
 const NOW_SOURCE = `##! experimental.persistence
 #@ persist
@@ -92,7 +92,7 @@ source: by_category is orders -> { group_by: category; aggregate: n is count() }
 `;
 
 describe("publisher_materialization_eligibility_refused_total", () => {
-   it("counts one refused source once per pass that judges it", async () => {
+   it("counts one refused source once per plan", async () => {
       const pkg = await packages.create(NOW_SOURCE);
       const outcome = await computePackageBuildPlan(pkg);
       expect(

@@ -740,7 +740,8 @@ export function recordAttributionSkipped(
 
 /**
  * Record a materialization-eligibility refusal (a source that can't be safely
- * materialized into a storage destination). The `given` reason is a security
+ * materialized into a storage destination), once per refused source per build
+ * plan, at the plan's verdict for its table. The `given` reason is a security
  * refusal (a frozen given-filtered table would leak rows across tenants); worth
  * tracking how often authors attempt it.
  */
