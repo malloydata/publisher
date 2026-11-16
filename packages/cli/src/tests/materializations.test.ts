@@ -168,6 +168,28 @@ describe("Materialization Commands", () => {
     ).rejects.toThrow(/FAILED/);
   });
 
+  test("materialize with wait throws when a host-bound package refuses the run (409)", async () => {
+    const mockClient = {
+      createMaterialization: mock(() =>
+        Promise.reject(
+          new Error(
+            "409: this package's tables are served from a host manifest; a local run would build tables it cannot serve",
+          ),
+        ),
+      ),
+      getMaterialization: mock(() => Promise.resolve({})),
+    } as unknown as PublisherClient;
+
+    await expect(
+      materializationCommands.materialize(mockClient, "env", "pkg", {
+        wait: true,
+        pollIntervalMs: 1,
+        timeoutMs: 1000,
+      }),
+    ).rejects.toThrow(/host manifest/);
+    expect(mockClient.getMaterialization).not.toHaveBeenCalled();
+  });
+
   test("stopMaterialization calls action stop", async () => {
     const mockClient = {
       materializationAction: mock(() =>

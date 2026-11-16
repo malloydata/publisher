@@ -3951,7 +3951,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Package already has an active materialization
+          description: The package already has an active materialization, or the package or version is bound to a host manifest (`manifestLocation`) and the request has no `buildInstructions` (it serves the host's tables, so a local run would build tables it cannot serve)
           content:
             application/json:
               schema:
