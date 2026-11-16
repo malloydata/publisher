@@ -337,9 +337,9 @@ jobs:
           # cannot reach it), GitHub's cache otherwise. Only main writes.
           cache-from: ${{ true && format('type=registry,ref={0}', env.LAYER_CACHE) || 'type=gha' }}
           cache-to: >-
-            ${{ github.ref != 'refs/heads/main' && '' ||
-                true && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) ||
-                'type=gha,mode=max' }}
+            ${{ github.ref == 'refs/heads/main'
+                && (true && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) || 'type=gha,mode=max')
+                || '' }}
       - name: Inspect image metadata
         run: |
           # Lock in the Dockerfile claims made for audit findings #7 and #8:
