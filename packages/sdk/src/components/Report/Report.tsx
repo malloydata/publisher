@@ -66,7 +66,7 @@ export interface ReportProps {
     * router. Omitted, links are plain anchors.
     */
    onLinkNavigate?: (to: string, event?: NavigationClick) => void;
-   /** Height cap for a grid tile's result panel; see `Dashboard`. */
+   /** Height cap for a grid tile's result panel; see `DashboardView`. */
    height?: number;
    maxResultSize?: number;
    /**
@@ -103,8 +103,8 @@ export interface ReportProps {
  * dashboard, or a linear report top to bottom (a legacy `.malloynb` among
  * them, read-only), each tile run through the governed query endpoint.
  *
- * Host-agnostic, like `Dashboard`: it takes props rather than reading a
- * router, and hands navigation and URL state back to whoever mounted it.
+ * Host-agnostic: it takes props rather than reading a router, and hands
+ * navigation and URL state back to whoever mounted it.
  */
 export function Report({
    resourceUri,

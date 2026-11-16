@@ -11,7 +11,7 @@
  * leaving it out does.
  *
  * modes.integration.spec.ts covers 17 routes this way. This file covers the
- * rest: reports (list and one), one dashboard, a notebook cell, skills,
+ * rest: reports (list and one), a notebook cell, skills,
  * agents and an agent's skill file, the package duckdb connection's tables
  * (and one table), the report write, a materialization's create (body),
  * get, stop and delete, and the model query with the version in its URL.
@@ -168,11 +168,6 @@ const READ_ROUTES: ReadRoute[] = [
    {
       name: "GET report",
       path: "/reports/dashboards/overview.malloy",
-      marker: (n) => `Overview v${n}`,
-   },
-   {
-      name: "GET dashboard",
-      path: "/dashboards/overview",
       marker: (n) => `Overview v${n}`,
    },
    {
@@ -427,7 +422,7 @@ describe("an empty versionId answers as no versionId", () => {
 
          afterAll(() => setFlag("off"));
 
-         it("answers each report, dashboard, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
+         it("answers each report, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
             await expectEmptyReadsAsNone(kind.pkg, kind.n);
          });
 

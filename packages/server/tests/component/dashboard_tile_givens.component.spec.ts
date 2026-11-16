@@ -7,7 +7,6 @@
  * and through the worker pool, because discovery reads the hydrated Model.
  */
 import { describe, expect, it } from "bun:test";
-import { getDashboard } from "../../src/service/legacy_report_views";
 import {
    loadTempPackage,
    usePackageLoadPool,
@@ -64,7 +63,7 @@ const EXPECTED: Record<string, string[] | undefined> = {
 
 type Tile = { kind?: string; query?: string; givenNames?: string[] };
 
-/** The same tiles as a dashboard, or as a notebook read through the notebook route. */
+/** The same tiles as a grid report, or as a notebook read through the notebook route. */
 async function tileGivens(
    kind: "dashboard" | "notebook",
 ): Promise<Record<string, string[] | undefined>> {
@@ -78,7 +77,7 @@ async function tileGivens(
    try {
       const tiles: Tile[] | undefined =
          kind === "dashboard"
-            ? (await getDashboard(pkg, "env", "d"))?.tiles
+            ? (await pkg.getReport("dashboards/d.malloy"))?.tiles
             : (await pkg.getModel("notebooks/d.malloy")?.getNotebook())
                  ?.dashboard?.tiles;
       expect(tiles).toBeDefined();

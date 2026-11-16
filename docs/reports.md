@@ -905,10 +905,6 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 
   The warning leaves the source unnamed when the package gates anything with `#(authorize)`.
 
-- **A shared grid basename.** Two or more grid reports with the same file name in different directories
-  (`report-name-ambiguous`, warn, one per name, naming the paths): the deprecated `…/dashboards/{name}`
-  route answers 409 for that name. The report routes address by path and are unaffected. Fix: rename one of
-  the files.
 - **Tags that did not parse**, on the report or on a `given:` declaration, and renderer tags the validator
   rejects.
 
@@ -942,13 +938,11 @@ everywhere else. A tile's `query` is an expression, so send it as `{"query": "ru
 `text` tiles, which have nothing to run.
 [ai-agents.md](ai-agents.md) has the REST playbook.
 
-**Deprecated aliases.** `GET …/dashboards` and `GET …/dashboards/{name}` answer with the grid reports, the
-item resolving a unique basename and answering `409` naming every match when it is ambiguous (the package
-warns about each such name at load, `report-name-ambiguous`);
-`GET …/notebooks`, `…/notebooks/{path}` and `…/notebooks/{path}/cells/{i}` answer for the linear reports. An
-old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still opens: a file that is there
-opens at its path, and otherwise a unique basename redirects to the report's path. All of these are removed
-in a later release; use `…/reports`.
+**Deprecated aliases.** `GET …/notebooks`, `…/notebooks/{path}` and `…/notebooks/{path}/cells/{i}` answer
+for the linear reports. An old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still
+opens: a file that is there opens at its path, and otherwise a unique basename redirects to the report's
+path. All of these are removed in a later release; use `…/reports`. The `…/dashboards` API routes are
+removed: list with `GET …/reports` and read one by its path with `GET …/reports/{path}`.
 
 After editing a report file in a watched environment (`--watch-env`), `GET …/packages/<pkg>?reload=true`
 recompiles the package in place, and a reload that fails to compile leaves the previously compiled model
@@ -1077,10 +1071,9 @@ browser instead, keyed by the report's path, and the package page lists those dr
 ## Rendering one in your own React app
 
 `@malloy-publisher/sdk` exports a `Report` component that renders a `.malloy` report of either layout from
-`GET …/reports/{path}`, running every tile and `run:` cell through the query endpoint. `<Dashboard>` and
-`<Notebook>` stay exported as deprecated wrappers over the same renderers, so an existing integration keeps
-working, and `<Notebook>` is the one that renders a legacy `.malloynb`: its cells run only through the
-deprecated notebook routes, which `Report` never calls. The Console is one consumer of these components rather than their
+`GET …/reports/{path}`, running every tile and `run:` cell through the query endpoint. `<Notebook>` stays
+exported as a deprecated wrapper over the same renderers, and is the one that renders a legacy `.malloynb`:
+its cells run only through the deprecated notebook routes, which `Report` never calls. The Console is one consumer of these components rather than their
 home: they take props instead of reading a router, so the host decides what a drill and a filter change
 mean.
 
@@ -1089,22 +1082,22 @@ near the root of your app. Add `versionId` to the URI and every request it makes
 each tile's query, and each control's suggest query. Publisher itself answers `501 Not Implemented` to a
 `versionId` on any route, so this is for a host that resolves versions at its own routing layer.
 
-The example below uses the deprecated `<Dashboard>` wrapper, whose props stay stable until it is removed:
+The example below renders the storefront's `overview.malloy`:
 
 ```tsx
 import {
-  Dashboard,
   encodeResourceUri,
+  Report,
   ServerProvider,
 } from "@malloy-publisher/sdk";
 
 <ServerProvider baseURL="https://publisher.example.com/api/v0">
-  <Dashboard
+  <Report
     resourceUri={encodeResourceUri({
       environmentName: "examples",
       packageName: "storefront",
     })}
-    dashboard="overview"
+    path="overview.malloy"
     givens={Object.fromEntries(searchParams)}
     // MERGE, do not replace. `managed` is every given this report declares,
     // including the ones holding no value right now, so a control the reader

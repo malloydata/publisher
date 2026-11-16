@@ -24,11 +24,11 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
-import {
-   getDashboard,
-   listDashboards,
-   listNotebooks,
-} from "./legacy_report_views";
+import { listNotebooks } from "./legacy_report_views";
+
+/** The grid reports a package lists. */
+const gridReports = (pkg: Package) =>
+   pkg.listReports().filter((report) => report.layout === "grid");
 
 const SOURCE =
    `source: base is duckdb.sql("select 1 as id, 'x' as label") extend {\n` +
@@ -165,8 +165,7 @@ describe("notebooks written as tiles (worker path)", () => {
    it("is a notebook, not a dashboard: unlisted as one, and a notebook listing carries it", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
-         expect(listDashboards(pkg, "env")).toEqual([]);
-         expect(await getDashboard(pkg, "env", "tour")).toBeUndefined();
+         expect(gridReports(pkg)).toEqual([]);
          expect((await listNotebooks(pkg, "env")).map((n) => n.path)).toEqual([
             "notebooks/tour.malloy",
          ]);
@@ -244,12 +243,9 @@ describe("notebooks written as tiles (worker path)", () => {
          expect(pkg.getReportLayout("notebooks/in_notebooks.malloy")).toBe(
             "grid",
          );
-         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
+         expect(gridReports(pkg).map((d) => d.path)).toEqual([
             "notebooks/in_notebooks.malloy",
          ]);
-         expect(await getDashboard(pkg, "env", "in_notebooks")).toMatchObject({
-            kind: "dashboard",
-         });
          const raw = await pkg
             .getModel("dashboards/in_dashboards.malloy")!
             .getNotebook();
@@ -259,8 +255,7 @@ describe("notebooks written as tiles (worker path)", () => {
 
    // Ported from "one dashboard per name": identity is the path, so two
    // reports sharing a basename are both served, and neither shadows the
-   // other (`docs/reports-design.md` §3). Only the deprecated by-name route
-   // has to say which one it means, and it says it cannot.
+   // other (`docs/reports-design.md` §3).
    it("serves two reports that share a basename, both, by path", async () => {
       const dashboard = `## artifact { tiles=["base -> by_label"] }\n${SOURCE}`;
       write("dashboards/same.malloy", dashboard);
@@ -269,18 +264,11 @@ describe("notebooks written as tiles (worker path)", () => {
          dashboard.replace("{ tiles", "{ layout=grid tiles"),
       );
       await withPackage(async (pkg) => {
-         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
-            "dashboards/same.malloy",
-            "notebooks/same.malloy",
-         ]);
          expect(pkg.listReports().map((r) => r.path)).toEqual([
             "dashboards/same.malloy",
             "notebooks/same.malloy",
          ]);
          expect(warningsOf(pkg, "notebooks/same.malloy")).toEqual([]);
-         expect(getDashboard(pkg, "env", "same")).rejects.toThrow(
-            /dashboards\/same\.malloy, notebooks\/same\.malloy/,
-         );
       });
    });
 });

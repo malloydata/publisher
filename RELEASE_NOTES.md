@@ -557,6 +557,23 @@ A version no host has bound or built, as on a standalone server, serves what its
 
 **The server log masks secrets on every line.** The full error text is logged, with a signed URL's signature, credential and token, and a Postgres password, masked in values and keys, nested errors and cycles included, however the URL's separators are escaped or encoded. Masking never alters a logged object, and a call to the server's logger never throws.
 
+## [Unreleased] — (BREAKING) the deprecated dashboards API routes and the SDK `Dashboard` component are removed
+
+**`GET …/packages/{pkg}/dashboards` and `GET …/packages/{pkg}/dashboards/{name}` are gone.** They were deprecated aliases for the grid reports. A request to either now answers `404` like any unknown API path. Use `GET …/packages/{pkg}/reports`, which lists every report of either layout with its `path` and `layout` (filter on `layout: "grid"` for what the old listing returned), and `GET …/packages/{pkg}/reports/{path}`, which returns one report's manifest by its path. The manifest carries the same fields the old dashboard manifest did, without `kind`, with `editable`, and with a `resource` that names the report route; its tiles run through `POST …/models/{path}/query` as before.
+
+Who is affected: any client that still calls the dashboards routes. Publisher's own Console and SDK no longer call them. To tell before upgrading, read `publisher_deprecated_usage_total` with `feature` `dashboards_list` and `dashboard_get` on the release you run now; both features go with the routes. After the upgrade a remaining caller still shows: Publisher's own request log records each one as `GET …/dashboards…` with `statusCode` 404, as a gateway's access log does, and the request metrics count it under `http.route="*"`, the route that answers unknown paths.
+
+What goes with the routes:
+
+- **The by-name lookup on the API.** The old item route took a report's file name and answered `409` when two grid reports shared it. No API route resolves a bare name any more.
+- **Two package warnings that existed only for that route.** `report-name-ambiguous` (two grid reports share a file name, so the route answered `409`) and the note that a grid report's name falls outside letters, digits, `-` and `_` (so a caller building the route's URL by hand had to percent-encode it) are no longer reported. The second was counted under `publisher_report_lint_findings_total{code="dashboard-lint"}`, which drops by one per such report on each load or reload.
+- **The SDK's `Dashboard` component**, its `DashboardProps` type, and `apiClients.dashboards`. Render `Report` with the report's `path` (`<Report resourceUri={…} path="dashboards/overview.malloy" />`); a host that holds only a dashboard's name filters `GET …/reports` on `name` and `layout: "grid"` and uses that entry's `path`. Every other `Dashboard` prop (`givens`, `onGivensChange`, `onNavigate`, `height`, `maxResultSize`, `onEvent`, `chrome`) is a `Report` prop of the same name.
+- **In `api-doc.yaml`**, the `list-dashboards` and `get-dashboard` operations, the `dashboards` tag and the `Dashboard` schema. `DashboardManifest` and `DashboardTile` stay, because the deprecated notebook route and the compile response still use them. The generated TypeScript client, which `@malloy-publisher/sdk/client` re-exports, loses `DashboardsApi`, `DashboardsApiFactory`, `DashboardsApiFp`, `DashboardsApiAxiosParamCreator` and the `Dashboard` interface, and the Python client generated from it (`malloy-publisher-sdk`) loses its dashboards API and `Dashboard` model.
+
+What stays: the Console's `/<env>/<pkg>/dashboards/<name>` link still redirects to the report of that name, as `/<env>/<pkg>/notebooks/<name>` does. It resolves the name over `GET …/reports` and never called the removed routes; both still count as `console_alias`. The `…/notebooks` routes and the SDK `Notebook` are unchanged and still deprecated; a later release removes them.
+
+## [Unreleased] — the v1 cutover conformance script runs again without NODE_ENV=test
+
 ## [0.15.0] — security fix: a stored table could answer a caller with rows live would not
 
 Several cases let a stored table answer a caller with rows that live would not return to that caller, mostly past a source's own row-level gate (`#(access_filter)`, which Publisher reads past with the gated-sources switch off for a source's own gate, or with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on). Each is fixed by answering such queries live, or by reading the right column. Upgrade if any applies to you. As with every gate, these hold only behind the gateway that sets the givens from a verified identity ([operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).

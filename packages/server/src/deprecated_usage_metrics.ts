@@ -32,8 +32,6 @@
 import { lazyCounter, resetInstrumentsForTesting } from "./telemetry";
 
 export type DeprecatedFeature =
-   | "dashboards_list"
-   | "dashboard_get"
    | "notebooks_list"
    | "notebook_get"
    | "notebook_cell"

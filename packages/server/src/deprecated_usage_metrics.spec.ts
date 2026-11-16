@@ -87,15 +87,10 @@ describe("publisher_deprecated_usage_total", () => {
 
       it("counts each request by route family, whatever it answers", async () => {
          const server = app();
-         await request(server).get(`${pkg}/dashboards`);
-         await request(server).get(`${pkg}/dashboards/sales`);
-         await request(server).get(`${pkg}/dashboards/sales`);
          await request(server).get(`${pkg}/notebooks`);
          await request(server).get(`${pkg}/notebooks/tour.malloynb`);
          await request(server).get(`${pkg}/notebooks/tour.malloynb/cells/0`);
 
-         expect(await used("dashboards_list")).toBe(1);
-         expect(await used("dashboard_get")).toBe(2);
          expect(await used("notebooks_list")).toBe(1);
          expect(await used("notebook_get")).toBe(1);
          expect(await used("notebook_cell")).toBe(1);
@@ -137,7 +132,7 @@ describe("publisher_deprecated_usage_total", () => {
          // (another file's "Environment env does not exist", say). Only lines
          // naming this request's own environment are this request's.
          const probe = "deprecated-404-probe";
-         const path = `/api/v0/environments/${probe}/packages/pkg/dashboards/sales`;
+         const path = `/api/v0/environments/${probe}/packages/pkg/notebooks`;
          const warn = spyOn(logger, "warn");
          const error = spyOn(logger, "error");
          try {
@@ -172,7 +167,7 @@ describe("publisher_deprecated_usage_total", () => {
             // 500: a class the mapping logs itself, with its stack.
             const fault = await request(
                app(() => new Error("fault-500-marker")),
-            ).get(`${pkg}/dashboards/sales`);
+            ).get(`${pkg}/notebooks`);
             expect(fault.status).toBe(500);
 
             expect(

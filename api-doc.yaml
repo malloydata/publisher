@@ -73,8 +73,6 @@ tags:
       manifests, and cells
   - name: notebooks
     description: Deprecated aliases for the linear reports. Use the `reports` routes.
-  - name: dashboards
-    description: Deprecated aliases for the grid reports. Use the `reports` routes.
   - name: data-apps
     description:
       In-package HTML data apps (static pages served from a package's public/
@@ -3271,171 +3269,10 @@ paths:
           $ref: "#/components/responses/ServiceUnavailable"
 
   # ── DEPRECATED ──────────────────────────────────────────────────────────
-  # The `…/dashboards*` and `…/notebooks*` routes, kept for clients that still
-  # read them, until a later release removes them. Use `…/reports*` above.
-  # Their schemas (`Dashboard`, `DashboardManifest`, `DashboardTile`,
-  # `Notebook`, `RawNotebook`) are in the deprecated section of the schemas;
-  # no report schema references them.
-  /environments/{environmentName}/packages/{packageName}/dashboards:
-    get:
-      tags:
-        - dashboards
-      operationId: list-dashboards
-      deprecated: true
-      summary: List package dashboards (deprecated; use list-reports)
-      description: |
-        **DEPRECATED**: use list-reports, which lists every report of either
-        layout by path. This route lists the package's grid reports (see
-        list-reports for what makes a file a report and which layout it has),
-        wherever they live in the package. Two may share a `name`; their `path`
-        tells them apart. A file with no artifact tag is an ordinary model and is
-        not listed, whether or not it compiles.
-
-        **Contract change since reports.** This route used to list only
-        `.malloy` files directly under `dashboards/`, so every `name` was unique
-        and every `path` was `dashboards/<name>.malloy`. It now lists grid
-        reports from anywhere in the package (`sales/q3.malloy`,
-        `notebooks/x.malloy`, `a/b/c.malloy`), so `path` may have any depth and
-        `name` may repeat. Key on `path`.
-
-        A tagged dashboard that failed to compile is listed carrying its
-        `error` where that state can arise at all, so a broken dashboard is
-        visibly broken rather than silently absent. In practice it rarely does:
-        a package whose model fails to compile is not loaded, and a reload that
-        would break one is refused and leaves the previously loaded package
-        serving, so `error` is only reachable on the paths that keep per-model
-        placeholders. Treat it as present-but-uncommon rather than the normal
-        way a broken dashboard surfaces.
-
-        Every tagged dashboard is listed, whatever the package's surface. To
-        hide one, remove its `# artifact` tag. On a package with a surface (a
-        root `index.malloy`, or a legacy `explores`) with `queryableSources`
-        left at `"declared"`, a dashboard's tiles, its single query and its
-        filter `suggest` queries may read only sources the surface exports. A
-        source the dashboard declares on top of a surface source may be read;
-        one over a hidden source may not. The dashboard file's own
-        `export {}` and named queries add nothing to the surface. A tile over a
-        hidden source answers 404 when it runs, and the package's `warnings`
-        report each such tile, single query and suggest, with severity
-        `error`, as of the last load, naming the source and the fix. Under
-        `"all"` nothing is refused, so the situation does not arise.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: A list of dashboards in the package
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Dashboard"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/dashboards/{dashboardName}:
-    get:
-      tags:
-        - dashboards
-      operationId: get-dashboard
-      deprecated: true
-      summary: Get a dashboard manifest (deprecated; use get-report)
-      description: |
-        **DEPRECATED**: use get-report, which addresses a report by its path.
-        Retrieves everything a viewer needs to render one grid report: the
-        artifact tag's declarations plus the control contract derived from the
-        givens its query references. Running it needs no further endpoint — its
-        query, each tile, and each control's suggest query all run
-        through the model query endpoint with `givens`, using the manifest's
-        `path` as the model.
-
-        `dashboardName` is a basename, which is not an identity: it resolves
-        only when exactly one grid report in the package has it. When several
-        do, the answer is 409 naming every matching path; address the report
-        by path with get-report instead.
-
-        **Contract change since reports.** This route never answered 409
-        before: a dashboard lived directly under `dashboards/`, so its name was
-        unique. A grid report may now live anywhere, two may share a basename,
-        and a client of this route must handle 409. The match also covers grid
-        reports outside `dashboards/`.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: dashboardName
-          in: path
-          description: >-
-            The report's name: its filename basename. Conventionally letters,
-            digits, "-" and "_", and a package is warned when one of its
-            grid reports falls outside that. It is NOT constrained to it, because
-            the name comes from a filename rather than being chosen: a file such
-            as `v1.2.malloy` is served, and its published `resource`
-            carries the name percent-encoded. Send it percent-encoded.
-          required: true
-          schema:
-            type: string
-            minLength: 1
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: The dashboard manifest
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DashboardManifest"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description:
-            More than one grid report in the package has this basename. The
-            message names every matching path; use get-report with one.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
+  # The `…/notebooks*` routes, kept for clients that still read them, until a
+  # later release removes them. Use `…/reports*` above. Their schemas
+  # (`DashboardManifest`, `DashboardTile`, `Notebook`, `RawNotebook`) are in
+  # the deprecated section of the schemas; no report schema references them.
   /environments/{environmentName}/packages/{packageName}/notebooks:
     get:
       tags:
@@ -6122,10 +5959,7 @@ components:
                   container; still read, in that container under the readable
                   name (one per measure and container, `subject`
                   `<base>.<measure>`; `warn`).
-                  `report-name-ambiguous`: two or more grid reports share a
-                  basename, so the deprecated `GET …/dashboards/{name}` route
-                  answers 409 for it (one per name, `subject` naming it and the
-                  message every path; `warn`). `classification-coverage`: a
+                  `classification-coverage`: a
                   published source with a dimension or measure that carries no
                   `#(classification)` while some field in the package does (one
                   per source, `model` naming its file and `subject` the source;
@@ -6395,8 +6229,7 @@ components:
                   findings use both: `error` for something that cannot work as
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the
-                  author probably intended, such as a dashboard name outside
-                  the conventional shape. The two findings about Publisher rather than about
+                  author probably intended. The two findings about Publisher rather than about
                   the package split across both: a file that carries an artifact
                   tag and could not be read is `error`, because the dashboard it
                   should have produced does not exist, and a lint that stopped
@@ -7540,7 +7373,7 @@ components:
             content-driven app, which keeps content-height auto-sizing.
 
     # ── DEPRECATED ────────────────────────────────────────────────────────
-    # The shapes of the deprecated `…/dashboards*` and `…/notebooks*` routes.
+    # The shapes of the deprecated `…/notebooks*` routes.
     # No report schema references them; each removal deletes its block here.
 
     Notebook:
@@ -7577,48 +7410,6 @@ components:
           type: string
           description: Error message if the notebook failed to compile or load
 
-    Dashboard:
-      type: object
-      deprecated: true
-      description: |
-        DEPRECATED: use `Report`. A grid report (see list-reports), as the
-        deprecated list-dashboards route lists it. The list entry; see
-        DashboardManifest for the detail a viewer needs to render one.
-      properties:
-        resource:
-          type: string
-          description: Resource path to the dashboard
-        packageName:
-          type: string
-          description: Name of the package containing this dashboard
-        name:
-          type: string
-          description: >-
-            The report's filename basename: a display label, and the segment of
-            the deprecated get-dashboard URL. Not an identity: two reports may
-            share it. A change since reports: it used to be unique within the
-            package (every dashboard was directly under `dashboards/`), and a
-            client that keyed a map on it must key on `path` instead.
-        path:
-          type: string
-          description:
-            Relative path to the report file within its package directory,
-            which is its identity
-        title:
-          type: string
-          description:
-            Human title from the artifact tag, falling back to the file's `#"`
-            doc comment and then to the slug
-        description:
-          type: string
-          description: >-
-            The file's unnamed `"` notes above the `## artifact` tag; when it
-            has none there, the ones below it (a legacy spot the lint flags). For
-            a dashboard whose tag sits on one query, that query's `#"` notes.
-        error:
-          type: string
-          description: Error message if the dashboard file failed to compile
-
     DashboardManifest:
       type: object
       deprecated: true
@@ -7639,11 +7430,11 @@ components:
         name:
           type: string
           description: >-
-            The report's filename basename: a display label, and the segment of
-            the deprecated get-dashboard URL. Not an identity: two reports may
-            share it. A change since reports: it used to be unique within the
-            package (every dashboard was directly under `dashboards/`), and a
-            client that keyed a map on it must key on `path` instead.
+            The report's filename basename: a display label. Not an identity:
+            two reports may share it. A change since reports: it used to be
+            unique within the package (every dashboard was directly under
+            `dashboards/`), and a client that keyed a map on it must key on
+            `path` instead.
         path:
           type: string
           description: |
@@ -7679,9 +7470,8 @@ components:
           deprecated: true
           description: >-
             DEPRECATED: read `layout`. The same thing in the old vocabulary:
-            `dashboard` for a grid report, `notebook` for a linear one. Always
-            `dashboard` on `GET …/dashboards/{dashboardName}`; a linear
-            report's manifest is the `dashboard` field of
+            `dashboard` for a grid report, `notebook` for a linear one. A
+            linear report's manifest is the `dashboard` field of
             `GET …/notebooks/{path}`.
         tiles:
           type: array
@@ -7745,7 +7535,7 @@ components:
     DashboardTile:
       deprecated: true
       description: >-
-        DEPRECATED: `ReportTile`, under the name the deprecated dashboard
+        DEPRECATED: `ReportTile`, under the name the removed dashboard
         routes gave it.
       allOf:
         - $ref: "#/components/schemas/ReportTile"
@@ -12684,9 +12474,9 @@ components:
         true }`, which is for authoring servers. Without it the argument is not
         in the tool's schema and is ignored if sent, so an agent answering
         questions stays on the curated surface.
-        This route is not affected by that setting. The notebook-cell route, the dashboards
-        route, the other MCP tools, and the legacy `/projects/...` aliases of
-        these routes ignore it.
+        This route is not affected by that setting. The notebook-cell route,
+        the other MCP tools, and the legacy `/projects/...` aliases of these
+        routes ignore it.
 
         Like every route on this server, it is unauthenticated. A deployment
         that authenticates in front of Publisher decides who may send it, and

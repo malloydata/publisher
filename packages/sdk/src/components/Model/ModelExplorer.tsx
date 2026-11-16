@@ -71,7 +71,7 @@ export interface ModelExplorerProps {
     * `givens` alone says which parameters to write but not which to REMOVE, so
     * a host that guesses by deleting everything it did not just receive
     * deletes the unrelated parameters it has no business touching. Same
-    * contract as `Dashboard` and `Notebook`, so a host can treat every surface
+    * contract as `Report` and `Notebook`, so a host can treat every surface
     * alike.
     */
    onGivensChange?: (

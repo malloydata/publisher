@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * DEPRECATED: the `…/dashboards*` and `…/notebooks*` routes, registered with
- * one call from server.ts. The report routes (`…/reports*`) replace them;
- * these answer the same reports in the old shapes
- * (`service/legacy_report_views.ts`), and run a `.malloynb`'s cells, with the
- * deprecated `filter_params` and `bypass_filters`. Removing them is deleting
- * this module, its controller and its views, and that one call.
+ * DEPRECATED: the `…/notebooks*` routes, registered with one call from
+ * `routes/api.ts`. The report routes (`…/reports*`) replace them; these answer
+ * the same reports in the old shapes (`service/legacy_report_views.ts`), and
+ * run a `.malloynb`'s cells, with the deprecated `filter_params` and
+ * `bypass_filters`. What imports this module: `routes/api.ts` (that one
+ * call) and `server-old.ts`, whose `/projects/…/notebooks*` routes share its
+ * controller and {@link notebookCellHandlers}. The views it answers from have
+ * importers of their own; `service/legacy_report_views.ts` names them.
  */
 
 import type { GivenValue } from "@malloydata/malloy";
@@ -128,29 +130,6 @@ export function registerDeprecatedRoutes(
 ): void {
    const controller = new LegacyReportController(environmentStore);
    const pkg = `${apiPrefix}/environments/:environmentName/packages/:packageName`;
-   app.get(
-      `${pkg}/dashboards`,
-      apiRoute((req) =>
-         controller.listDashboards(
-            req.params.environmentName,
-            req.params.packageName,
-            versionRefOf(req),
-         ),
-      ),
-   );
-
-   app.get(
-      `${pkg}/dashboards/:dashboardName`,
-      apiRoute((req) =>
-         controller.getDashboard(
-            req.params.environmentName,
-            req.params.packageName,
-            req.params.dashboardName,
-            versionRefOf(req),
-         ),
-      ),
-   );
-
    app.get(
       `${pkg}/notebooks`,
       apiRoute((req) =>

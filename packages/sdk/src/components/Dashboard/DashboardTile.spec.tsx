@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The tile's own query key, asserted directly rather than through `Dashboard`.
+ * The tile's own query key, asserted directly rather than through `DashboardView`.
  *
  * `DashboardTile` is exported from the package root, so a host can mount one
  * itself, and `versionId` has to land in both the request and the key from the

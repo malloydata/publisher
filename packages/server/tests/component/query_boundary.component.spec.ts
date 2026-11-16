@@ -42,10 +42,6 @@ import {
    duckdbMalloyConfig,
    usePackageLoadPool,
 } from "../../src/test_helpers/temp_package";
-import {
-   getDashboard,
-   listDashboards,
-} from "../../src/service/legacy_report_views";
 
 describe("Query Boundary via worker pool", () => {
    let tempDir: string;
@@ -1457,7 +1453,7 @@ import { customers } from "../index.malloy"`,
          writeManifest({});
          writeIndex("customers");
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         expect(await getDashboard(pkg, "env", "dash")).toBeDefined();
+         expect(await pkg.getReport("dashboards/dash.malloy")).toBeDefined();
          const dash = pkg.getModel("dashboards/dash.malloy")!;
          const found = tileWarnings(pkg);
          expect(found).toEqual([
@@ -2661,7 +2657,7 @@ export { listed }`,
                tempDir,
                malloyConfig,
             );
-            expect(listDashboards(pkg, "env")).toEqual([]);
+            expect(pkg.listReports()).toEqual([]);
             const models = (await pkg.listModels()).map((m) => m.path).sort();
             expect(models).toEqual(["dashboards/old.malloy", "index.malloy"]);
             const old = pkg.getModel("dashboards/old.malloy")!;

@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Exported because Dashboard, DashboardTile and Notebook all present request
+// Exported because Report, DashboardTile and Notebook all present request
 // failures through it; a host composing those needs the same presentation for
 // its own.
 export { ApiErrorDisplay, type ApiErrorDisplayProps } from "./ApiErrorDisplay";

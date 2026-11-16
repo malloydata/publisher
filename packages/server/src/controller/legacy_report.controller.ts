@@ -5,7 +5,7 @@ import type { GivenValue } from "@malloydata/malloy";
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
-import { DashboardNotFoundError, ModelNotFoundError } from "../errors";
+import { ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
 import {
@@ -18,8 +18,6 @@ import {
 import type { PackageLookup } from "../service/environment_ports";
 import type { FilterParams } from "../service/filter";
 import {
-   getDashboard,
-   listDashboards,
    listNotebooks,
    withLegacyNotebookKind,
 } from "../service/legacy_report_views";
@@ -31,8 +29,6 @@ import {
    VersionRef,
 } from "../service/identity";
 
-type ApiDashboard = components["schemas"]["Dashboard"];
-type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 
@@ -50,8 +46,8 @@ const cellAccessBase = (
 });
 
 /**
- * DEPRECATED: the `…/dashboards*` and `…/notebooks*` routes, answered from the
- * report API through `service/legacy_report_views.ts`. Each method counts one
+ * DEPRECATED: the `…/notebooks*` routes, answered from the report API
+ * through `service/legacy_report_views.ts`. Each method counts one
  * deprecated use as it starts, so every route reaching it counts once.
  */
 export class LegacyReportController {
@@ -72,39 +68,6 @@ export class LegacyReportController {
          packageName,
          versionId,
       );
-   }
-
-   public async listDashboards(
-      environmentName: string,
-      packageName: string,
-      versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiDashboard[]> {
-      recordDeprecatedUsage("dashboards_list");
-      return listDashboards(
-         await this.packageOf(environmentName, packageName, versionId),
-         environmentName,
-      );
-   }
-
-   public async getDashboard(
-      environmentName: string,
-      packageName: string,
-      dashboardName: string,
-      versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiDashboardManifest> {
-      recordDeprecatedUsage("dashboard_get");
-      // Throws AmbiguousReportNameError (409) when two grid reports share it.
-      const dashboard = await getDashboard(
-         await this.packageOf(environmentName, packageName, versionId),
-         environmentName,
-         dashboardName,
-      );
-      if (!dashboard) {
-         throw new DashboardNotFoundError(
-            `Dashboard ${dashboardName} does not exist in package ${packageName}`,
-         );
-      }
-      return dashboard;
    }
 
    public async listNotebooks(

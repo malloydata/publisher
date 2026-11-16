@@ -4,8 +4,8 @@
 /**
  * What makes a file a report, and which layout it has (`docs/reports-design.md`
  * §1, §2). One rule for the whole server: discovery, the lint, the compile
- * check, the write path and the deprecated dashboard and notebook routes all
- * read it from here, so none of them can disagree about a file.
+ * check, the write path and the deprecated notebook routes all read it from
+ * here, so none of them can disagree about a file.
  *
  * A report is a `.malloy` file in the package, outside `public/`, whose
  * model-level `## artifact` tag parses, does not set `kind=`, and lists its

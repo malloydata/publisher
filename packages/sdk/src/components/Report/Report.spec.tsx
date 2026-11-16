@@ -9,7 +9,7 @@
  * routes: a `.malloynb` is the deprecated `Notebook`'s to render.
  */
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
    clearCache,
@@ -186,6 +186,112 @@ describe("the host's actions", () => {
       const action = screen.getByRole("button", { name: "Download" });
       // The title's own row holds both.
       expect(title.parentElement?.contains(action)).toBe(true);
+   });
+});
+
+// Ported from the removed `Dashboard` wrapper's spec: a version that reaches
+// the manifest read but not what the manifest drives lets two versions of one
+// report share cache entries, and one silently serves the other's data.
+describe("the version reaches what the manifest drives", () => {
+   const VERSIONED: ReportManifest = {
+      path: "ops.malloy",
+      name: "ops",
+      title: "Ops",
+      layout: "grid",
+      tiles: [{ kind: "query", query: "orders -> overview" }],
+      givens: [
+         { name: "REGION", type: "string" },
+         {
+            name: "TIER",
+            control: "select",
+            suggest: { source: "orders", dimension: "tier" },
+         },
+      ],
+   } as ReportManifest;
+
+   const reportAt = (versionId: string) => (
+      <Report resourceUri={`${URI}?versionId=${versionId}`} path="ops.malloy" />
+   );
+
+   /** The latest tile request, told apart from a suggest by its `givens`. */
+   const tileRequest = () =>
+      executeQueryModel.mock.calls
+         .map((call) => call[3])
+         .filter(
+            (request) =>
+               typeof request === "object" &&
+               request !== null &&
+               "givens" in request,
+         )
+         .at(-1) as
+         | { versionId?: string; givens?: Record<string, string> }
+         | undefined;
+
+   beforeEach(() => {
+      manifest = VERSIONED;
+   });
+
+   it("runs the tile's query against the same version", async () => {
+      render(reportAt("v2"), { wrapper: serverWrapper });
+
+      await waitFor(() => expect(cacheKeys("queryResult").length).toBe(1));
+      expect(tileRequest()?.versionId).toBe("v2");
+      expect(cacheKeys("queryResult")[0]).toContain('"v2"');
+   });
+
+   it("runs every tile of a composite report against the same version", async () => {
+      manifest = {
+         ...VERSIONED,
+         tiles: [
+            { kind: "query", query: "orders -> by_month" },
+            { kind: "query", query: "orders -> by_region" },
+         ],
+      } as ReportManifest;
+      render(reportAt("v2"), { wrapper: serverWrapper });
+
+      await waitFor(() => expect(cacheKeys("queryResult").length).toBe(2));
+      for (const key of cacheKeys("queryResult")) expect(key).toContain('"v2"');
+   });
+
+   it("runs the control's suggest query against the same version", async () => {
+      render(reportAt("v2"), { wrapper: serverWrapper });
+
+      await waitFor(() => expect(cacheKeys("givenSuggest").length).toBe(1));
+      expect(cacheKeys("givenSuggest")[0]).toContain('"v2"');
+   });
+
+   it("does not carry one version's applied values into another", async () => {
+      // `documentKey` is what tells the givens state the document changed.
+      // Mounted with no `givens` prop, which is the case the key governs. v2
+      // is read first so that switching back to it is served from the cache:
+      // the view stays mounted across the switch, and only the key can reset
+      // the values (a fresh read would remount it and reset them anyway).
+      const { rerender } = render(reportAt("v2"), { wrapper: serverWrapper });
+      await waitFor(() => expect(cacheKeys("queryResult").length).toBe(1));
+      rerender(reportAt("v1"));
+      await waitFor(() => expect(cacheKeys("queryResult").length).toBe(2));
+
+      // The control sits in its filter button's popover.
+      fireEvent.click(await screen.findByRole("button", { name: /^REGION: / }));
+      fireEvent.change(await screen.findByLabelText("REGION"), {
+         target: { value: "CA" },
+      });
+      await waitFor(() =>
+         expect(tileRequest()?.givens).toEqual({ REGION: "CA" }),
+      );
+
+      rerender(reportAt("v2"));
+
+      await waitFor(() =>
+         expect(
+            // The popover is still open, so the bar behind it is aria-hidden.
+            screen.getByRole("button", { name: /^REGION: /, hidden: true })
+               .textContent,
+         ).not.toContain("CA"),
+      );
+      const v2 = cacheKeys("queryResult").filter((key) => key.includes('"v2"'));
+      expect(v2.length).toBeGreaterThan(0);
+      for (const key of v2) expect(key).not.toContain("CA");
    });
 });
 

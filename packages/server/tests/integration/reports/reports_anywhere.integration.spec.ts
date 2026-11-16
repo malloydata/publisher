@@ -100,52 +100,14 @@ describe("Reports anywhere in a package (E2E)", () => {
       );
       expect(a.title).toBe("Sales summary");
       expect(b.title).toBe("Finance summary");
+      // Only the removed by-name dashboards route needed a warning for it.
+      expect(warningsByCode(warnings, "report-name-ambiguous")).toEqual([]);
    });
 
    // DEPRECATED FEATURE COVERAGE — delete together with
-   // the `…/dashboards` / `…/notebooks` routes (see RELEASE_NOTES deprecations).
-   describe("deprecated: the …/dashboards and …/notebooks routes", () => {
-      it("says on the deprecated name route which reports share a basename", async () => {
-         const ambiguous = await fetch(api("/dashboards/summary"));
-         expect(ambiguous.status).toBe(409);
-         const message = ((await ambiguous.json()) as { message?: string })
-            .message;
-         expect(message).toContain("finance/summary.malloy");
-         expect(message).toContain("sales/summary.malloy");
-         // A unique basename still resolves on the deprecated route.
-         const q3 = await getJson<{ path: string; layout: string }>(
-            api("/dashboards/q3"),
-         );
-         expect(q3).toMatchObject({
-            path: "sales/2026/q3.malloy",
-            layout: "grid",
-         });
-      });
-
-      it("warns at load about the shared basename the name route answers 409 for", () => {
-         const shared = warningsByCode(warnings, "report-name-ambiguous");
-         expect(shared).toHaveLength(1);
-         expect(shared[0]).toMatchObject({
-            model: "finance/summary.malloy",
-            subject: "summary",
-            severity: "warn",
-         });
-         expect(shared[0].message).toContain(
-            "finance/summary.malloy, sales/summary.malloy",
-         );
-         expect(shared[0].message).toContain("rename one of the files");
-      });
-
-      it("lists the deprecated aliases by layout", async () => {
-         const dashboards = await getJson<{ path: string }[]>(
-            api("/dashboards"),
-         );
-         expect(dashboards.map((d) => d.path)).toContain(
-            "notebooks/grid_in_notebooks.malloy",
-         );
-         expect(dashboards.map((d) => d.path)).not.toContain(
-            "dashboards/linear_in_dashboards.malloy",
-         );
+   // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
+   describe("deprecated: the …/notebooks routes", () => {
+      it("lists the deprecated alias by layout", async () => {
          const notebooks = await getJson<{ path: string }[]>(api("/notebooks"));
          expect(notebooks.map((n) => n.path).sort()).toEqual([
             "dashboards/linear_in_dashboards.malloy",

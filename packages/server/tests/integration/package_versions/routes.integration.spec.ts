@@ -229,20 +229,6 @@ describe("package-scoped routes of a versioned package", () => {
       expect(String((await compile("")).sql)).toContain("SELECT 2 AS answer");
    });
 
-   it("dashboards are the named version's", async () => {
-      const list = (await (
-         await fetch(api(`${PKG}/dashboards?versionId=1.0.0`))
-      ).json()) as { title?: string }[];
-      expect(list.map((d) => d.title)).toEqual(["Overview v1"]);
-      const one = await json(
-         await fetch(api(`${PKG}/dashboards/overview?versionId=1.0.0`)),
-      );
-      expect(one.title).toBe("Overview v1");
-      expect(
-         (await json(await fetch(api(`${PKG}/dashboards/overview`)))).title,
-      ).toBe("Overview v2");
-   });
-
    it("reports are the named version's", async () => {
       const list = (await (
          await fetch(api(`${PKG}/reports?versionId=1.0.0`))
@@ -386,8 +372,6 @@ describe("package-scoped routes of a versioned package", () => {
          `${PKG}/models/model.malloy`,
          `${PKG}/reports`,
          `${PKG}/reports/dashboards/overview.malloy`,
-         `${PKG}/dashboards`,
-         `${PKG}/dashboards/overview`,
          `${PKG}/notebooks`,
          `${PKG}/notebooks/notes.malloynb`,
          `${PKG}/databases`,

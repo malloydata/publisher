@@ -5,7 +5,7 @@
 
 /**
  * Package versions on 17 routes that read a `versionId`: package, models,
- * model, query, compile, dashboards, notebooks, one notebook, data apps,
+ * model, query, compile, reports, notebooks, one notebook, data apps,
  * databases, the package-scoped connection (schemas, sqlQuery, sqlSource,
  * sqlTemporaryTable), materializations, events and static files. Each handler
  * reads the version itself, so each is probed, for each kind of package: one
@@ -19,7 +19,7 @@
  * page says it. So a route whose answer can say which tree served it is
  * checked on that answer, not only on its status: one that resolved the
  * version and then read `latest` fails. Routes whose answer is the same for
- * every tree (dashboards, notebooks, connection schemas, materializations,
+ * every tree (reports, notebooks, connection schemas, materializations,
  * events) are checked on status alone.
  */
 
@@ -140,8 +140,8 @@ const ROUTES: Route[] = [
          }).then((res) => probe(res, marker(/SELECT (\d+) as n/))),
    },
    {
-      name: "GET dashboards",
-      call: (base, v) => get(`${base}/dashboards${query(v)}`),
+      name: "GET reports",
+      call: (base, v) => get(`${base}/reports${query(v)}`),
    },
    {
       name: "GET notebooks",

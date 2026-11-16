@@ -1223,7 +1223,7 @@ function MyComponent() {
 
 The report surfaces report what happens on them through an `onEvent` prop, for the host to log or count:
 `Report` (every layout), `ReportEditor` and `ReportBuilder` from `@malloy-publisher/sdk/builder`,
-`NewDocumentDialog`, `Package` (for its New report dialog), and the deprecated `Dashboard`. Every event is a
+`NewDocumentDialog`, and `Package` (for its New report dialog). Every event is a
 `ReportEvent`, named `report.*`, and carries the report's package `path` and its `layout`; the host knows the
 environment and package and adds them when it logs.
 

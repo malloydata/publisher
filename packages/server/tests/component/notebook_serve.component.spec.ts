@@ -22,15 +22,15 @@ import {
    isReportEligiblePath,
    readReportTagOfText,
 } from "../../src/service/report";
-import {
-   getDashboard,
-   listDashboards,
-   listNotebooks,
-} from "../../src/service/legacy_report_views";
+import { listNotebooks } from "../../src/service/legacy_report_views";
 import {
    duckdbMalloyConfig,
    usePackageLoadPool,
 } from "../../src/test_helpers/temp_package";
+
+/** The grid reports a package lists. */
+const gridReports = (pkg: Package) =>
+   pkg.listReports().filter((report) => report.layout === "grid");
 
 /** The layout `readReportTagOfText` gives, or `null` for no report. */
 const layoutOfText = (source: string) => {
@@ -370,7 +370,7 @@ describe("served notebooks (worker path)", () => {
             `source: base is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
       );
       await withPackage(async (pkg) => {
-         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
+         expect(gridReports(pkg).map((d) => d.path)).toEqual([
             "dashboards/x.malloy",
          ]);
          write(
@@ -378,7 +378,7 @@ describe("served notebooks (worker path)", () => {
             `##|"\n## artifact kinds\n|##\nsource: oops is\n`,
          );
          await pkg.reloadAllModels({});
-         expect(listDashboards(pkg, "env")).toEqual([]);
+         expect(gridReports(pkg)).toEqual([]);
       });
    });
 
@@ -445,7 +445,7 @@ describe("served notebooks (worker path)", () => {
             `source: base is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
       );
       await withPackage(async (pkg) => {
-         const dashboards = await listDashboards(pkg, "env");
+         const dashboards = gridReports(pkg);
          expect(dashboards.map((d) => d.description)).toEqual([
             "Above the tag",
          ]);
@@ -469,7 +469,7 @@ describe("served notebooks (worker path)", () => {
       );
       await withPackage(async (pkg) => {
          const by = async (name: string) =>
-            (await getDashboard(pkg, "env", name))!;
+            (await pkg.getReport(`dashboards/${name}.malloy`))!;
          expect(await by("legacy")).toMatchObject({
             title: "Legacy title",
             description: "Legacy body",
