@@ -79,7 +79,11 @@ afterAll(async () => {
 
 describe("the conformance shapes under the default settings", () => {
    for (const shape of SHAPES) {
-      for (const variant of shape.variants ?? ["storage", "colocated"]) {
+      for (const variant of shape.variants ?? [
+         "storage" as const,
+         "colocated" as const,
+         "materialize_colocated" as const,
+      ]) {
          it(`${shape.name} [${variant}]: every answer equals live`, async () => {
             const restore = installSettings({
                env: { PERSIST_STORAGE_MODE: "on", ...shape.env },

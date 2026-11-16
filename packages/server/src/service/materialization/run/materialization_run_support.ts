@@ -48,7 +48,11 @@ import {
    type TableFolds,
 } from "../plan/build_plan";
 import { declaredStorage } from "../plan/persist_source_fields";
-import { type QueryContext, type QueryMetadata } from "../../query_metadata";
+import {
+   mergeQueryMetadata,
+   type QueryContext,
+   type QueryMetadata,
+} from "../../query_metadata";
 import type { components } from "../../../api";
 import { getPersistStorageMode } from "../../../config";
 import { escapeSQL } from "../../connection";
@@ -632,8 +636,8 @@ export interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
    getStorageDestination(destinationName: string): ApiConnection;
    getEnvironmentPath(): string;
-   /** For the usage record a metered build emits; absent in some test doubles. */
-   getEnvironmentName?(): string;
+   /** For the usage record a metered build emits. */
+   getEnvironmentName(): string;
    /**
     * The package's text for a chained `storage=` build (the host port's
     * `chainBuildText`). Absent, a chained build cannot stack on its parents
@@ -655,8 +659,8 @@ export interface BuildEnvironment {
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
    pkg: {
-      chainBuildText?(request: ChainBuildRequest): ChainBuildText;
-      getPackagePath?(): string;
+      chainBuildText(request: ChainBuildRequest): ChainBuildText;
+      getPackagePath(): string;
    },
    /**
     * Whether the package serves a model older than its files (a reload that
@@ -665,13 +669,9 @@ export function withChainBuildText<E extends BuildEnvironment>(
     */
    isStale: () => boolean = () => false,
 ): E {
-   if (!pkg.chainBuildText && !pkg.getPackagePath) return environment;
    const scoped = Object.create(environment) as E;
-   if (pkg.getPackagePath) {
-      const packagePath = pkg.getPackagePath();
-      scoped.getPackagePath = () => packagePath;
-   }
-   if (!pkg.chainBuildText) return scoped;
+   const packagePath = pkg.getPackagePath();
+   scoped.getPackagePath = () => packagePath;
    scoped.chainBuildText = (request) =>
       isStale()
          ? {
@@ -681,7 +681,7 @@ export function withChainBuildText<E extends BuildEnvironment>(
                  `are not the model this build was planned from`,
               code: "package_stale",
            }
-         : pkg.chainBuildText!(request);
+         : pkg.chainBuildText(request);
    return scoped;
 }
 
@@ -722,6 +722,25 @@ export function connectionMetadataLayers(
       });
       return { default: null, enforced: null };
    }
+}
+
+/**
+ * The query metadata a run's own statement on `connectionName` carries (an
+ * ownership probe, a mark, a drop): the connection's layers under the run's
+ * context. Fails open, as a build's does.
+ */
+export function statementRunOptions(
+   environment: BuildEnvironment,
+   connectionName: string,
+   context: QueryContext,
+): { queryMetadata?: QueryMetadata } {
+   const layers = connectionMetadataLayers(environment, connectionName);
+   const resolved = mergeQueryMetadata({
+      connection: layers.default,
+      enforced: layers.enforced,
+      context,
+   });
+   return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
 }
 
 /**

@@ -54,7 +54,6 @@ import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName } from "../../src/service/identity";
 import * as dialects from "../../src/service/materialization/domain/dialect";
 import { backupSuffix } from "../../src/service/materialization/run/materialization_run_support";
@@ -72,6 +71,7 @@ import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -366,11 +366,10 @@ describe.skipIf(process.platform === "win32")(
          await env.addPackage(PKG);
          pkg = await env.getPackage(parsePackageName(PKG), false);
          await reopenServe();
-         service = new MaterializationService({
-            storageManager: { getRepository: () => repo },
-            getEnvironment: async () => env,
-            getLoadedEnvironments: () => [env],
-         } as unknown as EnvironmentStore);
+         service = serviceOverEnvironment(
+            () => repo,
+            () => env,
+         );
       });
 
       afterAll(async () => {
@@ -1009,11 +1008,10 @@ class LakeFixture {
       await this.env.addPackage(PKG);
       this.pkg = await this.env.getPackage(parsePackageName(PKG), false);
       await this.reopenServe();
-      this.service = new MaterializationService({
-         storageManager: { getRepository: () => this.repo },
-         getEnvironment: async () => this.env,
-         getLoadedEnvironments: () => [this.env],
-      } as unknown as EnvironmentStore);
+      this.service = serviceOverEnvironment(
+         () => this.repo,
+         () => this.env,
+      );
    }
 
    async tearDown(): Promise<void> {

@@ -15,7 +15,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -57,15 +57,9 @@ for (const [route, annotate] of Object.entries(ROUTES)) {
       ["storage=", ` storage="${DESTINATION}"`],
    ] as const) {
       describe(`R4: the stored types a ${route} rollup reads [${label}]`, () => {
-         let restore: () => void;
          let fixture: R4Fixture;
+         useMaterializationOn();
          beforeAll(async () => {
-            restore = installSettings({
-               env: {
-                  PERSIST_STORAGE_MODE: "on",
-                  PUBLISHER_MATERIALIZE: "true",
-               },
-            }).restore;
             fixture = await buildScenario({
                files: {
                   "m.malloy": `##! experimental { persistence }
@@ -82,7 +76,6 @@ source: typed is duckdb.table('typed') extend {
             });
          });
          afterAll(async () => {
-            restore();
             await disposeScenarios();
          });
 

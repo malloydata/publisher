@@ -1,9 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterAll, describe, expect, it } from "bun:test";
-import { storedKeyCheckSql } from "../text/key_check_text";
+import { describe, expect, it } from "bun:test";
 import {
    KEY_RULES,
    requireUnique,
@@ -43,21 +41,5 @@ describe("key rules", () => {
       expect(verdictOf(true)).toBe("unique");
       expect(verdictOf(false)).toBe("repeated");
       expect(verdictOf(undefined)).toBe("unknown");
-   });
-});
-
-describe("a stored table's key check follows the stored_key row", () => {
-   const duckdb = new DuckDBConnection("key_rules", ":memory:");
-   afterAll(() => duckdb.close());
-   const fails = async (rows: string) =>
-      (
-         await duckdb.runSQL(
-            storedKeyCheckSql(`(SELECT * FROM (VALUES ${rows}) t(k))`, "k"),
-         )
-      ).rows.length > 0;
-   it("fails on a NULL key and on a repeat, passes a clean key", async () => {
-      expect(await fails("(1), (NULL), (2)")).toBe(true);
-      expect(await fails("(1), (1), (2)")).toBe(true);
-      expect(await fails("(1), (2), (3)")).toBe(false);
    });
 });

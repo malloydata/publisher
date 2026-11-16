@@ -154,7 +154,7 @@ describe("PersistedQueryServe (colocated)", () => {
       const decline = await declineOf(
          attempt("run: q_region + { limit: 1 }", built),
       );
-      expect(decline.code).toBe("view_missing_field");
+      expect(decline.code).toBe("query_missing_field");
       expect(decline.callerDetail).toBe(
          "the query refines `q_region` (`+ { … }`), and the stored result holds only the query as written",
       );
@@ -177,7 +177,7 @@ describe("PersistedQueryServe (colocated)", () => {
 
    it("declines an unbuilt query as not built, and one missing from the query's manifest as stale", async () => {
       expect((await declineOf(attempt("run: q_region", {}))).code).toBe(
-         "view_not_built",
+         "query_not_built",
       );
       const pinned = pinnedOf([], built);
       const decline = await declineOf(
@@ -189,7 +189,7 @@ describe("PersistedQueryServe (colocated)", () => {
             buildManifest: { entries: {}, strict: false },
          }),
       );
-      expect(decline.code).toBe("view_stale");
+      expect(decline.code).toBe("query_stale");
    });
 
    it("declines a result whose stored rows cannot be regrouped into live's", async () => {

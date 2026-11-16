@@ -153,7 +153,7 @@ export class PersistedQueryServe {
          which === "bound" ? pinned.snapshot.bindings : pinned.fresh
       ).filter(
          (b) =>
-            b.kind === "view" &&
+            b.kind === "query" &&
             b.tier === "storage" &&
             (b.sourceIDs ?? []).some((id) => ids.has(id)),
       );
@@ -220,11 +220,11 @@ export class PersistedQueryServe {
    }): Promise<ViewAnswer> {
       this.compiledOver(args.pinned);
       const called = this.calledQuery(args.queryString);
-      if (!called) throw new LegDecline("view_missing_field");
+      if (!called) throw new LegDecline("query_missing_field");
       const { call, plan } = called;
       if (call.refined) {
          throw new LegDecline(
-            "view_missing_field",
+            "query_missing_field",
             `the query refines \`${call.query}\` (\`+ { … }\`), and the stored result holds only the query as written`,
          );
       }
@@ -254,7 +254,7 @@ export class PersistedQueryServe {
          | { type?: unknown; location?: { url?: unknown } }
          | undefined;
       const notTheQuery = new LegDecline(
-         "view_missing_field",
+         "query_missing_field",
          `the query does not call \`${call.query}\` as its file declares it`,
       );
       if (
@@ -286,14 +286,14 @@ export class PersistedQueryServe {
          if (result.resultExplore.name !== plan.queryName) throw notTheQuery;
       }
       const table = this.views.tableOf(plan, args.pinned, args.buildManifest);
-      if (!table.built) throw new LegDecline("view_not_built");
+      if (!table.built) throw new LegDecline("query_not_built");
       if (table.stale || (!table.virtualMap && !table.colocatedTable)) {
-         throw new LegDecline("view_stale");
+         throw new LegDecline("query_stale");
       }
       const variant = await this.compiledVariant(plan, table);
       if (variant.refusal) {
          throw new LegDecline(
-            "view_missing_field",
+            "query_missing_field",
             `the stored result cannot answer \`${call.query}\` with live's columns: ${variant.refusal}`,
          );
       }

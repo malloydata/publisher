@@ -5906,14 +5906,17 @@ components:
                   `preaggregate-invalid`, `persist-view-invalid` and
                   `persist-query-invalid` (a bad value or contradictory
                   combination: a `storage=` that names nothing, an `@env.`
-                  reference, an unusable or reserved `name=`, an `inline=`
-                  that names no join, an incremental key on a view or query);
+                  reference, an unusable, unsafe, unquoted or reserved
+                  `name=`, an `inline=` that names no join, an incremental
+                  key or `refresh="incremental"` on a view or query);
                   `persist-unknown-key`, `materialize-unknown-key` and
-                  `preaggregate-unknown-key` (every route's key set is closed);
+                  `preaggregate-unknown-key` (every route's key set is
+                  closed, a `freshness.` group's included);
                   `persist-retired-key` and `materialize-retired-key`
-                  (`sharing=`, `schedule=`, `partition=`);
-                  `persist-unparseable`, `materialize-unparseable` and
-                  `preaggregate-unparseable`; `persist-not-materializable` (a
+                  (`sharing=`, `schedule=`, `partition=`, and on `#@ persist`
+                  `realization=`); `persist-unparseable`,
+                  `materialize-unparseable`, `preaggregate-unparseable`,
+                  `persist-view-unparseable` and `persist-query-unparseable`; `persist-not-materializable` (a
                   `#@ persist` on a shape Malloy does not plan);
                   `preaggregate-not-a-measure`, `preaggregate-unknown-grain`
                   and `preaggregate-not-mergeable`;
@@ -5927,35 +5930,30 @@ components:
                   `preaggregate-unparseable` now.
                   A VALID annotation Publisher cannot build here is refused
                   alone, answered live, while the package loads, and is
-                  severity `warn`, never `error`: `persist-not-built` (a
-                  `#@ persist` source a compile-time gate refused, a row-level
-                  gate, a free parameter, a given in the persisted query, the
-                  `storage=` gate, an incremental declaration the dialect cannot
-                  honour, or, under `PERSIST_COLLISION_ENFORCE=false`, a table
-                  another source writes; `subject` the source).
-                  `persist-source-refused` is its former name: each gate
-                  refusal (the cases it named before) is repeated under it,
+                  severity `warn`, never `error`. Every one is a
+                  `BuildPlan.refusedSources` entry with a bounded `reason`,
+                  and its warning's code names the mechanism:
+                  `persist-not-built` (a `#@ persist` source; `subject` the
+                  source), `materialize-not-built` (a `#(materialize)` source;
+                  `subject` the source), `persist-view-not-built` and
+                  `persist-query-not-built` (a persisted view or named query;
+                  `subject` the view or query), and `preaggregate-not-built`
+                  (a `#(preaggregate)` or `#@ preaggregate` rollup; `subject`
+                  the base, or `<base>.<measure>` for one measure). The
+                  message says why; the reason is on the refusal record.
+                  `persist-source-refused` is `persist-not-built`'s former
+                  name: a `#@ persist` source's refusal is repeated under it,
                   with the same message, for one release, then the repeat is
-                  removed; the refusals new in this release carry
-                  `persist-not-built` only.
-                  `materialize-not-built` (a valid `#(materialize)` Publisher
-                  cannot lay out or build; `subject` the source).
-                  `persist-view-not-built` and `persist-query-not-built` (a
-                  persisted view or named query that is not built: the feature
-                  is off (`PUBLISHER_MATERIALIZE`), or the message says why;
-                  `subject` the view or query). `preaggregate-not-built`: a
-                  valid `#(preaggregate)` or `#@ preaggregate` rollup a
-                  compile-time gate refused alone (a read-only dialect, a base
-                  scoped by a given, a table name another rollup holds, a
-                  row-level gate on a v1 rollup's base, or the `storage=`
-                  gate), so it is not built and its measures are served live
-                  while the rest of the package loads; the message names the
-                  base, the grain and the gate's reason (`subject` the base;
-                  `warn`). The rollup sub-family keeps its own codes:
+                  removed; it never accompanies another mechanism's code, nor
+                  a refusal no earlier release raised
+                  (`storage_source_unsupported`, `incremental_unsupported`).
+                  Retained, no longer produced: the rollup sub-family
                   `preaggregate-hidden-field`, `-access-filter`, `-time-zone`,
                   `-current-time`, `-reads-given`, `-unreadable-measure`,
-                  `-join-level` (also a `#@ preaggregate` over a source with a
-                  fan-out join), and `-name-clash`.
+                  `-join-level` and `-name-clash`, now each
+                  `preaggregate-not-built` with the reasons `hidden_field`,
+                  `access_filter`, `time_zone`, `current_time`, `reads_given`,
+                  `unreadable_measure`, `join_level` and `name_clash`.
                   `materialization-storage-mode`: a `storage=` source the
                   deployment's `PERSIST_STORAGE_MODE` (`off` or `write-only`)
                   does not serve from storage (`subject` the source, or a
@@ -5971,13 +5969,17 @@ components:
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always
                   a `warn`, never a load refusal; see docs/authorize.md).
-                  `storage-column-type-mismatch`: a `storage=` table stores a
-                  column as a type other than the one Malloy declares for it.
-                  It is read through a cast to the declared type where that is
-                  faithful, and otherwise answered live (one per source and
-                  column, `model` the first model binding it, `subject` the
-                  source, the message naming the column, both types and which
-                  of the two applies; `warn`; see docs/materialization.md).
+                  `storage-column-type-mismatch`: a `storage=` table of any
+                  kind (`#@ persist`, `#(materialize)`, a rollup, a persisted
+                  view or query) stores a column as a type other than the one
+                  its build declares. It is read through a cast to the
+                  declared type where that is faithful, answered live, or, for
+                  a `#(materialize)` source or a rollup's grain, read as its
+                  stored type (one per source and column, `model` the model
+                  declaring it, `subject` the source, a rollup's base, or a
+                  view's or query's build source, the message naming the
+                  column, both types and which applies; `warn`; see
+                  docs/materialization.md).
                   `stored-native-schema-missing`: a colocated table is bound
                   with no captured warehouse type (its manifest entry's
                   `nativeSchema`) for a column whose field Malloy types as a big
@@ -8545,9 +8547,9 @@ components:
             Null means no materialized table answered: the query was served
             live. `path`, the path report, says why each table that could have
             answered did not, and `path.servedBy.tier` names the same tier this
-            field does. The server also logs one
-            `served copy cannot answer this query` line at DEBUG per declined
-            query, carrying the error that declined it.
+            field does. The server also logs a
+            `served copy cannot answer this query` line at DEBUG, carrying the
+            error that declined the query and its decline code.
 
             ⚠️ **`live_fallback` here is not `manifestBindingStatus`'s.** On this
             field it means the store failed at run time; `manifestBindingStatus`
@@ -10502,17 +10504,26 @@ components:
         refusedSources:
           type: object
           description: >-
-            Map of sourceID ("sourceName@modelURL") to the sources the package
-            declared `#@ persist` on but that are ineligible to build, so they
-            carry no entry in `sources`. A SEPARATE collection rather than a
-            field on `PersistSourcePlan`: constructing that plan entry requires
-            the source's SQL and content address, and a free-parameter or
-            given-referencing source cannot produce either, so a refused
-            source needs a wire shape that requires neither. Lets a host
-            distinguish "this package declares no persist source" (both maps
-            empty) from "every persist source was refused" (empty `sources`,
-            populated `refusedSources`) — silence otherwise reads as the
-            former.
+            Map of sourceID ("sourceName@modelURL") to every valid
+            materialization declaration the package makes that is not built
+            here: a `#@ persist` or `#(materialize)` source, a persisted view
+            or named query, or a rollup (`#(preaggregate)` or
+            `#@ preaggregate`). Each is answered live while the rest of the
+            package loads, and each carries its `reason`. An invalid
+            declaration is never here: it fails the publish and the load. A
+            SEPARATE collection rather than a field on `PersistSourcePlan`:
+            constructing that plan entry requires the source's SQL and content
+            address, and a refused declaration may produce neither. Lets a
+            host distinguish "this package declares no materialization" (both
+            maps empty) from "every declaration was refused" (empty `sources`,
+            populated `refusedSources`), which silence otherwise reads as the
+            former. A persisted view or query is keyed by the generated build
+            source it would have had (`<source>__<view>__view@…` or
+            `<query>__query@…`), a `#(materialize)` source by its own
+            sourceID, and a rollup measure refused before its rollup is
+            planned by the measure's path on its base, its grain and its
+            destination (`<base>.<measure>[<grain>]@<model>.preaggregate.malloy`,
+            `[<grain> in <destination>]` for a `storage=` one).
           additionalProperties:
             $ref: "#/components/schemas/RefusedSource"
         omittedSources:
@@ -10622,22 +10633,32 @@ components:
     RefusedSource:
       type: object
       description: >-
-        One `#@ persist` source refused at compile time, and why. Computed
-        from the SAME tier-appropriate eligibility assert the build path
-        itself enforces (the colocated tier's post-relaxation admission for a
-        proven row-level, fully-attributed authorize gate applies here
-        too), so a source this reports as refused is refused for the tier it
-        would actually build under — never the unconditional
-        `storage=`-destination check applied to a source that declares no
-        `storage=`. A `preaggregate`-tier entry can coexist with an entry of
-        the same sourceID in `BuildPlan.sources` — the one tier where
+        One valid materialization declaration Publisher does not build here,
+        and why: the one refusal record for every mechanism (`#@ persist`,
+        `#(materialize)`, a persisted view or named query, and a rollup). It
+        is answered live, and the package carries one `*-not-built` warning
+        for it (`persist-not-built`, `materialize-not-built`,
+        `persist-view-not-built`, `persist-query-not-built` or
+        `preaggregate-not-built`) with this `message`. A `#@ persist`
+        source's gate refusal is computed from the SAME tier-appropriate
+        eligibility assert the build path itself enforces (the colocated
+        tier's post-relaxation admission for a proven row-level,
+        fully-attributed authorize gate applies here too), so a source this
+        reports as refused is refused for the tier it would actually build
+        under. A `preaggregate`-tier entry can coexist with an entry of the
+        same sourceID in `BuildPlan.sources`: the one tier where
         refused-and-present-in-sources is the correct, intended state, unlike
         `storage`/`colocated` where a refusal means absence from `sources`.
       required: [name, sourceID, tier, reason, message]
       properties:
         name:
           type: string
-          description: The source's declared name.
+          description: >-
+            The declaration's name: a source's declared name, a persisted
+            view's or query's generated build source name
+            (`<source>__<view>__view`, `<query>__query`), a planned rollup's
+            generated name, or, for a rollup measure refused before its
+            rollup is planned, `<base>.<measure>`.
         sourceID:
           type: string
           description: "sourceName@modelURL — matches this entry's map key."
@@ -10651,16 +10672,14 @@ components:
           type: string
           enum: [storage, colocated, preaggregate]
           description: >-
-            Which build path this source was evaluated against: `storage` for
-            a source declaring `#@ persist storage=<ref>` (evaluated against
-            the full storage-destination eligibility gate, which never
-            admits an authorize-gated source); `colocated` for a plain
-            `#@ persist` (evaluated against the colocated gate, which admits
-            a proven row-level, fully-attributed gate); `preaggregate` for a
-            `#@ preaggregate` rollup (evaluated against the pre-aggregation
-            gate, which refuses unconditionally when the rollup's base is
-            authorize-gated — rollups group away the gate column, so
-            there is no row-level admission the way colocated has).
+            Which build path this declaration was evaluated against: `storage`
+            for one declaring `storage=<ref>` (a `#@ persist` source is
+            evaluated against the full storage-destination eligibility gate,
+            which never admits an authorize-gated source); `colocated` for one
+            built in its own connection (a `#@ persist` source is evaluated
+            against the colocated gate, which admits a proven row-level,
+            fully-attributed gate); `preaggregate` for a rollup, whatever its
+            placement.
         reason:
           type: string
           enum:
@@ -10687,90 +10706,119 @@ components:
               empty_storage,
               table_name_collision,
               current_time,
+              reads_given,
+              incremental_unsupported,
+              materialization_off,
+              multi_line_annotation,
+              build_name_collision,
+              run_target_unsupported,
+              nested_result,
+              inherited_persist,
+              inline_unsupported,
+              no_stored_columns,
+              needs_qualified_name,
+              generated_build_failed,
+              hidden_field,
+              access_filter,
+              time_zone,
+              unreadable_measure,
+              join_level,
+              name_clash,
             ]
           description: >-
-            The bounded refusal reason. Only the compile-time reasons can
-            appear here — `free_parameter`, `authorize`, the four
-            that name where a given the build could not strip sits
+            The bounded refusal reason; `message` says the specifics.
+
+
+            On every mechanism: `free_parameter`, `authorize`, the four that
+            name where a given the build could not strip sits
             (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
-            `dynamic_joined_where`), `inherited_where_with_given` (a
-            given-reading `where:` the source inherits from a source it is
-            built from, in its own file or another, rather than writing it in
-            its own declaration: only the source's own declaration is
-            re-applied over the stored table at read, so it is not built and
-            is answered live, under the term; move the `where:` onto the
-            persisted source to serve it from a table),
+            `dynamic_joined_where`); `inherited_where_with_given` (a
+            given-reading `where:` or dimension the declaration inherits from
+            a source it is built from, in its own file or another, rather than
+            writing it in its own declaration: only the declaration's own
+            terms are re-applied over the stored table at read; move the
+            `where:` onto the persisted source to serve it from a table);
+            `reads_given` (the build Malloy generates reads a given wherever it
+            is written, so its table would hold one caller's rows: a persisted
+            view or query whose result reads one, or a rollup whose rows do);
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
-            cannot be expressed over the stored table's own columns),
-            `preaggregate_over_dynamic_source` (a rollup whose base is scoped by
-            a given, which has no read-time re-application to put the term back),
-            `read_only_dialect` (a colocated `#@ persist` on a source whose
-            dialect cannot create tables; SQL Server today, whose connection
-            reports `canPersist: false`), `storage_source_unsupported`
-            (`storage=` on a source whose connection the build cannot pass
-            through to a destination, e.g. the package's DuckDB sandbox; it
-            is not built and is answered live), `rollup_name_collision`
-            (retained on the enum and no longer produced: a rollup's generated
-            name digests its declaring source, so no two rollups share one),
-            and
-            `current_time` (a `#@ persist` whose build reads the current
-            time, `now`: in its persisted query, a view it runs, the
-            `where:`, a field or a join of the source that query reads, or
-            the query of a query-shaped source it is built from or joins; its
-            table would hold the rows as of the build, so it is not built and
-            is answered live. `now` in the source's own extend block is
-            applied at every read and is admitted) —
-            those being the only reasons the two
-            compile-time eligibility asserts this collection is computed from
-            produce. One more appears only in a run's
-            `metadata.refusedSources`, never in a build plan:
-            `table_name_collision` (a source whose readable table name, the
-            name a standalone run gives a table it names itself, is a name
-            another source's table already takes in that run: two sources of
-            one model that share a name, such as a `#@ persist` source named
-            like a persisted view's generated build source beside it, or a
-            hash collision; it is not built and is answered live), or a
-            source whose `name=` puts it on one table with another source,
-            under `PERSIST_COLLISION_ENFORCE=false` (by default such a
-            package does not load); neither is built, so neither overwrites
-            the other, and both are answered live).
+            cannot be expressed over the stored table's own columns);
+            `preaggregate_over_dynamic_source` (a rollup whose base is scoped
+            by a given, which has no read-time re-application to put the term
+            back); `read_only_dialect` (a colocated build on a dialect that
+            cannot create tables; SQL Server today, whose connection reports
+            `canPersist: false`); `storage_source_unsupported` (`storage=` on a
+            source whose connection the build cannot pass through to a
+            destination, e.g. the package's DuckDB sandbox);
+            `table_name_collision` (under `PERSIST_COLLISION_ENFORCE=false`, a
+            declaration whose `name=` puts it on one table with another, so
+            neither is built; by default such a package does not load; a run
+            also records it in its `metadata.refusedSources` for a source
+            whose readable table name another source's table already takes in
+            that run); `current_time` (the build reads the current time, `now`,
+            or keeps rows older than a moving cut-off it cannot leave out, so
+            its table would hold the rows as of the build; `now` in the
+            source's own extend block is applied at every read and is
+            admitted); `incremental_unsupported` (a valid incremental
+            declaration this deployment's dialect or destination cannot
+            honour).
 
 
-            `given_in_persisted_query` is raised by BOTH gates, for one
-            condition: the BUILD would substitute a given's value, so the
-            artifact holds one caller's slice. On colocated that is a build that
-            runs and lies; on a storage destination the same placement also
-            leaves nothing for the read to re-apply. A given in the source's
-            extend block is neither — it is left out of the build and applied
-            per caller at read — and is admitted on both tiers.
+            A persisted view or named query: `materialization_off` (persisted
+            named queries are built only with `PUBLISHER_MATERIALIZE` on),
+            `multi_line_annotation` (its `#@` line spans more than one line),
+            `build_name_collision` (its generated build source's name is one
+            the model, or another persisted view, already takes),
+            `run_target_unsupported` (its source is declared in another file,
+            is not in the model's namespace, or cannot be read),
+            `nested_result` (a result that nests, which its table cannot
+            answer yet), `access_filter` (it reaches a row-level gate its
+            stored result cannot keep), `current_time` (its result reads
+            `now`), `no_stored_columns` (it has no stage to store) and
+            `generated_build_failed` (its build does not compile on its own).
 
 
-            `given` is retained for records that already carry it and is no
-            longer produced. It was the storage tier's blanket refusal of any
-            given reference, and the positional reasons above replaced it: where
-            a given sits decides the outcome, so a single reason covering every
-            placement can no longer be raised. `not_duckdb_portable` is
-            likewise retained and no longer produced: a `storage=` table no
+            A `#(materialize)` source: `inherited_persist` (it inherits
+            `#@ persist`, so it is already its base's table),
+            `inline_unsupported` (an `inline=` join or pair-table layout the
+            build cannot store), `no_stored_columns` (the source has no
+            dimension to store), `needs_qualified_name` (a BigQuery table
+            built in its own warehouse needs a dataset-qualified `name=`), and
+            `generated_build_failed` (Publisher could not write or compile its
+            generated build, a Publisher bug worth reporting).
+
+
+            A rollup (`#(preaggregate)` or `#@ preaggregate`): `hidden_field`
+            (a measure or grain dimension the published surface hides, which a
+            rollup would publish), `access_filter` (a row-level gate a rollup
+            cannot re-apply to its rows; a planned rollup a gate refuses
+            carries `authorize`), `time_zone` (the source sets its own
+            time zone, so no query reads the rollup), `unreadable_measure` (a
+            measure definition outside what a rollup reads), `join_level` (a
+            measure that aggregates through a join its grain does not key), and
+            `name_clash` (a field already takes the name of the measure's
+            stored partial).
+
+
+            Retained, no longer produced: `given` (replaced by the positional
+            given reasons above), `not_duckdb_portable` (a `storage=` table no
             column of which Malloy can type is now built, and its source is
-            answered live. The three `partition_*` reasons
-            (`partition_without_storage`, `partition_column_unknown`,
-            `partition_column_not_public`) are likewise retained and no longer
-            produced: `partition=` is a retired key, which fails the publish
-            and the load as `persist-retired-key` or `materialize-retired-key`,
-            never a plan refusal. `env_reference` and `empty_storage` are
-            likewise retained and no longer produced: an `@env.` reference on a
-            `#@` line, and a `storage=` that names no destination, are invalid
-            annotations (`persist-invalid`), which fail the publish and the
-            load, so no served plan carries them. `public_surface_unknown` is raised by the build-time
-            narrowing of a stored table to the source's public columns; both
-            are listed only because they share the enum the runtime
-            eligibility metric uses.
+            answered live), the three `partition_*` reasons (`partition=` is a
+            retired key, which fails the publish and the load as
+            `persist-retired-key` or `materialize-retired-key`), `env_reference`
+            and `empty_storage` (invalid annotations, which fail the publish
+            and the load), and `rollup_name_collision` (a rollup's generated
+            name digests its declaring source, so no two rollups share one).
+            `public_surface_unknown` is raised by the build-time narrowing of a
+            stored table to the source's public columns, never by a plan; it
+            shares the enum with the eligibility metric.
         message:
           type: string
           description: >-
-            The full, human-readable refusal message the eligibility assert
-            produced — the same text a build attempting this source would 422
-            with.
+            The full, human-readable refusal message, the text of the
+            declaration's `*-not-built` warning. For a `#@ persist` gate
+            refusal it is the same text a build attempting the source would
+            422 with.
 
     BuildGraph:
       type: object
@@ -11033,14 +11081,15 @@ components:
             type: string
           description: >-
             All key=value fields of the source's `#@ persist` annotation (e.g.
-            `name`, `realization`). The control plane uses `name` as the
+            `name`, `storage`). The control plane uses `name` as the
             materialized table name (it may carry a dialect container path like
-            `dataset.table`). Returned as the full set so new persist directives
-            need no publisher change; an unrecognized key rides through here and
-            is reported as a package warning, never a rejection.
+            `dataset.table`). The key set is closed: an unrecognized or retired
+            key fails the publish and the load (`persist-unknown-key`,
+            `persist-retired-key`), so a served plan carries only recognized
+            keys.
 
 
-            Recognized keys beyond `name`/`realization`/`storage`, both read from
+            Recognized keys beyond `name`/`storage`, both read from
             the EFFECTIVE merged tag (a source extending a persisted parent
             inherits the parent's keys, and its own keys merge over them per key):
 
@@ -11201,7 +11250,9 @@ components:
     Realization:
       type: string
       enum: [SNAPSHOT, COPY]
-      description: SNAPSHOT = warehouse clone/snapshot; COPY = CREATE TABLE AS SELECT.
+      description: >-
+        COPY = CREATE TABLE AS SELECT, the only realization built. SNAPSHOT
+        (a warehouse clone or snapshot) is refused.
 
     BuildInstructions:
       type: object
@@ -11317,8 +11368,7 @@ components:
 
     BuildInstruction:
       type: object
-      required:
-        [sourceEntityId, materializedTableId, physicalTableName, realization]
+      required: [sourceEntityId, materializedTableId, physicalTableName]
       properties:
         sourceEntityId:
           type: string
@@ -11344,7 +11394,11 @@ components:
             hyphenated BigQuery project id, a container path) are valid, and
             echoes this logical name back in the manifest.
         realization:
-          $ref: "#/components/schemas/Realization"
+          allOf:
+            - $ref: "#/components/schemas/Realization"
+          description: >-
+            Optional; absent means `COPY`, the only realization built.
+            `SNAPSHOT` is refused.
         destination:
           type: string
           description: >-
@@ -11709,7 +11763,9 @@ components:
           items:
             $ref: "#/components/schemas/Column"
         realization:
-          $ref: "#/components/schemas/Realization"
+          allOf:
+            - $ref: "#/components/schemas/Realization"
+          description: Retained; always `COPY`.
         rowCount:
           type: ["integer", "null"]
         buildDurationMs:

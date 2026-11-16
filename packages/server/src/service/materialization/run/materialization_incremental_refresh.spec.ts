@@ -170,6 +170,7 @@ describe("buildOneSource: incremental refresh", () => {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries: {},
@@ -443,6 +444,7 @@ describe("buildOneSource: incremental refresh", () => {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries: {},

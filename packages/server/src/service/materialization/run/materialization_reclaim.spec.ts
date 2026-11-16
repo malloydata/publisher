@@ -10,9 +10,7 @@ import { PackageController } from "../../../controller/package.controller";
 import { VersionController } from "../../../controller/version.controller";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../../storage/DatabaseInterface";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import {
    failInterruptedMaterializations,
    INTERRUPTED_RUN_ERROR,
@@ -39,6 +37,13 @@ import {
 } from "../../identity";
 import { startedStore } from "../../../test_helpers/started_store";
 import { testRetrieval } from "../../../test_helpers/test_retrieval";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
+import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
+import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -231,12 +236,11 @@ describe("reclaiming an archived version's tables", () => {
       environment: Environment,
       collaborators: RunCollaboratorOverrides = {},
    ): MaterializationService {
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => environment,
-         getLoadedEnvironments: () => [environment],
-      } as unknown as EnvironmentStore;
-      const created = new MaterializationService(store, collaborators);
+      const created = serviceOverEnvironment(
+         () => repo,
+         () => environment,
+         collaborators,
+      );
       environment.setVersionArchivedHook((packageName, versionId) => {
          reclaims.push(
             created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
@@ -375,20 +379,14 @@ describe("reclaiming an archived version's tables", () => {
       (await repo.getMaterializationById(id))?.status ?? null;
 
    beforeEach(async () => {
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "materialization-reclaim-")),
-      );
-      envPath = path.join(root, "env");
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "materialization-reclaim-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       sourcesPath = path.join(root, "sources");
-      fs.mkdirSync(envPath);
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       reclaims = [];
       env = await newEnvironment();
       service = newService(env);
@@ -398,8 +396,7 @@ describe("reclaiming an archived version's tables", () => {
       for (const environment of environments.splice(0)) {
          await environment.closeAllConnections().catch(() => undefined);
       }
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
    });
 
    it("drops a table only the archived version's runs reference, and keeps one another committed run still serves", async () => {
@@ -647,6 +644,8 @@ describe("reclaiming an archived version's tables", () => {
          [DETAIL_V1, "host_v1", TABLE_V1, TABLE_V2].sort(),
       );
 
+      resetMaterializationTelemetryForTesting();
+      const harness = await startMetricsHarness();
       const deleted = await env
          .getVersionService()!
          .deleteVersion(PKG, "1.0.0");
@@ -654,6 +653,13 @@ describe("reclaiming an archived version's tables", () => {
 
       // The cleanup runs after the delete answers.
       await Promise.all(reclaims);
+      // A version's reclaim counts its drops as a reclaim, never a delete.
+      const drops = await harness.collectAttributes(
+         "publisher_materialization_drop_tables_total",
+      );
+      await harness.shutdown();
+      expect(drops.length).toBeGreaterThan(0);
+      for (const d of drops) expect(d).toMatchObject({ occasion: "reclaim" });
       expect((await tablesIn(env)).sort()).toEqual(
          ["host_v1", TABLE_V2].sort(),
       );
@@ -985,7 +991,7 @@ describe("reclaiming an archived version's tables", () => {
             dropManifestEntries: async (...args) => {
                if (failed) return real.dropManifestEntries(...args);
                failed = true;
-               return args[4];
+               return args[5];
             },
          };
       });

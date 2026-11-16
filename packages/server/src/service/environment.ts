@@ -890,7 +890,7 @@ export class Environment {
             {
                environmentName: this.environmentName,
                connection: overlap.connection,
-               destination: overlap.destination,
+               destinationName: overlap.destination,
             },
          );
       }

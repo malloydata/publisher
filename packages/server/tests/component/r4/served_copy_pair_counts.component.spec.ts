@@ -28,13 +28,17 @@ import type {
    KeyUniqueness,
    ManifestEntry,
 } from "../../../src/service/materialization/domain/types";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
    type R4Scenario,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
@@ -391,9 +395,7 @@ for (const tier of tiers) {
          return (path?.considered ?? []).map((c) => c.reason);
       };
 
-      it("compiles the served copy with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       it("counts a childless parent as none, as live does", async () => {
          const run = await equalToLive(
@@ -465,12 +467,9 @@ for (const tier of tiers) {
 // With no leaf key check on record (a table a host's manifest binds, or a
 // build that could not check), the counts stay declined.
 describe("R4: counts through a pair table with no leaf key check on record", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model("duckdb", "", () => 'storage="lake"') },
          seedSql: seed(""),
@@ -479,7 +478,6 @@ describe("R4: counts through a pair table with no leaf key check on record", () 
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -525,12 +523,9 @@ describe("R4: counts through a pair table with no leaf key check on record", () 
 // Every leaf count, sum and average answers live, a stored column's sum
 // included, and equals live.
 describe("R4: a pair table a host's manifest binds, its leaf key claimed checked", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model("duckdb", "", () => 'storage="lake"') },
          seedSql: seed(""),
@@ -538,7 +533,6 @@ describe("R4: a pair table a host's manifest binds, its leaf key claimed checked
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

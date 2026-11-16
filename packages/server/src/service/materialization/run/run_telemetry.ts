@@ -37,7 +37,10 @@ import {
    recordBuildReadBytes,
 } from "../../../materialization_metrics";
 import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../domain/table_plans";
+import {
+   isPersistedQuerySourceID,
+   PERSISTED_VIEW_COMPANION_SUFFIX,
+} from "../domain/table_plans";
 import type {
    BuildInstruction,
    BuildPlan,
@@ -83,6 +86,8 @@ export function buildKindOf(
    sourceID: string | undefined,
 ): BuildKind {
    if (sourceID === undefined) return "persist";
+   // A persisted query's table is planned as a view's; it reports as a query.
+   if (isPersistedQuerySourceID(sourceID)) return "query";
    const table = compiled.tables[sourceID];
    if (table) return table.kind;
    if (sourceID.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) return "view";
@@ -358,18 +363,43 @@ export function reportSourceFailed(
       outcome: failureClass === "none" ? "cancelled" : "failed",
       failureClass,
       code: errorCodeOf(err),
-      ...(source.destination ? { destination: source.destination } : {}),
+      ...(source.destination ? { destinationName: source.destination } : {}),
    });
 }
 
 /**
- * A source the eligibility gate refused: counted only. Its warn log, with the
- * refusal, is the gate's own.
+ * A source the eligibility gate refused: counted, and logged as
+ * `materialization.build.refused` with the refusal's reason code. The gate's
+ * message stays on the run's record: it can name a given or a field. Warn
+ * on an orchestrated run, whose host should not instruct a source the plan
+ * refused; info on an auto-run, where the package warning already says so.
  */
-export function reportSourceRefused(kind: BuildKind, tier: BuildTier): void {
+export function reportSourceRefused(
+   source: Omit<SourceIdentity, "sourceEntityId" | "physicalTableName"> & {
+      sourceEntityId?: string;
+   },
+   reason: string | undefined,
+): void {
    const run = currentRun.getStore();
    if (run) run.tally.refused++;
-   recordBuildOutcome({ kind, tier, outcome: "refused" });
+   recordBuildOutcome({
+      kind: source.kind,
+      tier: source.tier,
+      outcome: "refused",
+   });
+   logger[run?.mode === "orchestrated" ? "warn" : "info"](
+      "materialization.build.refused",
+      {
+         ...(run ? { runId: run.runId, packageName: run.packageName } : {}),
+         ...(source.sourceEntityId
+            ? { sourceEntityId: source.sourceEntityId }
+            : {}),
+         sourceName: source.sourceName,
+         kind: source.kind,
+         tier: source.tier,
+         ...(reason ? { reason } : {}),
+      },
+   );
 }
 
 /** A source the run carried forward instead of building: counted only. */

@@ -137,6 +137,9 @@ describe("compilePackageBuildPlan", () => {
          try {
             const pkg = {
                getModelPaths: () => ["notes.malloynb"],
+               getMaterializationConfig: () => null,
+               getPackageMetadata: () => ({}),
+               getVersionId: () => undefined,
                getPackagePath: () => "/test",
                getMalloyConfig: () => ({}),
                getMalloyConnection: async () => ({}),
@@ -159,6 +162,9 @@ describe("compilePackageBuildPlan", () => {
       try {
          const pkg = {
             getModelPaths: () => ["m.malloy"],
+            getMaterializationConfig: () => null,
+            getPackageMetadata: () => ({}),
+            getVersionId: () => undefined,
             getPackagePath: () => "/test",
             getMalloyConfig: () => ({}),
             getMalloyConnection: async () => ({}),
@@ -235,6 +241,9 @@ describe("compilePackageBuildPlan", () => {
       try {
          const pkg = {
             getModelPaths: () => ["base.malloy", "agg.malloy"],
+            getMaterializationConfig: () => null,
+            getPackageMetadata: () => ({}),
+            getVersionId: () => undefined,
             getPackagePath: () => "/test",
             getMalloyConfig: () => ({}),
             getMalloyConnection: async () => ({ getDigest: async () => "dig" }),
@@ -382,6 +391,9 @@ describe("computePackageBuildPlan", () => {
    it("returns a null plan and no dropped sources when the package declares no persist sources", async () => {
       const pkg = {
          getModelPaths: () => [],
+         getMaterializationConfig: () => null,
+         getPackageMetadata: () => ({}),
+         getVersionId: () => undefined,
          getPackagePath: () => "/test",
          getMalloyConfig: () => ({}),
          getMalloyConnection: async () => ({}),

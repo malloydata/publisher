@@ -77,6 +77,7 @@ describe("buildOneSource", () => {
                }
                throw new Error("no connection config in this colocated test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          // A colocated build with no prior storage upstreams.
@@ -352,6 +353,7 @@ describe("buildOneSource", () => {
             getApiConnection: () => {
                throw new Error("unused in the colocated build");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries,
@@ -459,6 +461,7 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
          manifest,
          environment: {
             getApiConnection: () => ({}),
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries,

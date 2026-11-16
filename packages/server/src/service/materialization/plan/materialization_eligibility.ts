@@ -991,7 +991,7 @@ export function assertTierEligible(
  * build and serve them until the next rebuild, while a live query reads `now`
  * again every time. Not built, and answered live. `now` in the source's own
  * extend block is re-applied at every read, so it is admitted. A rollup
- * (rollup_plan.ts, `preaggregate-current-time`) and a `#(materialize)` source
+ * (rollup_plan.ts, `preaggregate-not-built`, reason `current_time`) and a `#(materialize)` source
  * (materialize_plan.ts) are judged by their own planners.
  */
 export function assertBuildReadsNoCurrentTime(

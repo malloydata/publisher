@@ -172,7 +172,7 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
   is colocated (no `storage=`), and every field each gate reads is a grain dimension the source
   reads through no join. The query is then redeclared over the rollup with its gates, and each gate
   is grafted and proven there as on live. Otherwise the rollup is not built (a
-  `preaggregate-access-filter` warning) and its queries are answered live: with the switch off, in
+  `preaggregate-not-built` warning, reason `access_filter`) and its queries are answered live: with the switch off, in
   a `storage=` destination, when a gate reads a field the grain drops, or when a gate reads through
   a join or the source joins a gated source. A caller's own join into a gated source keeps the
   query off every rollup too. [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)
@@ -180,16 +180,16 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
 
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
-everyone. A source a compile-time gate refuses is also a package warning (severity `warn`),
-carrying the gate's message, with `subject` the source, under its route's not-built code:
-`persist-not-built` for a `#@ persist` source, `materialize-not-built` for a `#(materialize)`
-source, `persist-view-not-built` for a persisted view and `persist-query-not-built` for a persisted
-query (each of the last two with `subject` its generated source). The code was
-`persist-source-refused`; for one release each such warning is repeated with that old code and the
-same message, so a reader that matches the old code keeps working, and then the repeat is removed.
-A refusal no earlier release raised, `storage_source_unsupported`, is not repeated. A rollup a gate
-refuses is `preaggregate-not-built` instead, with `subject` its base and a message naming its base,
-its grain and the gate's reason.
+everyone. Every valid declaration that is not built, whatever its mechanism, is one record in the
+build plan's `refusedSources`, with a bounded `reason`, and one package warning (severity `warn`)
+carrying its message, under its mechanism's not-built code: `persist-not-built` for a `#@ persist`
+source, `materialize-not-built` for a `#(materialize)` source, `persist-view-not-built` for a
+persisted view and `persist-query-not-built` for a persisted query (`subject` the view or query),
+and `preaggregate-not-built` for a rollup (`subject` its base, or `<base>.<measure>` for one
+measure). A `#@ persist` source's code was `persist-source-refused`; for one release each such
+warning is repeated with that old code and the same message, so a reader that matches the old code
+keeps working, and then the repeat is removed. No other mechanism's warning, and no refusal no
+earlier release raised (`storage_source_unsupported`, `incremental_unsupported`), is repeated.
 
 ### Sources that read the current time
 
@@ -228,7 +228,7 @@ source: events_frozen is raw -> { where: ts > now - 7 days; select: * }
 ```
 
 A `#@ preaggregate` or `#(preaggregate)` rollup whose base, measure or grain reads `now` is left
-unbuilt by the rollup's own rule (`preaggregate-current-time`), including a grain that reads it
+unbuilt by the rollup's own rule (`preaggregate-not-built`, reason `current_time`), including a grain that reads it
 through a join to a query-shaped source whose query does, and `#(materialize)` has its own (rolling windows,
 below), under which an `inline=` join whose joined rows read `now` refuses the source. `now`
 written inside a `conn.sql("...")` string is SQL text Publisher does not read, so it is not refused.
@@ -542,6 +542,16 @@ rest, give the field a native cast in the model so the warehouse returns the dec
 example `amount_text::"double"`: a cast to a type Malloy already believes the field has, such as
 `::number` here, emits no SQL.
 
+The same warning, and the same `publisher_storage_column_type_mismatch_total{stage="serve"}`
+count, covers every `storage=` table, checked against the columns its build source declares: a
+`#@ persist` source's (above), a `#(materialize)` source's, a rollup's, and a persisted view's or
+named query's. Each reader takes the column its own way, and the warning says which. A persisted
+view or query reads it through a faithful cast or is answered live. A rollup does not read a
+numeric partial stored as another type, so queries over that measure are answered live, and reads
+a grain column as stored. A `#(materialize)` source's served copy reads the column as its stored
+type, so a query that reads it can answer with a different type than live: rebuild it with a native
+cast in the model. A rollup is named by its base source, and a view or query by its build source.
+
 **Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct
@@ -621,13 +631,14 @@ The code says which outcome it is:
 | Outcome | Codes |
 | --- | --- |
 | Fails the load, never a warning | `*-invalid`, `*-unknown-key`, `*-retired-key`, `*-unparseable`, `persist-not-materializable`, `preaggregate-not-a-measure`, `preaggregate-unknown-grain`, `preaggregate-not-mergeable`, `materialization-table-collision`, `materialization-near-miss` |
-| Refused alone, severity `warn` | `persist-not-built`, `materialize-not-built`, `preaggregate-not-built`, `persist-view-not-built`, `persist-query-not-built`, and the rollup refusals `preaggregate-hidden-field`, `preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given`, `preaggregate-unreadable-measure`, `preaggregate-join-level`, `preaggregate-name-clash` |
+| Refused alone, severity `warn`, and a `refusedSources` record with its reason | `persist-not-built`, `materialize-not-built`, `preaggregate-not-built`, `persist-view-not-built`, `persist-query-not-built` |
 
 Warnings about the deployment rather than one item carry codes of their own, such as `materialization-destination-missing` and `materialization-storage-mode` (`storage=` while `PERSIST_STORAGE_MODE` is `off` or `write-only`).
 
 Renamed and retired codes:
 
-- `persist-source-refused` is now the route's not-built code: `persist-not-built`, `materialize-not-built`, `persist-view-not-built` or `persist-query-not-built`. For one release each gate refusal that used to carry `persist-source-refused` is repeated under it, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed. A refusal no earlier release raised, `storage_source_unsupported`, carries only its route's code, without the repeat.
+- `persist-source-refused` is now `persist-not-built`. For one release each `#@ persist` gate refusal is repeated under it, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed. Another mechanism's refusal, and a refusal no earlier release raised (`storage_source_unsupported`, `incremental_unsupported`), carries only its own code, without the repeat.
+- The rollup refusals `preaggregate-hidden-field`, `preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given`, `preaggregate-unreadable-measure`, `preaggregate-join-level` and `preaggregate-name-clash` are no longer produced: each is `preaggregate-not-built`, with the reason `hidden_field`, `access_filter`, `time_zone`, `current_time`, `reads_given`, `unreadable_measure`, `join_level` or `name_clash` on its `refusedSources` record.
 - `preaggregate-malformed` is no longer produced: the same mistake is `preaggregate-invalid` or `preaggregate-unparseable`, and fails the load.
 - The API keeps three reasons it no longer produces: `RefusedSource.reason` `empty_storage` and `env_reference`, and `OmittedSource.reason` `persist_annotation_unparseable`.
 

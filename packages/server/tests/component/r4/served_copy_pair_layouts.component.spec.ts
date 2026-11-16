@@ -25,7 +25,10 @@ import { tmpdir } from "os";
 import path from "path";
 import { SingleConnectionRuntime } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    rerootDeclaration,
    typeDeclaration,
@@ -42,6 +45,7 @@ import {
    type R4Fixture,
    type Row,
    expectPairServedVia,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 /** Measures that count through the inlined path (see {@link expectPairServedVia}). */
@@ -161,12 +165,9 @@ ${measures}
 `;
 
 describe("R4: a path of join_manys and more than one join_many, served flat from one pair table, answer equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -174,13 +175,10 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    it("stores one row per row of live's three-way LEFT JOIN, with one flag per level above the leaf", async () => {
       const rows = await fixture.storedSQL(
@@ -545,14 +543,11 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
 // The query check, mutated: the same served text with a guard taken out
 // answers wrong, and the check refuses the query it would have answered.
 describe("R4: the pair-layout guards, mutated", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    let duckdb: DuckDBConnection;
    let dir: string;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -575,7 +570,6 @@ describe("R4: the pair-layout guards, mutated", () => {
       }
    });
    afterAll(async () => {
-      restore();
       await duckdb.close();
       rmSync(dir, { recursive: true, force: true });
       await disposeScenarios();
@@ -1105,9 +1099,7 @@ describe("R4: row-level gates on multi-join and multi-hop pair sources", () => {
       await disposeScenarios();
    });
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const cases = [
       [
@@ -1235,12 +1227,9 @@ const keySeeds = {
 
 for (const [label, overrides] of Object.entries(keySeeds)) {
    describe(`R4: a pair table over ${label} is not built, and answers live`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          const replaced = new Set(overrides.map((sql) => sql.split(" ")[2]));
          fixture = await buildScenario({
             files: { "m.malloy": keyModel },
@@ -1253,7 +1242,6 @@ for (const [label, overrides] of Object.entries(keySeeds)) {
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -1292,12 +1280,9 @@ for (const [label, overrides] of Object.entries(keySeeds)) {
 // UNION ALL: a null of the warehouse's float type would widen an integer
 // column to it, and a key past 2^53 would be stored rounded.
 describe("R4: a block table keeps each column's own type across the union", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": keyModel },
          seedSql: [
@@ -1318,7 +1303,6 @@ describe("R4: a block table keeps each column's own type across the union", () =
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1426,9 +1410,7 @@ describe("R4: a join_many reached through a join_one, beside a pair table", () =
       await disposeScenarios();
    });
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const cases = [
       [

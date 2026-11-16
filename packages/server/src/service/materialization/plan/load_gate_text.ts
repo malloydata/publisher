@@ -17,6 +17,7 @@ import {
    codedLine,
    MATERIALIZATION_TABLE_COLLISION_CODE,
    MATERIALIZE_INVALID_CODE,
+   MATERIALIZE_NOT_BUILT_CODE,
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
    PERSIST_VIEW_INVALID_CODE,
@@ -42,6 +43,7 @@ import {
    persistTableTarget,
 } from "./eligibility_collect";
 import type { IncrementalDeclaration } from "../domain/incremental";
+import type { RefusedReason } from "../domain/types";
 import {
    incrementalPolicyRejections,
    type IncrementalPolicySource,
@@ -99,7 +101,7 @@ export function relaxedCollision(
       // Each source under its own not-built code.
       code:
          finding.route !== "@"
-            ? "materialize-not-built"
+            ? MATERIALIZE_NOT_BUILT_CODE
             : finding.message.startsWith("#@ persist on view")
               ? PERSIST_VIEW_NOT_BUILT
               : finding.message.startsWith("#@ persist on query")
@@ -326,20 +328,23 @@ export function loadGateText(
 
 /**
  * `#@ preaggregate` violations of a VALID declaration Publisher cannot build
- * here: that rollup alone is refused with a warning (its code here), its
- * measures answered live, and the package loads. Every other violation is an
- * invalid declaration and fails the load (see formatInvalidPreaggregatePolicy).
- * The planner skips each of these itself, so nothing is built.
+ * here, and the reason each is refused under: that rollup alone is refused
+ * (`preaggregate-not-built`), its measures answered live, and the package
+ * loads. Every other violation is an invalid declaration and fails the load
+ * (see formatInvalidPreaggregatePolicy). The planner skips each of these
+ * itself, so nothing is built.
  */
-export const PREAGG_WARN_ONLY: ReadonlyMap<PreaggregateViolationCode, string> =
-   new Map([
-      // Governance: an extension that hides an inherited field cannot fix
-      // its base's annotation.
-      ["non_public_measure", "preaggregate-hidden-field"],
-      ["grain_dimension_not_public", "preaggregate-hidden-field"],
-      // A rollup over a fan-out join, as `#(preaggregate)` refuses one.
-      ["base_source_has_fanout_join", "preaggregate-join-level"],
-   ]);
+export const PREAGG_WARN_ONLY: ReadonlyMap<
+   PreaggregateViolationCode,
+   RefusedReason
+> = new Map([
+   // Governance: an extension that hides an inherited field cannot fix
+   // its base's annotation.
+   ["non_public_measure", "hidden_field"],
+   ["grain_dimension_not_public", "hidden_field"],
+   // A rollup over a fan-out join, as `#(preaggregate)` refuses one.
+   ["base_source_has_fanout_join", "join_level"],
+]);
 
 /**
  * The code a `#@ preaggregate` violation that fails the load is named by, the

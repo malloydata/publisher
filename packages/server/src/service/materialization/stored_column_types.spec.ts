@@ -31,9 +31,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { plannedSources } from "./plan/build_plan";
-import { mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { openTempDuckDB } from "../../test_helpers/temp_storage";
 
 describe("storedTypeServesAs", () => {
    const cases: [string, string, boolean | undefined][] = [
@@ -224,18 +222,33 @@ describe("PackageMaterialization.storedColumnTypeWarnings", () => {
          // a.malloy declares orders; b.malloy imports the same source.
          [
             "a.malloy",
-            { storedColumnTypeMismatches: () => of("orders@a", "cast") },
+            {
+               persistedViewBuilds: () => [],
+               storedColumnTypeMismatches: () => of("orders@a", "cast"),
+            },
          ],
          [
             "b.malloy",
-            { storedColumnTypeMismatches: () => of("orders@a", "cast") },
+            {
+               persistedViewBuilds: () => [],
+               storedColumnTypeMismatches: () => of("orders@a", "cast"),
+            },
          ],
          // c.malloy declares an orders of its own: reported too.
          [
             "c.malloy",
-            { storedColumnTypeMismatches: () => of("orders@c", "live") },
+            {
+               persistedViewBuilds: () => [],
+               storedColumnTypeMismatches: () => of("orders@c", "live"),
+            },
          ],
-         ["d.malloy", {}],
+         [
+            "d.malloy",
+            {
+               persistedViewBuilds: () => [],
+               storedColumnTypeMismatches: () => [],
+            },
+         ],
       ]);
       const materialization = new PackageMaterialization({
          models: () => models,
@@ -447,12 +460,11 @@ describe("isCastConversionError", () => {
 // what a real build of a real persist source casts, from the compiler's output.
 describe("storageBuildCasts over a compiled persist source", () => {
    // File-backed: db-duckdb shares one in-memory instance between connections.
-   const dir = mkdtempSync(join(tmpdir(), "build-casts-"));
-   const duckdb = new DuckDBConnection("duckdb", join(dir, "casts.duckdb"));
-   afterAll(async () => {
-      await duckdb.close();
-      rmSync(dir, { recursive: true, force: true });
+   const temp = openTempDuckDB("build-casts-", "duckdb", {
+      file: "casts.duckdb",
    });
+   const duckdb = temp.connection;
+   afterAll(() => temp.dispose());
 
    async function persisted(model: string) {
       const runtime = new Runtime({

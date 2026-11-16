@@ -152,9 +152,9 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
       expect(id).toMatch(/^q__query@.*m\.malloy\.persist-view\.malloy$/);
       // The stored rows are exactly `run: q`'s: its ordering and limit kept.
       expect(source.getSQL()).toContain("LIMIT 1");
-      // Planned, and so built and counted, as a persisted view's table.
+      // Planned and built as a persisted view's table, counted as a query.
       expect(c.tables[id].kind).toBe("view");
-      expect(buildKindOf(c, id)).toBe("view");
+      expect(buildKindOf(c, id)).toBe("query");
       expect(notBuilt(c)).toEqual([]);
       expect(c.droppedPersistSources ?? []).toEqual([]);
    });
@@ -313,13 +313,39 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
    }
 
    it.each([
-      ["an @env. reference on the line", "#@ persist name=@env.TBL", "@env."],
-      ["an incremental key", "#@ persist watermark=id", "incremental key"],
-      ["an empty storage=", '#@ persist storage=""', "names no destination"],
-      ["a line that does not parse", '#@ persist name="tbl', "does not parse"],
+      [
+         "an @env. reference on the line",
+         "#@ persist name=@env.TBL",
+         "@env.",
+         "persist-query-invalid",
+      ],
+      [
+         "an incremental key",
+         "#@ persist watermark=id",
+         "incremental key",
+         "persist-query-invalid",
+      ],
+      [
+         'a lone refresh="incremental"',
+         '#@ persist refresh="incremental"',
+         "incremental key",
+         "persist-query-invalid",
+      ],
+      [
+         "an empty storage=",
+         '#@ persist storage=""',
+         "names no destination",
+         "persist-query-invalid",
+      ],
+      [
+         "a line that does not parse",
+         '#@ persist name="tbl',
+         "does not parse",
+         "persist-query-unparseable",
+      ],
    ])(
       "finds %s invalid, which fails the load, and plans nothing",
-      async (_case, line, reason) => {
+      async (_case, line, reason, code) => {
          enable(true);
          const c = await compiled(
             `${BASE}${line}\nquery: q is base -> { group_by: carrier }\n`,
@@ -329,7 +355,7 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
          const invalid = (c.annotationFindings ?? []).filter(
             (f) => f.tier === "malformed",
          );
-         expect(invalid.map((f) => f.code)).toEqual(["persist-query-invalid"]);
+         expect(invalid.map((f) => f.code)).toEqual([code]);
          expect(invalid[0].message).toContain(reason);
       },
    );

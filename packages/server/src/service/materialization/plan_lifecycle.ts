@@ -26,17 +26,17 @@ import {
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import { errMessage } from "../../utils";
 import type { Model } from "../model";
-import type {
-   BuildPlanPackage,
-   ColocatedSourceEligibility,
-   RefusedRollup,
-   SourceEligibility,
+import {
+   type BuildPlanPackage,
+   type ColocatedSourceEligibility,
+   type RefusalNotices,
+   type RefusedRollup,
+   type SourceEligibility,
 } from "./plan/build_plan";
 import { computePackageBuildPlan } from "./plan/build_plan_compile";
 import {
    incrementalPolicySourcesOf,
    loadGateText,
-   relaxedCollision,
 } from "./plan/load_gate_text";
 import type { IncrementalPolicySource } from "./plan/incremental_policy";
 import type { MaterializePlan } from "./domain/table_plans";
@@ -80,6 +80,7 @@ export class PlanLifecycle {
    rollupsKeepingGates = new Set<string>();
    /** The base and grain of each refused rollup, by its sourceID. */
    refusedRollups: Record<string, RefusedRollup> = {};
+   refusalNotices: RefusalNotices = {};
    /** See BuildPlanOutcome.compilerKeys. */
    compilerKeys: Record<string, string> = {};
    annotationFindings: PackageAnnotationFinding[] = [];
@@ -186,12 +187,11 @@ export class PlanLifecycle {
          this.materializePlans = outcome.materializePlans;
          this.rollupsKeepingGates = new Set(outcome.rollupsKeepingGates);
          this.refusedRollups = outcome.refusedRollups;
+         this.refusalNotices = outcome.refusalNotices;
          this.compilerKeys = outcome.compilerKeys;
          this.failed = false;
          this.servingPlanWhileUnavailable = null;
-         this.annotationFindings = outcome.annotationFindings.map((f) =>
-            relaxedCollision(f, getPersistCollisionEnforce()),
-         );
+         this.annotationFindings = outcome.annotationFindings;
          this.sourceEligibility = outcome.sourceEligibility;
          this.colocatedSourceEligibility = outcome.colocatedSourceEligibility;
          this.buildConnectionNames = new Set(outcome.buildConnectionNames);
@@ -202,7 +202,7 @@ export class PlanLifecycle {
             { sourceName: string; viewName: string }
          >();
          for (const model of this.owner.models().values()) {
-            for (const v of model.persistedViewBuilds?.() ?? []) {
+            for (const v of model.persistedViewBuilds() ?? []) {
                // A persisted query takes no incremental key.
                if (v.queryName !== undefined) continue;
                persistedViews.set(v.buildSourceID, {
@@ -235,6 +235,7 @@ export class PlanLifecycle {
          this.incrementalPolicySources = [];
          this.rollupsKeepingGates = new Set();
          this.refusedRollups = {};
+         this.refusalNotices = {};
          this.compilerKeys = {};
          recordBuildPlanComputeFailed();
          logger.warn(

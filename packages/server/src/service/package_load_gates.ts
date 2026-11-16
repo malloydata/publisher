@@ -20,7 +20,6 @@ import {
 } from "./package_retrieval_settings";
 
 type ApiPackage = components["schemas"]["Package"];
-type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 /** The listing fields a load is judged under. */
 type Listing = Pick<ApiPackage, "explores" | "queryableSources">;
 
@@ -35,7 +34,6 @@ export interface LoadGatedPackage {
    formatClassificationLeaks(): string;
    formatArrayQueryJoins(): string;
    formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string;
-   preaggregateAccessWarnings(): ApiPackageWarning[];
 }
 
 /**
@@ -181,17 +179,5 @@ function judgeLoadGates(
          { packageName, detail: ceiling },
       );
       throw new BadRequestError(ceiling);
-   }
-   // A valid `#@ preaggregate` rollup Publisher cannot build (a hidden
-   // field, a fan-out join) is refused alone, with a warning.
-   const accessWarnings = pkg.preaggregateAccessWarnings();
-   if (accessWarnings.length > 0) {
-      logger.warn(
-         `Package ${packageName} has a pre-aggregation refused alone`,
-         {
-            packageName,
-            detail: accessWarnings.map((w) => w.message).join("\n"),
-         },
-      );
    }
 }

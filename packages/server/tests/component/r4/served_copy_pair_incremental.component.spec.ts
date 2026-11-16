@@ -27,7 +27,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    applyIncrementalStep,
    type IncrementalRunContext,
@@ -305,13 +305,10 @@ function pairRefresher() {
 }
 
 describe("R4: an incremental pair table refreshed in place equals a full rebuild, and serves live's answers", () => {
-   let restore: () => void;
    const { state, covered, runner, rows, table, refresh, expectEqualsRebuild } =
       pairRefresher();
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       state.fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -324,7 +321,6 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
       }
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -534,13 +530,10 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
 });
 
 describe("R4: an incremental pair table's edges: a watermark ahead of the clock, NULL parent keys, the watermark column", () => {
-   let restore: () => void;
    const { state, covered, runner, refresh, expectEqualsRebuild } =
       pairRefresher();
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       state.fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -550,7 +543,6 @@ describe("R4: an incremental pair table's edges: a watermark ahead of the clock,
       covered.flights = canonicalBoundValue("timestamp", at(B));
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -667,7 +659,6 @@ const PATH_FLAGS = [
 ];
 
 describe("R4: an incremental pair table of a path of join_manys refreshes in place, replacing whole parents", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    let covered: WatermarkBound;
    const runner = (sql: string) =>
@@ -692,10 +683,8 @@ describe("R4: an incremental pair table of a path of join_manys refreshes in pla
       },
    });
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": pathModel },
          seedSql: pathSeedSql,
@@ -705,7 +694,6 @@ describe("R4: an incremental pair table of a path of join_manys refreshes in pla
       covered = canonicalBoundValue("timestamp", at(B));
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -918,7 +906,6 @@ const BLOCK_FLAGS = [
 ];
 
 describe("R4: an incremental pair table of several blocks refreshes in place, replacing each parent in every block", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    let covered: WatermarkBound;
    const runner = (sql: string) =>
@@ -945,10 +932,8 @@ describe("R4: an incremental pair table of several blocks refreshes in place, re
       },
    });
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": blockModel },
          seedSql: blockSeedSql,
@@ -958,7 +943,6 @@ describe("R4: an incremental pair table of several blocks refreshes in place, re
       covered = canonicalBoundValue("timestamp", at(B));
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

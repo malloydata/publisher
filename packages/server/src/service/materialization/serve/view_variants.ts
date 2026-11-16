@@ -75,6 +75,7 @@ import {
    viewNoteTexts,
 } from "../text/read_text";
 import {
+   isPersistedQuerySourceID,
    splitSourceID,
    type PersistedQueryPlan,
    type PersistedViewPlan,
@@ -357,7 +358,10 @@ export class PersistedViewServe {
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
       if (plan.storage !== undefined) {
-         const lookup = pinned.tableFor(plan.buildSourceID, "view");
+         const lookup = pinned.tableFor(
+            plan.buildSourceID,
+            isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
+         );
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
          }

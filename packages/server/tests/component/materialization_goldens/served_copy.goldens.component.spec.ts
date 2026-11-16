@@ -19,7 +19,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -237,16 +237,10 @@ function goldenPath(c: ServedCopyCase): string {
 }
 
 const claimed = new Set<string>();
-let restore: () => void;
 
-beforeAll(() => {
-   restore = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-   }).restore;
-});
+useMaterializationOn();
 
 afterAll(async () => {
-   restore();
    await disposeScenarios();
 });
 

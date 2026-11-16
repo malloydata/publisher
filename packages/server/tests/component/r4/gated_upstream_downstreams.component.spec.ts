@@ -300,9 +300,8 @@ for (const gated of [false, true]) {
          // A downstream that bakes the upstream's given into its build is
          // refused whatever the switch. An extension inherits the upstream's
          // given-reading `where:`, which only the upstream's own declaration
-         // re-applies at read: a v1 one is refused as
-         // `inherited_where_with_given`, a `#(materialize)` one at plan
-         // (`materialize-not-built`, no refusedSources entry); none is built.
+         // re-applies at read: each is refused as
+         // `inherited_where_with_given`; none is built.
          const built = fixture.built.map((b) => b.name);
          for (const v of Object.keys(STORED)) {
             for (const s of SHAPES) {
@@ -311,9 +310,7 @@ for (const gated of [false, true]) {
                if (s === "ext") {
                   expect([name, hit]).toEqual([
                      name,
-                     v.startsWith("p")
-                        ? `${name}:${v === "pc" ? "colocated" : "storage"}:inherited_where_with_given`
-                        : undefined,
+                     `${name}:${v.endsWith("c") ? "colocated" : "storage"}:inherited_where_with_given`,
                   ]);
                   expect([name, built.includes(name)]).toEqual([name, false]);
                } else expect(hit).toEndWith(":given_in_persisted_query");

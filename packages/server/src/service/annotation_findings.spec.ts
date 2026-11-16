@@ -292,13 +292,20 @@ describe("annotation findings on a loaded package", () => {
   private measure: total is amount.sum()
 }
 `);
-         const [warning] = coded(pkg, "preaggregate-hidden-field");
+         const [warning] = coded(pkg, "preaggregate-not-built");
          expect(warning).toMatchObject({ severity: "warn" });
+         expect(
+            Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map((r) => [
+               r.name,
+               r.tier,
+               r.reason,
+            ]),
+         ).toEqual([["orders.total", "preaggregate", "hidden_field"]]);
          expect(
             await harness.collectCounter(
                "publisher_annotation_findings_total",
                {
-                  code: "preaggregate-hidden-field",
+                  code: "preaggregate-not-built",
                },
             ),
          ).toBe(1);

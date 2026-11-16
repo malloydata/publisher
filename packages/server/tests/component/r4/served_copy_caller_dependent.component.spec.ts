@@ -27,7 +27,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -129,12 +129,9 @@ source: headed is (ev extend { dimension: mine is org = $ORG }) extend {
 const CALLERS = [{ ORG: "acme" }, { ORG: "globex" }];
 
 describe("R4: a caller-dependent dimension is computed at read, never stored (P9)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model, "far.malloy": farModel },
          seedSql,
@@ -143,7 +140,6 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

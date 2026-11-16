@@ -816,7 +816,7 @@ export async function refreshOneSourceIncrementally(params: {
       materializedTableId: instruction.materializedTableId,
       physicalTableName: lineage.physicalTableName,
       connectionName: persistSource.connectionName,
-      realization: instruction.realization,
+      realization: "COPY",
       ...params.upstreamReuse,
       rowCount: null,
       buildDurationMs: outcome.durationMs ?? null,

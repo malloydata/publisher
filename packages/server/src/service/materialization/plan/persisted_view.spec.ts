@@ -243,7 +243,7 @@ source: ops is ${TABLE} extend {
       [
          "a line that does not parse",
          '#@ persist name="x',
-         "persist-view-invalid",
+         "persist-view-unparseable",
       ],
    ])("finds %s invalid", async (_case, line, code) => {
       const c = await compiled(`##! experimental.persistence

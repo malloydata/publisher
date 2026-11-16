@@ -6,7 +6,7 @@
  * base is planned and built (not refused by the colocated tier's `authorize`
  * check) only when a query can read it past the gate, which is
  * `rollupGateEnforcedAtRead`: `materialize.gatedSources` on, colocated.
- * With the switch off it is not planned at all (`preaggregate-access-filter`),
+ * With the switch off it is not planned at all (`preaggregate-not-built`, reason `access_filter`),
  * and a `storage=` one waits for question 14's review either way. Drives
  * `Package.create` on the worker path, as the package warnings specs do.
  */
@@ -92,9 +92,9 @@ for (const gated of [true, false]) {
             (s) => s.name,
          );
       const warned = () =>
-         (pkg.getPackageMetadata().warnings ?? [])
-            .filter((w) => w.code === "preaggregate-access-filter")
-            .map((w) => w.subject);
+         Object.values(pkg.getBuildPlan()?.refusedSources ?? {})
+            .filter((r) => r.reason === "access_filter")
+            .map((r) => r.name);
 
       it(
          gated

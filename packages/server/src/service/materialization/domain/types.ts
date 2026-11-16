@@ -55,6 +55,9 @@ export type SourceFailure = components["schemas"]["SourceFailure"];
  */
 export type RefusedSource = components["schemas"]["RefusedSource"];
 
+/** Why a valid declaration is not built (`RefusedSource.reason`). */
+export type RefusedReason = RefusedSource["reason"];
+
 /**
  * Whether a run manifest entry records a FAILED source, in the deprecated
  * shape.

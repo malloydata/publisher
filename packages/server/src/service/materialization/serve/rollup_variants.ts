@@ -192,7 +192,7 @@ interface RollupVariantHost {
     * destination there, through a joined source's rollup in the same one
     * (known limitation 26).
     */
-   joinRollupBasis?(pinned: Pinned): Promise<ServedCopyJoinBasis | undefined>;
+   joinRollupBasis(pinned: Pinned): Promise<ServedCopyJoinBasis | undefined>;
    /**
     * The rollups one source declares, as the planner reads them
     * (`plan/rollup_plan.ts`): passed in by the model, since serving never
@@ -998,7 +998,7 @@ export class RollupVariantServe {
          );
       let basis: ServedCopyJoinBasis | undefined;
       try {
-         basis = await this.host.joinRollupBasis?.(pinned);
+         basis = await this.host.joinRollupBasis(pinned);
       } catch {
          basis = undefined;
       }

@@ -200,6 +200,7 @@ describe("incremental refresh logs never carry a watermark value", () => {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries: {},
@@ -329,6 +330,7 @@ describe("build failure logs never carry the driver's message", () => {
             getApiConnection: () => {
                throw new Error("no config");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          instructions: [
