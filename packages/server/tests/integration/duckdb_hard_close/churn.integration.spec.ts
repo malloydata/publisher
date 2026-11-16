@@ -48,12 +48,19 @@ setDefaultTimeout(600_000);
 /** Environments churned at once in the peak loop, and cycles each. */
 const LANES = 4;
 const CYCLES = 10;
+/** Cycles per lane in the environment churn loop. */
+const ENV_CHURN_CYCLES = 15;
 /**
- * Peak growth allowed. A lane holds at most one live instance (three worker
- * threads) at a time, so a server that frees what it retires peaks near
- * LANES x 3 threads; one that leaks peaks at up to LANES x CYCLES x 3.
+ * How far the loop's peak may rise above the quiet point after the warm-up.
+ * What is legitimately in flight is bounded and known: each lane holds at
+ * most one live sandbox (at most 4 threads at PUBLISHER_DUCKDB_THREADS=4),
+ * plus request and package-load threads that come and go with it, given 24
+ * of slack. Measured: +22 to +30 over quiet on GitHub's Ubuntu runner and on
+ * an 18-core Mac. A server that leaks keeps three worker threads per retired
+ * sandbox until a GC runs, and rose +69 over quiet in 10 cycles per lane, so
+ * the loop runs ENV_CHURN_CYCLES to keep that well clear of this bound.
  */
-const THREAD_SLACK = 30;
+const IN_FLIGHT_ALLOWANCE = LANES * 4 + 24;
 /** Past the 30 s retirement drain of an unloaded package's connections. */
 const DRAIN_WAIT_MS = 33_000;
 /**
@@ -128,11 +135,15 @@ async function ok(
 }
 
 /**
- * Run `cycle` on LANES lanes at once, a warm-up round and then CYCLES more,
- * sampling the process throughout. Returns the PEAK growth over the
- * post-warm-up baseline: a leaked instance lives until a GC happens to
- * finalize it, so a leak shows as the peak between collections, not as what
- * is left at the end.
+ * Run `cycle` on LANES lanes at once, a warm-up round and then `cycles` more,
+ * and return how far the threads and RSS rose above the quiet point after the
+ * warm-up.
+ *
+ * By default the process is sampled every 20 ms throughout the loop, and the
+ * PEAK is returned: a leaked instance lives until a GC happens to finalize it,
+ * so a leak shows as the peak between collections, not as what is left at
+ * the end. With `betweenCycles`, only the quiet points between cycles are
+ * sampled.
  */
 async function peakGrowth(
    server: SpawnedServer,
@@ -140,11 +151,12 @@ async function peakGrowth(
    { lanes: laneCount = LANES, cycles = CYCLES, betweenCycles = false } = {},
 ): Promise<{ threads: number; rssMiB: number }> {
    const lanes = Array.from({ length: laneCount }, (_, lane) => lane);
+   const pid = server.proc.pid!;
    await Promise.all(lanes.map((lane) => cycle(lane, 0)));
-   const before = usage(server.proc.pid!)!;
-   const peak = { ...before };
+   const quiet = usage(pid)!;
+   const peak = { ...quiet };
    const sample = () => {
-      const now = usage(server.proc.pid!);
+      const now = usage(pid);
       if (now) {
          peak.threads = Math.max(peak.threads, now.threads);
          peak.rssMiB = Math.max(peak.rssMiB, now.rssMiB);
@@ -154,7 +166,7 @@ async function peakGrowth(
    const sampler = (async () => {
       while (sampling) {
          sample();
-         await new Promise((resolve) => setTimeout(resolve, 100));
+         await new Promise((resolve) => setTimeout(resolve, 20));
       }
    })();
    try {
@@ -171,10 +183,10 @@ async function peakGrowth(
       await sampler;
    }
    const grew = {
-      threads: peak.threads - before.threads,
-      rssMiB: Math.round(peak.rssMiB - before.rssMiB),
+      threads: peak.threads - quiet.threads,
+      rssMiB: Math.round(peak.rssMiB - quiet.rssMiB),
    };
-   console.log(`churn peak growth ${JSON.stringify({ before, peak, grew })}`);
+   console.log(`churn growth ${JSON.stringify({ quiet, peak, grew })}`);
    return grew;
 }
 
@@ -255,16 +267,23 @@ describe.skipIf(!measurable)("DuckDB sandbox churn", () => {
    });
 
    it("deleting and creating an environment frees its packages' sandboxes", async () => {
-      const grew = await peakGrowth(server, async (lane) => {
-         await ok(server, "POST", "/environments", {
-            name: `churn${lane}`,
-            packages: [],
-            connections: [],
-         });
-         await loadAndQuery(`churn${lane}`);
-         await ok(server, "DELETE", `/environments/churn${lane}`);
-      });
-      expect(grew.threads).toBeLessThan(THREAD_SLACK);
+      const grew = await peakGrowth(
+         server,
+         async (lane) => {
+            await ok(server, "POST", "/environments", {
+               name: `churn${lane}`,
+               packages: [],
+               connections: [],
+            });
+            await loadAndQuery(`churn${lane}`);
+            await ok(server, "DELETE", `/environments/churn${lane}`);
+         },
+         { cycles: ENV_CHURN_CYCLES },
+      );
+      // The sampler saw the loop's in-flight work: a run that missed every
+      // sample would pass the bound below vacuously.
+      expect(grew.threads).toBeGreaterThan(0);
+      expect(grew.threads).toBeLessThan(IN_FLIGHT_ALLOWANCE);
    });
 });
 

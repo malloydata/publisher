@@ -24,6 +24,9 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 ## [Unreleased] — a run that finished or was cancelled is no longer overwritten as FAILED by a late error
 
 A materialization run whose record was already terminal when its background work threw now keeps that status. Before, the settle wrote FAILED (or CANCELLED) over whatever the record held: a run whose manifest had committed (`MANIFEST_FILE_READY`) and then threw in a later step, or a run another process had already stopped (`CANCELLED`), was rewritten as FAILED with the late error's message. The settle now goes through the same state-machine check as every other status change, so it writes only over a run that is still `PENDING` or `MANIFEST_ROWS_READY`. When the record cannot be read at all, the failure is still recorded, so a run is never left holding its package's slot. A cancelled run still records `"Cancelled"`, and `errorAtCancel` and `errorRetryable` are unchanged.
+## [Unreleased] — the v1 cutover conformance script runs again without NODE_ENV=test
+
+`bun scripts/v1-cutover-conformance.ts` runs again as the standalone CLI it is documented as. In 0.14.0 it exited 3 on every package unless `NODE_ENV=test` was set, because the harness took a connection-type test seam that is guarded to test processes. The script now answers without `NODE_ENV=test`, and without marking itself a test process. A CI job that set `NODE_ENV=test` to work around it can drop the variable.
 
 ## [Unreleased] — a retired DuckDB instance frees its memory and threads at once
 

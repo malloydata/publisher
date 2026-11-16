@@ -510,3 +510,68 @@ describe("import-direction allowlist", () => {
       }
    });
 });
+
+/**
+ * No production module imports a test helper. A test helper can hold an
+ * unguarded test seam (test_helpers/conformance reaches
+ * `recordConnectionsAsForConformanceHarness`), so a production import of any
+ * module under test_helpers/ could carry one into the server. Specs, test
+ * helpers themselves and the package-load worker's test fixtures are exempt.
+ * Matches static `from "…"`, `import("…")` and `require("…")`, resolved
+ * against the importing file; build.ts checks the bundle for what a
+ * specifier scan cannot see.
+ */
+describe("test_helpers import ratchet", () => {
+   const SPECIFIER =
+      /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["']([^"']+)["']/gm;
+   const TEST_HELPERS = path.join(SRC_DIR, "test_helpers");
+   const exempt = (rel: string) =>
+      /\.spec\.tsx?$/.test(rel) ||
+      rel.startsWith("test_helpers/") ||
+      rel.startsWith("package_load/test_fixtures/");
+   const importsTestHelpers = (file: string, code: string): string[] =>
+      [...code.matchAll(SPECIFIER)]
+         .map((m) => m[1])
+         .filter((spec) => spec.startsWith("."))
+         .filter((spec) => {
+            const target = path.resolve(path.dirname(file), spec);
+            return (
+               target === TEST_HELPERS ||
+               target.startsWith(TEST_HELPERS + path.sep)
+            );
+         });
+
+   it("matches each import form, and only paths under test_helpers/", () => {
+      const file = path.join(SRC_DIR, "service", "x.ts");
+      const code = [
+         `import { a } from "../test_helpers/conformance/package_runner";`,
+         `const b = await import("../test_helpers/temp_package");`,
+         `const c = require("../test_helpers");`,
+         `import "../test_helpers/side_effect";`,
+         `import { d } from "./test_helpers_lookalike";`,
+         `import { e } from "../service/test_helpers";`,
+         `import { f } from "test_helpers/not_relative";`,
+      ].join("\n");
+      expect(importsTestHelpers(file, code)).toEqual([
+         "../test_helpers/conformance/package_runner",
+         "../test_helpers/temp_package",
+         "../test_helpers",
+         "../test_helpers/side_effect",
+      ]);
+   });
+
+   it("finds no production module that imports one", () => {
+      const offenders: string[] = [];
+      for (const file of listTs(SRC_DIR)) {
+         const rel = path.relative(SRC_DIR, file).split(path.sep).join("/");
+         if (exempt(rel)) continue;
+         for (const spec of importsTestHelpers(
+            file,
+            fs.readFileSync(file, "utf8"),
+         )) {
+            offenders.push(`${rel} -> ${spec}`);
+         }
+      }
+      expect(offenders).toEqual([]);
+   });
+});
