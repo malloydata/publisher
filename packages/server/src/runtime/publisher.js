@@ -186,6 +186,68 @@
       }
    }
 
+   // A result's row count, and its first rows as plain objects. query's rows are
+   // the result itself; queryFull's envelope is a Malloy result, its rows record
+   // cells under data.array_value named by schema.fields, so only the rows a
+   // report carries are converted.
+   function resultRows(outcome) {
+      var result = outcome.result;
+      if (outcome.compactJson) {
+         if (!Array.isArray(result)) return undefined;
+         return {
+            count: result.length,
+            first: function (n) {
+               return result.slice(0, n);
+            },
+         };
+      }
+      var cells = result && result.data && result.data.array_value;
+      if (!Array.isArray(cells)) return undefined;
+      var fields = (result.schema && result.schema.fields) || [];
+      return {
+         count: cells.length,
+         first: function (n) {
+            return cells.slice(0, n).map(function (cell) {
+               return recordOf(cell, fields);
+            });
+         },
+      };
+   }
+
+   function recordOf(cell, fields) {
+      var row = {};
+      var values = cell.record_value || [];
+      for (var i = 0; i < fields.length && i < values.length; i++) {
+         row[fields[i].name] = cellValue(values[i], fields[i].type);
+      }
+      return row;
+   }
+
+   var SCALAR_CELL_VALUES = {
+      string_cell: "string_value",
+      number_cell: "number_value",
+      boolean_cell: "boolean_value",
+      date_cell: "date_value",
+      timestamp_cell: "timestamp_value",
+      json_cell: "json_value",
+      sql_native_cell: "sql_native_value",
+   };
+
+   function cellValue(cell, type) {
+      if (!cell) return null;
+      if (cell.kind === "record_cell") {
+         return recordOf(cell, (type && type.fields) || []);
+      }
+      if (cell.kind === "array_cell") {
+         var element = type && type.element_type;
+         return (cell.array_value || []).map(function (item) {
+            return cellValue(item, element);
+         });
+      }
+      var key = SCALAR_CELL_VALUES[cell.kind];
+      return key && key in cell ? cell[key] : null;
+   }
+
    function postQueryReport(target, modelPath, malloyQuery, opts, outcome) {
       if (!reportsQueries) return;
       var report = {
@@ -199,11 +261,12 @@
       if (opts.queryName) report.queryName = opts.queryName;
       if (opts.filterParams) report.filterParams = opts.filterParams;
       if (opts.givens) report.givens = opts.givens;
+      var all = outcome.error ? undefined : resultRows(outcome);
       if (outcome.error) {
          report.error = String(outcome.error);
-      } else if (Array.isArray(outcome.rows)) {
-         report.rowCount = outcome.rows.length;
-         var rows = outcome.rows.slice(0, QUERY_REPORT_MAX_ROWS);
+      } else if (all) {
+         report.rowCount = all.count;
+         var rows = all.first(QUERY_REPORT_MAX_ROWS);
          // Drop rows from the end until the report fits; a host reads the first.
          while (
             rows.length > 0 &&
@@ -238,14 +301,9 @@
          });
          throw err;
       }
-      // queryFull's envelope carries its rows under data.array; query's are the
-      // result itself.
       postQueryReport(target, modelPath, malloyQuery, opts, {
-         rows: compactJson
-            ? result
-            : result && result.data && Array.isArray(result.data.array)
-              ? result.data.array
-              : undefined,
+         result: result,
+         compactJson: compactJson,
       });
       return result;
    }

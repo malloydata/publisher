@@ -153,6 +153,96 @@ describe("publisher:query reports", () => {
       ]);
    });
 
+   it("reads queryFull's rows from the Malloy result, as plain rows", async () => {
+      // The full shape the server sends when compactJson is false: record cells under
+      // data.array_value, named by schema.fields, a nested view as an array of records.
+      const full = {
+         schema: {
+            fields: [
+               {
+                  kind: "dimension",
+                  name: "region",
+                  type: { kind: "string_type" },
+               },
+               {
+                  kind: "dimension",
+                  name: "revenue",
+                  type: { kind: "number_type" },
+               },
+               {
+                  kind: "dimension",
+                  name: "by_month",
+                  type: {
+                     kind: "array_type",
+                     element_type: {
+                        kind: "record_type",
+                        fields: [
+                           { name: "month", type: { kind: "date_type" } },
+                        ],
+                     },
+                  },
+               },
+            ],
+         },
+         data: {
+            kind: "array_cell",
+            array_value: [
+               {
+                  kind: "record_cell",
+                  record_value: [
+                     { kind: "string_cell", string_value: "EMEA" },
+                     { kind: "number_cell", number_value: 120 },
+                     {
+                        kind: "array_cell",
+                        array_value: [
+                           {
+                              kind: "record_cell",
+                              record_value: [
+                                 {
+                                    kind: "date_cell",
+                                    date_value: "2026-07-01",
+                                 },
+                              ],
+                           },
+                        ],
+                     },
+                  ],
+               },
+               {
+                  kind: "record_cell",
+                  record_value: [
+                     { kind: "null_cell" },
+                     { kind: "number_cell", number_value: 5 },
+                     { kind: "array_cell", array_value: [] },
+                  ],
+               },
+            ],
+         },
+      };
+      const { Publisher, reports, deliver } = runtime({
+         answer: {
+            ok: true,
+            status: 200,
+            body: { result: JSON.stringify(full) },
+         },
+      });
+      deliver();
+      expect(await Publisher.queryFull("sales.malloy", "run: x", {})).toEqual(
+         full,
+      );
+      expect(reports()[0]).toMatchObject({
+         rowCount: 2,
+         rows: [
+            {
+               region: "EMEA",
+               revenue: 120,
+               by_month: [{ month: "2026-07-01" }],
+            },
+            { region: null, revenue: 5, by_month: [] },
+         ],
+      });
+   });
+
    it("carries the row count and only the first 20 rows", async () => {
       const many = Array.from({ length: 50 }, (_, i) => ({ i }));
       const { Publisher, reports, deliver } = runtime({
