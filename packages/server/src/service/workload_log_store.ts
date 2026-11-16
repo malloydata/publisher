@@ -333,6 +333,12 @@ export class WorkloadLogStore implements AccessRecordSink {
          params.package,
          params.since.toISOString(),
       ];
+      // TODO(phase 6): main now omits `path` when a query answered live with
+      // nothing considered, and sets `pathUnavailable` when no report could be
+      // assembled, so "has a path" no longer means "was reported". Decide
+      // whether `reported` should count `answered - pathUnavailable` (which
+      // cannot tell a record written before paths were kept from a live
+      // answer) or stay as is, and say so in docs/materialization.md.
       const totals = await db.all<Record<string, unknown>>(
          `SELECT count(*) AS answered,
                  count(*) FILTER (WHERE json_extract(record, '$.path') IS NOT NULL) AS reported
@@ -352,6 +358,11 @@ export class WorkloadLogStore implements AccessRecordSink {
           GROUP BY ALL`,
          args,
       );
+      // TODO(phase 6): a `storage=` table and its colocated copy share a
+      // `tableId` and are considered as two candidates, so one query can add
+      // two to `considered` for one table, and a hit on one tier sits beside a
+      // skip on the other. `servedBy` now names the `tier`; the considered
+      // entries the record keeps do not. Decide whether use is split by tier.
       const tables: Record<string, WorkloadTableUseEntry> = {};
       for (const row of rows) {
          const tableId = row.table_id;

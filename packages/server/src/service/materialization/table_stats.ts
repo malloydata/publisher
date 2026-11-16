@@ -22,10 +22,10 @@
 
 import type { components } from "../../api";
 import type { WorkloadTableUse } from "../workload_log_store";
-import type { BuildPlan, ManifestEntry } from "./types";
+import type { BuildPlan, ManifestEntry } from "./domain/types";
 
 export type ApiTableStats = components["schemas"]["TableStats"];
-export type ApiTableStat = components["schemas"]["TableStat"];
+type ApiTableStat = components["schemas"]["TableStat"];
 
 /** One recorded run, as table stats read it. */
 export interface RecordedRun {
@@ -39,7 +39,7 @@ export interface RecordedRun {
    } | null;
 }
 
-export interface TableStatsInput {
+interface TableStatsInput {
    plan: BuildPlan | null;
    /** The package's recorded runs, newest first. */
    runs: readonly RecordedRun[];
@@ -123,8 +123,9 @@ export function computeTableStats(input: TableStatsInput): ApiTableStats {
          };
       }
 
-      // The stored schema where the build captured one (a `storage=` table),
-      // else the columns the source declares.
+      // The stored schema where the build captured one (a `storage=` table,
+      // or a colocated one whose build read its columns back), else the
+      // columns the source declares.
       const stored = latest?.entry.schema;
       if (Array.isArray(stored) && stored.length > 0) {
          stat.columns = stored.flatMap((c) =>

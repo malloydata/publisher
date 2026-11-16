@@ -34,6 +34,7 @@ import type {
 import type { Tag } from "@malloydata/malloy-tag";
 import { ownModelNoteObjects } from "./annotations";
 import { referencedGivenNames } from "./authorize";
+import { queryGivenUsageIds } from "./governance/ir/prepared_query";
 import {
    dashboardDescriptionNotes,
    isMarkdownNote,
@@ -1167,6 +1168,7 @@ export function lintReport(
             !(property === "kind" && (kind === "text" || kind === "query")),
       );
       if (carried.length > 0) {
+         // malloy-text: markdown code formatting in a lint message, not Malloy
          const named = carried.map((property) => `\`${property}\``).join(", ");
          add(
             `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: ` +
@@ -1177,6 +1179,7 @@ export function lintReport(
                     `(\`# label\`, \`# subtitle\`, \`# borderless\`).`),
          );
       }
+      // malloy-text: markdown code formatting in a lint message, not Malloy
       const tile = kind === "text" ? `text tile \`${label}\`` : `\`${label}\``;
       for (const property of ["row", "col", "colspan", "rowspan"]) {
          if (
@@ -1782,6 +1785,7 @@ export async function compileTileGivens(
       };
       try {
          prepared = (await materializer
+            // malloy-text: a report tile's query, the author's Malloy, run as written
             .loadQuery(`run: ${tile}`)
             .getPreparedQuery()) as typeof prepared;
       } catch (error) {
@@ -1789,11 +1793,11 @@ export async function compileTileGivens(
          continue;
       }
       await onPrepared?.(tile, prepared);
-      const usage = prepared._query?.givenUsage;
+      const usage = queryGivenUsageIds(prepared);
       if (!usage) continue;
       const registry = prepared._modelDef?.givens ?? fallbackRegistry ?? {};
       const reads = usage
-         .map((given) => registry[given.id]?.name)
+         .map((id) => registry[id]?.name)
          .filter((name): name is string => name !== undefined);
       const target = prepared._query?.structRef;
       const sourceName =

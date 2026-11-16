@@ -30,6 +30,9 @@ export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 /** The guide to migrating from deprecated `#(filter)` annotations to `given:` parameters. */
 export const GIVENS_DOCS_URL =
    "https://github.com/malloydata/publisher/blob/main/docs/givens.md";
+/** The recipe for moving v1 `#@ persist` / `#@ preaggregate` annotations to v2's. */
+export const MATERIALIZATION_MIGRATION_DOCS_URL =
+   "https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md";
 
 /**
  * The model file that declares a package's published surface. With no

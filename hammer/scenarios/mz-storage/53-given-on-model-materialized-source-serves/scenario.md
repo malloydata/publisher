@@ -14,12 +14,12 @@ When a model declares a `given:` and *also* has a materialized (`storage=`) sour
 that is itself given-free (hence eligible), a query on the materialized source that
 carries the model-level given must still serve from storage.
 
-The trap: the transient serve-shape model declares no `given:` of its own, so any
-given forwarded to it fails Malloy's "unknown given" check — and a prepare/run throw
-lands past the routing fallback, surfacing as a 400 instead of retrying live. The
-serve path therefore suppresses givens on the shape path alongside the build
-manifest. Clients routinely pass every model-level given, so this is the common case,
-not an edge one.
+The trap: a model a query is served from that did not declare the author's
+`given:`s would fail Malloy's "unknown given" check for any given forwarded to it —
+and a prepare/run throw lands past the routing fallback, surfacing as a 400 instead
+of retrying live. The served copy is the author's own model text, so it declares the
+same givens, and the query's givens are passed to it unchanged. Clients routinely
+pass every model-level given, so this is the common case, not an edge one.
 
 The query below supplies the given and asserts it still serves the materialized
 snapshot.
@@ -67,9 +67,9 @@ expect binding: daily -> lake
 
 ## Query materialized source with the model-level given supplied
 
-`daily` is routed to the lake shape. The given is on the model's surface but the
-materialized source does not reference it, so it must be dropped before the shape
-rather than reaching it as an unknown name.
+`daily` is routed to its lake table. The given is on the model's surface but the
+materialized source does not reference it; the served copy declares it as the
+author's model does, so it is accepted rather than refused as an unknown name.
 
 ```malloy
 run: daily -> { select: order_date, total; order_by: order_date asc }

@@ -307,12 +307,22 @@ export class PackageController {
          packageName,
          versionId,
       );
+      // A connection edit re-derives the plan; never hand out the old one.
+      await pkg.whenBuildPlanCurrent();
       if (pkg.isBuildPlanUnavailable()) {
          throw new BuildPlanUnavailableError(
-            `The build plan of package ${packageName} could not be derived at load. Reload the package to derive it again; retrying the read does not.`,
+            `The build plan of package ${packageName} could not be derived (at load, or after a connection change). Reload the package to derive it again; retrying the read does not.`,
          );
       }
-      return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
+      return (
+         pkg.getBuildPlan() ?? {
+            graphs: [],
+            sources: {},
+            refusedSources: {},
+            omittedSources: [],
+            omittedFiles: [],
+         }
+      );
    }
 
    /**

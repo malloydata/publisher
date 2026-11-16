@@ -185,6 +185,69 @@ describe("a version bound to a manifest on this server's disk", () => {
       await expectLive();
    });
 
+   it("clears a binding with an empty body, as a client that drops null fields sends it", async () => {
+      const file = writeManifest("then-empty.json", sourceEntityId);
+      const bound = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
+         manifestLocation: file,
+      });
+      expect(bound.status).toBe(200);
+      await expectBoundTo(file);
+
+      // A typo is refused and leaves the binding as it was.
+      const typo = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
+         manifestUri: file,
+      });
+      expect(typo.status).toBe(400);
+      await expectBoundTo(file);
+
+      const cleared = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {});
+      expect(cleared.status).toBe(200);
+      await expectLive();
+   });
+
+   it("binds and clears through the legacy combined-name PATCH, whose body carries other fields", async () => {
+      // `PATCH …/packages/<pkg>___<version>` is rewritten to this PUT with
+      // the old package-update body, plus the `versionId` the legacy body
+      // middleware adds; only `manifestLocation` is read from it.
+      const file = writeManifest("by-legacy-patch.json", sourceEntityId);
+      const bound = await call("PATCH", `/${PKG}___1.0.0`, {
+         name: `${PKG}___1.0.0`,
+         description: "an orchestrator's full package body",
+         location: "ignored",
+         manifestLocation: file,
+      });
+      expect(bound.status).toBe(200);
+      await expectBoundTo(file);
+
+      const cleared = await call("PATCH", `/${PKG}___1.0.0`, {
+         name: `${PKG}___1.0.0`,
+         manifestLocation: null,
+      });
+      expect(cleared.status).toBe(200);
+      await expectLive();
+
+      // As before: the field must be present on this path.
+      const missing = await call("PATCH", `/${PKG}___1.0.0`, {
+         name: `${PKG}___1.0.0`,
+      });
+      expect(missing.status).toBe(400);
+   });
+
+   it("refuses a PUT not sent as JSON, rather than reading it as a clear", async () => {
+      const file = writeManifest("then-text.json", sourceEntityId);
+      await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
+         manifestLocation: file,
+      });
+      await expectBoundTo(file);
+      const res = await fetch(api(`/${PKG}/versions/1.0.0/manifest`), {
+         method: "PUT",
+         body: JSON.stringify({ manifestLocation: file }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("application/json");
+      await expectBoundTo(file);
+   });
+
    it("binds an absolute path through the deprecated PATCH, which binds latest", async () => {
       const file = writeManifest("by-patch.json", sourceEntityId);
       const patched = await call("PATCH", `/${PKG}`, {

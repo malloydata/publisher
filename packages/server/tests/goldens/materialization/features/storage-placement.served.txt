@@ -1,0 +1,260 @@
+// feature: storage placement: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 6)
+##! experimental { persistence composite_sources }
+##! experimental { virtual_source }
+type: m_storage__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+type: p_named_nested__served is {
+   status::string,
+   n::number
+}
+type: p_named_sibling__served is {
+   status::string,
+   n::number
+}
+type: p_nested__served is {
+   region::string,
+   n::number
+}
+type: p_sibling__served is {
+   region::string,
+   n::number
+}
+
+import "raw.malloy"
+
+#@ persist storage="lake"
+source: p_sibling is __served_copy_alias_of_lake.virtual('abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6')::p_sibling__served
+
+#@ persist { storage="lake" }
+source: p_nested is __served_copy_alias_of_lake.virtual('abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6')::p_nested__served
+
+#@ persist name="p_named" storage="lake"
+source: p_named_sibling is __served_copy_alias_of_lake.virtual('9dd25350bdb25aa9f7851c358e415a9fd78d32524fe535ed1ecd8aacf8eeec6b')::p_named_sibling__served
+
+#@ persist { name="p_named_nested" storage="lake" }
+source: p_named_nested is __served_copy_alias_of_lake.virtual('2132b8ba56b26471fd390f5db5b1efafcc536a1b564a521951213e4f8928e006')::p_named_nested__served
+
+#(materialize) storage="lake"
+source: m_storage is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::m_storage__served extend {
+  private rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
+ measure: n is count() }
+
+source: views is orders_raw extend {
+  measure: n is count()
+  #@ persist storage="lake"
+  view: v_sibling is { group_by: region; aggregate: n }
+  #@ persist { storage="lake" }
+  view: v_nested is { group_by: status; aggregate: n }
+}
+
+source: rollups is orders_raw extend {
+  #(preaggregate) grain=["region"] storage="lake"
+  measure: r_storage is amount.sum()
+}
+
+source: v1_rollups is orders_raw extend {
+  #@ preaggregate grain="region" storage="lake"
+  measure: v1_sibling is amount.sum()
+  #@ preaggregate { grain="status" storage="lake" }
+  measure: v1_nested is amount.max()
+}
+
+// ==== <pkg>/m.malloy (text 2 of 6)
+##! experimental { access_modifiers composite_sources persistence virtual_source }
+import { m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, views } from "m.malloy.rollup-author.malloy"
+
+type: v1_rollups__rollup__region__cbe05f06__type is {
+   region::string,
+   v1_sibling__partial::number
+}
+source: v1_rollups__rollup__region__cbe05f06__served is __served_copy_alias_of_lake.virtual('42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722')::v1_rollups__rollup__region__cbe05f06__type extend {
+  measure:
+    #@ preaggregate grain="region" storage="lake"
+    v1_sibling is v1_sibling__partial.sum()
+}
+source: v1_rollups is v1_rollups__rollup__region__cbe05f06__served include { internal: v1_sibling__partial public: * }
+export { v1_rollups, m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, views }
+
+// ==== <pkg>/m.malloy (text 3 of 6)
+##! experimental { access_modifiers composite_sources persistence virtual_source }
+import { m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, views } from "m.malloy.rollup-author.malloy"
+
+type: v1_rollups__rollup__status__1425197f__type is {
+   status::string,
+   v1_nested__partial::number
+}
+source: v1_rollups__rollup__status__1425197f__served is __served_copy_alias_of_lake.virtual('72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1')::v1_rollups__rollup__status__1425197f__type extend {
+  measure:
+    #@ preaggregate { grain="status" storage="lake" }
+    v1_nested is v1_nested__partial.max()
+}
+source: v1_rollups is v1_rollups__rollup__status__1425197f__served include { internal: v1_nested__partial public: * }
+export { v1_rollups, m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, views }
+
+// ==== <pkg>/m.malloy (text 4 of 6)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, v1_rollups } from "m.malloy.view-author.malloy"
+
+type: views__v_sibling__view__type is {
+   region::string,
+   n::number
+}
+source: views__v_sibling__view__stored is __served_copy_alias_of_lake.virtual('abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6')::views__v_sibling__view__type
+source: views is views__v_sibling__view__stored extend {
+  view: v_sibling is {
+    group_by: region
+    aggregate:
+      n is n.max()
+    order_by: n desc
+  }
+}
+export { views, m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, v1_rollups }
+
+// ==== <pkg>/m.malloy (text 5 of 6)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, v1_rollups } from "m.malloy.view-author.malloy"
+
+type: views__v_nested__view__type is {
+   status::string,
+   n::number
+}
+source: views__v_nested__view__stored is __served_copy_alias_of_lake.virtual('5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4')::views__v_nested__view__type
+source: views is views__v_nested__view__stored extend {
+  view: v_nested is {
+    group_by: status
+    aggregate:
+      n is n.max()
+    order_by: n desc
+  }
+}
+export { views, m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, rollups, v1_rollups }
+
+// ==== <pkg>/m.malloy (text 6 of 6)
+##! experimental { access_modifiers composite_sources persistence virtual_source }
+import { m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, v1_rollups, views } from "m.malloy.rollup-author.malloy"
+
+type: rollups__rollup__region__495e6697__type is {
+   region::string,
+   r_storage__partial::number
+}
+source: rollups__rollup__region__495e6697__served is __served_copy_alias_of_lake.virtual('e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed')::rollups__rollup__region__495e6697__type extend {
+  measure:
+    #(preaggregate) grain=["region"] storage="lake"
+    r_storage is r_storage__partial.sum()
+}
+source: rollups is rollups__rollup__region__495e6697__served include { internal: r_storage__partial public: * }
+export { rollups, m_storage, p_named_nested, p_named_sibling, p_nested, p_sibling, v1_rollups, views }
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { persistence composite_sources }
+import "raw.malloy"
+
+                         
+source: p_sibling is orders_raw -> { group_by: region; aggregate: n is count() }
+
+                             
+source: p_nested is orders_raw -> { group_by: region; aggregate: n is count() }
+
+                                        
+source: p_named_sibling is orders_raw -> { group_by: status; aggregate: n is count() }
+
+                                                   
+source: p_named_nested is orders_raw -> { group_by: status; aggregate: n is count() }
+
+#(materialize) storage="lake"
+source: m_storage is orders_raw extend { measure: n is count() }
+
+source: views is orders_raw extend {
+  measure: n is count()
+  #@ persist storage="lake"
+  view: v_sibling is { group_by: region; aggregate: n }
+  #@ persist { storage="lake" }
+  view: v_nested is { group_by: status; aggregate: n }
+}
+
+source: rollups is orders_raw extend {
+  #(preaggregate) grain=["region"] storage="lake"
+  measure: r_storage is amount.sum()
+}
+
+source: v1_rollups is orders_raw extend {
+  #@ preaggregate grain="region" storage="lake"
+  measure: v1_sibling is amount.sum()
+  #@ preaggregate { grain="status" storage="lake" }
+  measure: v1_nested is amount.max()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy (text 1 of 2)
+##! experimental { access_modifiers composite_sources persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { p_sibling, p_nested, p_named_sibling, p_named_nested, m_storage, views, rollups } from "m.malloy.rollup-author.malloy"
+import { v1_rollups } from "m.malloy"
+
+// ==== <pkg>/m.malloy.rollup.malloy (text 2 of 2)
+##! experimental { access_modifiers composite_sources persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { p_sibling, p_nested, p_named_sibling, p_named_nested, m_storage, views, v1_rollups } from "m.malloy.rollup-author.malloy"
+import { rollups } from "m.malloy"
+
+// ==== <pkg>/m.malloy.view-author.malloy
+##! experimental { persistence composite_sources }
+import "raw.malloy"
+
+                         
+source: p_sibling is orders_raw -> { group_by: region; aggregate: n is count() }
+
+                             
+source: p_nested is orders_raw -> { group_by: region; aggregate: n is count() }
+
+                                        
+source: p_named_sibling is orders_raw -> { group_by: status; aggregate: n is count() }
+
+                                                   
+source: p_named_nested is orders_raw -> { group_by: status; aggregate: n is count() }
+
+#(materialize) storage="lake"
+source: m_storage is orders_raw extend { measure: n is count() }
+
+source: views is orders_raw extend {
+  measure: n is count()
+  #@ persist storage="lake"
+  view: v_sibling is { group_by: region; aggregate: n }
+  #@ persist { storage="lake" }
+  view: v_nested is { group_by: status; aggregate: n }
+}
+
+source: rollups is orders_raw extend {
+  #(preaggregate) grain=["region"] storage="lake"
+  measure: r_storage is amount.sum()
+}
+
+source: v1_rollups is orders_raw extend {
+  #@ preaggregate grain="region" storage="lake"
+  measure: v1_sibling is amount.sum()
+  #@ preaggregate { grain="status" storage="lake" }
+  measure: v1_nested is amount.max()
+}
+
+// ==== <pkg>/m.malloy.view.malloy
+##! experimental { access_modifiers givens persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { p_sibling, p_nested, p_named_sibling, p_named_nested, m_storage, rollups, v1_rollups } from "m.malloy.view-author.malloy"
+import { views } from "m.malloy"

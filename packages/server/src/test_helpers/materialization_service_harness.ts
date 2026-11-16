@@ -6,7 +6,10 @@ import * as sinon from "sinon";
 import { ConnectionNotFoundError, DestinationNotFoundError } from "../errors";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import type { EnvironmentStore } from "../service/environment_store";
-import { MaterializationService } from "../service/materialization/run/materialization_service";
+import {
+   MaterializationService,
+   type RunCollaboratorOverrides,
+} from "../service/materialization/run/materialization_service";
 import { installSettings } from "./settings_env";
 
 /**
@@ -52,9 +55,13 @@ export function withQueryMetadataOn(): void {
  * environment resolves and yields a package whose build plan is empty (no
  * persist sources); individual tests override getBuildPlan via `setPackage`
  * to exercise the orchestrated path. getModelPaths()=>[] keeps the background
- * build from touching the Malloy runtime.
+ * build from touching the Malloy runtime. `collaborators` replaces the steps a
+ * run takes (see RunCollaborators); a spec that replaces one after the mocks
+ * exist constructs another service over `environmentStore` with them.
  */
-export function createMocks(): ServiceMocks {
+export function createMocks(
+   collaborators: RunCollaboratorOverrides = {},
+): ServiceMocks {
    const sandbox = sinon.createSandbox();
 
    const repository = {
@@ -64,8 +71,26 @@ export function createMocks(): ServiceMocks {
       getActiveMaterialization: sandbox.stub(),
       createMaterialization: sandbox.stub(),
       updateMaterialization: sandbox.stub(),
+      updateMaterializationFrom: sandbox.stub(),
       deleteMaterialization: sandbox.stub(),
    } as unknown as MockRepo;
+   // The conditional write, as the store makes it, over the status the read
+   // stub answers (null: the run is gone), through the write stub a spec
+   // configures. A read stub that answers nothing, or throws, lets it land.
+   repository.updateMaterializationFrom.callsFake(
+      async (id, updates, fromStatuses) => {
+         const current = await Promise.resolve(
+            repository.getMaterializationById(id),
+         ).catch(() => undefined);
+         if (
+            current === null ||
+            (current && !fromStatuses.includes(current.status))
+         ) {
+            return null;
+         }
+         return repository.updateMaterialization(id, updates);
+      },
+   );
 
    const storageManager = { getRepository: () => repository };
 
@@ -83,7 +108,7 @@ export function createMocks(): ServiceMocks {
    });
    setPackage(environmentStore, { getBuildPlan: () => null });
 
-   const service = new MaterializationService(environmentStore);
+   const service = new MaterializationService(environmentStore, collaborators);
 
    return { sandbox, repository, environmentStore, service };
 }
@@ -154,6 +179,8 @@ export function setPackage(
       getMalloyConnection: async () => ({}),
       // No bound manifestLocation by default, so seedFromBoundManifest no-ops.
       getPackageMetadata: () => ({}),
+      // Binds no key check, so there is none to forget.
+      forgetKeyUniqueness: () => undefined,
       ...pkgOverrides,
    };
    (environmentStore.getEnvironment as sinon.SinonStub).resolves({

@@ -344,6 +344,7 @@ describe("service/package", () => {
                      "model1.malloy",
                      {
                         getPath: () => "model1.malloy",
+                        getType: () => "model",
                         getModel: () => "foo",
                         getGivens: () => [],
                         getCompilationError: () => undefined,
@@ -614,9 +615,10 @@ describe("service/package", () => {
    // WHETHER the source may be served frozen — that is decided by compiling the
    // model. These assert the gate that enforces it, because the failure is silent:
    // an admitted binding for a `given`-filtered source serves one caller's rows to
-   // everyone, and no error is raised. Scenarios
-   // `host-binding-honors-row-level-access` and `host-binding-of-unplanned-source`
-   // prove it end to end; these keep it from being refactored away.
+   // everyone, and no error is raised. Scenario
+   // `host-binding-honors-row-level-access` proves it end to end: its forged
+   // binding names a source absent from `plan.sources`. These keep the gate from
+   // being refactored away.
    describe("bindStorageServeBindings eligibility gate", () => {
       /** A structurally complete manifest entry — the shape a host sends. */
       const entry = (sourceName: string, table: string) => ({
@@ -641,10 +643,31 @@ describe("service/package", () => {
             new Map(),
          );
          // Private by design: its only writer is the load path, which needs a
-         // compiled package. Set directly to isolate the filter.
+         // compiled package. Set directly to isolate the filter. Eligibility is
+         // keyed by sourceID, and a binding names the plan sources it
+         // materializes, so the plan holds every source the case names.
+         const id = (name: string) => `${name}@m.malloy`;
          (
             pkg as unknown as { sourceEligibility: typeof eligibility }
-         ).sourceEligibility = eligibility;
+         ).sourceEligibility = eligibility && {
+            eligible: eligibility.eligible.map(id),
+            refused: Object.fromEntries(
+               Object.entries(eligibility.refused).map(([n, r]) => [id(n), r]),
+            ),
+         };
+         const planned = [
+            ...(eligibility?.eligible ?? []),
+            ...Object.keys(eligibility?.refused ?? {}),
+         ];
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: Object.fromEntries(
+               planned.map((name) => [
+                  id(name),
+                  { name, sourceEntityId: `eid-${name}`, sourceID: id(name) },
+               ]),
+            ),
+         };
          return pkg;
       };
 
@@ -659,12 +682,73 @@ describe("service/package", () => {
             refused: { scoped_rollup: "references a given" },
          });
 
-         pkg.bindStorageServeBindings({
-            a: entry("all_rollup", "t_all"),
-            b: entry("scoped_rollup", "t_all"),
+         pkg.materialization().bind({
+            storage: {
+               a: entry("all_rollup", "t_all"),
+               b: entry("scoped_rollup", "t_all"),
+            },
          });
 
          expect(boundSources(pkg)).toEqual(["all_rollup"]);
+      });
+
+      it("keeps a binding only for its eligible source when two models' same-named sources share a table", () => {
+         // Two models declare `orders` with identical SQL (one address); one
+         // carries a gate the eligibility check refuses. The binding names both
+         // plan sources, and only the eligible one may keep it: admitting the
+         // binding whole would serve the refused model's source from the table.
+         const pkg = new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            new Map(),
+         );
+         const open = "orders@file:///open.malloy";
+         const gated = "orders@file:///gated.malloy";
+         (
+            pkg as unknown as {
+               sourceEligibility: {
+                  eligible: string[];
+                  refused: Record<string, string>;
+               };
+            }
+         ).sourceEligibility = {
+            eligible: [open],
+            refused: { [gated]: "protected by a gate" },
+         };
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: {
+               [open]: {
+                  name: "orders",
+                  sourceEntityId: "eid-orders",
+                  sourceID: open,
+               },
+               [gated]: {
+                  name: "orders",
+                  sourceEntityId: "eid-orders",
+                  sourceID: gated,
+               },
+            },
+         };
+
+         pkg.materialization().bind({
+            storage: { a: entry("orders", "t_orders") },
+         });
+
+         // The wire projection drops sourceIDs; read the bound set itself.
+         const bound = (
+            pkg.materialization() as unknown as {
+               storageBindings: {
+                  sourceName: string;
+                  sourceIDs?: string[];
+               }[];
+            }
+         ).storageBindings;
+         expect(bound.map((b) => b.sourceName)).toEqual(["orders"]);
+         expect(bound[0].sourceIDs).toEqual([open]);
       });
 
       it("refuses every binding when the build plan could not be computed", () => {
@@ -673,20 +757,23 @@ describe("service/package", () => {
          // unexamined binding must not read as an eligible one.
          const pkg = packageWith(undefined);
 
-         pkg.bindStorageServeBindings({ a: entry("all_rollup", "t_all") });
+         pkg.materialization().bind({
+            storage: { a: entry("all_rollup", "t_all") },
+         });
 
          expect(boundSources(pkg)).toEqual([]);
       });
 
       it("refuses a source the plan never contained", () => {
-         // Malloy admits only query-shaped sources as build roots, so `#@ persist`
-         // on a filtered pass-through produces no plan entry — neither eligible nor
-         // refused. Absence is not eligibility.
+         // A source with no `#@ persist` annotation produces no plan entry —
+         // neither eligible nor refused. Absence is not eligibility.
          const pkg = packageWith({ eligible: ["all_rows"], refused: {} });
 
-         pkg.bindStorageServeBindings({
-            a: entry("all_rows", "t_all"),
-            b: entry("scoped", "t_all"),
+         pkg.materialization().bind({
+            storage: {
+               a: entry("all_rows", "t_all"),
+               b: entry("scoped", "t_all"),
+            },
          });
 
          expect(boundSources(pkg)).toEqual(["all_rows"]);
@@ -728,9 +815,11 @@ describe("service/package", () => {
                items: "items",
             });
 
-            pkg.bindStorageServeBindings({
-               a: built("orders", "v2-orders"),
-               b: built("items", "items"),
+            pkg.materialization().bind({
+               storage: {
+                  a: built("orders", "v2-orders"),
+                  b: built("items", "items"),
+               },
             });
 
             expect(boundSources(pkg)).toEqual(["items"]);
@@ -738,13 +827,27 @@ describe("service/package", () => {
 
          it("binds a table its own definition built", () => {
             const pkg = definedAs("2.0.0", { orders: "v2-orders" });
-            pkg.bindStorageServeBindings({ a: built("orders", "v2-orders") });
+            pkg.materialization().bind({
+               storage: { a: built("orders", "v2-orders") },
+            });
             expect(boundSources(pkg)).toEqual(["orders"]);
          });
 
-         it("leaves a package with no versions binding by name, as before", () => {
+         it("serves live, in a package with no versions too, a table another definition built", () => {
+            // The author edited `orders` in place, and the store (or a host)
+            // still holds the table the old definition built under its name.
             const pkg = definedAs(undefined, { orders: "v1-orders" });
-            pkg.bindStorageServeBindings({ a: built("orders", "v2-orders") });
+            pkg.materialization().bind({
+               storage: { a: built("orders", "v2-orders") },
+            });
+            expect(boundSources(pkg)).toEqual([]);
+         });
+
+         it("binds, in a package with no versions, a table its own definition built", () => {
+            const pkg = definedAs(undefined, { orders: "v1-orders" });
+            pkg.materialization().bind({
+               storage: { a: built("orders", "v1-orders") },
+            });
             expect(boundSources(pkg)).toEqual(["orders"]);
          });
       });
@@ -787,12 +890,14 @@ describe("service/package", () => {
             refused: { "eid-refused": "row_level but not attributed" },
          });
 
-         pkg.bindColocatedServeManifest({
-            "eid-eligible": { tableName: "t_eligible" },
-            "eid-refused": { tableName: "t_refused" },
+         pkg.materialization().bind({
+            colocated: {
+               "eid-eligible": { tableName: "t_eligible" },
+               "eid-refused": { tableName: "t_refused" },
+            },
          });
 
-         expect(pkg.getBuildManifestEntries()).toEqual({
+         expect(pkg.materialization().getBuildManifestEntries()).toEqual({
             "eid-eligible": { tableName: "t_eligible" },
          });
       });
@@ -800,11 +905,15 @@ describe("service/package", () => {
       it("refuses every entry when the build plan could not be computed", () => {
          const pkg = packageWith(undefined);
 
-         pkg.bindColocatedServeManifest({
-            "eid-eligible": { tableName: "t_eligible" },
+         pkg.materialization().bind({
+            colocated: {
+               "eid-eligible": { tableName: "t_eligible" },
+            },
          });
 
-         expect(pkg.getBuildManifestEntries()).toBeUndefined();
+         expect(
+            pkg.materialization().getBuildManifestEntries(),
+         ).toBeUndefined();
       });
 
       it("refuses an entry naming a source never examined (absence is not eligibility)", () => {
@@ -813,12 +922,14 @@ describe("service/package", () => {
             refused: {},
          });
 
-         pkg.bindColocatedServeManifest({
-            "eid-known": { tableName: "t_known" },
-            "eid-unknown": { tableName: "t_unknown" },
+         pkg.materialization().bind({
+            colocated: {
+               "eid-known": { tableName: "t_known" },
+               "eid-unknown": { tableName: "t_unknown" },
+            },
          });
 
-         expect(pkg.getBuildManifestEntries()).toEqual({
+         expect(pkg.materialization().getBuildManifestEntries()).toEqual({
             "eid-known": { tableName: "t_known" },
          });
       });
@@ -841,6 +952,7 @@ describe("service/package", () => {
             getDeclaredSourceQueryMetadata: () => [],
             preaggregateViolations: () => [],
             declaredFilterSourceNames: () => [],
+            declaredDeprecatedPersistAnnotations: () => [],
          }) as unknown as Model;
       const roles = { name: "ROLES", type: "string[]", secure: true };
       const pkgWith = (models: Map<string, Model>) =>

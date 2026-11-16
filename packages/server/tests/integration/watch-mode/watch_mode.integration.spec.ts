@@ -196,6 +196,33 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
       expect(appeared).toBe(true);
    });
 
+   it("compiles an import that climbs between the mounted package's own directories", async () => {
+      // The package root is a symlink to the source: the import confinement
+      // compares realpaths, so a ../ that stays inside the source still reads.
+      fs.mkdirSync(path.join(server!.srcDir, "lib", "sub"), {
+         recursive: true,
+      });
+      fs.writeFileSync(
+         path.join(server!.srcDir, "lib", "base.malloy"),
+         'source: lib_base is duckdb.sql("SELECT 3 as n")\n',
+      );
+      fs.writeFileSync(
+         path.join(server!.srcDir, "lib", "sub", "importer.malloy"),
+         'import "../base.malloy"\nsource: climbed is lib_base\n',
+      );
+      const compiled = await pollUntil(async () => {
+         const res = await fetch(
+            apiUrl(baseUrl, "/models/lib/sub/importer.malloy"),
+         );
+         if (!res.ok) return false;
+         const model = (await res.json()) as {
+            sources?: Array<{ name?: string }>;
+         };
+         return (model.sources ?? []).some((s) => s.name === "climbed");
+      }, 25_000);
+      expect(compiled).toBe(true);
+   });
+
    it("reflects an edit to an existing model's contents (recompile)", async () => {
       // Rename the source inside first.malloy; the compiled model detail must
       // pick up the new name, proving the package recompiled (not just a

@@ -106,12 +106,33 @@ describe("ownedVersionOf", () => {
       expect(ownedVersionOf(pkg("1.0.0"))).toBeUndefined();
       expect(ownedVersionOf(pkg(undefined, "version"))).toBeUndefined();
    });
+
+   it("reads the scope alone when the package offers it, never the whole metadata", () => {
+      const scoped = (scope: string) => ({
+         getVersionId: () => "1.0.0",
+         getPackageMetadata: (): never => {
+            throw new Error("built the whole metadata");
+         },
+         getMaterializationScope: () => scope,
+      });
+      expect(ownedVersionOf(scoped("version"))).toBe("1.0.0");
+      expect(ownedVersionOf(scoped("package"))).toBeUndefined();
+   });
 });
 
 describe("newestServingEntries", () => {
    const owned = (id: string, version: string) =>
       run(id, { version, metadata: { scope: "version" } });
    const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute));
+
+   it("serves no run that recorded its manifest but did not finish: loading, or interrupted and settled FAILED", () => {
+      const runs = [
+         run("loading", { status: "MANIFEST_ROWS_READY" }),
+         run("interrupted", { status: "FAILED" }),
+         run("done"),
+      ];
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual(["t_done"]);
+   });
 
    it("reads a version's own runs only", () => {
       const runs = [owned("b", "2.0.0"), owned("a", "1.0.0"), run("legacy")];

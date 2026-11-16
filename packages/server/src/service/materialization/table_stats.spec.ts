@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { computeTableStats, type RecordedRun } from "./table_stats";
-import type { BuildPlan, ManifestEntry } from "./types";
+import type { BuildPlan, ManifestEntry } from "./domain/types";
 
 const plan = {
    graphs: [],

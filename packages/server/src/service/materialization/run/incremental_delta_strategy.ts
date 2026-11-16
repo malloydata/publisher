@@ -1,9 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The colocated tier's incremental path ({@link buildColocatedDelta}): a
+ * bounded delta applied by the source's own warehouse to the table it serves,
+ * or `undefined` when the table must be rebuilt in full. Called by the
+ * colocated tier (colocated_build_strategy.ts) before its staging CTAS.
+ *
+ * The decision (seed, delta or skip) is the shared planner's in
+ * incremental_build.ts; the delta's SQL is incremental_apply.ts's. This module
+ * only joins them for one warehouse table.
+ */
+
 import { quoteTablePath } from "../../quoting";
-import { ManifestEntry } from "../types";
-import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
+import { ManifestEntry } from "../domain/types";
+import type { ColocatedBuildRequest } from "./tier";
 import { warehouseDeltaTarget } from "./incremental_apply";
 import { refreshOneSourceIncrementally } from "./incremental_build";
 
@@ -14,41 +25,38 @@ import { refreshOneSourceIncrementally } from "./incremental_build";
  * full — for any other source, and for one whose ledger says a delta cannot be
  * trusted (the shared planner decides seed, delta or skip).
  */
-export class IncrementalDeltaStrategy
-   implements BuildStrategy<ColocatedBuildRequest>
-{
-   async build(
-      request: ColocatedBuildRequest,
-   ): Promise<ManifestEntry | undefined> {
-      const {
-         persistSource,
-         instruction,
-         connection,
-         manifest,
-         buildSQL,
-         runOptions,
-         incrementalRefresh,
-      } = request;
-      if (!incrementalRefresh) return undefined;
-      const dialect = persistSource.dialectName;
-      return refreshOneSourceIncrementally({
-         ...incrementalRefresh,
-         persistSource,
-         instruction,
-         target: warehouseDeltaTarget({
+export async function buildColocatedDelta(
+   request: ColocatedBuildRequest,
+): Promise<ManifestEntry | undefined> {
+   const {
+      persistSource,
+      instruction,
+      connection,
+      manifest,
+      buildSQL,
+      runOptions,
+      incrementalRefresh,
+   } = request;
+   if (!incrementalRefresh) return undefined;
+   const dialect = persistSource.dialectName;
+   return refreshOneSourceIncrementally({
+      ...incrementalRefresh,
+      persistSource,
+      instruction,
+      target: warehouseDeltaTarget({
+         dialect,
+         runner: (sql, options) =>
+            connection.runSQL(sql, { ...runOptions, ...options }),
+         quotedTablePath: quoteTablePath(
+            instruction.physicalTableName,
             dialect,
-            runner: (sql) => connection.runSQL(sql, runOptions),
-            quotedTablePath: quoteTablePath(
-               instruction.physicalTableName,
-               dialect,
-            ),
-            lineage: incrementalRefresh.lineage,
-            // The CTAS's own SQL, so a delta computes what a rebuild would
-            // (see deltaSelect).
-            sourceSQL: buildSQL,
-         }),
-         manifest,
-         upstreamReuse: request.upstreamReuse,
-      });
-   }
+         ),
+         lineage: incrementalRefresh.lineage,
+         // The CTAS's own SQL, so a delta computes what a rebuild would
+         // (see deltaSelect).
+         sourceSQL: buildSQL,
+      }),
+      manifest,
+      upstreamReuse: request.upstreamReuse,
+   });
 }

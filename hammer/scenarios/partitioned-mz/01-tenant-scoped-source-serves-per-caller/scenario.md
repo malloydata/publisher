@@ -13,8 +13,8 @@ SPDX-License-Identifier: MIT
 `orders` is scoped to the caller's org by an extend-block `where: org_id =
 $ORG_ID`. Materialized into the lake it becomes ONE table holding every org's
 rows — Malloy leaves an extend-block `where:` out of the build — and each caller
-is answered from their own slice of it, because the serve shape re-applies the
-term with the value that caller supplied.
+is answered from their own slice of it, because the served copy keeps the term as
+the author wrote it and applies it with the value that caller supplied.
 
 Before this, the storage tier refused the source outright: any given reference
 was a refusal, which took the tier away from every tenant-scoped model, i.e.
@@ -111,7 +111,7 @@ Expect:
 ## Query org 2 total
 
 The same artifact, a different caller, a different answer. 360 here would mean
-the shape stopped carrying the term and served the whole table.
+the served copy lost the term and served the whole table.
 
 ```malloy
 run: orders -> { aggregate: total is amount.sum() }
@@ -128,7 +128,8 @@ Expect:
 
 ## Query an unsupplied given falls back to its default
 
-The shape carries the author's declared default, so a request that binds nothing
+The served copy is the author's model text, so it declares the given with the
+author's default, and a request that binds nothing
 gets the answer the live path would give it rather than failing to compile and
 quietly losing the tier.
 
@@ -147,9 +148,9 @@ Expect:
 ## Note (since=2026-09-16)
 
 > The two properties here fail in opposite directions and both are asserted, on
-> purpose. A shape that stopped declaring the given fails CLOSED — the re-emitted
-> `where: org_id = $ORG_ID` no longer compiles, the binding is withheld, and the
-> query serves live. A shape that stopped carrying the TERM fails OPEN, compiling
-> perfectly and answering 360 to everyone. Only the second is a leak, and only a
+> purpose. A served copy that stopped declaring the given fails CLOSED — the kept
+> `where: org_id = $ORG_ID` no longer compiles, that source steps back to live, and
+> the query serves live. A served copy that stopped carrying the TERM fails OPEN,
+> compiling perfectly and answering 360 to everyone. Only the second is a leak, and only a
 > per-caller assertion can see it: a test that checked one caller, or that checked
 > routing alone, passes against it.

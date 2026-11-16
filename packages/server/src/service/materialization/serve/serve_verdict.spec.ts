@@ -3,11 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 import type { components } from "../../../api";
-import {
-   computeServeVerdicts,
-   type ServeVerdictFacts,
-   sourceIDsReachedFrom,
-} from "./serve_verdict";
+import { computeServeVerdicts, type ServeVerdictFacts } from "./serve_verdict";
+import { reachableSourceIDs } from "../text/source_map";
 
 type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 
@@ -42,6 +39,7 @@ function facts(
       storageMode: "on",
       reachable: () => true,
       gated: () => false,
+      keepsGate: () => false,
       boundEntityIds: new Set(),
       boundStorageNames: new Set(),
       servedStorageNames: new Set(),
@@ -122,7 +120,11 @@ describe("computeServeVerdicts", () => {
    });
 
    it("sends a gated stored source live, and keeps a gated colocated one", () => {
-      const gated = { gated: () => true };
+      // G3 with gated sources off: the policy keeps a colocated table's gate.
+      const gated = {
+         gated: () => true,
+         keepsGate: (_id: string, tier: string) => tier === "colocated",
+      };
       const [stored] = computeServeVerdicts(
          facts([plan("orders", STORAGE)], gated),
       );
@@ -132,6 +134,74 @@ describe("computeServeVerdicts", () => {
       });
       const [colocated] = computeServeVerdicts(facts([plan("orders")], gated));
       expect(colocated.verdict).toBe("not_built");
+   });
+
+   it("serves a gated stored source plan admitted past its own gate (G3) as a colocated one, and no other stored source", () => {
+      const bound = {
+         gated: () => true,
+         boundStorageNames: new Set(["orders", "other"]),
+         servedStorageNames: new Set(["orders", "other"]),
+         keepsGate: (id: string, tier: string) =>
+            tier === "colocated" || id.startsWith("orders@"),
+      };
+      const verdicts = computeServeVerdicts(
+         facts([plan("orders", STORAGE), plan("other", STORAGE)], bound),
+      );
+      expect(verdicts.map((v) => [v.sourceName, v.verdict, v.reason])).toEqual([
+         ["orders", "serves", undefined],
+         ["other", "live", "row_level_gate"],
+      ]);
+   });
+
+   it("serves a gated stored source when the served copy keeps its gates (R3), never a gated rollup", () => {
+      // Gated sources on: the served copy keeps every table's gate, and no
+      // rollup here was proven at plan.
+      const keeps = {
+         gated: () => true,
+         keepsGate: (id: string) => !id.startsWith("orders_rollup"),
+         boundStorageNames: new Set(["orders"]),
+         servedStorageNames: new Set(["orders"]),
+      };
+      const [stored] = computeServeVerdicts(
+         facts([plan("orders", STORAGE)], keeps),
+      );
+      expect(stored.verdict).toBe("serves");
+      const rollup = plan("orders_rollup_1", {
+         origin: "preaggregate",
+         preaggregate: {
+            baseSourceName: "orders",
+            grainDimensions: ["region"],
+            measures: [],
+         } as unknown as PersistSourcePlan["preaggregate"],
+      });
+      const [rolled] = computeServeVerdicts(facts([rollup], keeps));
+      expect(rolled).toMatchObject({
+         verdict: "live",
+         reason: "row_level_gate",
+      });
+   });
+
+   it("does not call a gated #(preaggregate) rollup gated out when its variant keeps the gates (row 1)", () => {
+      const rollup = plan("orders_rollup_1", {
+         origin: "preaggregate",
+         preaggregate: {
+            baseSourceName: "orders",
+            grainDimensions: ["region"],
+            measures: [],
+         } as unknown as PersistSourcePlan["preaggregate"],
+      });
+      const keeping = (keeps: boolean) =>
+         computeServeVerdicts(
+            facts([rollup], {
+               gated: () => true,
+               keepsGate: () => keeps,
+            }),
+         )[0];
+      expect(keeping(true)?.reason).not.toBe("row_level_gate");
+      expect(keeping(false)).toMatchObject({
+         verdict: "live",
+         reason: "row_level_gate",
+      });
    });
 
    it("reads a rollup's reach and gate through its base, by name", () => {
@@ -168,7 +238,7 @@ describe("computeServeVerdicts", () => {
       expect(verdict.message).toContain("rollup of `orders` at (region)");
    });
 
-   it("reports refused sources and rollups left out of the plan", () => {
+   it("reports refused sources", () => {
       const verdicts = computeServeVerdicts({
          ...facts([plan("orders")]),
          plan: {
@@ -193,14 +263,46 @@ describe("computeServeVerdicts", () => {
                },
             },
          } as unknown as components["schemas"]["BuildPlan"],
-         rollupsOverStoredBase: [{ baseName: "events", modelPath: "m.malloy" }],
       });
       expect(verdicts.map((v) => [v.sourceName, v.verdict, v.reason])).toEqual([
          ["orders", "not_built", undefined],
          ["gated", "live", "refused"],
-         ["events", "live", "rollup_over_stored_base"],
       ]);
       expect(verdicts[1].message).toContain("gated by #(authorize)");
+   });
+
+   it("gives a rollup over a storage= base its own verdict, beside its base's", () => {
+      // A `#@ preaggregate` line is planned as the `#(preaggregate)` it reads
+      // as, over the author's rows, so a stored base no longer leaves its
+      // rollups out: each is a planned source, bound and served on its own.
+      const base = plan("daily", STORAGE);
+      const rollup = plan("daily__rollup__category__1a2b3c4d", {
+         ...STORAGE,
+         origin: "preaggregate",
+         preaggregate: {
+            baseSourceName: "daily",
+            grainDimensions: ["category"],
+            measures: ["total"],
+         } as unknown as PersistSourcePlan["preaggregate"],
+      });
+      const names = new Set(["daily", "daily__rollup__category__1a2b3c4d"]);
+      const verdicts = computeServeVerdicts(
+         facts([base, rollup], {
+            boundStorageNames: names,
+            servedStorageNames: names,
+         }),
+      );
+      expect(
+         verdicts.map((v) => [v.sourceName, v.origin, v.verdict, v.reason]),
+      ).toEqual([
+         ["daily", "persist", "serves", undefined],
+         [
+            "daily__rollup__category__1a2b3c4d",
+            "preaggregate",
+            "serves",
+            undefined,
+         ],
+      ]);
    });
 
    it("carries a stored source's view verdicts", () => {
@@ -273,12 +375,111 @@ describe("computeServeVerdicts", () => {
       ]);
    });
 
+   // P13: a deployment the source cannot be written into is a publish
+   // warning, and the source serves live.
+   describe("deployment facts", () => {
+      it("a storage= destination the environment does not configure is live, with the destination and the fixes", () => {
+         const [v] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               destinationConfigured: (name) => name !== "lake",
+            }),
+         );
+         expect(v).toMatchObject({
+            tier: "storage",
+            verdict: "live",
+            reason: "destination_missing",
+         });
+         expect(v.message).toContain('storage="lake"');
+         expect(v.fixes?.join(" ")).toContain('named "lake"');
+      });
+
+      it("names the missing destination ahead of write-only, whose build would fail on it", () => {
+         const [v] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               storageMode: "write-only",
+               destinationConfigured: () => false,
+            }),
+         );
+         expect(v.reason).toBe("destination_missing");
+      });
+
+      it("never reads a destination while PERSIST_STORAGE_MODE=off ignores storage=", () => {
+         const [v] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               storageMode: "off",
+               destinationConfigured: () => false,
+            }),
+         );
+         expect(v.reason).toBe("storage_mode");
+      });
+
+      it("does not warn when the destination is configured, or the list is not known", () => {
+         for (const answer of [true, undefined]) {
+            const [v] = computeServeVerdicts(
+               facts([plan("orders", STORAGE)], {
+                  destinationConfigured: () => answer,
+               }),
+            );
+            expect(v.verdict).toBe("not_built");
+         }
+      });
+
+      it("never calls a bound table unbuildable: what serves is reported as serving", () => {
+         const [stored] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               boundStorageNames: new Set(["orders"]),
+               servedStorageNames: new Set(["orders"]),
+               destinationConfigured: () => false,
+            }),
+         );
+         expect(stored.verdict).toBe("serves");
+         const [colocated] = computeServeVerdicts(
+            facts([plan("orders")], {
+               boundEntityIds: new Set(["entity-orders"]),
+               connectionCanHoldTable: () => false,
+            }),
+         );
+         expect(colocated.verdict).toBe("serves");
+      });
+
+      it("a colocated source on a connection that cannot hold a table is live, naming the connection", () => {
+         const [v] = computeServeVerdicts(
+            facts([plan("orders")], {
+               connectionCanHoldTable: (name) => name !== "duckdb",
+            }),
+         );
+         expect(v).toMatchObject({
+            tier: "colocated",
+            verdict: "live",
+            reason: "connection_cannot_hold_table",
+         });
+         expect(v.message).toContain("'duckdb'");
+         expect(v.fixes?.[0]).toContain("storage=");
+      });
+
+      it("reads the connection's capability only for a colocated source, and never warns on an unknown one", () => {
+         // A storage= source only reads its own connection.
+         const [stored] = computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               connectionCanHoldTable: () => false,
+            }),
+         );
+         expect(stored.verdict).toBe("not_built");
+         const [unknown] = computeServeVerdicts(
+            facts([plan("orders")], {
+               connectionCanHoldTable: () => undefined,
+            }),
+         );
+         expect(unknown.verdict).toBe("not_built");
+      });
+   });
+
    it("is empty for a package that materializes nothing", () => {
       expect(computeServeVerdicts({ ...facts([]), plan: null })).toEqual([]);
    });
 });
 
-describe("sourceIDsReachedFrom", () => {
+describe("reachableSourceIDs", () => {
    it("collects every sourceID and referenceID in a structure, joins included, once", () => {
       const joined = { type: "table", sourceID: "dim@b", fields: [] };
       const root = {
@@ -289,10 +490,76 @@ describe("sourceIDsReachedFrom", () => {
       };
       // A cycle, as compiled structures can share nodes.
       (root as Record<string, unknown>).self = root;
-      expect([...sourceIDsReachedFrom([root])].sort()).toEqual([
+      expect([...reachableSourceIDs([root])].sort()).toEqual([
          "base@a",
          "dim@b",
          "fact@a",
       ]);
+   });
+
+   it("judges a #(materialize) source by the served copy, not the serve shape", () => {
+      const bound = {
+         boundStorageNames: new Set(["orders"]),
+         // The serve shape never keeps a #(materialize) binding.
+         servedStorageNames: new Set<string>(),
+      };
+      const verdictWith = (
+         state: "serves" | "off" | "not_served",
+         extra: Partial<PersistSourcePlan> = STORAGE,
+      ) =>
+         computeServeVerdicts(
+            facts([plan("orders", extra)], {
+               ...bound,
+               materialize: () => state,
+            }),
+         )[0];
+      expect(verdictWith("serves")).toMatchObject({ verdict: "serves" });
+      expect(verdictWith("serves").message).toContain("served copy");
+      expect(verdictWith("not_served")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      expect(verdictWith("off")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      // A colocated #(materialize) table is served by the served copy too,
+      // on the source's own connection (phase 3 pull request 6).
+      const colocatedWith = (
+         state: "serves" | "off" | "not_served",
+         bound = new Set(["entity-orders"]),
+      ) =>
+         computeServeVerdicts(
+            facts([plan("orders")], {
+               boundEntityIds: bound,
+               materialize: () => state,
+            }),
+         )[0];
+      expect(colocatedWith("serves")).toMatchObject({ verdict: "serves" });
+      expect(colocatedWith("serves").message).toContain("served copy");
+      expect(colocatedWith("not_served")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      expect(colocatedWith("serves", new Set())).toMatchObject({
+         verdict: "not_built",
+      });
+      // Off: the fix names only the materialize switch, not the storage tier.
+      expect(colocatedWith("off")).toMatchObject({
+         verdict: "live",
+         reason: "served_copy",
+      });
+      expect(JSON.stringify(colocatedWith("off"))).not.toContain(
+         "PERSIST_STORAGE_MODE",
+      );
+      // A #@ persist source keeps today's serve-shape rule.
+      expect(
+         computeServeVerdicts(
+            facts([plan("orders", STORAGE)], {
+               ...bound,
+               materialize: () => undefined,
+            }),
+         )[0],
+      ).toMatchObject({ verdict: "live", reason: "shadowed" });
    });
 });

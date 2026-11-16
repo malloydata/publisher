@@ -415,6 +415,102 @@ describe("service/filter", () => {
          });
          expect(clause).toBe("`status` = 'active'");
       });
+
+      describe("a value that is not a string", () => {
+         /** The message `buildFilterClause` refuses `value` with, under `filter`. */
+         const refusal = (filter: FilterDefinition, value: unknown) => {
+            try {
+               buildFilterClause([filter], {
+                  [filter.name]: value,
+               } as unknown as FilterParams);
+            } catch (err) {
+               expect(err).toBeInstanceOf(FilterValidationError);
+               return (err as Error).message;
+            }
+            throw new Error("expected a refusal");
+         };
+
+         // Every filter type, because each builds its predicate differently
+         // (a `like` lower-cases the value, the others type it as a literal).
+         const everyType = [
+            equalFilter,
+            inFilter,
+            likeFilter,
+            gtFilter,
+            ltFilter,
+         ];
+
+         it("refuses a number, naming the filter and the type it takes", () => {
+            for (const filter of everyType) {
+               expect(refusal(filter, 2)).toBe(
+                  `Filter "${filter.name}" takes a string or an array of strings, not a number`,
+               );
+            }
+            expect(refusal(equalFilter, 0)).toContain("not a number");
+         });
+
+         it("refuses a boolean", () => {
+            for (const filter of everyType) {
+               expect(refusal(filter, true)).toBe(
+                  `Filter "${filter.name}" takes a string or an array of strings, not a boolean`,
+               );
+            }
+            expect(refusal(likeFilter, false)).toContain("not a boolean");
+         });
+
+         it("refuses an object", () => {
+            expect(refusal(equalFilter, { value: "active" })).toBe(
+               'Filter "status" takes a string or an array of strings, not an object',
+            );
+         });
+
+         it("refuses an array holding anything but strings", () => {
+            expect(refusal(inFilter, ["us", 2])).toBe(
+               'Filter "region" takes a string or an array of strings, not an array holding a number',
+            );
+            expect(refusal(likeFilter, [true])).toContain(
+               "not an array holding a boolean",
+            );
+            expect(refusal(inFilter, ["us", null])).toContain(
+               "not an array holding null",
+            );
+            // A single-value filter reads only the first element, and is
+            // refused all the same.
+            for (const filter of [
+               equalFilter,
+               likeFilter,
+               gtFilter,
+               ltFilter,
+            ]) {
+               expect(refusal(filter, ["us", 2])).toContain(
+                  "not an array holding a number",
+               );
+            }
+         });
+
+         it("reads a null value as no value, as an omitted one", () => {
+            expect(
+               buildFilterClause([equalFilter], {
+                  status: null,
+               } as unknown as FilterParams),
+            ).toBe("");
+            expect(() =>
+               buildFilterClause([requiredFilter], {
+                  tenant_id: null,
+               } as unknown as FilterParams),
+            ).toThrow('Required filter "tenant_id"');
+         });
+
+         it("never answers with a JavaScript type error", () => {
+            for (const filter of everyType) {
+               for (const value of [2, true, {}, [3]]) {
+                  expect(refusal(filter, value)).not.toContain(
+                     "is not a function",
+                  );
+               }
+            }
+         });
+      });
    });
 
    // -----------------------------------------------------------------------
@@ -461,5 +557,37 @@ describe("service/filter", () => {
             expect(lastLine).toBe(`+ {where: ${clause}}`);
          }
       });
+   });
+});
+
+describe("buildFilterClause quoting", () => {
+   it("quotes the dimension with the Malloy-text module", () => {
+      const clause = buildFilterClause(
+         [
+            {
+               name: "r",
+               dimension: "a`b",
+               type: "equal",
+               required: false,
+            } as never,
+         ],
+         { r: "x" },
+      );
+      expect(clause).toBe("`a\\`b` = 'x'");
+   });
+
+   it("leaves a plain dimension's text unchanged", () => {
+      const clause = buildFilterClause(
+         [
+            {
+               name: "r",
+               dimension: "region",
+               type: "equal",
+               required: false,
+            } as never,
+         ],
+         { r: "x" },
+      );
+      expect(clause).toBe("`region` = 'x'");
    });
 });

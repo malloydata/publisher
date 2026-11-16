@@ -29,15 +29,36 @@ export async function updateRow(
    values: Record<string, unknown>,
    rawAssignments: string[] = [],
 ): Promise<void> {
+   const { sql, params } = updateRowSql(table, id, values, rawAssignments);
+   await db.run(sql, params);
+}
+
+/**
+ * {@link updateRow}'s statement, its WHERE narrowed by `where` (a condition
+ * on the row with its parameters) when given.
+ */
+export function updateRowSql(
+   table: string,
+   id: string,
+   values: Record<string, unknown>,
+   rawAssignments: string[] = [],
+   where?: { condition: string; params: unknown[] },
+): { sql: string; params: unknown[] } {
    const assigned = Object.entries(values).filter(([, v]) => v !== undefined);
    const setClauses = [
       ...assigned.map(([column]) => `${column} = ?`),
       ...rawAssignments,
       "updated_at = ?",
    ];
-   await db.run(`UPDATE ${table} SET ${setClauses.join(", ")} WHERE id = ?`, [
-      ...assigned.map(([, v]) => v),
-      new Date().toISOString(),
-      id,
-   ]);
+   return {
+      sql:
+         `UPDATE ${table} SET ${setClauses.join(", ")} WHERE id = ?` +
+         (where ? ` AND ${where.condition}` : ""),
+      params: [
+         ...assigned.map(([, v]) => v),
+         new Date().toISOString(),
+         id,
+         ...(where?.params ?? []),
+      ],
+   };
 }

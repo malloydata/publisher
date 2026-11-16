@@ -181,7 +181,9 @@ describe("table stats from a real build and real queries", () => {
          // A colocated build does not count its rows (that scans the
          // warehouse), so its row count is unknown rather than a guess.
          expect(daily?.lastBuild?.rowCount).toBeUndefined();
-         expect(daily?.columnsFrom).toBe("declared");
+         // A colocated build now captures its table's columns too (the
+         // manifest entry's `schema`), so they read as stored.
+         expect(daily?.columnsFrom).toBe("stored");
          expect(daily?.columns.map((c) => c.name)).toEqual([
             "order_date",
             "region",

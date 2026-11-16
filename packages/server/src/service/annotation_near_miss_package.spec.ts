@@ -3,7 +3,8 @@
 
 /**
  * The near-miss scan over real packages: what a load reports in
- * `Package.warnings`, that it never refuses a publish, that a shared import is
+ * `Package.warnings`, that it never refuses a publish (but a misspelled
+ * materialization route fails the load), that a shared import is
  * reported once, and that the findings metric counts it.
  */
 
@@ -25,6 +26,8 @@ import { Environment } from "./environment";
 import { parsePackageName } from "./identity";
 import type { Package } from "./package";
 import { formatPublishRejections } from "./publish_checks";
+import { MATERIALIZATION_NEAR_MISS_CODE } from "./annotation_reader";
+import { BadRequestError } from "../errors";
 
 let rootDir: string;
 let envPath: string;
@@ -71,9 +74,6 @@ describe("near misses on a loaded package", () => {
       async () => {
          const pkg = await loadPackage({
             "model.malloy": `${BASE}
-#@persist name="daily"
-source: daily is raw -> { group_by: category; aggregate: total is amount.sum() }
-
 source: orders is raw extend {
   #(clasification) "phi.x"
   dimension: cat is category
@@ -82,17 +82,13 @@ source: orders is raw extend {
          });
          const warnings = coded(pkg, ANNOTATION_NEAR_MISS_CODE);
          expect(warnings.map((w) => [w.subject, w.severity])).toEqual([
-            ["daily", "warn"],
             ["orders.cat", "warn"],
          ]);
          expect(warnings[0]?.model).toBe("model.malloy");
-         expect(warnings[0]?.message).toContain("did you mean `#@ persist`?");
-         expect(warnings[0]?.message).toContain("(line 4)");
-         expect(warnings[1]?.message).toContain(
+         expect(warnings[0]?.message).toContain(
             "did you mean `#(classification)`?",
          );
-         // The misspelled #@ line planned nothing: the source serves live.
-         expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
+         expect(warnings[0]?.message).toContain("(line 5)");
          // A warning, never a refusal.
          expect(formatPublishRejections(pkg)).toBeFalsy();
          expect(
@@ -102,7 +98,31 @@ source: orders is raw extend {
                   code: ANNOTATION_NEAR_MISS_CODE,
                },
             ),
-         ).toBe(2);
+         ).toBe(1);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "fails the load on a misspelled materialization directive, naming where",
+      async () => {
+         let error: unknown;
+         try {
+            await loadPackage({
+               "model.malloy": `${BASE}
+#@persist name="daily"
+source: daily is raw -> { group_by: category; aggregate: total is amount.sum() }
+`,
+            });
+         } catch (e) {
+            error = e;
+         }
+         expect(error).toBeInstanceOf(BadRequestError);
+         const message = (error as Error).message;
+         expect(message).toContain("model.malloy: ");
+         expect(message).toContain("did you mean `#@ persist`?");
+         expect(message).toContain("(line 4)");
+         expect(message).toContain(`[${MATERIALIZATION_NEAR_MISS_CODE}]`);
       },
       { timeout: 30000 },
    );

@@ -1659,6 +1659,8 @@ source: X is duckdb.table('parent') extend {
          model.setServeDestinationConfig(() => serveConfig);
          model.setServeBindings([
             {
+               kind: "persist",
+               tier: "storage",
                sourceName: "X",
                destinationName: "duckdb",
                virtualHandle: "h",
@@ -1733,6 +1735,8 @@ source: X is duckdb.table('parent') extend {
          model.setServeDestinationConfig(() => serveConfig);
          model.setServeBindings([
             {
+               kind: "persist",
+               tier: "storage",
                sourceName: "X",
                destinationName: "duckdb",
                virtualHandle: "h",
@@ -1811,6 +1815,8 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
          model.setServeDestinationConfig(() => serveConfig);
          model.setServeBindings([
             {
+               kind: "persist",
+               tier: "storage",
                sourceName: "W_except",
                destinationName: "duckdb",
                virtualHandle: "h",
@@ -1929,6 +1935,8 @@ source: X is duckdb.table('parent') extend {
          model.setServeDestinationConfig(() => serveConfig);
          model.setServeBindings([
             {
+               kind: "persist",
+               tier: "storage",
                sourceName: "X",
                destinationName: "duckdb",
                virtualHandle: "h",
@@ -1997,6 +2005,8 @@ source: X is duckdb.table('parent') extend {
          model.setServeDestinationConfig(() => serveConfig);
          model.setServeBindings([
             {
+               kind: "persist",
+               tier: "storage",
                sourceName: "X",
                destinationName: "duckdb",
                virtualHandle: "h",
