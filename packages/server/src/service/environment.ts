@@ -91,6 +91,7 @@ import { ApiConnection } from "./model";
 import { destinationOverlaps } from "./destination_overlap";
 import type { PackageMaterialization } from "./materialization";
 import { Package } from "./package";
+import { canonicalJson } from "./package_revision";
 import { applyLoadGates } from "./package_load_gates";
 import { resolvePatchedSettings } from "./package_patch";
 import { environmentResource, packageResource } from "../api_resource";
@@ -347,6 +348,21 @@ export type PackageListingOptions = {
    includeLoading?: boolean;
    operational?: boolean;
 };
+
+/**
+ * What a version binds from a set of entries, in one form whoever bound it:
+ * the colocated entries its models compile and bind over, and the `storage=`
+ * entries as {@link splitManifestEntries} gives them, keys sorted at every
+ * depth. A read of the store and a run's own load compare equal exactly when
+ * they bind the same, whatever key order the store (a jsonb column, say)
+ * gives back.
+ */
+function storeBindingSignature(
+   colocated: FreshnessManifest,
+   storage: Record<string, ManifestEntry>,
+): string {
+   return canonicalJson({ colocated, storage });
+}
 
 /**
  * At most this many build plans re-derive at once after a connection edit:
@@ -2223,15 +2239,12 @@ export class Environment {
             packageName,
             servingReaderOf(pkg),
          );
+         const { tableNameManifest, storageEntries, signature } =
+            this.splitStoreEntries(pkg, rawEntries);
          if (pkg.getVersionId() !== undefined) {
-            this.storeBindingReads.set(pkg, JSON.stringify(rawEntries));
+            this.storeBindingReads.set(pkg, signature);
          }
          if (Object.keys(rawEntries).length === 0) return;
-         const { tableNameManifest, storageEntries } = splitManifestEntries(
-            rawEntries,
-            `local store (package ${packageName})`,
-            "store",
-         );
          if (Object.keys(tableNameManifest).length > 0) {
             pkg.materialization().bind({ colocated: tableNameManifest });
          }
@@ -3054,14 +3067,18 @@ export class Environment {
                      }
                      try {
                         const entries = await read(servingReaderOf(pkg));
-                        const signature = JSON.stringify(entries);
                         if (
                            options.onlyIfMoved &&
-                           this.storeBindingReads.get(pkg) === signature
+                           this.storeBindingReads.get(pkg) ===
+                              this.splitStoreEntries(pkg, entries, true)
+                                 .signature
                         ) {
                            return "done";
                         }
-                        await this.bindStoreEntries(pkg, entries);
+                        await this.bindStoreEntries(
+                           pkg,
+                           this.splitStoreEntries(pkg, entries),
+                        );
                         return "done";
                      } catch (error) {
                         if (
@@ -3131,16 +3148,16 @@ export class Environment {
    }
 
    /**
-    * Bind store entries to a package bound to no host manifest: the
-    * colocated ones recompile the models when there is something to
-    * substitute or clear, the `storage=` ones replace the storage bindings
-    * (unless the storage tier is off). A version remembers what it bound
-    * (see storeBindingReads).
+    * Store entries split by tier, as a bind reads them, with the signature
+    * of what they bind ({@link storeBindingSignature}). `quiet` for a split
+    * that only compares: its skipped entries are logged by the bind, if one
+    * follows.
     */
-   private async bindStoreEntries(
+   private splitStoreEntries(
       pkg: Package,
       entries: Record<string, ManifestEntry>,
-   ): Promise<boolean> {
+      quiet = false,
+   ): FetchedManifest & { signature: string } {
       const packageName = pkg.getPackageName();
       const versionId = pkg.getVersionId();
       const { tableNameManifest, storageEntries } = splitManifestEntries(
@@ -3151,7 +3168,30 @@ export class Environment {
          // From the store, with the key checks its newest run stands behind
          // (withRollupKeyRecords).
          "store",
+         { quiet },
       );
+      return {
+         tableNameManifest,
+         storageEntries,
+         signature: storeBindingSignature(tableNameManifest, storageEntries),
+      };
+   }
+
+   /**
+    * Bind store entries ({@link splitStoreEntries}) to a package bound to no
+    * host manifest: the colocated ones recompile the models when there is
+    * something to substitute or clear, the `storage=` ones replace the
+    * storage bindings (unless the storage tier is off). A version remembers
+    * what it bound (see storeBindingReads).
+    */
+   private async bindStoreEntries(
+      pkg: Package,
+      {
+         tableNameManifest,
+         storageEntries,
+         signature,
+      }: ReturnType<Environment["splitStoreEntries"]>,
+   ): Promise<boolean> {
       let reloaded = false;
       if (
          Object.keys(tableNameManifest).length > 0 ||
@@ -3163,8 +3203,8 @@ export class Environment {
       if (getPersistStorageMode() !== "off") {
          pkg.materialization().bind({ storage: storageEntries });
       }
-      if (versionId !== undefined) {
-         this.storeBindingReads.set(pkg, JSON.stringify(entries));
+      if (pkg.getVersionId() !== undefined) {
+         this.storeBindingReads.set(pkg, signature);
       }
       return reloaded;
    }
@@ -3205,7 +3245,10 @@ export class Environment {
          }
       }
       if (Object.keys(entries).length > 0) {
-         return this.bindStoreEntries(pkg, entries);
+         return this.bindStoreEntries(
+            pkg,
+            this.splitStoreEntries(pkg, entries),
+         );
       }
       if (!wasBound) return false;
       // Drop both tiers so nothing still routes to a materialized table.
@@ -4111,6 +4154,26 @@ export class Environment {
             pkg.materialization().bind({ storage: params.storage });
          } catch (err) {
             return { loaded: false, step: "bind", error: errMessage(err) };
+         }
+         if (versionId !== undefined) {
+            // What the version now binds is the run's, which the store reads
+            // back once `commit` makes it MANIFEST_FILE_READY: so the run's
+            // rebind of its own version (rebindOwnVersionIfMoved) finds it
+            // unmoved and binds nothing again, while a store another process
+            // moved since still differs.
+            this.storeBindingReads.set(
+               pkg,
+               storeBindingSignature(
+                  params.colocated,
+                  splitManifestEntries(
+                     params.storage,
+                     `run (package ${packageName} version ${versionId})`,
+                     "store",
+                     // Compared, not bound: the load bound these above.
+                     { quiet: true },
+                  ).storageEntries,
+               ),
+            );
          }
          return { loaded: true };
       };

@@ -115,7 +115,8 @@ export async function fetchManifestEntries(
  * Split a manifest entry map by tier into {@link FetchedManifest}. A colocated
  * entry's wire `physicalTableName` becomes the runtime's `tableName`, keeping
  * the freshness fields (gated per query) and `connectionName` (for
- * dialect-specific quoting). Pure; `source` labels the skip log.
+ * dialect-specific quoting). Pure; `source` labels the skip log, which
+ * `quiet` leaves out for a split that only compares and binds nothing.
  */
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
@@ -124,6 +125,7 @@ export function splitManifestEntries(
    // key check record (withRollupKeyRecords); a host's manifest is never
    // trusted with one.
    from: "store" | "host" = "host",
+   { quiet = false }: { quiet?: boolean } = {},
 ): FetchedManifest {
    const readKeyUniqueness = from === "store";
    const tableNameManifest: FreshnessManifest = {};
@@ -133,18 +135,22 @@ export function splitManifestEntries(
       // never created; binding it would serve the prior generation as fresh.
       // Removable together with `ManifestEntry.error`.
       if (isLegacyFailedEntry(entry)) {
-         logger.warn("Manifest entry records a failed source; skipping", {
-            source,
-            sourceEntityId,
-         });
+         if (!quiet) {
+            logger.warn("Manifest entry records a failed source; skipping", {
+               source,
+               sourceEntityId,
+            });
+         }
          continue;
       }
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
-         logger.warn("Manifest entry has no physicalTableName; skipping", {
-            source,
-            sourceEntityId,
-         });
+         if (!quiet) {
+            logger.warn("Manifest entry has no physicalTableName; skipping", {
+               source,
+               sourceEntityId,
+            });
+         }
          continue;
       }
       if (entry.storageDestinationName) {
