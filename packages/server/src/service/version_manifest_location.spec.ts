@@ -493,7 +493,8 @@ describe("a local run of a host-bound package or version", () => {
       expect(tableOf(pkg, id)).not.toBe('"summary_host"');
    });
 
-   it("serves what the local store holds as soon as an unversioned package's manifest is cleared", async () => {
+   it("serves what the local store holds as soon as an unversioned package's manifest is cleared, where it restores from the store", async () => {
+      env.restoreUnversionedBindingsFromLocalStore(true);
       const id = await publishLive("1.0.0");
       const host = writeManifest("host.json", id, "summary_host");
       writePackageFiles(
@@ -512,5 +513,34 @@ describe("a local run of a host-bound package or version", () => {
       expect(solo.getManifestLocation()).toBeNull();
       expect(tableOf(solo, soloId)).toBe('"summary_local"');
       expect(await total(solo)).toBe(7);
+   });
+
+   it("goes live when an unversioned package's manifest is cleared, where it does not restore from the store", async () => {
+      // An environment created at runtime: unversioned packages serve live
+      // until a build binds them, a clear included.
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      writePackageFiles(
+         path.join(root, "env", "solo"),
+         { "m.malloy": MODEL },
+         { manifest: { name: "solo", manifestLocation: host } },
+      );
+      const solo = await env.getPackage(parsePackageName("solo"), false);
+      const soloId = Object.values(solo.getBuildPlan()?.sources ?? {})[0]
+         ?.sourceEntityId as string;
+      localStore = { [soloId]: entryFor(soloId, "summary_local") };
+      const resolver = spyOn(
+         env as unknown as {
+            storageBindingResolver: () => Promise<unknown>;
+         },
+         "storageBindingResolver",
+      );
+      await storeTables(solo);
+
+      await env.updatePackage("solo", { name: "solo", manifestLocation: null });
+      expect(solo.getManifestLocation()).toBeNull();
+      expect(tableOf(solo, soloId)).toBeUndefined();
+      expect(await total(solo)).toBe(1);
+      expect(resolver).not.toHaveBeenCalled();
    });
 });

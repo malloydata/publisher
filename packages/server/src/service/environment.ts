@@ -3164,16 +3164,21 @@ export class Environment {
     * After its host manifest is cleared, bind what this server's own store
     * holds for the package (or version), so tables already built here serve
     * at once; with none, or when the store cannot be read, revert it to
-    * live. `wasBound`: it served bound tables before the clear. Says whether
-    * the models were recompiled. The caller holds the package's (or
-    * version's) lock.
+    * live. An unversioned package reads the store only where it restores
+    * from it on load ({@link restoreUnversionedFromLocalStore}); elsewhere
+    * it goes live, as it would load. `wasBound`: it served bound tables
+    * before the clear. Says whether the models were recompiled. The caller
+    * holds the package's (or version's) lock.
     */
    private async bindLocalStoreOrLive(
       pkg: Package,
       wasBound: boolean,
    ): Promise<boolean> {
       let entries: Record<string, ManifestEntry> = {};
-      if (this.storageBindingResolver) {
+      const restores =
+         pkg.getVersionId() !== undefined ||
+         this.restoreUnversionedFromLocalStore;
+      if (this.storageBindingResolver && restores) {
          try {
             entries = await this.storageBindingResolver(
                pkg.getPackageName(),
