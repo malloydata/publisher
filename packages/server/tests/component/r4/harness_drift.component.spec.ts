@@ -27,7 +27,6 @@ import { unrecordedAudit } from "../../../src/service/access_record";
 import * as connection from "../../../src/service/connection";
 import { recordConnectionsAsForTests } from "../../../src/service/connection_type";
 import { Environment } from "../../../src/service/environment";
-import type { EnvironmentStore } from "../../../src/service/environment_store";
 import { parsePackageName } from "../../../src/service/identity";
 import { MaterializationService } from "../../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
@@ -50,6 +49,7 @@ import {
    type R4Fixture,
    type Row,
 } from "./harness";
+import { serviceOverEnvironment } from "../../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -168,11 +168,10 @@ async function serviceFixture(
    beforeLoad?.(env);
    await env.addPackage(PKG);
    const pkg = await env.getPackage(parsePackageName(PKG), false);
-   const service = new MaterializationService({
-      storageManager: { getRepository: () => repo },
-      getEnvironment: async () => env,
-      getLoadedEnvironments: () => [env],
-   } as unknown as EnvironmentStore);
+   const service = serviceOverEnvironment(
+      () => repo,
+      () => env,
+   );
    return { root, env, pkg, repo, db, service };
 }
 

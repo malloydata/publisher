@@ -25,7 +25,11 @@
  */
 
 import { quoteManifestTablePath } from "../../quoting";
-import type { MaterializePlan, StoredColumn } from "../domain/table_plans";
+import {
+   isPersistedQuerySourceID,
+   type MaterializePlan,
+   type StoredColumn,
+} from "../domain/table_plans";
 import { capabilitiesOf } from "../domain/dialect";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import type {
@@ -254,7 +258,10 @@ export function kindFromPlan(
 ): BindingKind {
    if (binding.kind === "rollup") return "rollup";
    const ids = binding.sourceIDs ?? [];
-   if (ids.some((id) => plan.viewBuildSourceIDs.has(id))) return "view";
+   const result = ids.find((id) => plan.viewBuildSourceIDs.has(id));
+   if (result !== undefined) {
+      return isPersistedQuerySourceID(result) ? "query" : "view";
+   }
    if (ids.some((id) => plan.materializeSourceIDs.has(id))) {
       return "materialize";
    }

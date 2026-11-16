@@ -193,7 +193,7 @@ interface RollupVariantHost {
     * destination there, through a joined source's rollup in the same one
     * (known limitation 26).
     */
-   joinRollupBasis?(pinned: Pinned): Promise<ServedCopyJoinBasis | undefined>;
+   joinRollupBasis(pinned: Pinned): Promise<ServedCopyJoinBasis | undefined>;
    /**
     * The rollups one source declares, as the planner reads them
     * (`plan/rollup_plan.ts`): passed in by the model, since serving never
@@ -999,7 +999,7 @@ export class RollupVariantServe {
          );
       let basis: ServedCopyJoinBasis | undefined;
       try {
-         basis = await this.host.joinRollupBasis?.(pinned);
+         basis = await this.host.joinRollupBasis(pinned);
       } catch {
          basis = undefined;
       }
@@ -2190,7 +2190,7 @@ function storedRollupReads(
             read(
                { name: p.column, notes: [], kind: "measure" },
                m.name,
-               minMaxLiveType(p, base?.fields) ?? "",
+               minMaxLiveType(p, m, base?.fields) ?? "",
             );
          if (refusal) return { refusal };
       }
@@ -2221,11 +2221,14 @@ function typeAt(
 
 /**
  * The type live gives a `min` or `max` partial: its argument's, when the
- * argument is a field (`amount.max()`, `max(carriers.fee)`), else undefined
- * (an expression, which the merge's compile checks).
+ * argument is a field (`amount.max()`, `max(carriers.fee)`); else, for a
+ * measure of that one partial, the measure's own type; else undefined (an
+ * expression in a measure of several partials, which the merge's compile
+ * checks).
  */
 function minMaxLiveType(
    partial: RollupVariantPlan["rollupMeasures"][number]["partials"][number],
+   measure: RollupVariantPlan["rollupMeasures"][number],
    fields: readonly unknown[] | undefined,
 ): string | undefined {
    if (partial.leaf.aggregate !== "min" && partial.leaf.aggregate !== "max") {
@@ -2241,7 +2244,10 @@ function minMaxLiveType(
              expr.args[0].kind === "path"
            ? expr.args[0].path
            : undefined;
-   return path ? typeAt(fields, path) : undefined;
+   if (path) return typeAt(fields, path);
+   return measure.partials.length === 1
+      ? typeAt(fields, [measure.name])
+      : undefined;
 }
 
 /**

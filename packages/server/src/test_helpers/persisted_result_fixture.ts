@@ -10,6 +10,7 @@
  * by the SQL it compiles.
  */
 
+import { isPersistedQuerySourceID } from "../service/materialization/domain/table_plans";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -131,6 +132,8 @@ export async function persistedResultFixture(
       ...host,
       planSourceRollups,
       rollupGateEnforcedAtRead,
+      // No served copy, so no join branch.
+      joinRollupBasis: async () => undefined,
    });
    views.setContext(packagePath, malloyConfig);
    queries.setContext(packagePath, malloyConfig);
@@ -177,7 +180,7 @@ export function storedViewBinding(
    overrides: Partial<Binding> = {},
 ): Binding {
    return {
-      kind: "view",
+      kind: isPersistedQuerySourceID(buildSourceID) ? "query" : "view",
       tier: "storage",
       sourceName: buildSourceID.split("@")[0],
       sourceIDs: [buildSourceID],

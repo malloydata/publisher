@@ -34,13 +34,11 @@ import {
    spyOn,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";
@@ -49,10 +47,10 @@ import type {
    ResourceRepository,
 } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { openTempStorage } from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -204,13 +202,14 @@ describe.skipIf(process.platform === "win32")(
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
             },
          }).restore;
-         root = fs.realpathSync(
-            fs.mkdtempSync(path.join(os.tmpdir(), "freshness-model-")),
-         );
+         const storage = await openTempStorage("freshness-model-", {
+            id: ENV_ID,
+            name: ENV,
+         });
+         ({ root, db, repo } = storage);
+         const { envPath } = storage;
          lakeDir = path.join(root, "lake");
          fs.mkdirSync(path.join(lakeDir, "data"), { recursive: true });
-         const envPath = path.join(root, "env");
-         fs.mkdirSync(envPath);
          for (const p of PACKAGES) {
             writePackageFiles(
                path.join(envPath, p.name),
@@ -218,14 +217,6 @@ describe.skipIf(process.platform === "win32")(
                { manifest: { name: p.name, description: "fixture" } },
             );
          }
-         db = new DuckDBConnection(":memory:");
-         await db.initialize();
-         await initializeSchema(db);
-         await db.run(
-            "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-            [ENV_ID, ENV, envPath],
-         );
-         repo = createDuckDBRepository(db);
          spies.push(
             spyOn(connection, "attachDuckLakeReadWrite").mockImplementation(
                async (session, dbName) => {
@@ -303,11 +294,10 @@ describe.skipIf(process.platform === "win32")(
          );
          for (const p of PACKAGES) await env.addPackage(p.name);
          await reopenServe();
-         service = new MaterializationService({
-            storageManager: { getRepository: () => repo },
-            getEnvironment: async () => env,
-            getLoadedEnvironments: () => [env],
-         } as unknown as EnvironmentStore);
+         service = serviceOverEnvironment(
+            () => repo,
+            () => env,
+         );
       });
 
       afterAll(async () => {

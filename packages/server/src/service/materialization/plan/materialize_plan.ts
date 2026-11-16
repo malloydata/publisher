@@ -15,6 +15,7 @@
  * answers, and returns plans and refusals.
  */
 
+import { refusalKey, tierOf } from "./refusal_key";
 import { freshnessValueProblem } from "../../annotation_reader";
 import { createHash } from "crypto";
 import {
@@ -49,6 +50,7 @@ import {
    PUBLISHER_ROUTES,
    MATERIALIZE_INVALID_CODE,
    MATERIALIZE_KEYS,
+   MATERIALIZE_NOT_BUILT_CODE,
    nearestKey,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -84,6 +86,7 @@ import {
 } from "./materialize_read_time";
 import type { MalloyRange, TermUse } from "../domain/read_time_terms";
 import { capabilitiesOf } from "../domain/dialect";
+import type { RefusedReason } from "../domain/types";
 import {
    rollingWindowTerms,
    leftOutTermReadElsewhere,
@@ -163,13 +166,23 @@ export interface MaterializeRefusal {
    sourceID?: string;
    reason: string;
    /**
-    * Set when the declaration is invalid (it does not parse, has an unknown
-    * or retired key, a bad value or a contradictory combination): the
-    * finding is `malformed` under this code and fails the publish and the
-    * load, rather than the `unservable` `materialize-not-built` of a valid
-    * declaration Publisher cannot build.
+    * `malformed`: the declaration is invalid (it does not parse, has an
+    * unknown or retired key, a bad value or a contradictory combination), so
+    * the finding is `malformed` under this code and fails the publish and the
+    * load; `whenRelaxed` is its refusal where the deployment refuses it alone
+    * instead (a collision under `PERSIST_COLLISION_ENFORCE=false`).
+    * `refused`: a valid declaration Publisher cannot build, its reason and
+    * tier in `refusedSources`.
     */
-   malformedCode?: string;
+   outcome:
+      | { malformed: string; whenRelaxed?: TierRefusal }
+      | { refused: TierRefusal };
+}
+
+/** A refusal's reason, and the tier the table would have been built in. */
+interface TierRefusal {
+   reason: RefusedReason;
+   tier: "colocated" | "storage";
 }
 
 /** The Malloy atomic types a stored column can hold. */
@@ -312,7 +325,7 @@ function carriedPersistKeys(
    declaration: NonNullable<ReturnType<typeof readMaterializeDeclaration>>,
 ):
    | { persist: Record<string, string>; watermarks?: string[] }
-   | { reason: string } {
+   | { reason: string; code?: string } {
    const persist: Record<string, string> = {};
    let watermarks: string[] | undefined;
    for (const key of CARRIED_KEYS) {
@@ -357,6 +370,7 @@ function carriedPersistKeys(
          if (group === "freshness" && !FRESHNESS_PROPERTIES.has(property)) {
             return {
                reason: `#(materialize) \`freshness.${property}\` is not a key it reads; use freshness.window= or freshness.fallback=`,
+               code: MATERIALIZE_UNKNOWN_KEY_CODE,
             };
          }
          if (!PLAIN_PROPERTY.test(property) || text === undefined) {
@@ -499,7 +513,9 @@ function callerDependentDimensions(
    def: SourceDefLike,
    probed: ReadonlyMap<string, FieldDependence> | undefined,
    inline: readonly string[] = [],
-): { leftOut: LeftOutDimension[]; zoneFree: Set<string> } | { reason: string } {
+):
+   | { leftOut: LeftOutDimension[]; zoneFree: Set<string> }
+   | { reason: string; refusal: RefusedReason } {
    const givenIR = givenReadingFields(def.fields);
    for (const j of inline) {
       // Every level of a path (`items.options`) is stored, its rows and its
@@ -519,6 +535,7 @@ function callerDependentDimensions(
                `inline= names ${quotedName(j)}, through which a given is read, ` +
                "so its stored columns would hold one caller's values; " +
                "reference the join instead",
+            refusal: "given_in_persisted_query",
          };
       }
    }
@@ -553,11 +570,15 @@ function callerDependentDimensions(
       if (probe?.timeZone === true) reads.push("time_zone");
       const own = reads.length > 0 && kept(field);
       if (reads.includes("given") && !own) {
-         return { reason: dimensionNotOwnReason(dimension, "a given") };
+         return {
+            reason: dimensionNotOwnReason(dimension, "a given"),
+            refusal: "inherited_where_with_given",
+         };
       }
       if (reads.includes("current_time") && !own) {
          return {
             reason: dimensionNotOwnReason(dimension, "the current time"),
+            refusal: "current_time",
          };
       }
       const perRead =
@@ -1229,9 +1250,15 @@ export function planModelMaterialize(
             sourceName: name,
             sourceID: def.sourceID,
             reason: planned.reason,
-            ...(planned.malformedCode
-               ? { malformedCode: planned.malformedCode }
-               : {}),
+            outcome:
+               "malformed" in planned.outcome
+                  ? planned.outcome
+                  : {
+                       refused: {
+                          reason: planned.outcome.refused,
+                          tier: declaredTier(def, ctx.contents),
+                       },
+                    },
          });
       } else if (planned) {
          plans.push(planned);
@@ -1253,12 +1280,33 @@ interface PlanContext {
 /** A source def the planner has checked carries its `sourceID`. */
 type PlannedDef = SourceDefLike & { sourceID: string };
 
-/** Why one source is not planned, and the malformed code a publish refuses it with. */
+/**
+ * Why one source is not planned: an invalid declaration's malformed code,
+ * which a publish refuses it with, or a valid one's refusal reason.
+ */
 class Declined {
    constructor(
       readonly reason: string,
-      readonly malformedCode?: string,
+      readonly outcome: { malformed: string } | { refused: RefusedReason },
    ) {}
+}
+
+/** Where a declaration that is not planned would have built its table. */
+function declaredTier(
+   def: SourceDefLike,
+   contents: Record<string, unknown>,
+): "colocated" | "storage" {
+   try {
+      const declaration = readMaterializeDeclaration(def, contents);
+      const placed = declaration ? placementOf(declaration.tag) : undefined;
+      return tierOf(
+         placed && !("refused" in placed) && placed.placement.tier === "storage"
+            ? placed.placement.destination
+            : undefined,
+      );
+   } catch {
+      return "colocated";
+   }
 }
 
 /** One stage of planning a source: its value, or why the source is not planned. */
@@ -1376,14 +1424,14 @@ function materializeDeclarationOf(
    } catch (error) {
       return new Declined(
          `#(materialize) does not parse: ${error instanceof Error ? error.message : String(error)}`,
-         MATERIALIZE_UNPARSEABLE_CODE,
+         { malformed: MATERIALIZE_UNPARSEABLE_CODE },
       );
    }
    if (!declaration) return undefined;
    if (declaration.errors.length > 0) {
       return new Declined(
          `#(materialize) does not parse: ${declaration.errors.join("; ")}`,
-         MATERIALIZE_UNPARSEABLE_CODE,
+         { malformed: MATERIALIZE_UNPARSEABLE_CODE },
       );
    }
    // Before any other refusal: a retired key, or one outside the closed
@@ -1391,19 +1439,25 @@ function materializeDeclarationOf(
    // be refused for.
    const retiredKey = retiredKeyRefusal(declaration);
    if (retiredKey)
-      return new Declined(retiredKey, MATERIALIZE_RETIRED_KEY_CODE);
+      return new Declined(retiredKey, {
+         malformed: MATERIALIZE_RETIRED_KEY_CODE,
+      });
    const unknownKey = unknownKeyRefusal(declaration);
    if (unknownKey)
-      return new Declined(unknownKey, MATERIALIZE_UNKNOWN_KEY_CODE);
+      return new Declined(unknownKey, {
+         malformed: MATERIALIZE_UNKNOWN_KEY_CODE,
+      });
    // Before anything else is read: the line's directives were dropped, so
    // building it would put a table where its author did not say.
    if (declaration.readsEnv) {
-      return new Declined(ENV_REFERENCE_REASON, MATERIALIZE_INVALID_CODE);
+      return new Declined(ENV_REFERENCE_REASON, {
+         malformed: MATERIALIZE_INVALID_CODE,
+      });
    }
    if (declaresOwnPersist(def, contents)) {
       return new Declined(
          "the source also carries its own #@ persist; declare one or the other",
-         MATERIALIZE_INVALID_CODE,
+         { malformed: MATERIALIZE_INVALID_CODE },
       );
    }
    // A source that inherits `#@ persist` is already its base's table under
@@ -1417,6 +1471,7 @@ function materializeDeclarationOf(
          `the source inherits #@ persist from ${inherited.from ? `\`${inherited.from}\`` : "the source it is built on"}, ` +
             "so it is already stored as that source's table; put #(materialize) on a " +
             "source that does not inherit #@ persist, or drop the #@ persist",
+         { refused: "inherited_persist" },
       );
    }
    return declaration;
@@ -1435,20 +1490,25 @@ function invalidValuesOf(declaration: ReadDeclaration): Declined | undefined {
       if (!items || items.some((i) => typeof i !== "string" || i === "")) {
          return new Declined(
             'inline= must be a list of join names, such as inline=["carriers"]',
-            MATERIALIZE_INVALID_CODE,
+            { malformed: MATERIALIZE_INVALID_CODE },
          );
       }
    }
    const carried = carriedPersistKeys(declaration);
    if ("reason" in carried) {
-      return new Declined(carried.reason, MATERIALIZE_INVALID_CODE);
+      return new Declined(carried.reason, {
+         malformed: carried.code ?? MATERIALIZE_INVALID_CODE,
+      });
    }
    if ("refused" in placementOf(declaration.tag)) {
-      return new Declined(EMPTY_STORAGE_REASON, MATERIALIZE_INVALID_CODE);
+      return new Declined(EMPTY_STORAGE_REASON, {
+         malformed: MATERIALIZE_INVALID_CODE,
+      });
    }
    const namedTable = carried.persist.name?.trim();
    const nameProblem = namedTable ? tableNameProblem(namedTable) : undefined;
-   if (nameProblem) return new Declined(nameProblem, MATERIALIZE_INVALID_CODE);
+   if (nameProblem)
+      return new Declined(nameProblem, { malformed: MATERIALIZE_INVALID_CODE });
    // A list of watermarks is a pair table's: it needs an incremental refresh
    // and an inlined join (the pair, checked once laid out).
    const inlines =
@@ -1458,7 +1518,9 @@ function invalidValuesOf(declaration: ReadDeclaration): Declined | undefined {
       carried.watermarks &&
       !(carried.persist.refresh === "incremental" && inlines)
    ) {
-      return new Declined(WATERMARK_LIST_REASON, MATERIALIZE_INVALID_CODE);
+      return new Declined(WATERMARK_LIST_REASON, {
+         malformed: MATERIALIZE_INVALID_CODE,
+      });
    }
    return undefined;
 }
@@ -1489,7 +1551,7 @@ function inlinedJoinsOf(
       if (!items || items.some((i) => typeof i !== "string" || i === "")) {
          return new Declined(
             'inline= must be a list of join names, such as inline=["carriers"]',
-            MATERIALIZE_INVALID_CODE,
+            { malformed: MATERIALIZE_INVALID_CODE },
          );
       }
       inline = [...new Set(items as string[])];
@@ -1506,7 +1568,9 @@ function inlinedJoinsOf(
    if (inlineProblem) {
       return new Declined(
          inlineProblem.reason,
-         inlineProblem.invalid ? MATERIALIZE_INVALID_CODE : undefined,
+         inlineProblem.invalid
+            ? { malformed: MATERIALIZE_INVALID_CODE }
+            : { refused: "inline_unsupported" },
       );
    }
    // A private or internal join's access, by name. Its build reads the
@@ -1548,6 +1612,7 @@ function inlinedJoinsOf(
             `inline= names two paths through ${quotedName(longest[0].name)} that ` +
                `part (${quotedName(pathKey(apart))}, ${quotedName(pathKey(longest))}); ` +
                "a pair table stores one path below each join it inlines",
+            { refused: "inline_unsupported" },
          );
       }
       paths.push(longest);
@@ -1582,7 +1647,9 @@ function storedColumnsOf(
       ctx.probed?.get(def.sourceID),
       inline,
    );
-   if ("reason" in dependence) return new Declined(dependence.reason);
+   if ("reason" in dependence) {
+      return new Declined(dependence.reason, { refused: dependence.refusal });
+   }
    // What reads through an inlined join_many has one value per pair, not
    // per parent, so it is computed at read through the served join.
    const columns = materializeColumns(def, {
@@ -1618,11 +1685,14 @@ function storedColumnsOf(
       return new Declined(
          `the inlined column \`${clash.column}\` has the name of one of the ` +
             "source's own dimensions",
+         { refused: "inline_unsupported" },
       );
    }
    columns.push(...joinedColumns);
    if (columns.length === 0) {
-      return new Declined("the source has no dimension to store");
+      return new Declined("the source has no dimension to store", {
+         refused: "no_stored_columns",
+      });
    }
    return { columns, joinedColumns, dependence };
 }
@@ -1645,7 +1715,9 @@ function readTermsOf(
       classified,
       new Map(columns.map((c) => [c.column, columnType(def, c.dimension)])),
    );
-   if (!window.ok) return new Declined(window.detail);
+   if (!window.ok) {
+      return new Declined(window.detail, { refused: "current_time" });
+   }
    // Only an inlined join's columns are stored; any other join is read
    // through the served join, over its own source, at read.
    const joinedWindow = leftOutTermReadElsewhere(
@@ -1662,6 +1734,7 @@ function readTermsOf(
             "moving cut-off and is also applied by a join `inline=` names, so " +
             "leaving it out of the build would store joined rows the read " +
             "cannot take back out",
+         { refused: "current_time" },
       );
    }
    // A join whose rows read the current time (its `where:`, its `on`, or the
@@ -1678,10 +1751,13 @@ function readTermsOf(
          `inline= names ${quotedName(timedInline)}, whose joined rows ` +
             "read the current time, so its stored columns would hold the " +
             "rows as of the build; reference the join instead",
+         { refused: "current_time" },
       );
    }
    const readTime = readTimeTermsOf(def, classified, columns, givens);
-   if (!readTime.ok) return new Declined(readTime.reason);
+   if (!readTime.ok) {
+      return new Declined(readTime.reason, { refused: readTime.refusal });
+   }
    return { window, readTime };
 }
 
@@ -1695,10 +1771,18 @@ function placedPersistOf(
    declaration: ReadDeclaration,
 ): Staged<{ persist: Record<string, string>; watermarks?: string[] }> {
    const carried = carriedPersistKeys(declaration);
-   if ("reason" in carried) return new Declined(carried.reason);
+   if ("reason" in carried) {
+      return new Declined(carried.reason, {
+         malformed: carried.code ?? MATERIALIZE_INVALID_CODE,
+      });
+   }
    const { persist } = carried;
    const placed = placementOf(declaration.tag);
-   if ("refused" in placed) return new Declined(EMPTY_STORAGE_REASON);
+   if ("refused" in placed) {
+      return new Declined(EMPTY_STORAGE_REASON, {
+         malformed: MATERIALIZE_INVALID_CODE,
+      });
+   }
    if (placed.placement.tier === "storage") {
       persist.storage = placed.placement.destination;
    }
@@ -1724,6 +1808,7 @@ function placedPersistOf(
       return new Declined(
          "a #(materialize) source built into BigQuery needs a " +
             "dataset-qualified name= (`dataset.table`), which places its table",
+         { refused: "needs_qualified_name" },
       );
    }
    if (nameDefaulted) persist.name = materializeTableName(name);
@@ -1770,17 +1855,25 @@ function pairLayoutOf(
          ),
       );
       const problem = laid.find((l): l is { reason: string } => "reason" in l);
-      if (problem) return new Declined(problem.reason);
+      if (problem) {
+         return new Declined(problem.reason, { refused: "inline_unsupported" });
+      }
       const pairs = (laid as { pair: MaterializePair }[]).map((l) => l.pair);
       pair = pairs[0];
       if (pairs.length > 1) {
          const blocks = pairBlocksOf(pairs, paths, columns, def.connection);
-         if ("reason" in blocks) return new Declined(blocks.reason);
+         if ("reason" in blocks) {
+            return new Declined(blocks.reason, {
+               refused: "inline_unsupported",
+            });
+         }
          pairBlocks = blocks.blocks;
       }
    }
    if (args.watermarks && !(pair && persist.refresh === "incremental")) {
-      return new Declined(WATERMARK_LIST_REASON, MATERIALIZE_INVALID_CODE);
+      return new Declined(WATERMARK_LIST_REASON, {
+         malformed: MATERIALIZE_INVALID_CODE,
+      });
    }
    let pairFullRefresh: string | undefined;
    if (pair && persist.refresh === "incremental") {
@@ -1925,17 +2018,26 @@ export function materializeRefusalFinding(
    refusal: MaterializeRefusal,
    model: string,
 ): PackageAnnotationFinding {
+   const { outcome, sourceName, sourceID } = refusal;
+   const key = "malformed" in outcome ? outcome.whenRelaxed : outcome.refused;
    return {
       route: MATERIALIZE_ROUTE,
-      tier: refusal.malformedCode ? "malformed" : "unservable",
-      code: refusal.malformedCode ?? "materialize-not-built",
-      message: refusal.malformedCode
-         ? `#(materialize) on source "${refusal.sourceName}" is invalid: ` +
-           `${refusal.reason}.`
-         : `#(materialize) on source "${refusal.sourceName}" is not built, ` +
-           `so the source is served live: ${refusal.reason}.`,
-      subject: refusal.sourceName,
+      ...("malformed" in outcome
+         ? {
+              tier: "malformed" as const,
+              code: outcome.malformed,
+              message: `#(materialize) on source "${sourceName}" is invalid: ${refusal.reason}.`,
+           }
+         : {
+              tier: "unservable" as const,
+              code: MATERIALIZE_NOT_BUILT_CODE,
+              message: `#(materialize) on source "${sourceName}" is not built, so the source is served live: ${refusal.reason}.`,
+           }),
+      subject: sourceName,
       model,
+      ...(key && sourceID
+         ? { refused: refusalKey(sourceID, sourceName, key.reason, key.tier) }
+         : {}),
    };
 }
 

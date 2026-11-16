@@ -197,7 +197,7 @@ export const SERVING_GATE_CONTEXT: LegGateContext = {
 };
 
 /** A table an answer read, as the policy judges it. */
-export interface TableRead {
+interface TableRead {
    readonly tier: GateTier;
    /**
     * A `storage=` table plan admitted past its source's own row-level gate

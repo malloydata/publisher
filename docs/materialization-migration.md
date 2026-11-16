@@ -113,8 +113,8 @@ still build and serve.
 
 | Code | What it means | What to do |
 | --- | --- | --- |
-| `materialize-not-built` | Publisher cannot build this valid `#(materialize)` source; the message names why (a colocated BigQuery source with no dataset-qualified `name=`, a refused `inline=`, an incremental source on a dialect without a bounded range, and so on). Severity `warn`; it serves live. | Fix what it names, or keep the v1 form. |
-| `preaggregate-not-built` | Publisher cannot build this valid rollup (a read-only dialect, a table name another rollup holds, a base scoped by a given, a row-level gate on a v1 rollup's base, the `storage=` gate); the message names the base, the grain and why. Its measures serve live. A refusal with its own code, such as `preaggregate-access-filter` or `preaggregate-time-zone`, keeps it. | Fix what it names. |
+| `materialize-not-built` | Publisher cannot build this valid `#(materialize)` source; the message names why, and its record in the build plan's `refusedSources` carries the reason (a colocated BigQuery source with no dataset-qualified `name=`, a refused `inline=`, an incremental source on a dialect without a bounded range, and so on). Severity `warn`; it serves live. | Fix what it names, or keep the v1 form. |
+| `preaggregate-not-built` | Publisher cannot build this valid rollup (a read-only dialect, a table name another rollup holds, a base scoped by a given, a row-level gate on a v1 rollup's base, the `storage=` gate); the message names the base, the grain and why. Its measures serve live. Every rollup refused alone carries this code; the reason (`access_filter`, `time_zone`, `hidden_field` and the like) is on its record in the build plan's `refusedSources`. | Fix what it names. |
 | `materialize-unknown-key`, `materialize-unparseable` | The line cannot be read as written. The publish and the load fail. | Fix the key or the quoting. |
 | `materialize-retired-key` | The line carries a key that is no longer read, `partition=`. The publish and the load fail. | Remove the key. |
 | `materialize-invalid` | A value is wrong as written: an empty, non-text or `@env.` `storage=`, both `#(materialize)` and the source's own `#@ persist`, an `inline=` that is not a list of joins of the source, a carried key of the wrong shape, a list `watermark=` off an incremental pair table, an unsafe or reserved `name=`, an invalid incremental declaration. The publish and the load fail. | Fix the value it names. |
@@ -164,10 +164,11 @@ unchanged ([the served copy](materialization.md#the-served-copy-materialization-
   for example, is malformed rather than a default table: the publish and the load fail with
   `materialize-unknown-key`, naming the key it was likely meant to be, on every load path, a
   package already published included. A `#(materialize)` line that does not parse (`name="t` with
-  no closing quote) fails the same way, as `materialize-unparseable`. `partition=` is retired on
-  both forms: on `#(materialize)` it is `materialize-retired-key` (on `#@ persist`,
-  `persist-retired-key`), and the load fails until it is removed. v1's `realization=` has no v2
-  form. A misspelled route, such as `#(materialise)`, fails the load as
+  no closing quote) fails the same way, as `materialize-unparseable`. `partition=`, `sharing=` and
+  `schedule=` are retired on both forms: on `#(materialize)` each is `materialize-retired-key` (on
+  `#@ persist`, `persist-retired-key`), and the load fails until it is removed. `realization=` is
+  retired on `#@ persist` too (`persist-retired-key`; every table is built by CREATE TABLE AS
+  SELECT), and has no v2 form. A misspelled route, such as `#(materialise)`, fails the load as
   `materialization-near-miss`.
 
 ## What stays the same
@@ -586,7 +587,7 @@ has the full list.
 ## What is not migrated
 
 - **`#@ persist` on a view** and **`#@ -persist`**: these are the v2 spellings already.
-- **`realization=`** has no v2 form; on `#(materialize)` it is `materialize-unknown-key`.
+- **`realization=`** is retired: on `#@ persist` it is `persist-retired-key`, and on `#(materialize)`, which never read it, `materialize-unknown-key`. Remove it; every table is built by CREATE TABLE AS SELECT.
 - **`partition=`** is retired on both forms, and fails the publish and the load; remove it.
 - **An incremental source on a DuckDB origin**: refused alone and answered live
   (`materialize-not-built`), as v1 refuses it (`persist-not-built`). Say `refresh="full"`.

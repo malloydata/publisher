@@ -16,7 +16,7 @@
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import { type ModelDef } from "@malloydata/malloy";
 import { compiledTextReader } from "../../../utils";
-import { materializedReadPlan, v1StoredColumns } from "./served_copy_serve";
+import { v1StoredColumns } from "./served_copy_serve";
 import { type Binding, bindingServesModelSource } from "../domain/binding";
 import {
    authorModelLiftContext,
@@ -25,9 +25,12 @@ import {
 import {
    declaredColumnsOf,
    type ReadCast,
+   serveTypePlan,
    storedColumnReadPlan,
+   storedColumnTypeMismatches,
    type StoredColumnTypeMismatch,
 } from "../stored_column_types";
+import type { BuildPlan } from "../domain/types";
 
 /** The warning code a stored column type mismatch is logged and reported with. */
 export { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
@@ -39,6 +42,84 @@ export interface SourceTypeMismatches {
    sourceID?: string;
    /** Each mismatch, and whether it is read through a cast or answered live. */
    mismatches: (StoredColumnTypeMismatch & { handling: "cast" | "live" })[];
+}
+
+/**
+ * How a stored column whose type does not serve as declared is read: through
+ * a faithful `cast`, or not at all, so queries that read it are answered
+ * `live`.
+ */
+export type MismatchHandling = "cast" | "live";
+
+/**
+ * A `#(materialize)`, persisted view or query, or rollup `storage=` table's
+ * stored columns that do not serve as the types its build source declares.
+ */
+export interface BoundTableTypeFinding {
+   binding: Binding;
+   sourceID: string;
+   modelPath?: string;
+   /** The name the author wrote: the source, view or query, or a rollup's base. */
+   subject: string;
+   mismatches: (StoredColumnTypeMismatch & { handling: MismatchHandling })[];
+}
+
+/**
+ * The type findings of every `storage=` table that is not a `#@ persist`
+ * source's (whose findings each model makes from its own source's fields,
+ * {@link modelStorageTables}), against the columns the plan's build source
+ * declares: the same declaration the build casts to and checks after it
+ * writes, so build and serve report one drift.
+ */
+export function boundTableTypeFindings(
+   bindings: readonly Binding[],
+   plan: BuildPlan | null,
+): BoundTableTypeFinding[] {
+   const sources = Object.entries(plan?.sources ?? {});
+   const findings: BoundTableTypeFinding[] = [];
+   for (const binding of bindings) {
+      if (binding.tier !== "storage" || binding.kind === "persist") continue;
+      const atAddress = sources.filter(
+         ([, s]) => s.sourceEntityId === binding.virtualHandle,
+      );
+      const [sourceID, source] =
+         atAddress.find(([id]) => binding.sourceIDs?.includes(id)) ??
+         atAddress[0] ??
+         [];
+      if (!sourceID || !source) continue;
+      const declared = (source.columns ?? []).flatMap((c) =>
+         c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+      );
+      const mismatches = storedColumnTypeMismatches(binding.schema, declared);
+      if (mismatches.length === 0) continue;
+      const handled = handlingOf(mismatches);
+      findings.push({
+         binding,
+         sourceID,
+         ...(source.modelPath ? { modelPath: source.modelPath } : {}),
+         subject: source.preaggregate?.baseSourceName ?? source.name,
+         mismatches: mismatches.map((m) => ({
+            ...m,
+            handling: handled(m),
+         })),
+      });
+   }
+   return findings;
+}
+
+/**
+ * How each reader treats a mismatch, the one rule every `storage=` reader
+ * applies ({@link serveTypePlan}): read through a faithful cast where one
+ * gives live's values, else not read, so a query reading it answers live. A
+ * persisted result (`storedColumnCasts`) and a rollup (`storedRollupReads`)
+ * decline the table for such a column; a `#(materialize)` table's served copy
+ * leaves the column out (`materializedColumnsOf`).
+ */
+function handlingOf(
+   mismatches: readonly StoredColumnTypeMismatch[],
+): (m: StoredColumnTypeMismatch) => MismatchHandling {
+   const cast = new Set(serveTypePlan(mismatches).casts.map((c) => c.column));
+   return (m) => (cast.has(m.column) ? "cast" : "live");
 }
 
 /** One binding's mismatches, with how each is handled, for the model's log. */
@@ -78,21 +159,15 @@ export function modelStorageTables(
    const stored = bindings.filter(
       (b) => b.kind === "persist" && b.tier === "storage",
    );
-   // A `#(materialize)` `storage=` table's types are checked, and warned
-   // about, as a `#@ persist` one's are; it is not one of `kept`.
-   const materialized = bindings.filter(
-      (b) => b.kind === "materialize" && b.tier === "storage",
-   );
-   if (stored.length === 0 && materialized.length === 0) {
+   if (stored.length === 0) {
       return { kept: [], shadowed: [], mismatches: [], findings: [] };
    }
    const { contents } = authorModelLift(modelDef, packageRoot);
    const { kept, shadowed } = ownBindingsIn(stored, contents);
-   const checked = [...kept, ...ownBindingsIn(materialized, contents).kept];
    const mismatches: SourceTypeMismatches[] = [];
    const findings: BindingTypeFinding[] = [];
    try {
-      for (const binding of checked) {
+      for (const binding of kept) {
          const plan = typePlanFor(binding, contents);
          if (plan.mismatches.length === 0) continue;
          findings.push({ binding, ...plan });
@@ -173,8 +248,7 @@ function authorModelLift(
 
 /**
  * A binding's stored columns against the source's declared types, hidden
- * ones included, as the served copy binds them (a `#(materialize)` table's
- * through {@link materializedReadPlan}): which columns read through a
+ * ones included, as the served copy binds them: which columns read through a
  * cast, and which no cast makes faithful.
  */
 function typePlanFor(
@@ -182,15 +256,11 @@ function typePlanFor(
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>,
 ): Omit<BindingTypeFinding, "binding"> {
    const def = contents?.[binding.sourceName];
-   // The read the served copy's `#(materialize)` re-root applies.
-   const plan =
-      binding.kind === "materialize"
-         ? materializedReadPlan(binding.schema, def)
-         : storedColumnReadPlan(
-              v1StoredColumns(binding.schema, def?.fields),
-              declaredColumnsOf(def?.fields),
-              { queryTimezone: queryTimezoneOf(def) },
-           );
+   const plan = storedColumnReadPlan(
+      v1StoredColumns(binding.schema, def?.fields),
+      declaredColumnsOf(def?.fields),
+      { queryTimezone: queryTimezoneOf(def) },
+   );
    return {
       casts: plan.casts,
       unservable: plan.leftOut,

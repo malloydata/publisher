@@ -4,9 +4,9 @@
 /**
  * The G3 models: sources under their own row-level gate (an
  * `#(access_filter)` row filter, an `#(authorize)` lock, both, or inherited),
- * stored colocated (colocated_materialize_gates) and in a `storage=`
- * destination (storage_g3_gates). Shared with the served copy's worker
- * parity spec, which compares the gates' grafts on both threads.
+ * stored colocated and in a `storage=` destination (g3_gates, once per
+ * tier). Shared with the served copy's worker parity spec, which compares
+ * the gates' grafts on both threads.
  */
 
 // Each materialized source selects its own columns, so no two share a

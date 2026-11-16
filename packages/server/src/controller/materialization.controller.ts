@@ -305,7 +305,6 @@ export class MaterializationController {
          "sourceEntityId",
          "materializedTableId",
          "physicalTableName",
-         "realization",
       ] as const;
       for (const field of required) {
          if (typeof instruction[field] !== "string") {
@@ -314,7 +313,10 @@ export class MaterializationController {
             );
          }
       }
+      // Absent means COPY, the only realization built (SNAPSHOT is refused
+      // when the run reads its instructions).
       if (
+         instruction.realization !== undefined &&
          instruction.realization !== "COPY" &&
          instruction.realization !== "SNAPSHOT"
       ) {
@@ -338,7 +340,9 @@ export class MaterializationController {
                : undefined,
          materializedTableId: instruction.materializedTableId as string,
          physicalTableName: instruction.physicalTableName as string,
-         realization: instruction.realization,
+         ...(instruction.realization !== undefined
+            ? { realization: instruction.realization }
+            : {}),
          // The `storage=` destination. Must be carried through, or an
          // orchestrated build silently falls back to a colocated build.
          ...(typeof instruction.destination === "string"

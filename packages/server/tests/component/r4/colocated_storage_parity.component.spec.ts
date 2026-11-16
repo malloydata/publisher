@@ -32,7 +32,7 @@
 
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -41,6 +41,7 @@ import {
    rowDifference,
    type R4Fixture,
    type R4Run,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
@@ -101,12 +102,9 @@ async function rollupReasons(
 
 for (const tier of TIERS) {
    describe(`R4 parity (${tier.label}): a #(materialize) table with a zoned timestamp and a UUID`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: {
                "m.malloy": `#(materialize)${tier.place("parity_zoned")}
@@ -124,13 +122,10 @@ source: s is duckdb.table('ex') extend { primary_key: id }
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
-      it("binds the source with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       it.each([
          "run: s -> { group_by: g; aggregate: n is count(), total is amount.sum(); order_by: g }",
@@ -154,7 +149,6 @@ source: s is duckdb.table('ex') extend { primary_key: id }
    });
 
    describe(`R4 parity (${tier.label}): two pair tables whose sources compile to the same SQL`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
       const pairSource = (
          name: string,
@@ -167,10 +161,8 @@ source: ${name} is duckdb.table('flights') extend {
     seg_w is segs.w.sum()
     seg_max is segs.w.max()
 }`;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: {
                "m.malloy": `source: segs is duckdb.table('segs') extend { primary_key: seg_id }
@@ -192,7 +184,6 @@ ${pairSource("pairs_b")}
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -247,14 +238,11 @@ ${tier.label === "storage=" ? `#(materialize)${place}\n` : ""}source: flights is
        ) AS t(flight_id, size)`;
       const malloy =
          "run: flights -> { group_by: carrier; aggregate: flight_count, total_distance, crew.crew_size; order_by: carrier }";
-      let restore: () => void;
       let checked: R4Fixture;
       let broken: R4Fixture;
       let unchecked: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          const scenario = (crew: string, rollupKeyChecks = true) =>
             buildScenario({
                files: { "m.malloy": model },
@@ -268,7 +256,6 @@ ${tier.label === "storage=" ? `#(materialize)${place}\n` : ""}source: flights is
          unchecked = await scenario(unique, false);
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -328,12 +315,9 @@ source: flights_unread is duckdb.table('flights_raw') extend {
   join_many: unread_segs on unread_segs.flight_id = id
 }
 `;
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": model },
             seedSql: [
@@ -349,7 +333,6 @@ source: flights_unread is duckdb.table('flights_raw') extend {
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -366,7 +349,7 @@ source: flights_unread is duckdb.table('flights_raw') extend {
 
       it("refuses at plan the rollup no join reads, and answers it live, equal to live", async () => {
          expect(fixture.rollupRefusals).toContainEqual({
-            code: "preaggregate-time-zone",
+            reason: "time_zone",
             sourceName: "unread_segs",
          });
          expect(
@@ -465,19 +448,15 @@ const PAIR_TIERS = [
 
 for (const tier of PAIR_TIERS) {
    describe(`R4 parity (${tier.label}): an incremental pair table`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
       let cleanup: (() => Promise<void>) | undefined;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          const scenario = await tier.scenario();
          cleanup = (scenario as { cleanup?: () => Promise<void> }).cleanup;
          fixture = await buildScenario(scenario);
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
          await cleanup?.();
       });

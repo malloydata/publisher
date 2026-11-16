@@ -63,7 +63,7 @@ interface ServeVerdictsHost {
    readonly plan: PlanLifecycle;
    packageName(): string;
    models(): Map<string, Model>;
-   publishedSurface?():
+   publishedSurface():
       | { modelPath: string; names: string[]; queries?: string[] }[]
       | undefined;
    snapshot(): Snapshot;
@@ -253,7 +253,7 @@ export class ServeVerdicts {
       const persistedViews = new Map<string, PersistedResultOf>();
       const servedStorageNames = new Set<string>();
       for (const model of models.values()) {
-         for (const v of model.persistedViewBuilds?.() ?? []) {
+         for (const v of model.persistedViewBuilds() ?? []) {
             persistedViews.set(v.buildSourceID, v);
          }
          for (const name of model.servedStorageSourceNames?.() ?? []) {
@@ -538,6 +538,11 @@ export class ServeVerdicts {
          }
       }
       return verdicts.map((v) => {
+         // A refused declaration has no table to serve from, a rollup's
+         // included.
+         if (v.verdict === "live" && v.reason === "refused") {
+            return { ...v, cutoverPath: "live", cutoverReason: "refused" };
+         }
          if (v.origin === "preaggregate") {
             return { ...v, cutoverPath: "rollup" };
          }
@@ -645,7 +650,7 @@ export class ServeVerdicts {
    private buildEntryPointIndex(
       models: Map<string, Model>,
    ): EntryPointIndex | undefined {
-      const surface = this.host.publishedSurface?.();
+      const surface = this.host.publishedSurface();
       const entries =
          surface ??
          [...models].map(([modelPath, model]) => ({
@@ -660,7 +665,7 @@ export class ServeVerdicts {
       const roots: EntryPointIndex["roots"] = [];
       for (const { modelPath, names, queries } of entries) {
          const model = models.get(modelPath);
-         const modelDef = model?.getModelDef?.();
+         const modelDef = model?.getModelDef();
          if (!model || !modelDef) return undefined;
          // Gated as the router's veto finds it: the governor's walk of the
          // entry point's own and inherited gates (`collectEntryPointGates`).

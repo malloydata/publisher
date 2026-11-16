@@ -24,6 +24,7 @@ import {
    disposeScenarios,
    rowDifference,
    type R4Fixture,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const seedSql = [
@@ -69,9 +70,7 @@ describe("R4: a connection-rooted source with an include before its extend", () 
       await disposeScenarios();
    });
 
-   it("re-roots it, with no problem", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const queries = [
       [

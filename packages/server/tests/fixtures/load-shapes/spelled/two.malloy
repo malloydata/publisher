@@ -1,0 +1,6 @@
+import "my%20models/b%C3%A4se.malloy"
+
+source: spelled_two is spelled_items
+
+#(doc) The same file, spelled percent-encoded. Expect row_count 6, v_total 210.
+query: check_spelled_two is spelled_two -> { aggregate: row_count, v_total }

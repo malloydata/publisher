@@ -232,12 +232,6 @@ async function loadRows(
             v.reason ? `${v.verdict} ${v.reason}` : v.verdict,
          );
       }
-      // A declaration planned nothing at all (not planned, not refused):
-      // the gate's warning says why.
-      for (const w of pkg.getPackageMetadata().warnings ?? []) {
-         if (w.code !== "preaggregate-access-filter") continue;
-         rows[`${w.subject}`] = ["not planned preaggregate-access-filter"];
-      }
       return Object.fromEntries(
          Object.entries(rows)
             .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -265,7 +259,7 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       pair_sto: "planned | storage | not_built",
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll.total_sto": "not planned preaggregate-access-filter",
+      "roll.total_sto": "refused access_filter | colocated | live refused",
       roll__rollup__category_region__7617040b:
          "planned | colocated | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
@@ -279,9 +273,9 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       pair_sto: "planned | storage | not_built",
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll.total_col": "not planned preaggregate-access-filter",
-      "roll.total_sto": "not planned preaggregate-access-filter",
-      "roll_v1.v1_total": "not planned preaggregate-access-filter",
+      "roll.total_col": "refused access_filter | colocated | live refused",
+      "roll.total_sto": "refused access_filter | colocated | live refused",
+      "roll_v1.v1_total": "refused access_filter | colocated | live refused",
       views__by_region_col__view:
          "refused authorize | colocated | live refused",
       views__by_region_sto__view: "refused authorize | storage | live refused",
@@ -294,7 +288,7 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
    "a gate on the declared source, materialize off, gated sources off": {
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll_v1.v1_total": "not planned preaggregate-access-filter",
+      "roll_v1.v1_total": "refused access_filter | colocated | live refused",
    },
    "a gate above it, materialize on, gated sources on": {
       mat_col: "planned | colocated | not_built",

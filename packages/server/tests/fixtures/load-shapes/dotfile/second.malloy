@@ -1,0 +1,7 @@
+import "first.malloy"
+import "../.lib/shared.malloy"
+
+source: second_shared is shared
+
+#(doc) Expect n 1.
+query: check_dotfile_second is second_shared -> { aggregate: n is count() }

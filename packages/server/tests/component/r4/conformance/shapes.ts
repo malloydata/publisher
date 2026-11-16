@@ -11,10 +11,12 @@
  *
  * (`@PERSIST()` renders no `name=`, so the table takes the source's name.)
  *  - `materialize`: `#(materialize) storage="lake"` (v2)
+ *  - `materialize_colocated`: `#(materialize)` (v2, built in the origin
+ *    warehouse)
  *
  * `@PREAGG(dim)` marks a rollup measure (`#@ preaggregate grain=…`, with
  * `storage=` for the `storage` variant, and `#(preaggregate)` for
- * `materialize`), and `@PVIEW(name)` a persisted view (`#@ persist name=…`).
+ * `materialize`, with `storage=` for `materialize` alone), and `@PVIEW(name)` a persisted view (`#@ persist name=…`).
  *
  * A shape lists its queries and, per variant and switch, any outcome main does
  * not give yet (a gap): recorded with its reason so the v1 cutover can read
@@ -24,8 +26,28 @@
 import { COVERAGE_SHAPES } from "./coverage_shapes";
 import { RAW_MODEL } from "./data";
 
-export type Variant = "storage" | "colocated" | "materialize";
-export const VARIANTS: Variant[] = ["storage", "colocated", "materialize"];
+export type Variant =
+   | "storage"
+   | "colocated"
+   | "materialize"
+   | "materialize_colocated";
+export const VARIANTS: Variant[] = [
+   "storage",
+   "colocated",
+   "materialize",
+   "materialize_colocated",
+];
+
+/** The variants a `#(materialize)` renders, on either tier. */
+export const MATERIALIZE_VARIANTS: Variant[] = [
+   "materialize",
+   "materialize_colocated",
+];
+
+/** The variants whose tables sit in the origin warehouse. */
+export function isColocated(variant: Variant): boolean {
+   return variant === "colocated" || variant === "materialize_colocated";
+}
 
 /** The tier a served query must report. */
 export type Expect =
@@ -110,7 +132,9 @@ export function renderFiles(
                ? `#@ preaggregate grain="${grain}" storage="lake"`
                : variant === "colocated"
                  ? `#@ preaggregate grain="${grain}"`
-                 : `#(preaggregate) grain=["${grain}"] storage="lake"`,
+                 : variant === "materialize_colocated"
+                   ? `#(preaggregate) grain=["${grain}"]`
+                   : `#(preaggregate) grain=["${grain}"] storage="lake"`,
          )
          .replace(/@PVIEW\(([^)]*)\)/g, (_m, name: string) =>
             variant === "storage"
@@ -130,6 +154,8 @@ export function renderFiles(
                   return `#@ persist${name ? ` name="${name}"` : ""}`;
                case "materialize":
                   return `#(materialize) storage="lake"`;
+               case "materialize_colocated":
+                  return `#(materialize)`;
             }
          });
    }
@@ -598,6 +624,7 @@ source: nested is orders_raw -> {
                "storage/cutover": LIVE_WRONG_NEST,
                "colocated/cutover": LIVE_WRONG_NEST,
                "materialize/on": LIVE_WRONG_NEST,
+               "materialize_colocated/cutover": LIVE_WRONG_NEST,
             },
          },
       ],
@@ -1426,7 +1453,7 @@ source: fact_joined is fact_s extend {
    {
       name: "materialize: a refined source with an inline join",
       about: "#(materialize) on a source declared by refinement, with an inline-extended join_one and computed dimensions (v2 only: v1 persists query-shaped sources)",
-      variants: ["materialize"],
+      variants: MATERIALIZE_VARIANTS,
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -1476,7 +1503,7 @@ source: enriched_ext is enriched extend {
    {
       name: "materialize: a refined source",
       about: "#(materialize) on a source declared by refinement with a where:, computed dimensions and an extension (v2 only)",
-      variants: ["materialize"],
+      variants: MATERIALIZE_VARIANTS,
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -1598,7 +1625,7 @@ source: ov is orders_raw extend {
    {
       name: "materialize: a base with measures and views",
       about: "A #(materialize) source extending a base that declares measures and a view in the same file (G8: the re-root replaces the base, so it keeps the base's blocks)",
-      variants: ["materialize"],
+      variants: MATERIALIZE_VARIANTS,
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"

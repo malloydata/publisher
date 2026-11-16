@@ -1113,7 +1113,7 @@ async function buildSameCatalogIntoStorage(params: {
  * {@link MaterializationEligibilityError}, so the caller may fall back.
  */
 /** A chained build's model: its files by URL, and the one it loads. */
-export interface ChainedBuildModel {
+interface ChainedBuildModel {
    files: ReadonlyMap<string, string>;
    entry: string;
    /**

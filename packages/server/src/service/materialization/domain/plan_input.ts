@@ -32,22 +32,20 @@ export interface BuildPlanPackage {
    getMalloyConnection(name: string): Promise<MalloyConnection>;
    /**
     * The package-level `materialization` config (publisher.json), the
-    * least-specific layer for per-source resolution. Optional: callers without
-    * it resolve with no package default.
+    * least-specific layer for per-source resolution.
     */
-   getMaterializationConfig?(): WirePackageMaterialization | null;
+   getMaterializationConfig(): WirePackageMaterialization | null;
    /**
     * The package's metadata, for its materialization `scope`: under
     * `scope: "version"` every table name takes the version's suffix, which
-    * decides which sources share a table. Optional: callers without it plan
-    * as unversioned.
+    * decides which sources share a table.
     */
-   getPackageMetadata?(): { scope?: string | null };
+   getPackageMetadata(): { scope?: string | null };
    /**
     * The published version this package is, if any. Only a published
     * version of a `scope: "version"` package names its tables per version;
     * an unversioned package writes an author's `name=` as given whatever its
-    * scope. Optional: callers without it plan as unversioned.
+    * scope.
     */
-   getVersionId?(): string | undefined;
+   getVersionId(): string | undefined;
 }

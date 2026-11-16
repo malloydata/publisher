@@ -3033,9 +3033,10 @@ function materializedColumnsOf(
 /**
  * How a `#(materialize)` table's own stored columns read as the types live
  * gives their fields ({@link storedColumnReadPlan}): each stored column named
- * for a scalar field of the author's source, against that field's type. The
- * served copy's re-root ({@link materializedColumnsOf}) and the model's
- * `storage-column-type-mismatch` warning both read it, so they agree.
+ * for a scalar field of the author's source, against that field's type, as
+ * the served copy's re-root ({@link materializedColumnsOf}) reads them. The
+ * `storage-column-type-mismatch` warning reports the same cast or live
+ * handling (`boundTableTypeFindings`).
  */
 export function materializedReadPlan(
    schema: readonly { name: string; type: string }[],

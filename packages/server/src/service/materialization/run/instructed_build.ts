@@ -40,7 +40,9 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import {
+   type KeyCheckKind,
    recordDuplicateTargetSkipped,
+   recordKeyCheck,
    recordManifestBindDegraded,
 } from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
@@ -95,6 +97,7 @@ import {
    refusalRecord,
    reportRetainedStorageTables,
    selfAssignTableName,
+   statementRunOptions,
 } from "./materialization_run_support";
 import {
    dropOwnNameView,
@@ -185,6 +188,7 @@ async function checkBuiltKeys(
       await checkAndRecordKey(
          run.uniqueness,
          sourceEntityId,
+         "stored",
          () =>
             STORAGE.checkKey(
                {
@@ -324,7 +328,7 @@ export class InstructedBuild {
           * so it answers the source live instead of from rows another
           * package may have written. Absent: nothing is retired.
           */
-         tableNotOwned?: (
+         tableNotOwned: (
             environmentName: string,
             packageName: string,
             target: OwnedTableTarget,
@@ -546,7 +550,7 @@ export class InstructedBuild {
       const pkg = runPackageOf(run);
       if (!pkg) return;
       await this.seams
-         .tableNotOwned?.(pkg.environmentName, pkg.packageName, ownedTarget)
+         .tableNotOwned(pkg.environmentName, pkg.packageName, ownedTarget)
          .catch((retireErr) => {
             if (retireErr instanceof LockOrderError) throw retireErr;
             logger.warn(
@@ -1225,7 +1229,7 @@ function runPackageOf(
 ): { environmentName: string; packageName: string } | undefined {
    const environmentName =
       run.buildMetadata?.context.environment ??
-      run.environment.getEnvironmentName?.();
+      run.environment.getEnvironmentName();
    const packageName =
       run.buildMetadata?.context.package ?? run.owner?.packageName;
    return environmentName && packageName
@@ -1237,7 +1241,7 @@ function runPackageOf(
 function packageOwnerOf(run: InstructedRun): string {
    return packageOwner(
       run.buildMetadata?.context.environment ??
-         run.environment.getEnvironmentName?.() ??
+         run.environment.getEnvironmentName() ??
          "",
       run.buildMetadata?.context.package ?? run.owner?.packageName ?? "",
    );
@@ -1248,10 +1252,18 @@ function packageOwnerOf(run: InstructedRun): string {
  * build holds, when given), or the destination the run builds into.
  */
 export function tableSiteContext(
-   run: Pick<InstructedRun, "compiled" | "environment">,
+   run: Pick<InstructedRun, "compiled" | "environment" | "buildMetadata">,
    connection?: MalloyConnection,
 ): TableSiteContext {
+   const context = run.buildMetadata?.context;
    return {
+      // The run's own statements carry its metadata, as its builds do.
+      ...(context
+         ? {
+              runOptions: (name: string) =>
+                 statementRunOptions(run.environment, name, context),
+           }
+         : {}),
       connectionFor: (name) =>
          (connection && connection.name === name ? connection : undefined) ??
          run.compiled.connections.get(name),
@@ -1369,19 +1381,18 @@ function recordPendingRefusal(
    const reason = errMessage(err);
    run.refusals.push(err);
    reportSourceRefused(
-      buildKindOf(run.compiled, persistSource.sourceID),
-      buildTierOf(instruction),
+      {
+         kind: buildKindOf(run.compiled, persistSource.sourceID),
+         tier: buildTierOf(instruction),
+         sourceEntityId: instruction.sourceEntityId,
+         sourceName: persistSource.name,
+      },
+      err.reason,
    );
    run.failedBySourceID.set(persistSource.sourceID, {
       name: persistSource.name,
       reason,
       retryable: false,
-   });
-   logger.warn("Instructed source refused by the eligibility gate", {
-      packageName: run.owner?.packageName,
-      sourceName: persistSource.name,
-      physicalTableName: instruction.physicalTableName,
-      reason,
    });
    run.pendingRefusals.push({
       failedKey,
@@ -1636,6 +1647,7 @@ async function checkRollupKeys(
       await checkAndRecordKey(
          ledger,
          address,
+         "rollup",
          () => COLOCATED.checkKey({ connection }, own, table),
          {
             notRun:
@@ -1705,6 +1717,7 @@ async function checkParentKeys(
       await checkAndRecordKey(
          ledger,
          address,
+         "parent",
          () => COLOCATED.checkKey({ connection }, check, table),
          {
             notRun:
@@ -1741,6 +1754,7 @@ async function checkPairLeafKeys(
       await checkAndRecordKey(
          ledger,
          address,
+         "pair_leaf",
          () => COLOCATED.checkKey({ connection }, check, table),
          {
             notRun:
@@ -1818,6 +1832,7 @@ function storedKeyCheckOf(
 export async function checkAndRecordKey(
    ledger: UniquenessLedger,
    address: string,
+   kind: KeyCheckKind,
    runCheck: () => Promise<KeyCheckRecord | undefined>,
    messages: { notRun: string; notUnique: string },
    logContext: Record<string, unknown>,
@@ -1827,13 +1842,16 @@ export async function checkAndRecordKey(
    try {
       record = await runCheck();
    } catch (err) {
+      recordKeyCheck(kind, "not_run");
       logger.warn(messages.notRun, { ...logContext, error: errMessage(err) });
       return;
    }
    if (!record) {
+      recordKeyCheck(kind, "not_run");
       logger.warn(messages.notRun, logContext);
       return;
    }
+   recordKeyCheck(kind, record.unique ? "unique" : "not_unique");
    if (!record.unique) logger.warn(messages.notUnique, logContext);
    ledger.recordRollupKey(
       address,

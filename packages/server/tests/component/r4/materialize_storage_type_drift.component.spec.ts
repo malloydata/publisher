@@ -21,17 +21,11 @@
  * | d2     | DATE      | TIMESTAMP   | cast to DATE             |
  *
  * The `storage=` table and a colocated one (its binding carrying the drifted
- * types) are held to the same answers, and the `storage=` one reports the
- * `storage-column-type-mismatch` warning and its `stage="serve"` tick as a
- * `#@ persist` table does.
+ * types) are held to the same answers. The `storage-column-type-mismatch`
+ * warning's cast or live handling is pinned in storage_bindings.spec.ts.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
-import {
-   startMetricsHarness,
-   type MetricsHarness,
-} from "../../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -157,14 +151,11 @@ const LIVE: R4Query[] = [
 for (const tier of TIERS) {
    describe(`R4 (${tier.label}): a #(materialize) table whose column types drifted`, () => {
       let restore: () => void;
-      let metrics: MetricsHarness;
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
             env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
          }).restore;
-         metrics = await startMetricsHarness();
-         resetMaterializationTelemetryForTesting();
          fixture = await buildScenario({
             files: {
                "m.malloy": `source: ev is duckdb.table('ev')
@@ -201,8 +192,6 @@ source: drift_m is ev extend {
       }, 120_000);
       afterAll(async () => {
          restore();
-         resetMaterializationTelemetryForTesting();
-         await metrics.shutdown();
          await disposeScenarios();
       });
 
@@ -255,41 +244,6 @@ source: drift_m is ev extend {
          const run = await fixture.run(LIVE[0]);
          expect(run.served).toEqual([{ m: 10 }]);
       });
-
-      if (tier.label === "storage=") {
-         it("warns storage-column-type-mismatch for each drifted column, and how it is read", () => {
-            const found = fixture.typeMismatches();
-            expect(found.map((f) => f.sourceName).sort()).toEqual([
-               "drift",
-               "drift_m",
-            ]);
-            for (const f of found) {
-               expect(
-                  f.mismatches
-                     .map((m) => [m.column, m.declaredType, m.handling])
-                     .sort(),
-               ).toEqual([
-                  ["amt", "number", "live"],
-                  ["d", "date", "live"],
-                  ["d2", "date", "cast"],
-                  ["flag", "boolean", "cast"],
-               ]);
-            }
-         });
-
-         it('counts each drifted column once at stage="serve"', async () => {
-            fixture.typeMismatches();
-            const count = (declared: string) =>
-               metrics.collectCounter(
-                  "publisher_storage_column_type_mismatch_total",
-                  { stage: "serve", declared },
-               );
-            // Two tables, each with the same four drifted columns.
-            expect(await count("number")).toBe(2);
-            expect(await count("date")).toBe(4);
-            expect(await count("boolean")).toBe(2);
-         });
-      }
    });
 }
 

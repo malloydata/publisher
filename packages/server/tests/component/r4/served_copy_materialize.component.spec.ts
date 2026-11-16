@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -65,12 +65,9 @@ source: kept_west is kept extend {
 `;
 
 describe("R4: the served copy over #(materialize) answers equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model, "kept.malloy": keptModel },
          seedSql,
@@ -78,7 +75,6 @@ describe("R4: the served copy over #(materialize) answers equal to live", () => 
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

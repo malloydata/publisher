@@ -8,7 +8,7 @@
 // never moves: a manifest handed to the compiler carries both keys, as it
 // already does for a partitioned source.
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { openTempDuckDB } from "../../../test_helpers/temp_storage";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -38,7 +38,13 @@ source: stored is ev -> { group_by: id; aggregate: total is amount.sum() }
 source: stored_ext is stored extend { dimension: big is total > 10 }
 `;
 
-const duckdb = new DuckDBConnection("duckdb");
+// Its own database: an unnamed in-memory one is shared with every other
+// connection to it in the process, so the table created here would outlive
+// this spec while another holds that database open.
+const temp = openTempDuckDB("addressing-destination-", "duckdb", {
+   file: "duckdb.db",
+});
+const duckdb = temp.connection;
 let sources: Record<string, PersistSource>;
 let digests: Record<string, string>;
 let restore: (() => void) | undefined;
@@ -68,7 +74,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-   await duckdb.close();
+   await temp.dispose();
 });
 
 function withSettings(env: Record<string, string>): void {

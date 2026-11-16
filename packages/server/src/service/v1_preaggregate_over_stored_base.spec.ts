@@ -101,10 +101,11 @@ function rollupsOf(compiled: FinishedBuildPlan): Record<string, PlannedRollup> {
    return out;
 }
 
+/** Each rollup finding's refusal reason, or its code when it refuses nothing. */
 function codesOf(compiled: FinishedBuildPlan): string[] {
    return (compiled.annotationFindings ?? [])
-      .map((f) => f.code)
-      .filter((c) => c.startsWith("preaggregate-"))
+      .filter((f) => f.code.startsWith("preaggregate-"))
+      .map((f) => f.refused?.reason ?? f.code)
       .sort();
 }
 
@@ -288,7 +289,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, TIMESTAMP '20
   measure: total is amount_sum.sum()
 }
 `,
-            ["preaggregate-current-time"],
+            ["current_time"],
          ],
          [
             "a gated base",
@@ -304,7 +305,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'east' AS reg
   measure: total is amount_sum.sum()
 }
 `,
-            ["preaggregate-access-filter"],
+            ["access_filter"],
          ],
          [
             "a base whose rows read a given",
@@ -320,7 +321,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'east' AS reg
   measure: total is amount_sum.sum()
 }
 `,
-            ["preaggregate-reads-given"],
+            ["reads_given"],
          ],
       ];
       for (const [label, template, codes] of cases) {

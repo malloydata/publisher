@@ -84,6 +84,19 @@ const SKIP_MESSAGE: Record<LegKind, string> = {
 };
 
 /**
+ * A leg's skip, at debug: it repeats on every query of a dashboard, and the
+ * path report and `publisher_query_route_total` already say why.
+ */
+function logSkip(kind: LegKind, modelPath: string, err: unknown): void {
+   if (!logger.isDebugEnabled()) return;
+   logger.debug(SKIP_MESSAGE[kind], {
+      modelPath,
+      code: isDeclineOf(err, DECLINING_LEG[kind]) ? err.code : "error",
+      error: err instanceof Error ? err.message : String(err),
+   });
+}
+
+/**
  * The router's candidates for one query: one per leg, in the legs' order.
  * The gate policy (`domain/gate_policy.ts`) decides, its switches read once
  * for the query, whether a leg may be tried past an entry-point gate (R3:
@@ -137,12 +150,7 @@ export function variantsOf(
                        : {}),
                  }
                : undefined,
-         onSkip: (err) => {
-            logger.debug(SKIP_MESSAGE[leg.kind], {
-               modelPath: args.modelPath,
-               error: err instanceof Error ? err.message : String(err),
-            });
-         },
+         onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };
    });
 }

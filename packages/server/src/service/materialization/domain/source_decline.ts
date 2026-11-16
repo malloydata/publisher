@@ -44,7 +44,7 @@ const SOURCE_DECLINES = {
 >;
 
 /** Why a source entry is not served. */
-export type SourceDeclineReason = keyof typeof SOURCE_DECLINES;
+type SourceDeclineReason = keyof typeof SOURCE_DECLINES;
 
 type DeclinedAt<S extends "bind" | "served_copy"> = {
    [R in SourceDeclineReason]: (typeof SOURCE_DECLINES)[R]["stage"] extends S

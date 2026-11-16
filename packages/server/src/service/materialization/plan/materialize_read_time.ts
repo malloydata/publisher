@@ -88,7 +88,11 @@ export function readTimeTermsOf(
         declaration?: TermUse;
         givenDeclarations?: MaterializeGivenDeclaration[];
      }
-   | { ok: false; reason: string } {
+   | {
+        ok: false;
+        reason: string;
+        refusal: "inherited_where_with_given" | "given_in_persisted_query";
+     } {
    const located = classified.flatMap(({ dependsOn }) =>
       dependsOn.kind === "given"
          ? [
@@ -112,13 +116,18 @@ export function readTimeTermsOf(
          return {
             ok: false,
             reason: `${shown} reads a given that could not be read back, so it cannot be left out of the build`,
+            refusal: "given_in_persisted_query",
          };
       }
       // Only its own declaration's: the served copy keeps no base's text, so
       // an inherited term (from a base in this file or another, or a
       // materialized parent) could not be re-applied at read.
       if (!withinDeclaration(term.at, declaration)) {
-         return { ok: false, reason: givenWhereNotOwnReason(shown) };
+         return {
+            ok: false,
+            reason: givenWhereNotOwnReason(shown),
+            refusal: "inherited_where_with_given",
+         };
       }
       if (
          term.columns.length === 0 ||
@@ -130,6 +139,7 @@ export function readTimeTermsOf(
                `${shown} reads a given and a field the table does not store ` +
                `(only dimensions of this source are stored), so it ` +
                `could not be re-applied over the table at read`,
+            refusal: "given_in_persisted_query",
          };
       }
       // The generated `where:` reads each given by the name the author wrote,
@@ -146,6 +156,7 @@ export function readTimeTermsOf(
          return {
             ok: false,
             reason: `${shown} reads a given whose declaration could not be read back, so the build cannot re-write the term`,
+            refusal: "given_in_persisted_query",
          };
       }
       for (const d of declared as { name: string; url: string }[]) {

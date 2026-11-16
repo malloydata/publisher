@@ -724,4 +724,10 @@ export default [
          ],
       },
    },
+   {
+      // Bun's `use…` fixtures register before/after hooks, not React state, so
+      // a spec may call them at a file's top level.
+      files: ["src/**/*.spec.ts", "tests/**/*.ts"],
+      rules: { "react-hooks/rules-of-hooks": "off" },
+   },
 ];

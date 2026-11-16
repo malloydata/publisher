@@ -86,6 +86,12 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
                message: `#(materialize) on source "orders" is invalid: ${reason("placed")}`,
                subject: "orders",
                model: "m.malloy",
+               // Refused alone under PERSIST_COLLISION_ENFORCE=false.
+               refused: expect.objectContaining({
+                  name: "orders",
+                  reason: "table_name_collision",
+                  tier: "colocated",
+               }),
             },
             {
                route: "@",
@@ -94,6 +100,12 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
                message: `#@ persist source "placed" is invalid: ${reason("orders")}`,
                subject: "placed",
                model: "m.malloy",
+               // Refused alone under PERSIST_COLLISION_ENFORCE=false.
+               refused: expect.objectContaining({
+                  name: "placed",
+                  reason: "table_name_collision",
+                  tier: "colocated",
+               }),
             },
          ]);
          const planned = Object.values(c.tables).map((t) => t.source.name);

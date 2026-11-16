@@ -75,6 +75,8 @@ export interface PreaggregateViolation {
    sourceName: string;
    /** The field the annotation sits on, absent for a source-level annotation. */
    fieldName?: string;
+   /** The source's `sourceID`, when the compiled source carries one. */
+   sourceID?: string;
    /** Names the offending object and the fix; becomes user-facing error text. */
    message: string;
 }
@@ -624,7 +626,12 @@ export function validateModelPreaggregation(
       }
       // Anything with a field list is worth scanning; a non-source object cannot
       // carry a measure, and scanning it costs one annotation parse.
-      violations.push(...validateSourcePreaggregation(name, source));
+      const sourceID = (source as { sourceID?: unknown }).sourceID;
+      violations.push(
+         ...validateSourcePreaggregation(name, source).map((v) =>
+            typeof sourceID === "string" ? { ...v, sourceID } : v,
+         ),
+      );
    }
    return violations;
 }

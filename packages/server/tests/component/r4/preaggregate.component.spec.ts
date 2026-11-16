@@ -14,7 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -457,12 +457,9 @@ const CASE_TIMEOUT_MS = 30_000;
 
 function scenarioSuite(label: string, placement: string): void {
    describe(`R4: #(preaggregate) rollups ${label} answer equal to live`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": model(placement) },
             seedSql,
@@ -470,7 +467,6 @@ function scenarioSuite(label: string, placement: string): void {
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -542,12 +538,9 @@ scenarioSuite("built colocated", "");
 scenarioSuite("built into a storage destination", ` storage="${DESTINATION}"`);
 
 describe("R4: a #(preaggregate) rollup over a storage= base (#6293)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.persistence
@@ -566,7 +559,6 @@ source: daily is duckdb.table('orders_raw') -> {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -594,12 +586,9 @@ describe("R4: a #(preaggregate) rollup and the model's givens", () => {
    // `contents` carries it with no location: a query reading $MIN_AMOUNT
    // compiles against the rollup only because the variant imports the model's
    // givens from the file declaring each (author_imports.ts).
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
@@ -619,7 +608,6 @@ given: MIN_AMOUNT :: number is 0
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -647,12 +635,9 @@ given: MIN_AMOUNT :: number is 0
 });
 
 describe("R4: a #(preaggregate) rollup over a source whose rows read a given", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
@@ -670,7 +655,6 @@ source: scoped is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -692,12 +676,9 @@ source: scoped is duckdb.table('orders_raw') extend {
 });
 
 describe("R4: a #(preaggregate) rollup under a gated entry point", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
@@ -725,7 +706,6 @@ source: mine is base extend {}
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -779,12 +759,9 @@ source: mine is base extend {}
 });
 
 describe("R4: a #(preaggregate) rollup under #(authorize)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
@@ -805,7 +782,6 @@ source: open is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -837,13 +813,10 @@ source: open is duckdb.table('orders_raw') extend {
 });
 
 describe("R4: a #(preaggregate) rollup over a rolling window (S25b)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    const query = "run: recent -> { group_by: category; aggregate: total }";
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: recent is duckdb.table('orders_raw') extend {
@@ -869,7 +842,6 @@ source: orders is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -905,7 +877,6 @@ source: orders is duckdb.table('orders_raw') extend {
 });
 
 describe("R4: a join-level max and min over a rollup, with NULLs and empty groups (row 23)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    // Category C's only carrier matches no carrier row, D's carrier is NULL,
    // and carrier BB's fleet is NULL: each live max or min there is NULL.
@@ -918,10 +889,8 @@ describe("R4: a join-level max and min over a rollup, with NULLs and empty group
          ('AA', 5), ('BB', NULL), ('CC', 11)
        ) AS t(code, fleet)`,
    ];
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
@@ -942,7 +911,6 @@ source: orders is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -985,12 +953,9 @@ source: orders is duckdb.table('orders_raw') extend {
 });
 
 describe("R4: a persisted view of the name answers before a rollup (R1, row 11)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.persistence
@@ -1012,7 +977,6 @@ source: orders is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1054,12 +1018,9 @@ source: orders is duckdb.table('orders_raw') extend {
 });
 
 describe("R4: a named view whose file changed since the model compiled (row 11)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
@@ -1076,7 +1037,6 @@ describe("R4: a named view whose file changed since the model compiled (row 11)"
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1111,12 +1071,9 @@ describe("R4: a named view whose file changed since the model compiled (row 11)"
 });
 
 describe("R4: a refinement view whose file changed since the model compiled (row 11)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
@@ -1152,7 +1109,6 @@ describe("R4: a refinement view whose file changed since the model compiled (row
       );
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -75,7 +75,6 @@ source: gated is duckdb.table('orders_raw') extend {
 `;
 
 describe("R4: #(preaggregate) rollups build the partials their measures merge from", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    /** The colocated table of the rollup of `base` at `grain`. */
    const table = (base: string, grain: string[]) => {
@@ -87,10 +86,8 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       return fixture.rollupTables[names[0] as string] as string;
    };
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": MODEL },
          seedSql,
@@ -99,7 +96,6 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

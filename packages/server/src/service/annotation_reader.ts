@@ -28,6 +28,9 @@ import {
 } from "@malloydata/malloy";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 import { parseBounded, parseRouteTag } from "./motly";
+import type { components } from "../api";
+
+type RefusedSource = components["schemas"]["RefusedSource"];
 
 /** Malloy's routing for one note: its route, `""` for a MOTLY tag, `undefined` when the prefix is malformed. */
 export function routeOfNote(text: string): string | undefined {
@@ -242,7 +245,6 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "persist",
    "name",
    "storage",
-   "realization",
    "refresh",
    "watermark",
    "merge_key",
@@ -325,6 +327,14 @@ const PARTITION_RETIRED =
    "unpartitioned. It was a layout choice only, so the cost is scan time; " +
    "what each caller sees is unchanged";
 
+/** The rewrite for a `sharing=` on a materialization route. */
+const SHARING_RETIRED =
+   "set materialization.scope in publisher.json; a source no longer chooses its own sharing";
+
+/** The rewrite for a `schedule=` on a materialization route. */
+const SCHEDULE_RETIRED =
+   "set materialization.schedule in publisher.json; a source no longer sets its own schedule";
+
 /**
  * The materialization v2 routes. Each is read only with the materialize switch
  * on (`PUBLISHER_MATERIALIZE`); off, nothing reads them and the near-miss scan
@@ -363,17 +373,21 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
       payload: "tag",
       keys: new Set([...PERSIST_KEYS, ...PREAGGREGATE_KEYS]),
       retiredKeys: {
-         sharing:
-            "set materialization.scope in publisher.json; a source no longer chooses its own sharing",
-         schedule:
-            "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
+         sharing: SHARING_RETIRED,
+         schedule: SCHEDULE_RETIRED,
          partition: PARTITION_RETIRED,
+         realization:
+            "remove it: every table is built by CREATE TABLE AS SELECT",
       },
    },
    materialize: {
       payload: "tag",
       keys: MATERIALIZE_KEYS,
-      retiredKeys: { partition: PARTITION_RETIRED },
+      retiredKeys: {
+         sharing: SHARING_RETIRED,
+         schedule: SCHEDULE_RETIRED,
+         partition: PARTITION_RETIRED,
+      },
    },
    preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
    "!": { payload: "tag" },
@@ -411,6 +425,8 @@ export const PERSIST_INVALID_CODE = "persist-invalid";
 export const PREAGGREGATE_INVALID_CODE = "preaggregate-invalid";
 export const PERSIST_VIEW_INVALID_CODE = "persist-view-invalid";
 export const PERSIST_QUERY_INVALID_CODE = "persist-query-invalid";
+export const PERSIST_VIEW_UNPARSEABLE_CODE = "persist-view-unparseable";
+export const PERSIST_QUERY_UNPARSEABLE_CODE = "persist-query-unparseable";
 /** Two sources an author's `name=` puts on one table. */
 export const MATERIALIZATION_TABLE_COLLISION_CODE =
    "materialization-table-collision";
@@ -420,6 +436,10 @@ export const MATERIALIZATION_STORAGE_MODE_CODE = "materialization-storage-mode";
 export const MATERIALIZATION_NEAR_MISS_CODE = "materialization-near-miss";
 /** A valid `#@ persist` source Publisher refuses alone. */
 export const PERSIST_NOT_BUILT_CODE = "persist-not-built";
+/** A valid `#(materialize)` source Publisher refuses alone. */
+export const MATERIALIZE_NOT_BUILT_CODE = "materialize-not-built";
+/** A valid rollup, or one measure of it, Publisher refuses alone. */
+export const PREAGGREGATE_NOT_BUILT_CODE = "preaggregate-not-built";
 /**
  * {@link PERSIST_NOT_BUILT_CODE}'s former name, still emitted beside it for
  * one release so a client switching on it keeps working; removed after.
@@ -657,8 +677,23 @@ export function editDistance(a: string, b: string): number {
    return previous[b.length] ?? 0;
 }
 
-/** A finding as a package load carries it: which model it is in, when known. */
-export type PackageAnnotationFinding = AnnotationFinding & { model?: string };
+/**
+ * A finding as a package load carries it: which model it is in, when known,
+ * and, for a valid declaration that is not built (`unservable`), the
+ * refusal record the build plan lists it under (`refusedSources`).
+ */
+export type PackageAnnotationFinding = AnnotationFinding & {
+   model?: string;
+   refused?: RefusalKey;
+};
+
+/** Where a refused declaration sits in the build plan's `refusedSources`. */
+export interface RefusalKey {
+   sourceID: string;
+   name: string;
+   tier: RefusedSource["tier"];
+   reason: RefusedSource["reason"];
+}
 
 /**
  * A `#@` tag Malloy's build walk could not parse. Malloy drops the source from

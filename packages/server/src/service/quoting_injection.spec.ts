@@ -23,7 +23,7 @@
 // content check lands, which is the proof the injection is reachable.
 
 import { describe, expect, it } from "bun:test";
-import { ModelCompilationError } from "../errors";
+import { BadRequestError } from "../errors";
 import { assertPersistNamesQuoted } from "./materialization/plan/persist_annotation_validation";
 
 describe("assertPersistNamesQuoted identifier-injection hardening (F-3)", () => {
@@ -67,7 +67,7 @@ describe("assertPersistNamesQuoted identifier-injection hardening (F-3)", () => 
    for (const { desc, line } of injectionPayloads) {
       it(`rejects a quoted persist name with ${desc}`, () => {
          expect(() => assertPersistNamesQuoted(line, "m.malloy")).toThrow(
-            ModelCompilationError,
+            BadRequestError,
          );
       });
    }
@@ -79,7 +79,8 @@ describe("assertPersistNamesQuoted identifier-injection hardening (F-3)", () => 
       } catch (e) {
          caught = e as Error;
       }
-      expect(caught).toBeInstanceOf(ModelCompilationError);
+      expect(caught).toBeInstanceOf(BadRequestError);
+      expect(caught?.message).toEndWith("[persist-invalid]");
       // Actionable: the message must name the offending value and the allowed shape.
       expect(caught?.message).toContain("m.malloy");
       expect(caught?.message).toMatch(/letters|identifier|hyphen/);

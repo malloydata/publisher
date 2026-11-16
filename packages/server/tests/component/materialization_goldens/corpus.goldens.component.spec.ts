@@ -51,7 +51,7 @@ import {
    materializes,
    releasingEach,
 } from "../../../src/test_helpers/persist_corpus";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    addressesOf,
    GeneratedFiles,
@@ -202,12 +202,9 @@ function stemOf(model: CorpusModel): string {
 const claimed = new Set<string>();
 const planned = new Map<string, Planned>();
 let root: string;
-let restore: () => void = () => {};
 
+useMaterializationOn();
 beforeAll(async () => {
-   restore = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-   }).restore;
    root = fs.mkdtempSync(path.join(os.tmpdir(), "mat-goldens-corpus-"));
    const { models } = await hammerModels(materializes);
    for await (const model of releasingEach(models)) {
@@ -218,7 +215,6 @@ beforeAll(async () => {
 }, 180000);
 
 afterAll(async () => {
-   restore();
    await closeCorpus();
    fs.rmSync(root, { recursive: true, force: true });
 });

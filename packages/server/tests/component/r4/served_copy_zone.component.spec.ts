@@ -31,7 +31,7 @@
 
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { logger } from "../../../src/logger";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -276,12 +276,9 @@ const ZONE_DECLINE = /another (time )?zone than/;
 
 for (const tier of ["colocated", "storage"] as const) {
    describe(`R4: a served-copy table is read in the zone it was built in, or answered live [${tier}]`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": modelFor(tier), "base.malloy": baseModel },
             seedSql,
@@ -289,7 +286,6 @@ for (const tier of ["colocated", "storage"] as const) {
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -301,6 +297,8 @@ for (const tier of ["colocated", "storage"] as const) {
       async function servedCopyDecline(
          malloy: string,
       ): Promise<string | undefined> {
+         // The skip line is written only at debug.
+         const enabled = spyOn(logger, "isDebugEnabled").mockReturnValue(true);
          const debug = spyOn(logger, "debug");
          try {
             await fixture.runAsIs(malloy);
@@ -317,6 +315,7 @@ for (const tier of ["colocated", "storage"] as const) {
                )[0];
          } finally {
             debug.mockRestore();
+            enabled.mockRestore();
          }
       }
 

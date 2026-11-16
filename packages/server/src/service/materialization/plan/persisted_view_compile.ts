@@ -72,6 +72,7 @@ import {
 } from "../text/generated_files";
 import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
+import type { RefusedReason } from "../domain/types";
 
 interface GeneratedPersistedViews {
    /** The views the companion declares. */
@@ -137,11 +138,14 @@ async function persistedViewRefusalReason(
    plan: PersistedViewPlan,
    modelDef: unknown,
    materializer: ModelMaterializer,
-): Promise<string | undefined> {
+): Promise<{ reason: string; refusal: RefusedReason } | undefined> {
    const node = SourceMap.of(modelDef).node(plan.sourceID);
    const localName = node?.name;
    if (!node || !localName) {
-      return "its source is not in this model's namespace";
+      return {
+         reason: "its source is not in this model's namespace",
+         refusal: "run_target_unsupported",
+      };
    }
    const def = node.def as {
       fields?: unknown;
@@ -158,34 +162,60 @@ async function persistedViewRefusalReason(
          ? (prepared.pipeline as StageLike[])
          : [];
    } catch (error) {
-      return `the view does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
+      return {
+         reason: `the view does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
+         refusal: "generated_build_failed",
+      };
    }
-   if (stages.length === 0) return "the view has no stage to store";
+   if (stages.length === 0)
+      return {
+         reason: "the view has no stage to store",
+         refusal: "no_stored_columns",
+      };
    if (pipelineReadsCurrentTime(def, stages)) {
-      return "its result reads the current time, so it differs per read";
+      return {
+         reason: "its result reads the current time, so it differs per read",
+         refusal: "current_time",
+      };
    }
    const last = stages[stages.length - 1];
    if (
       plan.storage !== undefined &&
       (last.outputStruct?.fields ?? []).some(isNested)
    ) {
-      return "its result nests, which a storage destination's table cannot declare yet; persist it without storage=";
+      return {
+         reason:
+            "its result nests, which a storage destination's table cannot declare yet; persist it without storage=",
+         refusal: "nested_result",
+      };
    }
    const gates = collectEntryPointGates(node.def as never, modelDef as never);
    if (gates.length === 0) return undefined;
    if (gates.some((g) => !g.struct)) {
-      return "the gates of its source cannot be read";
+      return {
+         reason: "the gates of its source cannot be read",
+         refusal: "access_filter",
+      };
    }
    const gatedWhy =
       "its source carries a row-level gate (#(access_filter) or #(authorize))";
    if (stages.length !== 1 || last.type !== "reduce") {
-      return `${gatedWhy}, which a multi-stage or non-grouping view's stored result cannot keep`;
+      return {
+         reason: `${gatedWhy}, which a multi-stage or non-grouping view's stored result cannot keep`,
+         refusal: "access_filter",
+      };
    }
    if (last.limit !== undefined) {
-      return `${gatedWhy}, which a view with limit: cannot keep: its stored rows are limited across every caller`;
+      return {
+         reason: `${gatedWhy}, which a view with limit: cannot keep: its stored rows are limited across every caller`,
+         refusal: "access_filter",
+      };
    }
    if (computesAcrossGroups(last)) {
-      return `${gatedWhy}, which a view computing across groups (all(), exclude(), calculate:) cannot keep`;
+      return {
+         reason: `${gatedWhy}, which a view computing across groups (all(), exclude(), calculate:) cannot keep`,
+         refusal: "access_filter",
+      };
    }
    const grouped = groupedNames(last);
    for (const gate of gates) {
@@ -202,12 +232,18 @@ async function persistedViewRefusalReason(
          }>(probe, `persisted view gate on "${localName}"`, filterText);
          paths = (condition.refSummary?.fieldUsage ?? []).map((u) => u.path);
       } catch {
-         return `${gatedWhy} that could not be read against the view`;
+         return {
+            reason: `${gatedWhy} that could not be read against the view`,
+            refusal: "access_filter",
+         };
       }
       for (const p of paths) {
          if (!Array.isArray(p) || p.length === 0) continue;
          if (p.length !== 1 || typeof p[0] !== "string" || !grouped.has(p[0])) {
-            return `the access filter of its source reads \`${p.join(".")}\`, which the view does not group by, so its stored rows could not be filtered per caller`;
+            return {
+               reason: `the access filter of its source reads \`${p.join(".")}\`, which the view does not group by, so its stored rows could not be filtered per caller`,
+               refusal: "access_filter",
+            };
          }
       }
    }
@@ -294,7 +330,7 @@ async function persistedQueryRefusalReason(
    plan: PersistedQueryPlan,
    modelDef: unknown,
    materializer: ModelMaterializer,
-): Promise<string | undefined> {
+): Promise<{ reason: string; refusal: RefusedReason } | undefined> {
    let stages: StageLike[];
    let structRef: unknown;
    try {
@@ -306,27 +342,48 @@ async function persistedQueryRefusalReason(
          : [];
       structRef = prepared.structRef;
    } catch (error) {
-      return `the query does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
+      return {
+         reason: `the query does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
+         refusal: "generated_build_failed",
+      };
    }
-   if (stages.length === 0) return "the query has no stage to store";
+   if (stages.length === 0)
+      return {
+         reason: "the query has no stage to store",
+         refusal: "no_stored_columns",
+      };
    const node =
       plan.sourceID !== undefined
          ? SourceMap.of(modelDef).node(plan.sourceID)
          : undefined;
    if (plan.sourceID !== undefined && !node) {
-      return "its source is not in this model's namespace";
+      return {
+         reason: "its source is not in this model's namespace",
+         refusal: "run_target_unsupported",
+      };
    }
    const def = (node?.def ?? structRef) as {
       fields?: unknown;
       filterList?: unknown;
    };
-   if (!def || typeof def !== "object") return "its source cannot be read";
+   if (!def || typeof def !== "object")
+      return {
+         reason: "its source cannot be read",
+         refusal: "run_target_unsupported",
+      };
    if (pipelineReadsCurrentTime(def, stages)) {
-      return "its result reads the current time, so it differs per read";
+      return {
+         reason: "its result reads the current time, so it differs per read",
+         refusal: "current_time",
+      };
    }
    const last = stages[stages.length - 1];
    if ((last.outputStruct?.fields ?? []).some(isNested)) {
-      return "its result nests, which a persisted query cannot answer from its table yet";
+      return {
+         reason:
+            "its result nests, which a persisted query cannot answer from its table yet",
+         refusal: "nested_result",
+      };
    }
    // A gate anywhere the query reaches refuses it: a stored result is never
    // read past a gate (the gate policy has no row for a persisted query).
@@ -342,9 +399,22 @@ async function persistedQueryRefusalReason(
       (plan.sourceID !== undefined &&
          carriesInheritedGateNote(plan.sourceID, modelDef))
    ) {
-      return GATED_QUERY_REASON;
+      return { reason: GATED_QUERY_REASON, refusal: "access_filter" };
    }
    return undefined;
+}
+
+/** A planned query's refusal record. */
+function queryRefusalOf(
+   plan: PersistedQueryPlan,
+   refusal: { reason: string; refusal: RefusedReason },
+): PersistedQueryRefusal {
+   return {
+      queryName: plan.queryName,
+      ...refusal,
+      declaringURL: plan.declaringURL,
+      ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
+   };
 }
 
 /** Why a persisted query over a gated source is not built. */
@@ -391,7 +461,13 @@ export async function tryCompilePersistedViewCompanion(args: {
             args.materializer,
          );
          if (reason === undefined) plans.push(plan);
-         else refused.push({ ...plan, reason });
+         else {
+            refused.push({
+               ...plan,
+               reason: reason.reason,
+               outcome: { refused: reason.refusal },
+            });
+         }
       }
       const plannedQueries = planModelPersistedQueries(
          args.modelDef,
@@ -401,15 +477,18 @@ export async function tryCompilePersistedViewCompanion(args: {
       const viewNames = new Set(plans.map((p) => p.buildSourceName));
       const queries: PersistedQueryPlan[] = [];
       for (const plan of plannedQueries.plans) {
-         const reason = viewNames.has(plan.buildSourceName)
-            ? `its generated build source \`${plan.buildSourceName}\` collides with a persisted view's; rename one of them`
+         const refusal = viewNames.has(plan.buildSourceName)
+            ? {
+                 reason: `its generated build source \`${plan.buildSourceName}\` collides with a persisted view's; rename one of them`,
+                 refusal: "build_name_collision" as const,
+              }
             : await persistedQueryRefusalReason(
                  plan,
                  args.modelDef,
                  args.materializer,
               );
-         if (reason === undefined) queries.push(plan);
-         else refusedQueries.push({ queryName: plan.queryName, reason });
+         if (refusal === undefined) queries.push(plan);
+         else refusedQueries.push(queryRefusalOf(plan, refusal));
       }
       plannedNames = [
          ...plans.map((p) => p.buildSourceName),
@@ -427,9 +506,12 @@ export async function tryCompilePersistedViewCompanion(args: {
          // A stored base must never stand in for the rows a result reads.
          const reason =
             "a source-level `#@` line in its files could not be set aside, so its build would read a stored table";
-         for (const plan of plans) refused.push({ ...plan, reason });
+         const refusal = "generated_build_failed" as const;
+         for (const plan of plans) {
+            refused.push({ ...plan, reason, outcome: { refused: refusal } });
+         }
          for (const plan of queries) {
-            refusedQueries.push({ queryName: plan.queryName, reason });
+            refusedQueries.push(queryRefusalOf(plan, { reason, refusal }));
          }
          return { refused, refusedQueries };
       }

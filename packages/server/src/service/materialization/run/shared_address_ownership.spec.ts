@@ -4,15 +4,12 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import type {
    Materialization,
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import {
    compiledWith,
    fakeSource,
@@ -21,7 +18,6 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { unrecordedAudit } from "../../access_record";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName, VersionRef } from "../../identity";
 import { storageBindingResolverFor } from "../../versions/materialization_scope";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
@@ -29,6 +25,11 @@ import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
 import { MaterializationService } from "./materialization_service";
 import { ownedTableComment, TABLE_OWNED_ELSEWHERE } from "./table_ownership";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * Two persisted sources that compile to one build: `named`, at its author's
@@ -86,34 +87,26 @@ beforeEach(async () => {
    restoreSettings = installSettings({
       env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
    }).restore;
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "shared-address-ownership-")),
-   );
-   envPath = path.join(root, "env");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-      [ENV_ID, ENV, envPath],
-   );
-   repo = createDuckDBRepository(db);
+   ({ root, envPath, db, repo } = await openTempStorage(
+      "shared-address-ownership-",
+      {
+         id: ENV_ID,
+         name: ENV,
+      },
+   ));
 });
 
 afterEach(async () => {
    await env?.closeAllConnections().catch(() => undefined);
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
    restoreSettings();
 });
 
 function newService(): MaterializationService {
-   return new MaterializationService({
-      storageManager: { getRepository: () => repo },
-      getEnvironment: async () => env,
-      getLoadedEnvironments: () => [env],
-   } as unknown as EnvironmentStore);
+   return serviceOverEnvironment(
+      () => repo,
+      () => env,
+   );
 }
 
 async function build(

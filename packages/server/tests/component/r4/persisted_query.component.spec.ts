@@ -22,7 +22,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { unrecordedAudit } from "../../../src/service/access_record";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
 import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
 import {
@@ -215,7 +218,6 @@ function answerOf(outcome: Outcome): Answer {
 }
 
 describe("R4: a persisted named query answers its exact call, equal to live", () => {
-   let restore: () => void;
    let loaded: Awaited<ReturnType<typeof loadFixture>>;
    let fixture: LoadedFixture;
    const live = new Map<string, Answer>();
@@ -317,10 +319,8 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
       ],
    ];
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       await freshLoadPool();
       loaded = await loadFixture(FILES);
       for (const [, model, malloy] of served) {
@@ -339,7 +339,6 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
    });
    afterAll(async () => {
       await loaded?.dispose();
-      restore();
    });
 
    it("builds every persisted query the planner admits, and warns about the rest", () => {

@@ -43,6 +43,13 @@ function facts(
       boundEntityIds: new Set(),
       boundStorageNames: new Set(),
       servedStorageNames: new Set(),
+      // The bind keeps every source, none is a #(materialize) source or a
+      // persisted result, and every deployment fact is unknown.
+      refusedAtBind: () => undefined,
+      materialize: () => undefined,
+      persistedViewOf: () => undefined,
+      destinationConfigured: () => undefined,
+      connectionCanHoldTable: () => undefined,
       ...overrides,
    };
 }

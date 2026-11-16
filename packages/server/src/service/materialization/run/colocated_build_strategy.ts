@@ -186,12 +186,6 @@ export class ColocatedTier
       manifest.update(sourceEntityId, { tableName: quotedPhysical });
 
       const durationMs = Math.round(performance.now() - startTime);
-      // Debug: the run's `materialization.build.finished` is the build's event.
-      logger.debug(`Built materialized source ${persistSource.name}`, {
-         physicalTableName,
-         durationMs,
-      });
-
       // A colocated `#@ persist` table is bound on the served copy with the
       // columns its build wrote, captured here as a `storage=` build captures
       // them (the v1 cutover's G1).
@@ -232,7 +226,7 @@ export class ColocatedTier
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
          connectionName: persistSource.connectionName,
-         realization: instruction.realization,
+         realization: "COPY",
          ...ledgerFields(incrementalRefresh?.lineage, seededThrough),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.

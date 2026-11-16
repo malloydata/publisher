@@ -1,0 +1,6 @@
+import "my models/bäse.malloy"
+
+source: spelled_one is spelled_items
+
+#(doc) Expect row_count 6, v_total 210.
+query: check_spelled_one is spelled_one -> { aggregate: row_count, v_total }

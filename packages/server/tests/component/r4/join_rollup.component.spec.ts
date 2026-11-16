@@ -19,7 +19,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -274,12 +274,9 @@ const COUNTS = [
 ] as const;
 
 describe("R4: join-to-rollup (A7), a joined source's colocated rollup, equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model("") },
          seedSql,
@@ -287,7 +284,6 @@ describe("R4: join-to-rollup (A7), a joined source's colocated rollup, equal to 
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -627,12 +623,9 @@ const FAN_OUT_LIVE = [
 ] as const;
 
 describe("R4: join-to-rollup (A7) with fan-out grain dimensions and join-level measures (row 27)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": fanOutModel },
          seedSql: fanOutSeedSql,
@@ -640,7 +633,6 @@ describe("R4: join-to-rollup (A7) with fan-out grain dimensions and join-level m
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -684,12 +676,9 @@ describe("R4: join-to-rollup (A7) with fan-out grain dimensions and join-level m
  * rollup row cannot, so the leg declines.
  */
 describe("R4: join-to-rollup (A7) through a join keyed on a field the query source repeats", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: certs is duckdb.table('certs_raw') extend { primary_key: cert_id }
@@ -730,7 +719,6 @@ source: legs is duckdb.table('legs_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -776,12 +764,9 @@ source: legs is duckdb.table('legs_raw') extend {
 });
 
 describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage destination the query source is not stored in", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model(` storage="${DESTINATION}"`) },
          seedSql,
@@ -789,7 +774,6 @@ describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -818,12 +802,9 @@ describe("R4: join-to-rollup (A7) declines a joined source's rollup in a storage
 });
 
 describe("R4: join-to-rollup (A7) on a gated source", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
@@ -845,7 +826,6 @@ source: flights is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -866,12 +846,9 @@ source: flights is duckdb.table('flights_raw') extend {
 });
 
 describe("R4: join-to-rollup (A7) where live and a rollup disagree by construction", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: segments is duckdb.table('segs_ts_raw') extend {
@@ -920,7 +897,6 @@ source: flights_la is flights extend { timezone: 'America/Los_Angeles' }
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1040,13 +1016,10 @@ const CREW_DUP_SEED = [
 ];
 
 describe("R4: join-to-rollup (A7) where no build checked the join_one's key (known limitation 29)", () => {
-   let restore: () => void;
    let unique: R4Fixture;
    let repeated: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       // As for a table a host's manifest binds, or a build whose check
       // could not run: unknown.
       unique = await buildScenario({
@@ -1063,7 +1036,6 @@ describe("R4: join-to-rollup (A7) where no build checked the join_one's key (kno
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1124,12 +1096,9 @@ describe("R4: join-to-rollup (A7) where no build checked the join_one's key (kno
 });
 
 describe("R4: join-to-rollup (A7) and a key check that no longer describes the table (known limitation 29)", () => {
-   let restore: () => void;
    let stale: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       // A pass bound over a table whose rows now repeat the key: what a
       // check over an earlier generation would say. A run never binds one
       // (a rebuild checks again, and a run forgets the bound check of every
@@ -1142,7 +1111,6 @@ describe("R4: join-to-rollup (A7) and a key check that no longer describes the t
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1214,12 +1182,9 @@ const PARENT_KEY_SEED = [
 ];
 
 describe("R4: join-to-rollup (A7) through a join_many whose parent key the data breaks", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": PARENT_KEY_MODEL },
          seedSql: PARENT_KEY_SEED,
@@ -1227,7 +1192,6 @@ describe("R4: join-to-rollup (A7) through a join_many whose parent key the data 
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1361,12 +1325,9 @@ const GIVEN_KEY_SEED = [
 ];
 
 describe("R4: join-to-rollup (A7) through a join_many on the key of a query source whose rows depend on a given", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": GIVEN_KEY_MODEL },
          seedSql: GIVEN_KEY_SEED,
@@ -1374,7 +1335,6 @@ describe("R4: join-to-rollup (A7) through a join_many on the key of a query sour
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1476,12 +1436,9 @@ const NULL_CHILD_KEY_LIVE = [
 ] as const;
 
 describe("R4: join-to-rollup (A7) through a join to a source whose own primary key the data holds NULL or repeated", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": nullChildKeyModel("") },
          seedSql: NULL_CHILD_KEY_SEED,
@@ -1489,7 +1446,6 @@ describe("R4: join-to-rollup (A7) through a join to a source whose own primary k
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

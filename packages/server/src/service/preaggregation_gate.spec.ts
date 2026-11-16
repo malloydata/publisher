@@ -53,6 +53,13 @@ function model(body: string): string {
    return `${HEADER}${body}\n}\n`;
 }
 
+/** The package's `preaggregate-not-built` warnings: the rollups refused alone. */
+function rollupRefusals(pkg: Package) {
+   return (pkg.getPackageMetadata().warnings ?? []).filter(
+      (w) => w.code === "preaggregate-not-built",
+   );
+}
+
 async function loadPackage(
    text: string,
    file = "model.malloy",
@@ -80,7 +87,7 @@ describe("a valid declaration does not disturb the load", () => {
          expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
             "",
          );
-         expect(pkg.preaggregateAccessWarnings()).toEqual([]);
+         expect(rollupRefusals(pkg)).toEqual([]);
       },
       { timeout: 30000 },
    );
@@ -214,7 +221,7 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
             "",
          );
          // But it is SAID, on the surface an operator reads.
-         const warned = pkg.preaggregateAccessWarnings();
+         const warned = rollupRefusals(pkg);
          expect(warned).toHaveLength(1);
          expect(warned[0].subject).toBe("total");
          expect(warned[0].message).toContain("does not publicly expose");
@@ -245,9 +252,7 @@ source: orders_pub is orders extend {} include {
          expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
             "",
          );
-         expect(pkg.preaggregateAccessWarnings().map((w) => w.subject)).toEqual(
-            ["total"],
-         );
+         expect(rollupRefusals(pkg).map((w) => w.subject)).toEqual(["total"]);
       },
       { timeout: 30000 },
    );

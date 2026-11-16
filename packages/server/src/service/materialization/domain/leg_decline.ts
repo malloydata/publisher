@@ -64,6 +64,9 @@ const DECLINES = {
    view_missing_field: { reason: "MISSING_FIELD" },
    view_not_built: { reason: "NOT_BUILT" },
    view_stale: { reason: "STALE" },
+   query_missing_field: { reason: "MISSING_FIELD" },
+   query_not_built: { reason: "NOT_BUILT" },
+   query_stale: { reason: "STALE" },
    served_copy_time_zone: { reason: "TIME_ZONE" },
    served_copy_cross_connection: { reason: "CROSS_CONNECTION" },
    served_copy_stale: { reason: "STALE" },
@@ -90,7 +93,7 @@ export type ServedCopyDeclineCode = Extract<
 >;
 
 /** The leg a code belongs to, by its prefix. */
-type DecliningLeg = "rollup" | "view" | "served_copy";
+type DecliningLeg = "rollup" | "view" | "query" | "served_copy";
 
 /**
  * A leg that did not answer one query: expected, so logged quietly. Its
@@ -126,7 +129,9 @@ export class LegDecline extends Error {
          ? "rollup"
          : this.code.startsWith("view_")
            ? "view"
-           : "served_copy";
+           : this.code.startsWith("query_")
+             ? "query"
+             : "served_copy";
    }
 }
 

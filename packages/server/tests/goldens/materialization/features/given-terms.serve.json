@@ -8,7 +8,10 @@
       }
     ],
     "verdicts": [
-      "own:serves"
+      "own:serves",
+      "both:live:refused",
+      "by_base_dimension:live:refused",
+      "inherited:live:refused"
     ],
     "warnings": [
       {

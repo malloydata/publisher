@@ -21,7 +21,7 @@ refused: it is built and served with the gate re-applied at read, as a colocated
 one is (G3). What stays refused on this tier is a gate the source inherits as a
 row filter, one reached through a join, and one whose build would substitute a
 given — see the eligibility unit tests and
-`storage_g3_gates.component.spec.ts`.)
+`g3_gates.component.spec.ts`.)
 
 ## Publisher
 

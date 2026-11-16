@@ -11,12 +11,9 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { VersionRef } from "../../identity";
 import { storageBindingResolverFor } from "../../versions/materialization_scope";
 import { autoRunTableName } from "../../../test_helpers/readable_table_name";
@@ -39,6 +36,11 @@ import {
    storageTableSite,
    type TableSiteContext,
 } from "./table_site";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * The `name=` views earlier releases left (leftover_name_views.ts). Publisher
@@ -168,12 +170,10 @@ describe("leftover name= views through real builds", () => {
    }
 
    function newService(environment: Environment): MaterializationService {
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => environment,
-         getLoadedEnvironments: () => [environment],
-      } as unknown as EnvironmentStore;
-      const created = new MaterializationService(store);
+      const created = serviceOverEnvironment(
+         () => repo,
+         () => environment,
+      );
       environment.setVersionArchivedHook((packageName, versionId) => {
          reclaims.push(
             created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
@@ -249,20 +249,14 @@ describe("leftover name= views through real builds", () => {
       // A load worker reads its settings when it spawns: a fresh pool, so
       // the package's build plan sees PUBLISHER_MATERIALIZE.
       await __setPackageLoadPoolForTests(null);
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "leftover-name-view-")),
-      );
-      envPath = path.join(root, "env");
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "leftover-name-view-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       sourcesPath = path.join(root, "sources");
-      fs.mkdirSync(envPath);
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       reclaims = [];
       env = await newEnvironment();
       service = newService(env);
@@ -270,8 +264,7 @@ describe("leftover name= views through real builds", () => {
 
    afterEach(async () => {
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
       // Nor does a later spec's worker inherit them.
       await __setPackageLoadPoolForTests(null);

@@ -18,7 +18,7 @@
  */
 
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
-import { expect } from "bun:test";
+import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import {
@@ -322,9 +322,10 @@ export interface R4Fixture {
    viewRefusals: string[];
    /**
     * With {@link R4Scenario.preaggregate}: each `#(preaggregate)` declaration
-    * the rollup planner refused, by its code and base source.
+    * the rollup planner refused, by its refusal reason (an invalid one's
+    * code) and base source.
     */
-   rollupRefusals: { code: string; sourceName: string }[];
+   rollupRefusals: { reason: string; sourceName: string }[];
    /** For a `#(materialize)` scenario: each source's plan, by its name. */
    materializePlans: Record<string, MaterializePlan>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
@@ -561,7 +562,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       );
    }
    // A rollup whose build reads a given is left out, as the package's build
-   // plan leaves it out (`preaggregate-reads-given`).
+   // plan leaves it out (`preaggregate-not-built`, reason `reads_given`).
    const allRollupTargets = rollups?.generated
       ? await rollups.generated.runtime.getBuildTargets(rollups.generated.model)
       : undefined;
@@ -1272,7 +1273,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       model,
       viewRefusals,
       rollupRefusals: (rollups?.refused ?? []).map((r) => ({
-         code: r.code,
+         reason: r.tier === "unservable" ? r.refused.reason : r.code,
          sourceName: r.sourceName,
       })),
       materializePlans: Object.fromEntries(
@@ -1408,6 +1409,9 @@ async function colocatedEligibilityOf(
       getModelPaths: () => scenario.files.filter((f) => f.endsWith(".malloy")),
       getPackagePath: () => scenario.dir,
       getMalloyConfig: () => config,
+      getMaterializationConfig: () => null,
+      getPackageMetadata: () => ({}),
+      getVersionId: () => undefined,
       getMalloyConnection: async (name) => {
          const c = scenario.connections.get(name);
          if (!c) throw new Error(`no connection ${name}`);
@@ -1443,4 +1447,17 @@ export function expectPairServedVia(
    expect(run.servedVia).toBe(
       servedHere && !countsThroughPath ? "served_copy" : undefined,
    );
+}
+
+/**
+ * One test: the served copy over `fixture()` compiled and re-rooted every
+ * source, so it reports no problem. A thunk, since the fixture is built in a
+ * `beforeAll` after the test is declared.
+ */
+export function itLeavesNoServedCopyProblem(
+   fixture: () => Pick<R4Fixture, "servedCopyProblems">,
+): void {
+   it("leaves no problem on the served copy", async () => {
+      expect(await fixture().servedCopyProblems()).toEqual([]);
+   });
 }

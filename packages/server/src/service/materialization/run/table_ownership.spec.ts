@@ -4,9 +4,11 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+   openTempDuckDB,
+   type TempDuckDB,
+} from "../../../test_helpers/temp_storage";
 import type { components } from "../../../api";
 import {
    packageTableSuffix,
@@ -317,18 +319,15 @@ describe("on a DuckDB connection", () => {
          )
       ).rows[0]?.comment;
 
+   let temp: TempDuckDB;
    beforeEach(() => {
-      dir = mkdtempSync(join(tmpdir(), "table-ownership-"));
-      connection = new DuckDBConnection(
-         "table_ownership",
-         join(dir, "wh.duckdb"),
-         dir,
-      );
+      temp = openTempDuckDB("table-ownership-", "table_ownership", {
+         file: "wh.duckdb",
+         workingDirectory: true,
+      });
+      ({ dir, connection } = temp);
    });
-   afterEach(async () => {
-      await connection.close().catch(() => undefined);
-      rmSync(dir, { recursive: true, force: true });
-   });
+   afterEach(() => temp.dispose());
 
    const target = { physicalTableName: "named_t", connectionName: "wh" };
    const check = (owner: string, ownRecords = false) =>
@@ -500,9 +499,12 @@ describe("in a DuckLake destination", () => {
    let session: DuckDBConnection;
    const lake = { name: "lake", type: "ducklake" } as ApiConnection;
 
+   let temp: TempDuckDB;
    beforeEach(async () => {
-      dir = mkdtempSync(join(tmpdir(), "table-ownership-lake-"));
-      session = new DuckDBConnection("table_ownership_lake", ":memory:", dir);
+      temp = openTempDuckDB("table-ownership-lake-", "table_ownership_lake", {
+         workingDirectory: true,
+      });
+      ({ dir, connection: session } = temp);
       await session.runSQL("INSTALL ducklake");
       await session.runSQL("LOAD ducklake");
       await session.runSQL(
@@ -510,10 +512,7 @@ describe("in a DuckLake destination", () => {
             `(DATA_PATH '${join(dir, "data")}')`,
       );
    });
-   afterEach(async () => {
-      await session.close().catch(() => undefined);
-      rmSync(dir, { recursive: true, force: true });
-   });
+   afterEach(() => temp.dispose());
 
    it("a stored table is marked, read back, and refused to another package", async () => {
       const site = storageTableSite("lake", lake, session);

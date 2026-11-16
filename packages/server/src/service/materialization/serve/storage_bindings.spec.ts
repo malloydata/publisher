@@ -8,7 +8,12 @@ import {
    type PersistedResultFixture,
 } from "../../../test_helpers/persisted_result_fixture";
 import type { Binding } from "../domain/binding";
-import { modelStorageTables, ownBindings } from "./storage_bindings";
+import type { BuildPlan } from "../domain/types";
+import {
+   boundTableTypeFindings,
+   modelStorageTables,
+   ownBindings,
+} from "./storage_bindings";
 
 /**
  * What one model reads of a snapshot's `storage=` tables: the bindings of its
@@ -176,5 +181,104 @@ describe("ownBindings", () => {
       expect(
          ownBindings([own, other, rollup], f.modelDef, f.packagePath),
       ).toEqual({ kept: [own, rollup], shadowed: ["orders"] });
+   });
+});
+
+describe("boundTableTypeFindings", () => {
+   const plan = {
+      sources: {
+         "orders@m": {
+            name: "orders",
+            sourceEntityId: "vh",
+            modelPath: "m.malloy",
+            columns: [
+               { name: "id", type: "number" },
+               { name: "day", type: "date" },
+            ],
+         },
+         "r@m": {
+            name: "orders__rollup",
+            sourceEntityId: "vr",
+            modelPath: "m.malloy",
+            preaggregate: { baseSourceName: "orders", grainDimensions: ["k"] },
+            columns: [
+               { name: "k", type: "number" },
+               { name: "s__partial", type: "number" },
+            ],
+         },
+      },
+   } as unknown as BuildPlan;
+   const stored = [
+      { name: "id", type: "VARCHAR" },
+      { name: "day", type: "TIMESTAMP" },
+   ];
+
+   it("reads each kind's mismatches against its build source's columns", () => {
+      const findings = boundTableTypeFindings(
+         [
+            binding({ kind: "view", sourceIDs: ["orders@m"], schema: stored }),
+            binding({
+               kind: "rollup",
+               virtualHandle: "vr",
+               schema: [
+                  { name: "k", type: "VARCHAR" },
+                  { name: "s__partial", type: "VARCHAR" },
+               ],
+            }),
+            binding({ kind: "materialize", schema: stored }),
+         ],
+         plan,
+      );
+      expect(
+         findings.map((f) => ({
+            subject: f.subject,
+            kind: f.binding.kind,
+            handling: f.mismatches.map((m) => [m.column, m.handling]),
+         })),
+      ).toEqual([
+         // A persisted result casts what a faithful cast reads.
+         {
+            subject: "orders",
+            kind: "view",
+            handling: [
+               ["id", "live"],
+               ["day", "cast"],
+            ],
+         },
+         // A rollup and a `#(materialize)` table follow the same rule:
+         // neither reads a column as its stored type.
+         {
+            subject: "orders",
+            kind: "rollup",
+            handling: [
+               ["k", "live"],
+               ["s__partial", "live"],
+            ],
+         },
+         {
+            subject: "orders",
+            kind: "materialize",
+            handling: [
+               ["id", "live"],
+               ["day", "cast"],
+            ],
+         },
+      ]);
+   });
+
+   it("leaves a `#@ persist` table to its model's check, and a colocated one alone", () => {
+      expect(
+         boundTableTypeFindings(
+            [
+               binding({ schema: stored }),
+               binding({
+                  kind: "materialize",
+                  tier: "colocated",
+                  schema: stored,
+               }),
+            ],
+            plan,
+         ),
+      ).toEqual([]);
    });
 });

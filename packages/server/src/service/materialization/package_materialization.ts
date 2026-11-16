@@ -29,6 +29,7 @@ import { logger } from "../../logger";
 import {
    recordSourceBound,
    recordSourceDeclined,
+   recordStoredColumnTypeMismatch,
 } from "../../materialization_metrics";
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import type { Model } from "../model";
@@ -59,6 +60,11 @@ import {
    v1StoredColumnsOf,
 } from "./serve/bind";
 import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
+import {
+   type BoundTableTypeFinding,
+   boundTableTypeFindings,
+} from "./serve/storage_bindings";
+import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import * as warnings from "./package_warnings";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
@@ -102,10 +108,9 @@ export interface PackageMaterializationOwner {
    buildPlanPackage: BuildPlanPackage;
    /**
     * The sources callers may query, by the model that publishes them, or
-    * undefined when every source is queryable. Optional: a spec's owner need
-    * not curate.
+    * undefined when every source is queryable.
     */
-   publishedSurface?():
+   publishedSurface():
       | { modelPath: string; names: string[]; queries?: string[] }[]
       | undefined;
 }
@@ -153,6 +158,12 @@ export class PackageMaterialization {
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
+   /**
+    * The type findings of the bound `storage=` tables a model's own
+    * `#@ persist` check does not make ({@link boundTableTypeFindings}), as of
+    * the last publish.
+    */
+   private boundTypeFindings: readonly BoundTableTypeFinding[] = [];
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
       | undefined;
@@ -163,9 +174,7 @@ export class PackageMaterialization {
          plan: this.plan,
          packageName: () => owner.packageName(),
          models: () => owner.models(),
-         publishedSurface: owner.publishedSurface
-            ? () => owner.publishedSurface?.()
-            : undefined,
+         publishedSurface: () => owner.publishedSurface(),
          snapshot: () => this.snapshot(),
          storageBindings: () => this.storageBindings,
          colocatedEntries: () => this.colocatedEntries,
@@ -588,7 +597,7 @@ export class PackageMaterialization {
     */
    private readonly declarationLookup = (sourceID: string): unknown => {
       for (const model of this.owner.models().values()) {
-         const def = SourceMap.of(model.getModelDef?.()).node(sourceID)?.def;
+         const def = SourceMap.of(model.getModelDef()).node(sourceID)?.def;
          if (def) return def;
       }
       return undefined;
@@ -619,7 +628,7 @@ export class PackageMaterialization {
    private persistedViewBuildIDs(): Set<string> {
       const ids = new Set<string>();
       for (const model of this.owner.models().values()) {
-         for (const b of model.persistedViewBuilds?.() ?? []) {
+         for (const b of model.persistedViewBuilds() ?? []) {
             ids.add(b.buildSourceID);
          }
       }
@@ -641,6 +650,33 @@ export class PackageMaterialization {
       for (const model of this.owner.models().values()) {
          this.setServedCopyContextOn(model);
          void model.prepareServedCopy();
+      }
+      this.bindTypeFindings(bindings);
+   }
+
+   /**
+    * Read the bound tables' type findings once per publish, counting and
+    * logging each table's mismatched columns there, as a model's own are.
+    */
+   private bindTypeFindings(bindings: readonly Binding[]): void {
+      this.boundTypeFindings = boundTableTypeFindings(
+         bindings,
+         this.plan.buildPlan,
+      );
+      for (const finding of this.boundTypeFindings) {
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+         logger.warn(
+            "Stored column types do not match the declared Malloy types",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               packageName: this.owner.packageName(),
+               source: finding.subject,
+               kind: finding.binding.kind,
+               columns: finding.mismatches,
+            },
+         );
       }
    }
 
@@ -729,6 +765,13 @@ export class PackageMaterialization {
       return warnings.annotationFindingWarnings(this.plan.annotationFindings);
    }
 
+   /** The refusal warnings a planner's finding made (see annotationFindingWarnings). */
+   findingRefusalWarnings(): ApiPackageWarning[] {
+      return this.persistRefusalWarnings(
+         (id) => id in this.plan.refusalNotices,
+      );
+   }
+
    repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
       return warnings.repeatedJoinOneKeyWarnings(
          this.plan.buildPlan,
@@ -737,11 +780,15 @@ export class PackageMaterialization {
       );
    }
 
-   persistRefusalWarnings(): ApiPackageWarning[] {
+   persistRefusalWarnings(
+      only?: (sourceID: string) => boolean,
+   ): ApiPackageWarning[] {
       return warnings.persistRefusalWarnings(
          this.plan.buildPlan,
          this.plan.refusedRollups,
          this.plan.materializePlans,
+         this.plan.refusalNotices,
+         only,
       );
    }
 
@@ -757,7 +804,10 @@ export class PackageMaterialization {
    }
 
    storedColumnTypeWarnings(): ApiPackageWarning[] {
-      return warnings.storedColumnTypeWarnings(this.owner.models());
+      return warnings.storedColumnTypeWarnings(
+         this.owner.models(),
+         this.boundTypeFindings,
+      );
    }
 
    nativeSchemaWarnings(): ApiPackageWarning[] {
@@ -776,10 +826,6 @@ export class PackageMaterialization {
    /** Legal-but-probably-unintended incremental declarations, as warnings. */
    incrementalPolicyAdvisories(): ApiPackageWarning[] {
       return incrementalPolicyAdvisories(this.plan.incrementalPolicySources);
-   }
-
-   preaggregateAccessWarnings(): ApiPackageWarning[] {
-      return warnings.preaggregateAccessWarnings(this.owner.models());
    }
 
    /** See `persistencePolicyWarnings` in package_warnings.ts. */

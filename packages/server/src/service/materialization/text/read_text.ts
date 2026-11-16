@@ -17,7 +17,7 @@
  */
 
 import * as path from "path";
-import { fileURLToPath, pathToFileURL } from "url";
+import { fileURLToPath } from "url";
 import { annotationTexts, type AnnotationsDef } from "../../annotations";
 import { byCodepoint, routeOfNote } from "../../annotation_reader";
 import {
@@ -148,16 +148,19 @@ export const ROLLUP_COMPANION_SUFFIX = ".preaggregate.malloy";
 
 /**
  * The companion URL of the file a `sourceID` was declared in, or undefined
- * for a declaration that is not a local file.
+ * for a declaration that is not a local file. Appended at the URL, never
+ * through a filesystem path, so it is the same URL on every platform.
  */
 export function rollupCompanionURLOf(declaringURL: string): URL | undefined {
+   let url: URL;
    try {
-      return pathToFileURL(
-         `${fileURLToPath(declaringURL)}${ROLLUP_COMPANION_SUFFIX}`,
-      );
+      url = new URL(declaringURL);
    } catch {
       return undefined;
    }
+   if (url.protocol !== "file:") return undefined;
+   url.pathname += ROLLUP_COMPANION_SUFFIX;
+   return url;
 }
 
 /**

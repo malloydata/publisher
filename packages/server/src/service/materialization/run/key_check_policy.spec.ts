@@ -7,9 +7,14 @@
  */
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
+import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../../../test_helpers/metrics_harness";
 import { ColocatedTier } from "./colocated_build_strategy";
 import { UniquenessLedger } from "./inline_uniqueness";
 import { checkAndRecordKey } from "./instructed_build";
@@ -20,13 +25,13 @@ const MESSAGES = { notRun: "did not run", notUnique: "not unique" };
 
 /** Record one check on a fresh ledger: what it recorded, and what it warned. */
 async function record(
-   runCheck: Parameters<typeof checkAndRecordKey>[2],
+   runCheck: Parameters<typeof checkAndRecordKey>[3],
 ): Promise<{ recorded: unknown; warned: string[] }> {
    const ledger = new UniquenessLedger(undefined, "run-1");
    const recordRollupKey = sinon.spy(ledger, "recordRollupKey");
    const warn = sinon.stub(logger, "warn");
    try {
-      await checkAndRecordKey(ledger, "addr", runCheck, MESSAGES, {});
+      await checkAndRecordKey(ledger, "addr", "rollup", runCheck, MESSAGES, {});
       return {
          recorded: recordRollupKey.firstCall?.args[1],
          warned: warn.getCalls().map((c) => String(c.args[0])),
@@ -73,5 +78,35 @@ describe("a key check that throws", () => {
       const result = await record(async () => found);
       expect(result.warned).toEqual(["not unique"]);
       expect(result.recorded).toMatchObject(found);
+   });
+});
+
+describe("publisher_materialization_key_check_total", () => {
+   let harness: MetricsHarness;
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+   });
+   afterEach(async () => {
+      resetMaterializationTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   it("counts each check once, by its kind and what it found", async () => {
+      const found = { table: "t", keyColumn: "id", digest: "d" };
+      await record(async () => ({ ...found, unique: true }));
+      await record(async () => ({ ...found, unique: false }));
+      await record(async () => undefined);
+      await record(async () => {
+         throw new Error("warehouse went away");
+      });
+      const count = (outcome: string) =>
+         harness.collectCounter("publisher_materialization_key_check_total", {
+            kind: "rollup",
+            outcome,
+         });
+      expect(await count("unique")).toBe(1);
+      expect(await count("not_unique")).toBe(1);
+      expect(await count("not_run")).toBe(2);
    });
 });

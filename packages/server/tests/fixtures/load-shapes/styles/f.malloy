@@ -1,0 +1,2 @@
+--! styles f.json
+source: st_f is duckdb.sql("select 1 as x")
