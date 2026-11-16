@@ -292,7 +292,9 @@ export function hardCloseWhenIdle(connection: DuckDBConnection): void {
    // captured (shareable mode, an open that never settled) or it is done.
    if (!internals.closed || !handle) {
       if (internals.closed) awaitingHandle.add(connection);
-      outcomes.set(connection, "skipped");
+      // A repeat request (a second release of the same connection) keeps
+      // what the first one recorded.
+      if (!outcomes.has(connection)) outcomes.set(connection, "skipped");
       return;
    }
    awaitingHandle.delete(connection);

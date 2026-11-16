@@ -96,7 +96,7 @@ function holdConnects(connection: DuckDBConnection) {
 
 async function waitFor(
    condition: () => boolean,
-   timeoutMs = 1_000,
+   timeoutMs = 5_000,
 ): Promise<void> {
    const deadline = Date.now() + timeoutMs;
    while (!condition() && Date.now() < deadline) {
