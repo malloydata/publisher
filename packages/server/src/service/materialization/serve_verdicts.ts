@@ -538,6 +538,11 @@ export class ServeVerdicts {
          }
       }
       return verdicts.map((v) => {
+         // A refused declaration has no table to serve from, a rollup's
+         // included.
+         if (v.verdict === "live" && v.reason === "refused") {
+            return { ...v, cutoverPath: "live", cutoverReason: "refused" };
+         }
          if (v.origin === "preaggregate") {
             return { ...v, cutoverPath: "rollup" };
          }

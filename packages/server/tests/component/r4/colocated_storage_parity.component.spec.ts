@@ -366,7 +366,7 @@ source: flights_unread is duckdb.table('flights_raw') extend {
 
       it("refuses at plan the rollup no join reads, and answers it live, equal to live", async () => {
          expect(fixture.rollupRefusals).toContainEqual({
-            code: "preaggregate-time-zone",
+            reason: "time_zone",
             sourceName: "unread_segs",
          });
          expect(

@@ -449,12 +449,17 @@ source: orders is orders_raw extend {
       },
    ],
    {
-      "warns preaggregate-name-clash on the clashing measure, and publish allows it":
+      "warns preaggregate-not-built (name_clash) on the clashing measure, and publish allows it":
          (l) => {
-            const clash = codes(l, "preaggregate-name-clash");
+            const clash = codes(l, "preaggregate-not-built");
             expect(clash.map((w) => w.subject)).toEqual(["orders.total"]);
             expect(clash[0].message).toContain("total__partial");
-            expect(l.rejections ?? "").not.toContain("preaggregate-name-clash");
+            expect(
+               Object.values(
+                  l.fixture.pkg.getBuildPlan()?.refusedSources ?? {},
+               ).map((r) => r.reason),
+            ).toEqual(["name_clash"]);
+            expect(l.rejections ?? "").not.toContain("preaggregate-not-built");
          },
    },
 );
@@ -956,7 +961,7 @@ source: listed is duckdb.sql("""
                loader.pkg.getPackageMetadata().warnings ?? []
             ).filter(
                (w) =>
-                  (w as { code?: string }).code === "preaggregate-join-level",
+                  (w as { code?: string }).code === "preaggregate-not-built",
             );
             expect(refused).toHaveLength(1);
             expect(refused[0]?.message).toContain(

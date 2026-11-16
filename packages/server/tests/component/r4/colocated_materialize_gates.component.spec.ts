@@ -208,7 +208,7 @@ describe("colocated #(materialize) past its own row-level gate under G3 (gated s
       );
       expect(
          fixture.warnings
-            .filter((w) => w.code === "persist-source-refused")
+            .filter((w) => w.code === "materialize-not-built")
             .map((w) => w.subject)
             .sort(),
       ).toEqual(["baked", "gated_ext_tbl", "mat_joiner"]);

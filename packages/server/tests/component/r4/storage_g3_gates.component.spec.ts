@@ -705,10 +705,14 @@ query: q_col is g_orders -> { group_by: region; aggregate: c is count() }
                   .sort(),
             ).toEqual(
                (gated
-                  ? ["g_orders__by_region_sto__view:storage:authorize"]
+                  ? [
+                       "g_orders__by_region_sto__view:storage:authorize",
+                       "q_col__query:colocated:access_filter",
+                    ]
                   : [
                        "g_orders__by_region_col__view:colocated:authorize",
                        "g_orders__by_region_sto__view:storage:authorize",
+                       "q_col__query:colocated:access_filter",
                     ]
                ).sort(),
             );

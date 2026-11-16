@@ -322,9 +322,10 @@ export interface R4Fixture {
    viewRefusals: string[];
    /**
     * With {@link R4Scenario.preaggregate}: each `#(preaggregate)` declaration
-    * the rollup planner refused, by its code and base source.
+    * the rollup planner refused, by its refusal reason (an invalid one's
+    * code) and base source.
     */
-   rollupRefusals: { code: string; sourceName: string }[];
+   rollupRefusals: { reason: string; sourceName: string }[];
    /** For a `#(materialize)` scenario: each source's plan, by its name. */
    materializePlans: Record<string, MaterializePlan>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
@@ -1272,7 +1273,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       model,
       viewRefusals,
       rollupRefusals: (rollups?.refused ?? []).map((r) => ({
-         code: r.code,
+         reason: r.refused?.reason ?? r.code,
          sourceName: r.sourceName,
       })),
       materializePlans: Object.fromEntries(
