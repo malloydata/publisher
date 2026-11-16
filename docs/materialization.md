@@ -933,14 +933,18 @@ See [configuration.md](configuration.md) for the env vars. Fire semantics:
 - **Caps fires per tick** (`…_MAX_FIRES_PER_TICK`) so a burst of due packages doesn't stampede; a capped package fires on a later tick.
 - **Coalesces** when a build is already active for the package (the in-flight build covers the occurrence).
 
+A package or version bound to a host manifest (one with a `manifestLocation`) refuses a local on-demand run with 409 before anything is built, since it serves the host's tables and never this server's (a run that passes `buildInstructions` is still accepted), and the scheduler skips it.
+
 > **Never set `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` on a control-plane-driven (orchestrated) worker.** A package serving live under a control plane has no `manifestLocation`, so the per-package skip does not cover it — the flag being off is the primary guard against the standalone scheduler double-driving refresh the control plane already owns.
 
 ## Manage it with the CLI
 
 ```bash
-# View / set / clear a package's schedule (set also sets scope: version). set and clear edit the
-# package, which a published version refuses with 409 PACKAGE_IS_VERSIONED: set the schedule in
-# its publisher.json and publish a new version instead.
+# View / set / clear a package's schedule (set also sets scope: version). set and clear apply
+# only to a package with no published versions. A published version is immutable, so the server
+# refuses them with 409 PACKAGE_IS_VERSIONED, and the CLI adds where its schedule belongs:
+# "materialization": { "scope": "version", "schedule": "<cron>" } in its publisher.json,
+# then bump version and publish the new version. view prints the version it read.
 malloy-pub schedule view  --environment <env> --package <pkg>
 malloy-pub schedule set "0 6 * * *" --environment <env> --package <pkg>
 malloy-pub schedule clear --environment <env> --package <pkg>

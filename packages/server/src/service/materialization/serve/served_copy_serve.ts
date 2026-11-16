@@ -337,13 +337,31 @@ interface ServedCopyHost {
     * Absent, nothing is bound.
     */
    pinned?(): Pinned;
+   /**
+    * Compile one pass's files off this thread (the load worker) and hydrate
+    * the compiled model here, in a runtime over `config`. Resolves undefined
+    * when it cannot (no worker free now, or the job failed), and the pass
+    * compiles inline; rejects with the compile's failure as the inline
+    * compile throws it. Absent: every pass compiles inline.
+    */
+   compileElsewhere?(args: {
+      packagePath: string;
+      modelPath: string;
+      config: MalloyConfig;
+      /** The pass's files, by overlay key. */
+      files: ReadonlyMap<string, string>;
+   }): Promise<Awaited<ReturnType<CopyLoad>> | undefined>;
 }
 
 interface Compiled {
    key: string;
    /** The invalidation generation it was compiled under. */
    generation: number;
-   /** The snapshot bindings it was compiled over. */
+   /**
+    * The bindings it was compiled over: those it may read at the pin, by
+    * identity. A pin whose bindings differ only in what the compile does not
+    * read ({@link compileInputOf}) reuses it, rebound to those bindings.
+    */
    over: readonly Binding[];
    /**
     * The block every multi-path pair table is read for in this copy (see
@@ -589,6 +607,72 @@ function rerootFailureKey(
    return `${packagePath}\0${modelPath}\0${hash.digest("hex")}`;
 }
 
+/**
+ * What a served copy's compile reads of a binding: everything but how fresh
+ * the table is (`freshAsOf`, its window and fallback, which decide only
+ * whether the pin reads it) and what the router reads of it beside the copy
+ * (`ownGateKept`, a rollup's key check). A field added to `Binding` is read
+ * here until it is listed, so a new input recompiles rather than reuses.
+ * Memoized per binding, which is replaced, never edited.
+ */
+const compileInputs = new WeakMap<Binding, string>();
+export function compileInputOf(b: Binding): string {
+   let input = compileInputs.get(b);
+   if (input === undefined) {
+      const {
+         freshAsOf: _freshAsOf,
+         freshnessWindowSeconds: _window,
+         freshnessFallback: _fallback,
+         ownGateKept: _gateKept,
+         rollupKey: _rollupKey,
+         ...read
+      } = b;
+      input = JSON.stringify(read);
+      compileInputs.set(b, input);
+   }
+   return input;
+}
+
+/** The compile key of the bindings a copy is compiled over, in any order. */
+function compileKeyOf(bindings: readonly Binding[]): string {
+   return bindings.map(compileInputOf).sort().join("\u0000");
+}
+
+/** Whether two binding lists are the same bindings, by identity, in order. */
+function sameBindings(a: readonly Binding[], b: readonly Binding[]): boolean {
+   return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/**
+ * `compiled` answering for `bindings`, whose compile key is its own: the same
+ * compile, with each binding it reports (re-rooted, aliased) replaced by the
+ * one of `bindings` that reads alike, so an answer reports the pin's
+ * freshness, never the compile's. Undefined when two of `bindings` read
+ * alike, since which is which cannot be told.
+ */
+function reboundTo(
+   compiled: Compiled,
+   bindings: readonly Binding[],
+): Compiled | undefined {
+   const byInput = new Map<string, Binding>();
+   for (const b of bindings) {
+      const input = compileInputOf(b);
+      if (byInput.has(input)) return undefined;
+      byInput.set(input, b);
+   }
+   const now = (b: Binding): Binding => byInput.get(compileInputOf(b)) ?? b;
+   const rerooted = compiled.rerooted.map(now);
+   return {
+      ...compiled,
+      over: bindings,
+      rerooted,
+      aliased: rerooted.map((b, i) => ({
+         ...b,
+         destinationName: compiled.aliased[i].destinationName,
+      })),
+   };
+}
+
 /** One model's served copy. */
 export class ServedCopyServe {
    private packagePath?: string;
@@ -606,13 +690,15 @@ export class ServedCopyServe {
       number,
       {
          key: string;
-         over: readonly Binding[];
          generation: number;
          promise: Promise<Compiled>;
       }
    >();
    /** Bumped on every invalidation, so a compile started before it is never kept. */
    private generation = 0;
+   /** Requests for a compiled copy so far, and the latest whose copy each lane keeps. */
+   private turns = 0;
+   private keptTurn = new Map<number, number>();
 
    constructor(private readonly host: ServedCopyHost) {}
 
@@ -1274,41 +1360,49 @@ export class ServedCopyServe {
     * that block, and kept like lane 0 until the next invalidation.
     */
    private async ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
+      // Each request's turn: a compile an older request awaited never
+      // replaces the copy a newer one kept.
+      const turn = ++this.turns;
+      const keep = (compiled: Compiled): void => {
+         if ((this.keptTurn.get(lane) ?? 0) > turn) return;
+         this.keptTurn.set(lane, turn);
+         this.compiledLanes.set(lane, compiled);
+      };
       const bindings = this.freshBindings(pinned);
-      const over = pinned.snapshot.bindings;
-      const key = [
-         ...bindings
-            .map(
-               (b) =>
-                  `${b.sourceName}@${isColocated(b) ? "colocated:" : ""}${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshnessFallback ?? ""}`,
-            )
-            .sort(),
-      ].join("|");
       const generation = this.generation;
       const current = this.compiledLanes.get(lane);
+      // The same bindings as the copy compiled over, by identity: no key to
+      // read (a query's usual case).
       if (
          current &&
-         current.key === key &&
-         current.over === over &&
-         current.generation === generation
+         current.generation === generation &&
+         sameBindings(current.over, bindings)
       ) {
+         // Kept again under this turn: an older request still compiling
+         // must not replace the copy this one answered from.
+         keep(current);
          return current;
+      }
+      const key = compileKeyOf(bindings);
+      if (current && current.key === key && current.generation === generation) {
+         const reused = reboundTo(current, bindings);
+         if (reused) {
+            keep(reused);
+            return reused;
+         }
       }
       let inFlight = this.inFlightLanes.get(lane);
       if (
          !inFlight ||
          inFlight.key !== key ||
-         inFlight.over !== over ||
          inFlight.generation !== generation
       ) {
          const started = {
             key,
-            over,
             generation,
             promise: this.compile(
                key,
                generation,
-               over,
                bindings,
                lane,
                pinned.asOf.getTime(),
@@ -1322,13 +1416,28 @@ export class ServedCopyServe {
          });
          inFlight = started;
       }
-      const compiled = await inFlight.promise;
+      const awaited = await inFlight.promise;
+      // A compile this pin joined over bindings that differ only in what the
+      // compile does not read answers with this pin's bindings.
+      const rebound = sameBindings(awaited.over, bindings)
+         ? awaited
+         : reboundTo(awaited, bindings);
+      // Two of this pin's bindings read alike, so which is which cannot be
+      // told: compile over them as they are.
+      const compiled =
+         rebound ??
+         (await this.compile(
+            key,
+            generation,
+            bindings,
+            lane,
+            pinned.asOf.getTime(),
+         ));
       // An invalidation while it compiled makes it stale: keep it only when
       // it is still the current generation's. A copy over another snapshot
-      // is kept too: the latest compile is what the warnings report.
-      if (compiled.generation === this.generation) {
-         this.compiledLanes.set(lane, compiled);
-      }
+      // is kept too, unless a later request kept its own: the latest
+      // request's copy is what the warnings report.
+      if (compiled.generation === this.generation) keep(compiled);
       return compiled;
    }
 
@@ -1959,12 +2068,12 @@ export class ServedCopyServe {
    private async compile(
       key: string,
       generation: number,
-      over: readonly Binding[],
       bindings: Binding[],
       lane = 0,
       /** The pin's time, which a remembered failure is held against. */
       asOf = 0,
    ): Promise<Compiled> {
+      const over = bindings;
       const problems: ServedCopyProblem[] = [];
       // Storage bindings reach here only with destinations (`usable`); a
       // copy of colocated tables alone needs none.
@@ -2012,8 +2121,9 @@ export class ServedCopyServe {
       // fields on; and one more each that keeps every inlined join as written
       // and drops the pair tables.
       const maxPasses = 3 * state.candidates.length + 3;
-      // Each pass is a full compile on the main thread: hand the loop a turn
-      // between them, so a long ladder does not hold it throughout.
+      // A pass compiled inline is a full compile on the main thread: hand
+      // the loop a turn between them, so a long ladder does not hold it
+      // throughout.
       const yielder = createEventLoopYielder();
       for (let pass = 0; pass <= maxPasses; pass++) {
          if (pass > 0) await yielder.maybeYield();
@@ -2078,22 +2188,7 @@ export class ServedCopyServe {
                   .map((b) => b.destinationName),
             ),
          );
-         const compiler = packageFiles(
-            packagePath,
-            this.host.modelPath(),
-            config,
-         );
-         const load = async (files: ReadonlyMap<string, string>) => {
-            const { runtime, materializer: m } =
-               await compiler.loadModel(files);
-            const model = await m.getModel();
-            return {
-               materializer: m,
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               def: modelDefOf(model as any),
-               runtime: runtime as unknown as GraftRuntime,
-            };
-         };
+         const load = this.passLoader(packagePath, config);
          const loaded = await this.loadCopy(state, copy, overlay, load, lift);
          if (loaded === "retry") continue;
          if (loaded === "failed") {
@@ -2148,6 +2243,34 @@ export class ServedCopyServe {
          rerooted: [],
          aliased: [],
          problems,
+      };
+   }
+
+   /**
+    * How a pass's files are compiled into a model: on the host's other
+    * thread when it takes them ({@link ServedCopyHost.compileElsewhere}),
+    * else here, as `packagePath`'s model over them with `config`'s
+    * connections.
+    */
+   private passLoader(packagePath: string, config: MalloyConfig): CopyLoad {
+      const modelPath = this.host.modelPath();
+      const compiler = packageFiles(packagePath, modelPath, config);
+      return async (files) => {
+         const elsewhere = await this.host.compileElsewhere?.({
+            packagePath,
+            modelPath,
+            config,
+            files: keyedOverlay(files),
+         });
+         if (elsewhere) return elsewhere;
+         const { runtime, materializer } = await compiler.loadModel(files);
+         const model = await materializer.getModel();
+         return {
+            materializer,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            def: modelDefOf(model as any),
+            runtime: runtime as unknown as GraftRuntime,
+         };
       };
    }
 

@@ -21,13 +21,16 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { PackageLoadPool } from "../package_load/package_load_pool";
-import { writePackageFiles } from "../test_helpers/temp_package";
+import {
+   duckdbMalloyConfig,
+   writePackageFiles,
+} from "../test_helpers/temp_package";
 import { unrecordedAudit } from "./access_record";
 import { Environment } from "./environment";
 import type { FreshnessManifest } from "./materialization/domain/types";
 import { QueryPrivileges } from "./model_query_request";
 import { governsAccess } from "./governance/ir/array_query";
-import type { Package } from "./package";
+import { Package } from "./package";
 
 const MODEL = `##! experimental.persistence
 source: base is duckdb.sql("SELECT 1 AS a")
@@ -154,12 +157,9 @@ describe("a package compiles once per thing a compile reads", () => {
       await storeTable(once);
 
       expect(once.getOperationalFields().manifestBindingStatus).toBe("bound");
-      // The reload a bind ran before re-read `manifestLocation` from
-      // publisher.json (none here), over the registry row's path; the bind
-      // that stands in for it does the same, so `boundManifestOf` and the
-      // local-store layering read what they read before.
+      // Each keeps its registry row's manifest: none, and the manifest.
       expect(before.getManifestLocation()).toBeNull();
-      expect(once.getManifestLocation()).toBeNull();
+      expect(once.getManifestLocation()).toBe(file);
       expect(once.getBuildManifestEntries()).toEqual(
          before.getBuildManifestEntries(),
       );
@@ -255,37 +255,70 @@ describe("a package compiles once per thing a compile reads", () => {
       expect(pkg.getManifestLocation()).toBeNull();
    });
 
-   it("leaves manifestLocation as a reload left it, after a version load and a table-changing rebind", async () => {
+   it("keeps a version's stored manifestLocation through a load and every rebind", async () => {
       const probe = await loadVersion(null);
       const { file, entries } = await writeManifest(probe);
       const [id] = Object.keys(entries);
       const pkg = await loadVersion(file);
-      expect(pkg.getManifestLocation()).toBeNull();
-      // The PATCH-style path: the stored location is set to the manifest,
-      // then a rebind to other tables reloads, which reads publisher.json.
-      pkg.updateStoredMetadata({ manifestLocation: file });
+      expect(pkg.getManifestLocation()).toBe(file);
+      // Another table: a reload, which never reads a version's binding from
+      // its publisher.json.
+      const moved = { [id]: { ...entries[id], tableName: "summary_b" } };
+      expect(await pkg.reloadAllModels(moved, { ifChanged: true })).toBe(true);
+      expect(pkg.getManifestLocation()).toBe(file);
+      // Only the freshness: bound in place of that reload.
+      const fresher = {
+         [id]: { ...moved[id], dataAsOf: "2026-11-02T00:00:00Z" },
+      };
+      expect(await pkg.reloadAllModels(fresher, { ifChanged: true })).toBe(
+         false,
+      );
+      expect(pkg.getManifestLocation()).toBe(file);
+      // The identical entries: nothing to do.
+      expect(await pkg.reloadAllModels(fresher, { ifChanged: true })).toBe(
+         false,
+      );
+      expect(pkg.getManifestLocation()).toBe(file);
+   });
+
+   it("re-reads an unversioned package's manifestLocation from publisher.json on a reload", async () => {
+      const unversionedPath = path.join(rootDir, "unversioned");
+      const declared = path.join(rootDir, "declared.json");
+      writePackageFiles(
+         unversionedPath,
+         { "m.malloy": MODEL },
+         { manifest: { name: "pkg", manifestLocation: declared } },
+      );
+      const pkg = await Package.create(
+         "testEnv",
+         "pkg",
+         unversionedPath,
+         () => duckdbMalloyConfig().malloyConfig,
+      );
+      expect(pkg.getVersionId()).toBeUndefined();
+      expect(pkg.getManifestLocation()).toBe(declared);
+      const { entries } = await writeManifest(pkg);
+      const [id] = Object.keys(entries);
+
+      // A stored value a reload replaces with publisher.json's, as before.
+      pkg.updateStoredMetadata({ manifestLocation: "elsewhere.json" });
+      expect(await pkg.reloadAllModels(entries)).toBe(true);
+      expect(pkg.getManifestLocation()).toBe(declared);
+
+      // An edit to publisher.json is picked up by the next reload.
+      const edited = path.join(rootDir, "edited.json");
+      writePackageFiles(
+         unversionedPath,
+         { "m.malloy": MODEL },
+         { manifest: { name: "pkg", manifestLocation: edited } },
+      );
       expect(
-         await pkg.reloadAllModels(
-            { [id]: { ...entries[id], tableName: "summary_b" } },
-            { ifChanged: true },
-         ),
+         await pkg.reloadAllModels({
+            [id]: { ...entries[id], tableName: "summary_b" },
+         }),
       ).toBe(true);
-      expect(pkg.getManifestLocation()).toBeNull();
-      // And a freshness-only rebind, which binds in place of that reload.
-      pkg.updateStoredMetadata({ manifestLocation: file });
-      expect(
-         await pkg.reloadAllModels(
-            {
-               [id]: {
-                  ...entries[id],
-                  tableName: "summary_b",
-                  dataAsOf: "2026-11-02T00:00:00Z",
-               },
-            },
-            { ifChanged: true },
-         ),
-      ).toBe(false);
-      expect(pkg.getManifestLocation()).toBeNull();
+      expect(pkg.getManifestLocation()).toBe(edited);
+      await pkg.releaseConnections();
    });
 
    it("ships whether each model governs access with the model", async () => {

@@ -39,6 +39,13 @@ describe("a rebind of the same manifest", () => {
    let pkg: Package;
    let reloads: ReturnType<typeof spyOn>;
    let copies: ReturnType<typeof spyOn>;
+   let offThread: ReturnType<typeof spyOn>;
+   /** The served copy's compiles: inline, and those a load worker took. */
+   const copyCount = () =>
+      copies.mock.calls.length +
+      offThread.mock.results.filter(
+         (r: { value: unknown }) => r.value !== undefined,
+      ).length;
    /** The colocated entry for `summary`, on `table`. */
    let manifest: (table: string) => FreshnessManifest;
 
@@ -74,11 +81,13 @@ describe("a rebind of the same manifest", () => {
       });
       reloads = spyOn(PackageLoadPool.prototype, "loadPackage");
       copies = spyOn(GeneratedFiles.prototype, "loadModel");
+      offThread = spyOn(PackageLoadPool.prototype, "compileServedCopy");
    });
 
    afterEach(async () => {
       reloads.mockRestore();
       copies.mockRestore();
+      offThread.mockRestore();
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
@@ -98,7 +107,7 @@ describe("a rebind of the same manifest", () => {
       );
       const [packageCompiles, copyCompiles] = [
          reloads.mock.calls.length,
-         copies.mock.calls.length,
+         copyCount(),
       ];
       expect(packageCompiles).toBe(1);
       // One served-copy compile for the reload: not one started, invalidated
@@ -114,7 +123,7 @@ describe("a rebind of the same manifest", () => {
          await settled();
       }
       expect(reloads.mock.calls.length).toBe(packageCompiles);
-      expect(copies.mock.calls.length).toBe(copyCompiles);
+      expect(copyCount()).toBe(copyCompiles);
       expect(pkg.getModel("m.malloy")).toBe(model);
       expect(pkg.getBuildManifestEntries()).toEqual({
          [Object.keys(manifest("x"))[0]]: expect.objectContaining({
@@ -130,7 +139,7 @@ describe("a rebind of the same manifest", () => {
       ).toBe(true);
       await settled();
       expect(reloads.mock.calls.length).toBe(packageCompiles + 1);
-      expect(copies.mock.calls.length).toBe(copyCompiles + 1);
+      expect(copyCount()).toBe(copyCompiles + 1);
       expect(pkg.getModel("m.malloy")!.servedCopySourceIDs()).toEqual(
          new Set([expect.stringContaining("summary@")]),
       );

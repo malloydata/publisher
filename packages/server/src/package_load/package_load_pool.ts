@@ -21,7 +21,9 @@
  *   pruned; the next dispatch respawns.
  * - A job past its limit terminates its worker rather than leave a zombie
  *   compile burning CPU, and the worker is retired so no queued load goes to it
- *   while it exits.
+ *   while it exits. * - A served copy's pass (`compileServedCopy`) takes only a worker that is
+ *   ready and idle now, with nothing queued, and never queues or spawns: a
+ *   query may be waiting on it, and its caller compiles inline instead.
  */
 import type {
    FetchSchemaOptions,
@@ -47,6 +49,8 @@ import type {
 import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type {
+   CompileServedCopyRequest,
+   CompileServedCopyResult,
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
    LoadPackageError,
@@ -64,7 +68,10 @@ import type {
    WorkerLogMessage,
    WorkerToMainMessage,
 } from "./protocol";
-import { checkLoadPackageResult } from "./protocol_decode";
+import {
+   checkCompileServedCopyResult,
+   checkLoadPackageResult,
+} from "./protocol_decode";
 import { connectionTypeOf } from "../service/connection_type";
 
 // ──────────────────────────────────────────────────────────────────────
@@ -121,7 +128,8 @@ interface JobContext {
    pw: PoolWorker;
    connections: LookupConnection<InfoConnection>;
    urlReader: PackageLoadUrlReader;
-   resolve: (result: LoadPackageResult) => void;
+   /** Settles the job with its result message, checked by kind. */
+   resolve: (result: LoadPackageResult | CompileServedCopyResult) => void;
    reject: (err: Error) => void;
    timeout: ReturnType<typeof setTimeout>;
 }
@@ -157,13 +165,22 @@ export function nextQueuedJobIndex(
    return foreground >= 0 ? foreground : 0;
 }
 
-interface QueuedJob {
-   request: LoadPackageJob;
-   /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
-   enqueuedAt?: number;
-   resolve: (result: LoadPackageOutcome) => void;
-   reject: (err: Error) => void;
-}
+type QueuedJob =
+   | {
+        kind: "load";
+        request: LoadPackageJob;
+        /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
+        enqueuedAt?: number;
+        resolve: (result: LoadPackageOutcome) => void;
+        reject: (err: Error) => void;
+     }
+   | {
+        kind: "served-copy";
+        request: CompileServedCopyJob;
+        enqueuedAt?: number;
+        resolve: (result: CompileServedCopyResult) => void;
+        reject: (err: Error) => void;
+     };
 
 interface PoolWorker {
    id: number;
@@ -171,6 +188,8 @@ interface PoolWorker {
    ready: Promise<void>;
    inFlight: Set<string>; // job ids; at most one
    exited: boolean;
+   /** Its `ready` handshake arrived: a job dispatched to it starts now. */
+   isReady: boolean;
    /**
     * Stopping and not yet exited: terminated after a job timeout, or failed to
     * start or errored. It takes no new job, but holds its slot until it exits,
@@ -222,6 +241,24 @@ export interface LoadPackageJob {
     * waits for at most the background job already running, never a backlog.
     */
    background?: boolean;
+}
+
+/** One pass of a model's served copy to compile (see CompileServedCopyRequest). */
+export interface CompileServedCopyJob {
+   packagePath: string;
+   /** See {@link CompileServedCopyRequest.environmentName}. */
+   environmentName: string;
+   modelPath: string;
+   /**
+    * The served copy's connections. They stay on this thread, which answers
+    * the worker's proxy RPCs against them.
+    */
+   malloyConfig: MalloyConfig;
+   defaultConnectionName: string | null;
+   /** The re-rooted files, by overlay key. */
+   files: ReadonlyMap<string, string>;
+   /** Never background work: a query may be waiting on it. */
+   background?: undefined;
 }
 
 /**
@@ -350,8 +387,40 @@ export class PackageLoadPool {
          throw new Error("PackageLoadPool is shutting down");
       }
       return new Promise<LoadPackageOutcome>((resolve, reject) => {
-         this.queue.push({ request, resolve, reject, enqueuedAt: Date.now() });
+         this.queue.push({
+            kind: "load",
+            request,
+            resolve,
+            reject,
+            enqueuedAt: Date.now(),
+         });
          this.tryDispatch();
+      });
+   }
+
+   /**
+    * Compile one pass of a served copy on a worker that is ready and idle
+    * now, or undefined when none is (every worker busy or starting, or a job
+    * already queued): the caller then compiles it on this thread, so a query
+    * waiting on it never waits behind a package load or a worker's start.
+    * The compile's own failure comes back in-band; the Promise rejects only
+    * for a failure of the job (a timeout, a worker exit, a malformed result).
+    */
+   compileServedCopy(
+      request: CompileServedCopyJob,
+   ): Promise<CompileServedCopyResult> | undefined {
+      if (this.shuttingDown || this.queue.length > 0) return undefined;
+      const idle = this.workers.find(
+         (w) => w.isReady && !w.exited && !w.retiring && w.inFlight.size === 0,
+      );
+      if (!idle) return undefined;
+      return new Promise<CompileServedCopyResult>((resolve, reject) => {
+         void this.dispatchToWorker(idle, {
+            kind: "served-copy",
+            request,
+            resolve,
+            reject,
+         });
       });
    }
 
@@ -443,6 +512,34 @@ export class PackageLoadPool {
          this.handleJobTimeout(pw, jobId, qj.request.packagePath);
       }, this.jobLimitMs);
 
+      if (qj.kind === "served-copy") {
+         this.jobs.set(jobId, {
+            jobId,
+            pw,
+            connections: qj.request.malloyConfig.connections,
+            urlReader: defaultUrlReader,
+            resolve: (result) => {
+               clearTimeout(timeout);
+               qj.resolve(checkCompileServedCopyResult(result));
+            },
+            reject: (err) => {
+               clearTimeout(timeout);
+               qj.reject(err);
+            },
+            timeout,
+         });
+         const message: CompileServedCopyRequest = {
+            type: "compile-served-copy",
+            requestId: jobId,
+            packagePath: qj.request.packagePath,
+            environmentName: qj.request.environmentName,
+            modelPath: qj.request.modelPath,
+            defaultConnectionName: qj.request.defaultConnectionName,
+            files: [...qj.request.files],
+         };
+         pw.worker.postMessage(message);
+         return;
+      }
       this.jobs.set(jobId, {
          jobId,
          pw,
@@ -450,7 +547,7 @@ export class PackageLoadPool {
          urlReader: qj.request.urlReader ?? defaultUrlReader,
          resolve: (result) => {
             clearTimeout(timeout);
-            qj.resolve(adaptResult(result));
+            qj.resolve(adaptResult(checkLoadPackageResult(result)));
          },
          reject: (err) => {
             clearTimeout(timeout);
@@ -556,8 +653,15 @@ export class PackageLoadPool {
          ready,
          inFlight: new Set(),
          exited: false,
+         isReady: false,
          retiring: false,
       };
+      void ready.then(
+         () => {
+            pw.isReady = true;
+         },
+         () => {},
+      );
 
       worker.on("message", (msg: WorkerToMainMessage) => {
          this.handleWorkerMessage(pw, msg, readyResolve, spawnTimer);
@@ -618,6 +722,7 @@ export class PackageLoadPool {
             markReady();
             return;
          case "load-package-result":
+         case "compile-served-copy-result":
             this.completeJob(pw, msg);
             return;
          case "load-package-error":
@@ -646,16 +751,19 @@ export class PackageLoadPool {
       }
    }
 
-   private completeJob(pw: PoolWorker, msg: LoadPackageResult): void {
+   private completeJob(
+      pw: PoolWorker,
+      msg: LoadPackageResult | CompileServedCopyResult,
+   ): void {
       const ctx = this.jobs.get(msg.requestId);
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
       pw.inFlight.delete(msg.requestId);
-      // The message is structured-clone data typed only by the union; check
-      // its protocol version and envelope before anything casts into it.
-      let checked: LoadPackageResult;
+      // The message is structured-clone data typed only by the union; the
+      // job's resolve checks its protocol version and envelope before
+      // anything casts into it.
       try {
-         checked = checkLoadPackageResult(msg);
+         ctx.resolve(msg);
       } catch (error) {
          logger.error(
             `PackageLoadPool: worker #${pw.id} sent a result this server cannot read`,
@@ -668,7 +776,6 @@ export class PackageLoadPool {
          this.tryDispatch();
          return;
       }
-      ctx.resolve(checked);
       this.tryDispatch();
    }
 
@@ -988,6 +1095,14 @@ let singleton: PackageLoadPool | null = null;
 
 /** Test-only: what makes the pool when there is none; see the setter below. */
 let poolFactoryForTests: (() => PackageLoadPool) | undefined;
+
+/**
+ * The pool, when one is running; never makes one. For work that uses a
+ * worker only when one is already free (a served copy's compile).
+ */
+export function currentPackageLoadPool(): PackageLoadPool | null {
+   return singleton;
+}
 
 export function getPackageLoadPool(): PackageLoadPool {
    if (singleton === null && poolFactoryForTests) {

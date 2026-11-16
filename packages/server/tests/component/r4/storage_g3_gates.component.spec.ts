@@ -34,6 +34,7 @@ import { QueryMaterializer } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
+import { G3_STORAGE_MODEL } from "./g3_models";
 import {
    freshLoadPool,
    type LoadedFixture,
@@ -42,145 +43,8 @@ import {
 } from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference, type Row } from "./harness";
 
-// Each stored source selects its own columns, so no two share a content
-// address (a shared table is refused when any sharer is). Every `mz_` source
-// is `#(materialize)`, every `v1_` source `#@ persist`, all `storage=`.
-const MODEL = `##! experimental { givens persistence }
-import "raw.malloy"
-
-given: REGIONS :: string[]
-given: ROLE :: string
-given: STATUS :: string is 'placed'
-
-#(access_filter) region in $REGIONS
-#(materialize) name="g3s_mz" storage="lake"
-source: mz_gated is orders_raw -> {
-  select: id, customer_id, region, status, amount
-} extend {
-  measure: total is amount.sum(), n is count()
-}
-
-#(access_filter) region in $REGIONS
-#@ persist name="g3s_v1" storage="lake"
-source: v1_gated is orders_raw -> {
-  select: id, customer_id, region, amount
-} extend {
-  measure: total is amount.sum(), n is count()
-}
-
-source: mz_ext is mz_gated extend {
-  measure: avg_amount is amount.avg()
-}
-
-source: v1_ext is v1_gated extend {
-  measure: avg_amount is amount.avg()
-}
-
-#(authorize) $ROLE = 'admin'
-#(materialize) name="g3s_mz_lock" storage="lake"
-source: mz_lock is orders_raw -> { select: id, region } extend {
-  measure: n is count()
-}
-
-#(authorize) $ROLE = 'admin'
-#@ persist name="g3s_v1_lock" storage="lake"
-source: v1_lock is orders_raw -> { select: id, region, status } extend {
-  measure: n is count()
-}
-
-#(authorize) $ROLE = 'admin'
-#(access_filter) region in $REGIONS
-#(materialize) name="g3s_mz_lr" storage="lake"
-source: mz_lock_rows is orders_raw -> {
-  select: id, region, status, customer_id
-} extend {
-  measure: n is count()
-}
-
-#(authorize) $ROLE = 'admin'
-#(access_filter) region in $REGIONS
-#@ persist name="g3s_v1_lr" storage="lake"
-source: v1_lock_rows is orders_raw -> { select: id, region, customer_id } extend {
-  measure: n is count()
-}
-
-#(authorize) $ROLE = 'admin'
-source: locked_base is orders_raw extend {}
-
-#(materialize) name="g3s_mz_inh_lock" storage="lake"
-source: mz_inh_lock is locked_base -> { select: id, region, amount } extend {
-  measure: n is count()
-}
-
-#@ persist name="g3s_v1_inh_lock" storage="lake"
-source: v1_inh_lock is locked_base -> {
-  select: id, region, status, amount
-} extend {
-  measure: n is count()
-}
-
-#(access_filter) region in $REGIONS
-source: rows_base is orders_raw extend {}
-
-#(materialize) name="g3s_mz_inh_rows" storage="lake"
-source: mz_inh_rows is rows_base -> { select: id, region, discount } extend {
-  measure: n is count()
-}
-
-#@ persist name="g3s_v1_inh_rows" storage="lake"
-source: v1_inh_rows is rows_base -> {
-  select: id, region, status, discount
-} extend {
-  measure: n is count()
-}
-
-#(materialize) name="g3s_mz_joiner" storage="lake"
-source: mz_joiner is customers_raw extend {
-  join_many: g is mz_gated on g.customer_id = id
-  measure: n_customers is count()
-}
-
-#(access_filter) region in $REGIONS
-#(materialize) name="g3s_mz_baked" storage="lake"
-source: mz_baked is orders_raw -> {
-  where: status = $STATUS
-  select: id, region, status, discount, amount
-} extend {
-  measure: n is count()
-}
-
-#(access_filter) region in $REGIONS
-#@ persist name="g3s_v1_baked" storage="lake"
-source: v1_baked is orders_raw -> {
-  where: status = $STATUS
-  select: id, region, customer_id, discount
-} extend {
-  measure: n is count()
-}
-
-#(materialize) name="g3s_cust" storage="lake"
-source: cust_sto is customers_raw -> { select: id, segment } extend {
-  primary_key: id
-}
-
-#(access_filter) region in $REGIONS
-#(materialize) name="g3s_mz_mix" storage="lake"
-source: mz_mix is orders_raw -> {
-  select: id, customer_id, region, amount, discount
-} extend {
-  join_one: c is cust_sto on c.id = customer_id
-  measure: n is count()
-}
-
-#(access_filter) region in $REGIONS
-#@ persist name="g3s_v1_mix" storage="lake"
-source: v1_mix is orders_raw -> {
-  select: id, customer_id, region, discount
-} extend {
-  join_one: c is cust_sto on c.id = customer_id
-  measure: n is count()
-}
-`;
+// The model is shared with the served copy's worker parity spec.
+const MODEL = G3_STORAGE_MODEL;
 
 const FILES = { ...DATA_FILES, "raw.malloy": RAW_MODEL, "m.malloy": MODEL };
 
