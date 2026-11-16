@@ -1,10 +1,5 @@
 {
-  "droppedPersistSources": [
-    {
-      "modelPath": "hbd.malloy",
-      "name": "scoped"
-    }
-  ],
+  "droppedPersistSources": [],
   "internal": {
     "annotationFindings": [],
     "builds": [
@@ -18,12 +13,10 @@
         ]
       }
     ],
-    "droppedPersistSources": [
-      {
-        "modelPath": "hbd.malloy",
-        "name": "scoped"
-      }
-    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "all_rows@<hammer>/hbd/hbd.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -37,7 +30,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {

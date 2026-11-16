@@ -2,21 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The v1 cutover's dry-run verdict (6e, plan question 15): with
- * `PUBLISHER_V1_SERVED_COPY` past `off`, `POST …/packages?dryRun=true`
- * names the path that will serve each materialized source after the cutover
- * (`cutoverPath`: `served_copy`, `rollup`, or `live` with `cutoverReason`),
- * judged by compiling the served copy over bindings declared from the plan,
- * before any table is built. With the switch off, it carries no such field.
+ * The v1 cutover's dry-run verdict (6e, plan question 15):
+ * `POST …/packages?dryRun=true` names the path that will serve each
+ * materialized source (`cutoverPath`: `served_copy`, `rollup`, or `live` with
+ * `cutoverReason`), judged by compiling the served copy over bindings
+ * declared from the plan, before any table is built.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { DATA_FILES } from "./conformance/data";
+import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
    freshLoadPool,
    loadFixture,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES, type Variant } from "./conformance/shapes";
 
 async function preview(
@@ -53,27 +52,53 @@ describe("v1 cutover: the dry run's serve path", () => {
       }
    }, 120_000);
 
-   it("names the served copy for a colocated source with hidden columns (G2)", async () => {
-      const paths = await preview(
-         "joined persisted source with hidden fields, from an index",
-         "colocated",
-         "cutover",
-      );
-      expect(paths.customer_dim?.[0]).toBe("served_copy");
-      expect(paths.order_facts?.[0]).toBe("served_copy");
+   it("names the served copy for a source with hidden columns, colocated or storage= (G2)", async () => {
+      for (const variant of ["colocated", "storage"] as const) {
+         const paths = await preview(
+            "joined persisted source with hidden fields, from an index",
+            variant,
+            "cutover",
+         );
+         expect(paths.customer_dim?.[0]).toBe("served_copy");
+         expect(paths.order_facts?.[0]).toBe("served_copy");
+      }
    }, 120_000);
 
-   it("says live, with the served copy's reason, for a source it leaves as written", async () => {
-      // A v1 storage= table holds public columns only, so a measure over
-      // the internal column does not compile on it.
-      const paths = await preview(
-         "joined persisted source with hidden fields, from an index",
-         "storage",
-         "cutover",
-      );
-      expect(paths.customer_dim?.[0]).toBe("live");
-      expect(paths.customer_dim?.[1]).toBeDefined();
-      expect(paths.customer_dim?.[1]).not.toBe("not_rerooted");
+   it("says live, with the reason, for a source it leaves as written", async () => {
+      // A row filter the source inherits is refused on every tier (G3
+      // admits a source's own gate only), so it is left as written.
+      const restore = withSwitch("cutover");
+      await freshLoadPool();
+      const loader = await loadFixture({
+         ...DATA_FILES,
+         "raw.malloy": RAW_MODEL,
+         "m.malloy": `##! experimental { givens persistence }
+import "raw.malloy"
+
+given: REGIONS :: string[]
+
+#(access_filter) region in $REGIONS
+source: rows_base is orders_raw extend {}
+
+#@ persist storage="lake"
+source: inherited is rows_base -> { select: id, region, amount }
+`,
+      });
+      try {
+         const pkg = (await loader.bind()).pkg;
+         const paths = Object.fromEntries(
+            (await pkg.previewServeVerdicts()).map((v) => [
+               v.sourceName,
+               [v.cutoverPath, v.cutoverReason],
+            ]),
+         );
+         expect(paths.inherited?.[0]).toBe("live");
+         expect(paths.inherited?.[1]).toBeDefined();
+         expect(paths.inherited?.[1]).not.toBe("not_rerooted");
+      } finally {
+         restore();
+         await loader.dispose();
+      }
    }, 120_000);
 
    it("names the rollup leg for a v1 rollup", async () => {
@@ -83,10 +108,5 @@ describe("v1 cutover: the dry run's serve path", () => {
          "cutover",
       );
       expect(Object.values(paths).map((p) => p[0])).toContain("rollup");
-   }, 120_000);
-
-   it("carries no cutover path with the switch off", async () => {
-      const paths = await preview("baseline", "colocated", "on");
-      expect(paths.daily).toEqual([undefined, undefined]);
    }, 120_000);
 });

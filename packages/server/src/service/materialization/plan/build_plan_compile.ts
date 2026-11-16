@@ -4,11 +4,14 @@
 /**
  * Compiling a package's build plan on the main thread, against the package's
  * live connections: the build path (MaterializationService) and a load whose
- * plan the package-load worker left at its soft deadline. Kept apart from
- * `build_plan.ts` because it compiles through `Model.getModelRuntime`, and the
- * worker, which imports `build_plan.ts`, must not load `./model`.
+ * plan the package-load worker left at its soft deadline. It compiles each
+ * model through `GeneratedFiles` over the package's files on disk, where the
+ * worker compiles from its own file map.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
+import type { KeyCheckCompiler } from "../domain/key_check";
+import { modelDefOf, primaryKeyOf } from "../../governance/ir/compiled_model";
 import { MODEL_FILE_SUFFIX } from "../../../constants";
 import { logger } from "../../../logger";
 import { recordConnectionDigestSkipped } from "../../../materialization_metrics";
@@ -16,38 +19,47 @@ import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
+   finishBuildPlan,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanOutcome,
    type BuildPlanPackage,
-   type CompiledBuildPlan,
+   type FinishedBuildPlan,
 } from "./build_plan";
-import { refuseCollidingMaterialize } from "./eligibility_collect";
+import { loadGateText } from "./load_gate_text";
 import {
    joinOneKey,
    joinOneKeysOf,
+   joinedKeyNeedsOf,
    parentKeyNeedsOf,
    storedKeyChecksOf,
+   type JoinedKeyNeed,
    type ParentKeyNeed,
-   type RollupVariantPlan,
 } from "./rollup_plan";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import {
    compileParentKeyChecks,
    parentKeyCheckCompiler,
 } from "./rollup_compile";
-import { SourceMap } from "./source_map";
+import { SourceMap } from "../text/source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
-import { Model } from "../../model";
-import { keyedOverlay } from "../../overlay_key";
-import {
-   compiledFileText,
-   loadLeavingOutCrossConnectionJoins,
-} from "./cross_connection_joins";
+import { packageFiles } from "../text/package_files";
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
-): Promise<CompiledBuildPlan> {
+   {
+      keepIncrementalUnbuildable = false,
+   }: {
+      /**
+       * Keep a source whose valid incremental declaration this deployment
+       * cannot honour (incremental_policy's rules 6, 7 and 12), rather than
+       * refuse it alone. For a spec that plans incremental machinery on
+       * DuckDB, which no load or run does.
+       */
+      keepIncrementalUnbuildable?: boolean;
+   } = {},
+): Promise<FinishedBuildPlan> {
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
    const joinOneKeys = new Set<string>();
@@ -57,8 +69,17 @@ export async function compilePackageBuildPlan(
       need: ParentKeyNeed;
       compile: (text: string) => Promise<string>;
    }[] = [];
+   // Every source a join reaches on a column other than its primary key, with
+   // the model that names it, for the check of a rollup's base's own key.
+   const joinedKeyNeeds: {
+      need: JoinedKeyNeed;
+      compile: (text: string) => Promise<string>;
+   }[] = [];
    // Every declared primary key, by sourceID, for the stored-table key checks.
    const primaryKeys = new Map<string, string>();
+   // Each `#(materialize)` uniqueness check's compiler over a run's
+   // compiler manifest: this plan is built on the thread that runs builds.
+   const keyCheckCompilers = new Map<string, KeyCheckCompiler>();
    const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -71,55 +92,36 @@ export async function compilePackageBuildPlan(
       // a turn between models so requests are not held for the whole plan.
       // Checked after the yield, so a cancel that lands during it is seen.
       await yielder.maybeYield();
-      if (signal?.aborted) throw new Error("Build cancelled");
+      if (signal?.aborted) throw new BuildCancelledError();
 
-      const load = async (files?: ReadonlyMap<string, string>) => {
-         const { runtime, modelURL, importBaseURL } =
-            await Model.getModelRuntime(
-               pkg.getPackagePath(),
-               modelPath,
-               pkg.getMalloyConfig(),
-               files ? { overlay: files } : undefined,
-            );
-         // Held onto (rather than chained straight into `.getModel()`)
-         // because the gate classification needs the SAME live materializer
-         // that compiled this model — see `classifyPersistSourceGate`'s doc.
-         const materializer = runtime.loadModel(modelURL, { importBaseURL });
-         return {
-            runtime,
-            materializer,
-            malloyModel: await materializer.getModel(),
-         };
-      };
-      let loaded: Awaited<ReturnType<typeof load>>;
-      // The build view's files, when the model joins sources across
-      // connections (#6982): its builds are planned from them.
-      let buildView: Map<string, string> | undefined;
-      try {
-         loaded = await load();
-      } catch (first) {
-         const view = await loadLeavingOutCrossConnectionJoins({
-            firstError: first,
-            readText: (url) => compiledFileText(url),
-            load: (files) => load(keyedOverlay(files)),
-         });
-         if (!view) throw first;
-         loaded = view.result;
-         buildView = keyedOverlay(view.overlay);
-      }
-      const { runtime, materializer, malloyModel } = loaded;
-      const map = SourceMap.of(malloyModel._modelDef);
+      const authorFiles = packageFiles(
+         pkg.getPackagePath(),
+         modelPath,
+         pkg.getMalloyConfig(),
+      );
+      // Held onto (rather than chained straight into `.getModel()`)
+      // because the gate classification needs the SAME live materializer
+      // that compiled this model — see `classifyPersistSourceGate`'s doc.
+      const { runtime, materializer } = await authorFiles.loadModel();
+      const malloyModel = await materializer.getModel();
+      const map = SourceMap.of(modelDefOf(malloyModel));
       for (const key of joinOneKeysOf(map)) {
          joinOneKeys.add(key);
       }
       for (const node of map.nodes()) {
-         const key = (node.def as { primaryKey?: unknown }).primaryKey;
-         if (typeof key === "string" && !primaryKeys.has(node.sourceID)) {
+         const key = primaryKeyOf(node.def);
+         if (key !== undefined && !primaryKeys.has(node.sourceID)) {
             primaryKeys.set(node.sourceID, key);
          }
       }
       for (const need of parentKeyNeedsOf(map)) {
          parentKeyNeeds.push({
+            need,
+            compile: parentKeyCheckCompiler(materializer),
+         });
+      }
+      for (const need of joinedKeyNeedsOf(map)) {
+         joinedKeyNeeds.push({
             need,
             compile: parentKeyCheckCompiler(materializer),
          });
@@ -130,20 +132,17 @@ export async function compilePackageBuildPlan(
          materializer,
          malloyModel,
          runtime,
-         getRuntime: (overlay) =>
-            Model.getModelRuntime(
-               pkg.getPackagePath(),
-               modelPath,
-               pkg.getMalloyConfig(),
-               { overlay: new Map([...(buildView ?? []), ...overlay]) },
-            ),
+         getRuntime: (overlay) => authorFiles.runtime(overlay),
+         keyCheckCompilers,
       });
    }
 
    // A rollup key check no join_one of the package reads is not run: it
    // would scan the base for nothing (known limitation 29).
-   for (const plan of Object.values(parts.preaggregatePlans)) {
-      const rollup = plan as RollupVariantPlan;
+   const rollupPlans = Object.values(parts.tables).flatMap((table) =>
+      table.rollup ? [table.rollup as RollupVariantPlan] : [],
+   );
+   for (const rollup of rollupPlans) {
       if (
          rollup.keyCheck &&
          !joinOneKeys.has(
@@ -154,23 +153,24 @@ export async function compilePackageBuildPlan(
       }
    }
 
-   // A query source read through a join_many keyed on its primary key:
-   // the rollup's build checks that key unique and never NULL.
-   const rollupPlans = Object.values(
-      parts.preaggregatePlans,
-   ) as RollupVariantPlan[];
-   await compileParentKeyChecks(rollupPlans, parentKeyNeeds);
+   // A query source read through a join_many keyed on its primary key, and
+   // a rollup's base reached by a join on another column: the rollup's build
+   // checks that key unique and never NULL.
+   await compileParentKeyChecks(rollupPlans, parentKeyNeeds, joinedKeyNeeds);
    // A `storage=` rollup read that way is read beside the query source's
-   // stored table (#1704): each stored source's key is checked over its
+   // stored table: each stored source's key is checked over its
    // table at its own build instead.
    const storedKeyChecks = storedKeyChecksOf(
       rollupPlans,
       parentKeyNeeds.map(({ need }) => need),
       (sourceID) => primaryKeys.get(sourceID),
-      Object.keys(parts.sources).filter(
-         (sourceID) => !parts.preaggregatePlans[sourceID],
+      Object.keys(parts.tables).filter(
+         (sourceID) => !parts.tables[sourceID].rollup,
       ),
    );
+   for (const [sourceID, keyColumn] of Object.entries(storedKeyChecks)) {
+      parts.tables[sourceID].storedKeyCheck = keyColumn;
+   }
 
    const connections = await resolvePackageConnections(
       pkg,
@@ -191,21 +191,14 @@ export async function compilePackageBuildPlan(
    );
 
    // The build path reads this plan directly: a `#(materialize)` source
-   // refused for its table name must not build here either.
-   return refuseCollidingMaterialize({
-      builds: parts.builds,
-      sources: parts.sources,
-      targets: parts.targets,
+   // refused for its table name, or a source whose incremental declaration
+   // this deployment cannot honour, must not build here either.
+   return finishBuildPlan(parts, {
       connectionDigests,
       connections,
-      sourceModelPaths: parts.sourceModelPaths,
-      droppedPersistSources: parts.droppedPersistSources,
-      annotationFindings: parts.annotationFindings,
-      preaggregatePlans: parts.preaggregatePlans,
-      ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
-      materializePlans: parts.materializePlans,
-      sourceGateOutcomes: parts.sourceGateOutcomes,
-      omittedSources: parts.omittedSources,
+      versionScoped: versionOwnsTables(pkg),
+      keyCheckCompilers,
+      keepIncrementalUnbuildable,
    });
 }
 
@@ -223,5 +216,43 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
+   );
+}
+
+/**
+ * The load gate's text for a plan a run compiled (plan/load_gate_text.ts),
+ * read off the plan the run derives so the run and the load agree: empty
+ * when the files carry no invalid materialization annotation.
+ */
+export function runLoadGateText(
+   compiled: FinishedBuildPlan,
+   pkg: BuildPlanPackage,
+   judgement: { versionScoped: boolean; enforceCollisions: boolean },
+): string {
+   const derived = deriveBuildPlanOutcome(
+      compiled,
+      pkg.getMaterializationConfig?.() ?? null,
+   );
+   return loadGateText(
+      {
+         plan: derived.plan,
+         annotationFindings: derived.annotationFindings,
+         incrementalDeclarations: derived.incrementalDeclarations,
+         materializePlans: derived.materializePlans,
+         modelGateLines: derived.modelGateLines,
+      },
+      judgement,
+   );
+}
+
+/**
+ * Whether the package's tables are named per version: a published version
+ * of a `scope: "version"` package (the run's `ownedVersionOf`). An
+ * unversioned package writes an author's `name=` as given whatever its scope.
+ */
+function versionOwnsTables(pkg: BuildPlanPackage): boolean {
+   return (
+      pkg.getPackageMetadata?.()?.scope === "version" &&
+      pkg.getVersionId?.() !== undefined
    );
 }

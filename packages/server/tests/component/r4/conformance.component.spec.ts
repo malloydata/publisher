@@ -4,11 +4,10 @@
 /**
  * The conformance fixture (ms2data/service#7098): synthetic packages shaped
  * like real ones, each served three ways (v1 `#@ persist` with `storage=`,
- * v1 colocated, and `#(materialize)`), with the materialize switch off
- * (today's serve shape), on (the served copy) and with the v1 cutover on
- * (`cutover`: `PUBLISHER_V1_SERVED_COPY=on`, so v1 tables are read by the
- * served copy, the rollup and view legs, or not at all), through the real
- * package path (conformance/package_harness.ts). Every query's served answer must
+ * v1 colocated, and `#(materialize)`), under the v1 cutover (`cutover`: v1
+ * tables are read by the served copy, the rollup and view legs, or not at
+ * all; since the retirement the only path), through the real
+ * package path (src/test_helpers/conformance/package_runner.ts). Every query's served answer must
  * equal live, rows and result metadata (field types with their timeframes,
  * and annotations), and a stored table must have answered it.
  *
@@ -35,7 +34,7 @@ import {
    type Switch,
    withSwitch,
    type WireField,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import {
    type ConformanceQuery,
    type Expect,
@@ -47,12 +46,15 @@ import {
    type Variant,
    VARIANTS,
 } from "./conformance/shapes";
+import { withoutDrillExpression } from "./conformance/drill_expression";
 import { rowDifference } from "./harness";
-import { shadowRowDifference } from "../../../src/service/materialization/serve/v1_shadow";
+import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 
 const RUN_GAPS = process.env.CONFORMANCE_GAPS === "run";
 const REPORT = process.env.CONFORMANCE_REPORT === "1";
-const SWITCHES: Switch[] = ["off", "on", "cutover"];
+// Only the cutover column: `off` and `on` pinned the retired serve shape and
+// composite; the shipped default is conformance_default_settings's.
+const SWITCHES: Switch[] = ["cutover"];
 
 /**
  * Metadata differences every stored read has on main, tolerated per case so
@@ -66,7 +68,7 @@ const TOLERANCES = {
    },
    "drill-metadata": {
       reason:
-         "the served copy's #(malloy) drill_expression differs from live's for a dimension it stores (its code is the stored column, or the definition, not live's)",
+         "the #(malloy) drill_expression differs from live's for a column read from a stored table (its code is the stored column, or the definition, not live's); every other #(malloy) key is compared",
    },
 } as const;
 type Tolerance = keyof typeof TOLERANCES;
@@ -79,7 +81,8 @@ const tolerated: Record<Tolerance, string[]> = {
 
 /**
  * A result type with the tolerated differences set aside, a nest's fields
- * included: every number's subtype, and every `#(malloy)` drill annotation.
+ * included: every number's subtype, and the `drill_expression` of every
+ * `#(malloy)` annotation.
  */
 function tolerantType(
    type: unknown,
@@ -88,16 +91,15 @@ function tolerantType(
 ): unknown {
    if (depth > 32 || type === null || typeof type !== "object") return type;
    if (Array.isArray(type)) {
-      return type
-         .filter(
-            (a) =>
-               !(
-                  tolerate.includes("drill-metadata") &&
-                  typeof (a as { value?: unknown })?.value === "string" &&
-                  isDrill((a as { value: string }).value)
-               ),
-         )
-         .map((t) => tolerantType(t, tolerate, depth + 1));
+      return type.map((a) =>
+         tolerate.includes("drill-metadata") &&
+         typeof (a as { value?: unknown })?.value === "string"
+            ? {
+                 ...(a as object),
+                 value: withoutDrillExpression((a as { value: string }).value),
+              }
+            : tolerantType(a, tolerate, depth + 1),
+      );
    }
    return Object.fromEntries(
       Object.entries(type as Record<string, unknown>)
@@ -108,11 +110,10 @@ function tolerantType(
    );
 }
 
-const isDrill = (a: string) => a.startsWith("#(malloy)");
-
 /**
  * The first difference in result metadata, or undefined. With tolerances,
- * a number's subtype and the `#(malloy)` drill annotations are not compared.
+ * a number's subtype and each `#(malloy)` annotation's `drill_expression`
+ * are not compared.
  */
 function fieldDifference(
    live: Answer,
@@ -127,11 +128,12 @@ function fieldDifference(
    const type = (f: WireField) => tolerantType(f.type, tolerate);
    const notes = (f: WireField) =>
       tolerate.includes("drill-metadata")
-         ? f.annotations.filter((n) => !isDrill(n))
+         ? f.annotations.map(withoutDrillExpression)
          : f.annotations;
    for (let i = 0; i < a.length; i++) {
       const pairs: [string, unknown, unknown][] = [
          ["name", a[i].name, b[i].name],
+         ["kind", a[i].kind, b[i].kind],
          ["type", type(a[i]), type(b[i])],
          ["annotations", notes(a[i]), notes(b[i])],
       ];
@@ -262,7 +264,7 @@ for (const shape of SHAPES) {
             // rollup leg's, under their v2 names) and at bind, so it gets a
             // package of its own, loaded, built and bound under it, by a
             // load pool spawned with it.
-            restore = withSwitch("on");
+            restore = withSwitch("on", shape.env);
             try {
                await freshLoadPool();
                const loader = await loadFixture({
@@ -275,13 +277,13 @@ for (const shape of SHAPES) {
                fixture = await loader.bind({ includeRollups: true });
                for (const on of SWITCHES.filter((s) => s !== "cutover")) {
                   restore();
-                  restore = withSwitch(on);
+                  restore = withSwitch(on, shape.env);
                   for (const q of shape.queries) {
                      served.set(key(q, on), await runIn(fixture, q));
                   }
                }
                restore();
-               restore = withSwitch("cutover");
+               restore = withSwitch("cutover", shape.env);
                await freshLoadPool();
                const cutoverLoader = await loadFixture({
                   ...DATA_FILES,
@@ -383,11 +385,12 @@ for (const shape of SHAPES) {
                   expect(
                      rowDifference(l.answer.rows, s.answer.rows),
                   ).toBeUndefined();
-                  // After the cutover, by the shadow comparison's exact rule
-                  // too (strings as strings, integers and bigints exact).
+                  // After the cutover, by the strict comparison too
+                  // (`answer_difference.ts`: strings as strings, integers
+                  // and bigints exact).
                   if (on === "cutover") {
                      expect(
-                        shadowRowDifference(l.answer.rows, s.answer.rows),
+                        strictRowDifference(l.answer.rows, s.answer.rows),
                      ).toBeUndefined();
                   }
                   const needed = tolerancesNeeded(l.answer, s.answer);

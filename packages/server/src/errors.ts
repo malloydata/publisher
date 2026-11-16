@@ -11,6 +11,7 @@ import {
    isCredentialRejection,
 } from "./driver_errors";
 import { redactPgSecrets } from "./pg_helpers";
+import { RetrievalSettingsError } from "./settings/errors";
 
 export { isConnectionFailure, isCredentialRejection };
 
@@ -893,8 +894,8 @@ export class PackageManifestError extends Error {
  * unbound free parameter, a given reference (an RLAC/tenant-isolation
  * refusal), or a shape that does not compile in DuckDB. 422, a hard refusal,
  * never a silent fallback; a distinct class so the givens refusal is greppable
- * for security review. `reason` matches what the throw site passed to
- * `recordEligibilityRefused`.
+ * for security review. `reason` is what a build plan counts a refused source
+ * under (`recordEligibilityRefused`).
  */
 export class MaterializationEligibilityError extends Error {
    get kind(): "materialization_eligibility" {
@@ -987,6 +988,9 @@ export class WarehouseRecomputeRefusedError extends Error {
  * The config file exists but cannot be read (malformed JSON, a rejected shape,
  * an unset `${VAR}`). Unlike an absent file, which falls back to the bundled
  * default, this must not degrade to serving nothing while reporting healthy.
+ *
+ * A `retrieval` block that a variable or flag makes invalid is reported the
+ * same way, but names those as the fix: moving the file aside leaves them set.
  */
 export class PublisherConfigError extends Error {
    get kind(): "publisher_config" {
@@ -994,10 +998,19 @@ export class PublisherConfigError extends Error {
    }
 
    constructor(configName: string, cause: unknown) {
+      const reason = (
+         cause instanceof Error ? cause.message : String(cause)
+      ).replace(/\.+$/, "");
+      const outside =
+         cause instanceof RetrievalSettingsError ? cause.outside : [];
       super(
-         `Could not read ${configName}: ${
-            cause instanceof Error ? cause.message : String(cause)
-         }. Fix the file, or move it aside to fall back to the bundled default.`,
+         outside.length > 0
+            ? `The retrieval settings are invalid: ${reason}. Fix ${outside.join(
+                 " or ",
+              )}, or the file; moving the file aside leaves ${
+                 outside.length === 1 ? "it" : "them"
+              } set.`
+            : `Could not read ${configName}: ${reason}. Fix the file, or move it aside to fall back to the bundled default.`,
       );
       this.name = "PublisherConfigError";
       this.cause = cause;

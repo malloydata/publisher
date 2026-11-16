@@ -6,6 +6,7 @@ import { mkdirSync, rmSync, writeFileSync } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { PublisherConfigError } from "../errors";
+import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { EnvironmentStore } from "./environment_store";
 
 /**
@@ -79,6 +80,62 @@ describe("reloadEnvironmentManifest on an unreadable config", () => {
       expect(manifest.environments[0].packages[0].location).toBe(
          "/tmp/somewhere/p",
       );
+   });
+
+   describe("a retrieval block that does not validate", () => {
+      const anthropic = {
+         environments: [],
+         retrieval: { llm: { provider: "anthropic", model: "m" } },
+      };
+      const reload = (input: SettingsInput) =>
+         withSettings(input, async ({ serverRoot }) => {
+            try {
+               await EnvironmentStore.reloadEnvironmentManifest(serverRoot);
+            } catch (error) {
+               return error;
+            }
+            throw new Error("expected the reload to fail");
+         });
+
+      it("names the variable that makes it fail as the fix, since moving the file aside leaves it set", async () => {
+         const error = await reload({
+            env: { PUBLISHER_RETRIEVAL_LLM_PROVIDER: "vertex" },
+            file: anthropic,
+         });
+         expect(error).toBeInstanceOf(PublisherConfigError);
+         const message = (error as Error).message;
+         expect(message).toStartWith("The retrieval settings are invalid: ");
+         expect(message).toEndWith(
+            ". Fix PUBLISHER_RETRIEVAL_LLM_PROVIDER, or the file; moving the file aside leaves it set.",
+         );
+         expect(message).not.toContain("move it aside to fall back");
+         expect(message).not.toContain("..");
+      });
+
+      it("names a flag the same way", async () => {
+         const error = await reload({
+            argv: ["--retrieval-llm-provider", "vertex"],
+            file: anthropic,
+         });
+         expect((error as Error).message).toEndWith(
+            ". Fix --retrieval-llm-provider, or the file; moving the file aside leaves it set.",
+         );
+      });
+
+      it("blames the file when the file alone gives it", async () => {
+         const error = await reload({
+            file: {
+               environments: [],
+               retrieval: { llm: { provider: "vertex", model: "m" } },
+            },
+         });
+         const message = (error as Error).message;
+         expect(message).toStartWith("Could not read publisher.config.json: ");
+         expect(message).toEndWith(
+            ". Fix the file, or move it aside to fall back to the bundled default.",
+         );
+         expect(message).not.toContain("..");
+      });
    });
 
    it("does NOT raise when the config file is absent", async () => {

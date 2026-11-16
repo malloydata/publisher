@@ -77,7 +77,13 @@
       ],
       "malloy": "run: orders -> { group_by: region; aggregate: total, n, secret_total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -92,13 +98,15 @@
           "sourceName": "orders"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a private dimension's measure under a row filter",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -150,7 +158,13 @@
       ],
       "malloy": "run: orders -> { group_by: north; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -163,13 +177,15 @@
           "sourceName": "orders"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an internal dimension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -222,7 +238,13 @@
       "equalToLive": true,
       "malloy": "run: wide -> { group_by: status; aggregate: amt }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -235,13 +257,15 @@
           "sourceName": "wide"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure over a private column",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

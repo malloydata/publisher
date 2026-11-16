@@ -1,18 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { decodeDottedTablePath } from "@malloydata/malloy";
-
-import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
-import type { IncrementalStepReason } from "../../../materialization_metrics";
-import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
-import type { IncrementalStrategy } from "../types";
-import { errMessage } from "../../../utils";
-import { quoteIdentifier } from "../../quoting";
-import type { PairDelta } from "../plan/incremental_declaration";
-import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
-
 /**
  * Generating and applying an incremental DELTA: the bounded slice of a persisted
  * source that a refresh writes into the already-serving table, instead of
@@ -25,70 +13,53 @@ import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
  * silently DROPS its `where:`, which would rewrite every row. Pinned in
  * incremental_compiler_contract.spec.ts.
  *
+ * The statements whose text differs by dialect (string literals, the probes'
+ * wrapping, the transaction around a delta) are warehouse_sql.ts's.
+ *
  * The range is HALF-OPEN, `[start, end)`, which makes a run idempotent: a crash
  * between the commit and the ledger advance costs a repeat, not a corruption.
  */
 
-/**
- * The two dialect sets below differ only for a `storage=` source, whose rows are
- * computed by the SOURCE warehouse and whose DML runs in the DESTINATION engine.
- *
- * Both are keyed by Malloy's `dialectName`, so BigQuery is `standardsql` (as in
- * `quoting.ts`). No source's `dialectName` is ever "bigquery", so keying by the
- * friendly name would silently reject every BigQuery source.
- */
+import { decodeDottedTablePath } from "@malloydata/malloy";
+
+import { logger } from "../../../logger";
+import { errorCodeOf } from "./error_code";
+import type { IncrementalStepReason } from "../../../materialization_metrics";
+import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
+import type { IncrementalStrategy } from "../domain/types";
+import { capabilitiesOf, dialectsWith } from "../domain/dialect";
+import { errMessage } from "../../../utils";
+import { quoteIdentifier } from "../../quoting";
+import {
+   escapeSqlString,
+   inOneTransaction,
+   probeSelect,
+   targetColumnsProbeSql,
+   transactionKeywords,
+} from "./warehouse_sql";
+import type { PairDelta } from "../domain/incremental";
+import {
+   windowDeleteBefore,
+   type RollingWindow,
+} from "../domain/read_time_terms";
 
 /**
- * Dialects a bounded watermark range can be rendered and probed FOR — the source
- * side. A dialect here has literal spellings for every watermark type
- * ({@link renderSqlBound}) and a decodable table path
- * ({@link decodeTablePathSegments}).
- */
-export const INCREMENTAL_SOURCE_RANGE_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-]);
-
-/**
- * Dialects whose transactional delta apply is proven: the target side, where the
- * DML lands.
+ * The incremental refresh's dialect sets, from the dialect table
+ * (`domain/dialect.ts`), for message text. The source and target sets differ
+ * only for a `storage=` source, whose rows are computed by the SOURCE warehouse
+ * and whose DML runs in the DESTINATION engine.
  *
  * Postgres, BigQuery and DuckDB take the range replace as one multi-statement
- * script. Snowflake's driver runs one statement per call, on a possibly different
- * pooled session each time, so it gets a Snowflake Scripting block instead (see
- * {@link deltaStatements}).
- *
- * `duckdb` is here only as a `storage=` destination; a DuckDB source is never
- * materialized.
+ * script. Snowflake's driver runs one statement per call, on a possibly
+ * different pooled session each time, so it gets a Snowflake Scripting block
+ * instead (see {@link deltaStatements}).
  */
-export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-   "duckdb",
-]);
-
-/** Dialects with a `MERGE INTO` statement, required by `merge_key=`. */
-export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-   "duckdb",
-]);
-
-/** Malloy `dialectName` -> the name an author would recognize, for a message. */
-const DIALECT_DISPLAY_NAMES: Record<string, string> = {
-   standardsql: "standardsql (BigQuery)",
-};
-
-/** A dialect set as message text, e.g. `postgres, standardsql (BigQuery)`. */
-export function describeDialects(dialects: ReadonlySet<string>): string {
-   return [...dialects]
-      .sort()
-      .map((d) => DIALECT_DISPLAY_NAMES[d] ?? d)
-      .join(", ");
-}
+export const INCREMENTAL_SOURCE_RANGE_DIALECTS: ReadonlySet<string> =
+   dialectsWith("incrementalSourceRange");
+export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> =
+   dialectsWith("incrementalTargetDml");
+export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> =
+   dialectsWith("merge");
 
 /**
  * A watermark boundary, held as CANONICAL SCALAR TEXT plus the watermark's Malloy
@@ -106,25 +77,6 @@ const RENDERABLE_TYPES = new Set(["date", "timestamp", "number", "string"]);
 
 export function isRenderableWatermarkType(malloyType: string): boolean {
    return RENDERABLE_TYPES.has(malloyType);
-}
-
-/**
- * Escape a string for a single-quoted SQL literal.
- *
- * Snowflake and BigQuery read `\` in a single-quoted string as an escape
- * character, so a backslash must be doubled there or a value ending in one
- * swallows the closing quote; Postgres (standard_conforming_strings, its
- * default) reads a doubled backslash as two characters. A quote is doubled
- * everywhere except BigQuery, which has no `''` escape (adjacent literals are a
- * syntax error) and takes `\'`; its backslashes are escaped first so they
- * cannot pair with that escape.
- */
-function escapeSqlString(value: string, dialect?: string): string {
-   if (dialect === "standardsql") {
-      return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-   }
-   const quoted = value.replace(/'/g, "''");
-   return dialect === "snowflake" ? quoted.replace(/\\/g, "\\\\") : quoted;
 }
 
 /**
@@ -375,20 +327,6 @@ export function decodeTablePathSegments(
    });
 }
 
-/**
- * Wrap a probe SELECT so the dialect's driver hands back named columns.
- *
- * Postgres only: `PostgresConnection` rewrites every `runSQL` row as
- * `rows[i].row` (Malloy queries project one `row` JSON column), so a plain
- * `SELECT max(x) AS m` comes back as `[undefined]`. Wrapping in `row_to_json`
- * supplies that column. Pinned in incremental_apply.spec.ts.
- */
-export function probeSelect(dialect: string, innerSelect: string): string {
-   return dialect === "postgres"
-      ? `SELECT row_to_json(__p) AS "row" FROM (${innerSelect}) AS __p`
-      : innerSelect;
-}
-
 /** A probe's rows as plain objects (see {@link probeSelect}). */
 function probeRows(rows: unknown[]): Record<string, unknown>[] {
    return rows.filter(
@@ -421,71 +359,16 @@ export async function probeTargetColumns(
          error: `physical table name ${JSON.stringify(physicalTableName)} is not a decodable ${dialect} table path`,
       };
    }
-   let sql: string;
-   if (dialect === "duckdb") {
-      // `duckdb_columns()`: an attached DuckLake catalog has no
-      // `information_schema`, and `DESCRIBE` throws on an absent table where this
-      // function's contract needs an empty answer.
-      const table = segments[segments.length - 1];
-      // A two-segment path is in the catalog's default schema. Named explicitly
-      // because two schemas can hold the same table name, and probing the wrong
-      // one would describe a table this build never wrote.
-      const schema =
-         segments.length >= 3 ? segments[segments.length - 2] : "main";
-      // The catalog is the FIRST segment (the path is `<destination>.<name>`);
-      // counting from the end would misread a longer name's container.
-      const database = segments[0];
-      sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
-              FROM duckdb_columns()
-              WHERE database_name = '${escapeSqlString(database, dialect)}'
-                AND schema_name = '${escapeSqlString(schema, dialect)}'
-                AND table_name = '${escapeSqlString(table, dialect)}'
-              ORDER BY column_index`;
-   } else if (dialect === "postgres" || dialect === "snowflake") {
-      const table = segments[segments.length - 1];
-      // An unqualified name lives in the session's default schema, where the CTAS
-      // created it. Not "any schema on the search path": two schemas can hold
-      // the same table name.
-      const schema =
-         segments.length >= 2
-            ? `'${escapeSqlString(segments[segments.length - 2], dialect)}'`
-            : "current_schema()";
-      // Snowflake's information_schema is per-DATABASE, so a database-qualified
-      // name must probe that database's view; Postgres cannot cross databases,
-      // so any leading segment is the current one by construction.
-      const infoSchema =
-         dialect === "snowflake" && segments.length >= 3
-            ? `${quoteIdentifier(segments[segments.length - 3], dialect)}.information_schema.columns`
-            : "information_schema.columns";
-      sql = probeSelect(
-         dialect,
-         `SELECT column_name AS ${probeAlias("column_name", dialect)}
-           FROM ${infoSchema}
-           WHERE table_schema = ${schema}
-             AND table_name = '${escapeSqlString(table, dialect)}'
-           ORDER BY ordinal_position`,
-      );
-   } else {
-      // BigQuery's INFORMATION_SCHEMA is per-dataset, so the view itself must be
-      // dataset-qualified: an unqualified target has no dataset to look in.
-      if (segments.length < 2) {
-         return {
-            columns: [],
-            error:
-               `physical table name ${JSON.stringify(physicalTableName)} is not ` +
-               `dataset-qualified, so its schema cannot be read from ` +
-               `INFORMATION_SCHEMA`,
-         };
-      }
-      const table = segments[segments.length - 1];
-      const container = segments
-         .slice(0, -1)
-         .map((s) => quoteIdentifier(s, dialect))
-         .join(".");
-      sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
-              FROM ${container}.INFORMATION_SCHEMA.COLUMNS
-              WHERE table_name = '${escapeSqlString(table, dialect)}'
-              ORDER BY ordinal_position`;
+   // Undefined: an unqualified BigQuery name has no dataset to look in.
+   const sql = targetColumnsProbeSql(dialect, segments);
+   if (sql === undefined) {
+      return {
+         columns: [],
+         error:
+            `physical table name ${JSON.stringify(physicalTableName)} is not ` +
+            `dataset-qualified, so its schema cannot be read from ` +
+            `INFORMATION_SCHEMA`,
+      };
    }
    try {
       const result = await runner(sql);
@@ -728,10 +611,7 @@ export function deltaStatements(params: {
       if (windowDeletes.length === 0) return [clauses.join("\n")];
       // The merge and the window's delete commit together, so a reader never
       // sees the delete without the rows that replaced the window's edge.
-      const body = [clauses.join("\n"), ...windowDeletes];
-      if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
-      const transaction = transactionKeywords(dialect);
-      return [transaction.begin, ...body, transaction.commit];
+      return inOneTransaction(dialect, [clauses.join("\n"), ...windowDeletes]);
    }
 
    const watermark = q(watermarkName);
@@ -744,9 +624,7 @@ export function deltaStatements(params: {
          `SELECT ${columnList} FROM (${deltaSQL}) AS __s`,
       ...windowDeletes,
    ];
-   if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
-   const transaction = transactionKeywords(dialect);
-   return [transaction.begin, ...body, transaction.commit];
+   return inOneTransaction(dialect, body);
 }
 
 /** The text a pair delta's check fails with; {@link isPairGuardFailure} reads it. */
@@ -795,7 +673,7 @@ export function pairDeltaStatements(params: {
    windowDeletes?: readonly { column: string; before: WatermarkBound }[];
 }): string[] {
    const { dialect, quotedTablePath, pair } = params;
-   if (dialect !== "duckdb") {
+   if (!capabilitiesOf(dialect).pairDelta) {
       throw new Error(
          `a pair table's delta is applied in DuckDB only, not ${dialect}`,
       );
@@ -847,45 +725,6 @@ export function pairDeltaStatements(params: {
       transaction.commit,
       `DROP TABLE IF EXISTS ${staged}`,
    ];
-}
-
-/**
- * The range replace as ONE statement for Snowflake: an anonymous Snowflake
- * Scripting block in `EXECUTE IMMEDIATE $$…$$` (drivers do not accept a bare
- * block).
- *
- * The EXCEPTION handler is the rollback, INSIDE the statement because a separate
- * `ROLLBACK` call could reach a different pooled session, leaving the open
- * transaction holding locks. RAISE re-throws, so the build still fails and the
- * boundary is not advanced.
- */
-export function snowflakeScriptingBlock(statements: string[]): string {
-   const body = statements.map((s) => `  ${s};`).join("\n");
-   // SQL containing `$$` would end the block early and run the rest as separate
-   // statements. Generated deltas never contain it, so refuse rather than escape:
-   // planSourceRefresh catches the throw and seeds (plan_error).
-   const block = `BEGIN\n  BEGIN TRANSACTION;\n${body}\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND`;
-   if (block.includes("$$")) {
-      throw new Error(
-         "the delta SQL contains '$$', which cannot be carried inside a " +
-            "Snowflake Scripting block",
-      );
-   }
-   return `EXECUTE IMMEDIATE $$\n${block}\n$$`;
-}
-
-function transactionKeywords(dialect: string): {
-   begin: string;
-   commit: string;
-   rollback: string;
-} {
-   return dialect === "standardsql"
-      ? {
-           begin: "BEGIN TRANSACTION",
-           commit: "COMMIT TRANSACTION",
-           rollback: "ROLLBACK TRANSACTION",
-        }
-      : { begin: "BEGIN", commit: "COMMIT", rollback: "ROLLBACK" };
 }
 
 /**
@@ -1109,7 +948,7 @@ export function ledgerLineageMismatch(
  * `reason` label — the free-text `reason` names specifics (columns, versions,
  * boundary values) that a metric label cannot carry.
  */
-export type IncrementalStepReasonCode = IncrementalStepReason;
+type IncrementalStepReasonCode = IncrementalStepReason;
 
 /** What one source's refresh should do. */
 export type IncrementalStep =
@@ -1192,6 +1031,13 @@ export interface DeltaTarget {
     * resolveDeltaEnd).
     */
    probeSourceFrontier(): Promise<{ bound?: WatermarkBound; error?: string }>;
+   /**
+    * The column the table and the source's SQL hold a field under, where it
+    * is not the field's name (a renamed field's column keeps its own name in
+    * a `storage=` table). The DML names the watermark, merge keys, scope and
+    * rolling-window columns through it. Absent: every field is its column.
+    */
+   storedColumn?(field: string): string;
 }
 
 /**
@@ -1280,7 +1126,7 @@ export async function planIncrementalStep(inputs: {
 
    if (
       lineage.strategy === "merge" &&
-      dialect === "postgres" &&
+      capabilitiesOf(dialect).mergeGatedByServerVersion &&
       (inputs.postgresVersionNum ?? 0) < POSTGRES_MERGE_MIN_VERSION_NUM
    ) {
       // Not a silent fallback to range replace: merge_key= asks for the
@@ -1373,6 +1219,7 @@ export async function planIncrementalStep(inputs: {
 
    // Built LAST: producing it can issue the source read (DeltaTarget.deltaRows),
    // which no failed check should pay for.
+   const column = (field: string) => target.storedColumn?.(field) ?? field;
    const statements = deltaStatements({
       dialect,
       quotedTablePath: target.quotedTablePath,
@@ -1386,13 +1233,13 @@ export async function planIncrementalStep(inputs: {
          lineage.pair ? undefined : end.bound,
       ),
       columns: inputs.columns,
-      mergeKeys: lineage.mergeKeys,
-      scopeColumns: lineage.scopeColumns,
-      watermarkName: lineage.watermarkName,
+      mergeKeys: (lineage.mergeKeys ?? []).map(column),
+      scopeColumns: lineage.scopeColumns?.map(column),
+      watermarkName: column(lineage.watermarkName),
       start,
       end: end.bound,
       windowDeletes: (lineage.rollingWindow ?? []).map((window) => ({
-         column: window.field,
+         column: column(window.field),
          before: canonicalBoundValue(
             "timestamp",
             windowDeleteBefore(window, inputs.now),
@@ -1440,12 +1287,16 @@ export async function seedCoveredThrough(
    lineage: IncrementalLineage,
    quotedTablePath: string,
    now: Date,
+   /** The column the table holds the watermark under (DeltaTarget.storedColumn). */
+   storedColumn?: (field: string) => string,
 ): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
+   const watermark =
+      storedColumn?.(lineage.watermarkName) ?? lineage.watermarkName;
    const frontier = await probeMaxWatermark(
       runner,
       dialect,
-      `SELECT ${quoteIdentifier(lineage.watermarkName, dialect)} FROM ${quotedTablePath}`,
-      lineage.watermarkName,
+      `SELECT ${quoteIdentifier(watermark, dialect)} FROM ${quotedTablePath}`,
+      watermark,
       lineage.watermarkType,
    );
    if (frontier.error || !frontier.bound) return frontier;

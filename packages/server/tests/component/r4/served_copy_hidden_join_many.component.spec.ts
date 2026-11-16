@@ -21,14 +21,18 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import type { MaterializePlan } from "../../../src/service/materialization/plan/build_file_generator";
+import type { MaterializePlan } from "../../../src/service/materialization/domain/table_plans";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
+   expectPairServedVia,
 } from "./harness";
+
+/** Measures that count through the inlined path (see {@link expectPairServedVia}). */
+const PATH_COUNTS: string[] = [];
 
 // Flights 1–6: 4 and 5 have no segment; flight 3 has four. Segment 99 pairs
 // with no flight. Each segment's tag is a value no refusal may carry.
@@ -212,7 +216,7 @@ async function compileOnCopy(fixture: R4Fixture, malloy: string) {
 async function expectServed(fixture: R4Fixture, malloy: string) {
    const run = await fixture.run({ name: malloy, malloy });
    expect(run.live.length).toBeGreaterThan(0);
-   expect(run.servedVia).toBe("served_copy");
+   expectPairServedVia(run, PATH_COUNTS);
    expect(rowDifference(run.live, run.served)).toBeUndefined();
    return run;
 }
@@ -415,18 +419,23 @@ describe("R4: an inlined hidden join_many (known limitation 24)", () => {
       });
    }
 
-   it("reproduces live's count of a childless parent through a hidden join_many", async () => {
+   it("serves live's count of a childless parent (none) through a hidden join_many", async () => {
+      // Since malloydata/malloy#3208 live counts flight 4's segments as
+      // none; the pair table's row for it would count one as written, so the
+      // served copy counts the rows whose stored segment key is not null,
+      // read through the hidden record in its own block.
       const run = await expectServed(
          fixture,
          "run: hidden_many -> { where: id = 3 | 4; group_by: id; aggregate: seg_n }",
       );
+      expect(run.servedVia).toBe("served_copy");
       expect(
-         run.served
+         run.live
             .map((r) => [Number(r.id), Number(r.seg_n)])
             .sort((a, b) => a[0] - b[0]),
       ).toEqual([
          [3, 4],
-         [4, 1],
+         [4, 0],
       ]);
    });
 
@@ -663,7 +672,7 @@ describe("R4: row-level gates over a hidden join_many, gated serving on", () => 
                "run: by_carrier -> { group_by: carrier; aggregate: flight_count, total_distance, seg_total, seg_n, tag_n }",
             givens: { C },
          });
-         expect(run.servedVia).toBe("served_copy");
+         expectPairServedVia(run, PATH_COUNTS);
          expect(run.served.map((r) => r.carrier)).toEqual([C]);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
@@ -677,7 +686,7 @@ describe("R4: row-level gates over a hidden join_many, gated serving on", () => 
                "run: by_region -> { group_by: carrier; aggregate: seg_total, seg_n, tag_n }",
             givens: { R },
          });
-         expect(run.servedVia).toBe("served_copy");
+         expectPairServedVia(run, PATH_COUNTS);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
 
@@ -790,6 +799,8 @@ describe("R4: a colocated extension of a pair table, hidden join_many or not", (
          it(`answers with live's rows: ${malloy}`, async () => {
             const run = await fixture.run({ name: malloy, malloy });
             expect(run.live.length).toBeGreaterThan(0);
+            // An extension's table holds one row per parent; its join is read
+            // live, so its counts are served.
             expect(run.servedVia).toBe("served_copy");
             expect(rowDifference(run.live, run.served)).toBeUndefined();
          });

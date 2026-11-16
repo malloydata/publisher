@@ -20,6 +20,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "accounts@<hammer>/pvj/pvj.malloy": "persist",
+      "grants@<hammer>/pvj/pvj.malloy": "persist",
+      "opps@<hammer>/pvj/pvj.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -43,7 +48,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -75,7 +79,6 @@
       "accounts@<hammer>/pvj/pvj.malloy": {
         "annotationFields": {
           "name": "pvj_accounts",
-          "partition": "org_id",
           "storage": "lake"
         },
         "columns": [
@@ -94,13 +97,10 @@
         "modelPath": "pvj.malloy",
         "name": "accounts",
         "origin": "persist",
-        "partition": [
-          "org_id"
-        ],
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "89ec4999e1b9f6bef8953b82cd7ce82839af2d05c76fa9bc812241d7c5bee240",
+        "sourceEntityId": "fd23eb961ebce416e2efbcfa822d44848635eb2003d7711ddda1abd7d4126195",
         "sourceID": "accounts@<hammer>/pvj/pvj.malloy",
         "sql": "sha256:1670163abb4659cd",
         "strippedTerms": [
@@ -115,7 +115,6 @@
       "grants@<hammer>/pvj/pvj.malloy": {
         "annotationFields": {
           "name": "pvj_grants",
-          "partition": "org_id",
           "storage": "lake"
         },
         "columns": [
@@ -138,13 +137,10 @@
         "modelPath": "pvj.malloy",
         "name": "grants",
         "origin": "persist",
-        "partition": [
-          "org_id"
-        ],
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "aebecd89bf95d910909071b0ff7d0040391621b03eb2c155f1d90b07f74bf391",
+        "sourceEntityId": "ddb6090be76dc7348a5b30e0548f6ef2e98836a942916176c986d167b8a36055",
         "sourceID": "grants@<hammer>/pvj/pvj.malloy",
         "sql": "sha256:4bbc91d4efa3c362",
         "strippedTerms": [
@@ -160,7 +156,6 @@
       "opps@<hammer>/pvj/pvj.malloy": {
         "annotationFields": {
           "name": "pvj_opps",
-          "partition": "org_id",
           "storage": "lake"
         },
         "columns": [
@@ -202,13 +197,10 @@
         "modelPath": "pvj.malloy",
         "name": "opps",
         "origin": "persist",
-        "partition": [
-          "org_id"
-        ],
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "fafe57aed7ddd235121cdf2ddc5e108819ac41011415b6cbbd417a75a318825d",
+        "sourceEntityId": "74b09e2476274c68e976da42e43118968918ab2bb3316d322c27e043910d4b12",
         "sourceID": "opps@<hammer>/pvj/pvj.malloy",
         "sql": "sha256:bebccedbe55000c0",
         "strippedTerms": [

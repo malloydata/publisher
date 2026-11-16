@@ -1,0 +1,46 @@
+// containment, a v1 table: files generated while serving
+
+// ==== <root>/m.malloy (text 1 of 2)
+##! experimental { persistence }
+
+##! experimental { virtual_source }
+type: p_broken__served is {
+   org::string
+}
+type: p_kept__served is {
+   org::string,
+   amount::number
+}
+
+source: events is duckdb.table('events')
+
+#@ persist storage="lake"
+source: p_kept is __served_copy_alias_of_unknown.virtual('h0')::p_kept__served extend {
+  measure: total is amount.sum()
+}
+
+#@ persist storage="lake"
+source: p_broken is __served_copy_alias_of_unknown.virtual('h1')::p_broken__served extend {
+  measure: total is amount.sum()
+}
+
+// ==== <root>/m.malloy (text 2 of 2)
+##! experimental { persistence }
+
+##! experimental { virtual_source }
+type: p_kept__served is {
+   org::string,
+   amount::number
+}
+
+source: events is duckdb.table('events')
+
+#@ persist storage="lake"
+source: p_kept is __served_copy_alias_of_unknown.virtual('h0')::p_kept__served extend {
+  measure: total is amount.sum()
+}
+
+#@ persist storage="lake"
+source: p_broken is events -> { select: org, amount } extend {
+  measure: total is amount.sum()
+}

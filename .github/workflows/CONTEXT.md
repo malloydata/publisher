@@ -52,6 +52,15 @@ a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
 `workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
 `PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
 
+`main-thread-regression.yml` is the main-thread regression check
+(`packages/server/tests/perf/main-thread/README.md`): a storm-lite A/B of two server builds on
+one runner, added after Publisher 0.13.1 pinned the worker's main thread
+(https://github.com/ms2data/service/issues/7795). On a PR that touches `packages/server/**`
+or `bun.lock` it compares the PR's head with its merge base; nightly, and as `release.yml`'s
+gate, it compares `main` with the anchor release in `anchor.json`. It holds no secret but stays on GitHub-hosted
+`ubuntu-latest`, where its absolute budgets were calibrated, and it is **not a required check yet**: its flake rate on PRs decides
+that. It path-filters, which is only safe because it is not required (see below).
+
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
 `BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.
@@ -63,6 +72,34 @@ replaced and every merged commit is tested. `push:` triggers are `main` only, so
 once, through `pull_request`. Path filters are not used on `build.yml` or `app-playwright.yml`:
 their jobs are required status checks on `main`, and a filtered-out workflow leaves a required check
 pending forever. A docs-only skip needs an always-run gate job first.
+
+### Credible's donated runners
+
+Credible runs self-hosted Ubuntu 24.04 x64 runners for the `malloydata` organization (4 vCPU / 16 GB,
+Docker, one job at a time per machine, machines reused between jobs), which do not count against
+GitHub's 20-concurrent-job limit. A job
+opts in with:
+
+```yaml
+runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+timeout-minutes: 30
+```
+
+The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
+goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux leg of
+`cross-platform-tests.yml`, `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
+`image-scan.yml` (amd64 build only), and `python-sdk.yml` when `build.yml` calls it (not when
+`release.yml` does). `docker_smoke_test` reads a registry layer cache there and writes it only from
+`main`, through the `layer-cache-writer` identity bound to `main`'s OIDC subject.
+
+**Keep off them:** any job that uses a repository or organization secret, holds `id-token: write`
+for anything but the layer cache, publishes, or runs on `pull_request_target` (the runners refuse
+those); and macOS, Windows, and arm64 jobs. Publishing jobs, which stay on GitHub's runners, restore no
+Actions cache (setup-bun's `no-cache: true`): any `main` job, here or on GitHub's runners, can write
+`main`'s cache entries. Every job moved there needs a `timeout-minutes`. `credible-ubuntu-24.04` is spot
+(a reclaimed job fails "The operation was canceled." and a rerun covers it);
+`credible-ubuntu-24.04-ondemand` is the label for a job that must not be interrupted. Package
+installs go through pull-through caches whose credentials last an hour from job start.
 
 ## Publishing
 
@@ -230,6 +267,13 @@ built (see *Publishing to PyPI*). `publish-packages` triggers the two other npm 
 `gh-release` cuts the tag, and
 only after npm and Docker have both succeeded.
 
+**`main-thread-check` runs first.** `prepare` needs it, so a release whose `main` fails the
+main-thread regression check stops before any branch is cut or anything is published, and a
+re-dispatch after a fix starts clean. It adds about ten minutes to a release. A release that must
+ship while the check itself is known to be wrong is dispatched with
+`skip_main_thread_check=true`: the job still runs and passes with a warning, rather than being
+skipped, because a skipped job would also skip every job downstream of `prepare`.
+
 **The release branch is also the post-release PR.** `prepare` rewrites every `## [Unreleased]`
 heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs stamp`) in the same
 commit that sets the three `packages/{sdk,app,server}/package.json` versions and
@@ -242,6 +286,19 @@ one PR is the whole post-release step. It does **not** touch `packages/skills/pa
 their published version is decided at release time from npm's own state (see *Skills and
 create-malloy-package version at release time* above). Both halves used to be manual post-release
 steps and were reliably skipped: 0.0.243 through 0.0.247 shipped with none of their narrative.
+
+**The release page has a length limit, and the job fits the body to it.** GitHub refuses a release
+body over 125,000 characters with a 422, and `gh-release` runs after npm, Docker and PyPI have
+published, so 0.13.0 (75 sections, about 136k characters) failed there and its page was made by hand.
+`gh-release` now fetches the generated PR list itself (`gh api …/releases/generate-notes`, the list
+`--generate-notes` would append) and has `release-notes.mjs fit` compose the whole body under a
+120,000-character budget. It gives up detail in order until the body fits: the narrative's full text
+becomes an index of its section titles linking `RELEASE_NOTES.md` at the tag (the form 0.13.0's page
+was made in by hand), then the PR list is truncated keeping its **Full Changelog** compare link, then
+only that link is left, then the index itself is shortened. The last step is a plain cut, so length
+cannot fail the job. Each fallback logs a notice, and the index fallback adds a line to the job
+summary. If the list cannot be fetched, the compare link stands in for it; if `fit` itself fails, the
+header goes up alone with `--generate-notes`, under the usual warning.
 
 Why this shape, and not the ones it replaced:
 
@@ -300,7 +357,8 @@ the commit, `version_taken` checks the tag as well as the branch, and the releas
 
 `scripts/release-notes.mjs` and `scripts/set-version.mjs` both have unit coverage —
 `release-notes.spec.ts` and `set-version.spec.ts` — run by `build.yml`'s `lint_format` job on every PR
-(`bun run test:scripts`). The notes spec also smoke-runs `extract` against the real
+(`bun run test:scripts`). The notes spec covers each of `fit`'s fallbacks, and that the body never
+exceeds its limit however small. The notes spec also smoke-runs `extract` against the real
 `RELEASE_NOTES.md`, so a heading it cannot read a title from fails the PR that wrote it rather than the
 release that would silently drop the narrative; the version spec does the equivalent, asserting the
 replace still finds the `"version"` field in all three real manifests at their real paths, so a

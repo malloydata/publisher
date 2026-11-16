@@ -4,7 +4,7 @@
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
-import { BuildInstruction, LedgerEntry } from "../types";
+import { BuildInstruction, LedgerEntry } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
 import { indexCallerLedger } from "./incremental_build";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
@@ -153,7 +153,7 @@ describe("buildOneSource: incremental refresh", () => {
          ...(params.reseed === undefined ? {} : { reseed: params.reseed }),
       } as BuildInstruction;
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                sourceEntityId: string;
                physicalTableName: string;
@@ -161,23 +161,22 @@ describe("buildOneSource: incremental refresh", () => {
                ledger?: LedgerEntry;
             }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
-         { runSQL: params.runSQL },
-         params.manifest ?? new Manifest(),
-         {
+         connection: { runSQL: params.runSQL },
+         manifest: params.manifest ?? new Manifest(),
+         environment: {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
             getEnvironmentPath: () => "/tmp/env",
          },
-         {},
-         undefined,
-         params.context,
+         builtEntries: {},
+         incremental: params.context,
          // The content address, which is the ledger's key.
-         "abcdef1234567890",
-      );
+         contentSourceEntityId: "abcdef1234567890",
+      });
    }
 
    it("applies the delta INSTEAD of the CTAS, and advances the boundary", async () => {
@@ -427,30 +426,29 @@ describe("buildOneSource: incremental refresh", () => {
          dialectName: "duckdb",
       });
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<unknown>;
          }
-      ).buildOneSource(
-         source,
-         {
+      ).buildOneSource({
+         persistSource: source,
+         instruction: {
             sourceEntityId: "abcdef1234567890",
             materializedTableId: "mt-1",
             physicalTableName: "orders_v1",
             realization: "COPY",
          } as BuildInstruction,
-         { runSQL },
-         new Manifest(),
-         {
+         connection: { runSQL },
+         manifest: new Manifest(),
+         environment: {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
             getEnvironmentPath: () => "/tmp/env",
          },
-         {},
-         undefined,
-         context,
-         "abcdef1234567890",
-      );
+         builtEntries: {},
+         incremental: context,
+         contentSourceEntityId: "abcdef1234567890",
+      });
       // The staging drop, the CTAS, the one-transaction swap, and the read of
       // the built table's column types.
       expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);

@@ -91,7 +91,7 @@ export function extractPackageEntities(
    for (const file of input.modelFiles) {
       if ("text" in file) texts.set(file.absolutePath, file.text);
    }
-   return withModelTextCache(() => extractAll(input), texts);
+   return withModelTextCache(() => extractAll(input), texts, input.packageRoot);
 }
 
 export interface PackageEntitiesExtraction {

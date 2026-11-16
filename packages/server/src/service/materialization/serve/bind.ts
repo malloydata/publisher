@@ -1,0 +1,459 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * The bind: committed manifest entries joined to the package's plan, as the
+ * bindings and the colocated entries a snapshot holds, and the entries it
+ * declines with why. One function per half of a manifest, both pure.
+ *
+ * - {@link bindStorageEntries}: a `storage=` entry binds only when a plan
+ *   source of its name was built at its content address (never by name
+ *   alone: another version's or another edit's table is declined), and only
+ *   for the sources the eligibility gate found eligible. Eligibility must be
+ *   positive: no plan, or a source missing from it, declines.
+ * - {@link bindColocatedEntries}: a colocated entry binds only when its
+ *   content address is colocated-eligible, its table name quoted for its
+ *   plan's dialect (Malloy pastes a manifest's table name verbatim).
+ * - {@link deriveColocatedServeBindings}: the served copy's bindings for the
+ *   colocated `#(materialize)` and v1 `#@ persist` tables those entries name,
+ *   read on the source's own connection. A `#(materialize)` build source is
+ *   read by no author query, so Malloy's own manifest substitution never
+ *   serves it; the served copy re-roots the author's source on it, exactly as
+ *   on a `storage=` table.
+ *
+ * Called by the facade, which logs and counts what each declines; no I/O.
+ */
+
+import { quoteManifestTablePath } from "../../quoting";
+import type { MaterializePlan, StoredColumn } from "../domain/table_plans";
+import { capabilitiesOf } from "../domain/dialect";
+import { storedColumnsOfOutput } from "../stored_column_types";
+import type {
+   BuildPlan,
+   FreshnessAwareManifestEntry,
+   FreshnessManifest,
+   ManifestEntry,
+} from "../domain/types";
+import {
+   type Binding,
+   type BindingKind,
+   deriveServeBindings,
+   primaryKeysOf,
+} from "../domain/binding";
+import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
+import type { BindDeclineReason as SourceBindDecline } from "../domain/source_decline";
+
+/** Why the bind declined an entry: the plan could not be computed, or it refused the source. */
+type BindDeclineReason = Exclude<SourceBindDecline, "missing_table">;
+
+/** One `storage=` binding the bind declined, for the facade's log and counter. */
+interface StorageBindDecline {
+   reason: BindDeclineReason;
+   sourceName: string;
+   /** A rollup, whose generated name means nothing to an operator alone. */
+   rollup: boolean;
+   /** Why, in a sentence, for the log. */
+   detail: string;
+}
+
+const PLAN_UNAVAILABLE =
+   "the package build plan could not be computed, so no source was examined for eligibility";
+const NOT_IN_PLAN =
+   "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)";
+
+/**
+ * The `storage=` bindings a manifest's entries make for this package.
+ *
+ * A binding is kept for its ELIGIBLE sources only: two models may declare
+ * same-named sources with identical SQL (one table), one gated and refused.
+ * Narrowing its sourceIDs keeps the refused one off the table in its own
+ * model, where admitting the binding whole would have served it.
+ */
+export function bindStorageEntries(args: {
+   entries: Record<string, ManifestEntry>;
+   /** The plan bound against, or null when it could not be computed. */
+   plan: BuildPlan | null;
+   /** A destination's schema by name (see storageTablePath). */
+   destinationSchema?: (destinationName: string) => string | undefined;
+   /** The plan's eligible sourceIDs, and why each other was refused; undefined when unknown. */
+   eligibility:
+      | {
+           eligible: readonly string[];
+           refused: Record<string, string>;
+           /** The eligible sourceIDs admitted past their own gate (G3). */
+           gateKept?: readonly string[];
+        }
+      | undefined;
+   /** Each binding's kind, from the plan (see {@link kindFromPlan}). */
+   kindOf: (binding: Binding) => BindingKind;
+}): {
+   bindings: Binding[];
+   /** Entries built from another definition of their source, by source name. */
+   otherDefinition: string[];
+   declined: StorageBindDecline[];
+} {
+   const { plan, eligibility } = args;
+   const sourceIDsFor = planSourceIds(plan?.sources ?? {});
+   const otherDefinition: string[] = [];
+   // An entry at an address no same-named plan source has was built from
+   // another definition (another version's, an earlier edit's, an older
+   // release's), so it is declined and that source serves live.
+   const own: Record<string, ManifestEntry> = {};
+   for (const [key, entry] of Object.entries(args.entries)) {
+      if (
+         !plan ||
+         !entry.sourceName ||
+         sourceIDsFor(entry.sourceName, entry.sourceEntityId).length > 0
+      ) {
+         own[key] = entry;
+      } else {
+         otherDefinition.push(entry.sourceName);
+      }
+   }
+   const derived = deriveServeBindings(
+      own,
+      groupAliasesByName(Object.values(plan?.sources ?? {})),
+      args.destinationSchema,
+      sourceIDsFor,
+   );
+   const eligible = new Set(eligibility?.eligible ?? []);
+   const keptTables = keptTableAddresses(
+      eligibility?.gateKept,
+      (id) => plan?.sources?.[id]?.sourceEntityId,
+   );
+   const declined: StorageBindDecline[] = [];
+   const admittedBindings = derived.flatMap((derivedBinding) => {
+      const binding = { ...derivedBinding, kind: args.kindOf(derivedBinding) };
+      const ids = binding.sourceIDs ?? [];
+      const admitted = ids.filter((id) => eligible.has(id));
+      if (admitted.length > 0) {
+         return [
+            admitted.length === ids.length
+               ? binding
+               : { ...binding, sourceIDs: admitted },
+         ];
+      }
+      const refusal = ids
+         .map((id) => eligibility?.refused[id])
+         .find((reason) => reason !== undefined);
+      declined.push({
+         reason:
+            eligibility === undefined ? "build_plan_unavailable" : "refused",
+         sourceName: binding.sourceName,
+         rollup: binding.kind === "rollup",
+         detail:
+            eligibility === undefined
+               ? PLAN_UNAVAILABLE
+               : (refusal ??
+                 (ids.length === 0
+                    ? "the table names no source of this package's build plan, so none was examined"
+                    : NOT_IN_PLAN)),
+      });
+      return [];
+   });
+   // The table, not the name, is what G3 admits: every name a G3 table is
+   // bound under is marked, since every one reads that one table (an
+   // extension that shares its base's table re-roots the base). So any
+   // sharer of a gate-kept source's content address counts as G3, an
+   // ungated sharer included: a gated entry point that joins an ungated
+   // sharer is served from the table because a gated sibling stores into
+   // it. Nothing leaks: the SQL, and so the rows, are identical, and
+   // `govern()` grafts and proves the entry point's own gate on the answer
+   // as on live. A rollup or a view is never marked (their legs pass a gate
+   // only with the switch).
+   const bindings = admittedBindings.map((binding) =>
+      keptTables.has(binding.virtualHandle) &&
+      (binding.kind === "persist" || binding.kind === "materialize")
+         ? { ...binding, ownGateKept: true }
+         : binding,
+   );
+   return { bindings, otherDefinition, declined };
+}
+
+/**
+ * The tables (content addresses) plan admitted past a stored source's own
+ * row-level gate under G3: the address of every `gateKept` source. The one
+ * rule both the bind (which marks each binding of such a table
+ * `ownGateKept`) and the serve verdict (for a table not bound yet) read.
+ */
+export function keptTableAddresses(
+   gateKept: readonly string[] | undefined,
+   addressOf: (sourceID: string) => string | undefined,
+): Set<string> {
+   const out = new Set<string>();
+   for (const id of gateKept ?? []) {
+      const address = addressOf(id);
+      if (address) out.add(address);
+   }
+   return out;
+}
+
+/** One colocated entry the bind declined, for the facade's log and counter. */
+interface ColocatedBindDecline {
+   reason: BindDeclineReason;
+   sourceEntityId: string;
+   detail: string;
+}
+
+/**
+ * The colocated entries a manifest binds, filtered POSITIVELY against the
+ * colocated eligibility (a miss is declined, not fatal), each table name
+ * quoted for its plan's dialect: a table named by a reserved word or needing
+ * its case kept reaches the warehouse only quoted, as the builder created it.
+ * A name already quoted passes through.
+ */
+export function bindColocatedEntries(args: {
+   entries: FreshnessManifest;
+   eligibility:
+      | {
+           eligibleEntityIds: ReadonlySet<string>;
+           refused: Record<string, string>;
+        }
+      | undefined;
+   /** Each planned source's dialect, by its content address. */
+   dialects: ReadonlyMap<string, string>;
+}): { entries: FreshnessManifest; declined: ColocatedBindDecline[] } {
+   const { eligibility } = args;
+   const entries: FreshnessManifest = {};
+   const declined: ColocatedBindDecline[] = [];
+   for (const [sourceEntityId, entry] of Object.entries(args.entries)) {
+      if (eligibility?.eligibleEntityIds.has(sourceEntityId)) {
+         const dialect = args.dialects.get(sourceEntityId);
+         entries[sourceEntityId] = dialect
+            ? {
+                 ...entry,
+                 tableName: quoteManifestTablePath(entry.tableName, dialect),
+              }
+            : entry;
+         continue;
+      }
+      declined.push({
+         reason:
+            eligibility === undefined ? "build_plan_unavailable" : "refused",
+         sourceEntityId,
+         detail:
+            eligibility === undefined
+               ? PLAN_UNAVAILABLE
+               : (eligibility.refused[sourceEntityId] ?? NOT_IN_PLAN),
+      });
+   }
+   return { entries, declined };
+}
+
+/**
+ * A binding's kind, read off the plan: a rollup when its entry says so, a
+ * persisted view's table when it stores a view's generated build source, a
+ * `#(materialize)` table when it stores a `#(materialize)` source, else a
+ * `#@ persist` table.
+ */
+export function kindFromPlan(
+   binding: Pick<Binding, "kind" | "sourceIDs">,
+   plan: {
+      materializeSourceIDs: ReadonlySet<string>;
+      viewBuildSourceIDs: ReadonlySet<string>;
+   },
+): BindingKind {
+   if (binding.kind === "rollup") return "rollup";
+   const ids = binding.sourceIDs ?? [];
+   if (ids.some((id) => plan.viewBuildSourceIDs.has(id))) return "view";
+   if (ids.some((id) => plan.materializeSourceIDs.has(id))) {
+      return "materialize";
+   }
+   return "persist";
+}
+
+/** What a binding reads of a build-plan source. */
+interface ColocatedPlanSource {
+   name: string;
+   sourceEntityId: string;
+   connectionName: string;
+   dialect?: string;
+   origin?: "persist" | "preaggregate";
+   annotationFields?: Record<string, string>;
+}
+
+/**
+ * The served copy's bindings for the colocated `#(materialize)` tables the
+ * bound manifest holds: one per planned `#(materialize)` source without
+ * `storage=` whose content address the manifest names, admitted by
+ * `eligible` (the same positive eligibility a `storage=` binding needs).
+ *
+ * Its columns are the plan's compiled output columns
+ * ({@link MaterializePlan.storedColumns}) and each one the build captured from
+ * the table it wrote that the plan cannot spell (a zoned timestamp), so a
+ * source over one is bound as a `storage=` source is. With neither, it binds
+ * nothing: its table's columns are unknown, so it serves live.
+ */
+export function deriveColocatedServeBindings(args: {
+   /** The bound colocated manifest, freshness fields included. */
+   entries: FreshnessManifest | undefined;
+   /** The build plan's sources, by sourceID. */
+   planSources: Readonly<Record<string, ColocatedPlanSource>>;
+   /** The `#(materialize)` plans, by the author's sourceID. */
+   materializePlans: Readonly<Record<string, MaterializePlan>>;
+   /** Whether the bind admits a planned source (positive eligibility). */
+   eligible: (sourceID: string) => boolean;
+   /**
+    * A v1 `#@ persist` source's stored columns derived
+    * from its compiled output, for a table whose build captured no schema;
+    * undefined when it cannot be derived. Absent, no v1 source is bound.
+    */
+   v1Schema?: (sourceID: string) => StoredColumn[] | undefined;
+   /**
+    * Planned sources that are not v1 `#@ persist` sources of the author's
+    * (a persisted view's generated build source), never bound as v1.
+    */
+   notV1?: (sourceID: string) => boolean;
+}): Binding[] {
+   const { entries, planSources, materializePlans } = args;
+   if (!entries) return [];
+   const bindings: Binding[] = [];
+   for (const [sourceID, source] of Object.entries(planSources)) {
+      const plan = materializePlans[sourceID];
+      if (source.origin === "preaggregate") continue;
+      if (!plan && (!args.v1Schema || args.notV1?.(sourceID))) continue;
+      // A `storage=` table is bound from the storage manifest, never here.
+      if (
+         plan?.persist.storage !== undefined ||
+         source.annotationFields?.storage?.trim()
+      ) {
+         continue;
+      }
+      const entry = entries[source.sourceEntityId];
+      if (!entry?.tableName) continue;
+      const schema = plan
+         ? plannedWithCaptured(plan.storedColumns, entry.schema)
+         : v1ColumnsOf(entry, () => args.v1Schema?.(sourceID));
+      if (!schema?.length) continue;
+      // Built on another connection than the plan names (a manifest from
+      // another configuration): not this source's table.
+      if (
+         entry.connectionName !== undefined &&
+         entry.connectionName !== source.connectionName
+      ) {
+         continue;
+      }
+      if (!args.eligible(sourceID)) continue;
+      bindings.push({
+         kind: plan ? "materialize" : "persist",
+         tier: "colocated",
+         sourceName: source.name,
+         sourceIDs: [sourceID],
+         destinationName: source.connectionName,
+         virtualHandle: source.sourceEntityId,
+         // Canonical for the connection's dialect, as Malloy's manifest
+         // substitution pastes it (a reserved or case-preserved name quoted).
+         tablePath: source.dialect
+            ? quoteManifestTablePath(entry.tableName, source.dialect)
+            : entry.tableName,
+         schema: schema.map((c) => ({ ...c })),
+         ...(entry.nativeSchema?.length
+            ? { nativeSchema: entry.nativeSchema.map((c) => ({ ...c })) }
+            : {}),
+         ...(entry.dataAsOf !== undefined ? { freshAsOf: entry.dataAsOf } : {}),
+         ...(entry.freshnessWindowSeconds !== undefined
+            ? { freshnessWindowSeconds: entry.freshnessWindowSeconds }
+            : {}),
+         ...(entry.freshnessFallback !== undefined
+            ? { freshnessFallback: entry.freshnessFallback }
+            : {}),
+         // The key checks the run that wrote the table recorded beside it
+         // (a pair table's leaf key, known limitation 40); internal, never
+         // from a host's manifest.
+         ...(primaryKeysOf(entry) ? { primaryKeys: primaryKeysOf(entry) } : {}),
+      });
+   }
+   return bindings;
+}
+
+/** A captured zoned timestamp's spelling (`storedColumnsOfOutput`). */
+const ZONED_TIMESTAMP = /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i;
+
+/**
+ * A colocated `#(materialize)` table's columns: the plan's, typed as Malloy
+ * declares them (a truncation's `DATE`, which the warehouse may hold as a
+ * timestamp), and each zoned timestamp the build captured, which the plan
+ * cannot spell, as it captured it, as a `storage=` binding declares one. No
+ * other captured column is added: one the plan leaves out has no faithful
+ * declaration. With no capture (a table built before it), the plan's alone.
+ */
+function plannedWithCaptured(
+   planned: StoredColumn[] | undefined,
+   captured: StoredColumn[] | undefined,
+): StoredColumn[] | undefined {
+   if (!planned?.length) return planned;
+   const named = new Set(planned.map((c) => c.name));
+   return [
+      ...planned,
+      ...(captured ?? []).filter(
+         (c) => !named.has(c.name) && ZONED_TIMESTAMP.test(c.type.trim()),
+      ),
+   ];
+}
+
+/**
+ * A v1 colocated table's columns: what its build captured, else what its
+ * compiled output derives (a table built before the capture).
+ */
+function v1ColumnsOf(
+   entry: FreshnessAwareManifestEntry,
+   derive: () => StoredColumn[] | undefined,
+): StoredColumn[] | undefined {
+   return entry.schema?.length ? entry.schema : derive();
+}
+
+/**
+ * The columns a v1 colocated `#@ persist` build wrote, derived from the
+ * source's compiled definition (for a table built before its build captured
+ * a schema). A v1 build source is query-shaped, so its
+ * stored columns are the query's output fields. They are read from the
+ * persisted query's output struct when the compiled source records it (what
+ * the `extend` block drops with `except:` or `accept:` is still a column);
+ * otherwise from the source's fields with no expression, minus views, with
+ * two corrections that make the compiled field list read as the table:
+ *
+ * - a stored column is the field's name before any `rename:` (`as`), since
+ *   the rename is applied in the source's `extend` block, after the build;
+ * - a nest is a column (an array or record), though Malloy gives it a
+ *   `join`, while every other joined field is not stored.
+ *
+ * A computed dimension in the `extend` block has an expression, so it is not
+ * a column (the served copy keeps its definition). A field whose type has no
+ * faithful stored spelling is left out ({@link storedColumnsOfOutput}), so
+ * the served copy finds it missing and that source serves live.
+ */
+export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
+   const d = def as
+      | {
+           fields?: unknown[];
+           dialect?: unknown;
+           query?: { pipeline?: { outputStruct?: { fields?: unknown[] } }[] };
+        }
+      | undefined;
+   // The persisted query's own output, when the compiled source records it:
+   // exactly the build's columns, before the `extend` block renames, drops
+   // (`except:`, `accept:`) or re-hides any.
+   const output = d?.query?.pipeline?.at(-1)?.outputStruct?.fields;
+   const fields = Array.isArray(output) ? output : d?.fields;
+   if (!Array.isArray(fields)) return undefined;
+   const outputs = fields
+      .filter((f) => {
+         const x = f as Record<string, unknown>;
+         return (
+            x !== null &&
+            typeof x === "object" &&
+            !("e" in x) &&
+            x.type !== "turtle" &&
+            (!("join" in x) || x.type === "array" || x.type === "record")
+         );
+      })
+      .map((f) => {
+         const { as: _as, ...rest } = f as Record<string, unknown>;
+         return rest;
+      });
+   return storedColumnsOfOutput(outputs, {
+      nested: capabilitiesOf(d?.dialect).nestedColumns,
+      bigint: true,
+      timestamptz: true,
+   });
+}

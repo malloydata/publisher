@@ -25,15 +25,34 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import {
    collectModelBuildPlan,
-   deriveBuildPlan,
+   deriveBuildPlan as wirePlanOf,
+   planAddresses,
    deriveBuildPlanOutcome,
+   finishBuildPlan,
    emptyBuildPlanParts,
    plannedSources,
    type BuildPlanParts,
 } from "./build_plan";
-import { finalizeOmissions, omittedFromFile } from "./omitted_sources";
-import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
+import { finalizeOmissions, omittedFromFile } from "../domain/omitted_sources";
+import type { TablePlan } from "../domain/table_plans";
+import {
+   fakeSource,
+   materializePlansIn,
+   persistTables,
+   rollupPlansIn,
+   sourcesIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
+
+/** {@link wirePlanOf} over a hand-made plan, its addresses computed. */
+function deriveBuildPlan(
+   plan: Omit<Parameters<typeof wirePlanOf>[0], "addresses">,
+   ...rest: Parameters<typeof wirePlanOf> extends [unknown, ...infer R]
+      ? R
+      : never
+): ReturnType<typeof wirePlanOf> {
+   return wirePlanOf({ ...plan, addresses: planAddresses(plan) }, ...rest);
+}
 
 const duckdb = new DuckDBConnection("duckdb", ":memory:");
 const connections = new FixedConnectionMap(
@@ -64,7 +83,11 @@ async function plan(
    text: string,
    env: Record<string, string>,
    companionsFail: boolean | "unreadable" | "overlay",
-): Promise<{ parts: BuildPlanParts; dir: string }> {
+): Promise<{
+   parts: BuildPlanParts;
+   /** The package directory, spelled as a file URL's path. */
+   dir: string;
+}> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omitted-sources-"));
    fs.writeFileSync(path.join(dir, "m.malloy"), text);
    const { restore } = installSettings({ env });
@@ -115,7 +138,9 @@ async function plan(
             };
          },
       });
-      return { parts, dir };
+      // As the package appears inside a source ID's file URL, so a test can
+      // replace it: on Windows the path is D:\..., the URL /D:/....
+      return { parts, dir: pathToFileURL(dir).pathname };
    } finally {
       restore();
    }
@@ -124,7 +149,12 @@ async function plan(
 /** The wire plan a package load would keep from `parts`. */
 function wirePlan(parts: BuildPlanParts) {
    return deriveBuildPlanOutcome(
-      { ...parts, connectionDigests: { duckdb: "digest" } },
+      finishBuildPlan(parts, {
+         connectionDigests: { duckdb: "digest" },
+         connections: new Map(),
+         versionScoped: false,
+         keepIncrementalUnbuildable: true,
+      }),
       null,
    ).plan;
 }
@@ -146,7 +176,7 @@ source: base is duckdb.sql("select 1 as a")
 #@ persist
 source: p is base -> { group_by: a }
 `,
-         { PUBLISHER_V1_SERVED_COPY: "off" },
+         {},
          false,
       );
       const wire = wirePlan(parts);
@@ -157,38 +187,10 @@ source: p is base -> { group_by: a }
       expect(wire?.omittedFiles).toEqual([]);
    });
 
-   it("off: a synthesized #@ preaggregate companion that fails reports its rollups as preaggregate_companion_failed", async () => {
-      const env = { PUBLISHER_V1_SERVED_COPY: "off" };
+   it("a rollup companion that fails reports the v1 rollups as rollup_companion_failed", async () => {
+      const env = {};
       const good = await plan(V1_ROLLUP, env, false);
-      const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
-         id.replace(good.dir, "<pkg>"),
-      );
-      expect(planned).toHaveLength(1);
-      expect(planned[0]).toMatch(/__preagg__.*@file:.*\.preagg\.malloy$/);
-
-      const bad = await plan(V1_ROLLUP, env, true);
-      expect(Object.keys(bad.parts.sources)).toEqual([]);
-      const wire = wirePlan(bad.parts);
-      // Kept, not null: a plan that lost sources is not "no plan".
-      expect(wire).not.toBeNull();
-      expect(
-         wire?.omittedSources?.map((o) => ({
-            ...o,
-            sourceID: o.sourceID.replace(bad.dir, "<pkg>"),
-         })),
-      ).toEqual(
-         planned.map((sourceID) => ({
-            sourceID,
-            reason: "preaggregate_companion_failed",
-         })),
-      );
-      expect(JSON.stringify(wire)).not.toContain("secret-value");
-   });
-
-   it("on: a rollup companion that fails reports the v1 rollups as rollup_companion_failed", async () => {
-      const env = { PUBLISHER_V1_SERVED_COPY: "on" };
-      const good = await plan(V1_ROLLUP, env, false);
-      const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
+      const planned = Object.keys(rollupPlansIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
       );
       expect(planned).toHaveLength(1);
@@ -208,15 +210,15 @@ source: p is base -> { group_by: a }
       );
    });
 
-   it("on: a rollup companion whose author file cannot be set aside reports its rollups as rollup_companion_blanking_failed", async () => {
+   it("a rollup companion whose author file cannot be set aside reports its rollups as rollup_companion_blanking_failed", async () => {
       // A `#@ persist` line is what the companion must set aside.
       const text = `${V1_ROLLUP}
 #@ persist
 source: by_category is orders -> { group_by: category }
 `;
-      const env = { PUBLISHER_V1_SERVED_COPY: "on" };
+      const env = {};
       const good = await plan(text, env, false);
-      const planned = Object.keys(good.parts.preaggregatePlans).map((id) =>
+      const planned = Object.keys(rollupPlansIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
       );
       expect(planned).toHaveLength(1);
@@ -234,14 +236,14 @@ source: by_category is orders -> { group_by: category }
       );
    });
 
-   it("on: a v1 build copy that fails reports the file's #@ persist sources as v1_build_companion_failed", async () => {
+   it("a v1 build copy that fails reports the file's #@ persist sources as v1_build_companion_failed", async () => {
       const text = `source: base is duckdb.sql("select 1 as a, 'x' as b")
 #@ persist
 source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregate: n }
 `;
-      const env = { PUBLISHER_V1_SERVED_COPY: "on" };
+      const env = {};
       const good = await plan(text, env, false);
-      const planned = Object.keys(good.parts.sources).map((id) =>
+      const planned = Object.keys(sourcesIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
       );
       expect(planned).toHaveLength(1);
@@ -249,7 +251,7 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
       // The copy's text unreadable, or the copy not compiling.
       for (const fails of [true, "overlay"] as const) {
          const bad = await plan(text, env, fails);
-         expect(Object.keys(bad.parts.sources)).toEqual([]);
+         expect(Object.keys(sourcesIn(bad.parts))).toEqual([]);
          expect(
             wirePlan(bad.parts)?.omittedSources?.map((o) => ({
                ...o,
@@ -272,7 +274,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
 `;
       const env = { PUBLISHER_MATERIALIZE: "true" };
       const good = await plan(text, env, false);
-      const planned = Object.keys(good.parts.materializePlans).map((id) =>
+      const planned = Object.keys(materializePlansIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
       );
       expect(planned).toHaveLength(1);
@@ -300,7 +302,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
 `;
       const env = { PUBLISHER_MATERIALIZE: "true" };
       const good = await plan(text, env, false);
-      const planned = Object.keys(good.parts.sources)
+      const planned = Object.keys(sourcesIn(good.parts))
          .filter((id) => id.includes("__view@"))
          .map((id) => id.replace(good.dir, "<pkg>"));
       expect(planned).toHaveLength(1);
@@ -330,16 +332,12 @@ source: p is base -> { group_by: a }
 #@ persist
 source: q is base -> { group_by: a }
 `;
-   for (const [mode, text] of [
-      ["off", `##! experimental.persistence\n${BROKEN}`],
-      ["on", BROKEN],
+   for (const [file, text] of [
+      ["a flagged file", `##! experimental.persistence\n${BROKEN}`],
+      ["an unflagged file", BROKEN],
    ] as const) {
-      it(`${mode}: reports the source as persist_annotation_unparseable, and only it`, async () => {
-         const { parts, dir } = await plan(
-            text,
-            { PUBLISHER_V1_SERVED_COPY: mode },
-            false,
-         );
+      it(`${file}: reports the source as persist_annotation_unparseable, and only it`, async () => {
+         const { parts, dir } = await plan(text, {}, false);
          const wire = wirePlan(parts);
          expect(Object.values(wire?.sources ?? {}).map((s) => s.name)).toEqual([
             "q",
@@ -366,7 +364,7 @@ source: base is duckdb.sql("select 1 as a")
 #@ refresh="unterminated
 source: p is base -> { group_by: a }
 `,
-         { PUBLISHER_V1_SERVED_COPY: "off" },
+         {},
          false,
       );
       const wire = wirePlan(parts);
@@ -412,20 +410,27 @@ describe("BuildPlan.omittedSources: projection failures", () => {
          },
       };
       const sources = { ok, unkeyable, stray, broken };
+      const tables: Record<string, TablePlan> = {
+         ...persistTables(sources),
+         broken: {
+            kind: "rollup",
+            source: broken,
+            rollup: brokenRollup as never,
+         },
+      };
       const wire = deriveBuildPlan(
-         [
-            {
-               connectionName: "duckdb",
-               order: Object.keys(sources),
-               dependsOn: {},
-            },
-         ],
-         sources,
-         { duckdb: "digest" },
-         undefined,
-         undefined,
+         {
+            builds: [
+               {
+                  connectionName: "duckdb",
+                  order: Object.keys(sources),
+                  dependsOn: {},
+               },
+            ],
+            tables,
+            connectionDigests: { duckdb: "digest" },
+         },
          null,
-         { preaggregatePlans: { broken: brokenRollup as never } },
       );
       expect(Object.keys(wire.sources)).toEqual(["ok"]);
       expect(wire.omittedSources).toEqual([
@@ -439,13 +444,12 @@ describe("BuildPlan.omittedSources: projection failures", () => {
    it("drops a recorded omission the plan did list, keeps the first reason per sourceID, and sorts", () => {
       const ok = fakeSource({ name: "ok2", sourceEntityId: "e-ok2" });
       const wire = deriveBuildPlan(
-         [{ connectionName: "duckdb", order: ["ok2"], dependsOn: {} }],
-         { ok2: ok },
-         { duckdb: "digest" },
-         undefined,
-         undefined,
-         null,
          {
+            builds: [
+               { connectionName: "duckdb", order: ["ok2"], dependsOn: {} },
+            ],
+            tables: persistTables({ ok2: ok }),
+            connectionDigests: { duckdb: "digest" },
             omittedSources: [
                { sourceID: "z@f", reason: "rollup_companion_failed" },
                // Another model's walk planned it: not omitted.
@@ -454,6 +458,7 @@ describe("BuildPlan.omittedSources: projection failures", () => {
                { sourceID: "z@f", reason: "projection_failed" },
             ],
          },
+         null,
       );
       expect(wire.omittedSources).toEqual([
          { sourceID: "a@f", reason: "materialize_companion_failed" },
@@ -478,19 +483,19 @@ describe("BuildPlan.omittedSources: projection failures", () => {
       // written as `*@<file>` would read as, and be dropped beside, it.
       const star = fakeSource({ name: "*", sourceEntityId: "e-star" });
       const wire = deriveBuildPlan(
-         [{ connectionName: "duckdb", order: ["*@f"], dependsOn: {} }],
-         { "*@f": star },
-         { duckdb: "digest" },
-         undefined,
-         undefined,
-         null,
          {
+            builds: [
+               { connectionName: "duckdb", order: ["*@f"], dependsOn: {} },
+            ],
+            tables: persistTables({ "*@f": star }),
+            connectionDigests: { duckdb: "digest" },
             omittedSources: [
                { file: "f", reason: "materialize_companion_failed" },
                { file: "f", reason: "projection_failed" },
                { file: "a", reason: "rollup_companion_failed" },
             ],
          },
+         null,
       );
       expect(Object.keys(wire.sources)).toEqual(["*@f"]);
       expect(wire.omittedSources).toEqual([]);
@@ -502,5 +507,114 @@ describe("BuildPlan.omittedSources: projection failures", () => {
          omittedSources: [],
          omittedFiles: [],
       });
+   });
+});
+
+describe("BuildPlan.omittedSources: every companion kind under every failure", () => {
+   /** One model per companion kind, as the cases above write them. */
+   const KINDS = {
+      rollup: { text: V1_ROLLUP, env: {} },
+      v1_build_copy: {
+         text: `source: base is duckdb.sql("select 1 as a, 'x' as b")
+#@ persist
+source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregate: n }
+`,
+         env: {},
+      },
+      materialize: {
+         text: `#(materialize) name="plain_t"
+source: plain is duckdb.sql("select 1 as a") extend {
+  measure: n is count()
+}
+`,
+         env: { PUBLISHER_MATERIALIZE: "true" },
+      },
+      persisted_view: {
+         text: `source: ops is duckdb.sql("select 1 as id, 'aa' as carrier") extend {
+  measure: n is count()
+  #@ persist name="ops_by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`,
+         env: { PUBLISHER_MATERIALIZE: "true" },
+      },
+   } as const;
+   const FAILURES = [true, "overlay", "unreadable"] as const;
+
+   /** What each failure leaves: planned names, then each omission as `id reason`. */
+   const EXPECTED: Record<string, { planned: string[]; omitted: string[] }> = {
+      "rollup true": {
+         planned: [],
+         omitted: [
+            "orders__rollup__category__4bc36c1b@file://<pkg>/m.malloy.preaggregate.malloy rollup_companion_failed",
+         ],
+      },
+      "rollup overlay": {
+         planned: [],
+         omitted: [
+            "orders__rollup__category__4bc36c1b@file://<pkg>/m.malloy.preaggregate.malloy rollup_companion_failed",
+         ],
+      },
+      // No `#@` line to set aside, so an unreadable author file costs nothing.
+      "rollup unreadable": {
+         planned: ["orders__rollup__category__4bc36c1b"],
+         omitted: [],
+      },
+      "v1_build_copy true": {
+         planned: [],
+         omitted: ["p@file://<pkg>/m.malloy v1_build_companion_failed"],
+      },
+      "v1_build_copy overlay": {
+         planned: [],
+         omitted: ["p@file://<pkg>/m.malloy v1_build_companion_failed"],
+      },
+      "v1_build_copy unreadable": {
+         planned: [],
+         omitted: ["p@file://<pkg>/m.malloy v1_build_companion_failed"],
+      },
+      "materialize true": {
+         planned: [],
+         omitted: ["plain@file://<pkg>/m.malloy materialize_companion_failed"],
+      },
+      "materialize overlay": {
+         planned: [],
+         omitted: ["plain@file://<pkg>/m.malloy materialize_companion_failed"],
+      },
+      "materialize unreadable": { planned: ["plain"], omitted: [] },
+      "persisted_view true": {
+         planned: [],
+         omitted: [
+            "ops__by_carrier__view@file://<pkg>/m.malloy.persist-view.malloy persisted_view_companion_failed",
+         ],
+      },
+      "persisted_view overlay": {
+         planned: [],
+         omitted: [
+            "ops__by_carrier__view@file://<pkg>/m.malloy.persist-view.malloy persisted_view_companion_failed",
+         ],
+      },
+      "persisted_view unreadable": {
+         planned: ["ops__by_carrier__view"],
+         omitted: [],
+      },
+   };
+
+   it("omits exactly these sources, refuses none, and never omits a file", async () => {
+      const seen: typeof EXPECTED = {};
+      for (const [kind, { text, env }] of Object.entries(KINDS)) {
+         for (const fails of FAILURES) {
+            const { parts, dir } = await plan(text, env, fails);
+            const wire = wirePlan(parts);
+            expect(wire?.refusedSources ?? {}).toEqual({});
+            expect(wire?.omittedFiles).toEqual([]);
+            seen[`${kind} ${fails}`] = {
+               planned: Object.values(wire?.sources ?? {}).map((s) => s.name),
+               omitted: (wire?.omittedSources ?? []).map(
+                  (o) => `${o.sourceID.replace(dir, "<pkg>")} ${o.reason}`,
+               ),
+            };
+         }
+      }
+      expect(seen).toEqual(EXPECTED);
    });
 });

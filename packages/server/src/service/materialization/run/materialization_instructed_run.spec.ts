@@ -11,10 +11,11 @@ import {
    MaterializationEligibilityError,
    BadRequestError,
 } from "../../../errors";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import {
    compiledWith,
    fakeSource,
+   persistTables,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
 import { logger } from "../../../logger";
@@ -70,31 +71,27 @@ describe("executeInstructedBuild", () => {
          getEnvironmentPath: () => "/tmp/env",
       };
       return (
-         ctx.service as unknown as {
-            executeInstructedBuild: (
-               c: unknown,
-               env: unknown,
-               i: BuildInstruction[],
-               s: Record<string, unknown>,
-               sig: AbortSignal,
-               strict: boolean,
-               ...rest: unknown[]
-            ) => Promise<ExecuteResult>;
+         ctx.service.collaborators as unknown as {
+            executeInstructedBuild: (options: {
+               compiled: unknown;
+               environment: unknown;
+               instructions: BuildInstruction[];
+               seedEntries: Record<string, unknown>;
+               signal: AbortSignal;
+               strict: boolean;
+               [option: string]: unknown;
+            }) => Promise<ExecuteResult>;
          }
-      ).executeInstructedBuild(
+      ).executeInstructedBuild({
          compiled,
          environment,
          instructions,
-         seed,
-         new AbortController().signal,
+         seedEntries: seed,
+         signal: new AbortController().signal,
          strict,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
+         priorRefusals: [],
          hostInstructed,
-      );
+      });
    }
 
    it("builds instructed sources in dependency order and seeds carried entries", async () => {
@@ -153,7 +150,7 @@ describe("executeInstructedBuild", () => {
       });
       const compiled = {
          builds: [{ connectionName: "duckdb", order: ["only"], dependsOn: {} }],
-         sources: { only },
+         tables: persistTables({ only }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -228,7 +225,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -282,7 +279,7 @@ describe("executeInstructedBuild", () => {
       ).toContain("Permission denied while writing to dataset analytics");
    });
 
-   it("refuses a host-instructed rollup over a stored base with its reason, not a chained-build error (#6293)", async () => {
+   it("gates a host-instructed rollup over a stored base as any storage rollup, never for its base being stored", async () => {
       const runSQL = sinon.stub().resolves();
       const orders = fakeSource({
          name: "orders",
@@ -302,21 +299,27 @@ describe("executeInstructedBuild", () => {
                dependsOn: {},
             },
          ],
-         sources: { orders, orders__preagg__category: rollup },
+         tables: {
+            ...persistTables({ orders }),
+            orders__preagg__category: {
+               kind: "rollup" as const,
+               source: rollup,
+               rollup: {
+                  variant: true,
+                  baseSourceName: "orders",
+                  baseSourceID: "orders",
+                  grainDimensions: ["category"],
+                  measures: [],
+               },
+            },
+         },
          connectionDigests: { duckdb: "dig" },
          connections: new Map([
             ["duckdb", { runSQL } as unknown as MalloyConnection],
          ]),
-         preaggregatePlans: {
-            orders__preagg__category: {
-               baseSourceName: "orders",
-               baseSourceID: "orders",
-               grainDimensions: ["category"],
-               measures: [],
-            },
-         },
       };
-      // Only the rollup instructed: refused, so the run has nothing to build.
+      // Only the rollup instructed, with no destination: refused for that,
+      // as a storage rollup over any base is, so the run has nothing to build.
       const err = await callExecute(
          compiled,
          [
@@ -332,7 +335,8 @@ describe("executeInstructedBuild", () => {
          () => undefined,
          (e: unknown) => e as Error,
       );
-      expect(err?.message).toContain("cannot build or serve yet");
+      expect(err?.message).toContain("instructed with no storage destination");
+      expect(err?.message).not.toContain("cannot build or serve yet");
       expect(runSQL.called).toBe(false);
    });
 
@@ -384,7 +388,7 @@ describe("executeInstructedBuild", () => {
                   dependsOn: { down: ["up"] },
                },
             ],
-            sources: { ok, up, down },
+            tables: persistTables({ ok, up, down }),
             connectionDigests: { duckdb: "dig" },
             connections: new Map([["duckdb", connection]]),
          };
@@ -439,7 +443,7 @@ describe("executeInstructedBuild", () => {
                builds: [
                   { connectionName: "duckdb", order: ["only"], dependsOn: {} },
                ],
-               sources: { only },
+               tables: persistTables({ only }),
                connectionDigests: { duckdb: "dig" },
                connections: new Map([
                   ["duckdb", { runSQL } as unknown as MalloyConnection],
@@ -525,7 +529,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -596,7 +600,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -654,7 +658,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["good", "bad"], dependsOn: {} },
          ],
-         sources: { good, bad },
+         tables: persistTables({ good, bad }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -782,7 +786,7 @@ describe("executeInstructedBuild", () => {
       });
       const compiled = {
          builds: [{ connectionName: "duckdb", order: ["only"], dependsOn: {} }],
-         sources: { only },
+         tables: persistTables({ only }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -819,7 +823,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["mid", "root"], dependsOn: {} },
          ],
-         sources: { root, mid },
+         tables: persistTables({ root, mid }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -885,7 +889,7 @@ describe("executeInstructedBuild", () => {
          builds: [
             { connectionName: "duckdb", order: ["base", "ext"], dependsOn: {} },
          ],
-         sources: { base, ext },
+         tables: persistTables({ base, ext }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -934,7 +938,7 @@ describe("executeInstructedBuild", () => {
             { connectionName: "duckdb", order: ["shared"], dependsOn: {} },
             { connectionName: "postgres", order: ["shared"], dependsOn: {} },
          ],
-         sources: { shared },
+         tables: persistTables({ shared }),
          connectionDigests: { duckdb: "dig", postgres: "dig2" },
          connections: new Map([
             ["duckdb", { runSQL: runDuck } as unknown as MalloyConnection],
@@ -976,7 +980,7 @@ describe("executeInstructedBuild", () => {
       };
       const compiled = {
          builds: [build, build],
-         sources: { shared },
+         tables: persistTables({ shared }),
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
@@ -1005,7 +1009,10 @@ describe("executeInstructedBuild", () => {
     * than the model declares, which is the case `persistenceCollisionWarnings`
     * cannot see at load.
     */
-   function collidingBuild(runSQL: sinon.SinonStub) {
+   function collidingBuild(
+      runSQL: sinon.SinonStub,
+      names: [string, string] = ["rollup", "rollup"],
+   ) {
       const connection = { runSQL } as unknown as MalloyConnection;
       const a = fakeSource({
          name: "a",
@@ -1027,13 +1034,13 @@ describe("executeInstructedBuild", () => {
             {
                sourceEntityId: "baaaaaaaaaaaaaa",
                materializedTableId: "mt-a",
-               physicalTableName: "rollup",
+               physicalTableName: names[0],
                realization: "COPY",
             },
             {
                sourceEntityId: "bbbbbbbbbbbbbbb",
                materializedTableId: "mt-b",
-               physicalTableName: "rollup",
+               physicalTableName: names[1],
                realization: "COPY",
             },
          ],
@@ -1068,6 +1075,30 @@ describe("executeInstructedBuild", () => {
          restore();
          warn.restore();
       }
+   });
+
+   it.each([[["main.rollup", "rollup"]], [["rollup", "main.rollup"]]] as [
+      [string, string],
+   ][])(
+      "refuses two definitions on %p: a name with the default schema and one without it are one table",
+      async (names) => {
+         const runSQL = sinon.stub().resolves();
+         const err = await collidingBuild(runSQL, names).catch(
+            (e: unknown) => e,
+         );
+         expect(String((err as Error)?.message)).toContain(
+            "both materialize into table",
+         );
+         expect(createsFrom(runSQL)).toEqual([]);
+      },
+   );
+
+   it("builds two definitions in two named schemas, which are two tables", async () => {
+      const runSQL = sinon.stub().resolves();
+      await collidingBuild(runSQL, ["s1.rollup", "s2.rollup"]);
+      expect(
+         createsFrom(runSQL).filter((s) => s.includes("rollup")),
+      ).toHaveLength(2);
    });
 
    it("builds only the last of several same-address instructions with no sourceID", async () => {
@@ -2068,15 +2099,15 @@ describe("executeInstructedBuild", () => {
             },
             getEnvironmentPath: () => "/tmp/env",
          };
-         const service = ctx.service as unknown as {
+         const service = ctx.service.collaborators as unknown as {
             executeInstructedBuild: (
                ...args: unknown[]
             ) => Promise<ExecuteResult & { refusalsInFailures: number }>;
          };
-         const result = await service.executeInstructedBuild(
+         const result = await service.executeInstructedBuild({
             compiled,
             environment,
-            [
+            instructions: [
                {
                   sourceEntityId: "b0k0k0k0k0k0k0k0",
                   materializedTableId: "mt-ok",
@@ -2090,13 +2121,10 @@ describe("executeInstructedBuild", () => {
                   realization: "COPY",
                },
             ],
-            {},
-            new AbortController().signal,
-            false,
-            undefined,
-            undefined,
-            undefined,
-            [
+            seedEntries: {},
+            signal: new AbortController().signal,
+            strict: false,
+            priorRefusals: [
                {
                   name: "ext",
                   sourceID: "ext",
@@ -2105,11 +2133,11 @@ describe("executeInstructedBuild", () => {
                   message: "Source 'ext' cannot be materialized",
                },
             ],
-            new Map([
+            clearedTiers: new Map([
                ["ok", "colocated"],
                ["base", "colocated"],
             ]),
-         );
+         });
          expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
             "ok_v1",
          );

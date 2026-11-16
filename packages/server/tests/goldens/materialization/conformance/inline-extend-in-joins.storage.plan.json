@@ -24,6 +24,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_customer@<pkg>/m.malloy": "persist",
+      "by_customer_plus@<pkg>/plus.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -37,7 +41,7 @@
       }
     },
     "sourceModelPaths": {
-      "by_customer@<pkg>/m.malloy": "plus.malloy",
+      "by_customer@<pkg>/m.malloy": "m.malloy",
       "by_customer_plus@<pkg>/plus.malloy": "plus.malloy"
     }
   },
@@ -101,7 +105,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "plus.malloy",
+        "modelPath": "m.malloy",
         "name": "by_customer",
         "origin": "persist",
         "preaggregate": null,

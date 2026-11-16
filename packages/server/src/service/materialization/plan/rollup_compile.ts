@@ -8,14 +8,22 @@
  * resolves while it never shows up in `getModelPaths()`, the API or the
  * package's own compile.
  *
- * **Built over the author's rows, never over a stored base (#6293).** The
- * companion reads the author's files with every source-level `#@` line blanked
- * (positions kept), so Malloy's planner sees no persisted source under a
- * rollup: a rollup never chains onto its base's table. That is what lets a
- * rollup over a `#@ persist storage=` base build at all (the chained storage
- * build lifts a downstream's definition from its file, and a rollup has
- * none), and it reads the same rows the live query reads. The content address
- * is unchanged by the blanking: Malloy keys a target on its fully inlined SQL.
+ * **Planned over the author's rows** (pinned in preaggregate_variants.spec.ts).
+ * The companion reads the author's files with every source-level `#@` line
+ * blanked (positions kept), so Malloy's planner sees no persisted source under
+ * a rollup: the plan's addresses, edges and SQL are the author's rows'. That
+ * is what lets a rollup over a `#@ persist storage=` base build at all (the
+ * chained storage build lifts a downstream's definition from its file, and a
+ * rollup has none). The content address is unchanged by the blanking: Malloy
+ * keys a target on its fully inlined SQL.
+ *
+ * **Built over a colocated base's stored table when a run holds it.** A
+ * colocated rollup over a colocated `#@ persist` base has a second compile,
+ * made only when a run asks ({@link GeneratedRollups.overStoredBases}), with
+ * the base's own `#@ persist` kept: the run builds the rollup from that
+ * source, at the same address, only when its build manifest holds the base's
+ * table (instructed_build.ts), so the build reads the table, not the
+ * warehouse. The rows are the base's rows either way.
  */
 
 import type {
@@ -24,82 +32,112 @@ import type {
    Runtime,
 } from "@malloydata/malloy";
 import * as path from "path";
-import { fileURLToPath, pathToFileURL } from "url";
+import { getMaterializeEnabled } from "../../../config";
+import { pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
-import { overlayKey } from "../../overlay_key";
-import { persistBlankedFiles } from "../persist_blanking";
-import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
 import {
-   generateRollupBuildFile,
+   companionOmissions,
+   declaredInModel,
+   GeneratedFiles,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
+import {
    planModelRollups,
-   ROLLUP_COMPANION_SUFFIX,
    parentKeyCheckQuery,
    readsAsJoinMany,
    rollupKeyCheckQuery,
-   type ParentKeyCheck,
+   type JoinedKeyNeed,
    type ParentKeyNeed,
    type RollupRefusal,
-   type RollupVariantPlan,
 } from "./rollup_plan";
-import { splitSourceID } from "./persisted_view";
-import { SourceMap } from "./source_map";
-import { omittedFromFile, type Omission } from "./omitted_sources";
+import {
+   generateRollupBuildFile,
+   packageRelativeSourceID,
+   ROLLUP_COMPANION_SUFFIX,
+} from "../text/read_text";
+import type { ParentKeyCheck, RollupVariantPlan } from "../domain/table_plans";
+import type { PersistSource } from "@malloydata/malloy";
+import {
+   ownLevelNotes,
+   type AnnotationsDef,
+   type NotePosition,
+} from "../../annotations";
+import { routeOfNote } from "../../annotation_reader";
+import {
+   notesDeclarePersist,
+   placementOf,
+   readNotesIfAny,
+} from "./declaration";
+import { noteSpanKey } from "../text/persist_blanking";
+import { plannedSources } from "./addressing";
+import { SourceMap } from "../text/source_map";
+import type { Omission } from "../domain/omitted_sources";
 
-export interface GeneratedRollups {
+interface GeneratedRollups {
    /** The rollups the companion declares. Never empty. */
    plans: RollupVariantPlan[];
    model: MalloyModel;
    materializer: ModelMaterializer;
    runtime: Runtime;
    text: string;
+   /**
+    * The rollups that may be built over their base's stored table, by sourceID,
+    * each as the companion compiled over the author's files with its base's
+    * own `#@ persist` kept ({@link overStoredBaseNotes}), so Malloy's planner
+    * reads the base's table through a run's build manifest. Compiled once, on
+    * the first call: a plan never builds, so only a run pays for it. Empty
+    * when no rollup qualifies or the compile fails (each rollup then builds
+    * from the warehouse, as it is planned).
+    */
+   overStoredBases(): Promise<ReadonlyMap<string, PersistSource>>;
+   /** The sourceIDs {@link overStoredBases} may hold: the reuse candidates. */
+   overStoredCandidates: ReadonlySet<string>;
+}
+
+/**
+ * The notes to keep for the rollups that may read their base's stored table:
+ * a colocated rollup over a base whose own notes declare a colocated
+ * `#@ persist`. A rollup in a `storage=` destination, or over a base built
+ * into one, reads the author's rows as planned: a destination cannot be read
+ * from the base's warehouse.
+ */
+function overStoredBaseNotes(
+   map: SourceMap,
+   plans: readonly RollupVariantPlan[],
+   companionHref: string,
+): { keep: Set<string>; rollups: Set<string> } {
+   const keep = new Set<string>();
+   // By the sourceID the companion declares each rollup under.
+   const rollups = new Set<string>();
+   for (const plan of plans) {
+      if (plan.storage !== undefined) continue;
+      const node = map.node(plan.baseSourceID);
+      const def = node?.def as { annotations?: AnnotationsDef } | undefined;
+      const own = ownLevelNotes(def?.annotations).filter(
+         (n) => routeOfNote(n.text) === "@",
+      );
+      if (!notesDeclarePersist(own)) continue;
+      const tag = readNotesIfAny(own, "@");
+      const placed = tag ? placementOf(tag, "persist") : undefined;
+      if (!placed || !("placement" in placed)) continue;
+      if (placed.placement.tier !== "colocated") continue;
+      const spans = own.flatMap((n) => {
+         const at = (n as { at?: NotePosition }).at;
+         return at ? [noteSpanKey(at.url, at.range)] : [];
+      });
+      if (spans.length !== own.length) continue;
+      for (const span of spans) keep.add(span);
+      rollups.add(`${plan.rollupSourceName}@${companionHref}`);
+   }
+   return { keep, rollups };
 }
 
 /** Where the rollup companion for `modelPath` lives, as an absolute URL. */
-export function rollupCompanionURL(
-   packagePath: string,
-   modelPath: string,
-): URL {
+function rollupCompanionURL(packagePath: string, modelPath: string): URL {
    return pathToFileURL(
       `${path.join(packagePath, modelPath)}${ROLLUP_COMPANION_SUFFIX}`,
    );
-}
-
-/**
- * The companion URL of the file a `sourceID` was declared in, or undefined
- * for a declaration that is not a local file.
- */
-export function rollupCompanionURLOf(declaringURL: string): URL | undefined {
-   try {
-      return pathToFileURL(
-         `${fileURLToPath(declaringURL)}${ROLLUP_COMPANION_SUFFIX}`,
-      );
-   } catch {
-      return undefined;
-   }
-}
-
-/**
- * A `sourceID` with its file made relative to the package
- * (`orders@models/orders.malloy`), so a rollup's name does not depend on
- * where the package is checked out.
- */
-export function packageRelativeSourceID(
-   packagePath: string,
-   sourceID: string,
-): string {
-   const at = splitSourceID(sourceID);
-   if (!at) return sourceID;
-   try {
-      const file = fileURLToPath(at.url);
-      const relative = path
-         .relative(path.resolve(packagePath), file)
-         .split(path.sep)
-         .join("/");
-      return `${at.name}@${relative}`;
-   } catch {
-      return sourceID;
-   }
 }
 
 /**
@@ -134,14 +172,10 @@ export async function tryCompileRollupCompanion(args: {
          {
             packageRelativeSourceID: (id) =>
                packageRelativeSourceID(args.packagePath, id),
+            // v1 lines are always planned; `#(preaggregate)` only with its switch.
+            readsPreaggregateDeclarations: getMaterializeEnabled(),
          },
-         (declaringURL) => {
-            try {
-               return path.resolve(fileURLToPath(declaringURL)) === modelFile;
-            } catch {
-               return true;
-            }
-         },
+         declaredInModel(modelFile, true),
       );
       refused = planned.refused;
       plannedNames = planned.plans.map((p) => p.rollupSourceName);
@@ -151,38 +185,68 @@ export async function tryCompileRollupCompanion(args: {
       );
       if (!text) return { refused };
       const url = rollupCompanionURL(args.packagePath, args.modelPath);
+      const files = GeneratedFiles.over(args.getRuntime);
       // The shared, checked blanking (persist_blanking.ts): each compiler
       // span must hold its note and the file must lex the same once blanked.
-      const { runtime: reader } = await args.getRuntime(new Map());
-      const overlay = await persistBlankedFiles(args.modelDef, async (href) => {
-         try {
-            const read = await reader.urlReader.readURL(new URL(href));
-            return typeof read === "string" ? read : read.contents;
-         } catch {
-            return undefined;
-         }
-      });
+      const overlay = await files.blanked(args.modelDef);
       if (!overlay) {
          // Building over the author's files as they are would chain a rollup
-         // onto its base's table (#6293); build nothing instead.
+         // onto its base's table; build nothing instead.
          logger.error(
             "A #(preaggregate) companion was not built: a `#@` line of the author's files could not be left out of it",
             { modelPath: args.modelPath },
          );
          return {
             refused,
-            omitted: omittedFromFile(
-               companionHref,
-               plannedNames,
-               "rollup_companion_blanking_failed",
-            ),
+            omitted: companionOmissions("rollup_blanking", {
+               file: companionHref,
+               names: plannedNames,
+            }),
          };
       }
-      overlay.set(overlayKey(url.href), text);
-      const { runtime, importBaseURL } = await args.getRuntime(overlay);
-      const materializer = runtime.loadModel(url, { importBaseURL });
-      const model = await materializer.getModel();
+      overlay.set(url.href, text);
+      const { runtime, materializer, model } = await files.compile(
+         url,
+         overlay,
+      );
       await compileRollupKeyChecks(planned.plans, materializer, args.modelPath);
+      const overStored = overStoredBaseNotes(
+         SourceMap.of(args.modelDef),
+         planned.plans,
+         url.href,
+      );
+      let overStoredBases:
+         | Promise<ReadonlyMap<string, PersistSource>>
+         | undefined;
+      const compileOverStoredBases = async (): Promise<
+         ReadonlyMap<string, PersistSource>
+      > => {
+         const out = new Map<string, PersistSource>();
+         if (overStored.rollups.size === 0) return out;
+         try {
+            const kept = await files.blanked(args.modelDef, overStored.keep);
+            if (!kept) return out;
+            kept.set(url.href, text);
+            const compiled = await files.compile(url, kept);
+            const targets = await compiled.runtime.getBuildTargets(
+               compiled.model,
+            );
+            for (const source of plannedSources(targets)) {
+               if (overStored.rollups.has(source.sourceID)) {
+                  out.set(source.sourceID, source);
+               }
+            }
+         } catch (error) {
+            logger.warn(
+               "The rollups of a model build from the warehouse: their companion over the bases' stored tables did not compile",
+               {
+                  modelPath: args.modelPath,
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+         }
+         return out;
+      };
       return {
          generated: {
             plans: planned.plans,
@@ -190,6 +254,9 @@ export async function tryCompileRollupCompanion(args: {
             materializer,
             runtime,
             text,
+            overStoredBases: () =>
+               (overStoredBases ??= compileOverStoredBases()),
+            overStoredCandidates: overStored.rollups,
          },
          refused,
       };
@@ -203,11 +270,10 @@ export async function tryCompileRollupCompanion(args: {
       );
       return {
          refused,
-         omitted: omittedFromFile(
-            companionHref,
-            plannedNames,
-            "rollup_companion_failed",
-         ),
+         omitted: companionOmissions("rollup", {
+            file: companionHref,
+            names: plannedNames,
+         }),
       };
    }
 }
@@ -218,8 +284,8 @@ export async function tryCompileRollupCompanion(args: {
  * Malloy records it, `givenUsage`: a `where:` that reads one, say). Compiled
  * once at plan time, such a check reads the rows of the given's default (or
  * does not compile without one), not the rows each caller's query reads, so a
- * key it finds unique may repeat for another caller; refused, the leg reads
- * that source's key as unknown and declines.
+ * key it finds unique may repeat for another caller; refused, the
+ * join-to-rollup branch reads that source's key as unknown and declines.
  */
 export function parentKeyCheckCompiler(materializer: {
    loadQuery(text: string): {
@@ -245,8 +311,13 @@ export function parentKeyCheckCompiler(materializer: {
  * Attach to each colocated rollup in `plans` the primary key checks of the
  * query sources that read it through a join read as a join_many
  * (`readsAsJoinMany`), each compiled once by its `compile` (the author's
- * model that names the source). A check that does not compile is left off,
- * logged: the leg then reads that source's key as unknown and declines.
+ * model that names the source). To each rollup, colocated or in a storage
+ * destination, also attach the check of its base's own primary key when a
+ * join reaches the base on another column (`joinedKeys`, see
+ * {@link JoinedKeyNeed}): the join-to-rollup branch serves a count, sum or
+ * average of the base through such a join only when that key is unique and
+ * never NULL. A check that does not compile is left off, logged: the branch
+ * then reads that source's key as unknown and declines.
  */
 export async function compileParentKeyChecks(
    plans: Iterable<RollupVariantPlan>,
@@ -254,37 +325,71 @@ export async function compileParentKeyChecks(
       need: ParentKeyNeed;
       compile: (text: string) => Promise<string>;
    }[],
+   joinedKeys: readonly {
+      need: JoinedKeyNeed;
+      compile: (text: string) => Promise<string>;
+   }[] = [],
 ): Promise<void> {
    const compiled = new Map<string, Promise<string | undefined>>();
-   for (const plan of plans) {
-      // A `#@ preaggregate` (v1) plan is never read through a join.
-      if (plan.variant !== true || plan.storage !== undefined) continue;
-      const checks: ParentKeyCheck[] = [];
-      const seen = new Set<string>();
-      for (const { need, compile } of needs) {
-         if (seen.has(need.sourceID) || !readsAsJoinMany(plan, need)) continue;
-         seen.add(need.sourceID);
-         let sql = compiled.get(need.sourceID);
-         if (sql === undefined) {
-            sql = compile(parentKeyCheckQuery(need.name, need.keyColumn)).catch(
-               (error) => {
-                  logger.warn(
-                     "A query source's primary key check did not compile; queries it answers through a #(preaggregate) rollup read as a join_many are answered live",
-                     {
-                        source: need.name,
-                        keyColumn: need.keyColumn,
-                        error:
-                           error instanceof Error
-                              ? error.message
-                              : String(error),
-                     },
-                  );
-                  return undefined;
+   const compileOnce = (
+      sourceID: string,
+      name: string,
+      keyColumn: string,
+      compile: (text: string) => Promise<string>,
+   ): Promise<string | undefined> => {
+      let sql = compiled.get(sourceID);
+      if (sql === undefined) {
+         sql = compile(parentKeyCheckQuery(name, keyColumn)).catch((error) => {
+            logger.warn(
+               "A source's primary key check did not compile; queries it answers through a #(preaggregate) rollup read through a join are answered live",
+               {
+                  source: name,
+                  keyColumn,
+                  error: error instanceof Error ? error.message : String(error),
                },
             );
-            compiled.set(need.sourceID, sql);
+            return undefined;
+         });
+         compiled.set(sourceID, sql);
+      }
+      return sql;
+   };
+   for (const plan of plans) {
+      // A `#@ preaggregate` (v1) plan is never read through a join.
+      if (plan.variant !== true) continue;
+      const checks: ParentKeyCheck[] = [];
+      const seen = new Set<string>();
+      // A query source's key is checked over its rows where the rollup is
+      // colocated; in a destination, over its stored table there
+      // (`storedKeyChecksOf`).
+      for (const { need, compile } of plan.storage === undefined ? needs : []) {
+         if (seen.has(need.sourceID) || !readsAsJoinMany(plan, need)) continue;
+         seen.add(need.sourceID);
+         const text = await compileOnce(
+            need.sourceID,
+            need.name,
+            need.keyColumn,
+            compile,
+         );
+         if (text === undefined) continue;
+         checks.push({
+            sourceID: need.sourceID,
+            keyColumn: need.keyColumn,
+            connectionName: need.connectionName,
+            sql: text,
+         });
+      }
+      for (const { need, compile } of joinedKeys) {
+         if (need.sourceID !== plan.baseSourceID || seen.has(need.sourceID)) {
+            continue;
          }
-         const text = await sql;
+         seen.add(need.sourceID);
+         const text = await compileOnce(
+            need.sourceID,
+            need.name,
+            need.keyColumn,
+            compile,
+         );
          if (text === undefined) continue;
          checks.push({
             sourceID: need.sourceID,
@@ -302,8 +407,7 @@ export async function compileParentKeyChecks(
  * Compile each rollup's key check (known limitation 29, see
  * `rollupKeyCheckQuery`) against the companion, onto its plan. A check that
  * does not compile is left off, logged: its rollup's join_one is then never
- * known unique, and the join-to-rollup leg keeps declining what it declined
- * before.
+ * known unique, and the join-to-rollup branch declines it.
  */
 async function compileRollupKeyChecks(
    plans: RollupVariantPlan[],

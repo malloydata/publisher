@@ -19,7 +19,10 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
-import { freshLoadPool, loadFixture } from "./conformance/package_harness";
+import {
+   freshLoadPool,
+   loadFixture,
+} from "../../../src/test_helpers/conformance/package_runner";
 import {
    buildScenario,
    disposeScenarios,
@@ -27,7 +30,11 @@ import {
    type R4Fixture,
    type R4Scenario,
    type Row,
+   expectPairServedVia,
 } from "./harness";
+
+/** Measures that count through the inlined path (see {@link expectPairServedVia}). */
+const PATH_COUNTS: string[] = [];
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 const PG_SCHEMA = "r4_colocated";
@@ -264,7 +271,7 @@ for (const tier of tiers) {
             fixture.bindings
                .map((b) => [
                   b.sourceName,
-                  b.colocated,
+                  b.tier === "colocated",
                   b.destinationName,
                   b.virtualHandle === fixture.tableIds[b.sourceName],
                ])
@@ -303,7 +310,9 @@ for (const tier of tiers) {
                expect(run.servedVia).toBeUndefined();
                return;
             }
-            expect(run.servedVia).toBe("served_copy");
+            expectPairServedVia(run, PATH_COUNTS);
+            // A count through the pair table's join is answered live.
+            if (run.servedVia === undefined) return;
             // The source's own warehouse: not a storage hit.
             expect(run.servedFrom).toBeNull();
             expect(run.servedBy?.kind).toBe("materialized");
@@ -366,7 +375,7 @@ for (const tier of tiers) {
 }
 
 /**
- * Through the real package path (conformance/package_harness.ts): the plan's
+ * Through the real package path (src/test_helpers/conformance/package_runner.ts): the plan's
  * eligibility, the colocated manifest bind, the router and `govern()`.
  */
 describe("colocated #(materialize) through the package: gates, and v1 unchanged", () => {
@@ -434,13 +443,16 @@ source: gated is orders_raw extend {
             fixture.pkg as unknown as {
                materialization: {
                   colocatedSourceEligibility: unknown;
-                  recordManifestBinding(e: Record<string, unknown>): void;
+                  bind(update: {
+                     colocated: Record<string, unknown>;
+                     colocatedAsGiven: true;
+                  }): void;
                };
             }
          ).materialization;
          const known = materialization.colocatedSourceEligibility;
          materialization.colocatedSourceEligibility = undefined;
-         materialization.recordManifestBinding(entries);
+         materialization.bind({ colocated: entries, colocatedAsGiven: true });
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };
@@ -460,20 +472,22 @@ source: gated is orders_raw extend {
       }
    });
 
-   it("with gated serving off, binds no gated colocated table, and answers live", async () => {
+   it("with gated serving off, serves the gated colocated table under G3, as v1 colocated", async () => {
       const { fixture, live, restore } = await loaded("false");
       try {
-         // Refused at the bind (the colocated tier's eligibility), so its
-         // table is never read: a table that cannot be served is not served.
-         expect(fixture.verdicts).toEqual(["gated:live:refused"]);
+         // The entry point's own row-level gate is kept on a colocated
+         // table without the switch (G3): the table stays in the warehouse
+         // and the gate is grafted and proven at read.
+         expect(fixture.built).toEqual([{ name: "gated", tier: "colocated" }]);
+         expect(fixture.verdicts).toEqual(["gated:serves"]);
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };
-         expect(model.servedCopy.hasBindings()).toBe(false);
+         expect(model.servedCopy.hasBindings()).toBe(true);
          for (const [i, REGIONS] of CALLERS.entries()) {
             const outcome = await fixture.run("m.malloy", QUERY, { REGIONS });
             if ("error" in outcome) throw new Error(outcome.error);
-            expect(outcome.answer.servedBy).toBe("live");
+            expect(outcome.answer.via).toBe("served_copy");
             expect(rowDifference(live[i], outcome.answer.rows)).toBeUndefined();
          }
       } finally {
@@ -482,7 +496,7 @@ source: gated is orders_raw extend {
       }
    });
 
-   it("leaves a v1 colocated #@ persist on Malloy's build manifest, not the served copy", async () => {
+   it("binds a v1 colocated #@ persist on the served copy, which answers it (the v1 cutover, G1)", async () => {
       const restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
@@ -500,6 +514,7 @@ source: v1 is orders_raw -> {
 }
 `,
       });
+
       const query = "run: v1 -> { aggregate: t is total.sum() }";
       const live = await loader.run("m.malloy", query);
       const fixture = await loader.bind();
@@ -508,15 +523,15 @@ source: v1 is orders_raw -> {
          const served = await fixture.run("m.malloy", query);
          if ("error" in served) throw new Error(served.error);
          expect(served.answer.servedBy).toBe("materialized");
-         expect(served.answer.via).toBeUndefined();
+         expect(served.answer.via).toBe("served_copy");
          expect(
             rowDifference(live.answer.rows, served.answer.rows),
          ).toBeUndefined();
-         // No served-copy binding for it: the copy reads only #(materialize).
+         // Bound on the served copy, not left to Malloy's build manifest.
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };
-         expect(model.servedCopy.hasBindings()).toBe(false);
+         expect(model.servedCopy.hasBindings()).toBe(true);
       } finally {
          await fixture.dispose();
          restore();

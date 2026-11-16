@@ -1,6 +1,25 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The run and build events of materialization (the telemetry specification
+ * in docs/materialization-v2-plan.md): `materialization.run.started` and `.run.finished` around a
+ * run, `materialization.build.finished` and `.build.failed` per source, and the
+ * build counters and histograms beside them. Each log is one call with the
+ * event name as its message, so a pipeline can key on it; `runId` (the run's
+ * materialization id) and `sourceEntityId` (a digest) join it to the run's
+ * record, which holds the rest.
+ *
+ * Never on an event or a label: row values, given values, gate text, SQL, a
+ * driver's message (it can quote SQL; reduced to {@link errorCodeOf}),
+ * storage aliases or destination locations, credentials. A host-assigned table
+ * name is left off too: only a name Publisher made is logged.
+ *
+ * Surface: {@link RunTelemetry} and {@link withRunTelemetry} around a run, the
+ * `report*` functions per source, and the label helpers. Read by the service,
+ * the instructed build and the run lifecycle.
+ */
+
 import { AsyncLocalStorage } from "async_hooks";
 import { getPersistStorageMode } from "../../../config";
 import { causeChain } from "../../../driver_errors";
@@ -17,28 +36,15 @@ import {
    recordBuildOutcome,
    recordBuildReadBytes,
 } from "../../../materialization_metrics";
-import type { CompiledBuildPlan } from "../plan/build_plan";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../plan/persisted_view";
-import type { BuildInstruction, BuildPlan, ManifestEntry } from "../types";
+import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../domain/table_plans";
+import type {
+   BuildInstruction,
+   BuildPlan,
+   ManifestEntry,
+} from "../domain/types";
 import type { BuildRetryable } from "./build_failure_class";
 import { BilledReadNotCapturedError } from "./materialization_build_session";
-
-export { errorCodeOf };
-
-/**
- * The run and build events of materialization (plan section 5, "Step 4
- * specification"): `materialization.run.started` and `.run.finished` around a
- * run, `materialization.build.finished` and `.build.failed` per source, and the
- * build counters and histograms beside them. Each log is one call with the
- * event name as its message, so a pipeline can key on it; `runId` (the run's
- * materialization id) and `sourceEntityId` (a digest) join it to the run's
- * record, which holds the rest.
- *
- * Never on an event or a label: row values, given values, gate text, SQL, a
- * driver's message (it can quote SQL; reduced to {@link errorCodeOf}),
- * storage aliases or destination locations, credentials. A host-assigned table
- * name is left off too: only a name Publisher made is logged.
- */
 
 /** What started a run, on `materialization.run.started`. */
 export const RUN_TRIGGERS = [
@@ -47,7 +53,7 @@ export const RUN_TRIGGERS = [
    "auto",
    "orchestrator",
 ] as const;
-export type RunTrigger = (typeof RUN_TRIGGERS)[number];
+type RunTrigger = (typeof RUN_TRIGGERS)[number];
 
 /**
  * A run's trigger: the scheduler's fire, else a host's instructed run, else a
@@ -66,15 +72,19 @@ export function runTriggerOf(args: {
    return "api";
 }
 
-/** What one planned source's build makes (see {@link BuildKind}). */
+/**
+ * What one planned source's build makes (see {@link BuildKind}): its table's
+ * kind, fixed at plan. A source this compile did not plan (the load's plan
+ * can list one the run's own compile does not) is read as a persisted view
+ * by its generated companion's sourceID, else as `persist`.
+ */
 export function buildKindOf(
-   compiled: Pick<CompiledBuildPlan, "preaggregatePlans" | "materializePlans">,
+   compiled: Pick<CompiledBuildPlan, "tables">,
    sourceID: string | undefined,
 ): BuildKind {
    if (sourceID === undefined) return "persist";
-   if (compiled.preaggregatePlans?.[sourceID]) return "rollup";
-   const materialize = compiled.materializePlans?.[sourceID];
-   if (materialize) return materialize.pair ? "pair" : "materialize";
+   const table = compiled.tables[sourceID];
+   if (table) return table.kind;
    if (sourceID.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) return "view";
    return "persist";
 }
@@ -85,7 +95,7 @@ export function buildKindOf(
  * a kind; an address the plan does not list is left to the caller.
  */
 export function buildKindsByAddress(
-   compiled: Pick<CompiledBuildPlan, "preaggregatePlans" | "materializePlans">,
+   compiled: Pick<CompiledBuildPlan, "tables">,
    plan: Pick<BuildPlan, "sources"> | null | undefined,
 ): Map<string, BuildKind> {
    const kinds = new Map<string, BuildKind>();

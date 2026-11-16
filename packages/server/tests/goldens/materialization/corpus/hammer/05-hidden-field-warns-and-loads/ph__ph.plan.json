@@ -4,12 +4,12 @@
     "annotationFindings": [],
     "builds": [],
     "droppedPersistSources": [],
+    "kinds": {},
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {},
     "sourceModelPaths": {}
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": null
 }

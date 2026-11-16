@@ -1,0 +1,37 @@
+// conformance: chained persisted sources [colocated]: files generated while serving
+
+// ==== <pkg>/base.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: orders_rollup__served is {
+   status::string,
+   regions::number,
+   t::number
+}
+type: orders_base__served is {
+   region::string,
+   status::string,
+   total_amount::number
+}
+
+import "raw.malloy"
+
+#@ persist name="orders_base"
+source: orders_base is duckdb.virtual('97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef')::orders_base__served
+
+#@ persist name="orders_rollup"
+source: orders_rollup is duckdb.virtual('b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463')::orders_rollup__served
+
+// ==== <pkg>/rollup.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: orders_rollup_x__served is {
+   region::string,
+   statuses::number,
+   t::number
+}
+
+import "base.malloy"
+
+#@ persist name="orders_rollup_x"
+source: orders_rollup_x is duckdb.virtual('45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd')::orders_rollup_x__served

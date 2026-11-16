@@ -83,7 +83,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -152,7 +153,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -221,7 +223,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -296,7 +299,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
+          "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -347,9 +351,10 @@
       "path": {
         "considered": [
           {
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "CROSS_CONNECTION",
             "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad"
           }
         ],

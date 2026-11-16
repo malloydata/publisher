@@ -681,3 +681,17 @@ export function readStartingGivens(
    }
    return Object.keys(collected).length > 0 ? collected : undefined;
 }
+
+/**
+ * The keys of a model's `##! experimental { … }` flags among `notes`, as the
+ * compiler read them.
+ */
+export function experimentalFlagKeys(notes: readonly unknown[]): string[] {
+   const { tag } = parseRouteTag(
+      new Annotations({ notes } as ConstructorParameters<
+         typeof Annotations
+      >[0]),
+      "!",
+   );
+   return [...(tag.tag("experimental")?.entries() ?? [])].map(([key]) => key);
+}

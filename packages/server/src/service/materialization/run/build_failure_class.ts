@@ -1,6 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Whether retrying a failed build could succeed: one source's error
+ * ({@link classifyBuildError}), a source's failure in the context of its run
+ * ({@link classifySourceFailure}, which inherits a failed upstream's answer),
+ * and a whole run that built nothing ({@link BuildRunFailedError},
+ * {@link classifyRunFailure}). Read by the instructed build, the run lifecycle
+ * and run telemetry.
+ *
+ * Pure: it reads an error's class, cause chain and message, and never logs.
+ * Conservative on purpose: an unrecognized failure answers `undefined`, never a
+ * guess.
+ */
+
 import { MalloyError } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -113,7 +126,7 @@ const TRANSIENT_CODES_IN_MESSAGES: readonly string[] = [
  * {@link BuildRetryable}); {@link classifySourceFailure} classifies it when
  * the upstream failed in this run.
  */
-export function isUpstreamMissingError(err: unknown): boolean {
+function isUpstreamMissingError(err: unknown): boolean {
    return (
       err instanceof ChainedUpstreamMissingError ||
       strictMissSourceId(err) !== undefined

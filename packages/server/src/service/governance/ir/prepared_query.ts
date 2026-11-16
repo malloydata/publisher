@@ -550,6 +550,25 @@ export function setsTimezone(query: unknown, depth = 0): boolean {
 }
 
 /**
+ * Every query time zone a compiled query sets (`timezone:` in any of its
+ * stages, a nest's or a view's it calls included), as written: what
+ * {@link setsTimezone} looks for, with the zones themselves.
+ */
+export function queryTimezones(query: unknown, depth = 0): string[] {
+   if (!query || typeof query !== "object" || depth > 64) return [];
+   if (Array.isArray(query)) {
+      return query.flatMap((q) => queryTimezones(q, depth + 1));
+   }
+   return Object.entries(query).flatMap(([k, v]) =>
+      k === "queryTimezone" && typeof v === "string"
+         ? [v]
+         : typeof v === "object"
+           ? queryTimezones(v, depth + 1)
+           : [],
+   );
+}
+
+/**
  * Whether a compiled expression or query holds raw SQL (the `sql_*` family,
  * `genericSQLExpr`) anywhere it computes or reads. Its text names columns by
  * itself (`${TABLE}.region`, or a bare `region`), which the compiler records
@@ -617,44 +636,6 @@ export function queryFieldUsagePaths(
             continue;
          }
          out.push(u.path as string[]);
-      }
-   });
-   return unreadable ? undefined : out;
-}
-
-/**
- * Every aggregate the compiler records it needs a unique key for, anywhere in
- * a prepared query (nests included), as the join path it is taken at: a
- * `count()` (`isCount`), or a `sum` or `avg`, written in the query or read
- * through a measure by name (`expandedFieldUsage` follows measures into their
- * definitions). `min` and `max` need no key and are not recorded. The empty
- * path is the source's own grain. Undefined when an entry is not readable, so
- * a caller fails closed.
- */
-export function uniqueKeyAggregatePaths(
-   view: PreparedQueryView,
-): { path: string[]; isCount: boolean }[] | undefined {
-   const out: { path: string[]; isCount: boolean }[] = [];
-   let unreadable = false;
-   eachQueryNode(view.pipeline, (n) => {
-      const usage = n.expandedFieldUsage;
-      if (!Array.isArray(usage)) return;
-      for (const u of usage as {
-         path?: unknown;
-         uniqueKeyRequirement?: { isCount?: unknown };
-      }[]) {
-         if (!u || u.uniqueKeyRequirement === undefined) continue;
-         if (
-            !Array.isArray(u.path) ||
-            u.path.some((p) => typeof p !== "string")
-         ) {
-            unreadable = true;
-            continue;
-         }
-         out.push({
-            path: u.path as string[],
-            isCount: u.uniqueKeyRequirement?.isCount === true,
-         });
       }
    });
    return unreadable ? undefined : out;

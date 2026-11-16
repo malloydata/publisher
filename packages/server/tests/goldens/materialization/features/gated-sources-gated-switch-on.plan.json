@@ -26,6 +26,12 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "gated_mat@<pkg>/m.malloy": "materialize",
+      "locked_mat@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "gated_mat@<pkg>/m.malloy": {
         "buildSourceName": "gated_mat__mat",
@@ -332,7 +338,8 @@
     "sourceGateOutcomes": {
       "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
         "attributed": true,
-        "classification": "rejected"
+        "classification": "rejected",
+        "inheritedRowFilter": true
       },
       "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
         "attributed": true,

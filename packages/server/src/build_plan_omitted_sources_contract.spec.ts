@@ -6,7 +6,20 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import { parse } from "yaml";
 import type { components } from "./api";
-import { deriveBuildPlan } from "./service/materialization/plan/build_plan";
+import {
+   deriveBuildPlan as wirePlanOf,
+   planAddresses,
+} from "./service/materialization/plan/build_plan";
+
+/** {@link wirePlanOf} over a hand-made plan, its addresses computed. */
+function deriveBuildPlan(
+   plan: Omit<Parameters<typeof wirePlanOf>[0], "addresses">,
+   ...rest: Parameters<typeof wirePlanOf> extends [unknown, ...infer R]
+      ? R
+      : never
+): ReturnType<typeof wirePlanOf> {
+   return wirePlanOf({ ...plan, addresses: planAddresses(plan) }, ...rest);
+}
 
 /**
  * `BuildPlan.omittedSources` is what lets a host retire a table safely, so a
@@ -60,12 +73,21 @@ describe("the BuildPlan.omittedSources contract", () => {
    });
 
    it("round-trips a derived plan through JSON as the generated type, with only declared fields", () => {
-      const plan = deriveBuildPlan([], {}, {}, undefined, undefined, null, {
-         omittedSources: [
-            { sourceID: "a@file:///p/m.malloy", reason: "projection_failed" },
-            { file: "file:///p/m.malloy.preaggregate.malloy", reason: "x" },
-         ],
-      });
+      const plan = deriveBuildPlan(
+         {
+            builds: [],
+            tables: {},
+            connectionDigests: {},
+            omittedSources: [
+               {
+                  sourceID: "a@file:///p/m.malloy",
+                  reason: "projection_failed",
+               },
+               { file: "file:///p/m.malloy.preaggregate.malloy", reason: "x" },
+            ],
+         },
+         null,
+      );
       const wire = JSON.parse(
          JSON.stringify(plan),
       ) as components["schemas"]["BuildPlan"];

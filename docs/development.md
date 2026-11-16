@@ -12,7 +12,7 @@ SPDX-License-Identifier: MIT
 
 | Tool | Version | Required for |
 | --- | --- | --- |
-| [Bun](https://bun.sh/) | ≥ 1.3.13 | Primary runtime + package manager |
+| [Bun](https://bun.sh/) | ≥ 1.4.4 | Primary runtime + package manager |
 | [Node.js](https://nodejs.org/) | ≥ 20 | DuckDB postinstall scripts and the `npx @malloy-publisher/server` bin shebang |
 | [Python](https://www.python.org/) | ≥ 3.12 | Only if you build the Python client (`packages/python-client`) |
 | Java | ≥ 21 (Corretto recommended) | Only if you regenerate API clients via `bun run generate-api-types` |

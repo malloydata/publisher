@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The join_one uniqueness check (materialization v2, P8): before a
+ * The join_one uniqueness check (P8): before a
  * `#(materialize)` source that inlines a join_one is built, its joined source
  * is grouped on the join's key, and any key held twice fails the build. A
  * duplicate would store the parent row once per match, so every count over
@@ -22,15 +22,13 @@
 
 import { createHash } from "node:crypto";
 import { tableIdentity } from "../../versions/materialization_scope";
-import type {
-   BuildManifest,
-   Connection as MalloyConnection,
-} from "@malloydata/malloy";
-import type { KeyUniqueness, ManifestEntry } from "../types";
+import { isActiveRun } from "./materialization_run_support";
+import type { Connection as MalloyConnection } from "@malloydata/malloy";
+import type { KeyUniqueness, ManifestEntry } from "../domain/types";
 import type {
    InlineUniquenessCheck,
    MaterializePlan,
-} from "../plan/build_file_generator";
+} from "../domain/table_plans";
 
 /**
  * A `#(materialize)` source inlines a join_one (`inline=["j"]`) whose joined
@@ -109,7 +107,7 @@ export const INLINE_UNIQUENESS_KEY = "inlineUniquenessChecks";
  * Recorded only for a check that read a persisted joined table (a
  * {@link StoredJoin}); a check over anything read live is never relied on.
  */
-export interface UniquenessPass {
+interface UniquenessPass {
    /** The joined source's content address (its sourceEntityId). */
    joinedAddress: string;
    /** The table the check read: its connection and physical name. */
@@ -119,7 +117,7 @@ export interface UniquenessPass {
 }
 
 /** What became of one check in a run, for the run's metadata. */
-export interface UniquenessCheckOutcome {
+interface UniquenessCheckOutcome {
    sourceName: string;
    join: string;
    /** `ran`: the check ran (and passed). `skipped`: a recorded pass held. */
@@ -449,35 +447,6 @@ export function withoutUniquenessPasses(
 }
 
 /**
- * Compiles a check against a build manifest, so it reads the persisted
- * tables the manifest names. Registered per check at plan time, where the
- * companion's materializer is (materialize_compile.ts); a check without one
- * (a plan from elsewhere) is never compiled over a stored table.
- */
-export type UniquenessCheckCompiler = (
-   buildManifest: BuildManifest,
-   connectionDigests: Record<string, string>,
-) => Promise<string>;
-
-const checkCompilers = new WeakMap<
-   InlineUniquenessCheck,
-   UniquenessCheckCompiler
->();
-
-export function registerUniquenessCheckCompiler(
-   check: InlineUniquenessCheck,
-   compile: UniquenessCheckCompiler,
-): void {
-   checkCompilers.set(check, compile);
-}
-
-export function uniquenessCheckCompiler(
-   check: InlineUniquenessCheck,
-): UniquenessCheckCompiler | undefined {
-   return checkCompilers.get(check);
-}
-
-/**
  * Run every uniqueness check `plan` carries on `connection`, throwing
  * {@link InlinedJoinNotUniqueError} for the first join whose key repeats. A
  * plan with no inlined join checks nothing.
@@ -496,6 +465,9 @@ export async function assertInlinedJoinsUnique(
    ) => Promise<StoredJoin | undefined>,
 ): Promise<void> {
    for (const check of plan?.uniquenessChecks ?? []) {
+      // A pair table's leaf key check never fails the build: an auto-run
+      // runs it once the table is written ({@link pairLeafKeyChecksOf}).
+      if (check.recordOnly) continue;
       // A plan from a Publisher that did not compile the check: refuse rather
       // than build unchecked.
       if (!check.sql) {
@@ -551,22 +523,32 @@ export async function assertInlinedJoinsUnique(
 }
 
 /**
- * The SQL of a stored table's primary key check, over `quotedTable` (a
- * DuckDB path, as the destination's session reads it): one row when a value
- * of `keyColumn` repeats or is NULL.
+ * A `#(materialize)` plan's pair-table leaf key checks
+ * (`InlineUniquenessCheck.recordOnly`), each as a key check a run records
+ * beside the table it wrote: the leaf source's sourceID, its key, and the
+ * compiled SQL (one row when a value repeats or is NULL). A check that was not
+ * compiled is left out, so the leaf's key stays unknown.
  */
-export function storedKeyCheckSql(
-   quotedTable: string,
-   keyColumn: string,
-): string {
-   const k = `"${keyColumn.replace(/"/g, '""')}"`;
-   return `SELECT ${k} FROM ${quotedTable} GROUP BY ${k} HAVING COUNT(*) > 1 OR ${k} IS NULL LIMIT 1`;
+export function pairLeafKeyChecksOf(
+   plan: MaterializePlan | undefined,
+): { sourceID: string; keyColumn: string; sql: string }[] {
+   return (plan?.uniquenessChecks ?? []).flatMap((check) =>
+      check.recordOnly && check.sql
+         ? [
+              {
+                 sourceID: check.joinedSourceID,
+                 keyColumn: check.keyColumn,
+                 sql: check.sql,
+              },
+           ]
+         : [],
+   );
 }
 
 /**
  * Run a rollup's key check (known limitation 29) on `connection` and say what
  * it found: unique when no non-NULL key value repeats. Undefined when the
- * check could not run, which the join-to-rollup leg reads as unknown and
+ * check could not run, which the join-to-rollup branch reads as unknown and
  * declines as it did before the check existed; the build itself never fails
  * for it.
  */
@@ -587,13 +569,6 @@ export async function runRollupKeyCheck(
       return undefined;
    }
 }
-
-/** A run that can write nothing more. */
-const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-]);
 
 /**
  * The newest of a package's runs, when its records may be relied on: it is
@@ -629,7 +604,7 @@ export function uncontestedAutoRun<
    const began = at(previous.startedAt ?? previous.createdAt);
    for (const other of runs) {
       if (other === previous) continue;
-      if (!TERMINAL_RUN_STATUSES.has(other.status)) return undefined;
+      if (isActiveRun(other.status)) return undefined;
       const ended = at(other.completedAt ?? other.updatedAt);
       if (!(ended <= began)) return undefined;
    }
@@ -651,25 +626,50 @@ export function tableIdentityKey(
 }
 
 /**
- * What a rollup key record says of the colocated table `entry` names, or
- * undefined when it names another table (a record never describes a table
- * it was not taken over).
+ * The identity of the table `entry` names: in its destination for a stored
+ * table, else on its connection; undefined when it names neither.
+ */
+function entryTableIdentity(
+   entry: Pick<
+      ManifestEntry,
+      "physicalTableName" | "connectionName" | "storageDestinationName"
+   >,
+): string | undefined {
+   if (!entry.physicalTableName) return undefined;
+   if (entry.storageDestinationName) {
+      return tableIdentityKey(
+         "destination",
+         entry.storageDestinationName,
+         entry.physicalTableName,
+      );
+   }
+   return entry.connectionName
+      ? tableIdentityKey(
+           "connection",
+           entry.connectionName,
+           entry.physicalTableName,
+        )
+      : undefined;
+}
+
+/**
+ * What a rollup key record says of the table `entry` names, colocated or in a
+ * destination, or undefined when it names another table (a record never
+ * describes a table it was not taken over).
  */
 export function keyUniquenessOf(
    record: RollupKeyRecord | undefined,
-   entry: Pick<ManifestEntry, "physicalTableName" | "connectionName">,
+   entry: Pick<
+      ManifestEntry,
+      "physicalTableName" | "connectionName" | "storageDestinationName"
+   >,
 ): KeyUniqueness | undefined {
+   const table = entryTableIdentity(entry);
    if (
       !record ||
-      !entry.physicalTableName ||
-      !entry.connectionName ||
+      table === undefined ||
       record.sourceID !== undefined ||
-      record.table !==
-         tableIdentityKey(
-            "connection",
-            entry.connectionName,
-            entry.physicalTableName,
-         )
+      record.table !== table
    ) {
       return undefined;
    }
@@ -677,10 +677,10 @@ export function keyUniquenessOf(
 }
 
 /**
- * Everything `records` say of the colocated table of the rollup at `address`:
- * its own key check ({@link keyUniquenessOf}) and each query source's primary
- * key check taken at its build, by sourceID. A record over another table is
- * left out; undefined when none describes this one.
+ * Everything `records` say of the table of the rollup at `address`: its own
+ * key check ({@link keyUniquenessOf}) and each query source's primary key
+ * check taken at its build, by sourceID. A record over another table is left
+ * out; undefined when none describes this one.
  */
 export function keyUniquenessAt(
    records: Readonly<Record<string, RollupKeyRecord>> | undefined,
@@ -690,26 +690,9 @@ export function keyUniquenessAt(
       "physicalTableName" | "connectionName" | "storageDestinationName"
    >,
 ): KeyUniqueness | undefined {
-   if (!records || !entry.physicalTableName) return undefined;
-   // A stored table carries only its own source's primary key check; a
-   // colocated one, its rollup's key check and each query source's.
-   const table = entry.storageDestinationName
-      ? tableIdentityKey(
-           "destination",
-           entry.storageDestinationName,
-           entry.physicalTableName,
-        )
-      : entry.connectionName
-        ? tableIdentityKey(
-             "connection",
-             entry.connectionName,
-             entry.physicalTableName,
-          )
-        : undefined;
-   if (table === undefined) return undefined;
-   const own = entry.storageDestinationName
-      ? undefined
-      : keyUniquenessOf(records[address], entry);
+   const table = entryTableIdentity(entry);
+   if (!records || table === undefined) return undefined;
+   const own = keyUniquenessOf(records[address], entry);
    const parentKeys: Record<string, boolean> = {};
    for (const [key, record] of Object.entries(records)) {
       if (
@@ -726,7 +709,7 @@ export function keyUniquenessAt(
 }
 
 /**
- * `entries` with each colocated rollup entry carrying what `run`'s key check
+ * `entries` with each rollup entry carrying what `run`'s key check
  * records say of its table (see {@link keyUniquenessOf}), for a bind that
  * restores serving from the store. Only an {@link uncontestedAutoRun}'s
  * records are read; any doubt leaves the entries as they are, unknown.

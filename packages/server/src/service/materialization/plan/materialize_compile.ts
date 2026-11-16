@@ -3,7 +3,7 @@
 
 /**
  * Compiles the generated `#(materialize)` build companion (see
- * build_file_generator.ts), as preaggregation_compile.ts compiles the rollup
+ * build_file_generator.ts), as rollup_compile.ts compiles the rollup
  * companion: the text is served from an overlay at a URL beside the author's
  * model, so its `import` resolves while it never shows up in
  * `getModelPaths()`, the API or the package's own compile, and cannot go stale
@@ -11,9 +11,13 @@
  */
 
 import {
+   hiddenAccess,
+   modelDefIfAny,
+   modelDefOf,
+} from "../../governance/ir/compiled_model";
+import {
    FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
+   type Runtime,
    type Connection,
    type Model as MalloyModel,
    type ModelMaterializer,
@@ -21,32 +25,45 @@ import {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
-import { omittedByID, omittedFromFile, type Omission } from "./omitted_sources";
-import { registerUniquenessCheckCompiler } from "../run/inline_uniqueness";
+import type { Omission } from "../domain/omitted_sources";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
+import {
+   keyCheckCompilerKey,
+   type KeyCheckCompiler,
+} from "../domain/key_check";
 import {
    buildCopyDeclarationAt,
    buildCopyName,
    buildCopyText,
+} from "./materialize_build_copy";
+import {
    chainLevels,
-   extensionOverStoredModel,
    generatedNamesOf,
    generateBuildFiles,
    givenReadTerms,
-   hiddenAccess,
-   keptBasesInText,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
-   planModelMaterialize,
    settledChains,
-   splitSourceID,
-   storedChainText,
    withoutParent,
-   type MaterializePlan,
-   type MaterializeRefusal,
-   type StoredColumnType,
 } from "./build_file_generator";
-import type { TermUse } from "./persist_dynamic_terms";
-import type { SynthesizedRuntimeFactory } from "./preaggregation_compile";
+import {
+   extensionOverStoredModel,
+   storedChainText,
+   type StoredColumnType,
+} from "./materialize_stored_chain";
+import {
+   planModelMaterialize,
+   type MaterializeRefusal,
+} from "./materialize_plan";
+import { splitSourceID, type MaterializePlan } from "../domain/table_plans";
+import type { TermUse } from "../domain/read_time_terms";
+import {
+   compileInMemory,
+   companionOmissions,
+   declaredInModel,
+   GeneratedFiles,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
 import { leftOutWindowTerms } from "./rolling_window";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import {
@@ -55,7 +72,7 @@ import {
    type ProbeCompiler,
 } from "../../probe_compiler";
 
-export interface GeneratedMaterialize {
+interface GeneratedMaterialize {
    /** The sources the generator planned. Never empty. */
    plans: MaterializePlan[];
    /** The compiled companion: its build targets are the generated sources. */
@@ -76,13 +93,16 @@ export interface GeneratedMaterialize {
     * table and is no build of its own.
     */
    generatedURLs: ReadonlySet<string>;
+   /**
+    * Each uniqueness check's compiler over a run's compiler manifest, by
+    * {@link keyCheckCompilerKey}: compiled through the companion, which only
+    * this process holds.
+    */
+   checkCompilers: ReadonlyMap<string, KeyCheckCompiler>;
 }
 
 /** Where the generated companion for `modelPath` lives, as an absolute URL. */
-export function materializeCompanionURL(
-   packagePath: string,
-   modelPath: string,
-): URL {
+function materializeCompanionURL(packagePath: string, modelPath: string): URL {
    // pathToFileURL, not `file://${path}`: on Windows the path is `D:\…`, and
    // the overlay key must match the URL Malloy normalizes to.
    return pathToFileURL(
@@ -128,180 +148,15 @@ export async function tryCompileMaterializeCompanion(args: {
    // planned; until then a failure cannot name them.
    let plannedIDs: string[] | undefined;
    try {
-      const declaredHere = (declaringURL: string) => {
-         try {
-            return path.resolve(fileURLToPath(declaringURL)) === modelFile;
-         } catch {
-            // Not a local file (a host, another scheme): planned, as before.
-            return true;
-         }
-      };
-      // P9: plan once from the IR, probe the computed dimensions that plan
-      // would store, and plan again with the answers. A probe only ever
-      // leaves a dimension out or refuses a source, so every dimension the
-      // second plan stores was probed.
-      const probed = args.probe
-         ? await probeMaterializeDimensions(
-              args.probe,
-              planModelMaterialize(args.contents, declaredHere, args.givens)
-                 .plans,
-              args.contents,
-           )
-         : undefined;
-      const planned = planModelMaterialize(
-         args.contents,
-         declaredHere,
-         args.givens,
-         probed?.fields,
-         probed?.zoneFreeRows,
-      );
+      const planned = await planWithProbes(args, modelFile);
       refused.push(...planned.refused);
       plannedIDs = planned.plans.map((p) => p.sourceID);
-      // The text the author's model was compiled from, through the reader
-      // the companion compiles with: a package's build view (joins across
-      // connections left out) or a worker's file map, not necessarily the
-      // file on disk, and the compiled locations the terms are found by are
-      // positions in that text. Read once.
-      let modelText: Promise<string> | undefined;
-      const readModelText = () =>
-         (modelText ??= (async () => {
-            const { runtime } = await args.getRuntime(new Map());
-            const read = await runtime.urlReader.readURL(
-               pathToFileURL(modelFile),
-            );
-            return typeof read === "string" ? read : read.contents;
-         })());
-      // A build copy compiled on its own, beside the author's model, so its
-      // imports resolve as the author's do; never run. P3 reads which hidden
-      // fields the copy lets the build select off it.
-      const compileCopy = async (fileName: string, text: string) => {
-         const url = pathToFileURL(
-            path.join(path.dirname(modelFile), fileName),
-         );
-         const { runtime, importBaseURL } = await args.getRuntime(
-            new Map([[url.href, text]]),
-         );
-         const model = await runtime
-            .loadModel(url, { importBaseURL })
-            .getModel();
-         return {
-            contents: model._modelDef.contents as Record<string, unknown>,
-            url: url.href,
-         };
-      };
-      const refusedIDs = new Set<string>();
-      const prepare = async (from: MaterializePlan[]) => {
-         const out = await withBuildCopies(
-            from,
-            modelFile,
-            readModelText,
-            compileCopy,
-            args.contents,
-         );
-         for (const r of out.refused) {
-            if (r.sourceID !== undefined && refusedIDs.has(r.sourceID))
-               continue;
-            if (r.sourceID !== undefined) refusedIDs.add(r.sourceID);
-            refused.push(r);
-         }
-         return out;
-      };
-      // One source's generated text that does not compile costs that source
-      // alone (see compileContained).
-      const compile = (from: MaterializePlan[]) =>
-         compileContained(args, from, prepare, (refusal) => {
-            if (refusedIDs.has(refusal.sourceID as string)) return;
-            refusedIDs.add(refusal.sourceID as string);
-            refused.push(refusal);
-         });
-      let { plans, copies, generated } = await compile(planned.plans);
-      // A `storage=` extension table builds in its destination from its
-      // chain alone, over its parent's stored table (P10). One whose chain
-      // does not compile there, with nothing else to read, builds over the
-      // raw chain, from the warehouse, as it did before P10.
-      const unstored = generated
-         ? await storedChainsNotCompiling(generated)
-         : new Map<string, string>();
-      if (unstored.size > 0) {
-         for (const [sourceID, error] of unstored) {
-            logger.warn(
-               "A storage= extension table does not compile over its parent's stored table alone; it builds over the raw chain",
-               {
-                  modelPath: args.modelPath,
-                  sourceName: planOf(plans, sourceID)?.sourceName,
-                  error,
-               },
-            );
-         }
-         ({ plans, copies, generated } = await compile(
-            plans.map((p) => (unstored.has(p.sourceID) ? withoutParent(p) : p)),
-         ));
-      }
-      // A build copy re-declares its whole file, so a `#@ persist` source the
-      // copied source reads (its base, a join) would enter the plan a second
-      // time under the copy's URL: a build node that no planned source names.
-      // A chained source builds over the raw chain instead; a source whose
-      // given term needs the copy is refused, and the companion compiled again
-      // without it.
-      let leaked = generated
-         ? await copyDeclaredBuilds(generated, modelFile, copies)
-         : new Map<string, string[]>();
-      if ([...leaked.keys()].some((id) => planOf(plans, id)?.buildsOver)) {
-         ({ plans, copies, generated } = await compile(
-            plans.map((p) => (leaked.has(p.sourceID) ? withoutParent(p) : p)),
-         ));
-         leaked = generated
-            ? await copyDeclaredBuilds(generated, modelFile, copies)
-            : new Map<string, string[]>();
-      }
-      if (leaked.size > 0) {
-         for (const plan of plans) {
-            const names = leaked.get(plan.sourceID);
-            if (!names) continue;
-            if (
-               givenReadTerms(plan).length === 0 &&
-               leftOutWindowTerms(plan.readTimeTerms).length === 0
-            ) {
-               // A copy made only to store hidden columns (P3): build from the
-               // author's file instead, storing the public ones.
-               copies.delete(plan.sourceID);
-               const columns = plan.columns.filter((c) => !c.access);
-               const kept = new Set(columns.map((c) => c.column));
-               if (
-                  columns.length > 0 &&
-                  (plan.readTimeTerms ?? []).every((t) =>
-                     t.columns.every((c) => kept.has(c)),
-                  )
-               ) {
-                  leaked.delete(plan.sourceID);
-                  plans = plans.map((p) =>
-                     p === plan ? { ...plan, columns } : p,
-                  );
-                  continue;
-               }
-            }
-            refused.push({
-               sourceName: plan.sourceName,
-               sourceID: plan.sourceID,
-               reason:
-                  givenReadTerms(plan).length > 0 ||
-                  leftOutWindowTerms(plan.readTimeTerms).length > 0
-                     ? "a `where:` reading a given or keeping rows older than a " +
-                       "moving cut-off cannot yet be left out of the " +
-                       "build of a source that reads a #@ persist source " +
-                       `(${names.join(", ")}): its build would declare that source ` +
-                       "a second time"
-                     : "the source stores only hidden fields, which its build " +
-                       "cannot read while it reads a #@ persist source " +
-                       `(${names.join(", ")})`,
-            });
-         }
-         ({ plans, copies, generated } = await compile(
-            plans.filter((p) => !leaked.has(p.sourceID)),
-         ));
-      }
-      return generated
-         ? { generated: withStoredColumns(generated), refused }
+      const compile = companionCompiler(args, modelFile, refused);
+      let round = await compile(planned.plans);
+      round = await unchainStoredChainsNotCompiling(round, compile, args);
+      round = await withoutLeakedBuilds(round, compile, modelFile, refused);
+      return round.generated
+         ? { generated: withStoredColumns(round.generated), refused }
          : { refused };
    } catch (error) {
       logger.error(
@@ -313,20 +168,211 @@ export async function tryCompileMaterializeCompanion(args: {
       );
       return {
          refused,
-         omitted: plannedIDs
-            ? omittedByID(
-                 plannedIDs.filter(
-                    (id) => !refused.some((r) => r.sourceID === id),
-                 ),
-                 "materialize_companion_failed",
-              )
-            : omittedFromFile(
-                 pathToFileURL(modelFile).href,
-                 undefined,
-                 "materialize_companion_failed",
-              ),
+         omitted: companionOmissions(
+            "materialize",
+            plannedIDs
+               ? {
+                    sourceIDs: plannedIDs.filter(
+                       (id) => !refused.some((r) => r.sourceID === id),
+                    ),
+                 }
+               : { file: pathToFileURL(modelFile).href, names: undefined },
+         ),
       };
    }
+}
+
+type CompanionArgs = Parameters<typeof tryCompileMaterializeCompanion>[0];
+
+/** One compile of the companion: the plans it holds, their build copies, and the model. */
+interface CompanionRound {
+   plans: MaterializePlan[];
+   copies: Map<string, BuildCopy>;
+   generated?: GeneratedMaterialize;
+}
+
+/** Compiles the companion over a set of plans, each source's failure its own. */
+type CompanionCompile = (from: MaterializePlan[]) => Promise<CompanionRound>;
+
+/**
+ * Plan the model's sources, only those it declares itself. P9: plan once
+ * from the IR, probe the computed dimensions that plan would store, and plan
+ * again with the answers. A probe only ever leaves a dimension out or
+ * refuses a source, so every dimension the second plan stores was probed.
+ */
+async function planWithProbes(
+   args: CompanionArgs,
+   modelFile: string,
+): Promise<ReturnType<typeof planModelMaterialize>> {
+   // Not a local file (a host, another scheme): planned.
+   const declaredHere = declaredInModel(modelFile, true);
+   const probed = args.probe
+      ? await probeMaterializeDimensions(
+           args.probe,
+           planModelMaterialize(args.contents, declaredHere, args.givens).plans,
+           args.contents,
+        )
+      : undefined;
+   return planModelMaterialize(
+      args.contents,
+      declaredHere,
+      args.givens,
+      probed?.fields,
+      probed?.zoneFreeRows,
+   );
+}
+
+/**
+ * The companion's compiler: each round gives the plans their build copies,
+ * then compiles them, one source's generated text that does not compile
+ * costing that source alone (see compileContained). Each source is refused
+ * into `refused` at most once across rounds.
+ */
+function companionCompiler(
+   args: CompanionArgs,
+   modelFile: string,
+   refused: MaterializeRefusal[],
+): CompanionCompile {
+   // The text the author's model was compiled from, through the reader
+   // the companion compiles with: a worker's file map or an overlay, not
+   // necessarily the file on disk, and the compiled locations the terms are found by are
+   // positions in that text. Read once.
+   const files = GeneratedFiles.over(args.getRuntime);
+   let modelText: Promise<string> | undefined;
+   const readModelText = () =>
+      (modelText ??= files.read(pathToFileURL(modelFile)));
+   // A build copy compiled on its own, beside the author's model, so its
+   // imports resolve as the author's do; never run. P3 reads which hidden
+   // fields the copy lets the build select off it.
+   const compileCopy = async (fileName: string, text: string) => {
+      const url = pathToFileURL(path.join(path.dirname(modelFile), fileName));
+      const { model } = await files.compile(url, new Map([[url.href, text]]));
+      return {
+         contents: modelDefOf(model).contents as Record<string, unknown>,
+         url: url.href,
+      };
+   };
+   const refusedIDs = new Set<string>();
+   const prepare = async (from: MaterializePlan[]) => {
+      const out = await withBuildCopies(
+         from,
+         modelFile,
+         readModelText,
+         compileCopy,
+         args.contents,
+      );
+      for (const r of out.refused) {
+         if (r.sourceID !== undefined && refusedIDs.has(r.sourceID)) continue;
+         if (r.sourceID !== undefined) refusedIDs.add(r.sourceID);
+         refused.push(r);
+      }
+      return out;
+   };
+   return (from) =>
+      compileContained(args, from, prepare, (refusal) => {
+         if (refusedIDs.has(refusal.sourceID as string)) return;
+         refusedIDs.add(refusal.sourceID as string);
+         refused.push(refusal);
+      });
+}
+
+/**
+ * A `storage=` extension table builds in its destination from its chain
+ * alone, over its parent's stored table (P10). One whose chain does not
+ * compile there, with nothing else to read, builds over the raw chain, from
+ * the warehouse, as it did before P10: the companion is compiled again.
+ */
+async function unchainStoredChainsNotCompiling(
+   round: CompanionRound,
+   compile: CompanionCompile,
+   args: CompanionArgs,
+): Promise<CompanionRound> {
+   const unstored = round.generated
+      ? await storedChainsNotCompiling(round.generated)
+      : new Map<string, string>();
+   if (unstored.size === 0) return round;
+   for (const [sourceID, error] of unstored) {
+      logger.warn(
+         "A storage= extension table does not compile over its parent's stored table alone; it builds over the raw chain",
+         {
+            modelPath: args.modelPath,
+            sourceName: planOf(round.plans, sourceID)?.sourceName,
+            error,
+         },
+      );
+   }
+   return compile(
+      round.plans.map((p) => (unstored.has(p.sourceID) ? withoutParent(p) : p)),
+   );
+}
+
+/**
+ * A build copy re-declares its whole file, so a `#@ persist` source the
+ * copied source reads (its base, a join) would enter the plan a second time
+ * under the copy's URL: a build node that no planned source names. A chained
+ * source builds over the raw chain instead; a source whose given term needs
+ * the copy is refused into `refused`, and the companion compiled again
+ * without it.
+ */
+async function withoutLeakedBuilds(
+   round: CompanionRound,
+   compile: CompanionCompile,
+   modelFile: string,
+   refused: MaterializeRefusal[],
+): Promise<CompanionRound> {
+   let { plans, copies, generated } = round;
+   let leaked = generated
+      ? await copyDeclaredBuilds(generated, modelFile, copies)
+      : new Map<string, string[]>();
+   if ([...leaked.keys()].some((id) => planOf(plans, id)?.buildsOver)) {
+      ({ plans, copies, generated } = await compile(
+         plans.map((p) => (leaked.has(p.sourceID) ? withoutParent(p) : p)),
+      ));
+      leaked = generated
+         ? await copyDeclaredBuilds(generated, modelFile, copies)
+         : new Map<string, string[]>();
+   }
+   if (leaked.size === 0) return { plans, copies, generated };
+   for (const plan of plans) {
+      const names = leaked.get(plan.sourceID);
+      if (!names) continue;
+      if (
+         givenReadTerms(plan).length === 0 &&
+         leftOutWindowTerms(plan.readTimeTerms).length === 0
+      ) {
+         // A copy made only to store hidden columns (P3): build from the
+         // author's file instead, storing the public ones.
+         copies.delete(plan.sourceID);
+         const columns = plan.columns.filter((c) => !c.access);
+         const kept = new Set(columns.map((c) => c.column));
+         if (
+            columns.length > 0 &&
+            (plan.readTimeTerms ?? []).every((t) =>
+               t.columns.every((c) => kept.has(c)),
+            )
+         ) {
+            leaked.delete(plan.sourceID);
+            plans = plans.map((p) => (p === plan ? { ...plan, columns } : p));
+            continue;
+         }
+      }
+      refused.push({
+         sourceName: plan.sourceName,
+         sourceID: plan.sourceID,
+         reason:
+            givenReadTerms(plan).length > 0 ||
+            leftOutWindowTerms(plan.readTimeTerms).length > 0
+               ? "a `where:` reading a given or keeping rows older than a " +
+                 "moving cut-off cannot yet be left out of the " +
+                 "build of a source that reads a #@ persist source " +
+                 `(${names.join(", ")}): its build would declare that source ` +
+                 "a second time"
+               : "the source stores only hidden fields, which its build " +
+                 "cannot read while it reads a #@ persist source " +
+                 `(${names.join(", ")})`,
+      });
+   }
+   return compile(plans.filter((p) => !leaked.has(p.sourceID)));
 }
 
 /**
@@ -340,11 +386,11 @@ export async function tryCompileMaterializeCompanion(args: {
 function withStoredColumns(
    generated: GeneratedMaterialize,
 ): GeneratedMaterialize {
-   const contents = (
+   const contents = modelDefIfAny(
       generated.model as unknown as {
          _modelDef?: { contents?: Record<string, unknown> };
-      }
-   )._modelDef?.contents;
+      },
+   )?.contents;
    return {
       ...generated,
       plans: generated.plans.map((plan) => {
@@ -355,7 +401,7 @@ function withStoredColumns(
          return {
             ...plan,
             storedColumns: storedColumnsOfOutput(def.fields, {
-               nested: def.dialect === "duckdb",
+               nested: capabilitiesOf(def.dialect).nestedColumns,
             }),
          };
       }),
@@ -468,8 +514,9 @@ async function compileCompanion(
    for (const [name, level] of files.levels) {
       overlay.set(pathToFileURL(path.join(dir, name)).href, level);
    }
-   const { runtime, importBaseURL } = await args.getRuntime(overlay);
-   const materializer = runtime.loadModel(url, { importBaseURL });
+   const { runtime, materializer } = await GeneratedFiles.over(
+      args.getRuntime,
+   ).load(url, overlay);
    const copyOwners = new Map(
       [...used].map(
          ([sourceID, c]) =>
@@ -479,11 +526,12 @@ async function compileCompanion(
    const model = await materializer.getModel().catch((error: unknown) => {
       throw new CompanionCompileError(error, overlay, copyOwners);
    });
+   const checkCompilers = new Map<string, KeyCheckCompiler>();
    // The P8 checks' SQL, compiled now (never run here) so a build runs it
    // against the joined source's connection before it writes anything.
-   // Each check can also be compiled again over a run's manifest, so a run
-   // whose parent build reads the joined source's persisted table checks that
-   // table (inline_uniqueness.ts).
+   // Each check can also be compiled again over a run's compiler manifest, so
+   // a run whose parent build reads the joined source's persisted table checks
+   // that table (inline_uniqueness.ts).
    for (const plan of plans) {
       for (const check of plan.uniquenessChecks ?? []) {
          check.sql = await materializer
@@ -497,8 +545,8 @@ async function compileCompanion(
                   plan.sourceID,
                );
             });
-         registerUniquenessCheckCompiler(
-            check,
+         checkCompilers.set(
+            keyCheckCompilerKey(plan.sourceID, check.queryName),
             (buildManifest, connectionDigests) =>
                materializer
                   .loadQueryByName(check.queryName)
@@ -513,6 +561,7 @@ async function compileCompanion(
       runtime,
       text,
       generatedURLs: new Set(overlay.keys()),
+      checkCompilers,
       ...(used.size > 0
          ? {
               buildCopies: new Map(
@@ -551,27 +600,25 @@ async function storedChainsNotCompiling(
          );
          const handle = "stand_in";
          const url = "file:///materialize-stored-chain/m.malloy";
-         const runtime = new Runtime({
-            urlReader: new InMemoryURLReader(
-               new Map([
-                  [
-                     url,
-                     extensionOverStoredModel({
-                        plan,
-                        chain,
-                        connectionName: destination,
-                        virtualHandle: handle,
-                        columns,
-                     }),
-                  ],
-               ]),
-            ),
-            connections: new FixedConnectionMap(
+         const { runtime, model } = await compileInMemory(
+            new Map([
+               [
+                  url,
+                  extensionOverStoredModel({
+                     plan,
+                     chain,
+                     connectionName: destination,
+                     virtualHandle: handle,
+                     columns,
+                  }),
+               ],
+            ]),
+            url,
+            new FixedConnectionMap(
                new Map([[destination, destinationStandIn(destination)]]),
                destination,
             ),
-         });
-         const model = await runtime.loadModel(new URL(url)).getModel();
+         );
          const targets = await runtime.getBuildTargets(model, {
             virtualMap: new Map([[destination, new Map([[handle, "t"]])]]),
          });
@@ -632,7 +679,7 @@ function destinationStandIn(name: string): Connection {
    const none = "not available to an extension table's build";
    const standIn = {
       name,
-      dialectName: "duckdb",
+      dialectName: STORAGE_DIALECT,
       getDigest: () => `materialize-stored-chain:${name}`,
       fetchSchemaForTables: async (tables: Record<string, string>) => ({
          schemas: {},
@@ -673,10 +720,7 @@ async function copyDeclaredBuilds(
          name,
       ]),
    );
-   const urlOf = (id: string) => {
-      const at = id.indexOf("@");
-      return at < 0 ? undefined : id.slice(at + 1);
-   };
+   const urlOf = (id: string) => splitSourceID(id)?.url;
    const targets = await generated.runtime.getBuildTargets(generated.model);
    const groups = [
       ...targets.connections.flatMap((c) =>
@@ -698,7 +742,7 @@ async function copyDeclaredBuilds(
          const url = urlOf(id);
          const owner = url === undefined ? undefined : ownerByURL.get(url);
          if (owner === undefined) continue;
-         const name = id.slice(0, id.indexOf("@"));
+         const name = splitSourceID(id)!.name;
          const names = out.get(owner) ?? [];
          if (!names.includes(name)) names.push(name);
          out.set(owner, names.sort());
@@ -758,10 +802,7 @@ async function withBuildCopies(
    input: MaterializePlan[],
    modelFile: string,
    readModelText: () => Promise<string>,
-   compileCopy: (
-      fileName: string,
-      text: string,
-   ) => Promise<{ contents: Record<string, unknown>; url: string }>,
+   compileCopy: CopyCompiler,
    /** The author model's contents, to trace a chained copy's problems. */
    contents: Record<string, unknown> = {},
 ): Promise<{
@@ -772,33 +813,17 @@ async function withBuildCopies(
    const plans = settledChains(input);
    const copies = new Map<string, BuildCopy>();
    const refused: MaterializeRefusal[] = [];
-   const hiddenOf = (plan: MaterializePlan) =>
-      plan.columns.filter((c) => c.access !== undefined);
    if (
       !plans.some(
          (p) =>
             givenReadTerms(p).length > 0 ||
             leftOutWindowTerms(p.readTimeTerms).length > 0 ||
             p.buildsOver ||
-            hiddenOf(p).length > 0 ||
-            p.keptBases !== undefined,
+            hiddenColumnsOf(p).length > 0,
       )
    ) {
       return { plans, copies, refused };
    }
-   const refuse = (plan: MaterializePlan, reason: string) =>
-      refused.push({
-         sourceName: plan.sourceName,
-         sourceID: plan.sourceID,
-         reason,
-      });
-   const localPath = (url: string): string | undefined => {
-      try {
-         return path.resolve(fileURLToPath(url));
-      } catch {
-         return undefined;
-      }
-   };
    let text: string | undefined;
    let unreadable: string | undefined;
    try {
@@ -806,7 +831,15 @@ async function withBuildCopies(
    } catch (error) {
       unreadable = error instanceof Error ? error.message : String(error);
    }
-   const modelFileName = path.basename(modelFile);
+   const ctx: CopyContext = {
+      modelFile,
+      modelFileName: path.basename(modelFile),
+      text,
+      unreadable,
+      compileCopy,
+      contents,
+      copies,
+   };
    // Parents first: a stable sort by depth in the planned chains.
    const depth = chainLevels(plans);
    const visitOrder = plans
@@ -819,252 +852,17 @@ async function withBuildCopies(
    const kept = new Map<string, MaterializePlan>();
    const levels = new Map<string, number>();
    for (const { plan: original } of visitOrder) {
-      const hidden = hiddenOf(original);
-      const declaredIn = original.declaration
-         ? localPath(original.declaration.url)
-         : undefined;
-      // P3: the hidden columns the build copy lets the build select, read
-      // off the copy over the raw chain (see above).
-      let lifted: Set<string> | undefined;
-      if (hidden.length > 0 && declaredIn === modelFile && text !== undefined) {
-         const probe = buildCopyText(text, withoutParent(original), undefined, {
-            liftAccess: true,
+      const copied = await copiedPlan(original, ctx, kept, levels);
+      if ("reason" in copied) {
+         refused.push({
+            sourceName: copied.plan.sourceName,
+            sourceID: copied.plan.sourceID,
+            reason: copied.reason,
          });
-         if ("copy" in probe) {
-            const compiled = await compileCopy(
-               buildCopyName(modelFileName, copies.size),
-               probe.copy,
-            ).catch(() => undefined);
-            // The copy's own declaration of the source: its sourceID names
-            // the copy's file in place of the author's (the keying rule).
-            const declared = splitSourceID(original.sourceID);
-            const copyID =
-               compiled && declared
-                  ? `${declared.name}@${compiled.url}`
-                  : undefined;
-            const fields = (
-               Object.values(compiled?.contents ?? {}).find(
-                  (d) =>
-                     (d as { sourceID?: unknown } | null)?.sourceID === copyID,
-               ) as
-                  | {
-                       fields?: {
-                          name?: unknown;
-                          as?: unknown;
-                          accessModifier?: unknown;
-                       }[];
-                    }
-                  | undefined
-            )?.fields;
-            const selectable = new Set(
-               (fields ?? [])
-                  .filter((f) => hiddenAccess(f) === undefined)
-                  .map((f) => String(f.as ?? f.name)),
-            );
-            if (hidden.some((c) => selectable.has(liftedName(c)))) {
-               lifted = selectable;
-            }
-         }
-      }
-      const columns = original.columns.filter(
-         (c) => c.access === undefined || lifted?.has(liftedName(c)),
-      );
-      let plan: MaterializePlan =
-         columns.length === original.columns.length
-            ? original
-            : { ...original, columns };
-      if (columns.length === 0) {
-         refuse(plan, "the source has no dimension the build can store");
          continue;
       }
-      const stored = new Set(columns.map((c) => c.column));
-      const unstored = (plan.readTimeTerms ?? []).find(
-         (t) => !t.columns.every((c) => stored.has(c)),
-      );
-      if (unstored) {
-         refuse(
-            plan,
-            `\`where: ${unstored.code}\` reads a field the build cannot ` +
-               "select (one private on a source this one extends, or hidden " +
-               "where the build copy cannot lift it), so it could not be " +
-               "re-applied over the table at read",
-         );
-         continue;
-      }
-      // A term or dimension a base writes is left out of the build only when
-      // the served copy keeps that base's block: confirmed against the text
-      // before anything is built.
-      if (plan.keptBases) {
-         const bases =
-            text === undefined
-               ? {
-                    reason:
-                       "the model file could not be read to confirm the " +
-                       `blocks its served copy keeps: ${unreadable}`,
-                 }
-               : declaredIn !== modelFile
-                 ? {
-                      reason:
-                         "a `where:` reading a given or a caller-dependent " +
-                         "dimension written on a base can only be left out " +
-                         "of the build for a source declared in a local model file",
-                   }
-                 : keptBasesInText(text, plan);
-         if ("reason" in bases) {
-            refuse(plan, bases.reason);
-            continue;
-         }
-      }
-      const liftAccess = lifted !== undefined;
-      const given = givenReadTerms(plan).length > 0;
-      const givens = (plan.givenDeclarations ?? []).map((g) => ({
-         ...g,
-         file: localPath(g.url),
-      }));
-      if (given && (declaredIn !== modelFile || givens.some((g) => !g.file))) {
-         refuse(
-            plan,
-            "a `where:` reading a given can only be left out of the build " +
-               "for a source declared in a local model file, reading givens " +
-               "declared in local files",
-         );
-         continue;
-      }
-      if (given && text === undefined) {
-         refuse(
-            plan,
-            "the model file could not be read to leave its given-reading " +
-               `\`where:\` out of the build: ${unreadable}`,
-         );
-         continue;
-      }
-      // An upper-bound current-time term (option A): taken out of the copy
-      // wherever this file writes it, the source's own or a base's.
-      const windowsOut = leftOutWindowTerms(plan.readTimeTerms);
-      const elsewhere = windowsOut.find((t) =>
-         t.at.some((use) => localPath(use.url) !== modelFile),
-      );
-      if (elsewhere) {
-         refuse(
-            plan,
-            `\`where: ${elsewhere.code}\` keeps rows older than a moving ` +
-               "cut-off and is written in another file than this source's " +
-               "model, so the build cannot leave it out. Write it in this " +
-               "file, or materialize the source in the file that writes it",
-         );
-         continue;
-      }
-      if (windowsOut.length > 0 && text === undefined) {
-         refuse(
-            plan,
-            "the model file could not be read to leave its `where:` keeping " +
-               `rows older than a moving cut-off out of the build: ${unreadable}`,
-         );
-         continue;
-      }
-      const leftOut = given || windowsOut.length > 0;
-      const parent = plan.buildsOver
-         ? kept.get(plan.buildsOver.sourceID)
-         : undefined;
-      if (
-         plan.buildsOver &&
-         (!parent ||
-            text === undefined ||
-            localPath(plan.buildsOver.declaration.url) !== modelFile)
-      ) {
-         plan = withoutParent(plan);
-      }
-      // A `storage=` pair also carries what its build compiles in the
-      // destination over the parent's stored table, lifted as its build copy
-      // is (P3); without it, the raw chain.
-      if (plan.buildsOver && parent && plan.persist.storage !== undefined) {
-         const overStored = storedChainText(text as string, plan, parent, {
-            liftAccess,
-         });
-         plan = overStored
-            ? { ...plan, buildsOver: { ...plan.buildsOver, overStored } }
-            : withoutParent(plan);
-      }
-      if (!leftOut && !plan.buildsOver && !liftAccess) {
-         kept.set(plan.sourceID, plan);
-         levels.set(plan.sourceID, 0);
-         continue;
-      }
-      const parentLevel = parent ? (levels.get(parent.sourceID) ?? 0) : 0;
-      // One copy per source: its terms taken out, its parent re-rooted, and
-      // its access modifiers lifted, as it needs.
-      let copy = buildCopyText(
-         text as string,
-         plan,
-         plan.buildsOver && parent
-            ? {
-                 parent,
-                 importFrom: levelFileName(modelFileName, parentLevel),
-              }
-            : undefined,
-         { liftAccess },
-      );
-      if ("reason" in copy && plan.buildsOver) {
-         plan = withoutParent(plan);
-         if (!leftOut && !liftAccess) {
-            kept.set(plan.sourceID, plan);
-            levels.set(plan.sourceID, 0);
-            continue;
-         }
-         copy = buildCopyText(text as string, plan, undefined, { liftAccess });
-      }
-      if ("reason" in copy) {
-         refuse(plan, copy.reason);
-         continue;
-      }
-      const chain =
-         plan.buildsOver && parent
-            ? {
-                 parent,
-                 importFrom: levelFileName(modelFileName, parentLevel),
-              }
-            : undefined;
-      const located = plan;
-      copies.set(plan.sourceID, {
-         fileName: buildCopyName(modelFileName, copies.size),
-         text: copy.copy,
-         ...(chain
-            ? {
-                 declarationAt: (at: { line: number; character: number }) =>
-                    buildCopyDeclarationAt(
-                       text as string,
-                       located,
-                       chain,
-                       { liftAccess },
-                       contents,
-                       at,
-                    ),
-              }
-            : {}),
-      });
-      levels.set(plan.sourceID, plan.buildsOver ? parentLevel + 1 : 0);
-      kept.set(
-         plan.sourceID,
-         given
-            ? {
-                 ...plan,
-                 givenDeclarations: givens.map(({ file, ...g }) =>
-                    file === modelFile
-                       ? g
-                       : {
-                            ...g,
-                            from: path
-                               .relative(
-                                  path.dirname(modelFile),
-                                  file as string,
-                               )
-                               .split(path.sep)
-                               .join("/"),
-                         },
-                 ),
-              }
-            : plan,
-      );
+      kept.set(copied.plan.sourceID, copied.plan);
+      levels.set(copied.plan.sourceID, copied.level);
    }
    return {
       plans: plans.flatMap((p) => {
@@ -1073,6 +871,295 @@ async function withBuildCopies(
       }),
       copies,
       refused,
+   };
+}
+
+/** Compiles a build copy on its own, beside the author's model; never run. */
+type CopyCompiler = (
+   fileName: string,
+   text: string,
+) => Promise<{ contents: Record<string, unknown>; url: string }>;
+
+/** What making one plan's build copy reads, and the copies made so far. */
+interface CopyContext {
+   modelFile: string;
+   modelFileName: string;
+   /** The author's model text, unless it could not be read (`unreadable`). */
+   text?: string;
+   unreadable?: string;
+   compileCopy: CopyCompiler;
+   contents: Record<string, unknown>;
+   copies: Map<string, BuildCopy>;
+}
+
+function hiddenColumnsOf(plan: MaterializePlan): MaterializePlan["columns"] {
+   return plan.columns.filter((c) => c.access !== undefined);
+}
+
+function localPath(url: string): string | undefined {
+   try {
+      return path.resolve(fileURLToPath(url));
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * One plan as its build copy leaves it, with its level in the chain, and its
+ * copy added to `ctx.copies` when it needs one; or why it is refused.
+ * `kept` and `levels` hold the plans visited before it, parents first.
+ */
+async function copiedPlan(
+   original: MaterializePlan,
+   ctx: CopyContext,
+   kept: ReadonlyMap<string, MaterializePlan>,
+   levels: ReadonlyMap<string, number>,
+): Promise<
+   | { plan: MaterializePlan; level: number }
+   | { plan: MaterializePlan; reason: string }
+> {
+   const { modelFile, modelFileName, text } = ctx;
+   const declaredIn = original.declaration
+      ? localPath(original.declaration.url)
+      : undefined;
+   const lifted = await liftedColumnsOf(original, declaredIn, ctx);
+   const columns = original.columns.filter(
+      (c) => c.access === undefined || lifted?.has(liftedName(c)),
+   );
+   let plan: MaterializePlan =
+      columns.length === original.columns.length
+         ? original
+         : { ...original, columns };
+   const liftAccess = lifted !== undefined;
+   const given = givenReadTerms(plan).length > 0;
+   const givens = (plan.givenDeclarations ?? []).map((g) => ({
+      ...g,
+      file: localPath(g.url),
+   }));
+   const windowsOut = leftOutWindowTerms(plan.readTimeTerms);
+   const reason = copyRefusal(plan, ctx, {
+      declaredIn,
+      given,
+      givens,
+      windowsOut,
+   });
+   if (reason) return { plan, reason };
+   const leftOut = given || windowsOut.length > 0;
+   const parent = plan.buildsOver
+      ? kept.get(plan.buildsOver.sourceID)
+      : undefined;
+   if (
+      plan.buildsOver &&
+      (!parent ||
+         text === undefined ||
+         localPath(plan.buildsOver.declaration.url) !== modelFile)
+   ) {
+      plan = withoutParent(plan);
+   }
+   // A `storage=` pair also carries what its build compiles in the
+   // destination over the parent's stored table, lifted as its build copy
+   // is (P3); without it, the raw chain.
+   if (plan.buildsOver && parent && plan.persist.storage !== undefined) {
+      const overStored = storedChainText(text as string, plan, parent, {
+         liftAccess,
+      });
+      plan = overStored
+         ? { ...plan, buildsOver: { ...plan.buildsOver, overStored } }
+         : withoutParent(plan);
+   }
+   if (!leftOut && !plan.buildsOver && !liftAccess) return { plan, level: 0 };
+   const parentLevel = parent ? (levels.get(parent.sourceID) ?? 0) : 0;
+   const chainOf = (p: MaterializePlan) =>
+      p.buildsOver && parent
+         ? {
+              parent,
+              importFrom: levelFileName(modelFileName, parentLevel),
+           }
+         : undefined;
+   // One copy per source: its terms taken out, its parent re-rooted, and
+   // its access modifiers lifted, as it needs.
+   let copy = buildCopyText(text as string, plan, chainOf(plan), {
+      liftAccess,
+   });
+   if ("reason" in copy && plan.buildsOver) {
+      plan = withoutParent(plan);
+      if (!leftOut && !liftAccess) return { plan, level: 0 };
+      copy = buildCopyText(text as string, plan, undefined, { liftAccess });
+   }
+   if ("reason" in copy) return { plan, reason: copy.reason };
+   const chain = chainOf(plan);
+   const located = plan;
+   ctx.copies.set(plan.sourceID, {
+      fileName: buildCopyName(modelFileName, ctx.copies.size),
+      text: copy.copy,
+      ...(chain
+         ? {
+              declarationAt: (at: { line: number; character: number }) =>
+                 buildCopyDeclarationAt(
+                    text as string,
+                    located,
+                    chain,
+                    { liftAccess },
+                    ctx.contents,
+                    at,
+                 ),
+           }
+         : {}),
+   });
+   return {
+      plan: given ? withGivenImports(plan, givens, modelFile) : plan,
+      level: plan.buildsOver ? parentLevel + 1 : 0,
+   };
+}
+
+/**
+ * P3: the columns the build copy lets the build select, read off the copy
+ * compiled over the raw chain, when it lets it select at least one of the
+ * plan's hidden columns; undefined otherwise (none is lifted).
+ */
+async function liftedColumnsOf(
+   original: MaterializePlan,
+   declaredIn: string | undefined,
+   ctx: CopyContext,
+): Promise<Set<string> | undefined> {
+   const hidden = hiddenColumnsOf(original);
+   if (
+      hidden.length === 0 ||
+      declaredIn !== ctx.modelFile ||
+      ctx.text === undefined
+   ) {
+      return undefined;
+   }
+   const probe = buildCopyText(ctx.text, withoutParent(original), undefined, {
+      liftAccess: true,
+   });
+   if (!("copy" in probe)) return undefined;
+   const compiled = await ctx
+      .compileCopy(
+         buildCopyName(ctx.modelFileName, ctx.copies.size),
+         probe.copy,
+      )
+      .catch(() => undefined);
+   // The copy's own declaration of the source: its sourceID names
+   // the copy's file in place of the author's (the keying rule).
+   const declared = splitSourceID(original.sourceID);
+   const copyID =
+      compiled && declared ? `${declared.name}@${compiled.url}` : undefined;
+   const fields = (
+      Object.values(compiled?.contents ?? {}).find(
+         (d) => (d as { sourceID?: unknown } | null)?.sourceID === copyID,
+      ) as
+         | {
+              fields?: {
+                 name?: unknown;
+                 as?: unknown;
+                 accessModifier?: unknown;
+              }[];
+           }
+         | undefined
+   )?.fields;
+   const selectable = new Set(
+      (fields ?? [])
+         .filter((f) => hiddenAccess(f) === undefined)
+         .map((f) => String(f.as ?? f.name)),
+   );
+   return hidden.some((c) => selectable.has(liftedName(c)))
+      ? selectable
+      : undefined;
+}
+
+/**
+ * Why a plan cannot be given the build copy it needs, or undefined: no column
+ * left, a read-time term over a column the build cannot select, a given term
+ * outside local files, a term the build cannot leave out of another file, or
+ * a model file that could not be read.
+ */
+function copyRefusal(
+   plan: MaterializePlan,
+   ctx: Pick<CopyContext, "modelFile" | "text" | "unreadable">,
+   facts: {
+      declaredIn: string | undefined;
+      given: boolean;
+      givens: { file: string | undefined }[];
+      windowsOut: ReturnType<typeof leftOutWindowTerms>;
+   },
+): string | undefined {
+   const { modelFile, text, unreadable } = ctx;
+   const { declaredIn, given, givens, windowsOut } = facts;
+   if (plan.columns.length === 0) {
+      return "the source has no dimension the build can store";
+   }
+   const stored = new Set(plan.columns.map((c) => c.column));
+   const unstored = (plan.readTimeTerms ?? []).find(
+      (t) => !t.columns.every((c) => stored.has(c)),
+   );
+   if (unstored) {
+      return (
+         `\`where: ${unstored.code}\` reads a field the build cannot ` +
+         "select (one private on a source this one extends, or hidden " +
+         "where the build copy cannot lift it), so it could not be " +
+         "re-applied over the table at read"
+      );
+   }
+   if (given && (declaredIn !== modelFile || givens.some((g) => !g.file))) {
+      return (
+         "a `where:` reading a given can only be left out of the build " +
+         "for a source declared in a local model file, reading givens " +
+         "declared in local files"
+      );
+   }
+   if (given && text === undefined) {
+      return (
+         "the model file could not be read to leave its given-reading " +
+         `\`where:\` out of the build: ${unreadable}`
+      );
+   }
+   // An upper-bound current-time term (option A): taken out of the copy
+   // wherever this file writes it, the source's own or a base's.
+   const elsewhere = windowsOut.find((t) =>
+      t.at.some((use) => localPath(use.url) !== modelFile),
+   );
+   if (elsewhere) {
+      return (
+         `\`where: ${elsewhere.code}\` keeps rows older than a moving ` +
+         "cut-off and is written in another file than this source's " +
+         "model, so the build cannot leave it out. Write it in this " +
+         "file, or materialize the source in the file that writes it"
+      );
+   }
+   if (windowsOut.length > 0 && text === undefined) {
+      return (
+         "the model file could not be read to leave its `where:` keeping " +
+         `rows older than a moving cut-off out of the build: ${unreadable}`
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The plan with each given its terms read imported from where it is declared:
+ * a given declared in another file than the model's, by its path from it.
+ */
+function withGivenImports(
+   plan: MaterializePlan,
+   givens: (NonNullable<MaterializePlan["givenDeclarations"]>[number] & {
+      file: string | undefined;
+   })[],
+   modelFile: string,
+): MaterializePlan {
+   return {
+      ...plan,
+      givenDeclarations: givens.map(({ file, ...g }) =>
+         file === modelFile
+            ? g
+            : {
+                 ...g,
+                 from: path
+                    .relative(path.dirname(modelFile), file as string)
+                    .split(path.sep)
+                    .join("/"),
+              },
+      ),
    };
 }
 
@@ -1214,8 +1301,8 @@ const MAX_OMISSION_ROUNDS = 4;
  * its parent's table. Any other source is refused (`refuse`, reported as
  * `materialize-not-built`) and answers live, and the rest are compiled again.
  * A failure no source can be told for sends every extension to the raw chain
- * once, as before; one that still cannot be told throws, costing the model
- * its builds (logged by the caller as a Publisher bug, as before).
+ * once; one that still cannot be told throws, costing the model its builds
+ * (logged by the caller as a Publisher bug).
  */
 async function compileContained(
    args: Parameters<typeof compileCompanion>[0],
@@ -1247,86 +1334,101 @@ async function compileContained(
          };
       } catch (error) {
          if (!(error instanceof CompanionCompileError)) throw error;
-         const failing = failingSourceOf(error, plans);
-         const plan =
-            failing === undefined ? undefined : planOf(plans, failing);
-         // In a chained copy, a problem in another source's declaration
-         // (one that reads the parent and does not compile over its re-root)
-         // is that source's: the copy leaves it out, empty, and keeps the
-         // chain.
-         const omitted =
-            plan?.buildsOver &&
-            (omissionRounds.get(plan.sourceID) ?? 0) < MAX_OMISSION_ROUNDS
-               ? copyOmissions(error, copies.get(plan.sourceID), plan)
-               : [];
-         if (plan?.buildsOver && omitted.length > 0) {
-            omissionRounds.set(
-               plan.sourceID,
-               (omissionRounds.get(plan.sourceID) ?? 0) + 1,
-            );
-            logger.warn(
-               "A chained #(materialize) build copy leaves out declarations that do not compile over the parent's build source",
-               {
-                  modelPath: args.modelPath,
-                  sourceName: plan.sourceName,
-                  omitted: omitted.map((o) => splitSourceID(o.sourceID)?.name),
-               },
-            );
-            input = plans.map((p) =>
-               p === plan && p.buildsOver
-                  ? {
-                       ...p,
-                       buildsOver: {
-                          ...p.buildsOver,
-                          omit: [
-                             ...(p.buildsOver.omit ?? []),
-                             ...omitted.map((o) => o.declaration),
-                          ],
-                       },
-                    }
-                  : p,
-            );
-         } else if (plan?.buildsOver) {
-            logger.warn(
-               "An extension table of a #(materialize) model did not compile over its parent's build source; it builds over the raw chain",
-               {
-                  modelPath: args.modelPath,
-                  sourceName: plan.sourceName,
-                  error: error.message,
-               },
-            );
-            input = plans.map((p) => (p === plan ? withoutParent(p) : p));
-         } else if (plan) {
-            logger.error(
-               "A #(materialize) source's generated build did not compile; it is not built, and the model's other sources are",
-               {
-                  modelPath: args.modelPath,
-                  sourceName: plan.sourceName,
-                  error: error.message,
-               },
-            );
-            refuse({
-               sourceName: plan.sourceName,
-               sourceID: plan.sourceID,
-               reason:
-                  "its generated build did not compile, so it is not built " +
-                  `(a Publisher bug; please report it): ${firstProblem(error)}`,
-            });
-            input = plans.filter((p) => p !== plan);
-         } else if (plans.some((p) => p.buildsOver)) {
-            // No source to blame: every extension builds over the raw chain,
-            // as it did before P10, with the same rows.
-            logger.warn(
-               "Extension tables of a #(materialize) model did not compile over their parents' build sources; they build over the raw chain",
-               { modelPath: args.modelPath, error: error.message },
-            );
-            input = plans.map(withoutParent);
-         } else {
-            throw error.error;
-         }
+         input = nextRound(error, plans, copies, {
+            modelPath: args.modelPath,
+            omissionRounds,
+            refuse,
+         });
       }
    }
    throw new Error(
       "the generated #(materialize) companion did not settle on sources that compile",
    );
+}
+
+/**
+ * The plans the next round of {@link compileContained} compiles, after
+ * `error` in this round's: the failing chained copy leaves the declarations
+ * its problems lie in out, or builds over the raw chain; any other failing
+ * source is refused alone; a failure no source can be told for sends every
+ * extension to the raw chain. One that still cannot be told throws.
+ */
+function nextRound(
+   error: CompanionCompileError,
+   plans: MaterializePlan[],
+   copies: Map<string, BuildCopy>,
+   ctx: {
+      modelPath: string;
+      omissionRounds: Map<string, number>;
+      refuse: (refusal: MaterializeRefusal) => void;
+   },
+): MaterializePlan[] {
+   const { modelPath, omissionRounds } = ctx;
+   const failing = failingSourceOf(error, plans);
+   const plan = failing === undefined ? undefined : planOf(plans, failing);
+   // In a chained copy, a problem in another source's declaration (one that
+   // reads the parent and does not compile over its re-root) is that
+   // source's: the copy leaves it out, empty, and keeps the chain.
+   const omitted =
+      plan?.buildsOver &&
+      (omissionRounds.get(plan.sourceID) ?? 0) < MAX_OMISSION_ROUNDS
+         ? copyOmissions(error, copies.get(plan.sourceID), plan)
+         : [];
+   if (plan?.buildsOver && omitted.length > 0) {
+      omissionRounds.set(
+         plan.sourceID,
+         (omissionRounds.get(plan.sourceID) ?? 0) + 1,
+      );
+      logger.warn(
+         "A chained #(materialize) build copy leaves out declarations that do not compile over the parent's build source",
+         {
+            modelPath,
+            sourceName: plan.sourceName,
+            omitted: omitted.map((o) => splitSourceID(o.sourceID)?.name),
+         },
+      );
+      const omit = omitted.map((o) => o.declaration);
+      return plans.map((p) =>
+         p === plan && p.buildsOver
+            ? {
+                 ...p,
+                 buildsOver: {
+                    ...p.buildsOver,
+                    omit: [...(p.buildsOver.omit ?? []), ...omit],
+                 },
+              }
+            : p,
+      );
+   }
+   if (plan?.buildsOver) {
+      logger.warn(
+         "An extension table of a #(materialize) model did not compile over its parent's build source; it builds over the raw chain",
+         { modelPath, sourceName: plan.sourceName, error: error.message },
+      );
+      return plans.map((p) => (p === plan ? withoutParent(p) : p));
+   }
+   if (plan) {
+      logger.error(
+         "A #(materialize) source's generated build did not compile; it is not built, and the model's other sources are",
+         { modelPath, sourceName: plan.sourceName, error: error.message },
+      );
+      ctx.refuse({
+         sourceName: plan.sourceName,
+         sourceID: plan.sourceID,
+         reason:
+            "its generated build did not compile, so it is not built " +
+            `(a Publisher bug; please report it): ${firstProblem(error)}`,
+      });
+      return plans.filter((p) => p !== plan);
+   }
+   if (plans.some((p) => p.buildsOver)) {
+      // No source to blame: every extension builds over the raw chain, as it
+      // did before P10, with the same rows.
+      logger.warn(
+         "Extension tables of a #(materialize) model did not compile over their parents' build sources; they build over the raw chain",
+         { modelPath, error: error.message },
+      );
+      return plans.map(withoutParent);
+   }
+   throw error.error;
 }

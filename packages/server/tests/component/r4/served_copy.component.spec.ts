@@ -20,6 +20,7 @@ import {
    type R4Fixture,
    type R4Query,
 } from "./harness";
+import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 
 const seedSql = [
    `CREATE TABLE ev AS SELECT * FROM (VALUES
@@ -176,8 +177,10 @@ describe("R4: the served copy answers equal to live", () => {
       });
 
       it("compiles once with no fresh binding, not on every query", async () => {
-         const servedCopy = fixture.servedCopy();
-         servedCopy.setBindings([]);
+         fixture.setBindings([]);
+         const servedCopy = (
+            fixture.model as unknown as { servedCopy: ServedCopyServe }
+         ).servedCopy;
          const compile = spyOn(
             servedCopy as unknown as { compile(): Promise<unknown> },
             "compile",
@@ -235,29 +238,5 @@ source: daily_plus is daily extend {
                "run: daily_plus -> { group_by: tiny; aggregate: n2 is n.sum() }",
          });
       });
-   });
-});
-
-describe("R4: with the served copy off, today's serve shape answers", () => {
-   let restore: () => void;
-   let fixture: R4Fixture;
-   beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
-      }).restore;
-      fixture = await buildScenario({ files: { "m.malloy": model }, seedSql });
-   });
-   afterAll(async () => {
-      restore();
-      await disposeScenarios();
-   });
-   it("serves from storage without the served copy", async () => {
-      const run = await fixture.run({
-         name: "off",
-         malloy: "run: daily -> { group_by: region; aggregate: grand }",
-      });
-      expect(run.servedFrom).toBe("storage");
-      expect(run.servedVia).toBeUndefined();
-      expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });

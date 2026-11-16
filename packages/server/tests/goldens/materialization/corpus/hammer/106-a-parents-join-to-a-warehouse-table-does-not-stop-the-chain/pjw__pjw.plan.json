@@ -22,6 +22,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_name@<hammer>/pjw/pjw.malloy": "persist",
+      "daily@<hammer>/pjw/pjw.malloy": "persist",
+      "rollup@<hammer>/pjw/pjw.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -45,7 +50,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {

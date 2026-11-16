@@ -165,18 +165,14 @@ which of their tables) a build reads.
 
 ## Cross-connection joins
 
-A join whose target is on a different origin connection is marked. Phase 0's
-probe (Evidence 7) showed the consequences the map has to carry:
-
-- the author's file with such a join does not compile live, so the generator
-  plans builds from the file with those joins removed, and the map for build
-  planning is built over that compile;
-- the build view (the author's text with those joins left out) is the compile
-  of record for discovery and gates, and the served copy is what the rewriter
-  and router read (decided 2026-11-12, #1643);
-- a query that reaches a side not yet built is refused from build state (the
-  join is left out of the served copy while that side is unbuilt, #1643), so
-  the map reports which joins depend on which tables.
+A join whose target is on a different origin connection is marked. Malloy
+refuses such a join in the author's file (`join-connection-mismatch`), so a
+model that has one fails to load and never reaches the map. The mark matters
+for the served copy: a re-root moves a source onto its destination, and a
+reference join it keeps to a source that is not stored there now crosses
+connections. The served copy leaves that join out (with what reads it), so
+the map reports which joins depend on which tables, and a query through one is
+answered live.
 
 ## Who consumes it
 
@@ -200,7 +196,8 @@ verdict tests stay green.
 
 - The map module, on `source_graph.ts`.
 - The three hand-written chain walkers are replaced by map walks:
-  - `reachedPersistedSources` (`materialization_serve_transform.ts`), the
+  - `reachedPersistedSources` (`materialization_serve_transform.ts`, since
+    deleted; the walk is now `reachPersisted` in `text/source_map.ts`), the
     build-side reach that stops at persisted sources;
   - `sourceChainOf` (`query_path.ts`), the chain the path report and router
     candidates read;

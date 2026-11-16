@@ -344,6 +344,7 @@ describe("service/package", () => {
                      "model1.malloy",
                      {
                         getPath: () => "model1.malloy",
+                        getType: () => "model",
                         getModel: () => "foo",
                         getGivens: () => [],
                         getCompilationError: () => undefined,
@@ -614,9 +615,10 @@ describe("service/package", () => {
    // WHETHER the source may be served frozen — that is decided by compiling the
    // model. These assert the gate that enforces it, because the failure is silent:
    // an admitted binding for a `given`-filtered source serves one caller's rows to
-   // everyone, and no error is raised. Scenarios
-   // `host-binding-honors-row-level-access` and `host-binding-of-unplanned-source`
-   // prove it end to end; these keep it from being refactored away.
+   // everyone, and no error is raised. Scenario
+   // `host-binding-honors-row-level-access` proves it end to end: its forged
+   // binding names a source absent from `plan.sources`. These keep the gate from
+   // being refactored away.
    describe("bindStorageServeBindings eligibility gate", () => {
       /** A structurally complete manifest entry — the shape a host sends. */
       const entry = (sourceName: string, table: string) => ({
@@ -736,13 +738,13 @@ describe("service/package", () => {
          const bound = (
             pkg as unknown as {
                materialization: {
-                  storageServeBindings: {
+                  storageBindings: {
                      sourceName: string;
                      sourceIDs?: string[];
                   }[];
                };
             }
-         ).materialization.storageServeBindings;
+         ).materialization.storageBindings;
          expect(bound.map((b) => b.sourceName)).toEqual(["orders"]);
          expect(bound[0].sourceIDs).toEqual([open]);
       });
@@ -759,9 +761,8 @@ describe("service/package", () => {
       });
 
       it("refuses a source the plan never contained", () => {
-         // Malloy admits only query-shaped sources as build roots, so `#@ persist`
-         // on a filtered pass-through produces no plan entry — neither eligible nor
-         // refused. Absence is not eligibility.
+         // A source with no `#@ persist` annotation produces no plan entry —
+         // neither eligible nor refused. Absence is not eligibility.
          const pkg = packageWith({ eligible: ["all_rows"], refused: {} });
 
          pkg.bindStorageServeBindings({
@@ -822,9 +823,17 @@ describe("service/package", () => {
             expect(boundSources(pkg)).toEqual(["orders"]);
          });
 
-         it("leaves a package with no versions binding by name, as before", () => {
+         it("serves live, in a package with no versions too, a table another definition built", () => {
+            // The author edited `orders` in place, and the store (or a host)
+            // still holds the table the old definition built under its name.
             const pkg = definedAs(undefined, { orders: "v1-orders" });
             pkg.bindStorageServeBindings({ a: built("orders", "v2-orders") });
+            expect(boundSources(pkg)).toEqual([]);
+         });
+
+         it("binds, in a package with no versions, a table its own definition built", () => {
+            const pkg = definedAs(undefined, { orders: "v1-orders" });
+            pkg.bindStorageServeBindings({ a: built("orders", "v1-orders") });
             expect(boundSources(pkg)).toEqual(["orders"]);
          });
       });

@@ -63,7 +63,13 @@
       "equalToLive": true,
       "malloy": "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "f4c625d477b98206d172cedd4c593f384037d09cbe230405a47b44a43fa84627"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -78,13 +84,15 @@
           "sourceName": "order"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "f4c625d477b98206d172cedd4c593f384037d09cbe230405a47b44a43fa84627",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "reserved-word fields",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

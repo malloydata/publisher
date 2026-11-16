@@ -96,11 +96,20 @@ import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
+import { recordConnectionType } from "./connection_type";
+import {
+   hardCloseOwnedDuckDBConnections,
+   installDuckDBHardClose,
+   ownDuckDBConnection,
+} from "./duckdb_hard_close";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
 
 // One DuckDB instance per database file (duckdb_instance_sharing.ts).
 installDuckDBInstanceSharing();
+// Retired DuckDB connections free their native database at once
+// (duckdb_hard_close.ts).
+installDuckDBHardClose();
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -2863,33 +2872,6 @@ export async function deleteDuckLakeConnectionFile(
 }
 
 /**
- * A config that resolves `allowed` connection names and nothing else, delegating
- * those to `base`.
- *
- * Used for the materialization serve-shape compile, which may resolve only the
- * destinations its bindings name: never a user connection, nor a destination it
- * has no binding for. Deriving the set from the bindings keeps the reachable
- * surface minimal by construction.
- */
-export function restrictMalloyConfigToConnections(
-   base: MalloyConfig,
-   allowed: ReadonlySet<string>,
-): MalloyConfig {
-   const restricted = new MalloyConfig({ connections: {} });
-   restricted.wrapConnections(() => ({
-      lookupConnection: async (name?: string) => {
-         if (!name || !allowed.has(name)) {
-            throw new ConnectionNotFoundError(
-               `Connection ${name ?? "(default)"} is not available to a materialization serve shape`,
-            );
-         }
-         return base.connections.lookupConnection(name);
-      },
-   }));
-   return restricted;
-}
-
-/**
  * The SQL dialect of every storage destination: DuckLake, the one declarable
  * destination type (DECLARABLE_STORAGE_DESTINATION_TYPES), is DuckDB.
  */
@@ -3416,9 +3398,9 @@ export function buildEnvironmentMalloyConfig(
                let connectionPromise = duckLakeCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
-                  connectionPromise = Promise.resolve(
-                     buildDuckLakeConnection(metadata, entry),
-                  );
+                  const built = buildDuckLakeConnection(metadata, entry);
+                  ownDuckDBConnection(malloyConfig, built);
+                  connectionPromise = Promise.resolve(built);
                   duckLakeCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
@@ -3537,9 +3519,9 @@ export function buildEnvironmentMalloyConfig(
                let connectionPromise = azureDuckDBCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
-                  connectionPromise = Promise.resolve(
-                     buildAzureDuckDBConnection(metadata, entry),
-                  );
+                  const built = buildAzureDuckDBConnection(metadata, entry);
+                  ownDuckDBConnection(malloyConfig, built);
+                  connectionPromise = Promise.resolve(built);
                   azureDuckDBCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
@@ -3571,6 +3553,9 @@ export function buildEnvironmentMalloyConfig(
             }
 
             const connection = await base.lookupConnection(name);
+            // This generation's lookup created it, so releasing the generation
+            // hard-closes it.
+            ownDuckDBConnection(malloyConfig, connection);
             if (metadata) {
                await attachOnce(connection, metadata);
             }
@@ -3605,6 +3590,9 @@ export function buildEnvironmentMalloyConfig(
                if (isDuckDBConnection(connection)) {
                   await applyExtensionSessionSettings(connection);
                }
+               // Its configured type, which a `storage=` build's eligibility
+               // reads (a dialect does not tell DuckDB from DuckLake).
+               recordConnectionType(connection, metadata?.apiConnection.type);
                return applyConnectionFingerprint(connection, metadata);
             },
          };
@@ -3630,6 +3618,9 @@ export function buildEnvironmentMalloyConfig(
             }),
             ...evictions,
          ]);
+         // Every DuckDB connection this generation created is closed now, so
+         // free each native database as soon as its last query settles.
+         hardCloseOwnedDuckDBConnections(malloyConfig);
          // Tunnels close only after the builds above settle: an in-flight
          // openProxy registers its endpoint inside that promise, and the tunnel
          // must stay up while the DB connections drain.

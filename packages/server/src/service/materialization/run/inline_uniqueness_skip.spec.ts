@@ -16,11 +16,16 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
-import { makeMaterialization } from "../../../test_helpers/materialization_test_fixtures";
+import {
+   makeMaterialization,
+   materializePlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import {
    INLINE_UNIQUENESS_KEY,
    UniquenessLedger,
@@ -29,7 +34,7 @@ import {
 } from "./inline_uniqueness";
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 
 const packages = tempBuildPlanPackages();
 let restore: () => void;
@@ -108,12 +113,12 @@ async function scenario(model: string) {
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
    const addresses = new Map(
-      Object.entries(compiled.sources).map(([id, s]) => [
+      Object.entries(sourcesIn(compiled)).map(([id, s]) => [
          s.name,
          computeSourceEntityId(
             s,
             compiled.connectionDigests,
-            compiled.targets?.[id],
+            targetsIn(compiled)?.[id],
          ),
       ]),
    );
@@ -127,10 +132,10 @@ async function scenario(model: string) {
    // The storage tier, stood in for by the scenario's own database: the
    // build SQL it is handed (the warehouse recompute a `storage=` build
    // copies) is written to the table there, so the stored rows can be read.
-   const builder = new SourceBuilder(async (request) => {
+   const storage: Parameters<typeof buildSource>[1] = async (request) => {
       const table = request.instruction.physicalTableName;
       await duckdb.runSQL(
-         `CREATE OR REPLACE TABLE ${table} AS ${request.publicBuildSQL}`,
+         `CREATE OR REPLACE TABLE ${table} AS ${request.storedBuildSQL}`,
       );
       return {
          sourceEntityId: request.contentSourceEntityId ?? "",
@@ -139,14 +144,15 @@ async function scenario(model: string) {
          connectionName: "duckdb",
          storageDestinationName: "lake",
       } as ManifestEntry;
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const sourceIdOf = (name: string) =>
-      Object.entries(compiled.sources).find(([, s]) => s.name === name)?.[0] ??
-      "";
+      Object.entries(sourcesIn(compiled)).find(
+         ([, s]) => s.name === name,
+      )?.[0] ?? "";
    const instruction = (name: string): BuildInstruction =>
       ({
          sourceEntityId: addresses.get(name),
@@ -154,7 +160,7 @@ async function scenario(model: string) {
          physicalTableName: `${name}_t`,
          realization: "COPY",
          // A `#(materialize)` source is built only into a destination.
-         ...(compiled.materializePlans?.[sourceIdOf(name)]
+         ...(materializePlansIn(compiled)?.[sourceIdOf(name)]
             ? { destination: "lake" }
             : {}),
       }) as BuildInstruction;
@@ -190,22 +196,18 @@ async function scenario(model: string) {
             : undefined,
          `run-${runs}`,
       );
-      const result = await build.run(
+      const result = await build.run({
          compiled,
          environment,
-         rebuild.map(instruction),
-         carried,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-         "recompute",
-         ledger,
-      );
+         instructions: rebuild.map(instruction),
+         seedEntries: carried,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+         warehouseReach: "recompute",
+         uniqueness: ledger,
+      });
       if (Object.keys(result.failures).length === 0) {
          previous = {
             entries: result.entries,

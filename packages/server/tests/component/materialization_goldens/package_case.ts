@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * One package-level golden case: a package loaded through the real
- * production path (the conformance fixture's harness: Environment,
+ * One package-level golden case, the golden-capture reporter of the
+ * package-case runner (src/test_helpers/conformance/package_runner.ts): a
+ * package loaded through the real production path (Environment,
  * `Package.create` in the load worker, the package's own build plan and
  * bindings), its plan compiled again on this thread to read the internals,
  * every planned table built and bound, and a fixed query set run live, then
@@ -29,15 +30,19 @@ import { unrecordedAudit } from "../../../src/service/access_record";
 import { compilePackageBuildPlan } from "../../../src/service/materialization/plan/build_plan_compile";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
 import { servedCopyAlias } from "../../../src/service/materialization/serve/served_copy_config";
-import { rowDifference, type Row } from "../r4/harness";
+import {
+   rowDifference,
+   type Row,
+} from "../../../src/test_helpers/conformance/answer_difference";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
-   freshLoadPool,
    LAKE,
-   loadFixture,
+   type loadFixture,
    type Outcome,
+   PackageCaseLoadError,
+   runPackageCase,
    type Switch,
-} from "../r4/conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import {
    addressesOf,
    GeneratedFiles,
@@ -103,132 +108,116 @@ function firstLine(normalizer: Normalizer, error: string): string {
 export async function runCase(c: GoldenCase): Promise<CaseGoldens> {
    const normalizer = new Normalizer();
    normalizer.addAlias(servedCopyAlias(LAKE), LAKE);
-   let restore = settingsFor(c, "on");
-   // A load worker reads its settings at spawn: a case with settings of its
-   // own plans in a fresh pool, and leaves a fresh one for the next case.
-   if (c.env) await freshLoadPool();
-   let loader: Awaited<ReturnType<typeof loadFixture>> | undefined;
+   const buildFiles = new GeneratedFiles();
+   const servedFiles = new GeneratedFiles();
+   let plan: Record<string, unknown> = {};
+   let addresses: ReturnType<typeof addressesOf> = [];
+   let run: Awaited<ReturnType<typeof runPackageCase>>;
    try {
-      try {
-         loader = await loadFixture(c.files);
-      } catch (error) {
-         const message = error instanceof Error ? error.message : String(error);
-         return {
-            "plan.json": JSON.stringify(
-               { loadError: message.split("\n")[0] },
-               null,
-               2,
-            ),
-            "build.sql": undefined,
-            "serve.json": undefined,
-            "served.txt": undefined,
-         };
-      }
-      normalizer.addRoot(loader.root);
-      const pkg = loader.pkg;
-      normalizer.addRoot(pkg.getPackagePath(), "<pkg>");
-      const modelOf = (q: GoldenQuery) => q.model ?? c.entry;
+      run = await runPackageCase({
+         package: c.files,
+         queries: c.queries.map((q) => ({
+            ...q,
+            model: q.model ?? c.entry,
+            givens: q.givens as Record<string, GivenValue> | undefined,
+         })),
+         settings: (pass) => settingsFor(c, pass ?? "on"),
+         passes: SWITCHES,
+         // A load worker reads its settings at spawn: a case with settings
+         // of its own plans in a pool made under them, and the next case's
+         // first load picks a pool made under its own.
+         freshPool: c.env !== undefined,
+         bindOptions: { includeRollups: true },
+         afterLive: async (loader) => {
+            normalizer.addRoot(loader.root);
+            const pkg = loader.pkg;
+            normalizer.addRoot(pkg.getPackagePath(), "<pkg>");
+            const loadWarnings = pkg.getPackageMetadata().warnings ?? [];
+            const wirePlan = pkg.getBuildPlan();
 
-      // Live first, before anything is bound.
-      const live = new Map<string, Outcome>();
-      for (const q of c.queries) {
-         live.set(
-            q.name,
-            await loader.run(modelOf(q), q.malloy, q.givens as never),
-         );
-      }
-
-      const loadWarnings = pkg.getPackageMetadata().warnings ?? [];
-      const wirePlan = pkg.getBuildPlan();
-
-      // The plan again, on this thread, for the internals and the generated text.
-      const buildFiles = new GeneratedFiles();
-      let compiled:
-         | Awaited<ReturnType<typeof compilePackageBuildPlan>>
-         | undefined;
-      let planError: string | undefined;
-      try {
-         compiled = await recordingOverlays(buildFiles, () =>
-            compilePackageBuildPlan(pkg),
-         );
-      } catch (error) {
-         planError = error instanceof Error ? error.message : String(error);
-      }
-      const addresses = compiled ? addressesOf(compiled) : [];
-      learnAddresses(normalizer, addresses);
-
-      const plan = {
-         wirePlan: wirePlan && {
-            ...wirePlan,
-            sources: Object.fromEntries(
-               Object.entries(wirePlan.sources).map(([id, s]) => [
-                  id,
-                  { ...s, sql: sqlFingerprint(normalizer, s.sql) },
-               ]),
-            ),
-         },
-         buildPlanUnavailable: pkg.isBuildPlanUnavailable() || undefined,
-         planError: planError && firstLine(normalizer, planError),
-         internal: compiled ? internalPlans(compiled) : undefined,
-         loadWarnings,
-      };
-
-      // Build and bind, recording what the served copy generates.
-      const servedFiles = new GeneratedFiles();
-      const fixture = await recordingOverlays(servedFiles, () =>
-         loader!.bind({ includeRollups: true }),
-      );
-      const runs: unknown[] = [];
-      for (const on of SWITCHES) {
-         restore();
-         restore = () => {};
-         const restoreSwitch = settingsFor(c, on);
-         try {
-            for (const q of c.queries) {
-               runs.push({
-                  switch: on,
-                  ...(await recordingOverlays(servedFiles, () =>
-                     serveOne(pkg, modelOf(q), q, live.get(q.name)!),
-                  )),
-               });
+            // The plan again, on this thread, for the internals and the generated text.
+            let compiled:
+               | Awaited<ReturnType<typeof compilePackageBuildPlan>>
+               | undefined;
+            let planError: string | undefined;
+            try {
+               compiled = await recordingOverlays(buildFiles, () =>
+                  compilePackageBuildPlan(pkg),
+               );
+            } catch (error) {
+               planError =
+                  error instanceof Error ? error.message : String(error);
             }
-         } finally {
-            restoreSwitch();
-         }
-      }
-      const serve = {
-         bind: {
-            built: fixture.built,
-            buildErrors: Object.fromEntries(
-               Object.entries(fixture.buildErrors).map(([k, v]) => [
-                  k,
-                  firstLine(normalizer, v),
-               ]),
-            ),
-            verdicts: fixture.verdicts,
-            warnings: fixture.warnings,
+            addresses = compiled ? addressesOf(compiled) : [];
+            learnAddresses(normalizer, addresses);
+
+            plan = {
+               wirePlan: wirePlan && {
+                  ...wirePlan,
+                  sources: Object.fromEntries(
+                     Object.entries(wirePlan.sources).map(([id, s]) => [
+                        id,
+                        { ...s, sql: sqlFingerprint(normalizer, s.sql) },
+                     ]),
+                  ),
+               },
+               buildPlanUnavailable: pkg.isBuildPlanUnavailable() || undefined,
+               planError: planError && firstLine(normalizer, planError),
+               internal: compiled ? internalPlans(compiled) : undefined,
+               loadWarnings,
+            };
          },
-         queries: runs,
-      };
+         // Build and bind, recording what the served copy generates.
+         aroundBind: (bind) => recordingOverlays(servedFiles, bind),
+         serve: async (fixture, q, live, on) => ({
+            switch: on,
+            ...(await recordingOverlays(servedFiles, () =>
+               serveOne(fixture.pkg, q.model, q, live),
+            )),
+         }),
+      });
+   } catch (error) {
+      if (!(error instanceof PackageCaseLoadError)) throw error;
       return {
-         "plan.json": normalizer.json(plan),
-         "build.sql": renderBuild(
-            `${c.title}: build plan`,
-            normalizer,
-            addresses,
-            buildFiles,
+         "plan.json": JSON.stringify(
+            { loadError: error.message.split("\n")[0] },
+            null,
+            2,
          ),
-         "serve.json": normalizer.json(serve),
-         "served.txt": servedFiles.render(
-            normalizer,
-            `${c.title}: files generated while serving`,
-         ),
+         "build.sql": undefined,
+         "serve.json": undefined,
+         "served.txt": undefined,
       };
-   } finally {
-      restore();
-      await loader?.dispose();
-      if (c.env) await freshLoadPool();
    }
+   const { fixture } = run;
+   const serve = {
+      bind: {
+         built: fixture.built,
+         buildErrors: Object.fromEntries(
+            Object.entries(fixture.buildErrors).map(([k, v]) => [
+               k,
+               firstLine(normalizer, v),
+            ]),
+         ),
+         verdicts: fixture.verdicts,
+         warnings: fixture.warnings,
+      },
+      queries: run.served.flatMap((p) => p.results),
+   };
+   return {
+      "plan.json": normalizer.json(plan),
+      "build.sql": renderBuild(
+         `${c.title}: build plan`,
+         normalizer,
+         addresses,
+         buildFiles,
+      ),
+      "serve.json": normalizer.json(serve),
+      "served.txt": servedFiles.render(
+         normalizer,
+         `${c.title}: files generated while serving`,
+      ),
+   };
 }
 
 /** One served query: what answered, against live, and the access record's governance fields. */

@@ -176,20 +176,32 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
       });
    });
 
-   it("answers a query that sets a timezone live, since the build truncated in the default one", async () => {
+   it("answers a query that reads a stored truncation in another zone live, since the build truncated in the default one", async () => {
       const run = await fixture.run({
          name: "timezone",
          malloy:
-            "run: stored -> { timezone: 'America/New_York'; group_by: ts_day; aggregate: total }",
+            "run: stored -> { timezone: 'America/New_York'; group_by: inherited_day; aggregate: total }",
       });
       expect(run.servedVia).toBeUndefined();
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("serves a query in another zone that reads only what the copy computes at read", async () => {
+      // `ts_day` is declared in the source's own block, which the copy keeps
+      // and evaluates at read, in the query's zone, as live does.
+      const run = await fixture.run({
+         name: "timezone, computed at read",
+         malloy:
+            "run: stored -> { timezone: 'America/New_York'; group_by: ts_day; aggregate: total }",
+      });
+      expect(run.servedVia).toBe("served_copy");
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
    it("places the table on the queried source's chain in the path report, whether or not it answered", async () => {
       fixture.setBindings(fixture.bindings);
       const declined = await fixture.runAsIs(
-         "run: stored -> { timezone: 'America/New_York'; group_by: ts_day }",
+         "run: stored -> { timezone: 'America/New_York'; group_by: inherited_day }",
       );
       const answered = await fixture.runAsIs(
          "run: stored -> { group_by: ts_day }",
@@ -207,7 +219,7 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
       expect(declined.path?.servedBy.kind).toBe("live");
       expect(tables(answered.path)).toEqual([["materialized", "used"]]);
       const ext = await fixture.runAsIs(
-         "run: stored_ext -> { timezone: 'UTC'; group_by: is_march }",
+         "run: stored_ext -> { timezone: 'America/New_York'; group_by: inherited_day }",
       );
       // The extension declares no #(materialize), so it has no table of its
       // own: `stored`'s table answers it. Malloy records no `extends` on an

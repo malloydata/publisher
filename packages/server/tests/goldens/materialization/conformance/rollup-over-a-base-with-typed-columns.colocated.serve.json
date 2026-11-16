@@ -1,0 +1,596 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "typed__rollup__dec__dadb73aa",
+        "tier": "colocated"
+      },
+      {
+        "name": "typed__rollup__g__b3e24831",
+        "tier": "colocated"
+      },
+      {
+        "name": "typed__rollup__tstz__7a053bfd",
+        "tier": "colocated"
+      }
+    ],
+    "verdicts": [],
+    "warnings": [
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure big_sum on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "typed"
+      },
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure dec_sum on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "typed"
+      },
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure n_by_dec on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "typed"
+      },
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure n_by_tstz on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "typed"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big_sum"
+          },
+          {
+            "classifications": [],
+            "path": "g"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "g"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3d2e2e1be447c935",
+          "kind": "reduce",
+          "measures": [
+            "big_sum"
+          ],
+          "source": "typed",
+          "stages": 1
+        },
+        "source": "typed"
+      },
+      "equalToLive": true,
+      "malloy": "run: typed -> { group_by: g; aggregate: big_sum; order_by: g }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "g"
+          ],
+          "measures": [
+            "big_sum"
+          ],
+          "sourceName": "typed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e"
+        },
+        "warnings": []
+      },
+      "query": "a BIGINT sum past 2^53",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "dec_sum"
+          },
+          {
+            "classifications": [],
+            "path": "g"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "g"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "bf596f33b2051440",
+          "kind": "reduce",
+          "measures": [
+            "dec_sum"
+          ],
+          "source": "typed",
+          "stages": 1
+        },
+        "source": "typed"
+      },
+      "equalToLive": true,
+      "malloy": "run: typed -> { group_by: g; aggregate: dec_sum; order_by: g }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "g"
+          ],
+          "measures": [
+            "dec_sum"
+          ],
+          "sourceName": "typed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e"
+        },
+        "warnings": []
+      },
+      "query": "a DECIMAL sum",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "dec"
+          },
+          {
+            "classifications": [],
+            "path": "n_by_dec"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "dec"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "004c05939d301141",
+          "kind": "reduce",
+          "measures": [
+            "n_by_dec"
+          ],
+          "source": "typed",
+          "stages": 1
+        },
+        "source": "typed"
+      },
+      "equalToLive": true,
+      "malloy": "run: typed -> { group_by: dec; aggregate: n_by_dec; order_by: dec }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "2f2aed1542b2e149ed951f3e604311ce8e823dc4c0278a2e77709ed9b731b12a"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "dec"
+          ],
+          "measures": [
+            "n_by_dec"
+          ],
+          "sourceName": "typed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "2f2aed1542b2e149ed951f3e604311ce8e823dc4c0278a2e77709ed9b731b12a"
+        },
+        "warnings": []
+      },
+      "query": "a DECIMAL grain",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n_by_tstz"
+          },
+          {
+            "classifications": [],
+            "path": "tstz"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "tstz"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3dca984b8acd0370",
+          "kind": "reduce",
+          "measures": [
+            "n_by_tstz"
+          ],
+          "source": "typed",
+          "stages": 1
+        },
+        "source": "typed"
+      },
+      "equalToLive": true,
+      "malloy": "run: typed -> { group_by: tstz; aggregate: n_by_tstz; order_by: tstz }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "c444edfd5a5741c760d9495684adbea67c59fc03012797c891f6ac0ae9f3eaa1"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "tstz"
+          ],
+          "measures": [
+            "n_by_tstz"
+          ],
+          "sourceName": "typed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "c444edfd5a5741c760d9495684adbea67c59fc03012797c891f6ac0ae9f3eaa1"
+        },
+        "warnings": []
+      },
+      "query": "a TIMESTAMPTZ grain",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "big_sum"
+          },
+          {
+            "classifications": [],
+            "path": "g"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "g"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3d2e2e1be447c935",
+          "kind": "reduce",
+          "measures": [
+            "big_sum"
+          ],
+          "source": "typed",
+          "stages": 1
+        },
+        "source": "typed"
+      },
+      "equalToLive": true,
+      "malloy": "run: typed -> { group_by: g; aggregate: big_sum; order_by: g }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "g"
+          ],
+          "measures": [
+            "big_sum"
+          ],
+          "sourceName": "typed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e"
+        },
+        "warnings": []
+      },
+      "query": "a BIGINT sum past 2^53",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "dec_sum"
+          },
+          {
+            "classifications": [],
+            "path": "g"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "g"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "bf596f33b2051440",
+          "kind": "reduce",
+          "measures": [
+            "dec_sum"
+          ],
+          "source": "typed",
+          "stages": 1
+        },
+        "source": "typed"
+      },
+      "equalToLive": true,
+      "malloy": "run: typed -> { group_by: g; aggregate: dec_sum; order_by: g }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "g"
+          ],
+          "measures": [
+            "dec_sum"
+          ],
+          "sourceName": "typed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e"
+        },
+        "warnings": []
+      },
+      "query": "a DECIMAL sum",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "dec"
+          },
+          {
+            "classifications": [],
+            "path": "n_by_dec"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "dec"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "004c05939d301141",
+          "kind": "reduce",
+          "measures": [
+            "n_by_dec"
+          ],
+          "source": "typed",
+          "stages": 1
+        },
+        "source": "typed"
+      },
+      "equalToLive": true,
+      "malloy": "run: typed -> { group_by: dec; aggregate: n_by_dec; order_by: dec }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "2f2aed1542b2e149ed951f3e604311ce8e823dc4c0278a2e77709ed9b731b12a"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "dec"
+          ],
+          "measures": [
+            "n_by_dec"
+          ],
+          "sourceName": "typed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "2f2aed1542b2e149ed951f3e604311ce8e823dc4c0278a2e77709ed9b731b12a"
+        },
+        "warnings": []
+      },
+      "query": "a DECIMAL grain",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n_by_tstz"
+          },
+          {
+            "classifications": [],
+            "path": "tstz"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "tstz"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3dca984b8acd0370",
+          "kind": "reduce",
+          "measures": [
+            "n_by_tstz"
+          ],
+          "source": "typed",
+          "stages": 1
+        },
+        "source": "typed"
+      },
+      "equalToLive": true,
+      "malloy": "run: typed -> { group_by: tstz; aggregate: n_by_tstz; order_by: tstz }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "c444edfd5a5741c760d9495684adbea67c59fc03012797c891f6ac0ae9f3eaa1"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "tstz"
+          ],
+          "measures": [
+            "n_by_tstz"
+          ],
+          "sourceName": "typed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "c444edfd5a5741c760d9495684adbea67c59fc03012797c891f6ac0ae9f3eaa1"
+        },
+        "warnings": []
+      },
+      "query": "a TIMESTAMPTZ grain",
+      "servedBy": "rollup",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

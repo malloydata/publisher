@@ -176,8 +176,20 @@ describe("deleteMaterialization", () => {
                .resolves({ getMalloyConnection: async () => ({}) }),
             getApiConnection: () => ({ name: "lake", type: "duckdb" }),
             getEnvironmentPath: () => "/test",
-            bindPackageStorageServeBindings: storageSpy,
-            bindPackageColocatedServeManifest: colocatedSpy,
+            // What the rebind read binds: colocated always, storage= when
+            // the read returns it.
+            rebindPackageFromStore: async (
+               packageName: string,
+               read: () => Promise<{
+                  colocated: unknown;
+                  storage?: unknown;
+               }>,
+            ) => {
+               const { colocated, storage } = await read();
+               await colocatedSpy(packageName, colocated);
+               if (storage !== undefined)
+                  await storageSpy(packageName, storage);
+            },
          });
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
@@ -609,7 +621,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
          physicalTableName: table,
          storageDestinationName: "lake",
       }) as unknown as Parameters<
-         MaterializationService["reclaimStorageTablesFromFailedRun"]
+         MaterializationService["collaborators"]["reclaimStorageTablesFromFailedRun"]
       >[0][number];
 
    /** A destination whose drop would fail loudly if one were ever attempted. */
@@ -617,7 +629,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
       destinations: { lake: { name: "lake", type: "duckdb" } },
       environmentPath: "/test",
    }) as unknown as Parameters<
-      MaterializationService["reclaimStorageTablesFromFailedRun"]
+      MaterializationService["collaborators"]["reclaimStorageTablesFromFailedRun"]
    >[1];
 
    const reclaim = (
@@ -626,7 +638,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
    ): Promise<void> => {
       (ctx.repository.listMaterializations as sinon.SinonStub).resolves(others);
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             reclaimStorageTablesFromFailedRun: (
                b: unknown,
                e: unknown,
@@ -664,8 +676,10 @@ describe("reclaimStorageTablesFromFailedRun", () => {
       );
 
       expect(said(infoLog, /Keeping a table from a failed run/)).toBe(true);
-      expect(said(infoLog, /Reclaimed a table/)).toBe(false);
-      expect(said(warnLog, /Failed to reclaim/)).toBe(false);
+      expect(said(infoLog, /Dropped a materialized storage table/)).toBe(false);
+      expect(said(warnLog, /Failed to drop a materialized storage table/)).toBe(
+         false,
+      );
    });
 
    it("does attempt the drop when nothing references the table", async () => {
@@ -676,8 +690,8 @@ describe("reclaimStorageTablesFromFailedRun", () => {
 
       expect(said(infoLog, /Keeping a table from a failed run/)).toBe(false);
       expect(
-         said(warnLog, /Failed to reclaim/) ||
-            said(infoLog, /Reclaimed a table/),
+         said(warnLog, /Failed to drop a materialized storage table/) ||
+            said(infoLog, /Dropped a materialized storage table/),
       ).toBe(true);
    });
 
@@ -689,12 +703,12 @@ describe("reclaimStorageTablesFromFailedRun", () => {
          destinations: {},
          environmentPath: "/test",
       }) as unknown as Parameters<
-         MaterializationService["reclaimStorageTablesFromFailedRun"]
+         MaterializationService["collaborators"]["reclaimStorageTablesFromFailedRun"]
       >[1];
       (ctx.repository.listMaterializations as sinon.SinonStub).resolves([]);
 
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             reclaimStorageTablesFromFailedRun: (
                b: unknown,
                e: unknown,

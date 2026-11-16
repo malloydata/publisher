@@ -3,158 +3,62 @@
 
 /**
  * Which planned sources may build and serve, decided where the compiled
- * sources exist: rollups over a stored base, rollups that would share a
- * table, the tier gate's inputs, and the per-tier eligibility records the
- * serve side requires. Split out of build_plan.ts; behaviour unchanged.
+ * sources exist: rollups that would share a table, the tier gate's inputs,
+ * and the per-tier eligibility records the serve side requires.
  */
 
-import type { BuildTarget, PersistSource } from "@malloydata/malloy";
+import { components } from "../../../api";
+import { MaterializationEligibilityError } from "../../../errors";
+import { tableNamesFoldCase } from "../domain/storage_table_path";
+import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import type { PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
-import { computeSourceEntityId } from "./addressing";
 import {
+   planAddressOf,
+   type PlanAddresses,
+   type TableFolds,
+} from "./addressing";
+import {
+   assertBuildReadsNoCurrentTime,
+   assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
-   assertRollupNameUnshared,
+   assertPlacementNamed,
    assertTierEligible,
    gateEnforcedAtRead,
+   storageKeepsOwnGate,
    type TierGateInputs,
 } from "./materialization_eligibility";
-import type { PackageAnnotationFinding } from "../../annotation_reader";
-import type { SourceBuild } from "./addressing";
 import {
-   materializeRefusalFinding,
-   type MaterializePlan,
-} from "./build_file_generator";
-import type { RollupPlan } from "./preaggregation_synthesis";
+   MATERIALIZATION_TABLE_COLLISION_CODE,
+   type PackageAnnotationFinding,
+} from "../../annotation_reader";
+import type { SourceBuild } from "../domain/compiled_build_plan";
+import { materializeRefusalFinding } from "./materialize_plan";
 import {
-   declaredStorage,
-   deriveAnnotationFields,
-   type PersistSourceGateOutcome,
-} from "./persist_source_fields";
+   isPersistedResultSourceID,
+   type TablePlan,
+} from "../domain/table_plans";
+import { deriveAnnotationFields } from "./persist_source_fields";
+import { rollupGateEnforcedAtRead } from "./rollup_plan";
+
+type WireRefusedSource = components["schemas"]["RefusedSource"];
 
 /**
  * The slice of a compiled build plan eligibility reads; `CompiledBuildPlan`
  * satisfies it. Declared here so this module is not typed against its caller.
  */
-export interface EligibilityPlan {
-   sources: Record<string, PersistSource>;
-   targets?: Record<string, BuildTarget>;
+interface EligibilityPlan {
+   tables: Record<string, TablePlan>;
    connectionDigests: Record<string, string>;
-   preaggregatePlans?: Record<string, RollupPlan>;
-   /** The `#(materialize)` plans, by the author's sourceID. */
-   materializePlans?: Record<string, unknown>;
-   sourceModelPaths?: Record<string, string>;
-   sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
-}
-
-/**
- * The base a `storage=` rollup is declared over, when that base is itself
- * persisted with `storage=`; undefined for every other source. Such a rollup
- * can neither build nor serve today (#6293): the chained storage build lifts a
- * downstream's definition from its file, and a rollup lives in the
- * synthesized companion, which is never written; and the base's own stored
- * binding claims the name the rollup would be served under. So it is left out
- * of the plan and every run, with a package warning, and the base still builds
- * and serves from storage. A `#(preaggregate)` rollup over a stored base
- * builds and serves (materialization v2 phase 4), so it is never named here.
- */
-export function storedBaseOfRollup(
-   compiled: {
-      sources: Record<string, PersistSource>;
-      preaggregatePlans?: Record<string, RollupPlan>;
-   },
-   sourceID: string,
-): PersistSource | undefined {
-   const plan = compiled.preaggregatePlans?.[sourceID];
-   const rollup = compiled.sources[sourceID];
-   // A `#(preaggregate)` rollup builds over the author's rows, not its base's
-   // table, and serves as its own router variant: the real fix (#6293).
-   if ((plan as { variant?: unknown } | undefined)?.variant === true) {
-      return undefined;
-   }
-   if (!plan?.baseSourceID || !rollup || !declaredStorage(rollup)) {
-      return undefined;
-   }
-   const base = compiled.sources[plan.baseSourceID];
-   return base && declaredStorage(base) ? base : undefined;
-}
-
-/** Memo for {@link collidingRollups}, per compiled `sources` record. */
-const collidingRollupsBySources = new WeakMap<
-   Record<string, PersistSource>,
-   ReadonlyMap<string, string>
->();
-
-/**
- * Rollups that would share one table with a DIFFERENT rollup, by sourceID, each
- * with the refusal to report. See `assertRollupNameUnshared`.
- *
- * Grouped by physical target (destination and name, as the collision warning
- * groups them); a group is a collision only when it holds two content
- * addresses. Two models that synthesize the same rollup over the same base
- * share one address, and so one table, legitimately.
- */
-export function collidingRollups(compiled: {
-   sources: Record<string, PersistSource>;
-   targets?: Record<string, BuildTarget>;
-   connectionDigests: Record<string, string>;
-   preaggregatePlans?: Record<string, RollupPlan>;
-   sourceModelPaths?: Record<string, string>;
-}): ReadonlyMap<string, string> {
-   const memo = collidingRollupsBySources.get(compiled.sources);
-   if (memo) return memo;
-   const byTarget = new Map<
-      string,
-      { sourceID: string; address: string; model?: string }[]
-   >();
-   for (const [sourceID, source] of Object.entries(compiled.sources)) {
-      if (!compiled.preaggregatePlans?.[sourceID]) continue;
-      // Left out of the plan entirely, so it shares no table with anyone.
-      if (storedBaseOfRollup(compiled, sourceID)) continue;
-      let address: string;
-      try {
-         address = computeSourceEntityId(
-            source,
-            compiled.connectionDigests,
-            compiled.targets?.[sourceID],
-         );
-      } catch {
-         // No address: the other gates refuse it on their own.
-         continue;
-      }
-      const fields = deriveAnnotationFields(source);
-      const target = `${fields.storage?.trim() || source.connectionName}\u0000${(fields.name || source.name).trim()}`;
-      const group = byTarget.get(target) ?? [];
-      group.push({
-         sourceID,
-         address,
-         model: compiled.sourceModelPaths?.[sourceID],
-      });
-      byTarget.set(target, group);
-   }
-   const colliding = new Map<string, string>();
-   for (const group of byTarget.values()) {
-      if (new Set(group.map((g) => g.address)).size < 2) continue;
-      const models = [
-         ...new Set(group.map((g) => g.model?.replace(/#preaggregate$/, ""))),
-      ]
-         .filter((m): m is string => !!m)
-         .sort();
-      for (const { sourceID } of group) {
-         const name = compiled.sources[sourceID].name;
-         colliding.set(
-            sourceID,
-            `Pre-aggregation rollup '${name}' is generated by more than one ` +
-               `model${models.length > 0 ? ` (${models.join(", ")})` : ""} ` +
-               `from different sources with the same name and grain, so they ` +
-               `would share one table. Neither is built or served from it; each ` +
-               `model's queries answer from its base. Rename one of the base ` +
-               `sources.`,
-         );
-      }
-   }
-   collidingRollupsBySources.set(compiled.sources, colliding);
-   return colliding;
+   /** The plan's table folds (CompiledBuildPlan.tableFolds). */
+   tableFolds?: TableFolds;
+   /** The plan's addresses (CompiledBuildPlan.addresses). */
+   addresses: PlanAddresses;
+   /** See `CompiledBuildPlan.connectionTypes`. */
+   connectionTypes?: Record<string, string>;
+   /** See `CompiledBuildPlan.versionScoped` ({@link persistTableTarget}). */
+   versionScoped?: boolean;
 }
 
 /**
@@ -163,42 +67,124 @@ export function collidingRollups(compiled: {
  * one table. The one definition of a persist-target collision, read by the
  * serve refusal ({@link sharedTables}), the `#(materialize)` refusal and the
  * publish check (`persistenceCollisionWarnings`), so the three never disagree.
- * Verbatim: names differing only by case or quoting may still fold to one
- * table on some destinations, and normalizing is dialect-dependent.
+ *
+ * The key is the table the run writes. An author's `name=` in an
+ * unversioned or `scope: "package"` package is written exactly as given, so
+ * two equal names (folded where the destination folds case,
+ * {@link tableNamesFoldCase}) are one table. Every other name is Publisher's
+ * readable name (domain/table_name.ts): a name the author did not choose
+ * (`defaulted`: no `name=` on a `#@ persist`, or a `#(materialize)` with
+ * none), and in a published version of a `scope: "version"` package
+ * (`versionScoped`) every name, `name=` included, which then sets only the
+ * readable prefix. A readable name ends in
+ * a hash of the source's identity (its declaring model and name, and the
+ * version), so two different declarations never share one but by a hash
+ * collision, which the run refuses (`table_name_collision`); its key is that
+ * identity, the source's `sourceID`.
  */
 export function persistTableTarget(
    fields: { name?: string; storage?: string },
    sourceName: string,
    connectionName: string,
-): { key: string; name: string; destination: string } {
+   written: {
+      defaulted?: boolean;
+      dialect?: string;
+      versionScoped?: boolean;
+      /** The source's `sourceID`: the identity its readable name hashes. */
+      identity: string;
+   },
+): {
+   key: string;
+   name: string;
+   destination: string;
+   /**
+    * The name as compared ({@link tableNamesMeet}): case-folded where the
+    * destination folds case. Undefined for a readable name, whose key is
+    * its identity.
+    */
+   written?: string;
+} {
    const name = (fields.name || sourceName).trim();
-   const destination = fields.storage?.trim() || connectionName;
-   return { key: `${destination}\u0000${name}`, name, destination };
+   const storage = fields.storage?.trim();
+   const destination = storage || connectionName;
+   const readable =
+      written.versionScoped || (written.defaulted ?? !fields.name?.trim());
+   if (readable) {
+      return {
+         key: `${destination}\u0000identity\u0000${written.identity}`,
+         name,
+         destination,
+      };
+   }
+   const folded = tableNamesFoldCase(written.dialect, !!storage)
+      ? name.toLowerCase()
+      : name;
+   // Keyed by the table segment: `main.t` and `t` may be one table, which
+   // the group then decides by tableNamesMeet.
+   return {
+      key: `${destination}\u0000named\u0000${tableNameParts(folded).leaf}`,
+      name,
+      destination,
+      written: folded,
+   };
 }
 
-function physicalTarget(source: PersistSource) {
+/**
+ * The members of one key's group that write one table with a member of a
+ * different content address ({@link tableNamesMeet} on their written names;
+ * a readable name's group is one table by its key).
+ */
+export function membersOnOneTable<
+   T extends { address: string; written?: string },
+>(members: readonly T[]): T[] {
+   return members.filter((m) =>
+      members.some(
+         (o) =>
+            o.address !== m.address &&
+            (m.written === undefined ||
+               o.written === undefined ||
+               tableNamesMeet(m.written, o.written)),
+      ),
+   );
+}
+
+function physicalTarget(
+   source: PersistSource,
+   materialize: { nameDefaulted?: true } | undefined,
+   versionScoped: boolean | undefined,
+) {
    return persistTableTarget(
       deriveAnnotationFields(source),
       source.name,
       source.connectionName,
+      {
+         ...(materialize ? { defaulted: !!materialize.nameDefaulted } : {}),
+         dialect: source.dialectName,
+         ...(versionScoped ? { versionScoped } : {}),
+         identity: source.sourceID,
+      },
    );
 }
 
 /** One source sharing a table with another, for {@link sharedTables}. */
 interface SharedTableMember {
    sourceID: string;
+   /** As its author wrote it: a source's name, or a view's or query's. */
    name: string;
    address: string;
    model?: string;
+   /** See {@link persistTableTarget}'s `written`. */
+   written?: string;
 }
 
 /**
  * Sources that are not rollups, grouped by the table they write, keeping only
  * the groups that hold two content addresses: two DIFFERENT sources writing
  * one table, where the later build overwrites the earlier and each source's
- * reader reads the other's rows (#6644). The same source reached through two
- * models' imports is one address, and shares its table legitimately. Rollups
- * are {@link collidingRollups}'.
+ * reader reads the other's rows. The same source reached through two
+ * models' imports is one address, and shares its table legitimately. A
+ * rollup's name digests its declaring sourceID, so two rollups never share
+ * one.
  */
 function sharedTableGroups(
    compiled: EligibilityPlan,
@@ -207,17 +193,18 @@ function sharedTableGroups(
       string,
       { table: string; destination: string; members: SharedTableMember[] }
    >();
-   for (const [sourceID, source] of Object.entries(compiled.sources)) {
-      if (compiled.preaggregatePlans?.[sourceID]) continue;
+   for (const [sourceID, table] of Object.entries(compiled.tables)) {
+      const { source } = table;
+      if (table.rollup) continue;
       let address: string;
       let target: ReturnType<typeof physicalTarget>;
       try {
-         address = computeSourceEntityId(
+         address = planAddressOf(compiled, sourceID);
+         target = physicalTarget(
             source,
-            compiled.connectionDigests,
-            compiled.targets?.[sourceID],
+            table.materialize,
+            compiled.versionScoped,
          );
-         target = physicalTarget(source);
       } catch {
          // No address: the other gates refuse it on their own.
          continue;
@@ -229,36 +216,61 @@ function sharedTableGroups(
       };
       group.members.push({
          sourceID,
-         name: source.name,
+         name: authorNameOf(sourceID, source.name),
          address,
-         model: compiled.sourceModelPaths?.[sourceID],
+         model: table.modelPath,
+         ...(target.written !== undefined ? { written: target.written } : {}),
       });
       byTarget.set(target.key, group);
    }
-   return [...byTarget.values()].filter(
-      (g) => new Set(g.members.map((m) => m.address)).size > 1,
-   );
+   return [...byTarget.values()]
+      .map((g) => ({ ...g, members: membersOnOneTable(g.members) }))
+      .filter((g) => g.members.length > 1);
 }
 
-function describeMembers(members: readonly SharedTableMember[]): string {
+/**
+ * A planned source named as its author wrote it: a persisted view's or
+ * query's generated build source (`<source>__<view>__view`,
+ * `<query>__query`) as that view or query, every other source by its name.
+ */
+export function authorNameOf(sourceID: string, name: string): string {
+   if (isPersistedResultSourceID(sourceID)) {
+      const view = /^(.+)__(.+)__view$/.exec(name);
+      if (view) return `view ${view[2]} of ${view[1]}`;
+      const query = /^(.+)__query$/.exec(name);
+      if (query) return `query ${query[1]}`;
+   }
+   return name;
+}
+
+/** The text a collision's message names a member by: `#@ persist source "x"`. */
+function collisionSubjectOf(sourceID: string, name: string): string {
+   const author = authorNameOf(sourceID, name);
+   const view = /^view (.+) of (.+)$/.exec(author);
+   // malloy-text: names quoted in a finding's message, not generated Malloy
+   if (view) return `#@ persist on view "${view[1]}" of source "${view[2]}"`;
+   const query = /^query (.+)$/.exec(author);
+   // malloy-text: names quoted in a finding's message, not generated Malloy
+   if (query) return `#@ persist on query "${query[1]}"`;
+   return `#@ persist source "${name}"`;
+}
+
+/** Each member as `"name" (model)`, sorted, for a collision's message. */
+export function describeMembers(
+   members: readonly { name: string; model?: string }[],
+): string {
    return members
       .map((m) => `"${m.name}"${m.model ? ` (${m.model})` : ""}`)
       .sort()
       .join(", ");
 }
 
-/** Memo for {@link sharedTables}, per compiled `sources` record. */
-const sharedTablesBySources = new WeakMap<
-   Record<string, PersistSource>,
-   ReadonlyMap<string, string>
->();
-
 /**
  * Sources that write one table with a DIFFERENT source (see
  * {@link sharedTableGroups}), by sourceID, each with the refusal to report.
  * Neither may be served from that table: it holds whichever build ran last,
  * so serving it hands one source's readers the other's rows. Both are still
- * planned and built, as before; a query on either is answered live until each
+ * planned and built; a query on either is answered live until each
  * has a `name=` of its own. Serving is refused whatever
  * `PERSIST_COLLISION_ENFORCE` says: that flag (on by default) decides whether
  * a publish is refused, and a wrong answer is never the alternative.
@@ -266,8 +278,6 @@ const sharedTablesBySources = new WeakMap<
 export function sharedTables(
    compiled: EligibilityPlan,
 ): ReadonlyMap<string, string> {
-   const memo = sharedTablesBySources.get(compiled.sources);
-   if (memo) return memo;
    const shared = new Map<string, string>();
    for (const { table, destination, members } of sharedTableGroups(compiled)) {
       for (const member of members) {
@@ -280,67 +290,99 @@ export function sharedTables(
          );
       }
    }
-   sharedTablesBySources.set(compiled.sources, shared);
    return shared;
 }
 
 /**
  * The compiled plan less every `#(materialize)` source whose table is also
  * another source's table (same destination, same physical name, a different
- * content address), each reported as `materialize-not-built` naming the
- * others. Refused outright, not built, whether its name is the default (the
+ * content address), each reported as `materialization-table-collision`
+ * naming the others, which fails the load (under
+ * `PERSIST_COLLISION_ENFORCE=false`, a `materialize-not-built` refusal). Refused outright, not built, whether its name is the default (the
  * source's own, with no `name=`) or a `name=` the author chose:
  * `#(materialize)` has no packages to stay compatible with, and a build over
  * another source's table would hand one source's readers the other's rows.
  * The same source reached through two models is one address, and is no
  * collision. What still shares a table afterwards (v1 sources only) is
- * {@link sharedTables}', served live, and refused at publish under
+ * {@link sharedTables}', served live, and a load failure under
  * `PERSIST_COLLISION_ENFORCE`.
  */
 export function refuseCollidingMaterialize<
    T extends EligibilityPlan & {
       builds: SourceBuild[];
-      materializePlans?: Record<string, MaterializePlan>;
       annotationFindings?: PackageAnnotationFinding[];
    },
 >(compiled: T): T {
-   const plans = compiled.materializePlans ?? {};
-   const refused = new Map<string, string>();
+   const refused = new Map<string, PackageAnnotationFinding>();
    for (const { table, destination, members } of sharedTableGroups(compiled)) {
+      // Only a group a `#(materialize)` source is in: one of v1 sources alone
+      // is the persistence check's (persistenceCollisionWarnings).
+      if (!members.some((m) => compiled.tables[m.sourceID]?.materialize)) {
+         continue;
+      }
       for (const member of members) {
-         const plan = plans[member.sourceID];
-         if (!plan) continue;
+         const plan = compiled.tables[member.sourceID]?.materialize;
          const others = members.filter((m) => m.address !== member.address);
-         const named = plan.nameDefaulted
+         const named = plan?.nameDefaulted
             ? `with no name=, its table takes the source's name \`${table}\``
             : `its name= \`${table}\` is a table`;
+         const reason =
+            `${named} in "${destination}", which ${describeMembers(others)} also ` +
+            `${others.length > 1 ? "write" : "writes"}, so each build would ` +
+            `overwrite the other and one source would read the other's rows; ` +
+            `give each source a distinct name=`;
+         const model = compiled.tables[member.sourceID]?.modelPath ?? "";
+         // An author's names collide: invalid, unless the deployment opts
+         // out (PERSIST_COLLISION_ENFORCE=false, applied where the package
+         // loads), which refuses each source alone. A `#@ persist` partner is
+         // refused with it, so neither side is built.
          refused.set(
             member.sourceID,
-            `${named} in "${destination}", which ${describeMembers(others)} also ` +
-               `${others.length > 1 ? "write" : "writes"}, so each build would ` +
-               `overwrite the other and one source would read the other's rows; ` +
-               `give each source a distinct name=`,
+            plan
+               ? materializeRefusalFinding(
+                    {
+                       sourceName: compiled.tables[member.sourceID].source.name,
+                       sourceID: member.sourceID,
+                       reason,
+                       malformedCode: MATERIALIZATION_TABLE_COLLISION_CODE,
+                    },
+                    model,
+                 )
+               : {
+                    route: "@",
+                    tier: "malformed",
+                    code: MATERIALIZATION_TABLE_COLLISION_CODE,
+                    message: `${collisionSubjectOf(member.sourceID, compiled.tables[member.sourceID].source.name)} is invalid: ${reason}.`,
+                    subject: compiled.tables[member.sourceID].source.name,
+                    model,
+                 },
          );
       }
    }
    if (refused.size === 0) return compiled;
-   const keep = (sourceID: string) => !refused.has(sourceID);
-   const without = <V>(record: Record<string, V> | undefined) =>
-      record &&
-      Object.fromEntries(Object.entries(record).filter(([id]) => keep(id)));
-   const findings = [...(compiled.annotationFindings ?? [])];
-   for (const [sourceID, reason] of refused) {
-      findings.push(
-         materializeRefusalFinding(
-            {
-               sourceName: compiled.sources[sourceID].name,
-               sourceID,
-               reason,
-            },
-            compiled.sourceModelPaths?.[sourceID] ?? "",
-         ),
-      );
-   }
+   return withoutSources(
+      compiled,
+      [...refused.values()],
+      new Set(refused.keys()),
+   );
+}
+
+/**
+ * The compiled plan less the sources in `drop` (neither built nor served:
+ * they answer live), with `findings` added to say why.
+ */
+export function withoutSources<
+   T extends EligibilityPlan & {
+      builds: SourceBuild[];
+      annotationFindings?: PackageAnnotationFinding[];
+   },
+>(
+   compiled: T,
+   findings: PackageAnnotationFinding[],
+   drop: ReadonlySet<string>,
+): T {
+   if (drop.size === 0) return compiled;
+   const keep = (sourceID: string) => !drop.has(sourceID);
    return {
       ...compiled,
       builds: compiled.builds
@@ -354,18 +396,21 @@ export function refuseCollidingMaterialize<
             ),
          }))
          .filter((build) => build.order.length > 0),
-      sources: without(compiled.sources)!,
-      targets: without(compiled.targets),
-      sourceModelPaths: without(compiled.sourceModelPaths),
-      sourceGateOutcomes: without(compiled.sourceGateOutcomes),
-      materializePlans: without(compiled.materializePlans),
-      annotationFindings: findings,
+      tables: Object.fromEntries(
+         Object.entries(compiled.tables).filter(([id]) => keep(id)),
+      ),
+      annotationFindings: [...(compiled.annotationFindings ?? []), ...findings],
    };
 }
 
-/** A compiled plan as the tier gate reads it, rollup collisions included. */
-export function tierGateInputs(compiled: EligibilityPlan): TierGateInputs {
-   return { ...compiled, collidingRollups: collidingRollups(compiled) };
+/** A compiled plan as the tier gate reads it. */
+export function tierGateInputs(
+   compiled: Pick<EligibilityPlan, "tables" | "connectionTypes">,
+): TierGateInputs {
+   return {
+      tables: compiled.tables,
+      connectionTypes: compiled.connectionTypes,
+   };
 }
 
 /**
@@ -387,32 +432,31 @@ export type SourceEligibility = {
    eligible: string[];
    /** sourceID -> why it was refused; for the operator-facing log. */
    refused: Record<string, string>;
+   /**
+    * The eligible sourceIDs admitted past their own row-level gate under G3
+    * (`gateEnforcedAtRead`), whose bindings the router lets a served answer
+    * read past that gate. Absent, as in a record made before it: none.
+    */
+   gateKept?: string[];
 };
 
 export function collectSourceEligibility(
    compiled: EligibilityPlan,
+   verdicts: ReadonlyMap<string, TableVerdict> = planVerdicts(compiled),
 ): SourceEligibility {
    const eligible: string[] = [];
+   const gateKept: string[] = [];
    const refused: Record<string, string> = {};
-   const gate = { collidingRollups: collidingRollups(compiled) };
-   const shared = sharedTables(compiled);
-   for (const [sourceID, source] of Object.entries(compiled.sources)) {
-      const sharing = shared.get(sourceID);
-      if (sharing !== undefined) {
-         refused[sourceID] = sharing;
+   for (const sourceID of Object.keys(compiled.tables)) {
+      const storage = verdicts.get(sourceID)!.storage;
+      if ("refused" in storage) {
+         refused[sourceID] = storage.refused;
          continue;
       }
-      try {
-         assertRollupNameUnshared(source, gate);
-         assertMaterializationEligible(source, deriveAnnotationFields(source), {
-            gateEnforcedAtRead: gateEnforcedAtRead(sourceID, compiled),
-         });
-         eligible.push(sourceID);
-      } catch (err) {
-         refused[sourceID] = errMessage(err);
-      }
+      eligible.push(sourceID);
+      if (storage.gateKept) gateKept.push(sourceID);
    }
-   return { eligible, refused };
+   return { eligible, refused, gateKept };
 }
 
 /**
@@ -436,25 +480,21 @@ export type ColocatedSourceEligibility = {
 
 export function collectColocatedSourceEligibility(
    compiled: EligibilityPlan,
+   verdicts: ReadonlyMap<string, TableVerdict> = planVerdicts(compiled),
 ): ColocatedSourceEligibility {
    const eligibleEntityIds = new Set<string>();
    const refused: Record<string, string> = {};
-   const shared = sharedTables(compiled);
-   for (const [sourceID, source] of Object.entries(compiled.sources)) {
+   for (const [sourceID, { source }] of Object.entries(compiled.tables)) {
       try {
-         assertTierEligible(source, false, tierGateInputs(compiled));
-         const sharing = shared.get(sourceID);
-         if (sharing !== undefined) throw new Error(sharing);
+         const { colocated, shared } = verdicts.get(sourceID)!;
+         if (colocated !== undefined) throw colocated;
+         if (shared !== undefined) throw new Error(shared);
       } catch (err) {
          // Gated BEFORE computeSourceEntityId: the gate never addresses the
          // source, so it refuses cleanly even when addressing would throw.
          let sourceEntityId: string;
          try {
-            sourceEntityId = computeSourceEntityId(
-               source,
-               compiled.connectionDigests,
-               compiled.targets?.[sourceID],
-            );
+            sourceEntityId = planAddressOf(compiled, sourceID);
          } catch (idErr) {
             // No id to key the refusal under; the log is the only record that
             // it was examined and refused.
@@ -478,11 +518,7 @@ export function collectColocatedSourceEligibility(
       // to this source's binding.
       let sourceEntityId: string;
       try {
-         sourceEntityId = computeSourceEntityId(
-            source,
-            compiled.connectionDigests,
-            compiled.targets?.[sourceID],
-         );
+         sourceEntityId = planAddressOf(compiled, sourceID);
       } catch (err) {
          logger.warn(
             "Dropping an eligible colocated source: its content address could not be computed",
@@ -496,4 +532,296 @@ export function collectColocatedSourceEligibility(
       }
    }
    return { eligibleEntityIds, refused };
+}
+
+/** An eligibility gate that failed with an error, not a refusal. */
+export class EligibilityCheckFailed extends Error {
+   constructor(readonly failure: unknown) {
+      super(errMessage(failure));
+   }
+}
+
+/**
+ * The refusal `check` throws, if any. Only an eligibility refusal is
+ * reportable; any other error must not masquerade as a security refusal, so
+ * it is rethrown as an {@link EligibilityCheckFailed}.
+ */
+function refusalOf(
+   check: () => void,
+): MaterializationEligibilityError | undefined {
+   try {
+      check();
+      return undefined;
+   } catch (err) {
+      if (err instanceof MaterializationEligibilityError) return err;
+      throw new EligibilityCheckFailed(err);
+   }
+}
+
+/**
+ * What the eligibility gates decide for one planned table in the wire plan:
+ * its refusal, if any, and whether it stays in `sources`.
+ *
+ * Tier-appropriate, BEFORE computeSourceEntityId(), which fails for a refused
+ * source. Mirrors the build path: `storage=` gets the storage-destination
+ * gate; plain `#@ persist` gets the colocated gate, which admits a resolved,
+ * fully-attributed gate. The storage gate for every source would misreport
+ * buildable colocated sources as refused.
+ *
+ * A rollup over a gated base is refused UNCONDITIONALLY, but that governs
+ * only whether it MATERIALIZES (enforced at build time); the plan still
+ * reports the synthesized rollup. See preaggregation_seams.spec.ts ("gate
+ * stops materialization, not synthesis") and docs/materialization.md.
+ */
+function eligibilityOf(
+   table: TablePlan,
+   annotationFields: Record<string, string>,
+   ctx: {
+      gateInputs: TierGateInputs;
+      /** The colocated gate's refusal of this table, decided once. */
+      colocated: unknown;
+   },
+): WireVerdict {
+   const { source, modelPath, rollup } = table;
+   const declaresStorage = !!annotationFields.storage;
+   const refusal = (
+      err: MaterializationEligibilityError,
+      tier: WireRefusedSource["tier"],
+      fallback: WireRefusedSource["reason"],
+   ): WireRefusedSource => ({
+      name: source.name,
+      sourceID: source.sourceID,
+      modelPath,
+      tier,
+      reason: err.reason || fallback,
+      message: errMessage(err),
+   });
+   if (!rollup) {
+      const err = refusalOf(() => {
+         assertPlacementNamed(source);
+         if (declaresStorage) {
+            assertTierEligible(source, true, ctx.gateInputs, annotationFields);
+         } else if (ctx.colocated !== undefined) {
+            // The colocated gate, as decided for the table once.
+            throw ctx.colocated;
+         }
+      });
+      return err
+         ? {
+              refused: refusal(
+                 err,
+                 declaresStorage ? "storage" : "colocated",
+                 "authorize",
+              ),
+              refusal: err,
+              inPlan: false,
+           }
+         : { inPlan: true };
+   }
+   // A storage rollup runs BOTH gates; neither subsumes the other. The
+   // authorize refusal is unconditional for rollups (they group ACROSS the
+   // gated column, so cannot be row-filtered afterwards).
+   //
+   // An AUTHORIZE refusal leaves the rollup in `sources` too (Malloy
+   // synthesized it) — the coexistence the spec permits for this tier alone.
+   // A STORAGE refusal removes it: the rollup can never be written, and
+   // `Package.storageWarnings` and the auto-run would otherwise treat it as
+   // materialized/buildable.
+   //
+   // Always tier `preaggregate`, even for a storage refusal: only this tier
+   // may coexist with a `sources` entry, and it is the only provenance
+   // marking the entry as a rollup. Which gate refused is in `reason`.
+   //
+   // A `#(preaggregate)` rollup over a gated base whose gates the variant
+   // grafts at read (rows 1 and 21) is not refused for them; a v1 rollup
+   // always is.
+   let keepsGate = false;
+   const authorize = refusalOf(() => {
+      // Inside the check: a rollup whose gate cannot be read fails the gate.
+      keepsGate = rollupGateEnforcedAtRead(rollup);
+      assertColocatedPersistNotAuthorizeGated(
+         source,
+         source.name,
+         "preaggregate",
+         table.gate,
+         annotationFields,
+         { gateEnforcedAtRead: keepsGate },
+      );
+   });
+   if (authorize) {
+      return {
+         refused: refusal(authorize, "preaggregate", "authorize"),
+         refusal: authorize,
+         inPlan: true,
+      };
+   }
+   if (!declaresStorage) return { inPlan: true };
+   const storage = refusalOf(() =>
+      assertMaterializationEligible(source, deriveAnnotationFields(source), {
+         gateEnforcedAtRead: keepsGate,
+         connectionTypes: ctx.gateInputs.connectionTypes,
+      }),
+   );
+   return storage
+      ? {
+           refused: refusal(storage, "preaggregate", "authorize"),
+           refusal: storage,
+           inPlan: false,
+        }
+      : { inPlan: true };
+}
+
+/** What the wire plan keeps of one table's eligibility ({@link eligibilityOf}). */
+interface WireVerdict {
+   /** Its refusal on the wire (`BuildPlan.refusedSources`). */
+   refused?: WireRefusedSource;
+   /** The gate's refusal behind {@link refused}. */
+   refusal?: MaterializationEligibilityError;
+   /** Whether it stays in `sources`. */
+   inPlan: boolean;
+}
+
+/**
+ * One planned table's eligibility, decided once per plan
+ * ({@link planVerdicts}): the wire plan's `refusedSources`, the bind's
+ * {@link SourceEligibility} and {@link ColocatedSourceEligibility}, and the
+ * colocated sibling rule are each projected from it.
+ */
+export interface TableVerdict {
+   /**
+    * The wire plan's: its tier-appropriate gate, or the error that kept its
+    * projection from deciding (thrown again where it is projected).
+    */
+   wire:
+      | (WireVerdict & { annotationFields: Record<string, string> })
+      | { failed: unknown };
+   /** Whether it may be served from a stored table ({@link SourceEligibility}). */
+   storage: { refused: string } | { gateKept: boolean };
+   /**
+    * The colocated gate's refusal, before any table it shares
+    * ({@link ColocatedSourceEligibility}, the colocated sibling rule).
+    */
+   colocated?: unknown;
+   /** Why it shares its table with another source ({@link sharedTables}). */
+   shared?: string;
+   /**
+    * The reason a refused source is counted under, once per plan: its wire
+    * refusal (`refusedSources`), or the colocated gate's when the wire
+    * projection could not decide.
+    */
+   counted?: NonNullable<MaterializationEligibilityError["reason"]>;
+}
+
+/** Each planned table's {@link TableVerdict}, by sourceID. */
+export function planVerdicts(
+   compiled: EligibilityPlan,
+): ReadonlyMap<string, TableVerdict> {
+   const gateInputs = tierGateInputs(compiled);
+   const shared = sharedTables(compiled);
+   const verdicts = new Map<string, TableVerdict>();
+   for (const [sourceID, table] of Object.entries(compiled.tables)) {
+      const { source } = table;
+      let colocated: unknown;
+      try {
+         assertTierEligible(source, false, gateInputs);
+      } catch (err) {
+         colocated = err;
+      }
+      let wire: TableVerdict["wire"];
+      try {
+         const annotationFields = deriveAnnotationFields(source);
+         wire = {
+            annotationFields,
+            ...eligibilityOf(table, annotationFields, {
+               gateInputs,
+               colocated,
+            }),
+         };
+      } catch (err) {
+         wire = { failed: err };
+      }
+      const sharing = shared.get(sourceID);
+      const storage = storageVerdict(sourceID, compiled, gateInputs, sharing);
+      const refusal = "failed" in wire ? colocated : wire.refusal;
+      const counted =
+         refusal instanceof MaterializationEligibilityError
+            ? refusal.reason
+            : undefined;
+      verdicts.set(sourceID, {
+         wire,
+         storage,
+         ...(colocated !== undefined ? { colocated } : {}),
+         ...(sharing !== undefined ? { shared: sharing } : {}),
+         ...(counted ? { counted } : {}),
+      });
+   }
+   return verdicts;
+}
+
+/**
+ * Whether the table may be served from a stored table: not one it shares
+ * with another source, and admitted by the storage-destination gate.
+ */
+function storageVerdict(
+   sourceID: string,
+   compiled: EligibilityPlan,
+   gate: TierGateInputs,
+   sharing: string | undefined,
+): TableVerdict["storage"] {
+   if (sharing !== undefined) return { refused: sharing };
+   const { source } = compiled.tables[sourceID];
+   try {
+      const kept = gateEnforcedAtRead(sourceID, compiled, true);
+      assertMaterializationEligible(source, deriveAnnotationFields(source), {
+         gateEnforcedAtRead: kept,
+         connectionTypes: compiled.connectionTypes,
+      });
+      // A table whose build reads the current time is not served, however it
+      // was built.
+      assertBuildReadsNoCurrentTime(source, gate);
+      return { gateKept: kept && storageKeepsOwnGate(source, compiled) };
+   } catch (err) {
+      return { refused: errMessage(err) };
+   }
+}
+
+/**
+ * The colocated gate's refusals on each address, in sourceID order, of the
+ * sources `include` admits: a refusal on a shared colocated address wins for
+ * every source on it, as the bind ({@link collectColocatedSourceEligibility})
+ * and the build read it.
+ */
+export function colocatedRefusalsByAddress(
+   compiled: EligibilityPlan,
+   verdicts: ReadonlyMap<string, TableVerdict>,
+   include: (sourceID: string) => boolean,
+): Map<
+   string,
+   { sourceID: string; name: string; reason?: string; message: string }[]
+> {
+   const refusals = new Map<
+      string,
+      { sourceID: string; name: string; reason?: string; message: string }[]
+   >();
+   for (const id of Object.keys(compiled.tables).sort()) {
+      const err = verdicts.get(id)?.colocated;
+      if (err === undefined || !include(id)) continue;
+      let address: string;
+      try {
+         address = planAddressOf(compiled, id);
+      } catch {
+         continue;
+      }
+      const list = refusals.get(address) ?? [];
+      list.push({
+         sourceID: id,
+         name: compiled.tables[id].source.name,
+         ...(err instanceof MaterializationEligibilityError && err.reason
+            ? { reason: err.reason }
+            : {}),
+         message: errMessage(err),
+      });
+      refusals.set(address, list);
+   }
+   return refusals;
 }

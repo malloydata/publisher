@@ -71,7 +71,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315"
+          "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -125,7 +126,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9"
+          "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -187,7 +189,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315"
+          "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -241,7 +244,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9"
+          "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9",
+          "via": "served_copy"
         },
         "warnings": []
       },

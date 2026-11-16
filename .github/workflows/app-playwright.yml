@@ -9,7 +9,7 @@ on:
   pull_request:
 
 env:
-  BUN_VERSION: 1.3.13
+  BUN_VERSION: 1.4.4
 
 # The GITHUB_TOKEN is read-only for every job here; a job that needs more
 # declares it itself.
@@ -33,7 +33,8 @@ jobs:
     # Pinned: `ubuntu-latest` began resolving to ubuntu-26.04 on 2026-10-30, and
     # `playwright install --with-deps chromium` refuses that image ("does not
     # support chromium on ubuntu26.04"), failing the job before any test runs.
-    runs-on: ubuntu-24.04
+    # On Credible's donated runners when CREDIBLE_RUNNERS is on.
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -111,7 +112,7 @@ jobs:
         run: bunx playwright test --config=playwright.config.ts
         env:
           CI: "true"
-          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "false"
 
       - name: Upload Playwright report
         if: always()
@@ -141,7 +142,7 @@ jobs:
         run: bunx playwright test --config=playwright.config.ts --output=test-results-model-viewer tests/playwright/model-page-literals.spec.ts tests/playwright/model-page-givens.spec.ts tests/playwright/model-viewer.spec.ts
         env:
           CI: "true"
-          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "false"
           PUBLISHER_MODEL_PAGE: viewer
           EXPECT_MODEL_PAGE: viewer
 

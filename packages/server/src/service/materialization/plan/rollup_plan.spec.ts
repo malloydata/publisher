@@ -1,35 +1,22 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   afterAll,
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-} from "bun:test";
+import { allowGatedStorageRollupsForTests } from "../../../config";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../test_helpers/settings_env";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { InMemoryURLReader, SingleConnectionRuntime } from "@malloydata/malloy";
-import { persistBlankedFiles } from "../persist_blanking";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
+import { persistBlankedFiles } from "../text/persist_blanking";
 import {
-   generateRollupBuildFile,
    planModelRollups,
    rollupName,
-   allowGatedStorageRollupsForTests,
    rollupGateEnforcedAtRead,
-   rollupsServeGatedBases,
    type RollupRefusal,
-   type RollupVariantPlan,
 } from "./rollup_plan";
-import { emitMeasureExpr } from "./rollup_measure_grammar";
-import { SourceMap } from "./source_map";
+import { emitMeasureExpr, generateRollupBuildFile } from "../text/read_text";
+import type { RollupVariantPlan } from "../domain/table_plans";
+import { SourceMap } from "../text/source_map";
 
-const connection = new DuckDBConnection("duckdb", ":memory:");
-afterAll(async () => {
-   await connection.close();
-});
+const mz = materializationFixture();
 
 const ROWS = `duckdb.sql("""
   SELECT * FROM (VALUES
@@ -41,31 +28,12 @@ const ROWS = `duckdb.sql("""
 
 const CARRIERS = `duckdb.sql("SELECT 'AA' AS code, 5 AS fleet UNION ALL SELECT 'BB', 7")`;
 
-/** Compile `files` and return the first file's model definition. */
-async function compile(files: Record<string, string>): Promise<unknown> {
-   const urls = new Map(
-      Object.entries(files).map(([name, text]) => [
-         `file:///pkg/${name}`,
-         text,
-      ]),
-   );
-   const runtime = new SingleConnectionRuntime({
-      urlReader: new InMemoryURLReader(urls),
-      connection,
-   });
-   const [first] = Object.keys(files);
-   const model = await runtime
-      .loadModel(new URL(`file:///pkg/${first}`))
-      .getModel();
-   return model._modelDef;
-}
-
 async function plan(
    files: Record<string, string>,
    declaredIn?: string,
    readUnderGates?: boolean,
 ): Promise<{ plans: RollupVariantPlan[]; refused: RollupRefusal[] }> {
-   const modelDef = await compile(files);
+   const modelDef = await mz.compile(files);
    return planModelRollups(
       SourceMap.of(modelDef),
       {
@@ -150,7 +118,7 @@ source: ops is orders include {
       ).toEqual(["orders"]);
    });
 
-   it("refuses a malformed declaration at publish", async () => {
+   it("reports a malformed declaration, which fails the load", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `source: orders is ${ROWS} extend {
   #(preaggregate) grain=["category"]
@@ -170,9 +138,9 @@ source: ops is orders include {
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.measure, r.tier, r.code])).toEqual([
          ["big", "malformed", "preaggregate-not-a-measure"],
-         ["a", "malformed", "preaggregate-malformed"],
+         ["a", "malformed", "preaggregate-invalid"],
          ["b", "malformed", "preaggregate-unknown-key"],
-         ["e", "malformed", "preaggregate-malformed"],
+         ["e", "malformed", "preaggregate-invalid"],
          ["c", "malformed", "preaggregate-unknown-grain"],
          ["d", "malformed", "preaggregate-not-mergeable"],
       ]);
@@ -283,7 +251,9 @@ describe("#(preaggregate) access filters (A4)", () => {
 
 describe("#(preaggregate) over a gated source with gated sources off (row 21)", () => {
    it("plans no rollup over a gated source, even one whose grain keeps the gate's field", async () => {
-      expect(rollupsServeGatedBases({})).toBe(false);
+      expect(rollupGateEnforcedAtRead({ variant: true, baseGated: true })).toBe(
+         false,
+      );
       const { plans, refused } = await plan(GATED);
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.tier, r.code])).toEqual([
@@ -496,7 +466,7 @@ source: orders is ${ROWS} extend {
 });
 
 describe("a source that sets its own time zone (#1686)", () => {
-   it("plans its rollup only where the join leg reads it: joined from a source in the same zone", async () => {
+   it("plans its rollup only where the join branch reads it: joined from a source in the same zone, stored beside a storage= rollup", async () => {
       const zoned = (
          name: string,
          storage = "",
@@ -511,6 +481,10 @@ describe("a source that sets its own time zone (#1686)", () => {
          "m.malloy": `${zoned("lonely")}
 ${zoned("joined")}
 ${zoned("joined_stored", ' storage="lake"')}
+${zoned("joined_lake", ' storage="lake"')}
+${zoned("joined_persisted", ' storage="lake"')}
+${zoned("joined_other_lake", ' storage="lake"')}
+${zoned("joined_from_pond", ' storage="lake"')}
 ${zoned("joined_elsewhere")}
 source: inherits is lonely extend {
   #(preaggregate) grain=["category"]
@@ -527,14 +501,38 @@ source: parent is ${ROWS} extend {
 }
 source: parent_utc is ${ROWS} extend {
   join_one: je is joined_elsewhere on je.id = id
+}
+#(materialize) storage="lake"
+source: parent_lake is ${ROWS} extend {
+  timezone: 'America/New_York'
+  join_one: jl is joined_lake on jl.id = id
+}
+#@ persist storage="lake"
+source: parent_persisted is ${ROWS} -> { select: * } extend {
+  timezone: 'America/New_York'
+  join_one: jp is joined_persisted on jp.id = id
+}
+source: parent_lake_extended is parent_lake extend {
+  join_one: jo is joined_other_lake on jo.id = id
+}
+#(materialize) storage="pond"
+source: parent_pond is ${ROWS} extend {
+  timezone: 'America/New_York'
+  join_one: jf is joined_from_pond on jf.id = id
 }`,
       });
-      // A storage= rollup joined from the same zone is planned too: the join
-      // leg reads it when the joining source is stored in that destination
-      // (#1704), and declines at read when it is not.
+      // A storage= rollup is planned only when a source in the same zone
+      // that joins it is stored in its destination, or is built on one that
+      // is (#1704): the join leg reads it from no other source, so
+      // `joined_stored`, joined from a source on its own connection, and
+      // `joined_from_pond`, joined from one stored in another destination,
+      // do not make one; `parent_lake_extended`, built on a stored source,
+      // does.
       expect(plans.map((p) => p.baseSourceID.split("@")[0]).sort()).toEqual([
          "joined",
-         "joined_stored",
+         "joined_lake",
+         "joined_other_lake",
+         "joined_persisted",
          "plain",
       ]);
       expect(
@@ -545,8 +543,13 @@ source: parent_utc is ${ROWS} extend {
       ).toEqual([
          ["inherits", "total2"],
          ["joined_elsewhere", "total"],
+         ["joined_from_pond", "total"],
+         ["joined_stored", "total"],
          ["lonely", "total"],
       ]);
+      expect(
+         refused.find((r) => r.sourceName === "joined_stored")?.message,
+      ).toContain("is stored in `lake`");
       const message = refused.find((r) => r.sourceName === "lonely")?.message;
       expect(message).toContain("timezone: 'America/New_York'");
       expect(refused.find((r) => r.sourceName === "lonely")?.tier).toBe(
@@ -576,7 +579,7 @@ describe("the rollup build file", () => {
       expect(text).toContain("    per_order__partial0 is amount.sum()");
       expect(text).toContain("    per_order__partial1 is count()");
       // It compiles beside the author's file.
-      await compile({
+      await mz.compile({
          "orders.malloy.preaggregate.malloy": text,
          "orders.malloy": `source: orders is ${ROWS} extend {
   measure: paid is amount.sum() { where: region = 'x' }
@@ -589,7 +592,7 @@ describe("the rollup build file", () => {
 #@ persist storage="lake"
 source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
 `;
-      const modelDef = await compile({ "m.malloy": text });
+      const modelDef = await mz.compile({ "m.malloy": text });
       const blanked = await persistBlankedFiles(modelDef, () => text);
       const out = [...(blanked?.values() ?? [])][0] ?? "";
       expect(out.split("\n")[1]?.trim()).toBe("");
@@ -602,7 +605,7 @@ source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
 #@ persist storage="lake"
 source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
 `;
-      const modelDef = await compile({ "m.malloy": text });
+      const modelDef = await mz.compile({ "m.malloy": text });
       // The file moved on since it compiled: the span holds something else.
       expect(
          await persistBlankedFiles(modelDef, () => `\n\n${text}`),
@@ -777,11 +780,11 @@ source: orders is ${ROWS} extend {
   measure: n is count()
 }`;
 
-   async function planV1(readsV1: boolean) {
-      const modelDef = await compile({ "orders.malloy": V1 });
+   async function planV1(readsPreaggregateLines: boolean) {
+      const modelDef = await mz.compile({ "orders.malloy": V1 });
       return planModelRollups(SourceMap.of(modelDef), {
          packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
-         readsV1,
+         readsPreaggregateLines,
       });
    }
 
@@ -813,7 +816,7 @@ source: orders is ${ROWS} extend {
 
 describe("a v1 rollup's namespace under the v1 cutover", () => {
    it("inherits its base's #@ persist name= namespace when its line names none, as v1 places it", async () => {
-      const modelDef = await compile({
+      const modelDef = await mz.compile({
          "orders.malloy": `##! experimental.persistence
 #@ persist name="analytics.orders_tbl"
 source: orders is ${ROWS} -> {
@@ -832,7 +835,7 @@ source: orders is ${ROWS} -> {
       });
       const { plans, refused } = planModelRollups(SourceMap.of(modelDef), {
          packageRelativeSourceID: (id) => id.replace("file:///pkg/", ""),
-         readsV1: true,
+         readsPreaggregateLines: true,
       });
       expect(refused).toEqual([]);
       expect(

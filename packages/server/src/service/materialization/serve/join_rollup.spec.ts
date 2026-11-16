@@ -2,19 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import malloyPackage from "@malloydata/malloy/package.json";
-import type { SourceJoin } from "../plan/source_map";
-import type { RollupVariantPlan } from "../plan/rollup_plan";
+import type { SourceJoin } from "../text/source_map";
+import type { RollupVariantPlan } from "../domain/table_plans";
 import type { QueryLevelFacts } from "../../governance/ir/prepared_query";
 import {
    checkJoinCoverage,
-   joinRollupLegs,
-   malloyCountsChildlessParentsAsZero,
-   MALLOY_SKIPS_UNMATCHED_JOIN_ROWS_SINCE,
+   joinedKeyProblem,
+   joinRollupBranches,
    parentKeyProblem,
-   relationshipChangeProblem,
    unmatchedRowProblem,
-   versionAtLeast,
 } from "./join_rollup";
 
 const CHILD = "segments@file:///p/m.malloy";
@@ -107,45 +103,27 @@ function plan(over: Partial<RollupVariantPlan> = {}): RollupVariantPlan {
    } as RollupVariantPlan;
 }
 
-describe("versionAtLeast", () => {
-   it("compares dotted versions numerically and fails closed", () => {
-      expect(versionAtLeast("0.0.438", "0.0.438")).toBe(true);
-      expect(versionAtLeast("0.0.440", "0.0.438")).toBe(true);
-      expect(versionAtLeast("0.1.0", "0.0.438")).toBe(true);
-      expect(versionAtLeast("0.0.436", "0.0.438")).toBe(false);
-      expect(versionAtLeast("0.0.99", "0.0.438")).toBe(false);
-      expect(versionAtLeast("0.0.438-dev", "0.0.438")).toBe(true);
-      expect(versionAtLeast(undefined, "0.0.438")).toBe(false);
-      expect(versionAtLeast("x.y", "0.0.438")).toBe(false);
-   });
-
-   it("the switch follows the pinned Malloy", () => {
-      const pinned = malloyPackage.version;
-      expect(malloyCountsChildlessParentsAsZero()).toBe(
-         versionAtLeast(pinned, MALLOY_SKIPS_UNMATCHED_JOIN_ROWS_SINCE),
-      );
-   });
-});
-
-describe("joinRollupLegs", () => {
+describe("joinRollupBranches", () => {
    const legsOf = (j: SourceJoin, p = plan(), filters = new Set<string>()) =>
-      joinRollupLegs([j], new Map([[CHILD, [p]]]), filters, "id");
+      joinRollupBranches([j], new Map([[CHILD, [p]]]), filters, "id");
 
    it("offers a join keyed on one field each side, join_one at the key alone", () => {
       const [only] = legsOf(join());
       expect(only?.refusal).toBeUndefined();
-      expect(only?.leg.relationship).toBe("one");
+      expect(only?.branch.relationship).toBe("one");
       const [finer] = legsOf(
          join(),
          plan({ grainDimensions: ["flight_id", "kind"] }),
       );
-      expect(finer?.leg.relationship).toBe("many");
+      expect(finer?.branch.relationship).toBe("many");
    });
 
    it("offers nothing for a join defined in place, a join_cross, or a source without rollups", () => {
       expect(legsOf(join({ sourceID: undefined }))).toEqual([]);
       expect(legsOf(join({ relationship: "cross" }))).toEqual([]);
-      expect(joinRollupLegs([join()], new Map(), new Set(), "id")).toEqual([]);
+      expect(joinRollupBranches([join()], new Map(), new Set(), "id")).toEqual(
+         [],
+      );
    });
 
    it("refuses, with reasons, what the rollup's rows cannot stand in for", () => {
@@ -192,7 +170,7 @@ describe("joinRollupLegs", () => {
    it("refuses a join read as a join_many keyed on a field the query source does not keep unique", () => {
       const fine = plan({ grainDimensions: ["flight_id", "kind"] });
       const keyed = (j: SourceJoin, p: RollupVariantPlan, pk?: string) =>
-         joinRollupLegs([j], new Map([[CHILD, [p]]]), new Set(), pk)[0]
+         joinRollupBranches([j], new Map([[CHILD, [p]]]), new Set(), pk)[0]
             ?.refusal;
       // A declared join_many keyed on the query source's primary key.
       expect(keyed(join(), plan(), "id")).toBeUndefined();
@@ -214,105 +192,49 @@ describe("joinRollupLegs", () => {
 
    it("refuses a join another join's condition reads", () => {
       const other = join({
-         name: "legs",
-         sourceID: "legs@file:///p/m.malloy",
-         condition: { joins: new Set(["legs", "segments"]), nested: false },
+         name: "branches",
+         sourceID: "branches@file:///p/m.malloy",
+         condition: { joins: new Set(["branches", "segments"]), nested: false },
       });
-      const legs = joinRollupLegs(
+      const branches = joinRollupBranches(
          [join(), other],
          new Map([[CHILD, [plan()]]]),
          new Set(),
          "id",
       );
-      expect(legs[0]?.refusal?.code).toBe("rollup_count_semantics");
+      expect(branches[0]?.refusal?.code).toBe("rollup_count_semantics");
    });
 });
 
 describe("parentKeyProblem", () => {
-   const legOf = (relationship: "one" | "many", declared: "one" | "many") => ({
+   const branchOf = (
+      relationship: "one" | "many",
+      declared: "one" | "many",
+   ) => ({
       join: join({ relationship: declared }) as never,
       plan: plan(),
       relationship,
    });
 
    it("serves a join read as a join_many only over a key known unique and never NULL", () => {
-      for (const leg of [
-         legOf("one", "many"),
-         legOf("many", "many"),
-         legOf("many", "one"),
+      for (const branch of [
+         branchOf("one", "many"),
+         branchOf("many", "many"),
+         branchOf("many", "one"),
       ]) {
-         expect(parentKeyProblem(leg, true)).toBeUndefined();
-         expect(parentKeyProblem(leg, false)).toContain(
+         expect(parentKeyProblem(branch, "unique")).toBeUndefined();
+         expect(parentKeyProblem(branch, "repeated")).toContain(
             "more than once or NULL",
          );
-         expect(parentKeyProblem(leg, undefined)).toContain("was not checked");
+         expect(parentKeyProblem(branch, "unknown")).toContain(
+            "was not checked",
+         );
       }
    });
 
    it("asks nothing of a join_one read at its key", () => {
-      expect(parentKeyProblem(legOf("one", "one"), undefined)).toBeUndefined();
-   });
-});
-
-describe("relationshipChangeProblem", () => {
-   const legOf = (relationship: "one" | "many", declared: "one" | "many") => ({
-      join: join({ relationship: declared }) as never,
-      plan: plan(),
-      relationship,
-   });
-   const fansOut = (path: readonly string[]) => path[0] !== "crew";
-
-   it("before malloydata/malloy#3208: a count, sum or average through another join_many beside a re-pointed join", () => {
-      for (const leg of [legOf("one", "many"), legOf("many", "one")]) {
-         expect(
-            relationshipChangeProblem(
-               leg,
-               [{ path: ["certs"], isCount: true }],
-               fansOut,
-               false,
-            ),
-         ).toContain("count through the join_many `certs`");
-         expect(
-            relationshipChangeProblem(
-               leg,
-               [{ path: ["certs"], isCount: false }],
-               fansOut,
-               false,
-            ),
-         ).toContain("sum or average");
-         expect(
-            relationshipChangeProblem(leg, undefined, fansOut, false),
-         ).toContain("could not be traced");
-      }
-   });
-
-   it("leaves the source's own grain, the leg's join, a join_one path and an unchanged relationship alone", () => {
-      const keyed = [
-         { path: [], isCount: true },
-         { path: ["segments"], isCount: false },
-         { path: ["crew"], isCount: true },
-      ];
       expect(
-         relationshipChangeProblem(legOf("one", "many"), keyed, fansOut, false),
-      ).toBeUndefined();
-      expect(
-         relationshipChangeProblem(
-            legOf("many", "many"),
-            [{ path: ["certs"], isCount: true }],
-            fansOut,
-            false,
-         ),
-      ).toBeUndefined();
-   });
-
-   it("after malloydata/malloy#3208: nothing is declined", () => {
-      expect(
-         relationshipChangeProblem(
-            legOf("one", "many"),
-            [{ path: ["certs"], isCount: true }],
-            fansOut,
-            true,
-         ),
+         parentKeyProblem(branchOf("one", "one"), "unknown"),
       ).toBeUndefined();
    });
 });
@@ -320,66 +242,113 @@ describe("relationshipChangeProblem", () => {
 describe("unmatchedRowProblem", () => {
    const isColumn = (p: readonly string[]) =>
       p.length === 1 && p[0] === "miles";
-   const many = joinRollupLegs(
+   const many = joinRollupBranches(
       [join()],
       new Map([[CHILD, [plan()]]]),
       new Set(),
       "id",
-   )[0]!.leg;
-   const one = joinRollupLegs(
+   )[0]!.branch;
+   const one = joinRollupBranches(
       [join({ relationship: "one" })],
       new Map([[CHILD, [plan()]]]),
       new Set(),
       "id",
-   )[0]!.leg;
+   )[0]!.branch;
 
-   it("before malloydata/malloy#3208: a join_many count and a non-column operand are declined", () => {
-      const problem = (leg: typeof many, m: string) =>
-         unmatchedRowProblem(leg, new Set([m]), isColumn, false);
-      expect(problem(many, "seg_miles")).toBeUndefined();
-      expect(problem(many, "p_miles")).toBeUndefined();
-      expect(problem(many, "seg_count")).toContain("join_many");
-      expect(problem(many, "padded")).toContain("not NULL");
-      // A join_one's count counts the joined key: right live already.
-      expect(problem(one, "seg_count")).toBeUndefined();
-      expect(problem(one, "padded")).toContain("not NULL");
+   const noJoin = () => false;
+
+   it("serves the joined source's own counts and sums, whatever their operand (malloydata/malloy#3208)", () => {
+      for (const branch of [many, one]) {
+         for (const m of ["seg_miles", "seg_count", "padded", "p_miles"]) {
+            expect(
+               unmatchedRowProblem(branch, new Set([m]), isColumn, noJoin),
+            ).toBeUndefined();
+         }
+      }
+   });
+
+   const withPartials = (
+      partials: ReturnType<typeof leaf>[],
+   ): Parameters<typeof unmatchedRowProblem>[0] => {
+      const p = plan();
+      p.rollupMeasures[0]!.partials =
+         partials as RollupVariantPlan["rollupMeasures"][number]["partials"];
+      return joinRollupBranches(
+         [join()],
+         new Map([[CHILD, [p]]]),
+         new Set(),
+         "id",
+      )[0]!.branch;
+   };
+   const read = new Set(["seg_miles"]);
+
+   it("declines a min or max of a value that is not NULL on an unmatched parent", () => {
+      const constant = withPartials([
+         leaf("max", {
+            kind: "call",
+            name: "max",
+            args: [{ kind: "number", text: "1" }],
+         }),
+      ]);
+      expect(unmatchedRowProblem(constant, read, isColumn, noJoin)).toContain(
+         "max of a value that is not NULL",
+      );
+      const column = withPartials([leaf("min", method("miles", "min"))]);
+      expect(
+         unmatchedRowProblem(column, read, isColumn, noJoin),
+      ).toBeUndefined();
       // Only what the query reads is held to it.
       expect(
-         unmatchedRowProblem(many, new Set(["seg_miles"]), isColumn, false),
+         unmatchedRowProblem(
+            constant,
+            new Set(["seg_count"]),
+            isColumn,
+            noJoin,
+         ),
       ).toBeUndefined();
    });
 
    it("reads a column of the joined source's own keyed join as NULL on an unmatched parent", () => {
-      const p = plan();
-      p.rollupMeasures[0]!.partials = [
+      const branch = withPartials([
          leaf("max", {
             kind: "method",
             path: ["kinds", "weight"],
             fn: "max",
             args: [],
          }),
-      ] as RollupVariantPlan["rollupMeasures"][number]["partials"];
-      const [{ leg }] = joinRollupLegs(
-         [join()],
-         new Map([[CHILD, [p]]]),
-         new Set(),
-         "id",
-      ) as [{ leg: Parameters<typeof unmatchedRowProblem>[0] }];
-      const read = new Set(["seg_miles"]);
+      ]);
       const seen: (readonly string[])[] = [];
       const yes = (path: readonly string[]) => (seen.push(path), true);
-      expect(unmatchedRowProblem(leg, read, yes, false)).toBeUndefined();
+      expect(unmatchedRowProblem(branch, read, yes, noJoin)).toBeUndefined();
       expect(seen).toEqual([["kinds", "weight"]]);
-      expect(unmatchedRowProblem(leg, read, () => false, false)).toContain(
+      expect(unmatchedRowProblem(branch, read, () => false, noJoin)).toContain(
          "not NULL",
       );
    });
 
-   it("after malloydata/malloy#3208: nothing is declined for unmatched parents", () => {
-      for (const m of ["seg_miles", "seg_count", "padded", "p_miles"]) {
+   it("declines a sum or count at a join of the joined source that can match an unmatched parent's row", () => {
+      const at = (aggregate: "sum" | "count") => {
+         const l = leaf(aggregate, {
+            kind: "method",
+            path: aggregate === "sum" ? ["kinds", "weight"] : ["kinds"],
+            fn: aggregate,
+            args: [],
+         });
+         l.leaf.joinPath = ["kinds"] as never;
+         return withPartials([l]);
+      };
+      for (const aggregate of ["sum", "count"] as const) {
          expect(
-            unmatchedRowProblem(many, new Set([m]), isColumn, true),
+            unmatchedRowProblem(at(aggregate), read, isColumn, noJoin),
+         ).toContain("is not keyed on a column of `segments`");
+         const asked: string[] = [];
+         expect(
+            unmatchedRowProblem(at(aggregate), read, isColumn, (j) => {
+               asked.push(j);
+               return true;
+            }),
          ).toBeUndefined();
+         expect(asked).toEqual(["kinds"]);
       }
    });
 });
@@ -407,32 +376,32 @@ describe("checkJoinCoverage (row 27)", () => {
       grainDimensions: ["flight_id", "line_kind"],
       fanOutDimensions: ["line_kind"],
    });
-   const legOf = (p: RollupVariantPlan) =>
-      joinRollupLegs([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
-         .leg;
+   const branchOf = (p: RollupVariantPlan) =>
+      joinRollupBranches([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
+         .branch;
    const none = () => "none" as const;
    const miles = { name: "seg_miles", ref: ["segments", "seg_miles"] };
    const kind = { name: "line_kind", ref: ["segments", "line_kind"] };
 
    it("serves a fan-out dimension grouped or fixed, and declines it dropped (A6)", () => {
-      const leg = legOf(fanned);
+      const branch = branchOf(fanned);
       expect(
-         checkJoinCoverage(leg, level([kind, miles]), none),
+         checkJoinCoverage(branch, level([kind, miles]), none),
       ).toBeUndefined();
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([miles], { fixedPathsByWhere: [["segments", "line_kind"]] }),
             none,
          ),
       ).toBeUndefined();
-      expect(checkJoinCoverage(leg, level([miles]), none)?.code).toBe(
+      expect(checkJoinCoverage(branch, level([miles]), none)?.code).toBe(
          "rollup_grain_too_coarse",
       );
       // Another join's field of the same name does not fix it.
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([miles], { fixedPathsByWhere: [["crew", "line_kind"]] }),
             none,
          )?.code,
@@ -440,24 +409,24 @@ describe("checkJoinCoverage (row 27)", () => {
    });
 
    it("reads a level that aggregates only the parent's own rows as aggregating nothing through the join", () => {
-      const leg = legOf(fanned);
+      const branch = branchOf(fanned);
       const count = { name: "flight_count", ref: ["flight_count"] };
       const nest = level([kind, miles]);
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([count, { name: "k", isNest: true, nest }]),
             none,
          ),
       ).toBeUndefined();
       // A parent measure that reads the join is held to every requirement.
       expect(
-         checkJoinCoverage(leg, level([count]), () => "aggregate")?.code,
+         checkJoinCoverage(branch, level([count]), () => "aggregate")?.code,
       ).toBe("rollup_grain_too_coarse");
       // So is an expression the query writes over a joined measure.
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([
                {
                   name: "m",
@@ -471,7 +440,7 @@ describe("checkJoinCoverage (row 27)", () => {
       // And a field whose reads were not recorded.
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([{ name: "m", expressionType: "aggregate" }]),
             none,
          )?.code,
@@ -479,39 +448,39 @@ describe("checkJoinCoverage (row 27)", () => {
    });
 
    it("carries a grouped or fixed dimension into nests, and checks each nest", () => {
-      const leg = legOf(fanned);
+      const branch = branchOf(fanned);
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([kind, { name: "n", isNest: true, nest: level([miles]) }]),
             none,
          ),
       ).toBeUndefined();
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([{ name: "n", isNest: true, nest: level([miles]) }]),
             none,
          )?.code,
       ).toBe("rollup_grain_too_coarse");
       expect(
-         checkJoinCoverage(leg, level([{ name: "n", isNest: true }]), none)
+         checkJoinCoverage(branch, level([{ name: "n", isNest: true }]), none)
             ?.code,
       ).toBe("rollup_count_semantics");
    });
 
    it("declines an ungrouped aggregate and holds a having: to every requirement", () => {
-      const leg = legOf(fanned);
+      const branch = branchOf(fanned);
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([kind, { name: "t", ungrouped: true }]),
             none,
          )?.code,
       ).toBe("rollup_grain_too_coarse");
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([], { havings: [{ computesAggregate: false }] }),
             none,
          )?.code,
@@ -521,13 +490,13 @@ describe("checkJoinCoverage (row 27)", () => {
    it("serves a join-level sum with its other grain dimensions fixed, the parent's key fixing the join's (A2)", () => {
       const p = plan({ grainDimensions: ["flight_id", "kind"] });
       p.rollupMeasures[0]!.fanOutDimensions = ["flight_id"];
-      const leg = legOf(p);
-      expect(checkJoinCoverage(leg, level([miles]), none)?.code).toBe(
+      const branch = branchOf(p);
+      expect(checkJoinCoverage(branch, level([miles]), none)?.code).toBe(
          "rollup_grain_too_coarse",
       );
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([
                { name: "flight_id", ref: ["segments", "flight_id"] },
                miles,
@@ -537,14 +506,14 @@ describe("checkJoinCoverage (row 27)", () => {
       ).toBeUndefined();
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([{ name: "id", ref: ["id"] }, miles]),
             none,
          ),
       ).toBeUndefined();
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([miles], { fixedPathsByWhere: [["id"]] }),
             none,
          ),
@@ -552,7 +521,7 @@ describe("checkJoinCoverage (row 27)", () => {
       // A measure with no fan-out of its own, beside it, asks nothing.
       expect(
          checkJoinCoverage(
-            leg,
+            branch,
             level([{ name: "seg_count", ref: ["segments", "seg_count"] }]),
             none,
          ),
@@ -561,7 +530,63 @@ describe("checkJoinCoverage (row 27)", () => {
 
    it("asks nothing of a rollup with no fan-out", () => {
       expect(
-         checkJoinCoverage(legOf(plan()), level([miles]), () => "aggregate"),
+         checkJoinCoverage(branchOf(plan()), level([miles]), () => "aggregate"),
+      ).toBeUndefined();
+   });
+});
+
+describe("joinedKeyProblem", () => {
+   const branchOf = (p: RollupVariantPlan = plan()) =>
+      joinRollupBranches([join()], new Map([[CHILD, [p]]]), new Set(), "id")[0]!
+         .branch;
+
+   it("declines a count or sum of the joined source's own rows unless its key was checked unique and never NULL", () => {
+      for (const m of ["seg_miles", "seg_count"]) {
+         const read = new Set([m]);
+         expect(
+            joinedKeyProblem(branchOf(), read, "seg_id", "repeated"),
+         ).toContain("more than once or NULL");
+         expect(
+            joinedKeyProblem(branchOf(), read, "seg_id", "unknown"),
+         ).toContain("was not checked unique and never NULL");
+         expect(
+            joinedKeyProblem(branchOf(), read, "seg_id", "unique"),
+         ).toBeUndefined();
+      }
+   });
+
+   it("asks nothing of a join keyed on the joined source's primary key, or of one with none", () => {
+      const read = new Set(["seg_miles"]);
+      expect(
+         joinedKeyProblem(branchOf(), read, "flight_id", "unknown"),
+      ).toBeUndefined();
+      expect(
+         joinedKeyProblem(branchOf(), read, undefined, "unknown"),
+      ).toBeUndefined();
+   });
+
+   it("asks nothing of a min, a max, or a partial taken at a join of the joined source", () => {
+      const p = plan();
+      p.rollupMeasures[0]!.partials = [
+         leaf("max", method("miles", "max")),
+         leaf("min", method("miles", "min")),
+         {
+            column: "q__partial",
+            leaf: {
+               aggregate: "sum",
+               expr: method("qty", "sum"),
+               reads: [],
+               joinPath: ["lines"],
+            },
+         },
+      ] as RollupVariantPlan["rollupMeasures"][number]["partials"];
+      expect(
+         joinedKeyProblem(
+            branchOf(p),
+            new Set(["seg_miles"]),
+            "seg_id",
+            "repeated",
+         ),
       ).toBeUndefined();
    });
 });

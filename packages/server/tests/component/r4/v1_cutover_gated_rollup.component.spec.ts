@@ -22,7 +22,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../../src/errors";
-import { allowGatedStorageRollupsForTests } from "../../../src/service/materialization/plan/rollup_plan";
+import { allowGatedStorageRollupsForTests } from "../../../src/config";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -157,7 +157,7 @@ source: ext_open is by_column extend {
 #(access_filter) carrier = $CARRIER
 source: ext_gated is by_column extend {}
 
-// A gated parent joining a rollup's base (A7): the join leg redeclares the
+// A gated parent joining a rollup's base (A7): the join branch redeclares the
 // parent around the join, carrying no gate to prove, so it declines.
 source: order_lines is duckdb.table('lines_raw') extend {
   #@ preaggregate grain="order_id"${p}
@@ -325,7 +325,6 @@ for (const placement of ["colocated", "storage"] as const) {
             env: {
                PERSIST_STORAGE_MODE: "on",
                PUBLISHER_MATERIALIZE: "true",
-               PUBLISHER_V1_SERVED_COPY: "on",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
             },
          }).restore;
@@ -702,7 +701,6 @@ describe("v1 cutover R4: gated queries on rollups with gated sources off", () =>
          env: {
             PERSIST_STORAGE_MODE: "on",
             PUBLISHER_MATERIALIZE: "true",
-            PUBLISHER_V1_SERVED_COPY: "on",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
          },
       }).restore;
@@ -751,7 +749,6 @@ describe("v1 cutover: storage= rollups over gated bases without the review seam"
          env: {
             PERSIST_STORAGE_MODE: "on",
             PUBLISHER_MATERIALIZE: "true",
-            PUBLISHER_V1_SERVED_COPY: "on",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
          },
       }).restore;

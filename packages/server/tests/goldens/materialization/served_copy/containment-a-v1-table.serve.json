@@ -1,0 +1,51 @@
+{
+  "problems": [
+    {
+      "reason": "column_types",
+      "sourceName": "p_broken"
+    }
+  ],
+  "queries": [
+    {
+      "equalToLive": true,
+      "fieldTypes": [
+        [
+          "org",
+          {
+            "kind": "string_type"
+          }
+        ],
+        [
+          "total",
+          {
+            "kind": "number_type"
+          }
+        ]
+      ],
+      "query": "the kept re-root",
+      "servedFrom": "storage",
+      "servedVia": "served_copy"
+    },
+    {
+      "equalToLive": true,
+      "fieldTypes": [
+        [
+          "org",
+          {
+            "kind": "string_type"
+          }
+        ],
+        [
+          "total",
+          {
+            "kind": "number_type",
+            "subtype": "integer"
+          }
+        ]
+      ],
+      "query": "the broken re-root",
+      "servedFrom": null,
+      "servedVia": null
+    }
+  ]
+}

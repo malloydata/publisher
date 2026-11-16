@@ -18,6 +18,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders_all@<hammer>/qts/qts.malloy": "persist",
+      "vis_all@<hammer>/qts/qts.malloy": "persist",
+      "visible_orders@<hammer>/qts/qts.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -41,7 +46,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -71,7 +75,6 @@
       "orders_all@<hammer>/qts/qts.malloy": {
         "annotationFields": {
           "name": "qts_orders_all",
-          "partition": "org_id",
           "storage": "lake"
         },
         "columns": [
@@ -98,13 +101,10 @@
         "modelPath": "qts.malloy",
         "name": "orders_all",
         "origin": "persist",
-        "partition": [
-          "org_id"
-        ],
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "8253ea9dafc65cea4d366d6750be5bc5d40d39689777ec8959cadf06bbe00742",
+        "sourceEntityId": "cc23d682c888b6f522ba261b7951ef52145a1b30b3f1b532ac237c9b5bed7777",
         "sourceID": "orders_all@<hammer>/qts/qts.malloy",
         "sql": "sha256:cbcfddef425b157c",
         "strippedTerms": [
@@ -119,7 +119,6 @@
       "vis_all@<hammer>/qts/qts.malloy": {
         "annotationFields": {
           "name": "qts_vis_all",
-          "partition": "org_id",
           "storage": "lake"
         },
         "columns": [
@@ -142,13 +141,10 @@
         "modelPath": "qts.malloy",
         "name": "vis_all",
         "origin": "persist",
-        "partition": [
-          "org_id"
-        ],
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "6cdf335f7dd739a6a50a98655f3c0f7e903421dbe38466d384af4d9a829641be",
+        "sourceEntityId": "078aa0b9c4af42d0dbfe0de503073ec707e9dfd2ebd4b9d37772740cee5ae011",
         "sourceID": "vis_all@<hammer>/qts/qts.malloy",
         "sql": "sha256:3d3c25c8b8dfb8da",
         "strippedTerms": [
@@ -163,7 +159,6 @@
       "visible_orders@<hammer>/qts/qts.malloy": {
         "annotationFields": {
           "name": "qts_orders_all",
-          "partition": "org_id",
           "storage": "lake"
         },
         "columns": [
@@ -204,13 +199,10 @@
         "modelPath": "qts.malloy",
         "name": "visible_orders",
         "origin": "persist",
-        "partition": [
-          "org_id"
-        ],
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "8253ea9dafc65cea4d366d6750be5bc5d40d39689777ec8959cadf06bbe00742",
+        "sourceEntityId": "cc23d682c888b6f522ba261b7951ef52145a1b30b3f1b532ac237c9b5bed7777",
         "sourceID": "visible_orders@<hammer>/qts/qts.malloy",
         "sql": "sha256:cbcfddef425b157c",
         "strippedTerms": [

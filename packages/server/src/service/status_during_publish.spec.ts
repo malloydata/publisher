@@ -201,7 +201,10 @@ describe("/status while a version is published", () => {
          }
          return result;
       };
-      const read = store!.getStatus({ includeLoading: true });
+      // The listing computation: `/status` itself answers from its snapshot
+      // and asks the registry nothing (status_snapshot.spec.ts), but the
+      // listings GET /environments serves still race this way.
+      const read = store!.computeStatusFromListings({ includeLoading: true });
       await asked.wait;
       compile.open();
       await reached.wait;
@@ -242,7 +245,8 @@ describe("/status while a version is published", () => {
          }
          return result;
       };
-      const read = store!.getStatus({ includeLoading: true });
+      // The listing computation, as above.
+      const read = store!.computeStatusFromListings({ includeLoading: true });
       await asked.wait;
       fail.open();
       await expect(published).rejects.toThrow("download failed");
@@ -277,7 +281,7 @@ describe("/status while a version is published", () => {
    });
 
    it("lists a version waiting on its commit as loading, by its versionId, and as served once committed", async () => {
-      const { versions } = await open();
+      const { environment, versions } = await open();
       const { held, reached } = holdCommits(versions);
       const published = publishSales(versions);
       await reached.wait;
@@ -295,6 +299,8 @@ describe("/status while a version is published", () => {
 
       held.open();
       await published;
+      // The version's shared bindings settle in the background once it serves.
+      await environment.awaitPackageLoads("sales");
 
       const served = await salesEntries(true);
       expect(served.entries).toHaveLength(1);

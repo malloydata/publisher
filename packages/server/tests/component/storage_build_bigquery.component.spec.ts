@@ -10,7 +10,7 @@ import path from "node:path";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { storageDestinationRoot } from "../../src/service/connection_config";
 import { buildSourceIntoStorage } from "../../src/service/materialization/run/materialization_build_session";
-import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
+import { StorageBuildStrategy } from "../../src/service/materialization/run/storage_build_strategy";
 
 /**
  * The `storage=` build's warehouse read, against a REAL BigQuery project.
@@ -178,20 +178,20 @@ describe.skipIf(!hasPublicDataBigQueryCredentials())(
          // `tsc` is the only thing standing between a signature change and a red
          // CI job nobody can reproduce locally — and a variadic cast tells it
          // nothing. Keep it shaped like the method.
-         const service = Object.create(MaterializationService.prototype) as {
-            buildOneSourceIntoStorage: (p: {
+         const service = new StorageBuildStrategy() as unknown as {
+            build: (p: {
                persistSource: unknown;
                instruction: unknown;
                manifest: unknown;
                environment: unknown;
-               publicBuildSQL: string;
+               storedBuildSQL: string;
                buildSQL: string;
                builtEntries: Record<string, unknown>;
                dependsOnStorageUpstream: boolean;
                queryMetadata?: Record<string, string>;
             }) => Promise<Record<string, unknown>>;
          };
-         const entry = await service.buildOneSourceIntoStorage({
+         const entry = await service.build({
             persistSource: { name: "orders", connectionName: "bq_src" },
             instruction: {
                sourceEntityId: `sid-${nonce}`,
@@ -204,7 +204,7 @@ describe.skipIf(!hasPublicDataBigQueryCredentials())(
                getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
                getEnvironmentPath: () => environmentPath,
             },
-            publicBuildSQL: buildSQLFor(nonce),
+            storedBuildSQL: buildSQLFor(nonce),
             buildSQL: buildSQLFor(nonce),
             builtEntries: {},
             dependsOnStorageUpstream: false,

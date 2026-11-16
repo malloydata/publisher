@@ -11,13 +11,13 @@ import {
    DestinationNotFoundError,
    internalErrorToHttpError,
 } from "../../../errors";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
    buildEnvironmentStub,
    createMocks,
 } from "../../../test_helpers/materialization_service_harness";
-import { MaterializationService } from "./materialization_service";
+import { StorageBuildStrategy } from "./storage_build_strategy";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import {
    startMetricsHarness,
@@ -25,11 +25,11 @@ import {
 } from "../../../test_helpers/metrics_harness";
 
 /**
- * buildOneSourceIntoStorage: the chained-build fallback ladder, destination
+ * The storage tier's build: the chained-build fallback ladder, destination
  * resolution, and redaction of an infrastructure failure on the chained path.
  */
 
-describe("buildOneSourceIntoStorage (failure redaction)", () => {
+describe("the storage tier's build (failure redaction)", () => {
    // Stubbed at the seam because the leak needs an ATTACH (not CTAS) failure:
    // bad catalog creds fast-fail at connection validation, so no black-box test
    // can reach this branch.
@@ -56,22 +56,16 @@ describe("buildOneSourceIntoStorage (failure redaction)", () => {
          };
 
          // A failed RW ATTACH echoes the statement, connstring included.
-         sandbox
-            .stub(
-               MaterializationService.prototype as unknown as Record<
-                  string,
-                  unknown
-               >,
-               "buildDownstreamViaParents" as never,
-            )
-            .rejects(
-               new Error(
-                  "IO Error: failed to ATTACH 'ducklake:postgres:host=catalog.internal " +
-                     "user=lake_rw password=c4talog-pw' (db lake)",
+         const service = new StorageBuildStrategy({
+            buildDownstreamViaParents: sandbox
+               .stub()
+               .rejects(
+                  new Error(
+                     "IO Error: failed to ATTACH 'ducklake:postgres:host=catalog.internal " +
+                        "user=lake_rw password=c4talog-pw' (db lake)",
+                  ),
                ),
-            );
-
-         const { service } = createMocks();
+         });
          const environment = buildEnvironmentStub({
             connections: { orders_pg: sourceConnection },
             destinations: { lake: destinationConnection },
@@ -79,9 +73,9 @@ describe("buildOneSourceIntoStorage (failure redaction)", () => {
 
          const call = (
             service as unknown as {
-               buildOneSourceIntoStorage: (...a: unknown[]) => Promise<unknown>;
+               build: (...a: unknown[]) => Promise<unknown>;
             }
-         ).buildOneSourceIntoStorage({
+         ).build({
             persistSource: {
                name: "orders_by_month",
                connectionName: "orders_pg",
@@ -94,7 +88,7 @@ describe("buildOneSourceIntoStorage (failure redaction)", () => {
             // strict: throw instead of falling through to recompute-from-raw.
             manifest: { strict: true, update: () => {} },
             environment,
-            publicBuildSQL: "SELECT 1",
+            storedBuildSQL: "SELECT 1",
             buildSQL: "SELECT 1",
             builtEntries: {},
             dependsOnStorageUpstream: true, // take the chained path
@@ -124,12 +118,7 @@ describe("buildOneSourceIntoStorage (failure redaction)", () => {
    });
 });
 
-describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
-   let ctx: ReturnType<typeof createMocks>;
-   beforeEach(() => {
-      ctx = createMocks();
-   });
-
+describe("the storage tier's build (chained-build fallback ladder)", () => {
    function callInto(opts: {
       strict: boolean;
       /**
@@ -146,7 +135,8 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          | "missing"
          | "infra"
          | "wrongTier"
-         | "wrongTierAndMissing";
+         | "wrongTierAndMissing"
+         | "withUndeclarable";
       /** The host instructed the run (orchestrated). */
       hostInstructed?: boolean;
       /** The host's `warehouseReach` (ms2data/service#6756). */
@@ -172,28 +162,9 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       const manifest = new Manifest();
       manifest.strict = opts.strict;
       const environment = buildEnvironmentStub({
-         connections: { duckdb: { name: "duckdb", type: "duckdb" } },
+         connections: { duckdb: { name: "duckdb", type: "postgres" } },
          destinations: { lake: { name: "lake", type: "duckdb" } },
       });
-      const svc = ctx.service as unknown as {
-         buildDownstreamViaParents: unknown;
-         buildOneSourceIntoStorage: (p: {
-            persistSource: unknown;
-            instruction: BuildInstruction;
-            manifest: Manifest;
-            environment: unknown;
-            publicBuildSQL: string;
-            buildSQL: string;
-            builtEntries: Record<string, unknown>;
-            dependsOnStorageUpstream: boolean;
-            planFacts?: unknown;
-         }) => Promise<{
-            physicalTableName: string;
-            storageDestinationName?: string;
-            upstreamReuse?: string;
-            upstreamRecomputeReason?: string;
-         }>;
-      };
       // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
       const seam: Record<typeof opts.stackOnParent, sinon.SinonStub> = {
          ok: sinon.stub().resolves({
@@ -201,6 +172,16 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             schema: [
                { name: "order_month", type: "DATE" },
                { name: "monthly_total", type: "DOUBLE" },
+            ],
+            upstreamReuse: "reused",
+         }),
+         // Builds a table with two columns no Malloy type declares.
+         withUndeclarable: sinon.stub().resolves({
+            storageDestinationName: "lake",
+            schema: [
+               { name: "order_month", type: "DATE" },
+               { name: "tags", type: "MAP(VARCHAR, INTEGER)" },
+               { name: "span", type: "INTERVAL" },
             ],
             upstreamReuse: "reused",
          }),
@@ -266,13 +247,32 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                ),
             ),
       };
-      svc.buildDownstreamViaParents = seam[opts.stackOnParent];
-      return svc.buildOneSourceIntoStorage({
+      const svc = new StorageBuildStrategy({
+         buildDownstreamViaParents: seam[opts.stackOnParent],
+      }) as unknown as {
+         build: (p: {
+            persistSource: unknown;
+            instruction: BuildInstruction;
+            manifest: Manifest;
+            environment: unknown;
+            storedBuildSQL: string;
+            buildSQL: string;
+            builtEntries: Record<string, unknown>;
+            dependsOnStorageUpstream: boolean;
+            planFacts?: unknown;
+         }) => Promise<{
+            physicalTableName: string;
+            storageDestinationName?: string;
+            upstreamReuse?: string;
+            upstreamRecomputeReason?: string;
+         }>;
+      };
+      return svc.build({
          persistSource: source,
          instruction,
          manifest,
          environment,
-         publicBuildSQL: "SELECT should_not_run",
+         storedBuildSQL: "SELECT should_not_run",
          buildSQL: "SELECT should_not_run",
          builtEntries: {
             up: {
@@ -519,10 +519,25 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             expect(await harness.collectCounter(COUNTER, { outcome })).toBe(n);
          }
       });
+
+      it("counts each column the table holds that no type declares, once per build", async () => {
+         const result = await callInto({
+            strict: false,
+            stackOnParent: "withUndeclarable",
+         });
+         // Built, not refused: the served copy leaves the columns out at bind.
+         expect(result.storageDestinationName).toBe("lake");
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_shape_type_fallback_total",
+               { kind: "unrecognized" },
+            ),
+         ).toBe(2);
+      });
    });
 });
 
-describe("buildOneSourceIntoStorage destination resolution", () => {
+describe("the storage tier's build destination resolution", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
       ctx = createMocks();
@@ -563,25 +578,25 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
          storageDestinationName: "shared",
          schema: [{ name: "order_month", type: "DATE" }],
       });
-      (
-         ctx.service as unknown as { buildDownstreamViaParents: unknown }
-      ).buildDownstreamViaParents = write;
+      const service = new StorageBuildStrategy({
+         buildDownstreamViaParents: write,
+      });
 
       const run = () =>
          (
-            ctx.service as unknown as {
-               buildOneSourceIntoStorage: (p: {
+            service as unknown as {
+               build: (p: {
                   persistSource: unknown;
                   instruction: BuildInstruction;
                   manifest: unknown;
                   environment: unknown;
-                  publicBuildSQL: string;
+                  storedBuildSQL: string;
                   buildSQL: string;
                   builtEntries: Record<string, unknown>;
                   dependsOnStorageUpstream: boolean;
                }) => Promise<{ storageDestinationName?: string }>;
             }
-         ).buildOneSourceIntoStorage({
+         ).build({
             persistSource: fakeSource({
                name: "monthly",
                sourceEntityId: "abcdef1234567890",
@@ -596,7 +611,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
             },
             manifest: new Manifest(),
             environment,
-            publicBuildSQL: "SELECT should_not_run",
+            storedBuildSQL: "SELECT should_not_run",
             buildSQL: "SELECT should_not_run",
             builtEntries: {
                up: {
@@ -615,7 +630,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
 
    it("materializes into the destination the destination list holds", async () => {
       const environment = buildEnvironmentStub({
-         connections: { duckdb: { name: "duckdb", type: "duckdb" } },
+         connections: { duckdb: { name: "duckdb", type: "postgres" } },
          destinations: { shared: MANAGED_DESTINATION },
       });
       const { run, write } = callInto(environment);
@@ -637,7 +652,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       // warehouse.
       const environment = buildEnvironmentStub({
          connections: {
-            duckdb: { name: "duckdb", type: "duckdb" },
+            duckdb: { name: "duckdb", type: "postgres" },
             shared: TENANT_CONNECTION,
          },
          destinations: {},
@@ -657,5 +672,100 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       expect(environment.getApiConnection.calledWith("shared")).toBe(false);
       // Reported as a misconfigured target, not as a missing connection.
       expect(internalErrorToHttpError(error as Error).status).toBe(422);
+   });
+
+   // The plan's gate refuses a source the build cannot read; one that reaches
+   // the build anyway is refused alone, never failing the run with a missing
+   // connection.
+   for (const [what, connections] of [
+      ["the package's sandbox, which the environment does not hold", {}],
+      [
+         "an environment DuckDB connection",
+         { duckdb: { name: "duckdb", type: "duckdb" } },
+      ],
+   ] as const) {
+      it(`refuses a source on ${what}, writing nothing`, async () => {
+         const environment = buildEnvironmentStub({
+            connections,
+            destinations: { shared: MANAGED_DESTINATION },
+         });
+         const { run, write } = callInto(environment);
+
+         let error: unknown;
+         try {
+            await run();
+         } catch (caught) {
+            error = caught;
+         }
+
+         expect(error).toBeInstanceOf(MaterializationEligibilityError);
+         expect((error as MaterializationEligibilityError).reason).toBe(
+            "storage_source_unsupported",
+         );
+         expect((error as Error).message).toContain("connection 'duckdb'");
+         expect(write.called).toBe(false);
+      });
+   }
+
+   // A DuckLake source builds only into its own catalog: another catalog is
+   // refused alone, with the same reason, rather than failing the run.
+   const catalogAt = (host: string) => ({
+      catalog: {
+         postgresConnection: { host, port: 5432, databaseName: "lake" },
+      },
+      storage: { bucketUrl: "gs://managed-tier/org_a" },
+   });
+   const DESTINATION_AT_A = {
+      name: "shared",
+      type: "ducklake",
+      ducklakeConnection: catalogAt("catalog-a.internal"),
+   };
+
+   it("refuses a DuckLake source on another catalog, writing nothing", async () => {
+      const environment = buildEnvironmentStub({
+         connections: {
+            duckdb: {
+               name: "duckdb",
+               type: "ducklake",
+               ducklakeConnection: catalogAt("catalog-b.internal"),
+            },
+         },
+         destinations: { shared: DESTINATION_AT_A },
+      });
+      const { run, write } = callInto(environment);
+
+      let error: unknown;
+      try {
+         await run();
+      } catch (caught) {
+         error = caught;
+      }
+
+      expect(error).toBeInstanceOf(MaterializationEligibilityError);
+      expect((error as MaterializationEligibilityError).reason).toBe(
+         "storage_source_unsupported",
+      );
+      expect((error as Error).message).toContain(
+         "a DuckLake catalog other than the destination's",
+      );
+      expect(write.called).toBe(false);
+   });
+
+   it("admits a DuckLake source on the destination's own catalog", async () => {
+      const environment = buildEnvironmentStub({
+         connections: {
+            duckdb: {
+               name: "duckdb",
+               type: "ducklake",
+               ducklakeConnection: catalogAt("catalog-a.internal"),
+            },
+         },
+         destinations: { shared: DESTINATION_AT_A },
+      });
+      const { run, write } = callInto(environment);
+
+      await run();
+
+      expect(write.called).toBe(true);
    });
 });

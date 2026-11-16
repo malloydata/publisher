@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "gated@<pkg>/m.malloy": "materialize",
+      "scoped@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "gated@<pkg>/m.malloy": {
         "buildSourceName": "gated__mat",
@@ -203,15 +207,7 @@
       "scoped@<pkg>/m.malloy": "m.malloy"
     }
   },
-  "loadWarnings": [
-    {
-      "code": "persist-source-refused",
-      "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "gated"
-    }
-  ],
+  "loadWarnings": [],
   "wirePlan": {
     "graphs": [
       {
@@ -232,17 +228,44 @@
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {
+    "refusedSources": {},
+    "sources": {
       "gated@<pkg>/m.malloy": {
-        "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "annotationFields": {
+          "name": "gated",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
         "modelPath": "m.malloy",
         "name": "gated",
-        "reason": "authorize",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
         "sourceID": "gated@<pkg>/m.malloy",
-        "tier": "storage"
-      }
-    },
-    "sources": {
+        "sql": "sha256:39c379d1a9e6f2cd"
+      },
       "scoped@<pkg>/m.malloy": {
         "annotationFields": {
           "name": "scoped",

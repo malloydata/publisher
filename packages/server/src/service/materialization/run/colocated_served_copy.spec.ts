@@ -238,17 +238,17 @@ for (const tier of TIERS)
                QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
             );
          const served = await runQuery();
-         const off = installSettings({
-            env: {
-               PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-               PUBLISHER_MATERIALIZE: "false",
-            },
-         });
+         // Live: the same model serving no binding, so no candidate reads
+         // a table (the live compile reads none).
+         model.setServeBindings([]);
          let live: Awaited<ReturnType<typeof runQuery>>;
          try {
             live = await runQuery();
          } finally {
-            off.restore();
+            // Back to the package's own snapshot.
+            (
+               model as unknown as { bindingsOverride: undefined }
+            ).bindingsOverride = undefined;
          }
          return { served, live };
       }

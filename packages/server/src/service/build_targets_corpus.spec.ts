@@ -145,9 +145,7 @@ function movedFields(
    ) {
       what.push("sourceEntityId");
    }
-   if (
-      compilerBuildId(source, digests) !== source.makeBuildId(digest, legacySQL)
-   ) {
+   if (compilerBuildId(source) !== source.makeBuildId(digest, legacySQL)) {
       what.push("compilerBuildId");
    }
    const empty = { entries: {} };

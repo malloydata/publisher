@@ -31,7 +31,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { DATA_FILES } from "../r4/conformance/data";
-import { freshLoadPool } from "../r4/conformance/package_harness";
+import { freshLoadPool } from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES, VARIANTS } from "../r4/conformance/shapes";
 import { FEATURE_SHAPES } from "./feature_shapes";
 import {
@@ -54,6 +54,10 @@ const SUFFIXES: (keyof CaseGoldens)[] = [
 const AREAS = ["conformance", "features", "fixtures"];
 /** The area corpus.goldens.component.spec.ts owns. */
 const CORPUS_AREA = "corpus";
+/** The area served_copy.goldens.component.spec.ts owns. */
+const SERVED_COPY_AREA = "served_copy";
+/** The area served_copy_reasons.goldens.component.spec.ts owns. */
+const SERVED_COPY_REASONS_AREA = "served_copy_reasons";
 
 /**
  * Every file under `dir`, by path relative to it with `/` separators, with LF
@@ -94,6 +98,7 @@ function conformanceCases(): GoldenCase[] {
                model: q.model,
                givens: q.givens,
             })),
+            ...(shape.env ? { env: shape.env } : {}),
          });
       }
    }
@@ -187,6 +192,13 @@ describe("materialization goldens: housekeeping", () => {
    });
 
    it("keeps every golden under an area a spec owns", () => {
-      expect(unownedEntries([...AREAS, CORPUS_AREA])).toEqual([]);
+      expect(
+         unownedEntries([
+            ...AREAS,
+            CORPUS_AREA,
+            SERVED_COPY_AREA,
+            SERVED_COPY_REASONS_AREA,
+         ]),
+      ).toEqual([]);
    });
 });

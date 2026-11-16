@@ -36,21 +36,6 @@ describe("runUnrecorded", () => {
    });
 });
 
-describe("shadowRunAudit", () => {
-   it("is called only by the Model's shadow comparison", () => {
-      const callers = sourceFiles(SRC)
-         .map((file) => path.relative(SRC, file))
-         .filter(
-            (file) =>
-               file !== path.join("service", "access_record.ts") &&
-               fs
-                  .readFileSync(path.join(SRC, file), "utf8")
-                  .includes("shadowRunAudit("),
-         );
-      expect(callers).toEqual([path.join("service", "model.ts")]);
-   });
-});
-
 describe("unrecordedAudit", () => {
    it("is called by no production file", () => {
       const callers = sourceFiles(SRC)

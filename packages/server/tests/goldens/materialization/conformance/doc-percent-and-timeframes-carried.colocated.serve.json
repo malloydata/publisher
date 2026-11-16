@@ -73,7 +73,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -148,7 +149,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -227,7 +229,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -294,7 +297,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -363,7 +367,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -438,7 +443,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -517,7 +523,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -584,7 +591,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc"
+          "tableId": "513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc",
+          "via": "served_copy"
         },
         "warnings": []
       },

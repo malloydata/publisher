@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "deals@<hammer>/fch/fch.malloy": "persist",
+      "pipeline_now@<hammer>/fch/fch.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -34,7 +38,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -89,7 +92,7 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "0661ea6f1ff1c4b38c274b4742f96bac1ebcf1b6b2ef0dfe34c114274b6ff586",
+        "sourceEntityId": "236df6a74f584bdafe1071b6d0692bc163b8b7624800d74054b385d11d24afad",
         "sourceID": "deals@<hammer>/fch/fch.malloy",
         "sql": "sha256:becc8d0f65a9021d"
       },
@@ -125,7 +128,7 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "0661ea6f1ff1c4b38c274b4742f96bac1ebcf1b6b2ef0dfe34c114274b6ff586",
+        "sourceEntityId": "3cf1e97a12cdd2c16a7efae6a0df2f0dd4aba0fdf914b73e31a0ac03ed725260",
         "sourceID": "pipeline_now@<hammer>/fch/fch.malloy",
         "sql": "sha256:becc8d0f65a9021d"
       }

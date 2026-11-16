@@ -58,7 +58,7 @@ export interface ProbeCompiler {
  * UTC (the zone a query without one is read in), and from each other, one of
  * them by a half hour, so an expression that reads the zone at all shows.
  */
-export const PROBE_TIME_ZONES = ["America/Los_Angeles", "Asia/Kolkata"];
+const PROBE_TIME_ZONES = ["America/Los_Angeles", "Asia/Kolkata"];
 
 /**
  * What one field's value depends on that the caller sets, as far as the probe
@@ -197,32 +197,8 @@ async function compileProbe(
    return { givens, sql };
 }
 
-/**
- * What each of `fields` of `source` (a source's name in the model `compiler`
- * compiled; a field is a name or a dotted path through a join) depends on that
- * a caller sets, beyond what the source itself reads. Every field is
- * answered; a signal the probe could not settle is left undefined (see
- * {@link FieldDependence}).
- *
- * A baseline probe (a constant selected from the source) reads what the
- * source reads with no field: its `where:` givens, its clock reads, and
- * whether its SQL moves with the zone. One probe of every field at once then
- * settles a source whose fields add nothing; otherwise each field is probed
- * alone.
- */
-export async function probeFieldDependence(
-   compiler: ProbeCompiler,
-   source: string,
-   fields: readonly string[],
-   reservedNames: ReadonlySet<string> = new Set(),
-): Promise<Map<string, FieldDependence>> {
-   if (fields.length === 0) return new Map();
-   return (await probeSourceDependence(compiler, source, fields, reservedNames))
-      .fields;
-}
-
 /** What a source's rows, and each of its probed fields, depend on (P9). */
-export interface SourceDependence {
+interface SourceDependence {
    /**
     * Whether the source with no field selected compiles to the same SQL at
     * every probe zone as at none, so the rows it holds (its `where:` terms,
@@ -234,10 +210,22 @@ export interface SourceDependence {
 }
 
 /**
- * {@link probeFieldDependence}, and whether the source's own rows depend on
- * the query time zone: a `where: ts > @2026-03-08 09:00` filters a different
- * set of rows in every zone, so a table built in the default zone holds the
- * wrong rows for a query that sets another (the baseline probe answers it).
+ * What each of `fields` of `source` (a source's name in the model `compiler`
+ * compiled; a field is a name or a dotted path through a join) depends on that
+ * a caller sets, beyond what the source itself reads. Every field is
+ * answered; a signal the probe could not settle is left undefined (see
+ * {@link FieldDependence}).
+ *
+ * Also whether the source's own rows depend on the query time zone: a
+ * `where: ts > @2026-03-08 09:00` filters a different set of rows in every
+ * zone, so a table built in the default zone holds the wrong rows for a query
+ * that sets another.
+ *
+ * A baseline probe (a constant selected from the source) reads what the
+ * source reads with no field: its `where:` givens, its clock reads, and
+ * whether its SQL moves with the zone. One probe of every field at once then
+ * settles a source whose fields add nothing; otherwise each field is probed
+ * alone.
  */
 export async function probeSourceDependence(
    compiler: ProbeCompiler,

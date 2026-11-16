@@ -25,6 +25,7 @@ import { isOnRoute, marksAgentHidden } from "../../service/annotation_reader";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import { splitSourceId } from "../../service/source_id";
+import { forEachFieldPath } from "../../service/governance/ir/array_query";
 import {
    collectRecordMembers,
    entityDocs,
@@ -776,27 +777,21 @@ export function nodeKeyOf(kind: string, sourceKey: string, name: string) {
    return `${kind}:${sourceKey}:${name}`;
 }
 
-/** Every `{node: "field", path}` an expression tree reads, in walk order. */
+/**
+ * Every `{node: "field", path}` an expression tree reads, in walk order; one
+ * inside an array query is re-rooted under its array.
+ */
 export function referencedPaths(e: unknown): string[][] {
    const out: string[][] = [];
-   const walk = (v: unknown, depth: number) => {
-      if (depth > 64 || v === null || typeof v !== "object") return;
-      if (Array.isArray(v)) {
-         for (const x of v) walk(x, depth + 1);
-         return;
-      }
-      const o = v as Record<string, unknown>;
-      if (o.node === "field" && Array.isArray(o.path)) {
-         out.push(o.path.map(String));
-      }
-      for (const [k, x] of Object.entries(o)) {
-         // `at` is a location, never an expression.
-         if (k !== "at" && k !== "path") walk(x, depth + 1);
-      }
-   };
-   walk(e, 0);
+   // `at` is a location, never an expression.
+   forEachFieldPath(e, (path) => out.push(path), {
+      skipKeys: REFERENCED_PATH_SKIPPED_KEYS,
+      maxDepth: 64,
+   });
    return out;
 }
+
+const REFERENCED_PATH_SKIPPED_KEYS = new Set(["at", "path"]);
 
 /** Whether a field's annotations carry an `#(index)` tag. */
 function hasIndexTag(field: {

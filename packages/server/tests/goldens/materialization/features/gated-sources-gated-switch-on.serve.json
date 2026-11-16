@@ -249,16 +249,14 @@
       ],
       "malloy": "run: gated_mat -> { group_by: status; aggregate: n, total }",
       "path": {
-        "considered": [],
-        "notConsidered": [
+        "considered": [
           {
-            "built": true,
             "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "locked_mat",
+            "outcome": "used",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
         ],
+        "notConsidered": [],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -271,13 +269,15 @@
           "sourceName": "gated_mat"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a row filter over a materialized source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -329,16 +329,14 @@
       ],
       "malloy": "run: locked_mat -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
-        "notConsidered": [
+        "considered": [
           {
-            "built": true,
             "kind": "materialized",
-            "relationship": "sibling",
-            "sourceName": "gated_mat",
+            "outcome": "used",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
         ],
+        "notConsidered": [],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -350,13 +348,15 @@
           "sourceName": "locked_mat"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a lock over a materialized source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

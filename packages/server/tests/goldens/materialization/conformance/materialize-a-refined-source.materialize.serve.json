@@ -53,7 +53,13 @@
       "equalToLive": true,
       "malloy": "run: east_west -> { group_by: order_month; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +72,15 @@
           "sourceName": "east_west"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a computed timeframe dimension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -115,7 +123,13 @@
       "equalToLive": true,
       "malloy": "run: east_west -> { group_by: big; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -128,13 +142,15 @@
           "sourceName": "east_west"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a computed boolean dimension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -182,7 +198,13 @@
       "equalToLive": true,
       "malloy": "run: east_west_ext -> { group_by: region; aggregate: n, total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -196,13 +218,15 @@
           "sourceName": "east_west_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "tableId": "66844921999eecf1f00874459a3b65a47e4947dad08dbb52d961e11f2951bbf8",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {

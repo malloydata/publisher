@@ -448,6 +448,13 @@ const LIVE = [
    ],
 ] as const;
 
+/**
+ * Each routed case runs one query twice over a fixture built once: seconds at
+ * most, even under coverage. A stuck case fails at this bound rather than
+ * holding the suite for the run's default timeout.
+ */
+const CASE_TIMEOUT_MS = 30_000;
+
 function scenarioSuite(label: string, placement: string): void {
    describe(`R4: #(preaggregate) rollups ${label} answer equal to live`, () => {
       let restore: () => void;
@@ -468,22 +475,30 @@ function scenarioSuite(label: string, placement: string): void {
       });
 
       for (const [name, malloy] of SERVED) {
-         it(`serves ${name}`, async () => {
-            expectServedFromRollup(await fixture.run({ name, malloy }));
-         });
+         it(
+            `serves ${name}`,
+            async () => {
+               expectServedFromRollup(await fixture.run({ name, malloy }));
+            },
+            CASE_TIMEOUT_MS,
+         );
       }
       for (const [name, malloy, reason] of LIVE) {
-         it(`answers ${name} live (${reason})`, async () => {
-            const run = await fixture.run({ name, malloy });
-            expectLive(run);
-            fixture.setBindings(fixture.bindings);
-            const { path } = await fixture.runAsIs(malloy);
-            expect(
-               path?.considered
-                  .filter((c) => c.kind === "rollup")
-                  .map((c) => c.reason),
-            ).toContain(reason);
-         });
+         it(
+            `answers ${name} live (${reason})`,
+            async () => {
+               const run = await fixture.run({ name, malloy });
+               expectLive(run);
+               fixture.setBindings(fixture.bindings);
+               const { path } = await fixture.runAsIs(malloy);
+               expect(
+                  path?.considered
+                     .filter((c) => c.kind === "rollup")
+                     .map((c) => c.reason),
+               ).toContain(reason);
+            },
+            CASE_TIMEOUT_MS,
+         );
       }
 
       it("keeps the rollups' tables off the serve shape and the served copy", () => {
@@ -491,12 +506,12 @@ function scenarioSuite(label: string, placement: string): void {
          // compile (and fail) every query against it.
          fixture.setBindings(fixture.bindings);
          const internals = fixture.model as unknown as {
-            storageServe: { serveBindings: unknown[] };
+            storageTables(): { kept: unknown[] };
             servedCopy: { hasBindings(): boolean };
          };
          // A storage= rollup is bound; a colocated one has no binding.
          expect(fixture.bindings.length > 0).toBe(placement !== "");
-         expect(internals.storageServe.serveBindings).toEqual([]);
+         expect(internals.storageTables().kept).toEqual([]);
          expect(internals.servedCopy.hasBindings()).toBe(false);
       });
 

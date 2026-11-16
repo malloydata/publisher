@@ -39,6 +39,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "d_plus@<pkg>/dash.malloy": "persist",
+      "daily@<pkg>/facts.malloy": "persist",
+      "daily_ext@<pkg>/facts.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -56,9 +61,9 @@
       }
     },
     "sourceModelPaths": {
-      "d_plus@<pkg>/dash.malloy": "index.malloy",
-      "daily@<pkg>/facts.malloy": "index.malloy",
-      "daily_ext@<pkg>/facts.malloy": "index.malloy"
+      "d_plus@<pkg>/dash.malloy": "dash.malloy",
+      "daily@<pkg>/facts.malloy": "facts.malloy",
+      "daily_ext@<pkg>/facts.malloy": "facts.malloy"
     }
   },
   "loadWarnings": [],
@@ -148,7 +153,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "index.malloy",
+        "modelPath": "dash.malloy",
         "name": "d_plus",
         "origin": "persist",
         "preaggregate": null,
@@ -188,7 +193,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "index.malloy",
+        "modelPath": "facts.malloy",
         "name": "daily",
         "origin": "persist",
         "preaggregate": null,
@@ -228,7 +233,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "index.malloy",
+        "modelPath": "facts.malloy",
         "name": "daily_ext",
         "origin": "persist",
         "preaggregate": null,

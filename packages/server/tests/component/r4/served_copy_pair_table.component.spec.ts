@@ -10,9 +10,11 @@
  * Every accepted shape equals live row for row: parent-level and child-level
  * measures, both together, ratios and measures that read measures, filtered
  * measures, nests, filters on either side, childless parents, fan-out up to 5
- * and past it, a many-to-many join_many, and live's count of a childless
- * parent through a join_many (malloydata/malloy#1762). Every shape the flat
- * table cannot reproduce is answered live, and equals live there too.
+ * and past it, a many-to-many join_many. Since Malloy 0.0.438
+ * (malloydata/malloy#3208) live counts a childless parent through a
+ * join_many as none, which the flat table's null-extended row cannot
+ * reproduce, so every count through the join is answered live. Every shape
+ * the flat table cannot reproduce is answered live, and equals live there too.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -34,7 +36,14 @@ import {
    rowDifference,
    type R4Fixture,
    type Row,
+   expectPairServedVia,
 } from "./harness";
+
+/**
+ * Views that count through the inlined path in an aggregate of their own,
+ * which the served copy cannot re-declare (see {@link expectPairServedVia}).
+ */
+const PATH_COUNTS = ["by_leg"];
 
 // Flights 1–12 with 0 to 12 segments each: four childless (4, 5, 9, 11), fan-out
 // up to 5 on most, and 12 on flight 7. Segment 99 pairs with no flight.
@@ -193,7 +202,7 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
          "run: flights -> { group_by: carrier; aggregate: m is segments.miles.sum(), n is segments.count(), a is segments.miles.avg(), d is count(segments.seg_id) }",
       ],
       [
-         "live's count of a childless parent through a join_many (malloydata/malloy#1762)",
+         "a childless parent's count through a join_many (none; answered live)",
          "run: flights -> { group_by: id; aggregate: seg_n, n is segments.count() }",
       ],
       [
@@ -249,26 +258,29 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
    for (const [name, malloy] of served) {
       it(name, async () => {
          const run = await fixture.run({ name, malloy });
-         expect(run.servedVia).toBe("served_copy");
+         expectPairServedVia(run, PATH_COUNTS);
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
    }
 
-   it("reproduces live's count of a childless parent, not the true count", async () => {
+   it("serves a childless parent's count (none, since malloydata/malloy#3208)", async () => {
       const run = await fixture.run({
          name: "count",
          malloy:
             "run: flights -> { where: id = 4 | 6; group_by: id; aggregate: seg_n }",
       });
+      expectPairServedVia(run, PATH_COUNTS);
+      // Live counts childless flight 4 as no segments; the pair table's row
+      // for it would count one as written, so the served copy counts the
+      // rows whose stored segment key is not null.
       expect(run.servedVia).toBe("served_copy");
-      // Live counts childless flight 4 as one segment; so does the served copy.
       expect(
-         run.served
+         run.live
             .map((r) => [Number(r.id), Number(r.seg_n)])
             .sort((a, b) => a[0] - b[0]),
       ).toEqual([
-         [4, 1],
+         [4, 0],
          [6, 5],
       ]);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
@@ -585,7 +597,7 @@ describe("R4: a pair table keeps the joined source's classifications", () => {
          malloy:
             "run: flights -> { group_by: carrier; aggregate: flight_count, m is segments.miles.sum() }",
       });
-      expect(run.servedVia).toBe("served_copy");
+      expectPairServedVia(run, PATH_COUNTS);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
       // A classified child field as an output: the record cannot carry its
       // annotations onto the result, so live answers it, with them.
@@ -751,7 +763,7 @@ describe("R4: an inherited, render-tagged or inferred-class joined field", () =>
       ]) {
          const malloy = `run: ${source} -> { group_by: segments.tripled; aggregate: n is ${aggregate} }`;
          const run = await fixture.run({ name: source, malloy });
-         expect(run.servedVia).toBe("served_copy");
+         expectPairServedVia(run, PATH_COUNTS);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       }
    });
@@ -760,9 +772,22 @@ describe("R4: an inherited, render-tagged or inferred-class joined field", () =>
       const run = await fixture.run({
          name: "aggregate and filter",
          malloy:
+            "run: flights -> { where: segments.leg > 2; group_by: carrier; aggregate: m is segments.miles.sum() }",
+      });
+      expectPairServedVia(run, PATH_COUNTS);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   // A stored computed field need not be null on a childless parent's
+   // null-extended row, which live's sum skips: a sum of one written in the
+   // query is answered live.
+   it("answers a sum of a stored computed field written in the query live", async () => {
+      const run = await fixture.run({
+         name: "computed aggregate and filter",
+         malloy:
             "run: flights -> { where: segments.leg > 2; group_by: carrier; aggregate: m is segments.doubled.sum() }",
       });
-      expect(run.servedVia).toBe("served_copy");
+      expect(run.servedVia).toBeUndefined();
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });
@@ -897,7 +922,7 @@ describe("R4: a row-level gate on a pair source", () => {
             "run: by_region -> { group_by: carrier; aggregate: seg_n, seg_w }",
          givens: { R: "east" },
       });
-      expect(run.servedVia).toBe("served_copy");
+      expectPairServedVia(run, PATH_COUNTS);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
@@ -907,7 +932,7 @@ describe("R4: a row-level gate on a pair source", () => {
          malloy: mixed("by_carrier"),
          givens: { C: "AA" },
       });
-      expect(run.servedVia).toBe("served_copy");
+      expectPairServedVia(run, PATH_COUNTS);
       expect(run.served.map((r) => r.carrier)).toEqual(["AA"]);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
@@ -944,7 +969,7 @@ describe("R4: a row-level gate on a pair source", () => {
          malloy: mixed("by_carrier_noted"),
          givens: { C: "AA" },
       });
-      expect(run.servedVia).toBe("served_copy");
+      expectPairServedVia(run, PATH_COUNTS);
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 });
@@ -1121,7 +1146,7 @@ describe("R4: a one-hop pair table beside a join_one whose source joins many", (
          });
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(run.servedVia).toBe(servedHere ? "served_copy" : undefined);
+         expectPairServedVia(run, PATH_COUNTS, servedHere);
       });
    }
 });

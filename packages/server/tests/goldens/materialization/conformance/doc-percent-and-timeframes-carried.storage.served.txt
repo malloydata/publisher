@@ -17,7 +17,7 @@ import "raw.malloy"
 
 #@ persist name="monthly" storage="lake"
 source: monthly is __served_copy_alias_of_lake.virtual('513e827245f13473e04bf62e6047e330cedd1e27f39aa4cb3b1c245a62de04dc')::monthly__served extend {
-  internal rename:
+  private rename:
     order_month__stored is order_month
     created_hour__stored is created_hour
     order_week__stored is order_week

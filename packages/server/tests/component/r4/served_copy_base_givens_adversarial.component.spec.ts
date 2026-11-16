@@ -6,7 +6,11 @@
  * inherited given-reading `where:` and the base's given-reading dimensions
  * could be built into the table with one caller's value, or dropped from the
  * served copy, so a second caller reads the first caller's rows (#1637's
- * shape).
+ * shape). Only a materialized source's own term and dimensions are left out
+ * of its build and applied at read, so every shape here that inherits one is
+ * refused at plan and must answer live, each caller its own rows; a source
+ * that writes its own term beside them is served from its table under the
+ * same pressure.
  *
  * The given has a DEFAULT here, unlike the plain spec: a term or dimension the
  * build kept would then build silently with the default's value (one
@@ -97,6 +101,16 @@ source: base is ev extend {
 #(materialize) storage="lake"
 source: plain is base extend {
   measure: total is amt.sum()
+}
+
+// The term and dimension on the materialized source itself: served.
+#(materialize) storage="lake"
+source: own_term is ev extend {
+  where: org = $ORG
+  dimension: mine is org = $ORG
+  dimension: tag is pick 'me' when org = $ORG else 'other'
+  measure: total is amt.sum()
+  measure: n is count()
 }
 
 // A parenthesised head: the base's block the served copy keeps is only
@@ -277,25 +291,10 @@ async function asEachCaller(
 }
 
 // Over a table and over a SQL source: Malloy records an extension's base
-// differently for each, and the kept walk reads both.
-// Each shape builds the same: over a table, Malloy records no base edge for
-// an extension, and the walk infers it, through a rename (`b2 is base`) and
-// past an extension's own `where:` or join, as it reads the SQL source's.
-const BUILT = [
-   "bare_chain",
-   "rename_ext",
-   "hidden",
-   "mixed",
-   "own_join",
-   "own_join_direct",
-   "plain",
-   "rename_chain",
-   "rename_where",
-   "renamed_ext",
-   "rolling",
-   "three_terms",
-   "two_blocks",
-];
+// differently for each, and neither may lose the refusal.
+// Every source over the scoped base inherits its term, so only the one that
+// writes its own is built.
+const BUILT = ["own_term"];
 for (const [shape, ev, tiers, labels, expectedBuilt] of [
    [
       "table",
@@ -341,7 +340,7 @@ for (const [shape, ev, tiers, labels, expectedBuilt] of [
          await disposeScenarios();
       });
 
-      it("builds only what the served copy can keep, each with every caller's rows", async () => {
+      it("builds only the source that writes its own term, with every caller's rows", async () => {
          expect(built).toEqual([...expectedBuilt].sort());
          expect(await fixture.servedCopyProblems()).toEqual([]);
          // Every built table holds every caller's rows: none was built with the
@@ -480,6 +479,16 @@ for (const [shape, ev, tiers, labels, expectedBuilt] of [
             "run: rehides -> { group_by: tier, mine; aggregate: total }",
             false,
          ],
+         [
+            "own_term",
+            "run: own_term -> { group_by: org, mine, tag; aggregate: total, n }",
+            true,
+         ],
+         [
+            "own_term",
+            "run: own_term -> { where: mine; group_by: org; aggregate: n }",
+            true,
+         ],
       ] as const) {
          it(`${source}: ${malloy}`, async () => {
             await asEachCaller(fixture, source, malloy, {
@@ -507,12 +516,12 @@ for (const [shape, ev, tiers, labels, expectedBuilt] of [
       });
 
       it("a caller's own extend cannot shadow the dimension or the term's column", async () => {
-         for (const malloy of [
-            "run: plain extend { dimension: mine is true } -> { group_by: org, mine; aggregate: total }",
-            "run: plain extend { rename: o is org } -> { group_by: o; aggregate: total }",
-            "run: plain extend { dimension: org2 is 'acme' } -> { group_by: org, org2; aggregate: total }",
-            "run: plain extend { where: org = 'initech' or true } -> { group_by: org; aggregate: total }",
-         ]) {
+         for (const malloy of ["plain", "own_term"].flatMap((source) => [
+            `run: ${source} extend { dimension: mine is true } -> { group_by: org, mine; aggregate: total }`,
+            `run: ${source} extend { rename: o is org } -> { group_by: o; aggregate: total }`,
+            `run: ${source} extend { dimension: org2 is 'acme' } -> { group_by: org, org2; aggregate: total }`,
+            `run: ${source} extend { where: org = 'initech' or true } -> { group_by: org; aggregate: total }`,
+         ])) {
             for (const givens of INTERLEAVED) {
                const attempt = async (f: () => Promise<R4Run>) => {
                   try {
@@ -620,17 +629,17 @@ describe("R4 adversarial: stored dimensions, joins and extension tables over a s
       await disposeScenarios();
    });
 
-   it("stores every caller's rows and no caller-dependent column", async () => {
-      expect(built).toEqual([
-         "child_m",
-         "derived",
-         "join_on_mine",
-         "parent_m",
-         "scoped_child",
-         "scoped_m",
-         "tiers",
-      ]);
-      expect(await fixture.servedCopyProblems()).toEqual([]);
+   it("builds only the source that writes its own term, with every caller's rows and no caller-dependent column", async () => {
+      // Every other source inherits a term: from the scoped base, or (an
+      // extension table) from its materialized parent `scoped_m`.
+      expect(built).toEqual(["scoped_m", "tiers"]);
+      // A refused source that joins the stored `tiers` reads it across
+      // connections now (reported, answered live); the built ones are clean.
+      expect(
+         (await fixture.servedCopyProblems()).filter((p) =>
+            built.includes(p.sourceName ?? ""),
+         ),
+      ).toEqual([]);
       for (const source of built) {
          const rows = await fixture.storedSQL(
             (t) => `SELECT * FROM ${t(source)}`,
@@ -676,12 +685,13 @@ describe("R4 adversarial: stored dimensions, joins and extension tables over a s
    ] as const) {
       it(`${source}: ${malloy}`, async () => {
          await asEachCaller(fixture, source, malloy, {
+            served: built.includes(source) || source === "scoped_child",
             orgsOf: orgs ? (r) => r.org : undefined,
          });
       });
    }
 
-   it("a source joining the materialized extension sees only the caller's rows through the join", async () => {
+   it("a source joining the refused extension sees only the caller's rows through the join, live", async () => {
       for (const givens of INTERLEAVED) {
          const run = await fixture.run({
             name: `viewer as ${givens.ORG}`,
@@ -689,7 +699,7 @@ describe("R4 adversarial: stored dimensions, joins and extension tables over a s
                "run: viewer -> { group_by: org, d.mine_label; aggregate: n is d.count(), t is d.total }",
             givens,
          });
-         expect(run.servedVia).toBe("served_copy");
+         expect(run.servedVia).toBeUndefined();
          for (const row of run.served) {
             if (row.org !== givens.ORG) expect(row.n).toBe(0);
          }
@@ -701,12 +711,12 @@ describe("R4 adversarial: stored dimensions, joins and extension tables over a s
       fixture.setBindings([]);
       const live = (
          await fixture.runAsIs(
-            "run: derived -> { group_by: org, mine; aggregate: total }",
+            "run: scoped_m -> { group_by: org, smine; aggregate: n is count() }",
          )
       ).rows;
       fixture.setBindings(fixture.bindings);
       const served = await fixture.runAsIs(
-         "run: derived -> { group_by: org, mine; aggregate: total }",
+         "run: scoped_m -> { group_by: org, smine; aggregate: n is count() }",
       );
       expect(served.servedFrom).toBe("storage");
       expect(rowDifference(live, served.rows)).toBeUndefined();
@@ -728,6 +738,21 @@ source: colocated is base extend { measure: total is amt.sum() }
 
 #(materialize) storage="lake" refresh="incremental" watermark="ts"
 source: incremental is base extend { measure: total is amt.sum() }
+
+// Colocated, no name=, writing its own term: built and served.
+#(materialize)
+source: colocated_own is duckdb.table('ev') extend {
+  where: org = $ORG
+  dimension: mine is org = $ORG
+  measure: total is amt.sum()
+}
+
+#(materialize) storage="lake" refresh="incremental" watermark="ts"
+source: incremental_own is duckdb.table('ev') extend {
+  where: org = $ORG
+  dimension: mine is org = $ORG
+  measure: total is amt.sum()
+}
 `;
 
 describe("R4 adversarial: colocated and incremental over a scoped base", () => {
@@ -742,7 +767,7 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
          files: { "m.malloy": colocatedModel },
          seedSql,
          materialize: true,
-         colocated: ["colocated"],
+         colocated: ["colocated", "colocated_own"],
       });
       built = fixture.bindings
          .flatMap((b) => b.sourceIDs ?? [])
@@ -755,8 +780,10 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
    });
 
    it("never builds one caller's rows", async () => {
-      // Colocated #(materialize) is not built yet; the incremental one is.
-      expect(built).toEqual(["incremental"]);
+      // Both over the scoped base inherit its term and are refused; the
+      // sources that write their own are built, the colocated one with no
+      // name= (a colocated #(materialize) needs none).
+      expect(built).toEqual(["colocated_own", "incremental_own"]);
       for (const source of Object.keys(fixture.physicalTables)) {
          const orgs = await fixture.storedSQL(
             (t) => `SELECT DISTINCT org FROM ${t(source)} ORDER BY org`,
@@ -765,7 +792,12 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
       }
    });
 
-   for (const source of ["colocated", "incremental"]) {
+   for (const source of [
+      "colocated",
+      "incremental",
+      "colocated_own",
+      "incremental_own",
+   ]) {
       it(`${source} answers each caller as live`, async () => {
          const runs: R4Run[] = [];
          for (const givens of INTERLEAVED) {
@@ -775,7 +807,7 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
                givens,
             });
             expect(run.servedVia).toBe(
-               source === "incremental" ? "served_copy" : undefined,
+               source.endsWith("_own") ? "served_copy" : undefined,
             );
             expect(rowDifference(run.live, run.served)).toBeUndefined();
             for (const row of run.served) expect(row.org).toBe(givens.ORG);

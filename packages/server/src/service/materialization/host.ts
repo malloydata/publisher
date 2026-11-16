@@ -16,11 +16,17 @@ import type {
 import type { EnvironmentName, PackageName, VersionRef } from "../identity";
 import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
-import type { BuildPlanPackage } from "./plan/build_plan";
-import type { BuildPlan, FreshnessManifest, ManifestEntry } from "./types";
+import type { BuildPlanPackage } from "./domain/plan_input";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
+import type {
+   BuildPlan,
+   FreshnessManifest,
+   ManifestEntry,
+   RunManifestLoad,
+} from "./domain/types";
 
 /** The package surface a run reads: its plan, its metadata, its connections. */
-export interface MaterializationPackage extends BuildPlanPackage {
+interface MaterializationPackage extends BuildPlanPackage {
    getPackageName(): string;
    /** The published version this package is; undefined for an unversioned one. */
    getVersionId(): string | undefined;
@@ -48,10 +54,18 @@ export interface MaterializationPackage extends BuildPlanPackage {
     * stand-in package binds none.
     */
    forgetKeyUniqueness?(sourceEntityIds: Iterable<string>): void;
+   /**
+    * The text a chained `storage=` build compiles on its destination alone:
+    * the request's downstream, with each stored upstream the request carries
+    * re-rooted as the served copy re-roots it, from those entries alone and
+    * never the package's bound tables. Optional: a stand-in package has no
+    * served copy, and its chained builds recompute.
+    */
+   chainBuildText?(request: ChainBuildRequest): ChainBuildText;
 }
 
 /** The part of an environment's version registry a run consults. */
-export interface MaterializationVersions {
+interface MaterializationVersions {
    resolve(
       packageName: string,
       rawVersionId?: unknown,
@@ -96,6 +110,12 @@ export interface MaterializationEnvironment {
       options?: { versionId?: VersionRef },
    ): Promise<MaterializationPackage>;
    getLoadedPackages(): MaterializationPackage[];
+   /**
+    * Whether the package serves a model older than its files, because its
+    * last reload did not compile (a `stale: true` load error). Optional: a
+    * test double's packages are never stale.
+    */
+   getStaleCompileErrors?(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
 
    getVersionService(): MaterializationVersions | null;
@@ -108,21 +128,34 @@ export interface MaterializationEnvironment {
    registerVersionBuild(packageName: string, versionId: string): () => void;
    versionBuildsSettled(packageName: string, versionId: string): Promise<void>;
 
+   /**
+    * Load an auto-run's manifest into the slot it built and run `commit`, all
+    * under that slot's lock (see Environment.loadRunManifest).
+    */
+   loadRunManifest(params: {
+      packageName: string;
+      versionId?: string;
+      colocated: FreshnessManifest;
+      storage: Record<string, ManifestEntry>;
+      commit: (outcome: RunManifestLoad) => Promise<void>;
+   }): Promise<RunManifestLoad>;
    /** Bind a freshly built colocated manifest into a slot's models. */
    reloadAllModelsForPackage(
       packageName: string,
       manifest: FreshnessManifest,
       versionId?: string,
    ): Promise<void>;
-   bindPackageColocatedServeManifest(
+   /**
+    * Read an unversioned package's tables from the store and bind them, the
+    * read and the bind under the package's lock (see
+    * Environment.rebindPackageFromStore).
+    */
+   rebindPackageFromStore(
       packageName: string,
-      entries: FreshnessManifest,
-      versionId?: string,
-   ): Promise<void>;
-   bindPackageStorageServeBindings(
-      packageName: string,
-      entries: Record<string, ManifestEntry>,
-      versionId?: string,
+      read: () => Promise<{
+         colocated: FreshnessManifest;
+         storage?: Record<string, ManifestEntry>;
+      }>,
    ): Promise<void>;
    rebindVersionFromStore(
       packageName: string,

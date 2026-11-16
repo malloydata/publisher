@@ -110,7 +110,7 @@ export function modelDefGateGraph(modelDef: ModelDef | undefined): GateGraph {
 }
 
 /** Why a walk could not read a gate; the entry carries `["false"]`. */
-export type GateFailure =
+type GateFailure =
    /** A note at this level (own or ancestor) did not parse. */
    | { kind: "unreadable"; error: unknown }
    /** The `inherits` chain, or the registry chain, ran past its budget. */
@@ -121,7 +121,7 @@ export type GateFailure =
    | { kind: "base_unresolvable"; message: string };
 
 /** One gate the walk found, read at one level. */
-export interface GatePlanGate {
+interface GatePlanGate {
    kind: "gate";
    route: string;
    /** The level's label: `as ?? name`. */
@@ -138,23 +138,23 @@ export interface GatePlanGate {
 }
 
 /** A shape the walk does not descend into; only the index refuses on it. */
-export interface GatePlanUnwalked {
+interface GatePlanUnwalked {
    kind: "unwalked";
    route: string;
    reason: "sql_embed" | "unsupported_type";
    message: string;
 }
 
-export type GatePlanStep = GatePlanGate | GatePlanUnwalked;
+type GatePlanStep = GatePlanGate | GatePlanUnwalked;
 
-export interface GatePlan {
+interface GatePlan {
    /** Every step, per route in `routes` order, each in walk order. */
    steps: GatePlanStep[];
    /** The walk met a composite (any route), so which branch gates a query is unknown. */
    metComposite: boolean;
 }
 
-export interface GatePlanOptions {
+interface GatePlanOptions {
    composite: "resolved" | "anyMember";
    /** The routes to walk, in order. Default {@link CANONICAL_AUTHORIZE_ROUTES}. */
    routes?: readonly string[];

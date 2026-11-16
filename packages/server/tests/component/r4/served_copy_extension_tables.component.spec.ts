@@ -293,10 +293,10 @@ describe("R4: extension tables answer equal to live", () => {
             expect(considered(f, answered.path)).toEqual([
                ["east_big", "used"],
             ]);
-            // A timezone over a stored computed dimension declines every
-            // table on the chain, nearest first, each for that reason.
+            // A read of a stored computed dimension in another zone declines
+            // every table on the chain, nearest first, each for that reason.
             const declined = await f.runAsIs(
-               "run: east_big -> { timezone: 'UTC'; group_by: order_month }",
+               "run: east_big -> { timezone: 'America/New_York'; group_by: d_hour }",
             );
             expect(declined.path?.servedBy.kind).toBe("live");
             expect(considered(f, declined.path)).toEqual([
@@ -306,7 +306,7 @@ describe("R4: extension tables answer equal to live", () => {
             ]);
             // An unmaterialized extension reads its parent's table.
             const reader = await f.runAsIs(
-               "run: east_reader -> { timezone: 'UTC'; group_by: order_month }",
+               "run: east_reader -> { timezone: 'America/New_York'; group_by: d_hour }",
             );
             expect(considered(f, reader.path)).toEqual([
                ["east", "skipped", "TIME_ZONE"],

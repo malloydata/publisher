@@ -23,7 +23,10 @@ import { initializeSchema } from "../../../storage/duckdb/schema";
 import { Environment } from "../../environment";
 import type { EnvironmentStore } from "../../environment_store";
 import { MaterializationScheduler } from "./materialization_scheduler";
-import { MaterializationService } from "./materialization_service";
+import {
+   MaterializationService,
+   type RunCollaboratorOverrides,
+} from "./materialization_service";
 import { Package } from "../../package";
 import { installSettings } from "../../../test_helpers/settings_env";
 import {
@@ -31,8 +34,8 @@ import {
    ServingReader,
    WRITES_TABLES_KEY,
    storageBindingResolverFor,
-   versionTableSuffix,
 } from "../../versions/materialization_scope";
+import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { parsePackageName, VersionRef } from "../../identity";
 
@@ -49,7 +52,11 @@ const PKG = "sales";
 
 /** The table a `scope: version` version builds `summary` into. */
 const versionTable = (version: string, packageName = PKG) =>
-   `summary${versionTableSuffix({ environmentName: ENV, packageName, version })}`;
+   autoRunTableName(ENV, packageName, "summary", {
+      modelPath: "model.malloy",
+      version,
+      prefix: "summary",
+   });
 const TABLE_V1 = versionTable("1.0.0");
 const TABLE_V2 = versionTable("2.0.0");
 
@@ -135,16 +142,24 @@ async function newEnvironment(): Promise<Environment> {
    return created;
 }
 
-/** A MaterializationService over `environment`, as main_server.ts wires it. */
-function newService(environment: Environment): MaterializationService {
+/**
+ * A MaterializationService over `environment`, as main_server.ts wires it,
+ * with any run collaborators a case replaces.
+ */
+function newService(
+   environment: Environment,
+   collaborators: RunCollaboratorOverrides = {},
+): MaterializationService {
    const store = {
       storageManager: { getRepository: () => repo },
       getEnvironment: async () => environment,
       getLoadedEnvironments: () => [environment],
    } as unknown as EnvironmentStore;
-   const created = new MaterializationService(store);
+   const created = new MaterializationService(store, collaborators);
    environment.setVersionArchivedHook((packageName, versionId) => {
-      reclaims.push(created.reclaimVersionTables(ENV, packageName, versionId));
+      reclaims.push(
+         created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
+      );
    });
    return created;
 }
@@ -175,6 +190,17 @@ async function build(
 ): Promise<Materialization> {
    const created = await service.createMaterialization(ENV, PKG, options);
    return settled(created.id);
+}
+
+/**
+ * Swap in a service whose instructed build rejects with `err`;
+ * `mockRestore` swaps the real one back.
+ */
+function rejectingBuilds(err: Error): { mockRestore: () => void } {
+   service = newService(env, {
+      executeInstructedBuild: () => Promise.reject(err),
+   });
+   return { mockRestore: () => (service = newService(env)) };
 }
 
 async function settled(id: string): Promise<Materialization> {
@@ -411,17 +437,14 @@ describe('scope "version": each version builds and serves its own tables', () =>
       const gate = new Promise<void>((resolve) => (release = resolve));
       let reached!: () => void;
       const building = new Promise<void>((resolve) => (reached = resolve));
-      const target = service as unknown as {
-         executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
-      };
-      const execute = target.executeInstructedBuild.bind(service);
-      const held = spyOn(target, "executeInstructedBuild").mockImplementation(
-         async (...args: unknown[]) => {
+      service = newService(env, (real) => ({
+         executeInstructedBuild: async (...args) => {
             reached();
             await gate;
-            return execute(...args);
+            return real.executeInstructedBuild(...args);
          },
-      );
+      }));
+      const held = { mockRestore: () => (service = newService(env)) };
       try {
          const auto = await service.createMaterialization(ENV, PKG, {});
          await building;
@@ -594,16 +617,55 @@ describe('scope "version": each version builds and serves its own tables', () =>
             return write(...args);
          },
       );
-      const archiving = versions.setArchiveStatus(PKG, "1.0.0", "archive");
-      await writing;
-      const creating = service.createMaterialization(ENV, PKG, {
-         versionId: VersionRef.parse("1.0.0"),
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      unlock();
-      await archiving;
-      spy.mockRestore();
-      expect(await refusal(creating)).toEqual({
+      let isQueued = false;
+      let queued!: () => void;
+      const waiting = new Promise<void>((resolve) => (queued = resolve));
+      const lock = versions.withVersionLock.bind(versions);
+      let lockSpy: ReturnType<typeof spyOn> | undefined;
+      let refused: ReturnType<typeof refusal>;
+      try {
+         const archiving = versions.setArchiveStatus(PKG, "1.0.0", "archive");
+         await writing;
+         // The archive holds the lock, so the next to ask for it is the run.
+         // The write is let go only once the run waits there, so the refusal
+         // is the run's check under the lock, not its first look at the
+         // version.
+         lockSpy = spyOn(versions, "withVersionLock").mockImplementation(((
+            packageName,
+            versionId,
+            fn,
+         ) => {
+            const held = lock(packageName, versionId, fn);
+            isQueued = true;
+            queued();
+            return held;
+         }) as typeof versions.withVersionLock);
+         // Caught from the start: the refusal can land while the archive is
+         // still finishing.
+         refused = refusal(
+            service.createMaterialization(ENV, PKG, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
+         );
+         // A run that settles without queuing fails here, not by timing out.
+         await Promise.race([
+            waiting,
+            refused.then(() => {
+               if (!isQueued) {
+                  throw new Error(
+                     "run settled before queuing on the version lock",
+                  );
+               }
+            }),
+         ]);
+         unlock();
+         await archiving;
+      } finally {
+         unlock();
+         lockSpy?.mockRestore();
+         spy.mockRestore();
+      }
+      expect(await refused).toEqual({
          status: 410,
          reason: "VERSION_ARCHIVED",
       });
@@ -630,7 +692,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
       expect(await repo.getMaterializationById(v1.id)).toBeNull();
       expect(await warehouseTables()).toContain(TABLE_V1);
 
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
       expect(await warehouseTables()).toContain(TABLE_V1);
    });
 });
@@ -707,21 +769,14 @@ describe('scope "package": the versions share the package\'s tables', () => {
       const gate = new Promise<void>((resolve) => (release = resolve));
       let reached!: () => void;
       const building = new Promise<void>((resolve) => (reached = resolve));
-      const execute = (
-         service as unknown as {
-            executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
-         }
-      ).executeInstructedBuild.bind(service);
-      const spy = spyOn(
-         service as unknown as {
-            executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
+      service = newService(env, (real) => ({
+         executeInstructedBuild: async (...args) => {
+            reached();
+            await gate;
+            return real.executeInstructedBuild(...args);
          },
-         "executeInstructedBuild",
-      ).mockImplementation(async (...args: unknown[]) => {
-         reached();
-         await gate;
-         return execute(...args);
-      });
+      }));
+      const spy = { mockRestore: () => (service = newService(env)) };
       try {
          const run = await service.createMaterialization(ENV, PKG, {});
          await building;
@@ -799,12 +854,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
    it("a run that builds nothing records whether retrying it could help, beside its other metadata", async () => {
       await publish("1.0.0", 1, "package");
       const failWith = async (err: Error) => {
-         const failing = spyOn(
-            service as unknown as {
-               executeInstructedBuild: () => Promise<unknown>;
-            },
-            "executeInstructedBuild",
-         ).mockRejectedValue(err);
+         const failing = rejectingBuilds(err);
          const failed = await build({ forceRefresh: true });
          failing.mockRestore();
          expect(failed.status).toBe("FAILED");
@@ -835,12 +885,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       expect(await answerOf("1.0.0")).toBe(101);
       await publish("2.0.0", 2, "package"); // another definition
 
-      const failing = spyOn(
-         service as unknown as {
-            executeInstructedBuild: () => Promise<unknown>;
-         },
-         "executeInstructedBuild",
-      ).mockRejectedValue(new Error("warehouse went away mid-build"));
+      const failing = rejectingBuilds(
+         new Error("warehouse went away mid-build"),
+      );
       const failed = await build({ forceRefresh: true });
       failing.mockRestore();
       expect(failed.status).toBe("FAILED");
@@ -874,12 +921,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       expect(await answerOf("1.0.0")).toBe(101);
 
       // Even one that fails: the table holds that definition's rows either way.
-      const failing = spyOn(
-         service as unknown as {
-            executeInstructedBuild: () => Promise<unknown>;
-         },
-         "executeInstructedBuild",
-      ).mockRejectedValue(new Error("warehouse went away mid-build"));
+      const failing = rejectingBuilds(
+         new Error("warehouse went away mid-build"),
+      );
       expect((await build({ forceRefresh: true })).status).toBe("FAILED");
       failing.mockRestore();
       expect(
@@ -912,12 +956,9 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await publish("1.0.0", 1, "package");
       await build({});
       await publish("2.0.0", 2, "package");
-      const failing = spyOn(
-         service as unknown as {
-            executeInstructedBuild: () => Promise<unknown>;
-         },
-         "executeInstructedBuild",
-      ).mockRejectedValue(new Error("warehouse went away mid-build"));
+      const failing = rejectingBuilds(
+         new Error("warehouse went away mid-build"),
+      );
       const failed = await build({});
       failing.mockRestore();
       expect(failed.status).toBe("FAILED");

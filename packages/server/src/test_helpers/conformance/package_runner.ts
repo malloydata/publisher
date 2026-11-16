@@ -2,13 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The package-level runner for the conformance fixture (ms2data/service#7098),
- * and the library the v1 cutover's conformance runner is built on
- * (`v1_cutover_runner.ts`, plan question 15):
- * a synthetic package goes through the real production path (Environment,
- * Package.create, the package's own build plan, its colocated manifest bind
- * and its `storage=` bind), and every query runs live first, then served with
- * the materialize switch off (today's serve shape) and on (the served copy).
+ * The package-case runner: a synthetic package (or a real package snapshot)
+ * goes through the real production path (Environment, Package.create, the
+ * package's own build plan, its colocated manifest bind and its `storage=`
+ * bind), and every query runs live first, then served with the materialize
+ * switch off and on ({@link runPackageCase}). Three reporters read what it
+ * produces, each comparing through `answer_difference.ts`:
+ *
+ * - R4 rows: the conformance fixture (tests/component/r4/conformance*)
+ *   compares each served answer with live, row by row;
+ * - conformance verdicts: the v1 cutover's conformance runner
+ *   (`v1_cutover_runner.ts`, plan question 15), whose entry point and output
+ *   columns Credible's private CI reads;
+ * - golden capture: the materialization goldens
+ *   (tests/component/materialization_goldens/package_case.ts).
  *
  * The R4 model harness (tests/component/r4/harness.ts) drives one Model with bindings it
  * derives itself; this one lets the package derive them, so it sees what a
@@ -17,6 +24,10 @@
  */
 
 import { capturedNativeSchema } from "../../service/materialization/run/colocated_native_types";
+import {
+   pairLeafKeyChecksOf,
+   runRollupKeyCheck,
+} from "../../service/materialization/run/inline_uniqueness";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -27,18 +38,32 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../service/access_record";
-import { __setPackageLoadPoolForTests } from "../../package_load/package_load_pool";
+import {
+   __setPackageLoadPoolFactoryForTests,
+   __setPackageLoadPoolForTests,
+   getPackageLoadWorkerCount,
+   PackageLoadPool,
+} from "../../package_load/package_load_pool";
+import { Settings } from "../../settings/settings";
 import { Environment } from "../../service/environment";
 import { parsePackageName } from "../../service/identity";
 import { QueryPrivileges } from "../../service/model_query_request";
 import type { Package } from "../../service/package";
 import { installSettings } from "../settings_env";
+import { readableTableName } from "../../service/materialization/domain/table_name";
 import { writePackageFiles } from "../temp_package";
+import { sharedTables } from "../../service/materialization/plan/eligibility_collect";
+import { compilePackageBuildPlan } from "../../service/materialization/plan/build_plan_compile";
 import {
+   type BuildCastOptions,
    castToDeclaredTypes,
    type DeclaredColumn,
    declaredColumnsOf,
 } from "../../service/materialization/stored_column_types";
+import { queryTimezoneOf } from "../../service/governance/ir/compiled_model";
+import { planModelPersistedViews } from "../../service/materialization/plan/persisted_view";
+import { SourceMap } from "../../service/materialization/text/source_map";
+import { recordConnectionsAsForConformanceHarness } from "../../service/connection_type";
 /** A result row, as `compactResult` carries it. */
 export type Row = Record<string, unknown>;
 
@@ -53,9 +78,11 @@ function withoutReferenceIds(value: unknown): unknown {
 /** The storage destination every `storage=` source in the fixture names. */
 export const LAKE = "lake";
 
-/** A served field as the wire carries it: name, type (timeframe included) and annotations. */
+/** A served field as the wire carries it: name, kind, type (timeframe included) and annotations. */
 export interface WireField {
    name: string;
+   /** `dimension` or `measure`, as Malloy's result schema reports it. */
+   kind?: string;
    type: unknown;
    annotations: string[];
 }
@@ -69,26 +96,30 @@ export interface Answer {
    servedBy: string;
    /** `served_copy` when the served copy on `virtual` answered. */
    via?: string;
+   /** The view leg's skip, when it considered the query and declined it. */
+   viewSkip?: { reason?: string; detail?: string };
+   /** The served copy's skip, when it considered the query and declined it. */
+   servedSkip?: { reason?: string; detail?: string };
 }
 
 /** What querying a package produced: an answer, or the error it threw. */
 export type Outcome = { answer: Answer } | { error: string };
 
 /**
- * The switches a served run is taken under: `off` (today's serve shape),
- * `on` (`PUBLISHER_MATERIALIZE`: the served copy beside today's paths), and
- * `cutover` (`PUBLISHER_MATERIALIZE` and `PUBLISHER_V1_SERVED_COPY=on`: the
- * served copy, the rollup and view legs, or live; no serve shape and no build
- * manifest on the live compile).
+ * The switches a served run is taken under: `off` (`PUBLISHER_MATERIALIZE`
+ * set `false`) and `on` or `cutover` (`PUBLISHER_MATERIALIZE` on, the shipped
+ * default). Since the v1 cutover's retirement every one serves through the served
+ * copy, the rollup and view legs, or live; `cutover` is kept as a name for
+ * the column the fixture declares its expectations under.
  */
 export type Switch = "off" | "on" | "cutover";
 
-function settingsFor(materialize: Switch) {
+function settingsFor(materialize: Switch, env: Record<string, string> = {}) {
    return {
       env: {
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_MATERIALIZE: materialize === "off" ? "false" : "true",
-         PUBLISHER_V1_SERVED_COPY: materialize === "cutover" ? "on" : "off",
+         ...env,
       },
    };
 }
@@ -99,18 +130,49 @@ function settingsFor(materialize: Switch) {
  * cutover's bindings are pushed at bind, so a fixture queried under
  * `cutover` is rebound first ({@link LoadedFixture.rebind}).
  */
-export function withSwitch(materialize: Switch): () => void {
-   return installSettings(settingsFor(materialize)).restore;
+export function withSwitch(
+   materialize: Switch,
+   /** Settings of the fixture's own, over the switch's. */
+   env: Record<string, string> = {},
+): () => void {
+   return installSettings(settingsFor(materialize, env)).restore;
 }
 
 /**
- * Drop the package-load worker pool, so the next load spawns workers with the
- * settings installed then. A worker reads its settings once, at spawn, and the
- * build plan (with `#(materialize)` in it or not) is computed in the worker:
- * a pool another spec file spawned would plan with that file's settings.
+ * Pools kept for the rest of the run, one per set of settings a pool was made
+ * under. Reusing them, rather than spawning a worker per case, keeps a run's
+ * worker count down, which makes the run faster. Under Bun 1.3, which kept most
+ * of a stopped worker's memory, it also kept Windows CI from running out of
+ * memory; Bun 1.4.4 returns that memory.
+ */
+const poolsBySettings = new Map<string, PackageLoadPool>();
+
+/**
+ * The pool for the settings in force now. Called at the first load after
+ * {@link freshLoadPool}, so a caller may switch settings before or after it.
+ * A pool's worker count, timeouts and cache size are fixed when it is made,
+ * and its worker reads the rest at spawn, so the whole settings snapshot is
+ * the key.
+ */
+function poolForCurrentSettings(): PackageLoadPool {
+   const key = JSON.stringify(Settings.current().toWorkerData());
+   const kept = poolsBySettings.get(key);
+   // Another spec may have shut it down through __setPackageLoadPoolForTests.
+   if (kept && !kept.isShutDownForTests) return kept;
+   const pool = new PackageLoadPool(getPackageLoadWorkerCount());
+   poolsBySettings.set(key, pool);
+   return pool;
+}
+
+/**
+ * Drop the current package-load pool, so the next load runs in a pool made
+ * under the settings installed then. A worker reads its settings once, at
+ * spawn, and the build plan (with `#(materialize)` in it or not) is computed
+ * in the worker: a pool made under other settings would plan with those.
  */
 export async function freshLoadPool(): Promise<void> {
-   await __setPackageLoadPoolForTests(null);
+   __setPackageLoadPoolFactoryForTests(poolForCurrentSettings);
+   await __setPackageLoadPoolForTests(null, new Set(poolsBySettings.values()));
 }
 
 /** A package loaded, built and bound; queries run against it. */
@@ -122,6 +184,8 @@ export interface LoadedFixture {
    verdicts: string[];
    /** The plan's sources that were built, by name and tier. */
    built: { name: string; tier: "storage" | "colocated" }[];
+   /** The table each built content address was written to, by sourceEntityId. */
+   tables: Record<string, string>;
    /** Problems building a planned source, by name. */
    buildErrors: Record<string, string>;
    /** The `storage=` manifest entries the build bound, by sourceEntityId. */
@@ -147,6 +211,13 @@ export interface BindOptions {
     * false: most callers serve no rollup, so they build none).
     */
    includeRollups?: boolean;
+   /**
+    * Store each `storage=` table as the warehouse returned it, uncast, as a
+    * build stores it when it declines a cast (a `date` under a query time
+    * zone) or a cast fails and it retries without them (default false: cast
+    * to the declared types, as a build does).
+    */
+   storeUncast?: boolean;
 }
 
 /**
@@ -187,13 +258,21 @@ export async function loadFixture(
    }
    const lake = new DuckDBConnection(LAKE, path.join(root, `${LAKE}.duckdb`));
    let env: Environment | undefined;
+   let releaseSandbox = (): void => {};
    const dispose = async () => {
+      releaseSandbox();
       await env?.closeAllConnections().catch(() => {});
       await lake.close().catch(() => {});
       fs.rmSync(root, { recursive: true, force: true });
    };
    let pkg: Package;
    try {
+      // `buildAll` builds a `storage=` table from the sandbox by hand, through
+      // Parquet, which no real build can, so while the fixture lives its
+      // sandbox stands in for a warehouse the plan's `storage=` gate admits.
+      releaseSandbox = recordConnectionsAsForConformanceHarness({
+         duckdb: "postgres",
+      });
       env = await Environment.create("conform", envPath, []);
       await env.addPackage("pkg");
       pkg = await env.getPackage(parsePackageName("pkg"), false);
@@ -229,6 +308,7 @@ export async function loadFixture(
                rows: result.compactResult as unknown as Row[],
                fields: (result.result?.schema?.fields ?? []).map((f) => ({
                   name: f.name,
+                  kind: (f as { kind?: string }).kind,
                   // A nest's fields carry annotations too, with the same
                   // per-compile reference id.
                   type: withoutReferenceIds((f as { type?: unknown }).type),
@@ -245,6 +325,8 @@ export async function loadFixture(
                ...(result.path?.servedBy?.via
                   ? { via: result.path.servedBy.via }
                   : {}),
+               ...skipOf("view", result.path?.considered),
+               ...skipOf("materialized", result.path?.considered),
             },
          };
       } catch (error) {
@@ -274,9 +356,17 @@ export async function loadFixture(
             }
          };
          await settle();
+         const tables: Record<string, string> = {};
+         for (const [id, e] of Object.entries(colocated)) {
+            tables[id] = String(e.tableName);
+         }
+         for (const [id, e] of Object.entries(stored)) {
+            tables[id] = String(e.physicalTableName);
+         }
          return {
             pkg,
             built,
+            tables,
             buildErrors,
             stored,
             async rebind() {
@@ -303,6 +393,116 @@ export async function loadFixture(
          };
       },
    };
+}
+
+/** One query a package case runs: in a model of the package, with its givens. */
+export interface CaseQuery {
+   model: string;
+   malloy: string;
+   givens?: Record<string, GivenValue>;
+}
+
+/** The package could not be loaded; `cause` is what loading threw. */
+export class PackageCaseLoadError extends Error {
+   constructor(readonly cause: unknown) {
+      super(cause instanceof Error ? cause.message : String(cause));
+   }
+}
+
+/** How {@link runPackageCase} runs one case. */
+export interface PackageCase<Q extends CaseQuery, S> {
+   /** The package: its files by relative path, or a directory to copy. */
+   package: Parameters<typeof loadFixture>[0];
+   queries: readonly Q[];
+   /**
+    * Install the case's settings for the load (`undefined`) or for a served
+    * pass under one switch; returns the restore.
+    */
+   settings: (pass: Switch | undefined) => () => void;
+   /**
+    * The switches the served queries run under, one pass each, its settings
+    * installed in place of the load's; undefined for one pass under the
+    * load's settings.
+    */
+   passes?: readonly Switch[];
+   /** Load in a pool made under the case's settings, and drop it after. */
+   freshPool: boolean;
+   bindOptions?: BindOptions;
+   /** After the live answers, before the bind. */
+   afterLive?: (
+      loader: Awaited<ReturnType<typeof loadFixture>>,
+   ) => Promise<void>;
+   /** Around the bind (to record what it generates). */
+   aroundBind?: (bind: () => Promise<LoadedFixture>) => Promise<LoadedFixture>;
+   /** Answer one query served, against its live outcome. */
+   serve: (
+      fixture: LoadedFixture,
+      query: Q,
+      live: Outcome,
+      pass: Switch | undefined,
+   ) => Promise<S>;
+}
+
+/** What a package case produced: live outcomes and each pass's served results, by query position. */
+export interface PackageCaseRun<S> {
+   live: Outcome[];
+   fixture: LoadedFixture;
+   served: { pass: Switch | undefined; results: S[] }[];
+}
+
+/**
+ * Run one package case: load the package under the case's settings, answer
+ * every query live, bind, then answer every query served in each pass. The
+ * package is disposed and the settings restored before it returns. A
+ * package that does not load throws {@link PackageCaseLoadError}.
+ */
+export async function runPackageCase<Q extends CaseQuery, S>(
+   c: PackageCase<Q, S>,
+): Promise<PackageCaseRun<S>> {
+   let restore = c.settings(undefined);
+   try {
+      if (c.freshPool) await freshLoadPool();
+      let loader: Awaited<ReturnType<typeof loadFixture>>;
+      try {
+         loader = await loadFixture(c.package);
+      } catch (error) {
+         throw new PackageCaseLoadError(error);
+      }
+      try {
+         // By position: two queries may share a name.
+         const live: Outcome[] = [];
+         for (const q of c.queries) {
+            live.push(await loader.run(q.model, q.malloy, q.givens));
+         }
+         await c.afterLive?.(loader);
+         const bind = () => loader.bind(c.bindOptions);
+         const fixture = await (c.aroundBind ? c.aroundBind(bind) : bind());
+         const served: PackageCaseRun<S>["served"] = [];
+         for (const pass of c.passes ?? [undefined]) {
+            let restorePass = () => {};
+            if (pass !== undefined) {
+               restore();
+               restore = () => {};
+               restorePass = c.settings(pass);
+            }
+            try {
+               const results: S[] = [];
+               for (const [i, q] of c.queries.entries()) {
+                  results.push(await c.serve(fixture, q, live[i], pass));
+               }
+               served.push({ pass, results });
+            } finally {
+               restorePass();
+            }
+         }
+         return { live, fixture, served };
+      } finally {
+         await loader.dispose();
+      }
+   } finally {
+      restore();
+      if (c.freshPool) await freshLoadPool();
+   }
 }
 
 /**
@@ -337,22 +537,82 @@ async function buildAll(
    // an extension that inherits its annotation.
    // Rollups only when asked (`#@ preaggregate`, `#(preaggregate)`), each
    // recorded with its origin, as a build records it.
-   const entries = Object.values(pkg.getBuildPlan()?.sources ?? {})
+   const entries = Object.entries(pkg.getBuildPlan()?.sources ?? {})
+      .map(([sourceID, e]) => ({ ...e, sourceID }))
       .filter((e) => options.includeRollups || e.origin !== "preaggregate")
       .sort(
          (a, b) =>
             Number(b.annotationFields?.name === b.name) -
             Number(a.annotationFields?.name === a.name),
       );
+   // A pair table's leaf key check, run on the source's connection once its
+   // table is written and bound beside it, as an auto-run records it (known
+   // limitation 40). The package's own plans hold the check's compiled SQL.
+   const materializePlans =
+      (
+         pkg as unknown as {
+            materialization?: { materializePlans?: Record<string, unknown> };
+         }
+      ).materialization?.materializePlans ?? {};
+   const leafKeys = async (
+      sourceID: string,
+      warehouse: DuckDBConnection,
+   ): Promise<{ keyUniqueness?: { parentKeys: Record<string, boolean> } }> => {
+      const checks = pairLeafKeyChecksOf(
+         (materializePlans as Record<string, never>)[sourceID],
+      );
+      const parentKeys: Record<string, boolean> = {};
+      for (const check of checks) {
+         const record = await runRollupKeyCheck(check, warehouse, "pair");
+         if (record) parentKeys[check.sourceID] = record.unique;
+      }
+      return Object.keys(parentKeys).length > 0
+         ? { keyUniqueness: { parentKeys } }
+         : {};
+   };
    try {
+      // Sources an author's name= puts on one table are refused by a
+      // self-instructed run (only reachable under the collision opt-out), so
+      // neither is built: read off the plan the run compiles.
+      const shared =
+         pkg.persistenceCollisionWarnings().length > 0
+            ? sharedTables(
+                 await compilePackageBuildPlan(pkg, undefined, {
+                    keepIncrementalUnbuildable: true,
+                 }),
+              )
+            : new Map<string, string>();
       for (const entry of entries) {
          if (seen.has(entry.sourceEntityId)) continue;
          seen.add(entry.sourceEntityId);
-         // The name a build writes: `name=`, else the source's name, so two
-         // sources resolving to one name overwrite each other as they would
-         // in a real destination. Quoted in DDL; recorded unquoted, as a
-         // build records it.
-         const table = (entry.annotationFields?.name || entry.name).trim();
+         if (shared.has(entry.sourceID)) continue;
+         // The name a self-instructed build writes: an author's `name=` as
+         // written, else Publisher's readable name, hashed over the source's
+         // identity (its declaring model and name), so two sources of one
+         // name in two models write two tables, as in a real destination, and
+         // a defaulted name never meets an author's. Quoted in DDL; recorded
+         // unquoted, as a build records it.
+         const plan = (
+            materializePlans as Record<string, { nameDefaulted?: true }>
+         )[entry.sourceID];
+         const declared = plan
+            ? !plan.nameDefaulted
+            : !!entry.annotationFields?.name?.trim();
+         const base = (entry.annotationFields?.name || entry.name).trim();
+         const table =
+            declared || entry.origin === "preaggregate"
+               ? base
+               : readableTableName({
+                    identity: {
+                       environmentName: "conform",
+                       packageName: "pkg",
+                       modelPath: entry.modelPath ?? "",
+                       sourceName: entry.name,
+                    },
+                    label: entry.name,
+                    dialect: entry.dialect ?? undefined,
+                    inDestination: !!entry.annotationFields?.storage,
+                 });
          const quoted = `"${table.replace(/"/g, '""')}"`;
          const storage = entry.annotationFields?.storage;
          try {
@@ -379,9 +639,12 @@ async function buildAll(
                await lake.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${castToDeclaredTypes(
                      select,
-                     declaredColumnsFor(pkg, entry).filter((c) =>
-                        present.has(c.name),
-                     ),
+                     options.storeUncast
+                        ? []
+                        : declaredColumnsFor(pkg, entry).filter((c) =>
+                             present.has(c.name),
+                          ),
+                     castOptionsFor(pkg, entry),
                   )}`,
                );
                const described = await lake.runSQL(`DESCRIBE ${quoted}`, {
@@ -402,6 +665,7 @@ async function buildAll(
                         column_type: string;
                      }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
+                  ...(await leafKeys(entry.sourceID, warehouse)),
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
@@ -420,6 +684,7 @@ async function buildAll(
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
                   ...(nativeSchema ? { nativeSchema } : {}),
+                  ...(await leafKeys(entry.sourceID, warehouse)),
                };
                built.push({ name: entry.name, tier: "colocated" });
             }
@@ -437,14 +702,64 @@ async function buildAll(
 }
 
 /**
+ * What decides the planned source's build casts beyond its declared types:
+ * the query time zone its rows are computed in, under which a build leaves a
+ * `date` uncast (`storageBuildCasts`). An author source's own; for a
+ * generated build source (a persisted view's), its source's and the view's
+ * stages'.
+ */
+function castOptionsFor(
+   pkg: Package,
+   entry: { name: string; modelPath?: string },
+): BuildCastOptions {
+   const def = entry.modelPath
+      ? pkg.getModel(entry.modelPath)?.getModelDef()
+      : undefined;
+   if (!def) return {};
+   const struct = def.contents?.[entry.name];
+   let queryTimezone: string | undefined;
+   if (struct) {
+      queryTimezone = queryTimezoneOf(struct);
+   } else {
+      const plan = planModelPersistedViews(def).plans.find(
+         (p) => p.buildSourceName === entry.name,
+      );
+      const source = plan
+         ? (SourceMap.of(def).node(plan.sourceID)?.def as
+              | {
+                   queryTimezone?: unknown;
+                   fields?: {
+                      type?: unknown;
+                      name?: unknown;
+                      as?: unknown;
+                      pipeline?: unknown;
+                   }[];
+                }
+              | undefined)
+         : undefined;
+      const view = source?.fields?.find(
+         (f) => f.type === "turtle" && (f.as ?? f.name) === plan?.viewName,
+      );
+      queryTimezone = queryTimezoneOf({
+         queryTimezone: source?.queryTimezone,
+         query: {
+            pipeline: Array.isArray(view?.pipeline) ? view.pipeline : [],
+         },
+      });
+   }
+   return queryTimezone ? { queryTimezone } : {};
+}
+
+/**
  * The scalar dimensions the planned source declares, read from its model's
- * compiled definition: what a storage build casts its columns to. None when
- * the definition cannot be found (the build then runs uncast, as a build does
- * when it cannot read the field list).
+ * compiled definition, or for a generated build source its plan entry's
+ * columns: what a storage build casts its columns to. None when neither can
+ * be read (the build then runs uncast, as a build does when it cannot read
+ * the field list).
  */
 function declaredColumnsFor(
    pkg: Package,
-   entry: { name: string; modelPath?: string },
+   entry: { name: string; modelPath?: string; columns?: unknown[] },
 ): DeclaredColumn[] {
    const def = entry.modelPath
       ? pkg.getModel(entry.modelPath)?.getModelDef()
@@ -452,9 +767,32 @@ function declaredColumnsFor(
    const struct = def?.contents?.[entry.name] as
       | { fields?: { expressionType?: string }[] }
       | undefined;
+   // A generated build source (a persisted view's) is no name of the author's
+   // model: its plan entry's columns are the ones a build casts to
+   // (`storageBuildCasts`, from the same field list).
+   if (!struct) return declaredColumnsOf(entry.columns);
    return declaredColumnsOf(
       (struct?.fields ?? []).filter(
          (f) => f.expressionType === undefined || f.expressionType === "scalar",
       ),
    );
+}
+
+/** A leg's entry in a path report's `considered`, when it skipped. */
+function skipOf(
+   kind: "view" | "materialized",
+   considered: readonly unknown[] | undefined,
+): Pick<Answer, "viewSkip" | "servedSkip"> {
+   const skip = (considered ?? []).find(
+      (c) =>
+         (c as { kind?: unknown }).kind === kind &&
+         (c as { outcome?: unknown }).outcome === "skipped",
+   ) as { reason?: unknown; detail?: unknown } | undefined;
+   if (!skip) return {};
+   return {
+      [kind === "view" ? "viewSkip" : "servedSkip"]: {
+         ...(typeof skip.reason === "string" ? { reason: skip.reason } : {}),
+         ...(typeof skip.detail === "string" ? { detail: skip.detail } : {}),
+      },
+   };
 }

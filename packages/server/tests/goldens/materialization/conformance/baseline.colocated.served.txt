@@ -1,0 +1,24 @@
+// conformance: baseline [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: daily__served is {
+   region::string,
+   order_date::date,
+   total::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#@ persist name="daily"
+source: daily is duckdb.virtual('b5f87ec0aa79359dd819028840930acbc84c500ea8364a54bb7f54c323188829')::daily__served extend {
+  dimension: big is total > 300
+  measure: grand is total.sum()
+  view: by_region is { group_by: region; aggregate: grand }
+}
+
+source: daily_ext is daily extend {
+  measure: avg_total is total.avg()
+}

@@ -12,10 +12,15 @@ import type {
 } from "@malloydata/malloy";
 import fs from "fs";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../logger";
+import { readPackageURLSync } from "../../utils";
 
-const modelLines = new AsyncLocalStorage<Map<string, string[]>>();
+const modelLines = new AsyncLocalStorage<{
+   lines: Map<string, string[]>;
+   /** The package root a file not in `lines` must lie inside to be read. */
+   packageRoot?: string;
+}>();
 
 /**
  * Runs `fn` with each model file's lines split at most once. `texts` (by
@@ -26,18 +31,24 @@ const modelLines = new AsyncLocalStorage<Map<string, string[]>>();
 export function withModelTextCache<T>(
    fn: () => T,
    texts: ReadonlyMap<string, string> = new Map(),
+   packageRoot?: string,
 ): T {
-   const cache = new Map<string, string[]>();
-   for (const [filePath, text] of texts) cache.set(filePath, text.split("\n"));
-   return modelLines.run(cache, fn);
+   const lines = new Map<string, string[]>();
+   for (const [filePath, text] of texts) lines.set(filePath, text.split("\n"));
+   return modelLines.run({ lines, packageRoot }, fn);
 }
 
 function readModelLines(filePath: string): string[] {
-   const cache = modelLines.getStore();
-   const cached = cache?.get(filePath);
+   const store = modelLines.getStore();
+   const cached = store?.lines.get(filePath);
    if (cached !== undefined) return cached;
-   const lines = fs.readFileSync(filePath, "utf8").split("\n");
-   cache?.set(filePath, lines);
+   // Inside the package only, when the run names it.
+   const text =
+      store?.packageRoot !== undefined
+         ? readPackageURLSync(store.packageRoot, pathToFileURL(filePath))
+         : fs.readFileSync(filePath, "utf8");
+   const lines = text.split("\n");
+   store?.lines.set(filePath, lines);
    return lines;
 }
 
