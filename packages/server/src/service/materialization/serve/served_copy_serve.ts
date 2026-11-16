@@ -696,6 +696,9 @@ export class ServedCopyServe {
    >();
    /** Bumped on every invalidation, so a compile started before it is never kept. */
    private generation = 0;
+   /** Requests for a compiled copy so far, and the latest whose copy each lane keeps. */
+   private turns = 0;
+   private keptTurn = new Map<number, number>();
 
    constructor(private readonly host: ServedCopyHost) {}
 
@@ -1357,6 +1360,14 @@ export class ServedCopyServe {
     * that block, and kept like lane 0 until the next invalidation.
     */
    private async ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
+      // Each request's turn: a compile an older request awaited never
+      // replaces the copy a newer one kept.
+      const turn = ++this.turns;
+      const keep = (compiled: Compiled): void => {
+         if ((this.keptTurn.get(lane) ?? 0) > turn) return;
+         this.keptTurn.set(lane, turn);
+         this.compiledLanes.set(lane, compiled);
+      };
       const bindings = this.freshBindings(pinned);
       const generation = this.generation;
       const current = this.compiledLanes.get(lane);
@@ -1373,7 +1384,7 @@ export class ServedCopyServe {
       if (current && current.key === key && current.generation === generation) {
          const reused = reboundTo(current, bindings);
          if (reused) {
-            this.compiledLanes.set(lane, reused);
+            keep(reused);
             return reused;
          }
       }
@@ -1421,10 +1432,9 @@ export class ServedCopyServe {
          ));
       // An invalidation while it compiled makes it stale: keep it only when
       // it is still the current generation's. A copy over another snapshot
-      // is kept too: the latest compile is what the warnings report.
-      if (compiled.generation === this.generation) {
-         this.compiledLanes.set(lane, compiled);
-      }
+      // is kept too, unless a later request kept its own: the latest
+      // request's copy is what the warnings report.
+      if (compiled.generation === this.generation) keep(compiled);
       return compiled;
    }
 

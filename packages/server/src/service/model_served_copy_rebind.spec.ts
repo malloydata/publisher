@@ -229,6 +229,27 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       expect(compileCount()).toBe(seen);
    });
 
+   it("keeps the latest bind's copy when an older bind's compile finishes after it", async () => {
+      const { model } = await buildModel(PLAIN, STORED);
+      const asOf = (iso: string): Binding => ({ ...BINDING, freshAsOf: iso });
+      model.setServeBindings([asOf("2026-01-01T00:00:00.000Z")]);
+      await model.prepareServedCopy();
+      const seen = compileCount();
+      // What a package's bind does: empty, then the tables again, each
+      // compiling at bind without waiting for the one before.
+      model.setServeBindings([]);
+      const emptied = model.prepareServedCopy();
+      model.setServeBindings([asOf("2026-02-01T00:00:00.000Z")]);
+      const rebound = model.prepareServedCopy();
+      await Promise.all([emptied, rebound]);
+      // The empty copy, compiled for the older bind, did not replace the
+      // reused one: a freshness-only rebind after it compiles nothing.
+      model.setServeBindings([asOf("2026-03-01T00:00:00.000Z")]);
+      await model.prepareServedCopy();
+      expect(compileCount()).toBe(seen);
+      expect(await total(model)).toBe(60);
+   });
+
    it("recompiles for every binding field the compile reads", async () => {
       const { model, connMap } = await buildModel(PLAIN, STORED);
       await connMap
