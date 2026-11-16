@@ -57,7 +57,6 @@
  */
 
 import type { PersistSource } from "@malloydata/malloy";
-import { Mutex } from "async-mutex";
 import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
 import type { Materialization } from "../../../storage/DatabaseInterface";
@@ -73,6 +72,7 @@ import {
    parseOwnedTableComment,
 } from "./table_mark_sql";
 import { ownedTableProbeSql, tableCommentSql } from "./warehouse_sql";
+import { KeyedLock } from "./keyed_lock";
 import {
    atTableSite,
    type TableSite,
@@ -110,33 +110,27 @@ export class TableOwnershipError extends BadRequestError {
  * the table segment, lower-cased: two connections or environments may reach
  * one schema under different names, and an over-wide key only serializes.
  */
-const ownedNameLocks = new Map<string, { mutex: Mutex; holders: number }>();
+const OWNED_NAME_LOCK = new KeyedLock({
+   name: "owned-name",
+   // Its holder may retire entries under the table lock (tableNotOwned).
+   takenBefore: ["table"],
+});
 
 /**
  * Wait for, and take, the lock on builds at `physicalTableName`. Returns the
  * release, which must be called exactly once.
  */
-export async function acquireOwnedNameLock(
+export function acquireOwnedNameLock(
    physicalTableName: string,
 ): Promise<() => void> {
-   const key = physicalTableName
+   return OWNED_NAME_LOCK.acquire(ownedNameLockKey(physicalTableName));
+}
+
+/** The key {@link acquireOwnedNameLock} serializes a name's builds by. */
+export function ownedNameLockKey(physicalTableName: string): string {
+   return physicalTableName
       .slice(physicalTableName.lastIndexOf(".") + 1)
       .toLowerCase();
-   let lock = ownedNameLocks.get(key);
-   if (!lock) {
-      lock = { mutex: new Mutex(), holders: 0 };
-      ownedNameLocks.set(key, lock);
-   }
-   lock.holders++;
-   const held = lock;
-   const release = await held.mutex.acquire();
-   let released = false;
-   return () => {
-      if (released) return;
-      released = true;
-      release();
-      if (--held.holders === 0) ownedNameLocks.delete(key);
-   };
 }
 
 /**

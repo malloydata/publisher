@@ -33,15 +33,30 @@ function manifestMethods(service: MaterializationService): {
       serve?: (finish: (served: Served) => Promise<void>) => Promise<void>,
       serveTimeoutMs?: number,
    ) => Promise<void>;
-   getMostRecentManifestEntries: (
-      envId: string,
-      pkg: string,
-      excludeId: string,
-   ) => Promise<Record<string, unknown>>;
 } {
    return service.collaborators as unknown as ReturnType<
       typeof manifestMethods
    >;
+}
+
+/** The committer's skip-if-unchanged read, which the service keeps private. */
+function mostRecentEntries(
+   service: MaterializationService,
+): (
+   envId: string,
+   pkg: string,
+   excludeId: string,
+) => Promise<Record<string, unknown>> {
+   const { committer } = service as unknown as {
+      committer: {
+         mostRecentEntries: (
+            envId: string,
+            pkg: string,
+            excludeId: string,
+         ) => Promise<Record<string, unknown>>;
+      };
+   };
+   return committer.mostRecentEntries.bind(committer);
 }
 
 interface Served {
@@ -465,9 +480,11 @@ describe("getMostRecentManifestEntries", () => {
          }),
       ]);
 
-      const result = await manifestMethods(
-         ctx.service,
-      ).getMostRecentManifestEntries("env-1", "pkg", "in-flight");
+      const result = await mostRecentEntries(ctx.service)(
+         "env-1",
+         "pkg",
+         "in-flight",
+      );
 
       expect(result).toEqual(entries);
    });
@@ -487,9 +504,11 @@ describe("getMostRecentManifestEntries", () => {
          }),
       ]);
 
-      const result = await manifestMethods(
-         ctx.service,
-      ).getMostRecentManifestEntries("env-1", "pkg", "self");
+      const result = await mostRecentEntries(ctx.service)(
+         "env-1",
+         "pkg",
+         "self",
+      );
 
       expect(result).toEqual({});
    });
@@ -526,9 +545,11 @@ describe("getMostRecentManifestEntries", () => {
          }),
       ]);
 
-      const entries = await manifestMethods(
-         ctx.service,
-      ).getMostRecentManifestEntries("env-1", "pkg", "mat-current");
+      const entries = await mostRecentEntries(ctx.service)(
+         "env-1",
+         "pkg",
+         "mat-current",
+      );
 
       expect(Object.keys(entries)).toEqual(["healthy"]);
    });

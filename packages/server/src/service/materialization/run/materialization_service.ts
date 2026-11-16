@@ -154,22 +154,16 @@ export interface RunCollaborators {
    buildOneSource: (
       options: Parameters<typeof buildSource>[0],
    ) => ReturnType<typeof buildSource>;
-   /** The storage tier's build ({@link StorageBuildStrategy.build}). */
-   buildOneSourceIntoStorage: StorageBuildStrategy["build"];
    /** A chained storage build on its stored parents. */
    buildDownstreamViaParents: StorageBuildStrategy["buildDownstreamViaParents"];
    /** See {@link Reclaimer.reclaimStorageTablesFromFailedRun}. */
    reclaimStorageTablesFromFailedRun: Reclaimer["reclaimStorageTablesFromFailedRun"];
-   /** See {@link Reclaimer.dropMaterializedTables}. */
-   dropMaterializedTables: Reclaimer["dropMaterializedTables"];
    /** How a reclaim drops one run's entries ({@link Reclaimer.dropManifestEntries}). */
    dropManifestEntries: Reclaimer["dropManifestEntries"];
    /** See {@link ManifestCommitter.commit}. */
    commitManifest: ManifestCommitter["commit"];
    /** See {@link ManifestCommitter.autoLoad}. */
    autoLoadManifest: ManifestCommitter["autoLoad"];
-   /** See {@link ManifestCommitter.mostRecentEntries}. */
-   getMostRecentManifestEntries: ManifestCommitter["mostRecentEntries"];
 }
 
 /**
@@ -335,8 +329,8 @@ export class MaterializationService {
          repository,
          host,
          lifecycle: this.lifecycle,
-         tableLock: (environmentId, packageName) =>
-            this.claims.lockFor(environmentId, packageName),
+         withTableLock: (environmentId, packageName, fn) =>
+            this.claims.withTableLock(environmentId, packageName, fn),
       });
       this.reclaimer = new Reclaimer({
          repository,
@@ -387,22 +381,15 @@ export class MaterializationService {
                },
             }).run(...args),
          buildOneSource: (options) =>
-            buildSource(options, (request) =>
-               this.collaborators.buildOneSourceIntoStorage(request),
-            ),
-         buildOneSourceIntoStorage: (request) => storage.build(request),
+            buildSource(options, (request) => storage.build(request)),
          buildDownstreamViaParents: (...args) =>
             storage.buildDownstreamViaParents(...args),
          reclaimStorageTablesFromFailedRun: (...args) =>
             this.reclaimer.reclaimStorageTablesFromFailedRun(...args),
-         dropMaterializedTables: (...args) =>
-            this.reclaimer.dropMaterializedTables(...args),
          dropManifestEntries: (...args) =>
             this.reclaimer.dropManifestEntries(...args),
          commitManifest: (...args) => this.committer.commit(...args),
          autoLoadManifest: (...args) => this.committer.autoLoad(...args),
-         getMostRecentManifestEntries: (...args) =>
-            this.committer.mostRecentEntries(...args),
       };
    }
 
@@ -666,9 +653,7 @@ export class MaterializationService {
       // recorded as one step (see claimTables).
       return versions.withVersionLock(packageName, version, async () => {
          await versions.resolve(packageName, version);
-         return this.claims
-            .lockFor(environmentId, packageName)
-            .runExclusive(start);
+         return this.claims.withTableLock(environmentId, packageName, start);
       });
    }
 
@@ -1195,14 +1180,13 @@ export class MaterializationService {
          // `forceRefresh` too, where nothing is carried: the entries still
          // decide each table's name (an incremental source keeps the name
          // its ledger is keyed by, a readable name stays put).
-         const priorEntries =
-            await this.collaborators.getMostRecentManifestEntries(
-               environmentId,
-               packageName,
-               id,
-               reader,
-               await target.runs(),
-            );
+         const priorEntries = await this.committer.mostRecentEntries(
+            environmentId,
+            packageName,
+            id,
+            reader,
+            await target.runs(),
+         );
          let recheck: Record<string, BuildInstruction>;
          ({
             instructions,
@@ -1274,16 +1258,14 @@ export class MaterializationService {
          (orchestrated || owned === undefined)
       ) {
          if (orchestrated) {
-            await this.claims
-               .lockFor(environmentId, packageName)
-               .runExclusive(() =>
-                  this.claims.markSuperseded(
-                     environmentId,
-                     packageName,
-                     id,
-                     instructions,
-                  ),
-               );
+            await this.claims.withTableLock(environmentId, packageName, () =>
+               this.claims.markSuperseded(
+                  environmentId,
+                  packageName,
+                  id,
+                  instructions,
+               ),
+            );
          } else {
             await this.claims.claimTables(
                environmentId,
@@ -1733,7 +1715,7 @@ export class MaterializationService {
       }
 
       if (options.dropTables) {
-         await this.collaborators.dropMaterializedTables(
+         await this.reclaimer.dropMaterializedTables(
             environmentName,
             packageName,
             m,

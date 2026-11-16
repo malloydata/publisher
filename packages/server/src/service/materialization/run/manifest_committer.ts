@@ -14,7 +14,6 @@
  * the run; the run's record says what is served.
  */
 
-import type { Mutex } from "async-mutex";
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
 import { logger } from "../../../logger";
@@ -127,12 +126,16 @@ export class ManifestCommitter {
          host: MaterializationHost;
          lifecycle: RunLifecycle;
          /**
-          * The package's table lock (`TableClaims.lockFor`), under which
-          * another run marks this one's entries superseded: the final write
-          * re-reads and keeps those marks under it. Absent in tests that
-          * drive one run.
+          * The package's table lock (`TableClaims.withTableLock`), under
+          * which another run marks this one's entries superseded: the final
+          * write re-reads and keeps those marks under it. Absent in tests
+          * that drive one run.
           */
-         tableLock?: (environmentId: string, packageName: string) => Mutex;
+         withTableLock?: (
+            environmentId: string,
+            packageName: string,
+            fn: () => Promise<void>,
+         ) => Promise<void>;
       },
    ) {}
 
@@ -231,10 +234,12 @@ export class ManifestCommitter {
                current ?? undefined,
             );
          };
-         if (this.deps.tableLock && rowsReady) {
-            await this.deps
-               .tableLock(rowsReady.environmentId, rowsReady.packageName)
-               .runExclusive(write);
+         if (this.deps.withTableLock && rowsReady) {
+            await this.deps.withTableLock(
+               rowsReady.environmentId,
+               rowsReady.packageName,
+               write,
+            );
          } else {
             await write();
          }
