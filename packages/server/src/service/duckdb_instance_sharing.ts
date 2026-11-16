@@ -39,6 +39,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { getDuckDBThreads } from "../config";
 import { logger } from "../logger";
+import { hardCloseIfAwaitingHandle } from "./duckdb_hard_close";
 
 /** A connection's settings, as `@malloydata/db-duckdb` normalized them. */
 interface NormalizedDuckDBConfig {
@@ -281,10 +282,17 @@ export function installDuckDBInstanceSharing(): void {
             "Closing a DuckDB connection whose open has not settled; its instance is released when it does",
             { waitedMs: closeWaitMs },
          );
-         void connecting.then(
-            () => close.call(this),
-            () => close.call(this),
-         );
+         // A hard close requested meanwhile found no handle to free; the
+         // deferred close detaches it, so retry then (duckdb_hard_close.ts).
+         const closeLater = () =>
+            close
+               .call(this)
+               .then(() =>
+                  hardCloseIfAwaitingHandle(
+                     this as unknown as DuckDBConnection,
+                  ),
+               );
+         void connecting.then(closeLater, closeLater);
       }
       return close.call(this);
    };
