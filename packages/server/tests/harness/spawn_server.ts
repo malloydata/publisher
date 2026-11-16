@@ -121,29 +121,96 @@ export interface SpawnedServer {
    stop(): Promise<void>;
 }
 
+/** How many boots `spawnServer` tries before a lost port race fails the test. */
+const PORT_ATTEMPTS = 3;
+
+/** The line `main_server.ts` logs before exiting on EADDRINUSE. */
+const portInUseLine = (port: number, flag: string) =>
+   `Port ${port} in use; pass ${flag} <n>`;
+
+/** Both listening lines `main_server.ts` logs once its listeners bind. */
+const bothListening = (log: string) =>
+   log.includes("Publisher server listening at") &&
+   log.includes("MCP server listening at");
+
+export interface SpawnServerOptions {
+   env?: Record<string, string | undefined>;
+   serverRoot?: string;
+   config?: unknown;
+   args?: string[];
+   /** The process cwd, where `.mcp.json` would land. Defaults to packages/server. */
+   cwd?: string;
+   restPort?: number;
+   mcpPort?: number;
+   /** Picks each unpinned port. Defaults to `getFreePort`; tests of the retry inject one. */
+   pickPort?: () => Promise<number>;
+   /** Called with each boot attempt, including ones retried away. For the harness's own spec. */
+   onAttempt?: (attempt: SpawnedServer) => void;
+}
+
 /**
  * `bun src/server.ts` as a real process on free ports (unless given), REST
  * bound to loopback, with an empty server root unless `serverRoot` is given.
  * `config` is written to the root's `publisher.config.json`. `env` is merged
  * over this process's; a key set to `undefined` is removed.
+ *
+ * A free port is picked by binding and releasing it, so another process can
+ * take it before the server binds. When a port this harness picked is lost
+ * that way, the server exits with its port-in-use line and the harness boots
+ * again on fresh ports (a fresh root too, unless `serverRoot` was given), up
+ * to three times. A port the caller pinned is never replaced: a collision on
+ * it is returned as the exited server, for the caller to assert on. With any
+ * port picked here, the call returns once both listeners have bound or the
+ * process has exited.
  */
 export async function spawnServer(
-   options: {
-      env?: Record<string, string | undefined>;
-      serverRoot?: string;
-      config?: unknown;
-      args?: string[];
-      /** The process cwd, where `.mcp.json` would land. Defaults to packages/server. */
-      cwd?: string;
-      restPort?: number;
-      mcpPort?: number;
-   } = {},
+   options: SpawnServerOptions = {},
 ): Promise<SpawnedServer> {
-   const restPort = options.restPort ?? (await getFreePort());
-   let mcpPort = options.mcpPort ?? (await getFreePort());
-   while (options.mcpPort === undefined && mcpPort === restPort) {
-      mcpPort = await getFreePort();
+   const pickPort = options.pickPort ?? getFreePort;
+   for (let attempt = 1; ; attempt++) {
+      const restPort = options.restPort ?? (await pickPort());
+      let mcpPort = options.mcpPort ?? (await pickPort());
+      while (options.mcpPort === undefined && mcpPort === restPort) {
+         mcpPort = await pickPort();
+      }
+      const { server, drained } = launch(options, restPort, mcpPort);
+      options.onAttempt?.(server);
+      const picked = [
+         options.restPort === undefined && portInUseLine(restPort, "--port"),
+         options.mcpPort === undefined && portInUseLine(mcpPort, "--mcp_port"),
+      ].filter((line): line is string => line !== false);
+      if (picked.length === 0) return server;
+
+      // Settled once both listeners hold their ports, or the process is gone.
+      await pollUntil(
+         () => server.exited() || bothListening(server.output()),
+         90_000,
+         50,
+      );
+      // 'exit' can beat the last of the output, so read it once the pipes close.
+      if (server.exited()) await pollUntil(drained, 5_000, 20);
+      const lostRace =
+         server.exited() &&
+         picked.some((line) => server.output().includes(line));
+      if (!lostRace) return server;
+      await server.stop();
+      if (attempt === PORT_ATTEMPTS) {
+         throw new Error(
+            `server lost a free port to another process on each of ${PORT_ATTEMPTS} boots\n--- last server log tail ---\n${server.output().slice(-4000)}`,
+         );
+      }
    }
+}
+
+/**
+ * One boot of `spawnServer` on the given ports. `drained` turns true once the
+ * process's output pipes have closed, so `output()` holds everything it wrote.
+ */
+function launch(
+   options: SpawnServerOptions,
+   restPort: number,
+   mcpPort: number,
+): { server: SpawnedServer; drained: () => boolean } {
    const ownRoot = options.serverRoot === undefined;
    const serverRoot =
       options.serverRoot ??
@@ -180,11 +247,13 @@ export async function spawnServer(
       err += d.toString();
    });
    proc.on("exit", (code) => (exitCode = code));
+   let closed = false;
+   proc.on("close", () => (closed = true));
    const exited = () => exitCode !== undefined;
    const baseUrl = `http://127.0.0.1:${restPort}`;
    const tail = () => `\n--- server log tail ---\n${all.slice(-4000)}`;
 
-   return {
+   const server: SpawnedServer = {
       proc,
       restPort,
       mcpPort,
@@ -233,4 +302,5 @@ export async function spawnServer(
          if (ownRoot) removeDir(serverRoot);
       },
    };
+   return { server, drained: () => closed };
 }
