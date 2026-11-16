@@ -93,6 +93,7 @@ describe("isPublisherResizeMessage", () => {
 describe("isPublisherQueryMessage", () => {
    const report = {
       type: "publisher:query",
+      seq: 1,
       environment: "env",
       package: "pkg",
       model: "sales.malloy",
@@ -102,11 +103,14 @@ describe("isPublisherQueryMessage", () => {
    it("accepts a report", () => {
       expect(isPublisherQueryMessage(report)).toBe(true);
    });
-   it("rejects a resize message and a report missing its target", () => {
+   it("rejects a resize message, and a report missing its target or seq", () => {
       expect(
          isPublisherQueryMessage({ type: "publisher:resize", height: 1 }),
       ).toBe(false);
       expect(isPublisherQueryMessage({ ...report, model: undefined })).toBe(
+         false,
+      );
+      expect(isPublisherQueryMessage({ ...report, seq: undefined })).toBe(
          false,
       );
       expect(isPublisherQueryMessage(null)).toBe(false);

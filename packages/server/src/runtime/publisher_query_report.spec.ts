@@ -108,6 +108,7 @@ describe("publisher:query reports", () => {
       expect(reports()).toEqual([
          {
             type: "publisher:query",
+            seq: 1,
             environment: "sales-env",
             package: "sales",
             model: "sales.malloy",
@@ -117,6 +118,30 @@ describe("publisher:query reports", () => {
             rowCount: 1,
             rows: [{ region: "EMEA", revenue: 120 }],
          },
+      ]);
+   });
+
+   it("numbers each report by when its query started, not when it finished", async () => {
+      let releaseSlow = () => {};
+      const slow = new Promise<void>((resolve) => (releaseSlow = resolve));
+      const { Publisher, reports, deliver } = runtime({
+         answer: async (body) => {
+            if (body.query === "run: slow") await slow;
+            return {
+               ok: true,
+               status: 200,
+               body: { result: JSON.stringify([{ q: body.query }]) },
+            };
+         },
+      });
+      deliver();
+      const first = Publisher.query("sales.malloy", "run: slow", {});
+      await Publisher.query("sales.malloy", "run: fast", {});
+      releaseSlow();
+      await first;
+      expect(reports().map((r) => [r.query, r.seq])).toEqual([
+         ["run: fast", 2],
+         ["run: slow", 1],
       ]);
    });
 

@@ -64,6 +64,12 @@ export const PUBLISHER_QUERY_MESSAGE_TYPE = "publisher:query";
 /** Query report posted by an embedded data app's publisher.js runtime. */
 export interface PublisherQueryMessage {
    type: typeof PUBLISHER_QUERY_MESSAGE_TYPE;
+   /**
+    * The order the query started in, counting from 1 for the page. Reports
+    * arrive in the order queries finish, so a host that keeps one report per
+    * view keeps the one with the highest `seq`.
+    */
+   seq: number;
    environment: string;
    package: string;
    /** Model path the query ran against, as the page passed it. */
@@ -101,6 +107,7 @@ export function isPublisherQueryMessage(
    const m = data as Record<string, unknown>;
    return (
       m.type === PUBLISHER_QUERY_MESSAGE_TYPE &&
+      typeof m.seq === "number" &&
       typeof m.environment === "string" &&
       typeof m.package === "string" &&
       typeof m.model === "string"

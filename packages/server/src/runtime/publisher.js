@@ -164,6 +164,10 @@
    // The origin of the framing page that subscribed; until then, reports wait.
    var reportOrigin = null;
    var reportBacklog = [];
+   // Reports go out as queries finish. Each carries the order its query
+   // started in, so a host can keep the latest one asked rather than the last
+   // one answered.
+   var querySeq = 0;
 
    if (reportsQueries) {
       window.addEventListener("message", function (event) {
@@ -295,10 +299,18 @@
       }
    }
 
-   function postQueryReport(target, modelPath, malloyQuery, opts, outcome) {
+   function postQueryReport(
+      target,
+      modelPath,
+      malloyQuery,
+      opts,
+      seq,
+      outcome,
+   ) {
       if (!reportsQueries) return;
       var report = {
          type: "publisher:query",
+         seq: seq,
          environment: target.env,
          package: target.pkg,
          model: modelPath,
@@ -331,6 +343,7 @@
    async function rawQuery(modelPath, malloyQuery, opts, compactJson) {
       opts = opts || {};
       var target = resolveTarget(opts);
+      var seq = ++querySeq;
       try {
          var result = await runQuery(
             target,
@@ -340,12 +353,12 @@
             compactJson,
          );
       } catch (err) {
-         postQueryReport(target, modelPath, malloyQuery, opts, {
+         postQueryReport(target, modelPath, malloyQuery, opts, seq, {
             error: (err && err.message) || err,
          });
          throw err;
       }
-      postQueryReport(target, modelPath, malloyQuery, opts, {
+      postQueryReport(target, modelPath, malloyQuery, opts, seq, {
          result: result,
          compactJson: compactJson,
       });

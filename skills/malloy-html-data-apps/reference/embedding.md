@@ -40,7 +40,7 @@ The host opts in. It posts `{ type: "publisher:subscribe" }` to the frame, with 
 iframe.contentWindow.postMessage({ type: "publisher:subscribe" }, frameOrigin);
 ```
 
-The runtime accepts that only from its parent window, then posts a `publisher:query` message after each query to the origin the subscribe came from, never to `"*"`. The latest reports from before the subscribe, at most 10, are sent in order when it arrives; a frame nobody subscribes to sends nothing. Reports are never posted on a hosted embed surface (`/apps/...`) or by a page opened in its own tab.
+The runtime accepts that only from its parent window, then posts a `publisher:query` message after each query to the origin the subscribe came from, never to `"*"`. The latest reports from before the subscribe, at most 10, are sent in order when it arrives; a frame nobody subscribes to sends nothing. Reports arrive in the order queries finish, and each carries a `seq` numbering the order they started in, so a host that keeps one report per view keeps the one with the highest `seq`. Reports are never posted on a hosted embed surface (`/apps/...`) or by a page opened in its own tab.
 
 The app's author writes none of this; pass filters as `givens` or `filterParams` rather than baking them into query text, so the host can name them.
 
