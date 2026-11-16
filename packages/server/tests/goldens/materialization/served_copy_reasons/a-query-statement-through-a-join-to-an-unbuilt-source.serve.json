@@ -1,0 +1,12 @@
+{
+  "problems": [
+    {
+      "reason": "cross_connection_unbuilt",
+      "sourceName": null
+    }
+  ],
+  "query": {
+    "equalToLive": true,
+    "servedFrom": null
+  }
+}

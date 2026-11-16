@@ -6,15 +6,18 @@ import type {
    Materialization,
    ResourceRepository,
 } from "../../storage/DatabaseInterface";
-import type { ManifestEntry } from "../materialization/types";
+import {
+   isLegacyFailedEntry,
+   type ManifestEntry,
+} from "../materialization/domain/types";
 
 /**
  * Who owns the tables a published version's materializations build, decided
  * by the package's `materialization.scope`:
  *
  *  - `scope: "version"`: each version owns its tables. A self-assigned name
- *    gains the version as a suffix, reuse and the serve binding read only that
- *    version's runs, and archiving the version reclaims them.
+ *    shows the version (domain/table_name.ts), reuse and the serve binding
+ *    read only that version's runs, and archiving the version reclaims them.
  *  - `scope: "package"` (the default): the versions share the package's
  *    tables, under unchanged names. Each version binds only the tables its own
  *    definition built (the serve binding checks the content address).
@@ -27,6 +30,11 @@ import type { ManifestEntry } from "../materialization/types";
 export interface ScopedPackage {
    getVersionId(): string | undefined;
    getPackageMetadata(): { scope?: string | null };
+   /**
+    * `getPackageMetadata().scope`, without building the rest of the
+    * metadata (its warnings pass); read in its place when present.
+    */
+   getMaterializationScope?(): string | null | undefined;
 }
 
 /**
@@ -37,7 +45,10 @@ export interface ScopedPackage {
 export function ownedVersionOf(pkg: ScopedPackage): string | undefined {
    const version = pkg.getVersionId();
    if (version === undefined) return undefined;
-   return pkg.getPackageMetadata().scope === "version" ? version : undefined;
+   const scope = pkg.getMaterializationScope
+      ? pkg.getMaterializationScope()
+      : pkg.getPackageMetadata().scope;
+   return scope === "version" ? version : undefined;
 }
 
 /**
@@ -132,7 +143,7 @@ export function tableNamesIn(
 }
 
 /** Whether `reader` serves from what run `m` built. */
-function readsRun(m: Materialization, reader: ServingReader): boolean {
+export function readsRun(m: Materialization, reader: ServingReader): boolean {
    if (reader.owned !== undefined) return m.version === reader.owned;
    if (isVersionOwnedRun(m)) return false;
    // A run with instructions built the tables its caller named for its own
@@ -199,20 +210,55 @@ export function tableIdentity(physicalTableName: string): string {
 export function storageBindingResolverFor(
    repository: Pick<ResourceRepository, "listMaterializations">,
    environmentId: string,
+   /**
+    * What the bind adds to the entries from the runs they came from: the
+    * rollup key records (known limitation 29, `withRollupKeyRecords`).
+    */
+   annotate?: (
+      entries: Record<string, ManifestEntry>,
+      runs: Materialization[],
+   ) => Record<string, ManifestEntry>,
 ): (
    packageName: string,
    reader: ServingReader,
 ) => Promise<Record<string, ManifestEntry>> {
-   return async (packageName, reader) =>
-      newestServingEntries(
-         await repository.listMaterializations(
-            environmentId,
-            packageName,
-            reader.owned !== undefined ? { version: reader.owned } : undefined,
-         ),
-         reader,
+   return async (packageName, reader) => {
+      const runs = await repository.listMaterializations(
+         environmentId,
+         packageName,
+         reader.owned !== undefined ? { version: reader.owned } : undefined,
       );
+      const entries = storedServingEntries(runs, reader);
+      return annotate ? annotate(entries, runs) : entries;
+   };
 }
+
+/**
+ * The entries `reader` serves from the store: {@link newestServingEntries},
+ * less any that records a failed source. Legacy tolerance, removable with
+ * `ManifestEntry.error`: manifests from 0.0.245-0.0.246 record failed sources
+ * among their entries, naming a table that was never created. Every read of
+ * the store for serving or reuse goes through this one.
+ */
+export function storedServingEntries(
+   runs: Materialization[],
+   reader: ServingReader,
+   excludeId?: string,
+): Record<string, ManifestEntry> {
+   return Object.fromEntries(
+      Object.entries(newestServingEntries(runs, reader, excludeId)).filter(
+         ([, entry]) => !isLegacyFailedEntry(entry),
+      ),
+   );
+}
+
+/*
+ * The names auto-run gave the tables it named before readable names
+ * (domain/table_name.ts). Kept only to re-derive them exactly, so a run can
+ * tell a table this package built under its old name from anything else, and
+ * reclaim it once its readable replacement has committed
+ * (Reclaimer.reclaimRenamedTables).
+ */
 
 /**
  * The longest table segment a version-owned name may have: Postgres truncates
@@ -253,6 +299,35 @@ export function versionTableSuffix(owner: VersionTableOwner): string {
       owner.version,
    ]);
    return `__v${base}_${shortHash(owned)}`;
+}
+
+/** Whose an auto-run's shared tables are: one package of one environment. */
+export interface PackageTableOwner {
+   environmentName: string;
+   packageName: string;
+}
+
+/**
+ * The suffix that makes an auto-run's self-assigned table name this package's
+ * own, for an unversioned package or the shared tables of a `scope: package`
+ * one: `__p<8 hex>`, a hash of the environment and the package.
+ *
+ * Tables live on connections and storage destinations that packages, and
+ * environments, can share. Named after the source alone, two packages that
+ * each persist a source called `orders` on one schema would build one table,
+ * each overwriting the other's rows and serving whichever wrote last. An
+ * explicit `name=` is not suffixed (the author chose it, and an outside reader
+ * may rely on it); its table is checked for ownership before every build
+ * instead (table_ownership.ts). A `scope: version` table takes
+ * {@link versionTableSuffix}, which hashes the environment and package too.
+ *
+ * The hash keeps tables apart within one server. Two servers whose
+ * environments and packages have the same names must not share a schema.
+ */
+export function packageTableSuffix(owner: PackageTableOwner): string {
+   return `__p${shortHash(
+      JSON.stringify(["package", owner.environmentName, owner.packageName]),
+   )}`;
 }
 
 /**

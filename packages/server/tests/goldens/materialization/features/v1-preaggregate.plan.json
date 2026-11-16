@@ -1,0 +1,153 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": "rollup"
+    },
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "orders",
+        "baseGated": false,
+        "baseSourceID": "orders@<pkg>/m.malloy",
+        "baseSourceName": "orders",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "m",
+          "region"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "orders__rollup__m_region__75e7c0f9",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "deprecated-preaggregate-annotation",
+      "message": "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "orders"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "m",
+            "type": "timestamp"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders__rollup__m_region__75e7c0f9",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "m",
+            "region"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
+        "sourceID": "orders__rollup__m_region__75e7c0f9@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:f57a937d99ef9160"
+      }
+    }
+  }
+}

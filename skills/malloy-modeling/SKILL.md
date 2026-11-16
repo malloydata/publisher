@@ -116,6 +116,8 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 |-------------|----------|
 | "Model my data", "create a model" | 8-step workflow (`skill:malloy-discover`) |
 | "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
+| "Model from Power BI" | 8-step with prior art via `skill:malloy-powerbi-review` |
+| "Model from an Excel workbook" (formulas or pivots) | 8-step with prior art via `skill:malloy-excel-review` |
 | "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analysis` (no specific question) |
 | "Build a dashboard", "build a notebook", "create views" on existing model | `skill:malloy-reports` for a saved report (`layout=grid` for a dashboard, `layout=linear` for a notebook), written at the package root; `skill:malloy-charts` for views in the model |
 | "Build a model but not sure what metrics" | `skill:malloy-model-as-you-go`: answer their first real question, codify what it assumed, repeat |

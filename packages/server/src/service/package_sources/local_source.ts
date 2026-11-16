@@ -64,7 +64,8 @@ export class LocalPackageSource implements PackageSource {
       assertSafeEnvironmentPath(absoluteTargetPath);
       const notFound = () =>
          new PackageNotFoundError(
-            `Package ${packageName} for environment ${environmentName} not found in "${environmentPath}"`,
+            // Named by the package: the location is the server's path.
+            `Package ${packageName} for environment ${environmentName} not found at its configured location`,
          );
       const source = await fs.promises.stat(environmentPath).catch((error) => {
          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -84,6 +85,9 @@ export class LocalPackageSource implements PackageSource {
          await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
          await fs.promises.cp(environmentPath, absoluteTargetPath, {
             recursive: true,
+            // A relative link stays relative, so an in-package link still
+            // leads inside the copy rather than back into the source.
+            verbatimSymlinks: true,
          });
       } else {
          throw notFound();

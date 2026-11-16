@@ -11,6 +11,7 @@ import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
+import { quotedIdentifier, stringLiteral } from "../../service/malloy_text";
 import {
    capColumns,
    type RankingMode,
@@ -101,23 +102,6 @@ type SearchDatabaseSchemaParams = z.infer<
 >;
 
 /**
- * Escape a Malloy string literal. Malloy escapes with a backslash, not by
- * doubling the quote as SQL does, so `o'brien` needs `\'`.
- */
-function escapeMalloyString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
-/**
- * Quote an identifier, always: a bare reserved word (`table`, `source`) does
- * not compile. Backslash is escaped first so the backtick's escape is not
- * doubled, and a trailing backslash cannot swallow the closing backtick.
- */
-function malloyIdentifier(name: string): string {
-   return `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
-}
-
-/**
  * The ready-to-paste `source:` line for a table. `resource` keeps its
  * qualification exactly as introspection produced it; only quoting is added.
  */
@@ -126,9 +110,9 @@ export function malloySourceSnippet(
    resource: string,
    tableName: string,
 ): string {
-   const alias = malloyIdentifier(tableName);
-   const connection = malloyIdentifier(connectionName);
-   return `source: ${alias} is ${connection}.table('${escapeMalloyString(resource)}') extend { }`;
+   const alias = quotedIdentifier(tableName);
+   const connection = quotedIdentifier(connectionName);
+   return `source: ${alias} is ${connection}.table(${stringLiteral(resource)}) extend { }`;
 }
 
 /**

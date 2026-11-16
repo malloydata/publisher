@@ -1,0 +1,36 @@
+// cast plan: files generated while serving
+
+// ==== <root>/m.malloy
+##! experimental { persistence sql_functions }
+##! experimental { virtual_source }
+type: typed__served is {
+   id::number,
+   big::number,
+   ts::timestamp,
+   tz::timestamptz,
+   code::string,
+   d_from_ts::timestamp,
+   d_from_tz::timestamp,
+   flag::number
+}
+
+source: ev is duckdb.table('ev')
+
+#@ persist name="typed" storage="lake"
+source: typed is __served_copy_alias_of_unknown.virtual('h0')::typed__served extend {
+  private rename:
+    big__stored is big
+    d_from_ts__stored is d_from_ts
+    d_from_tz__stored is d_from_tz
+    flag__stored is flag
+  dimension:
+    big is big__stored::"HUGEINT"
+    d_from_ts is d_from_ts__stored::"DATE"
+    d_from_tz is d_from_tz__stored::"DATE"
+    flag is flag__stored::boolean
+}
+
+#(materialize) storage="lake"
+source: wide is ev extend {
+  measure: n is count()
+}

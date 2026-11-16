@@ -48,7 +48,13 @@ function planOf(...sources: PersistSourcePlan[]): BuildPlan {
    };
 }
 
-const ALL_ELIGIBLE = (names: string[]) => ({ eligible: names, refused: {} });
+/** A planSource's sourceID: eligibility is keyed by sourceID, not name. */
+const sid = (name: string) => `${name}@file:///m.malloy`;
+
+const ALL_ELIGIBLE = (names: string[]) => ({
+   eligible: names.map(sid),
+   refused: {},
+});
 
 describe("rowCountSQL", () => {
    it("wraps the build query in a count, dropping a trailing semicolon", () => {
@@ -119,20 +125,30 @@ describe("estimateRefusal", () => {
       expect(refusal?.message).toContain("gated base");
    });
 
-   it("refuses a source the storage gate does not admit, or admits under a refused name", () => {
+   it("refuses a source the storage gate does not admit, or also lists as refused", () => {
       expect(
          estimateRefusal(open.sourceID, open, undefined, {
             eligible: [],
-            refused: { open: "it is protected by a gate" },
+            refused: { [sid("open")]: "it is protected by a gate" },
          })?.reason,
       ).toBe("gated");
-      // Two models' same-named sources: one refusal refuses the name.
+      // Listed as both eligible and refused: the refusal wins.
       expect(
          estimateRefusal(open.sourceID, open, undefined, {
-            eligible: ["open"],
-            refused: { open: "it is protected by a gate" },
+            eligible: [sid("open")],
+            refused: { [sid("open")]: "it is protected by a gate" },
          })?.reason,
       ).toBe("gated");
+   });
+
+   it("refuses a source the storage gate admits only because the read keeps its own gate", () => {
+      const refusal = estimateRefusal(open.sourceID, open, undefined, {
+         eligible: [sid("open")],
+         refused: {},
+         gateKept: [sid("open")],
+      });
+      expect(refusal?.reason).toBe("gated");
+      expect(refusal?.message).toContain("re-applies");
    });
 
    it("refuses a source whose build strips a caller-scoped term", () => {
@@ -233,8 +249,8 @@ describe("estimateRowCounts", () => {
       const result = await estimateRowCounts({
          plan: planOf(persisted, rollup, gated),
          eligibility: {
-            eligible: ["orders_flat", "orders__preagg_1"],
-            refused: { gated: "it is protected by a gate" },
+            eligible: [sid("orders_flat"), sid("orders__preagg_1")],
+            refused: { [sid("gated")]: "it is protected by a gate" },
          },
          request: {},
          countRows: async (source, sql) => {

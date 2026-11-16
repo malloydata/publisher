@@ -262,8 +262,12 @@ describe("row-count estimates over DuckDB", () => {
 
 describe("who can run an estimate", () => {
    it("is only the estimate route's controller: no load, reload or build path imports it", () => {
+      // The module is reached through materialization/index.ts (R10), so the
+      // index is its one importer, and the controller is the one caller of
+      // what the index re-exports.
       const srcRoot = path.resolve(import.meta.dir, "../../..");
       const importers: string[] = [];
+      const callers: string[] = [];
       const walk = (dir: string) => {
          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
             const full = path.join(dir, entry.name);
@@ -271,17 +275,27 @@ describe("who can run an estimate", () => {
             else if (
                entry.name.endsWith(".ts") &&
                !entry.name.endsWith(".spec.ts") &&
-               !full.endsWith(path.join("estimate", "row_count_estimate.ts")) &&
-               /from\s+"[^"]*\/row_count_estimate"/.test(
-                  fs.readFileSync(full, "utf8"),
-               )
+               !full.endsWith(path.join("estimate", "row_count_estimate.ts"))
             ) {
-               importers.push(path.relative(srcRoot, full));
+               const text = fs.readFileSync(full, "utf8");
+               const rel = path.relative(srcRoot, full);
+               if (/from\s+"[^"]*\/row_count_estimate"/.test(text)) {
+                  importers.push(rel);
+               }
+               if (
+                  /\bestimatePackageRowCounts\b/.test(text) &&
+                  rel !== path.join("service", "materialization", "index.ts")
+               ) {
+                  callers.push(rel);
+               }
             }
          }
       };
       walk(srcRoot);
       expect(importers).toEqual([
+         path.join("service", "materialization", "index.ts"),
+      ]);
+      expect(callers).toEqual([
          path.join("controller", "package.controller.ts"),
       ]);
    });

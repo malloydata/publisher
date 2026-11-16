@@ -1,9 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { sqlLiteral } from "../../db_utils";
-import type { QueryMetadata } from "../../query_metadata";
-
 /**
  * Render a build's query-metadata bag into each warehouse's own tagging grammar,
  * for the `storage=` build path.
@@ -17,8 +14,13 @@ import type { QueryMetadata } from "../../query_metadata";
  * Neither connector exports its renderer, so the grammars are reimplemented
  * here and pinned by tests that state the grammar.
  *
+ * The Snowflake statement that sets the tag is warehouse_sql.ts's.
+ *
  * Pinned to @malloydata/malloy 0.0.427.
  */
+
+import { snowflakeSetQueryTagStatement } from "./warehouse_sql";
+import type { QueryMetadata } from "../../query_metadata";
 
 /**
  * Snowflake's `QUERY_TAG` ceiling. The bag arrives already bounded to this on
@@ -59,13 +61,8 @@ export function snowflakeQueryTagValue(
  * else. The passthrough reuses ONE session across calls, which is what makes a
  * session-level tag reach the build's read at all.
  *
- * <b>Escaped with {@link sqlLiteral} for the snowflake dialect, not by doubling
- * quotes.</b> A property value may contain a backslash — the contract admits
- * printable ASCII except `"` — and JSON renders one as `\\`. Snowflake treats
- * backslash as an escape inside a single-quoted literal, so quote-doubling alone
- * delivers `\` where the JSON needed `\\`, and the stored tag no longer parses:
- * unqueryable in `QUERY_HISTORY`, which is the entire purpose of tagging, and
- * silent because the statement itself succeeds.
+ * The statement escapes the tag for Snowflake (see
+ * snowflakeSetQueryTagStatement).
  */
 export function snowflakeSetQueryTagSQL(
    metadata: QueryMetadata | undefined,
@@ -73,10 +70,7 @@ export function snowflakeSetQueryTagSQL(
 ): string | undefined {
    const tag = snowflakeQueryTagValue(metadata);
    if (tag === undefined) return undefined;
-   const inner = `ALTER SESSION SET QUERY_TAG = '${sqlLiteral(tag, "snowflake")}'`;
-   // The outer literal is parsed by DuckDB, which has no backslash escape, so
-   // the passthrough's own quote-doubling is the correct level here.
-   return `SELECT * FROM snowflake_query('${inner.replace(/'/g, "''")}', '${secretName.replace(/'/g, "''")}')`;
+   return snowflakeSetQueryTagStatement(tag, secretName);
 }
 
 /** BigQuery's label grammar: lowercase, `[a-z0-9_-]`, at most 63 characters. */

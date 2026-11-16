@@ -1,0 +1,344 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "cart_rows",
+        "tier": "storage"
+      },
+      {
+        "name": "cart_totals",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "cart_rows:serves",
+      "cart_totals:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "g"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "g"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "ced01578ca40fd68",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "cart_totals",
+          "stages": 1
+        },
+        "source": "cart_totals"
+      },
+      "equalToLive": true,
+      "malloy": "run: cart_totals -> { group_by: g; aggregate: total; order_by: g }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b8c77013015fb5c71865cb71ce01dce1056f7ae465d383a91776c24f2ca6e286"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "cart_rows",
+            "tableId": "94337d64da6f769f74675d99ec9a24e277d11f5b4659313035fad98e3123a032"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "g"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "cart_totals"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b8c77013015fb5c71865cb71ce01dce1056f7ae465d383a91776c24f2ca6e286",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a stored array-query result",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "id"
+          },
+          {
+            "classifications": [],
+            "path": "items"
+          },
+          {
+            "classifications": [],
+            "path": "items.price"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "arrayQuery(items,[[],?,[[?],[],?],[],[],[],?,[?,?],?,?,[?,t,?,?],query_result,?,[?,aggregate:sum(price),?,t,?,[[?],[],?],?],[[?],[],?],?])",
+            "id"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c1f8359f6d1aca3a",
+          "kind": "project",
+          "measures": [],
+          "source": "cart_rows",
+          "stages": 1
+        },
+        "source": "cart_rows"
+      },
+      "equalToLive": true,
+      "malloy": "run: cart_rows -> { select: id, s is items -> { aggregate: t is price.sum() }; order_by: id }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "94337d64da6f769f74675d99ec9a24e277d11f5b4659313035fad98e3123a032"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "cart_totals",
+            "tableId": "b8c77013015fb5c71865cb71ce01dce1056f7ae465d383a91776c24f2ca6e286"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "id",
+            "items",
+            "items.price"
+          ],
+          "measures": [],
+          "sourceName": "cart_rows"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "94337d64da6f769f74675d99ec9a24e277d11f5b4659313035fad98e3123a032",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a caller's array query over a stored array",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "g"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "g"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "ced01578ca40fd68",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "cart_totals",
+          "stages": 1
+        },
+        "source": "cart_totals"
+      },
+      "equalToLive": true,
+      "malloy": "run: cart_totals -> { group_by: g; aggregate: total; order_by: g }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "b8c77013015fb5c71865cb71ce01dce1056f7ae465d383a91776c24f2ca6e286"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "cart_rows",
+            "tableId": "94337d64da6f769f74675d99ec9a24e277d11f5b4659313035fad98e3123a032"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "g"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "cart_totals"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "b8c77013015fb5c71865cb71ce01dce1056f7ae465d383a91776c24f2ca6e286",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a stored array-query result",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "id"
+          },
+          {
+            "classifications": [],
+            "path": "items"
+          },
+          {
+            "classifications": [],
+            "path": "items.price"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "arrayQuery(items,[[],?,[[?],[],?],[],[],[],?,[?,?],?,?,[?,t,?,?],query_result,?,[?,aggregate:sum(price),?,t,?,[[?],[],?],?],[[?],[],?],?])",
+            "id"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c1f8359f6d1aca3a",
+          "kind": "project",
+          "measures": [],
+          "source": "cart_rows",
+          "stages": 1
+        },
+        "source": "cart_rows"
+      },
+      "equalToLive": true,
+      "malloy": "run: cart_rows -> { select: id, s is items -> { aggregate: t is price.sum() }; order_by: id }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "94337d64da6f769f74675d99ec9a24e277d11f5b4659313035fad98e3123a032"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "cart_totals",
+            "tableId": "b8c77013015fb5c71865cb71ce01dce1056f7ae465d383a91776c24f2ca6e286"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "id",
+            "items",
+            "items.price"
+          ],
+          "measures": [],
+          "sourceName": "cart_rows"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "94337d64da6f769f74675d99ec9a24e277d11f5b4659313035fad98e3123a032",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a caller's array query over a stored array",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

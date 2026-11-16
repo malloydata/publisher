@@ -51,10 +51,16 @@
  * 400.
  */
 
-import { Annotations } from "@malloydata/malloy";
-import { parseRouteTag } from "../../motly";
+import { hasEnvReference } from "../../motly";
+import { nearestKey } from "../../annotation_reader";
+import { placementOf, readNotes, type RouteTag } from "./declaration";
 import { isSpliceableNamespace } from "./preaggregation_namespace";
 import type { LogMessage } from "@malloydata/malloy";
+import type { DeclaredFreshness } from "../domain/freshness";
+import {
+   FRESHNESS_GROUP_KEYS,
+   readFreshnessGroup,
+} from "./freshness_declaration";
 
 /** One grain a measure is declared at — one rollup. */
 interface PreaggregateGrain {
@@ -86,6 +92,12 @@ interface PreaggregateGrain {
     * `basePersistNamespace` for why).
     */
    storage?: string;
+   /**
+    * This grain's own `freshness` group, when its line writes one
+    * (`#@ preaggregate grain="category" freshness.window="1h"`), read as
+    * `#(preaggregate)` reads it (freshness_declaration.ts).
+    */
+   freshness?: DeclaredFreshness;
 }
 
 /** A `#@ preaggregate` line that is present but unusable. */
@@ -95,7 +107,11 @@ interface PreaggregateDeclarationError {
       | "empty_grain"
       | "invalid_namespace"
       | "empty_storage"
-      | "invalid_storage";
+      | "invalid_storage"
+      | "unknown_key"
+      | "unparseable"
+      | "env_reference"
+      | "invalid_freshness";
    /** Names the measure and the fix; becomes the body of a publish-time 400. */
    message: string;
 }
@@ -144,8 +160,32 @@ export function parseGrainDimensions(grainText: string): string[] {
    return [...new Set(parts)].sort();
 }
 
-/** A note that turns the annotation off. The one text pattern this module reads. */
+/** A note that turns the annotation off. */
 const NEGATION = /#@\s*-\s*preaggregate\b/;
+
+/**
+ * A note that declares `#@ preaggregate`, told from its text when the line
+ * cannot be read (it does not parse, or it reads the environment and the
+ * reader drops it).
+ */
+const DECLARATION = /^\s*#@\s*preaggregate\b/;
+
+/** The keys a `#@ preaggregate` line takes, beside the directive. A closed set. */
+const LINE_KEYS: ReadonlySet<string> = new Set([
+   "preaggregate",
+   "grain",
+   "namespace",
+   "storage",
+   "freshness",
+]);
+
+/** The keys `#@ preaggregate { … }` takes inside the directive. */
+const DIRECTIVE_KEYS: ReadonlySet<string> = new Set([
+   "grain",
+   "namespace",
+   "storage",
+   "freshness",
+]);
 
 interface OrderedNote {
    text: string;
@@ -183,6 +223,47 @@ function orderedNotes(annotations: unknown): OrderedNote[] {
 }
 
 /**
+ * A `#@ preaggregate` line's `freshness` group, read as `#(preaggregate)`
+ * reads it (freshness_declaration.ts); the nested form wins, as for grain=.
+ */
+function readLineFreshness(
+   tag: RouteTag,
+   name: string,
+): { freshness?: DeclaredFreshness } | { error: PreaggregateDeclarationError } {
+   const fresh = readFreshnessGroup(
+      tag,
+      tag.has("preaggregate", "freshness")
+         ? ["preaggregate", "freshness"]
+         : ["freshness"],
+   );
+   if ("unknownKeys" in fresh) {
+      return {
+         error: {
+            kind: "unknown_key",
+            message:
+               `Measure \`${name}\` declares \`#@ preaggregate\` with ` +
+               fresh.unknownKeys
+                  .map((key) => {
+                     const near = nearestKey(key, FRESHNESS_GROUP_KEYS);
+                     return `\`freshness.${key}=\`${near ? ` (did you mean \`freshness.${near}=\`?)` : ""}`;
+                  })
+                  .join(", ") +
+               `, which is not a key it reads. Use freshness.window= or freshness.fallback=.`,
+         },
+      };
+   }
+   if ("invalid" in fresh) {
+      return {
+         error: {
+            kind: "invalid_freshness",
+            message: `Measure \`${name}\` declares \`#@ preaggregate\` that ${fresh.invalid}.`,
+         },
+      };
+   }
+   return fresh;
+}
+
+/**
  * Read `#@ preaggregate` off one measure.
  *
  * Pure apart from the compiler's tag parse, and total: an unparseable annotation
@@ -210,24 +291,79 @@ export function readPreaggregateAnnotation(
          continue;
       }
 
+      const declaring = DECLARATION.test(note.text);
+      // The reader drops a line that reads the environment whole, so the
+      // declaration would vanish: an invalid line, reported as one.
+      if (declaring && hasEnvReference(note.text)) {
+         declared = true;
+         errors.push({
+            kind: "env_reference",
+            message: `Measure \`${name}\` declares \`#@ preaggregate\` on a line that reads the server's environment (\`@env.\`), which a materialization annotation may not: Publisher never reads it. Write the value into the model.`,
+         });
+         continue;
+      }
       let tag;
+      let parseErrors: string[];
       try {
-         const parsed = parseRouteTag(
-            new Annotations(
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               { notes: [note.raw] } as any,
-            ),
-            "@",
-         );
+         const parsed = readNotes([note.raw], "@");
          tag = parsed.tag;
          parseLog.push(...parsed.log);
-      } catch {
-         // Mirrors deriveAnnotationFields: a malformed annotation must not take
-         // the package down. An unreadable line cannot have declared anything.
+         parseErrors = parsed.log
+            .filter((entry) => entry.severity === "error")
+            .map((entry) => entry.message);
+      } catch (error) {
+         // Never thrown into a package load: reported as a finding instead.
+         tag = undefined;
+         parseErrors = [error instanceof Error ? error.message : String(error)];
+      }
+      if (!tag || parseErrors.length > 0) {
+         // A line that does not parse declares nothing it can be read for; on
+         // a `#@ preaggregate` line that is an invalid declaration.
+         if (declaring) {
+            declared = true;
+            errors.push({
+               kind: "unparseable",
+               message: `Measure \`${name}\` declares \`#@ preaggregate\` on a line that does not parse (${parseErrors.join("; ")}). Fix the line's syntax.`,
+            });
+         }
          continue;
       }
       if (!tag.has("preaggregate")) continue;
       declared = true;
+
+      // The key set is closed: a typo (`stroage="lake"`) would otherwise
+      // build the rollup somewhere its author did not say.
+      const unknown = [
+         ...[...tag.entries()]
+            .map(([key]) => key)
+            .filter((key) => !LINE_KEYS.has(key))
+            .map((key) => ({ key, near: nearestKey(key, LINE_KEYS) })),
+         ...[...(tag.tag("preaggregate")?.entries() ?? [])]
+            .map(([key]) => key)
+            .filter((key) => !DIRECTIVE_KEYS.has(key))
+            .map((key) => ({ key, near: nearestKey(key, DIRECTIVE_KEYS) })),
+      ];
+      if (unknown.length > 0) {
+         errors.push({
+            kind: "unknown_key",
+            message:
+               `Measure \`${name}\` declares \`#@ preaggregate\` with ` +
+               unknown
+                  .map(
+                     ({ key, near }) =>
+                        `\`${key}=\`${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+                  )
+                  .join(", ") +
+               `, which is not a key it reads. Use grain=, namespace=, storage= or freshness.window= / freshness.fallback=.`,
+         });
+         continue;
+      }
+
+      const fresh = readLineFreshness(tag, name);
+      if ("error" in fresh) {
+         errors.push(fresh.error);
+         continue;
+      }
 
       // Nested form wins; the documented sibling-key form is the fallback. Both
       // parse per line, so this is the same precedence the merged tag applied.
@@ -252,15 +388,21 @@ export function readPreaggregateAnnotation(
          }
          namespace = candidate;
       }
-      // Same precedence as `grain`, bound to THIS line's grain.
-      const storageText =
-         tag.text("preaggregate", "storage") ?? tag.text("storage");
+      // The placement rule (declaration.ts), bound to THIS line's grain. The
+      // NAME is not validated here: which destinations exist is a deployment
+      // fact, so an unknown one is refused downstream by the
+      // storage-destination resolver.
+      const placed = placementOf(tag, "preaggregate");
       let storage: string | undefined;
-      if (storageText !== undefined) {
-         const candidate = storageText.trim();
-         // Empty is refused, per the strictness rule. The NAME is not validated
-         // here: which destinations exist is a deployment fact, so an unknown one
-         // is refused downstream by the storage-destination resolver.
+      const placedIn =
+         "refused" in placed
+            ? ""
+            : placed.placement.tier === "storage"
+              ? placed.placement.destination
+              : undefined;
+      if (placedIn !== undefined) {
+         const candidate = placedIn;
+         // Names nothing: an invalid declaration, which fails the load.
          if (candidate === "") {
             errors.push({
                kind: "empty_storage",
@@ -299,6 +441,7 @@ export function readPreaggregateAnnotation(
          text: grainText,
          namespace,
          storage,
+         ...(fresh.freshness ? { freshness: fresh.freshness } : {}),
       });
    }
 

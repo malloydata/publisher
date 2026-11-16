@@ -1,0 +1,172 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "line_totals@<pkg>/m.malloy": [],
+          "segment_totals@<pkg>/m.malloy": [],
+          "with_lines@<pkg>/m.malloy": []
+        },
+        "order": [
+          "line_totals@<pkg>/m.malloy",
+          "segment_totals@<pkg>/m.malloy",
+          "with_lines@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "line_totals@<pkg>/m.malloy": "persist",
+      "segment_totals@<pkg>/m.malloy": "persist",
+      "with_lines@<pkg>/m.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "line_totals@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "segment_totals@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "with_lines@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "line_totals@<pkg>/m.malloy": "m.malloy",
+      "segment_totals@<pkg>/m.malloy": "m.malloy",
+      "with_lines@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "line_totals@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "segment_totals@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "with_lines@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "line_totals@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "line_totals",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "lines",
+            "type": "number"
+          },
+          {
+            "name": "avg_qty",
+            "type": "number"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "line_totals",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782",
+        "sourceID": "line_totals@<pkg>/m.malloy",
+        "sql": "sha256:4893114c10760063"
+      },
+      "segment_totals@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "segment_totals",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "segment",
+            "type": "string"
+          },
+          {
+            "name": "t",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "segment_totals",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd",
+        "sourceID": "segment_totals@<pkg>/m.malloy",
+        "sql": "sha256:1f5a315519d36df7"
+      },
+      "with_lines@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "with_lines",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "with_lines",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3",
+        "sourceID": "with_lines@<pkg>/m.malloy",
+        "sql": "sha256:0d2df2b9a0edd27b"
+      }
+    }
+  }
+}

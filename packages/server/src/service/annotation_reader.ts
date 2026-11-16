@@ -11,11 +11,15 @@
  * helpers for annotation bundles (own notes, model notes, positions); this
  * module is about routes.
  *
- * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) join the
- * registry in the phases that make them work (3 and 4), so nothing here
- * recognizes a spelling that still does nothing.
+ * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) are in the
+ * registry with their closed key sets, and are read only with the materialize
+ * switch on (`PUBLISHER_MATERIALIZE`): see {@link MATERIALIZE_V2_ROUTES}.
  */
 
+import {
+   freshnessWindowSeconds,
+   isFreshnessFallback,
+} from "./materialization/domain/freshness";
 import {
    payloadOf,
    routeOf,
@@ -23,7 +27,7 @@ import {
    type DocumentLocation,
 } from "@malloydata/malloy";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
-import { parseRouteTag } from "./motly";
+import { parseBounded, parseRouteTag } from "./motly";
 
 /** Malloy's routing for one note: its route, `""` for a MOTLY tag, `undefined` when the prefix is malformed. */
 export function routeOfNote(text: string): string | undefined {
@@ -56,12 +60,28 @@ function readNote(
    const route = routeOfNote(text);
    if (route !== undefined) return { route, payload: payloadOfNote(text) };
    const glued = GLUED_PREFIX.exec(text);
-   if (glued && glued[1] !== undefined && glued[1] in PUBLISHER_ROUTES) {
+   // Only the routes that were always read glued: a v2 route's reader is
+   // Malloy's `routeOf`, so a glued `#(materialize)…` declares nothing and
+   // must stay visible to the near-miss scan.
+   if (
+      glued &&
+      glued[1] !== undefined &&
+      glued[1] in PUBLISHER_ROUTES &&
+      !MATERIALIZE_V2_ROUTES.has(glued[1])
+   ) {
       return { route: glued[1], payload: glued[2] ?? "" };
    }
    const docString = GLUED_DOC_STRING.exec(text);
    if (docString) return { route: '"', payload: docString[1] ?? "" };
    return undefined;
+}
+
+/**
+ * The route a note is on as Publisher reads it (glued prefixes included), or
+ * `undefined` when it is on no route.
+ */
+export function publisherRouteOf(text: string): string | undefined {
+   return readNote(text)?.route;
 }
 
 /** Whether a note is on `route`, as Publisher reads it (glued prefixes included). */
@@ -80,6 +100,107 @@ export function payloadsOnRoute(
       if (note?.route === route) out.push(note.payload);
    }
    return out;
+}
+
+/**
+ * The top-level keys a `tag` payload declares, folded to lower case, in the
+ * order written. Read by Malloy's tag parser, so quoting, nesting and
+ * deletion (`-key`) mean what they mean to every MOTLY reader. Only key names
+ * leave, so an `@env.` value is never hydrated into a result. A payload that
+ * does not parse is read word by word, so one broken property cannot hide a
+ * sibling's key, and a word that does not parse on its own still names the
+ * key before its `=` (`sharing=`, `sharing="a`, `sharing=x)`), as the
+ * whitespace split this replaced did: a malformed value must not hide the
+ * knob it sets.
+ */
+export function tagPayloadKeys(payload: string): string[] {
+   const declared = (text: string): string[] | undefined => {
+      const { tag, messages } = parseBounded([`# ${text}`]);
+      if (!tag || messages.length > 0) return undefined;
+      return [...tag.entries()]
+         .filter(([key]) => tag.has(key))
+         .map(([key]) => key.toLowerCase());
+   };
+   const assigned = (word: string): string[] => {
+      const key = /^(['"]?)([A-Za-z_]\w*)\1=/.exec(word)?.[2];
+      return key === undefined ? [] : [key.toLowerCase()];
+   };
+   const keys =
+      declared(payload) ??
+      payload
+         .split(/[ \t\r\n]+/)
+         .filter(Boolean)
+         .flatMap((word) => declared(word) ?? assigned(word));
+   return [...new Set(keys)];
+}
+
+/**
+ * An `#(index)` / `#(index_values)` tagline: `#(` (or `# (`) and the word, at
+ * the object level. Parenthesis-only, and a block note (`#|(index)`) is not
+ * one: see `hasIndexTag` in `dim_index_discovery.ts` for why widening it is a
+ * change of its own.
+ */
+const INDEX_NOTE = /^#\s*\(\s*index(?:_values)?\b/;
+/** A tagline Malloy does not route to `index`: the bracket's body and what follows it. */
+const INDEX_NOTE_PARTS = /^#\s*\(\s*index(?:_values)?\b([^)]*)\)(.*)$/;
+
+/** Whether a tagline opts its field into the dimension index. */
+export function isIndexNote(text: string): boolean {
+   return INDEX_NOTE.test(text);
+}
+
+/**
+ * An index tagline's payload, or `undefined` when `text` is none. Malloy's
+ * own payload when it routes the note (`#(index) n=200`); otherwise the
+ * shapes authors write that Malloy calls malformed or reads as a MOTLY tag,
+ * which have always been read: the payload inside the parens
+ * (`#( index_values n=200 )`), glued to them (`#(index)n=200`), or after a
+ * spaced prefix (`# (index) n=200`). An unclosed paren is no payload.
+ */
+export function indexNotePayload(text: string): string | undefined {
+   const trimmed = text.trim();
+   if (!isIndexNote(trimmed)) return undefined;
+   const route = routeOfNote(trimmed);
+   if (route === "index" || route === "index_values") {
+      return payloadOfNote(trimmed);
+   }
+   const parts = INDEX_NOTE_PARTS.exec(trimmed);
+   if (!parts) return undefined;
+   return [parts[1], parts[2]]
+      .map((part) => (part ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+}
+
+/** The mark that keeps a source out of agent retrieval. Deprecated, still read. */
+export const AGENT_HIDDEN_ROUTE = "agent-hidden";
+
+/**
+ * Every spelling of the mark that hides, past Malloy's own route: a malformed
+ * prefix (`#( agent-hidden )`, `#agent-hidden`, `#(agent-hidden)x`) and a
+ * MOTLY tag naming it (`# agent-hidden`, `# (agent-hidden)`). Read wide on
+ * purpose: a missed mark exposes a source the author meant to withhold, and
+ * the hosted service reads the plan's verdict.
+ */
+const AGENT_HIDDEN_MARK = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
+
+/**
+ * Whether a note marks agent-hidden at `level`: `#(agent-hidden)` on a
+ * source, `##(agent-hidden)` on a model file. Every bracket pair Malloy
+ * routes and a block note (`#|(agent-hidden) … |#`) count, as do the
+ * near-miss spellings {@link AGENT_HIDDEN_MARK} lists.
+ */
+export function marksAgentHidden(
+   text: string,
+   level: "source" | "file",
+): boolean {
+   if (!text.startsWith("#")) return false;
+   const fileLevel = text.startsWith("##");
+   if (fileLevel !== (level === "file")) return false;
+   const note = fileLevel ? text.slice(1) : text;
+   return (
+      routeOfNote(note) === AGENT_HIDDEN_ROUTE || AGENT_HIDDEN_MARK.test(note)
+   );
 }
 
 /** A sorted set, in codepoint order, so two servers on identical bytes agree. */
@@ -127,14 +248,92 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "merge_key",
    "freshness",
    "queryMetadata",
-   "partition",
 ]);
+
+/** The keys of a `freshness` group (`freshness.window=`, `freshness.fallback=`). */
+const FRESHNESS_KEYS: ReadonlySet<string> = new Set(["window", "fallback"]);
+
+/**
+ * Why a `freshness` group's values cannot be read, or undefined: a window
+ * that is not a whole number and a unit (`s`, `m`, `h`, `d`, `w`), or a
+ * fallback other than `live`, `stale_ok`, `fail`. The one grammar every
+ * mechanism reads (materialization/domain/freshness.ts).
+ */
+export function freshnessValueProblem(group: {
+   has(...path: string[]): boolean;
+   text(...path: string[]): string | undefined;
+}): string | undefined {
+   if (group.has("window")) {
+      const window = group.text("window");
+      if (
+         window === undefined ||
+         freshnessWindowSeconds(window) === undefined
+      ) {
+         return 'has a freshness.window= that is not a whole number and a unit (s, m, h, d or w), such as freshness.window="24h"';
+      }
+   }
+   if (group.has("fallback") && !isFreshnessFallback(group.text("fallback"))) {
+      return "has a freshness.fallback= that is not one of live, stale_ok, fail";
+   }
+   return undefined;
+}
 
 /** The pre-aggregation directive's keys, on the same `#@` route. */
 const PREAGGREGATE_KEYS: ReadonlySet<string> = new Set([
    "preaggregate",
    "grain",
    "namespace",
+]);
+
+/**
+ * `#(materialize)`'s keys (materialization v2, P13): the `#@ persist` keys it
+ * carries onto its generated build source, and `inline`, which the plan reads.
+ * A closed set: any other key is malformed, which fails the publish and the load.
+ */
+export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
+   "name",
+   "storage",
+   "refresh",
+   "watermark",
+   "merge_key",
+   "freshness",
+   "queryMetadata",
+   "inline",
+]);
+
+/**
+ * `#(preaggregate)`'s keys (materialization v2, A1): the grain it stores a
+ * measure at, where (a `storage=` destination, or a `namespace=` in the
+ * source's own warehouse), and its `freshness` group, as on `#@ persist`. A
+ * closed set: any other key is malformed.
+ */
+export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
+   "grain",
+   "storage",
+   "namespace",
+   "freshness",
+]);
+
+/**
+ * The rewrite for a `partition=` on `#@ persist` or `#(materialize)`, both of
+ * which once laid a storage table out by the named columns. Partitioning was a
+ * layout choice only, never isolation, so dropping the key costs scan time and
+ * nothing else.
+ */
+const PARTITION_RETIRED =
+   "remove it: partition= is not supported, and the stored table is written " +
+   "unpartitioned. It was a layout choice only, so the cost is scan time; " +
+   "what each caller sees is unchanged";
+
+/**
+ * The materialization v2 routes. Each is read only with the materialize switch
+ * on (`PUBLISHER_MATERIALIZE`); off, nothing reads them and the near-miss scan
+ * treats them as it did before they were registered. A key outside a
+ * route's set is malformed (`<route>-unknown-key`), on every route.
+ */
+export const MATERIALIZE_V2_ROUTES: ReadonlySet<string> = new Set([
+   "materialize",
+   "preaggregate",
 ]);
 
 /**
@@ -148,7 +347,15 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
    classification: { payload: "list" },
    carries: { payload: "list" },
    secure: { payload: "none" },
-   index: { payload: "tag" },
+   index: {
+      payload: "tag",
+      // Package-level knobs a dimension may not set: refused at load
+      // (`findForbiddenIndexPolicyKeys`). The route's other keys are open.
+      retiredKeys: {
+         sharing: "set materialization.scope in publisher.json",
+         schedule: "set materialization.schedule in publisher.json",
+      },
+   },
    dbmeta: { payload: "tag" },
    doc: { payload: "prose" },
    markdown: { payload: "prose" },
@@ -160,8 +367,15 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
             "set materialization.scope in publisher.json; a source no longer chooses its own sharing",
          schedule:
             "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
+         partition: PARTITION_RETIRED,
       },
    },
+   materialize: {
+      payload: "tag",
+      keys: MATERIALIZE_KEYS,
+      retiredKeys: { partition: PARTITION_RETIRED },
+   },
+   preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
    "!": { payload: "tag" },
    "": { payload: "tag" },
 };
@@ -171,21 +385,63 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
  * their own message rather than a vaguer "unknown key". Narrower than the
  * `@` route's `keys`, which also hold the `#@ preaggregate` line's keys: a
  * persist source is checked against this set, a rollup against its own.
- * Anything else is a load-time warning, never a refusal, so a new directive
- * needs no Publisher change.
+ * The set is closed, as every materialization route's is: anything else is
+ * `persist-unknown-key`, which fails the publish and the load, so a new
+ * directive needs a Publisher change.
  */
 export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
    ...PERSIST_KEYS,
    ...Object.keys(PUBLISHER_ROUTES["@"]?.retiredKeys ?? {}),
 ]);
 
+/**
+ * The materialization warning-code taxonomy. The suffix tells the outcome:
+ *
+ *  - `*-invalid`, `*-unknown-key`, `*-retired-key`, `*-unparseable` and
+ *    {@link MATERIALIZATION_TABLE_COLLISION_CODE} name an invalid annotation.
+ *    They appear only on a load failure (the publish 4xx and `loadErrors`),
+ *    never as a warning on a serving package.
+ *  - `*-not-built` names a valid annotation Publisher cannot build here (an
+ *    environment, dialect, capacity or governance limit): that item alone is
+ *    refused, answers live, and the package loads. Severity `warn`, never
+ *    `error`.
+ */
+export const MATERIALIZE_INVALID_CODE = "materialize-invalid";
+export const PERSIST_INVALID_CODE = "persist-invalid";
+export const PREAGGREGATE_INVALID_CODE = "preaggregate-invalid";
+export const PERSIST_VIEW_INVALID_CODE = "persist-view-invalid";
+export const PERSIST_QUERY_INVALID_CODE = "persist-query-invalid";
+/** Two sources an author's `name=` puts on one table. */
+export const MATERIALIZATION_TABLE_COLLISION_CODE =
+   "materialization-table-collision";
+/** A storage source the deployment's `PERSIST_STORAGE_MODE` does not honour. */
+export const MATERIALIZATION_STORAGE_MODE_CODE = "materialization-storage-mode";
+/** A misspelled materialization route or directive (`#(materialise)`). */
+export const MATERIALIZATION_NEAR_MISS_CODE = "materialization-near-miss";
+/** A valid `#@ persist` source Publisher refuses alone. */
+export const PERSIST_NOT_BUILT_CODE = "persist-not-built";
+/**
+ * {@link PERSIST_NOT_BUILT_CODE}'s former name, still emitted beside it for
+ * one release so a client switching on it keeps working; removed after.
+ */
+export const PERSIST_SOURCE_REFUSED_ALIAS_CODE = "persist-source-refused";
+
+/**
+ * A load failure's line: `text` ended with a full stop, then its `[code]`.
+ */
+export function codedLine(text: string, code: string): string {
+   const trimmed = text.trimEnd();
+   return `${/[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`} [${code}]`;
+}
+
 /** One diagnostic about an annotation, with its tier from the outcome rule. */
 export interface AnnotationFinding {
    route: string;
    /**
-    * `malformed`: it cannot be read as written, and is refused at publish.
-    * `unservable`: well-formed but not honoured here; a coded warning, served
-    * live. `deprecated`: still read, with its rewrite.
+    * `malformed`: it cannot be read as written (an invalid annotation), and
+    * fails the publish and the load. `unservable`: well-formed but not
+    * honoured here; a coded warning, served live. `deprecated`: still read,
+    * with its rewrite.
     */
    tier: "malformed" | "unservable" | "deprecated";
    /** Stable, for counting and for clients: `persist-unknown-key`. */
@@ -193,6 +449,10 @@ export interface AnnotationFinding {
    message: string;
    /** The fix, when there is one. */
    rewrite?: string;
+   /** For a retired key: the key. */
+   key?: string;
+   /** The key was written inside the `persist` key (`#@ persist { … }`). */
+   nested?: true;
    /** The source or field the annotation is on. */
    subject?: string;
    at?: DocumentLocation;
@@ -201,8 +461,8 @@ export interface AnnotationFinding {
 /**
  * A route's tag, read without the server's environment (see `parseRouteTag`),
  * and a finding for each top-level key the route does not accept or has
- * retired. The findings are reported at the tier the callers already use:
- * an unknown key is `unservable` (a warning), a retired one `malformed`.
+ * retired. Both are `malformed`, which fails the publish and the load: every
+ * route's key set is closed.
  */
 export function readRouteTag(
    annotations: Annotations,
@@ -214,24 +474,101 @@ export function readRouteTag(
    const spec = PUBLISHER_ROUTES[route];
    const accepted = keys ?? spec?.keys;
    const findings: AnnotationFinding[] = [];
+   // `#@`, `#!` and `#` are sigil routes; an app route is written `#(name)`.
+   const spelled =
+      route === "@" || route === "!" || route === ""
+         ? `#${route}`
+         : `#(${route})`;
    if (accepted) {
       for (const [key] of tag.entries()) {
-         const retired = spec?.retiredKeys?.[key];
+         const retired = retiredRewrite(spec, key);
          if (retired !== undefined) {
             findings.push({
                route,
                tier: "malformed",
                code: `${route === "@" ? "persist" : route}-retired-key`,
-               message: `\`${key}=\` is no longer read on \`#${route}\``,
+               message: `\`${key}=\` is no longer read on \`${spelled}\``,
                rewrite: retired,
+               key,
             });
          } else if (!accepted.has(key)) {
             const near = nearestKey(key, accepted);
             findings.push({
                route,
-               tier: "unservable",
+               // Every materialization route's key set is closed: a typo
+               // (`nmae=`) would otherwise build under a defaulted name.
+               tier: "malformed",
                code: `${route === "@" ? "persist" : route}-unknown-key`,
-               message: `\`${key}=\` is not a key \`#${route}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+               message: `\`${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+            });
+         }
+      }
+      // A key written inside `persist` (`#@ persist { partition="day" }`) is
+      // read as the top-level one is (the one placement rule, plan/
+      // declaration.ts), so a retired one there is retired too, and an
+      // unknown one (`#@ persist { nmae="t" }`) is unknown: the set is closed.
+      if (route === "@") {
+         const nestedKeys = new Set(
+            [...accepted].filter((k) => PERSIST_KEYS.has(k) && k !== "persist"),
+         );
+         for (const [key] of tag.tag("persist")?.entries() ?? []) {
+            const retired = retiredRewrite(spec, key);
+            if (retired !== undefined) {
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: "persist-retired-key",
+                  message: `\`${key}=\` is no longer read on \`#@ persist { … }\``,
+                  rewrite: retired,
+                  key,
+                  nested: true,
+               });
+            } else if (!nestedKeys.has(key)) {
+               const near = nearestKey(key, nestedKeys);
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: "persist-unknown-key",
+                  message: `\`${key}=\` is not a key \`#@ persist { … }\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+                  nested: true,
+               });
+            }
+         }
+      }
+      // `freshness` is a group of two keys on every route that carries it
+      // (`freshness.window=`, `freshness.fallback=`), written flat or inside
+      // `persist`; another key in it does nothing.
+      const groups =
+         route === "@"
+            ? [tag.tag("freshness"), tag.tag("persist", "freshness")]
+            : accepted.has("freshness")
+              ? [tag.tag("freshness")]
+              : [];
+      for (const group of groups) {
+         // A value the publisher cannot read is invalid, on `#@ persist` as
+         // on every route that takes the group (`#(materialize)` and the
+         // rollup routes check theirs where they are planned).
+         if (route === "@" && group) {
+            const problem = freshnessValueProblem(group);
+            if (problem !== undefined) {
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: PERSIST_INVALID_CODE,
+                  message: `\`#@ persist\` ${problem}`,
+                  nested: true,
+               });
+            }
+         }
+         for (const [key] of group?.entries() ?? []) {
+            if (FRESHNESS_KEYS.has(key)) continue;
+            const near = nearestKey(key, FRESHNESS_KEYS);
+            findings.push({
+               route,
+               tier: "malformed",
+               code: `${route === "@" ? "persist" : route}-unknown-key`,
+               message: `\`freshness.${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`freshness.${near}=\`?)` : ""}`,
+               nested: true,
             });
          }
       }
@@ -249,7 +586,10 @@ export function persistAnnotationFindings(
    annotations: Annotations,
    subject: string,
    model?: string,
-   { incremental = false }: { incremental?: boolean } = {},
+   {
+      incremental = false,
+      subjectKind = "source",
+   }: { incremental?: boolean; subjectKind?: "source" | "query" } = {},
 ): PackageAnnotationFinding[] {
    return readRouteTag(annotations, "@", RECOGNIZED_PERSIST_KEYS).findings.map(
       (finding) => {
@@ -261,7 +601,7 @@ export function persistAnnotationFindings(
                : "";
          return {
             ...finding,
-            message: `#@ persist source "${subject}": ${finding.message}${consequence}`,
+            message: `#@ persist ${subjectKind} "${subject}": ${finding.message}${consequence}`,
             subject,
             ...(model ? { model } : {}),
          };
@@ -270,10 +610,23 @@ export function persistAnnotationFindings(
 }
 
 /**
+ * What to write instead of `key` when `spec` retires it, or undefined. An own
+ * key only: `constructor=` or `toString=` is an unknown key, never one
+ * inherited from `Object.prototype`.
+ */
+function retiredRewrite(
+   spec: RouteSpec | undefined,
+   key: string,
+): string | undefined {
+   const retired = spec?.retiredKeys;
+   return retired && Object.hasOwn(retired, key) ? retired[key] : undefined;
+}
+
+/**
  * The accepted key within edit distance 2 of `key`, closest first, or
  * undefined: the likely intended spelling of an unknown key.
  */
-function nearestKey(
+export function nearestKey(
    key: string,
    accepted: ReadonlySet<string>,
 ): string | undefined {
@@ -288,7 +641,7 @@ function nearestKey(
 }
 
 /** Levenshtein distance between two short strings. */
-function editDistance(a: string, b: string): number {
+export function editDistance(a: string, b: string): number {
    let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
    for (let i = 1; i <= a.length; i++) {
       const current = [i];
@@ -310,7 +663,7 @@ export type PackageAnnotationFinding = AnnotationFinding & { model?: string };
 /**
  * A `#@` tag Malloy's build walk could not parse. Malloy drops the source from
  * the build entirely, so nothing else records that it was annotated: this is
- * the only trace, and it is malformed (refused at publish).
+ * the only trace, and it is malformed: it fails the publish and the load.
  */
 export function persistUnparseableFinding(
    entry: { message: string; at?: DocumentLocation },
@@ -325,11 +678,9 @@ export function persistUnparseableFinding(
    const message = planned
       ? `#@ persist source "${planned.subject}": the #@ line${where} ` +
         `\`${planned.line.trim()}\` does not parse (${entry.message}), so its ` +
-        `directives are not read: the source is built from its other #@ ` +
-        `lines without them. Fix the line's syntax.`
+        `directives cannot be read. Fix the line's syntax.`
       : `a #@ annotation${where} does not parse (${entry.message}), so the ` +
-        `source it is on is not materialized and is served live. Fix the ` +
-        `annotation's syntax.`;
+        `source it is on cannot be read. Fix the annotation's syntax.`;
    return {
       route: "@",
       tier: "malformed",
@@ -400,4 +751,89 @@ export function readRouteList(
    if (values.length === 0) return fault("names nothing");
    if (values.some((v) => v === "")) return fault("names an empty value");
    return { values };
+}
+
+const REGEXP_SPECIAL = /[.*+?^${}()|[\]\\]/g;
+
+/** A route name folded for comparison: lower case, no separators. */
+export function foldRouteName(name: string): string {
+   return name.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+/** The two patterns {@link isRouteAttempt} tests, compiled once per name list. */
+interface RouteAttemptPatterns {
+   /** A malformed-prefix note reaching for a name: `#( doc )`, `#doc`. */
+   malformed: RegExp;
+   /** A MOTLY payload that is a bracketed name: `# (doc) …`. */
+   motly: RegExp;
+}
+
+const routeAttemptPatternCache = new Map<string, RouteAttemptPatterns>();
+
+/**
+ * {@link isRouteAttempt}'s patterns for `names`, compiled on first use and
+ * cached: the load sweep and the near-miss scan test every note against the
+ * same few lists. `names` must not be empty (see isRouteAttempt).
+ */
+export function routeAttemptPatterns(
+   names: readonly string[],
+): RouteAttemptPatterns {
+   const key = names.join("\u0000");
+   const cached = routeAttemptPatternCache.get(key);
+   if (cached) return cached;
+   const words = names
+      .map((name) => name.replace(REGEXP_SPECIAL, "\\$&"))
+      .join("|");
+   const patterns = {
+      malformed: new RegExp(
+         `^##?\\|?[ \\t]*(?:[([{<][ \\t]*)?(?:${words})`,
+         "iu",
+      ),
+      motly: new RegExp(
+         `^[ \\t]*[([{<][ \\t]*(?:${words})[ \\t]*[)\\]}>]`,
+         "iu",
+      ),
+   };
+   routeAttemptPatternCache.set(key, patterns);
+   return patterns;
+}
+
+/**
+ * Whether `text` reads as an author reaching for `route`, written as one of
+ * `names` (case-insensitive), while Malloy routes it somewhere else, so no
+ * reader of `route` ever sees it. Keyed on Malloy's route, so it cannot claim
+ * another app's namespace:
+ *
+ *  - `""` (a MOTLY tag): only when the payload is a bracketed name, as in
+ *    `# (doc) …`; an ordinary render tag never matches.
+ *  - `undefined` (a malformed prefix): when the text was reaching for one of
+ *    the names, as in `#( doc )`, `#(doc)X`, `#doc`.
+ *  - any other route: when it is one of the names spelled another way
+ *    (`#(Doc)`), never a different word.
+ *
+ * `names` must not be empty: an empty alternation would match every
+ * malformed note. Shared by the gate refusal and the near-miss scan.
+ */
+export function isRouteAttempt(
+   text: string,
+   route: string,
+   names: readonly string[],
+): boolean {
+   if (names.length === 0) {
+      throw new Error(
+         `No near-miss spellings for route \`${route}\`: an empty alternation ` +
+            "matches every malformed note.",
+      );
+   }
+   const trimmed = text.trimStart();
+   const noted = routeOfNote(trimmed);
+   if (noted === route) return false;
+   if (noted === undefined) {
+      return routeAttemptPatterns(names).malformed.test(trimmed);
+   }
+   if (noted === "") {
+      return routeAttemptPatterns(names).motly.test(payloadOfNote(trimmed));
+   }
+   const lowered = noted.toLowerCase();
+   return names.some((name) => name.toLowerCase() === lowered);
 }

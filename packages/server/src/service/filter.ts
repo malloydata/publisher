@@ -11,6 +11,8 @@
  * based on the provided filter values and the declared filter definitions.
  */
 
+import { escapeString, quotedIdentifier } from "./malloy_text";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -160,10 +162,6 @@ export function parseFilters(annotations: string[]): FilterDefinition[] {
 // Filter Clause Generation
 // ---------------------------------------------------------------------------
 
-function escapeMalloyString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
 function isBooleanLiteral(v: string): boolean {
    const lower = v.toLowerCase();
    return lower === "true" || lower === "false";
@@ -184,14 +182,14 @@ function malloyLiteral(v: string): string {
    if (isDateLiteral(v)) {
       return `@${v.slice(0, 10)}`;
    }
-   return `'${escapeMalloyString(v)}'`;
+   return `'${escapeString(v)}'`;
 }
 
 function buildPredicate(
    filter: FilterDefinition,
    value: string | string[],
 ): string {
-   const dim = `\`${filter.dimension}\``;
+   const dim = quotedIdentifier(filter.dimension);
 
    switch (filter.type) {
       case "equal": {
@@ -208,7 +206,7 @@ function buildPredicate(
       }
       case "like": {
          const v = Array.isArray(value) ? value[0] : value;
-         const escaped = escapeMalloyString(v.toLowerCase());
+         const escaped = escapeString(v.toLowerCase());
          const pattern =
             escaped.startsWith("%") || escaped.endsWith("%")
                ? escaped
@@ -263,7 +261,9 @@ export function buildFilterClause(
          continue;
       }
 
-      predicates.push(buildPredicate(filter, params[filter.name]));
+      predicates.push(
+         buildPredicate(filter, validatedValue(filter, params[filter.name])),
+      );
    }
 
    if (predicates.length === 0) {
@@ -274,12 +274,52 @@ export function buildFilterClause(
 }
 
 /**
+ * `value` as {@link FilterParams} types it, or a {@link FilterValidationError}
+ * naming the filter. A request body is JSON, so a value may arrive as a number,
+ * a boolean or an object, none of which a predicate is built from.
+ */
+function validatedValue(
+   filter: FilterDefinition,
+   value: unknown,
+): string | string[] {
+   if (typeof value === "string") return value;
+   if (Array.isArray(value)) {
+      const other = value.find((v) => typeof v !== "string");
+      if (other === undefined) return value as string[];
+      throw new FilterValidationError(
+         `Filter "${filter.name}" takes a string or an array of strings, not an array holding ${jsonTypeOf(other)}`,
+      );
+   }
+   throw new FilterValidationError(
+      `Filter "${filter.name}" takes a string or an array of strings, not ${jsonTypeOf(value)}`,
+   );
+}
+
+/** The JSON type of `value`, with its article. */
+function jsonTypeOf(value: unknown): string {
+   if (value === null) return "null";
+   if (Array.isArray(value)) return "an array";
+   switch (typeof value) {
+      case "number":
+         return "a number";
+      case "boolean":
+         return "a boolean";
+      case "object":
+         return "an object";
+      default:
+         return `a ${typeof value}`;
+   }
+}
+
+/**
  * Append `+ {where: ...}` to a query; an empty clause leaves it unchanged.
  * The refinement goes on its own line so a trailing `//` or `--` comment in
  * the caller's query cannot swallow it and neutralize the filter.
  */
 export function injectFilterRefinement(
+   // malloy-text: the caller's own query, refined as written
    query: string,
+   // malloy-text: a filter clause the caller's request carries, Malloy as written
    filterClause: string,
 ): string {
    if (!filterClause) {
@@ -304,7 +344,7 @@ export class FilterValidationError extends Error {
 // ---------------------------------------------------------------------------
 
 /** Split on whitespace, respecting quotes: `name="Foo Bar" dimension=status`. */
-export function tokenize(input: string): string[] {
+function tokenize(input: string): string[] {
    const tokens: string[] = [];
    let current = "";
    let inQuote = false;

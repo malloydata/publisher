@@ -451,7 +451,10 @@ program
     "--reseed",
     "Rebuild incremental sources from scratch, discarding their covered_through boundary (--force-refresh does NOT do this)",
   )
-  .option("--wait", "Poll until the run settles (build complete or failed)")
+  .option(
+    "--wait",
+    "Poll until the run settles (built and served, built but not served (exit 2), or failed)",
+  )
   .option(
     "--timeout <seconds>",
     "With --wait, seconds to wait before giving up (default 120)",
@@ -468,7 +471,7 @@ program
         options.pollInterval,
         "--poll-interval",
       );
-      await materializationCommands.materialize(
+      process.exitCode = await materializationCommands.materialize(
         client,
         options.environment,
         options.package,
@@ -533,7 +536,8 @@ schedule
 schedule
   .command("set <cron>")
   .description(
-    'Set the schedule (5-field UNIX cron in UTC, e.g. "0 6 * * *"); also sets scope: version',
+    'Set the schedule (5-field UNIX cron in UTC, e.g. "0 6 * * *"); also sets scope: version. ' +
+      "A published version refuses it (409): set materialization.schedule in its publisher.json and publish a new version",
   )
   .requiredOption("--environment <n>", "Environment name")
   .requiredOption("--package <n>", "Package name")
@@ -553,7 +557,10 @@ schedule
 
 schedule
   .command("clear")
-  .description("Clear the schedule (revert to publish / on-demand only)")
+  .description(
+    "Clear the schedule (revert to publish / on-demand only). " +
+      "A published version refuses it (409): remove materialization.schedule from its publisher.json and publish a new version",
+  )
   .requiredOption("--environment <n>", "Environment name")
   .requiredOption("--package <n>", "Package name")
   .action(async (options) => {

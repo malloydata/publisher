@@ -222,11 +222,25 @@ async function expectEmptyReadsAsNone(pkg: string, n: number): Promise<void> {
    const wanted: Record<string, unknown> = {};
    for (const route of READ_ROUTES) {
       const url = `${pkgApi(pkg)}${route.path}`;
-      const none = await answerOf(await fetch(url), route.normalize);
-      const empty = await answerOf(
-         await fetch(`${url}?versionId=`),
-         route.normalize,
-      );
+      // A run reports MANIFEST_FILE_READY before it rebinds the package's
+      // loaded versions, and a rebind reloads the tree a read answers from
+      // (a new `servedRevision`). So the pair is read between two reads with
+      // no versionId, and read again when those two disagree: a reload
+      // landed between them.
+      let none: Awaited<ReturnType<typeof answerOf>>;
+      let empty: Awaited<ReturnType<typeof answerOf>>;
+      for (let attempt = 0; ; attempt++) {
+         none = await answerOf(await fetch(url), route.normalize);
+         empty = await answerOf(
+            await fetch(`${url}?versionId=`),
+            route.normalize,
+         );
+         const after = await answerOf(await fetch(url), route.normalize);
+         if (JSON.stringify(after) === JSON.stringify(none) || attempt >= 20) {
+            break;
+         }
+         await new Promise((r) => setTimeout(r, 50));
+      }
       actual[route.name] = {
          statuses: [none.status, empty.status],
          body: empty.body,

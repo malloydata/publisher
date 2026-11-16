@@ -19,13 +19,15 @@ own join and term re-applied per caller.
 
 Two things make that hold. The user term is stripped from the build and
 re-applied at read like any extend-block `where:`. And the join is to a source
-that is itself persisted into storage and scoped by a given, so the serve shape
-re-emits it only against `vis_all`'s own binding, which re-applies `vis_all`'s
-org term with the caller's value. A join to a given-scoped source that is NOT
+that is itself persisted into storage and scoped by a given, so the served copy
+re-roots `vis_all` on its own table with its `where:` kept, and keeps the join as
+written: it reads the re-rooted `vis_all`, whose org term applies with the
+caller's value. A join to a given-scoped source that is NOT
 materialized that way is still refused (`dynamic_joined_where`): nothing could
 bind it per caller.
 
-The shape must also accept the same givens the author's model does. One that
+The served copy must also accept the same givens the author's model does, which
+it does by being the author's model text. One that
 declared only the terms its own sources stripped would fail to compile a query
 mentioning `$USER_ID` and serve the whole thing live.
 
@@ -65,12 +67,12 @@ given:
 source: raw_orders is orders_pg.sql('SELECT order_id, org_id, list_id, amount FROM public.qts_orders')
 source: raw_vis is orders_pg.sql('SELECT org_id, user_id, list_id FROM public.qts_visibility')
 
-#@ persist name="qts_orders_all" storage=lake partition="org_id"
+#@ persist name="qts_orders_all" storage=lake
 source: orders_all is raw_orders -> { select: * } extend {
   where: org_id = $ORG_ID
 }
 
-#@ persist name="qts_vis_all" storage=lake partition="org_id"
+#@ persist name="qts_vis_all" storage=lake
 source: vis_all is raw_vis -> { select: * } extend {
   where: org_id = $ORG_ID
 }

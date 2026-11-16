@@ -73,9 +73,96 @@ is how a local authoring loop talks to a hosted environment.
 
 ## Packages in this repo
 
-| Package | Description |
-| --- | --- |
-| **[packages/server](../packages/server/)** | Express.js backend providing REST API (port 4000) and MCP API (port 4040). Loads Malloy packages, compiles queries, executes against databases. |
-| **[packages/sdk](../packages/sdk/)** | React component library the Console is built from (internal — see above). |
-| **[packages/app](../packages/app/)** | Reference implementation and production-ready data exploration tool built with the SDK. |
-| **[packages/python-client](../packages/python-client/)** | Auto-generated Python SDK for the REST API. |
+| Package                                                  | Description                                                                                                                                     |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[packages/server](../packages/server/)**               | Express.js backend providing REST API (port 4000) and MCP API (port 4040). Loads Malloy packages, compiles queries, executes against databases. |
+| **[packages/sdk](../packages/sdk/)**                     | React component library the Console is built from (internal — see above).                                                                       |
+| **[packages/app](../packages/app/)**                     | Reference implementation and production-ready data exploration tool built with the SDK.                                                         |
+| **[packages/python-client](../packages/python-client/)** | Auto-generated Python SDK for the REST API.                                                                                                     |
+
+## Materialization inside the server
+
+Materialization (`packages/server/src/service/materialization/`) builds stored tables from a
+package's declarations and answers a query from them only when the answer equals live. It is five
+layers with one direction of import, checked by the server's lint:
+
+```mermaid
+flowchart BT
+  subgraph pure["Pure: no I/O, logger, metrics, config or clock"]
+    D["domain/<br/>the shared vocabulary and its rules"]
+    T["text/<br/>Malloy text in and out"]
+  end
+  IR["governance/ir"]
+  P["plan/<br/>declarations to table plans"]
+  R["run/<br/>builds, commit, reclaim"]
+  S["serve/<br/>bindings, legs, verdicts"]
+  F["index.ts and the package facade"]
+  Q["query pipeline"]
+  T --> D
+  T --> IR
+  P --> T
+  P --> D
+  P --> IR
+  R --> T
+  R --> D
+  S --> T
+  S --> D
+  F --> P
+  F --> R
+  F --> S
+  Q --> F
+```
+
+`plan/`, `run/` and `serve/` never import one another, and the rest of the server imports only the
+module's `index.ts` and `domain/`. One stored table has three lifecycle values: what should exist
+(planned), what a run built (a manifest entry, the wire type), and what a query may read (a binding).
+A run commits one manifest; serving reads it through three legs (a persisted view called exactly, a
+rollup, and the served copy, the author's source re-rooted on its stored table) and answers live
+whenever none of them can prove the same answer.
+
+**The query path.** `ModelServing` (`service/model_serving.ts`) answers one query in six stages:
+**pin** the model's snapshot once, so every leg, the run and the path report read the tables bound
+at one instant; **prepare** the caller's own compile (the boundary, the caller-text guards, filter
+injection); **route** over the legs `makeLegs` made for that pin, each `{ kind, applies, attempt }`,
+with the router asking the gate policy before an attempt and over the bindings the answer read;
+**govern** whatever answered, the authority on every answer, routed or live; **run** it with the
+manifest or virtual map the answer names, retrying live only when every binding it read allows it;
+and **report**: the caps, the metrics, the access record and the path report, all read off the one
+`Answer`. A notebook cell is governed and run on its own compile, not routed.
+
+**The build path.** A package's load plans it: the load worker compiles each model and plans it in
+`plan/`, which reads each declaration once (`declaration.ts`), plans and compiles each generated
+companion (`#(materialize)` sources, persisted views, rollups), walks the v1 `#@ persist` sources, and
+classifies each planned table's gate where its model compiled. The result is one **table plan** per
+table (`TablePlan`, in `domain/table_plans.ts`), its **kind** (`persist`, `materialize`, `pair`,
+`rollup` or `view`) fixed by the planner that made it, so nothing downstream derives it; a
+declaration that is not planned is a refusal or an omission. `deriveBuildPlan` projects the table plans
+into the wire `BuildPlan` the REST API and a control plane read. A **run** (`run/`) takes its
+instructions from that plan or from a host, builds each table in build order on its **tier**
+(colocated, in the source's own warehouse, or `storage=`, loaded into a DuckDB or DuckLake
+destination) by its **method** (a full build or a delta), checks its keys, and commits one manifest.
+The facade then **binds** the manifest into a new snapshot, swapped by reference, and computes each
+source's serve verdict and the package's warnings.
+
+```mermaid
+flowchart TB
+  A["Author's files"] --> DECL["Read declarations"]
+  DECL --> PLAN["Plan: one table plan per table,<br/>or a refusal or omission"]
+  PLAN -->|"wire projection"| WIRE["BuildPlan<br/>REST, the control plane"]
+  PLAN --> RUN["Run: its own instructions, or a host's"]
+  RUN --> TIER{"Tier"}
+  TIER --> COL["Colocated"]
+  TIER --> STO["storage="]
+  COL --> ENTRY["Manifest entry"]
+  STO --> ENTRY
+  ENTRY --> COMMIT["Commit one manifest"]
+  COMMIT --> BIND["Bind: a new snapshot"]
+  PLAN --> BIND
+  BIND --> VERDICT["Serve verdicts, package warnings"]
+```
+
+The facade (`package_materialization.ts`) is the one door to all of it for `Package` and
+`Environment`; its header lists the nine methods its contract comes to.
+
+The module's [README](../packages/server/src/service/materialization/README.md) has the glossary, and
+each layer's README lists its modules and what reads them.

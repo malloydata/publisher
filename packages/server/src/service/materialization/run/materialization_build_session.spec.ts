@@ -14,7 +14,6 @@ import {
 import { storageDestinationRoot } from "../../connection_config";
 import type { components } from "../../../api";
 import {
-   assertStorageServeShapeCompiles,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    type BuildSessionDeps,
@@ -27,14 +26,46 @@ import {
    passthroughSourceType,
    wrapPassthrough,
    writePartitionedTable,
+   oneFileModel,
 } from "./materialization_build_session";
-import {
-   buildChainedStorageBuildModel,
-   buildVirtualMap,
-   type ServeBinding,
-} from "../serve/materialization_serve_transform";
+import { identifier } from "../../malloy_text";
+import { declarableColumns } from "../stored_column_types";
+import { buildVirtualMap } from "../serve/bindings";
+import { type Binding } from "../domain/binding";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+/**
+ * A one-file model over stored parents, for the build session's own specs:
+ * each parent declared as a virtual source of its stored table (its
+ * declarable columns only), then the downstream as a persist source.
+ */
+function buildChainedStorageBuildModel(params: {
+   upstreams: Binding[];
+   downstreamName: string;
+   downstreamDefText: string;
+   destinationName: string;
+   documentFlags?: string[];
+}): string {
+   const parents = params.upstreams.map((b) => {
+      const type = identifier(`${b.sourceName}__shape`);
+      const fields = declarableColumns(b.schema)
+         .declared.map((c) => `   ${identifier(c.name)}::${c.malloyType}`)
+         .join(",\n");
+      return (
+         `type: ${type} is {\n${fields}\n}\n` +
+         `source: ${identifier(b.sourceName)} is ${identifier(b.destinationName)}.virtual('${b.virtualHandle}')::${type}`
+      );
+   });
+   return [
+      ...(params.documentFlags ?? []),
+      "##! experimental { persistence virtual_source }",
+      ...parents,
+      `#@ persist storage="${params.destinationName}"`,
+      `source: ${params.downstreamDefText}`,
+      "",
+   ].join("\n");
+}
 
 describe("createIsolatedBuildSession (per-build instance isolation)", () => {
    // Multi-tenant safety regression guard. @malloydata/db-duckdb pools :memory:
@@ -68,83 +99,6 @@ describe("createIsolatedBuildSession (per-build instance isolation)", () => {
       await dispose();
       // Second dispose must not throw (idempotent teardown).
       await dispose();
-   });
-});
-
-describe("assertStorageServeShapeCompiles (build-time servability gate)", () => {
-   it("passes for a well-formed captured schema (compiles the serve shape in DuckDB)", async () => {
-      await expect(
-         assertStorageServeShapeCompiles({
-            destinationName: "lake",
-            sourceName: "daily_orders",
-            virtualHandle: "se_1",
-            physicalTableName: "daily_orders__mabc123",
-            schema: [
-               { name: "order_date", type: "DATE" },
-               { name: "order_count", type: "BIGINT" },
-               { name: "total_amount", type: "DOUBLE" },
-            ],
-         }),
-      ).resolves.toBeUndefined();
-   });
-});
-
-describe("serve-shape gate shares one session across builds", () => {
-   // The gate compiles against ONE process-wide session rather than a fresh
-   // DuckDB instance per build (~5.9MB/build of unreclaimed RSS on the
-   // production image). Sharing is safe on paper — the gate does no ATTACH and
-   // establishes no credentials — but a shared session means a shared CATALOG,
-   // and every compile declares a virtual source into it.
-   //
-   // The failure that would matter is a false PASS: a later shape satisfied by
-   // declarations an earlier compile left behind. No end-to-end scenario reaches
-   // it, because each hammer scenario gets a fresh publisher and so never
-   // compiles many shapes through one session.
-   const valid = (i: number) => ({
-      destinationName: "lake",
-      sourceName: `daily_${i}`,
-      virtualHandle: `se_${i}`,
-      physicalTableName: `daily_${i}__mabc`,
-      schema: [
-         { name: "order_date", type: "DATE" },
-         { name: "total_amount", type: "DOUBLE" },
-      ],
-   });
-
-   it("still refuses an unservable shape after many successful compiles", async () => {
-      for (let i = 0; i < 25; i++) {
-         await assertStorageServeShapeCompiles(valid(i));
-      }
-      await expect(
-         assertStorageServeShapeCompiles({ ...valid(99), schema: [] }),
-      ).rejects.toThrow(/cannot be served/i);
-      await expect(
-         assertStorageServeShapeCompiles({
-            ...valid(98),
-            schema: [{ name: "a", type: "NOT_A_REAL_TYPE" }],
-         }),
-      ).rejects.toThrow(/cannot be served/i);
-   });
-
-   it("a refusal does not poison the session for later valid shapes", async () => {
-      await expect(
-         assertStorageServeShapeCompiles({ ...valid(31), schema: [] }),
-      ).rejects.toThrow(/cannot be served/i);
-      await expect(
-         assertStorageServeShapeCompiles(valid(32)),
-      ).resolves.toBeUndefined();
-   });
-
-   it("reusing one handle with a DIFFERENT schema sees the new schema", async () => {
-      // The sharpest false-pass shape: if the first declaration lingered, the
-      // second would compile against stale columns and wrongly pass.
-      await assertStorageServeShapeCompiles({
-         ...valid(41),
-         schema: [{ name: "kept", type: "BIGINT" }],
-      });
-      await expect(
-         assertStorageServeShapeCompiles({ ...valid(41), schema: [] }),
-      ).rejects.toThrow(/cannot be served/i);
    });
 });
 
@@ -336,12 +290,10 @@ describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
    });
 });
 
-describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partitioned or not", () => {
-   // The ordering a partitioned build needs is applied at the top of the INSERT
-   // (materialization_partitioned_build.spec), never to the SELECT the warehouse
-   // runs: what is executed there, attributed there, and addressed by is the
+describe("buildSourceIntoStorage hands the warehouse its SQL verbatim", () => {
+   // What is executed there, attributed there, and addressed by is the
    // compiled SQL and nothing else.
-   function harness(partitionColumns: string[] | undefined) {
+   function harness() {
       const received: string[] = [];
       const deps: BuildSessionDeps = {
          federate: async () => ({
@@ -354,7 +306,7 @@ describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partition
             return { selectSQL: "SELECT 1 AS org_id", jobId: null, cost: null };
          },
       };
-      const dir = mkdtempSync(join(tmpdir(), "partition-verbatim-"));
+      const dir = mkdtempSync(join(tmpdir(), "build-verbatim-"));
       mkdirSync(storageDestinationRoot(dir), { recursive: true });
       const params = {
          destinationName: "lake",
@@ -366,120 +318,16 @@ describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partition
          buildSQL: "SELECT 1 AS org_id",
          physicalTableName: "t",
          environmentPath: dir,
-         partitionColumns,
          deps,
       };
       return { params, dir, received };
    }
 
-   it("for a partitioned build", async () => {
-      const h = harness(["org_id"]);
-      try {
-         // The plain-DuckDB file destination cannot take a layout, so the build
-         // fails at the ALTER — after the read has been issued, which is the
-         // statement this test is about.
-         await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
-            /PARTITIONED BY/,
-         );
-         expect(h.received).toEqual(["SELECT 1 AS org_id"]);
-      } finally {
-         rmSync(h.dir, { recursive: true, force: true });
-      }
-   });
-
-   it("for an unpartitioned build", async () => {
-      const h = harness(undefined);
+   it("runs the compiled SQL unchanged", async () => {
+      const h = harness();
       try {
          await buildSourceIntoStorage(h.params);
          expect(h.received).toEqual(["SELECT 1 AS org_id"]);
-      } finally {
-         rmSync(h.dir, { recursive: true, force: true });
-      }
-   });
-});
-
-describe("buildSourceIntoStorage bounds the incremental delta's session too", () => {
-   // A delta into a laid-out table is the same partitioned COPY as the seed, and
-   // its memory is width x partitions, not row count. The threshold and the
-   // single appender reach the delta through the session it runs on; proved by
-   // reading the settings back from INSIDE the refresh hook, on a real session.
-   function harness(partitionColumns: string[] | undefined) {
-      const seen: Record<string, string>[] = [];
-      const afterPlan: Record<string, string>[] = [];
-      const deps: BuildSessionDeps = {
-         federate: async () => ({
-            handle: "wh",
-            sourceType: "postgres" as const,
-            close: async () => {},
-         }),
-         read: async () => ({
-            selectSQL: "SELECT 1 AS org_id",
-            jobId: null,
-            cost: null,
-         }),
-      };
-      const settings = async (session: DuckDBConnection) => {
-         const r = await session.runSQL(
-            "SELECT name, value FROM duckdb_settings() " +
-               "WHERE name IN ('threads', 'partitioned_write_flush_threshold')",
-         );
-         return Object.fromEntries(
-            (r.rows as { name: string; value: string }[]).map((x) => [
-               x.name,
-               String(x.value),
-            ]),
-         );
-      };
-      const dir = mkdtempSync(join(tmpdir(), "partition-delta-"));
-      mkdirSync(storageDestinationRoot(dir), { recursive: true });
-      const params = {
-         destinationName: "lake",
-         destinationConnection: {
-            name: "lake",
-            type: "duckdb",
-         } as ApiConnection,
-         sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
-         buildSQL: "SELECT 1 AS org_id",
-         physicalTableName: "t",
-         environmentPath: dir,
-         partitionColumns,
-         incremental: {
-            plan: async ({ session }: { session: DuckDBConnection }) => {
-               seen.push(await settings(session));
-               // A delta was applied: the build returns here, before the seed.
-               return {
-                  readCost: null,
-                  refreshed: true,
-               } as never;
-            },
-            afterSeed: async () => undefined,
-         },
-         deps,
-      };
-      return { params, dir, seen, afterPlan, settings };
-   }
-
-   it("a partitioned build's delta runs on one thread at the flush threshold", async () => {
-      const h = harness(["org_id"]);
-      try {
-         // The plain-DuckDB destination has no laid-out table to describe, so
-         // the build fails after the hook -- which is the part under test.
-         await buildSourceIntoStorage(h.params).catch(() => undefined);
-         expect(h.seen).toEqual([
-            { threads: "1", partitioned_write_flush_threshold: "8192" },
-         ]);
-      } finally {
-         rmSync(h.dir, { recursive: true, force: true });
-      }
-   });
-
-   it("an unpartitioned build's delta sees the session as it was", async () => {
-      const h = harness(undefined);
-      try {
-         await buildSourceIntoStorage(h.params).catch(() => undefined);
-         expect(h.seen).toHaveLength(1);
-         expect(h.seen[0].threads).not.toBe("1");
-         expect(h.seen[0].partitioned_write_flush_threshold).toBe("524288");
       } finally {
          rmSync(h.dir, { recursive: true, force: true });
       }
@@ -495,11 +343,13 @@ describe("buildSourceIntoStorage bounds the incremental delta's session too", ()
 // catalog, with no file reopen). POSIX releases the handle promptly. The
 // stack-on-parent rebind mechanism's cross-platform correctness is pinned in-memory (no file) by
 // the "runs the downstream over the parent's stored rows" test in
-// materialization_serve_transform.spec.ts.
+// chained_storage_build.spec.ts.
 describe.skipIf(process.platform === "win32")(
    "buildDownstreamIntoStorage (stack-on-parent, real DuckDB)",
    () => {
-      const parent: ServeBinding = {
+      const parent: Binding = {
+         kind: "persist",
+         tier: "storage",
          sourceName: "daily_orders",
          destinationName: "lake",
          virtualHandle: "daily_h",
@@ -571,12 +421,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -611,13 +463,15 @@ describe.skipIf(process.platform === "win32")(
                   // The downstream reads `weekly_orders`, which is NOT rebound here —
                   // the transient model can't compile, mirroring the mixed-engine /
                   // uncarried-parent case that must fall back to recompute-from-raw.
-                  transientModel: buildChainedStorageBuildModel({
-                     upstreams: [parent],
-                     downstreamName: "monthly_orders",
-                     downstreamDefText:
-                        "monthly_orders is weekly_orders -> { group_by: x is 1 }",
-                     destinationName: "lake",
-                  }),
+                  model: oneFileModel(
+                     buildChainedStorageBuildModel({
+                        upstreams: [parent],
+                        downstreamName: "monthly_orders",
+                        downstreamDefText:
+                           "monthly_orders is weekly_orders -> { group_by: x is 1 }",
+                        destinationName: "lake",
+                     }),
+                  ),
                   downstreamName: "monthly_orders",
                   virtualMap: buildVirtualMap([parent]),
                   physicalTableName: "monthly_orders__mdef456",
@@ -640,12 +494,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                // No table for the rebound parent, so its SQL cannot be written.
                virtualMap: new Map(),
@@ -671,16 +527,18 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText:
-                     "monthly_orders is daily_orders extend {\n" +
-                     '  dimension: doubled is sql_number("${total} * 2")\n' +
-                     "} -> { group_by: doubled }",
-                  destinationName: "lake",
-                  documentFlags: ["##! experimental.sql_functions"],
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText:
+                        "monthly_orders is daily_orders extend {\n" +
+                        '  dimension: doubled is sql_number("${total} * 2")\n' +
+                        "} -> { group_by: doubled }",
+                     destinationName: "lake",
+                     documentFlags: ["##! experimental.sql_functions"],
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -709,12 +567,14 @@ describe.skipIf(process.platform === "win32")(
                      type: "duckdb",
                      ducklakeConnection: { destinationSchema: "materialzed" },
                   } as ApiConnection,
-                  transientModel: buildChainedStorageBuildModel({
-                     upstreams: [parent],
-                     downstreamName: "monthly_orders",
-                     downstreamDefText,
-                     destinationName: "lake",
-                  }),
+                  model: oneFileModel(
+                     buildChainedStorageBuildModel({
+                        upstreams: [parent],
+                        downstreamName: "monthly_orders",
+                        downstreamDefText,
+                        destinationName: "lake",
+                     }),
+                  ),
                   downstreamName: "monthly_orders",
                   virtualMap: buildVirtualMap([parent]),
                   physicalTableName: "monthly_orders__mdef456",
@@ -732,18 +592,57 @@ describe.skipIf(process.platform === "win32")(
                   type: "duckdb",
                   ducklakeConnection: { destinationSchema: "materialized" },
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
                environmentPath: dir,
             });
             expect(built.schema.length).toBe(2);
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      // ms2data/service#6642: a chained build casts to the DOWNSTREAM's own
+      // declared types, as a recompute would. DuckDB answers `date + 1 day`
+      // with a timestamp, which Malloy declares a date.
+      it("stores the downstream's columns as the types the downstream declares", async () => {
+         const dir = mkdtempSync(join(tmpdir(), "t3-types-"));
+         try {
+            await seedLake(dir);
+            const result = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "next_days",
+                     downstreamDefText:
+                        "next_days is daily_orders -> {\n" +
+                        "  group_by: next_day is order_date + 1 day\n" +
+                        "  aggregate: t is total.sum()\n}",
+                     destinationName: "lake",
+                  }),
+               ),
+               downstreamName: "next_days",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "next_days__m1",
+               environmentPath: dir,
+            });
+            expect(result.schema.find((c) => c.name === "next_day")?.type).toBe(
+               "DATE",
+            );
          } finally {
             rmSync(dir, { recursive: true, force: true });
          }
@@ -762,12 +661,14 @@ describe.skipIf(process.platform === "win32")(
                   name: "lake",
                   type: "duckdb",
                } as ApiConnection,
-               transientModel: buildChainedStorageBuildModel({
-                  upstreams: [parent],
-                  downstreamName: "monthly_orders",
-                  downstreamDefText,
-                  destinationName: "lake",
-               }),
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [parent],
+                     downstreamName: "monthly_orders",
+                     downstreamDefText,
+                     destinationName: "lake",
+                  }),
+               ),
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
@@ -782,6 +683,121 @@ describe.skipIf(process.platform === "win32")(
          } finally {
             rmSync(dir, { recursive: true, force: true });
          }
+      });
+
+      // The parents' `type:` follows the served copy's declaration rule: a
+      // list or struct is declared as Malloy's array or record type, and a
+      // column nothing declares faithfully (a MAP here) is left out. Before,
+      // every such column was declared `json`, which Malloy refuses in a
+      // `type:`, so no chained build over such a parent could lift.
+      describe("over a parent with list, struct and MAP columns", () => {
+         const exotic: Binding = {
+            ...parent,
+            sourceName: "tagged_orders",
+            virtualHandle: "tagged_h",
+            tablePath: "lake.tagged_orders__mabc",
+            schema: [
+               { name: "order_date", type: "DATE" },
+               { name: "total", type: "DOUBLE" },
+               { name: "tags", type: "INTEGER[]" },
+               { name: "who", type: "STRUCT(a INTEGER, b VARCHAR)" },
+               { name: "attrs", type: "MAP(VARCHAR, INTEGER)" },
+            ],
+         };
+
+         function seedExotic(dir: string): Promise<void> {
+            return writeLake(
+               dir,
+               'CREATE TABLE "tagged_orders__mabc" AS ' +
+                  "SELECT CAST('2026-01-01' AS DATE) AS order_date, 150.0 AS total, " +
+                  "[1, 2]::INTEGER[] AS tags, {'a': 1, 'b': 'x'} AS who, " +
+                  "MAP {'k': 1} AS attrs " +
+                  "UNION ALL SELECT CAST('2026-02-01' AS DATE), 99.0, " +
+                  "[3]::INTEGER[], {'a': 2, 'b': 'y'}, MAP {'k': 2}",
+            );
+         }
+
+         const build = (dir: string, name: string, defText: string) =>
+            buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               model: oneFileModel(
+                  buildChainedStorageBuildModel({
+                     upstreams: [exotic],
+                     downstreamName: name,
+                     downstreamDefText: defText,
+                     destinationName: "lake",
+                  }),
+               ),
+               downstreamName: name,
+               virtualMap: buildVirtualMap([exotic]),
+               physicalTableName: `${name}__m1`,
+               environmentPath: dir,
+            });
+
+         it("lifts a downstream over the parent's scalar columns", async () => {
+            const dir = mkdtempSync(join(tmpdir(), "t3-exotic-"));
+            try {
+               await seedExotic(dir);
+               const result = await build(
+                  dir,
+                  "monthly_tagged",
+                  "monthly_tagged is tagged_orders -> {\n" +
+                     "  group_by: order_month is order_date.month\n" +
+                     "  aggregate: monthly_total is total.sum()\n}",
+               );
+               expect(result.upstreamReuse).toBe("reused");
+               expect(result.schema.map((c) => c.name).sort()).toEqual([
+                  "monthly_total",
+                  "order_month",
+               ]);
+            } finally {
+               rmSync(dir, { recursive: true, force: true });
+            }
+         });
+
+         it("lifts a downstream reading the list and struct columns", async () => {
+            const dir = mkdtempSync(join(tmpdir(), "t3-exotic-nested-"));
+            try {
+               await seedExotic(dir);
+               const result = await build(
+                  dir,
+                  "tag_totals",
+                  "tag_totals is tagged_orders -> {\n" +
+                     "  group_by: order_date, wa is who.a\n" +
+                     "  aggregate: tag_total is tags.each.sum()\n}",
+               );
+               expect(result.upstreamReuse).toBe("reused");
+               expect(result.schema.map((c) => c.name).sort()).toEqual([
+                  "order_date",
+                  "tag_total",
+                  "wa",
+               ]);
+            } finally {
+               rmSync(dir, { recursive: true, force: true });
+            }
+         });
+
+         it("refuses, as a shape failure the caller recomputes, a downstream reading the left-out column", async () => {
+            const dir = mkdtempSync(join(tmpdir(), "t3-exotic-map-"));
+            try {
+               await seedExotic(dir);
+               const error = await build(
+                  dir,
+                  "attr_rows",
+                  "attr_rows is tagged_orders -> { select: order_date, attrs }",
+               ).then(
+                  () => undefined,
+                  (e: unknown) => e,
+               );
+               expect(error).toBeInstanceOf(MaterializationEligibilityError);
+            } finally {
+               rmSync(dir, { recursive: true, force: true });
+            }
+         });
       });
    },
 );
@@ -936,8 +952,6 @@ describe("writePartitionedTable", () => {
             { column: "day", transform: "month" },
          ],
          createStatement: "CREATE TABLE",
-         bounded: true,
-         read: async () => undefined,
       });
 
       const transaction = issued.slice(issued.indexOf("BEGIN TRANSACTION"));
@@ -955,29 +969,9 @@ describe("writePartitionedTable", () => {
       );
       expect(transaction[4]).toBe("COMMIT");
       // The bounds are set before the transaction and threads restored after.
+      expect(issued).toContain("SET partitioned_write_flush_threshold = 8192");
       expect(issued).toContain("SET threads = 1");
       expect(issued[issued.length - 1]).toBe("RESET threads");
-   });
-
-   it("keeps the build's identity layout through createTableAndDescribe", async () => {
-      const { session, issued } = recordingSession();
-
-      await createTableAndDescribe(
-         session,
-         `"lake"."t"`,
-         "SELECT 1 AS region",
-         ["region"],
-      );
-
-      expect(issued).toContain(
-         `CREATE OR REPLACE TABLE "lake"."t" AS (SELECT 1 AS region) WITH NO DATA`,
-      );
-      expect(issued).toContain(
-         `ALTER TABLE "lake"."t" SET PARTITIONED BY ("region")`,
-      );
-      // A chained build (no passthrough source) inserts unordered, as before.
-      expect(issued).toContain(`INSERT INTO "lake"."t" (SELECT 1 AS region)`);
-      expect(issued).not.toContain("SET threads = 1");
    });
 });
 
@@ -1056,6 +1050,8 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
          ]);
          expect(result.storageDestinationName).toBe("lake");
          expect(result.schema.map((c) => c.name)).toEqual(["id", "category"]);
+         // Counted in the destination, for table stats.
+         expect(result.rowCount).toBe(3);
          // A postgres read reports no cost; null is "not reported", never free.
          expect(result.readCost).toBeNull();
          // A rebuild reports where the new snapshot reaches, and no refresh.
@@ -1064,6 +1060,74 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
             value: "3",
          });
          expect(result.refresh).toBeUndefined();
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // ms2data/service#6642: the warehouse's types, cast in DuckDB around the
+   // passthrough, so the warehouse still runs exactly the build SQL.
+   it("stores each column as the type Malloy declares where one DuckDB type is faithful", async () => {
+      const lake = fileLakeBuild(
+         "SELECT TIMESTAMP '2026-02-01 00:00:00' AS order_month, 1 AS is_open, 2.5 AS amount",
+      );
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [
+               { name: "order_month", type: "date" },
+               { name: "is_open", type: "boolean" },
+               { name: "amount", type: "number" },
+            ],
+         });
+         expect(lake.reads).toEqual(["SELECT * FROM orders"]);
+         expect(result.schema).toEqual([
+            { name: "order_month", type: "DATE" },
+            { name: "is_open", type: "BOOLEAN" },
+            { name: "amount", type: "DECIMAL(2,1)" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // A cast that cannot convert a value must not fail a build that used to
+   // succeed: it stores what the warehouse returned, never TRY_CAST's NULLs.
+   it("stores the warehouse's types when a declared-type cast cannot convert a value", async () => {
+      const lake = fileLakeBuild("SELECT 'open' AS is_open, 1 AS n");
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [{ name: "is_open", type: "boolean" }],
+         });
+         expect(result.schema).toEqual([
+            { name: "is_open", type: "VARCHAR" },
+            { name: "n", type: "INTEGER" },
+         ]);
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   // Under a query time zone a date is not cast at build: an instant's date in
+   // the build session's UTC can be the day before the zone's.
+   it("does not cast a date at build when the source has a query time zone", async () => {
+      const lake = fileLakeBuild(
+         "SELECT TIMESTAMPTZ '2024-03-04 15:00:00+00' AS d, 1 AS is_open",
+      );
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            declaredColumns: [
+               { name: "d", type: "date" },
+               { name: "is_open", type: "boolean" },
+            ],
+            castOptions: { queryTimezone: "Asia/Tokyo" },
+         });
+         expect(result.schema).toEqual([
+            { name: "d", type: "TIMESTAMP WITH TIME ZONE" },
+            { name: "is_open", type: "BOOLEAN" },
+         ]);
       } finally {
          lake.cleanup();
       }

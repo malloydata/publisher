@@ -79,6 +79,7 @@ export class QueryController {
                rowLimitSource,
                queryCorrelationId,
                servedFrom,
+               path,
                executionTimeMs,
                queryCostBytes,
                renderLogs,
@@ -101,6 +102,8 @@ export class QueryController {
                // a declined transform both read `null`, like a live query. See the
                // field's description in `api-doc.yaml`.
                servedFrom,
+               // What answered and why, every tier included (D1).
+               ...(path ? { path } : {}),
                executionTimeMs,
                queryCostBytes,
             }) as ApiQuery,

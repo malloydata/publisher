@@ -77,7 +77,9 @@ describe("a valid declaration does not disturb the load", () => {
             model(`  #@ preaggregate grain="category"
   measure: total is amount.sum()`),
          );
-         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
+            "",
+         );
          expect(pkg.preaggregateAccessWarnings()).toEqual([]);
       },
       { timeout: 30000 },
@@ -89,7 +91,9 @@ describe("a valid declaration does not disturb the load", () => {
          const pkg = await loadPackage(
             model(`  measure: total is amount.sum()`),
          );
-         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
+            "",
+         );
       },
       { timeout: 30000 },
    );
@@ -206,7 +210,9 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
 `,
          );
          // Neither gate refuses.
-         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
+            "",
+         );
          // But it is SAID, on the surface an operator reads.
          const warned = pkg.preaggregateAccessWarnings();
          expect(warned).toHaveLength(1);
@@ -236,7 +242,9 @@ source: orders_pub is orders extend {} include {
 }
 `,
          );
-         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
+            "",
+         );
          expect(pkg.preaggregateAccessWarnings().map((w) => w.subject)).toEqual(
             ["total"],
          );

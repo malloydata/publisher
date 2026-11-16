@@ -70,6 +70,7 @@ import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization/run/materialization_scheduler";
 import { MaterializationService } from "./service/materialization/run/materialization_service";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
+import { startWorkloadLogFromSettings } from "./service/workload_log_store";
 import { ThemeStore } from "./service/theme_store";
 import { createAdminApp } from "./routes/admin";
 import { CatalogAdmin, catalogAdminConfig } from "./service/catalog_admin";
@@ -240,7 +241,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    } catch (error) {
       retrievalConfig = undefined;
       logger.error(
-         `Could not read the retrieval settings from publisher.config.json; retrieval runs with its defaults until this is fixed and the server restarted. ${
+         `Could not read the retrieval settings; retrieval runs with its defaults until this is fixed and the server restarted. ${
             error instanceof Error ? error.message : String(error)
          }`,
       );
@@ -329,7 +330,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // Archiving a version reclaims the tables it alone owns, in the background.
    environmentStore.setVersionArchivedHook(
       (environmentName, packageName, versionId) => {
-         void materializationService.reclaimVersionTables(
+         void materializationService.reclaimer.reclaimVersionTables(
             environmentName,
             packageName,
             versionId,
@@ -340,7 +341,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // background, once its row is gone.
    environmentStore.setVersionDeletedHook(
       (environmentName, packageName, versionId) => {
-         void materializationService.cleanUpDeletedVersion(
+         void materializationService.reclaimer.cleanUpDeletedVersion(
             environmentName,
             packageName,
             versionId,
@@ -350,7 +351,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // A publish of a version id a delete freed first reclaims what the deleted
    // version still owes, if that delete's cleanup has not run yet.
    environmentStore.setOwedReclaimHook((environment, packageName, versionId) =>
-      materializationService.reclaimOwedNow(
+      materializationService.reclaimer.reclaimOwedNow(
          environment,
          packageName,
          versionId,
@@ -359,7 +360,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // A reclaim that a crash cut short is finished once the environments have
    // loaded: nothing else would start it again.
    void environmentStore.finishedInitialization.then(
-      () => materializationService.reclaimArchivedVersions(),
+      () => materializationService.reclaimer.reclaimArchivedVersions(),
       () => undefined,
    );
    // Every hook is installed: open storage and load the environments.
@@ -370,6 +371,9 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       environmentStore,
       materializationService,
    );
+   // The workload log's local store, when PUBLISHER_WORKLOAD_LOG_STORE=on; it
+   // buffers until storage opens. Its timer is unref'd.
+   startWorkloadLogFromSettings(environmentStore.storageManager);
    const themeStore = new ThemeStore(
       environmentStore.storageManager,
       SERVER_ROOT,

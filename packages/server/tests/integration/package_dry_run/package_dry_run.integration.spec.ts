@@ -111,6 +111,61 @@ describe("a dry-run publish", () => {
       ).toBe(404);
    }, 60_000);
 
+   // ms2data/service#7090: what a publish would build and serve, before it.
+   it("previews what the package would build and serve, and the status of a published one agrees", async () => {
+      const files = {
+         "orders.malloy": `##! experimental.persistence
+#@ persist name="orders_t"
+source: orders is ${ROWS} -> { select: * }
+
+#@ persist name="staging_t"
+source: staging is ${ROWS} -> { group_by: channel }
+
+source: orders_public is orders extend { measure: n is count() }
+`,
+         "index.malloy": `import "orders.malloy"\nexport { orders_public }\n`,
+      };
+      const { status, json } = await post(
+         "preview",
+         writePackage("preview", files),
+         true,
+      );
+      expect(status).toBe(200);
+      const verdicts = json.serveVerdicts as {
+         sourceName: string;
+         verdict: string;
+         reason?: string;
+      }[];
+      const staging = verdicts.find((v) => v.sourceName === "staging");
+      expect(staging).toMatchObject({ verdict: "live", reason: "unreachable" });
+      expect(verdicts.find((v) => v.sourceName === "orders")?.verdict).toBe(
+         "not_built",
+      );
+      const plan = json.buildPlan as {
+         sources: Record<string, unknown>;
+         omittedSources?: unknown[];
+         omittedFiles?: unknown[];
+      };
+      expect(Object.keys(plan.sources).length).toBe(verdicts.length);
+      // Every source planned: a complete plan says so.
+      expect(plan.omittedSources).toEqual([]);
+      expect(plan.omittedFiles).toEqual([]);
+      expect(await listed()).not.toContain("preview");
+
+      // Published, its serving state carries the same verdicts.
+      expect(
+         (await post("preview", writePackage("preview", files), false)).status,
+      ).toBe(200);
+      const served = (
+         await get(`/environments/${ENV_NAME}/packages/preview/status`)
+      ).json;
+      expect(
+         (
+            served.serveVerdicts as { sourceName: string; reason?: string }[]
+         ).map((v) => [v.sourceName, v.reason]),
+      ).toEqual(verdicts.map((v) => [v.sourceName, v.reason]));
+   }, 60_000);
+
    it("answers a tree that does not compile with the refusal a publish would give", async () => {
       const location = writePackage("broken", {
          "orders.malloy": `source: orders is ${ROWS} extend { dimension: x is nope }\n`,
@@ -166,23 +221,18 @@ describe("a dry-run publish", () => {
    }, 30_000);
 
    /**
-    * Counts `shutdown("close")` on every package's connections while `run`
-    * runs: a dry run's package is never served, so it must close its own.
+    * Counts `releaseConnections()` on every package while `run` runs: a dry
+    * run's package is never served, so it must close its own connections.
     */
    const closesDuring = async (run: () => Promise<unknown>) => {
       let closed = 0;
-      const original = Package.prototype.getMalloyConfig;
+      const original = Package.prototype.releaseConnections;
       const spy = spyOn(
          Package.prototype,
-         "getMalloyConfig",
+         "releaseConnections",
       ).mockImplementation(function (this: Package) {
-         const config = original.call(this);
-         const shutdown = config.shutdown.bind(config);
-         config.shutdown = async (...args: Parameters<typeof shutdown>) => {
-            if (args[0] === "close") closed++;
-            return shutdown(...args);
-         };
-         return config;
+         closed++;
+         return original.call(this);
       });
       try {
          await run();

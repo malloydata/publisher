@@ -31,7 +31,6 @@ import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { pathToFileURL } from "url";
 import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
 import { Environment } from "../../src/service/environment";
@@ -169,7 +168,9 @@ interface Served {
 
 /**
  * Install `files` as package `pkg` (compiled by the real load path) and run
- * `act`. `outside` files sit beside the package, imported as `OUTSIDE/<name>`.
+ * `act`. `outside` files sit outside the package's models, imported as
+ * `OUTSIDE/<name>`: in a dot directory, which the load never compiles as a
+ * model of its own. (A model cannot import from outside the package root.)
  */
 async function withPackage<T>(
    files: Record<string, string>,
@@ -178,20 +179,20 @@ async function withPackage<T>(
 ): Promise<T> {
    const root = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-probe-"));
    roots.push(root);
-   const outDir = path.join(root, "outside");
-   await fs.mkdir(outDir, { recursive: true });
-   for (const [name, text] of Object.entries(outside)) {
-      await fs.writeFile(path.join(outDir, name), text);
-   }
    const envPath = path.join(root, "env");
    await fs.mkdir(envPath, { recursive: true });
    const env = await Environment.create("probeEnv", envPath, []);
    const pkg = await env.installPackage("pkg", async (staging) => {
       writePackageFiles(staging, {});
+      const outDir = path.join(staging, ".outside");
+      await fs.mkdir(outDir, { recursive: true });
+      for (const [name, text] of Object.entries(outside)) {
+         await fs.writeFile(path.join(outDir, name), text);
+      }
       for (const [name, text] of Object.entries(files)) {
          await fs.writeFile(
             path.join(staging, name),
-            text.replaceAll("OUTSIDE/", `${pathToFileURL(outDir).href}/`),
+            text.replaceAll("OUTSIDE/", ".outside/"),
          );
       }
    });

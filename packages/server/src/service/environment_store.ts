@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { localPackageFingerprint } from "./configured_publish_retry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
@@ -44,13 +45,18 @@ import {
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
-import { Environment, type PackageListingOptions } from "./environment";
+import {
+   Environment,
+   STAGING_DIR_NAME,
+   type PackageListingOptions,
+} from "./environment";
 import { formatPublishRejections } from "./publish_checks";
 import type { Package } from "./package";
 import { environmentResource } from "../api_resource";
 import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
+import { withRollupKeyRecords } from "./materialization/run/inline_uniqueness";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 import type {
@@ -573,14 +579,19 @@ export class EnvironmentStore
 
    /**
     * Publish each configured package as the version its publisher.json
-    * declares (see addConfiguredEnvironment). The packages are mounted first,
-    * by the loop an unversioned environment mounts its packages with
-    * (loadEnvironmentIntoDisk), into a staging folder of their own: a location
-    * holding several packages is downloaded once, with labelled progress, and
-    * one that does not mount is recorded as that package's load error. Each
-    * mounted tree is then published from there. One that cannot be published
-    * (no version, a refused check, a conflict) is recorded as its load error
-    * too, and the others still load.
+    * declares (see addConfiguredEnvironment). A local location (a directory
+    * or a .zip) is published straight from where it is, so it is copied
+    * once. The remote ones (GitHub, gs://, s3://) are mounted first, by the
+    * loop an unversioned environment mounts its packages with
+    * (loadEnvironmentIntoDisk), into a folder under the environment's
+    * `.staging`: a location holding several packages is downloaded once, with
+    * labelled progress, and one that does not mount is recorded as that
+    * package's load error. Each is then published from its mount. A server
+    * stopped mid-mount leaves that folder behind, and the next boot's sweep of
+    * `.staging` removes it (Environment.sweepStaleInstallDirs), whether that
+    * boot reads the config or restores from the database. A package that
+    * cannot be published (no version, a refused check, a conflict) is recorded
+    * as its load error too, and the others still load.
     */
    private async publishConfiguredPackages(
       environment: Environment,
@@ -589,30 +600,36 @@ export class EnvironmentStore
       if (packages.length === 0) return;
       const environmentName = environment.getEnvironmentName();
       const versions = environment.getVersionService();
-      const stagingRoot = safeJoinUnderRoot(
+      const remote = packages.filter((p) => !isLocalPath(p.location));
+      // Dot-prefixed, so no package's own staging (`<pkg>-<uuid>`) shares it.
+      const mountRoot = safeJoinUnderRoot(
          environment.getEnvironmentPath(),
-         `.publish_${crypto.randomBytes(8).toString("hex")}`,
+         STAGING_DIR_NAME,
+         `.configured-${crypto.randomUUID()}`,
       );
       try {
-         let mountErrors: ReadonlyMap<string, string>;
-         try {
-            ({ mountErrors } = await this.loadEnvironmentIntoDisk(
-               environmentName,
-               packages,
-               stagingRoot,
-            ));
-         } catch (error) {
-            // Nothing could be staged (the environment's folder refused the
-            // staging folder, say): each package is a load error, as a
-            // location that does not mount is, and the environment serves.
-            const failed = new Map<string, string>();
-            this.recordMountFailure(
-               error,
-               stagingRoot,
-               packages.map((p) => p.name),
-               failed,
-            );
-            mountErrors = failed;
+         let mountErrors: ReadonlyMap<string, string> = new Map();
+         if (remote.length > 0) {
+            try {
+               ({ mountErrors } = await this.loadEnvironmentIntoDisk(
+                  environmentName,
+                  remote,
+                  mountRoot,
+               ));
+            } catch (error) {
+               // Nothing could be staged (the environment's folder refused
+               // the staging folder, say): each remote package is a load
+               // error, as a location that does not mount is, and the
+               // environment serves.
+               const failed = new Map<string, string>();
+               this.recordMountFailure(
+                  error,
+                  mountRoot,
+                  remote.map((p) => p.name),
+                  failed,
+               );
+               mountErrors = failed;
+            }
          }
          for (const configured of packages) {
             const mountError = mountErrors.get(configured.name);
@@ -627,28 +644,54 @@ export class EnvironmentStore
                   );
                }
                // A relative or `~/` location is the config's, resolved against
-               // its folder as the mount resolved it (resolveLocalPath), so a
-               // later boot that restores the version from its recorded source
-               // location finds the same folder.
-               const sourceLocation = isLocalPath(configured.location)
+               // its folder (resolveLocalPath), so a later boot that restores
+               // the version from its recorded source location finds the same
+               // folder.
+               const local = isLocalPath(configured.location);
+               const sourceLocation = local
                   ? this.resolveLocalPath(configured.location)
                   : configured.location;
-               const mounted = safeJoinUnderRoot(stagingRoot, configured.name);
-               await versions.publish(
-                  configured.name,
-                  (stagingPath) =>
-                     this.downloadPackageInto(
-                        environmentName,
+               const fetchFrom = local
+                  ? sourceLocation
+                  : safeJoinUnderRoot(mountRoot, configured.name);
+               const publish = () =>
+                  versions.publish(
+                     configured.name,
+                     (stagingPath) =>
+                        this.downloadPackageInto(
+                           environmentName,
+                           configured.name,
+                           fetchFrom,
+                           stagingPath,
+                        ),
+                     {
+                        sourceLocation,
+                        promotion: getVersionPromotionMode(),
+                        validate: (loaded) => formatPublishRejections(loaded),
+                     },
+                  );
+               try {
+                  await publish();
+               } catch (error) {
+                  // A refused publish places nothing. A local location can be
+                  // read again, so the package's next access publishes it
+                  // again (Environment.setConfiguredPublishRetry); a remote
+                  // one's mount is removed below, so its reads answer this
+                  // error until the next --init.
+                  if (local) {
+                     environment.setConfiguredPublishRetry(
                         configured.name,
-                        mounted,
-                        stagingPath,
-                     ),
-                  {
-                     sourceLocation,
-                     promotion: getVersionPromotionMode(),
-                     validate: (loaded) => formatPublishRejections(loaded),
-                  },
-               );
+                        publish,
+                        () => localPackageFingerprint(sourceLocation),
+                     );
+                  } else {
+                     environment.setConfiguredPublishRefused(
+                        configured.name,
+                        error,
+                     );
+                  }
+                  throw error;
+               }
             } catch (error) {
                const message = redactPgSecrets(
                   error instanceof Error ? error.message : String(error),
@@ -666,11 +709,11 @@ export class EnvironmentStore
          }
       } finally {
          await fs.promises
-            .rm(stagingRoot, { recursive: true, force: true })
+            .rm(mountRoot, { recursive: true, force: true })
             .catch((error) =>
                logger.warn("Could not remove a package staging folder", {
                   environmentName,
-                  stagingRoot,
+                  stagingRoot: mountRoot,
                   error,
                }),
             );
@@ -976,6 +1019,11 @@ export class EnvironmentStore
    private async bindVersionRegistry(
       environment: Environment,
       environmentId: string,
+      /**
+       * The environment's row was created just now, so no version names it:
+       * there is nothing to read for `/status` or to keep when cleaning up.
+       */
+      newRow: boolean = false,
    ): Promise<void> {
       const repository = this.storageManager.getRepository();
       const environmentName = environment.getEnvironmentName();
@@ -987,7 +1035,11 @@ export class EnvironmentStore
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
-         storageBindingResolverFor(repository, environmentId),
+         storageBindingResolverFor(
+            repository,
+            environmentId,
+            withRollupKeyRecords,
+         ),
       );
       this.attachHooks(environment, VERSION_HOOKS);
       environment.bindVersions(repository, environmentId, {
@@ -1034,11 +1086,19 @@ export class EnvironmentStore
             this.cleanupPackageEmbeddings(environmentName, packageName),
       });
       if (alreadyBound) return;
+      // Before any poll can list this environment's versions: /status reads
+      // them from memory from here on. A new row has none, so a create reads
+      // no version row (two database round trips fewer on every create).
+      if (newRow) {
+         environment.primeStatusVersionsEmpty();
+      } else {
+         await environment.primeStatusVersions();
+      }
       try {
          const owned = new Map<string, Set<string>>();
-         for (const version of await repository.listVersionsByEnvironment(
-            environmentId,
-         )) {
+         for (const version of newRow
+            ? []
+            : await repository.listVersionsByEnvironment(environmentId)) {
             const dirs = owned.get(version.packageName) ?? new Set<string>();
             dirs.add(version.dirName);
             owned.set(version.packageName, dirs);
@@ -1108,7 +1168,11 @@ export class EnvironmentStore
       // Its version rules as soon as it has a row: the environment is already
       // served, and a publish to it needs them. A sync below that fails must
       // not leave it without them.
-      await this.bindVersionRegistry(environment, dbEnvironment.id);
+      await this.bindVersionRegistry(
+         environment,
+         dbEnvironment.id,
+         dbEnvironment.created,
+      );
 
       const connectionFailures = await this.addConnections(
          environment,
@@ -1165,7 +1229,7 @@ export class EnvironmentStore
    private async addEnvironmentMetadata(
       environment: Environment,
       repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<{ id: string; name: string }> {
+   ): Promise<{ id: string; name: string; created: boolean }> {
       const environmentName = environment.metadata?.name;
       if (!environmentName) {
          throw new Error("Environment name is required but not found");
@@ -1182,7 +1246,7 @@ export class EnvironmentStore
       const existingEnvironment =
          await repository.getEnvironmentByName(environmentName);
 
-      let dbEnvironment: { id: string; name: string };
+      let dbEnvironment: { id: string; name: string; created: boolean };
       if (existingEnvironment) {
          const updateData = {
             description: environmentDescription,
@@ -1190,9 +1254,14 @@ export class EnvironmentStore
          };
 
          await repository.updateEnvironment(existingEnvironment.id, updateData);
-         dbEnvironment = { id: existingEnvironment.id, name: environmentName };
+         dbEnvironment = {
+            id: existingEnvironment.id,
+            name: environmentName,
+            created: false,
+         };
       } else {
-         dbEnvironment = await repository.createEnvironment(environmentData);
+         const created = await repository.createEnvironment(environmentData);
+         dbEnvironment = { id: created.id, name: created.name, created: true };
       }
 
       return dbEnvironment;
@@ -1695,35 +1764,39 @@ export class EnvironmentStore
       );
    }
 
+   /**
+    * The body of `GET /status` and `get_status`: the control plane's
+    * heartbeat, so a constant-time read of what this server holds. Each
+    * environment answers from its status snapshot (see
+    * Environment.describeForStatus), so a poll builds no package metadata,
+    * reads nothing from the database and never starts a load, whatever else
+    * the server is doing.
+    */
    public async getStatus(
       options: StatusOptions = {},
    ): Promise<ServerStatusBody> {
-      // Back-pressure reads as "throttled" so the control plane can stop
-      // routing to this worker; "draining" takes precedence.
-      const baseState = getOperationalState();
-      const operationalState = (
-         baseState !== "draining" &&
-         (this.memoryGovernor?.isBackpressured() ?? false)
-            ? "throttled"
-            : baseState
-      ) as ServerStatusBody["operationalState"];
+      const status = this.statusHeader();
+      for (const environment of this.environments.values()) {
+         status.environments.push(
+            environment.describeForStatus({
+               includeLoading: options.includeLoading,
+            }) as ServerStatusBody["environments"][number],
+         );
+      }
+      this.addStatusProblems(status);
+      return status;
+   }
 
-      const status: ServerStatusBody = {
-         timestamp: Date.now(),
-         environments: [],
-         initialized: this.isInitialized,
-         frozenConfig: isPublisherConfigFrozen(),
-         operationalState,
-         version: SERVER_VERSION,
-      };
-      // Whether a publish from a location publishes versions, so an
-      // orchestrator mid-rollout can tell. A server from before versions sends
-      // no field, which means "off".
-      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
-      status.versionPromotion = getVersionPromotionMode();
-      // The Console's model page. Absent, as from a server that predates the
-      // setting, reads as "explorer".
-      status.modelPage = getModelPageMode();
+   /**
+    * `/status` as it was computed before the snapshot: every package listed
+    * (and so a registered one loaded) and every version row read on the call.
+    * The reference the snapshot is proven equal to (status_snapshot.spec.ts);
+    * never on a poll.
+    */
+   public async computeStatusFromListings(
+      options: StatusOptions = {},
+   ): Promise<ServerStatusBody> {
+      const status = this.statusHeader();
 
       // `/status` entries carry each package's serving state; a listing does not.
       const environments = await this.listEnvironments(true, {
@@ -1786,6 +1859,43 @@ export class EnvironmentStore
 
       // Collected AFTER listEnvironments: serialize() loads packages, which is
       // what records their failures.
+      this.addStatusProblems(status);
+      return status;
+   }
+
+   /** The fields of a `/status` body that do not describe an environment. */
+   private statusHeader(): ServerStatusBody {
+      // Back-pressure reads as "throttled" so the control plane can stop
+      // routing to this worker; "draining" takes precedence.
+      const baseState = getOperationalState();
+      const operationalState = (
+         baseState !== "draining" &&
+         (this.memoryGovernor?.isBackpressured() ?? false)
+            ? "throttled"
+            : baseState
+      ) as ServerStatusBody["operationalState"];
+
+      const status: ServerStatusBody = {
+         timestamp: Date.now(),
+         environments: [],
+         initialized: this.isInitialized,
+         frozenConfig: isPublisherConfigFrozen(),
+         operationalState,
+         version: SERVER_VERSION,
+      };
+      // Whether a publish from a location publishes versions, so an
+      // orchestrator mid-rollout can tell. A server from before versions sends
+      // no field, which means "off".
+      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
+      status.versionPromotion = getVersionPromotionMode();
+      // The Console's model page. Absent, as from a server that predates the
+      // setting, reads as "explorer".
+      status.modelPage = getModelPageMode();
+      return status;
+   }
+
+   /** Load errors, stale packages, and why the server is empty or failed. */
+   private addStatusProblems(status: ServerStatusBody): void {
       const loadErrors: LoadError[] = [];
       for (const [environmentName, message] of this.failedEnvironments) {
          loadErrors.push({ environment: environmentName, message });
@@ -1825,8 +1935,6 @@ export class EnvironmentStore
       if (this.initError) {
          status.initError = this.initError;
       }
-
-      return status;
    }
 
    /**
@@ -2395,6 +2503,9 @@ export class EnvironmentStore
                         });
                         await fs.promises.cp(sourcePath, absolutePackagePath, {
                            recursive: true,
+                           // A relative link stays relative, so an in-package link still
+                           // leads inside the copy rather than back into the source.
+                           verbatimSymlinks: true,
                         });
                         logger.info(
                            `Copied package "${packageDir}" (${++mountedCount}/${totalPackages})`,
@@ -2424,6 +2535,9 @@ export class EnvironmentStore
                      });
                      await fs.promises.cp(sourcePath, absolutePackagePath, {
                         recursive: true,
+                        // A relative link stays relative, so an in-package link still
+                        // leads inside the copy rather than back into the source.
+                        verbatimSymlinks: true,
                      });
                      logger.info(
                         `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"} (${++mountedCount}/${totalPackages})`,
@@ -2437,6 +2551,9 @@ export class EnvironmentStore
                   });
                   await fs.promises.cp(tempDownloadPath, absolutePackagePath, {
                      recursive: true,
+                     // A relative link stays relative, so an in-package link still
+                     // leads inside the copy rather than back into the source.
+                     verbatimSymlinks: true,
                   });
                   logger.info(
                      `Copied entire download as package "${packageDir}" (${++mountedCount}/${totalPackages})`,
@@ -2504,8 +2621,12 @@ export class EnvironmentStore
             `Failed to ${selected.action} "${selected.subject}"`,
             errorData,
          );
+         // A local location is a path on this server: the answer names the
+         // package instead. A remote one (a URL) is the caller's own text.
          throw new PackageNotFoundError(
-            `Failed to ${selected.action}: ${selected.subject}`,
+            selected.source === this.packageSources.local
+               ? `Failed to ${selected.action} for package "${packageName}"`
+               : `Failed to ${selected.action}: ${selected.subject}`,
             { cause: error },
          );
       }

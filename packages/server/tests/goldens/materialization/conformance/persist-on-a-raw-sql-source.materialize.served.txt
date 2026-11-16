@@ -1,0 +1,15 @@
+// conformance: persist on a raw SQL source [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+
+##! experimental { virtual_source }
+type: raw_direct__served is {
+   region::string,
+   amount::number
+}
+
+#(materialize) storage="lake"
+source: raw_direct is __served_copy_alias_of_lake.virtual('d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742')::raw_direct__served extend {
+  measure: total is amount.sum()
+}

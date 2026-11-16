@@ -1,12 +1,27 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Row-count estimates for a build plan: how many rows each planned table would
+ * hold, with the method that produced the number and its error band.
+ *
+ * Nothing here runs at load. The only caller is the estimate route, so a count
+ * is a warehouse statement somebody asked for; see row_count_estimate_load.spec.ts.
+ *
+ * The one method today is an exact count over the build query. It costs what
+ * the build's read costs, which is why it is opt-in. Cheaper methods with wider
+ * bands (table metadata, sampled or approximate counts, dry runs) are the T5
+ * adapters' work and add `method` values; `method` is an open string on the wire
+ * so they can.
+ *
+ * Emits no telemetry itself: a warning goes to the caller's `warn`.
+ */
+
 import { randomUUID } from "crypto";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { getQueryTimeoutMs } from "../../../config";
 import { BadRequestError } from "../../../errors";
-import { logger } from "../../../logger";
 import { runWithQueryTimeout } from "../../../query_timeout";
 import { errMessage } from "../../../utils";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
@@ -17,30 +32,15 @@ type BuildPlan = components["schemas"]["BuildPlan"];
 type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 type RefusedSource = components["schemas"]["RefusedSource"];
 export type BuildPlanEstimates = components["schemas"]["BuildPlanEstimates"];
-export type RowCountEstimate = components["schemas"]["RowCountEstimate"];
-export type BuildPlanEstimateRequest =
+type RowCountEstimate = components["schemas"]["RowCountEstimate"];
+type BuildPlanEstimateRequest =
    components["schemas"]["BuildPlanEstimateRequest"];
-
-/**
- * Row-count estimates for a build plan (materialization v2, telemetry T4, the
- * phase 2 part): how many rows each planned table would hold, with the method
- * that produced the number and its error band.
- *
- * Nothing here runs at load. The only caller is the estimate route, so a count
- * is a warehouse statement somebody asked for; see row_count_estimate_load.spec.ts.
- *
- * The one method today is an exact count over the build query. It costs what
- * the build's read costs, which is why it is opt-in. Cheaper methods with wider
- * bands (table metadata, sampled or approximate counts, dry runs) are the T5
- * adapters' work and add `method` values; `method` is an open string on the wire
- * so they can.
- */
 
 /** An exact `COUNT(*)` over the source's build query. */
 export const COUNT_QUERY_METHOD = "count_query";
 
 /** Why a source was not counted. An open set on the wire. */
-export type EstimateRefusalReason =
+type EstimateRefusalReason =
    | "not_buildable"
    | "gated"
    | "caller_scoped"
@@ -129,11 +129,13 @@ export function readRowCount(rows: readonly unknown[]): {
  * caller's rows, so a source is counted only when nothing scopes it per caller:
  *
  * - the plan itself refuses it (any tier), so there is no build to size;
- * - the STORAGE gate, the strictest one, does not admit it by name: it refuses
- *   any `#(authorize)` or `#(access_filter)` on the source, its base or a joined
- *   source, a free parameter, and a given in the persisted query. Keyed by name
- *   as that gate is, so a name refused anywhere in the package refuses every
- *   source of that name; failing closed is the point;
+ * - the STORAGE gate, the strictest one, does not admit its sourceID: it
+ *   refuses any `#(authorize)` or `#(access_filter)` on the source, its base or
+ *   a joined source, a free parameter, and a given in the persisted query.
+ *   Keyed by sourceID, as that gate's record is;
+ * - the storage gate admits it only because the read re-applies its own
+ *   row-level gate (`gateKept`): the build query still reads every caller's
+ *   rows, so it is refused as gated;
  * - the build strips a caller-scoped term from it (a given in its extend-block
  *   `where:`, or a join to a given-scoped source), which the storage gate admits
  *   because the read re-applies it, but which leaves the build query unscoped.
@@ -170,13 +172,18 @@ export function estimateRefusal(
          message: `The package's materialization eligibility was not computed, so nothing proves '${name}' is ungated. Reload the package.`,
       };
    }
+   // Open question: the storage verdict also refuses for reasons unrelated to
+   // caller scoping; see the TODO on Package.getSourceEligibility.
    if (
-      !eligibility.eligible.includes(name) ||
-      Object.hasOwn(eligibility.refused, name)
+      !eligibility.eligible.includes(sourceID) ||
+      Object.hasOwn(eligibility.refused, sourceID) ||
+      (eligibility.gateKept ?? []).includes(sourceID)
    ) {
-      const why = Object.hasOwn(eligibility.refused, name)
-         ? eligibility.refused[name]
-         : undefined;
+      const why = Object.hasOwn(eligibility.refused, sourceID)
+         ? eligibility.refused[sourceID]
+         : eligibility.gateKept?.includes(sourceID)
+           ? "its own row-level gate is admitted only because the read re-applies it"
+           : undefined;
       return {
          reason: "gated",
          message:
@@ -274,11 +281,14 @@ export function parseEstimateRequest(body: unknown): BuildPlanEstimateRequest {
    return request;
 }
 
+/** Receives a warning the estimate would log; the caller logs it. */
+type EstimateWarn = (message: string, fields: Record<string, unknown>) => void;
+
 /**
  * Runs one count for one planned source and returns its rows, within
  * `budgetMs` (the request's remaining time, never more than a query timeout).
  */
-export type CountRunner = (
+type CountRunner = (
    source: PersistSourcePlan,
    sql: string,
    budgetMs: number,
@@ -300,6 +310,8 @@ export async function estimateRowCounts(args: {
    budgetMs?: number;
    /** Aborted when the client goes away; no further statement is issued. */
    signal?: AbortSignal;
+   /** Where a warning goes; the caller logs it. */
+   warn?: EstimateWarn;
 }): Promise<BuildPlanEstimates> {
    const { plan, eligibility, request, countRows } = args;
    const now = args.now ?? (() => new Date());
@@ -373,7 +385,7 @@ export async function estimateRowCounts(args: {
          if (request.maxRows !== undefined) {
             estimate.exceedsMaxRows = rows > request.maxRows;
             if (estimate.exceedsMaxRows) {
-               logger.warn(
+               args.warn?.(
                   "A planned table's row-count estimate exceeds the requested bound",
                   { sourceID, rows, maxRows: request.maxRows },
                );
@@ -461,6 +473,8 @@ export async function estimatePackageRowCounts(args: {
    meteredConnection?: (connectionName: string) => boolean;
    /** Aborted when the client goes away. */
    signal?: AbortSignal;
+   /** Where a warning goes; the caller logs it. */
+   warn?: EstimateWarn;
 }): Promise<BuildPlanEstimates> {
    const { pkg, plan, environmentName } = args;
    const request = parseEstimateRequest(args.body);
@@ -471,6 +485,7 @@ export async function estimatePackageRowCounts(args: {
       eligibility: pkg.getSourceEligibility(),
       request,
       signal: args.signal,
+      warn: args.warn,
       countRows: async (source, sql, budgetMs) => {
          const connection = await pkg.getMalloyConnection(
             source.connectionName,
@@ -491,7 +506,7 @@ export async function estimatePackageRowCounts(args: {
             },
          });
          if (drops.length > 0) {
-            logger.warn("Dropped query-metadata properties for an estimate", {
+            args.warn?.("Dropped query-metadata properties for an estimate", {
                sourceName: source.name,
                drops,
             });
