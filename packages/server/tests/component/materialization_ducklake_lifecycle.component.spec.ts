@@ -132,7 +132,7 @@ type Entry = {
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
-   servedBy: { kind: string; tableId?: string; via?: string };
+   servedBy: { kind: string; tableId?: string; tier?: string; via?: string };
 };
 
 describe.skipIf(process.platform === "win32")(
@@ -2221,11 +2221,13 @@ describe.skipIf(process.platform === "win32")(
          expect((await lake.ask(QUERIES.view)).servedBy).toEqual({
             kind: "view",
             tableId: entries.ops__by_cat__view.sourceEntityId,
+            tier: "storage",
          });
          for (const name of ["pairs", "parent", "child"] as const) {
             expect((await lake.ask(QUERIES[name])).servedBy).toEqual({
                kind: "materialized",
                tableId: entries[name].sourceEntityId,
+               tier: "storage",
                via: "served_copy",
             });
          }
