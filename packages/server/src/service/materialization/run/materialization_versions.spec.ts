@@ -617,35 +617,54 @@ describe('scope "version": each version builds and serves its own tables', () =>
             return write(...args);
          },
       );
-      const archiving = versions.setArchiveStatus(PKG, "1.0.0", "archive");
-      await writing;
-      // The archive holds the lock, so the next to ask for it is the run. The
-      // write is let go only once the run waits there, so the refusal is the
-      // run's check under the lock, not its first look at the version.
+      let isQueued = false;
       let queued!: () => void;
       const waiting = new Promise<void>((resolve) => (queued = resolve));
       const lock = versions.withVersionLock.bind(versions);
-      const lockSpy = spyOn(versions, "withVersionLock").mockImplementation(((
-         packageName,
-         versionId,
-         fn,
-      ) => {
-         const held = lock(packageName, versionId, fn);
-         queued();
-         return held;
-      }) as typeof versions.withVersionLock);
-      // Caught from the start: the refusal can land while the archive is
-      // still finishing.
-      const refused = refusal(
-         service.createMaterialization(ENV, PKG, {
-            versionId: VersionRef.parse("1.0.0"),
-         }),
-      );
-      await waiting;
-      lockSpy.mockRestore();
-      unlock();
-      await archiving;
-      spy.mockRestore();
+      let lockSpy: ReturnType<typeof spyOn> | undefined;
+      let refused: ReturnType<typeof refusal>;
+      try {
+         const archiving = versions.setArchiveStatus(PKG, "1.0.0", "archive");
+         await writing;
+         // The archive holds the lock, so the next to ask for it is the run.
+         // The write is let go only once the run waits there, so the refusal
+         // is the run's check under the lock, not its first look at the
+         // version.
+         lockSpy = spyOn(versions, "withVersionLock").mockImplementation(((
+            packageName,
+            versionId,
+            fn,
+         ) => {
+            const held = lock(packageName, versionId, fn);
+            isQueued = true;
+            queued();
+            return held;
+         }) as typeof versions.withVersionLock);
+         // Caught from the start: the refusal can land while the archive is
+         // still finishing.
+         refused = refusal(
+            service.createMaterialization(ENV, PKG, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
+         );
+         // A run that settles without queuing fails here, not by timing out.
+         await Promise.race([
+            waiting,
+            refused.then(() => {
+               if (!isQueued) {
+                  throw new Error(
+                     "run settled before queuing on the version lock",
+                  );
+               }
+            }),
+         ]);
+         unlock();
+         await archiving;
+      } finally {
+         unlock();
+         lockSpy?.mockRestore();
+         spy.mockRestore();
+      }
       expect(await refused).toEqual({
          status: 410,
          reason: "VERSION_ARCHIVED",
