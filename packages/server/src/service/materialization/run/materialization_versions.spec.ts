@@ -1837,7 +1837,10 @@ describe("what a run's load binds, read back from the store", () => {
          commit: async () => {},
       });
       const reloads = spyOn(pkg, "reloadAllModels");
-      const bindings = spyOn(pkg, "bindStorageServeBindings");
+      const bind = spyOn(pkg.materialization(), "bind");
+      const storageBinds = () =>
+         bind.mock.calls.filter(([update]) => update.storage !== undefined)
+            .length;
       try {
          // The store gives the same entry back with its keys in another order.
          const reversed = (o: object) =>
@@ -1854,10 +1857,7 @@ describe("what a run's load binds, read back from the store", () => {
          await env.rebindVersionFromStore(PKG, "1.0.0", async () => readBack, {
             onlyIfMoved: true,
          });
-         expect([
-            reloads.mock.calls.length,
-            bindings.mock.calls.length,
-         ]).toEqual([0, 0]);
+         expect([reloads.mock.calls.length, storageBinds()]).toEqual([0, 0]);
 
          // Another table at the same address: moved, so bound.
          await env.rebindVersionFromStore(
@@ -1868,10 +1868,10 @@ describe("what a run's load binds, read back from the store", () => {
             }),
             { onlyIfMoved: true },
          );
-         expect(bindings.mock.calls.length).toBe(1);
+         expect(storageBinds()).toBe(1);
       } finally {
          reloads.mockRestore();
-         bindings.mockRestore();
+         bind.mockRestore();
       }
    }
 });
