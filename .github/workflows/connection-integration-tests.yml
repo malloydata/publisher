@@ -34,6 +34,14 @@ on:
       - "packages/server/src/service/materialization/run/colocated_native_types.ts"
       - "packages/server/src/service/materialization/run/colocated_native_types.spec.ts"
       - "packages/server/src/service/materialization/stored_column_types.ts"
+      # The materialization specs that need a real Postgres (a DuckLake
+      # catalog, a Postgres warehouse, the run store's Postgres semantics),
+      # and everything they exercise.
+      - "packages/server/src/service/materialization/**"
+      - "packages/server/src/storage/**"
+      - "packages/server/tests/component/materialization_key_check_rebind.component.spec.ts"
+      - "packages/server/tests/component/materialization_stale_chain.component.spec.ts"
+      - "packages/server/tests/integration/materialization/**"
       # The passthrough surfaces this job exists to catch are provided by the
       # DuckDB extensions, which move with a dependency bump rather than with any
       # file above.
@@ -70,6 +78,14 @@ on:
       - "packages/server/src/service/materialization/run/colocated_native_types.ts"
       - "packages/server/src/service/materialization/run/colocated_native_types.spec.ts"
       - "packages/server/src/service/materialization/stored_column_types.ts"
+      # The materialization specs that need a real Postgres (a DuckLake
+      # catalog, a Postgres warehouse, the run store's Postgres semantics),
+      # and everything they exercise.
+      - "packages/server/src/service/materialization/**"
+      - "packages/server/src/storage/**"
+      - "packages/server/tests/component/materialization_key_check_rebind.component.spec.ts"
+      - "packages/server/tests/component/materialization_stale_chain.component.spec.ts"
+      - "packages/server/tests/integration/materialization/**"
       # The passthrough surfaces this job exists to catch are provided by the
       # DuckDB extensions, which move with a dependency bump rather than with any
       # file above.
@@ -262,6 +278,17 @@ jobs:
         run: |
           cd packages/server
           bun test --timeout 100000 ./src/service/materialization/run/colocated_native_types.spec.ts
+
+      # The materialization specs that skip unless a Postgres is reachable:
+      # DuckLake destinations on a Postgres catalog, a Postgres warehouse's
+      # native column types, cross-package tables, the v1 cutover and its
+      # leftover views, and the rebind and stale-chain races.
+      - name: Run Postgres-gated materialization tests
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/malloy_test
+        run: |
+          cd packages/server
+          bun test --timeout 200000 --max-workers=1 ./src/service/materialization/run/v1_cutover_postgres.spec.ts ./src/service/materialization/run/leftover_name_views_postgres.spec.ts ./tests/component/materialization_key_check_rebind.component.spec.ts ./tests/component/materialization_stale_chain.component.spec.ts ./tests/integration/materialization/cross_package_tables.integration.spec.ts ./tests/integration/materialization/storage_postgres_native_types.integration.spec.ts ./tests/integration/materialization/storage_sandbox_source.integration.spec.ts
 
       # The storage= build's warehouse read reaches BigQuery job records the unit
       # suite cannot: bigquery_execute's returned job id, the child job a
