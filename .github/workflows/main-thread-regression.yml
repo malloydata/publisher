@@ -127,7 +127,7 @@ jobs:
       - name: Unit-test the verdict
         if: steps.gate.outputs.run == 'true'
         working-directory: packages/server
-        run: bun test tests/perf/main-thread
+        run: bun test ./tests/perf/main-thread
 
       - name: Choose the baseline and candidate
         if: steps.gate.outputs.run == 'true'
