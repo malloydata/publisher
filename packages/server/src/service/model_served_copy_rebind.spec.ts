@@ -30,6 +30,11 @@ import { installSettings } from "../test_helpers/settings_env";
 import { materializationFixture } from "../test_helpers/materialization_fixture";
 import type { Binding } from "./materialization/domain/binding";
 import { GeneratedFiles } from "./materialization/text/generated_files";
+import { SourceMap } from "./materialization/text/source_map";
+import {
+   compileInputOf,
+   type ServedCopyServe,
+} from "./materialization/serve/served_copy_serve";
 import { unrecordedAudit } from "./access_record";
 import { Model } from "./model";
 import { QueryPrivileges } from "./model_query_request";
@@ -165,6 +170,105 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       model.setServeBindings([{ ...BINDING, tablePath: "mz_rebind_2" }]);
       expect(await recompiled()).toBe(true);
       expect(await recompiled()).toBe(false);
+   });
+
+   it("keeps the compiled copy on a rebind that changes only how fresh a table is", async () => {
+      const { model } = await buildModel(PLAIN, STORED);
+      const asOf = (iso: string): Binding => ({
+         ...BINDING,
+         freshAsOf: iso,
+         freshnessWindowSeconds: 10 * 365 * 86400,
+         freshnessFallback: "live",
+      });
+      model.setServeBindings([asOf("2026-01-01T00:00:00.000Z")]);
+      await model.prepareServedCopy();
+      expect(await total(model)).toBe(60);
+      const seen = compiles.mock.calls.length;
+      expect(seen).toBeGreaterThan(0);
+
+      // A new data-as-of instant, a new window or fallback, the router's own
+      // gate mark: none of it is read by the compile.
+      const later = asOf("2026-02-01T00:00:00.000Z");
+      model.setServeBindings([later]);
+      await model.prepareServedCopy();
+      model.setServeBindings([
+         { ...later, freshnessWindowSeconds: 20 * 365 * 86400 },
+      ]);
+      await model.prepareServedCopy();
+      const last: Binding = {
+         ...later,
+         freshnessFallback: "stale_ok",
+         ownGateKept: true,
+      };
+      model.setServeBindings([last]);
+      await model.prepareServedCopy();
+      expect(compiles.mock.calls.length).toBe(seen);
+      expect(await total(model)).toBe(60);
+      expect(compiles.mock.calls.length).toBe(seen);
+
+      // An answer reports the bindings pinned now, not those it compiled over.
+      const copy = (model as unknown as { servedCopy: ServedCopyServe })
+         .servedCopy;
+      const answer = await copy.loadQuery(
+         "run: X -> { aggregate: t is total.sum() }",
+      );
+      expect(answer.bindings).toEqual([last]);
+      expect(answer.bindings[0]).toBe(last);
+      expect(answer.tablesRead[0]).toBe(last);
+      expect(compiles.mock.calls.length).toBe(seen);
+   });
+
+   it("recompiles for every binding field the compile reads", async () => {
+      const { model, connMap } = await buildModel(PLAIN, STORED);
+      await connMap
+         .get("duckdb")!
+         .runSQL("CREATE OR REPLACE TABLE mz_rebind_b AS SELECT 60 AS total");
+      model.setServeBindings([BINDING]);
+      await model.prepareServedCopy();
+      let seen = compiles.mock.calls.length;
+      const recompiledFor = async (b: Binding) => {
+         model.setServeBindings([b]);
+         await model.prepareServedCopy();
+         const more = compiles.mock.calls.length > seen;
+         seen = compiles.mock.calls.length;
+         return more;
+      };
+      const changes: Partial<Binding>[] = [
+         { tablePath: "mz_rebind_b" },
+         { virtualHandle: "h2" },
+         { schema: [{ name: "total", type: "INTEGER" }] },
+         { nativeSchema: [{ name: "total", type: "HUGEINT" }] },
+         { primaryKeys: { x: true } },
+         {
+            sourceIDs: [
+               SourceMap.of(
+                  (model as unknown as { modelDef: unknown }).modelDef,
+               ).sourceIDOf("X")!,
+            ],
+         },
+         { tier: "colocated" },
+         { kind: "materialize" },
+      ];
+      for (const change of changes) {
+         expect([
+            Object.keys(change)[0],
+            await recompiledFor({ ...BINDING, ...change }),
+         ]).toEqual([Object.keys(change)[0], true]);
+         // Back to the first binding: a change again, so compiled again.
+         expect(await recompiledFor(BINDING)).toBe(true);
+      }
+      // The compile's inputs are the field list less freshness and the
+      // router's marks: a field `Binding` adds is read until it is listed.
+      expect(
+         compileInputOf({
+            ...BINDING,
+            freshAsOf: "a",
+            freshnessWindowSeconds: 1,
+         }),
+      ).toBe(compileInputOf(BINDING));
+      expect(
+         compileInputOf({ ...BINDING, unlisted: 1 } as unknown as Binding),
+      ).not.toBe(compileInputOf(BINDING));
    });
 
    it("compiles nothing for a model with no bindings", async () => {

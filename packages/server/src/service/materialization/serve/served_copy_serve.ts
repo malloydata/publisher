@@ -343,7 +343,11 @@ interface Compiled {
    key: string;
    /** The invalidation generation it was compiled under. */
    generation: number;
-   /** The snapshot bindings it was compiled over. */
+   /**
+    * The bindings it was compiled over: those it may read at the pin, by
+    * identity. A pin whose bindings differ only in what the compile does not
+    * read ({@link compileInputOf}) reuses it, rebound to those bindings.
+    */
    over: readonly Binding[];
    /**
     * The block every multi-path pair table is read for in this copy (see
@@ -589,6 +593,72 @@ function rerootFailureKey(
    return `${packagePath}\0${modelPath}\0${hash.digest("hex")}`;
 }
 
+/**
+ * What a served copy's compile reads of a binding: everything but how fresh
+ * the table is (`freshAsOf`, its window and fallback, which decide only
+ * whether the pin reads it) and what the router reads of it beside the copy
+ * (`ownGateKept`, a rollup's key check). A field added to `Binding` is read
+ * here until it is listed, so a new input recompiles rather than reuses.
+ * Memoized per binding, which is replaced, never edited.
+ */
+const compileInputs = new WeakMap<Binding, string>();
+export function compileInputOf(b: Binding): string {
+   let input = compileInputs.get(b);
+   if (input === undefined) {
+      const {
+         freshAsOf: _freshAsOf,
+         freshnessWindowSeconds: _window,
+         freshnessFallback: _fallback,
+         ownGateKept: _gateKept,
+         rollupKey: _rollupKey,
+         ...read
+      } = b;
+      input = JSON.stringify(read);
+      compileInputs.set(b, input);
+   }
+   return input;
+}
+
+/** The compile key of the bindings a copy is compiled over, in any order. */
+function compileKeyOf(bindings: readonly Binding[]): string {
+   return bindings.map(compileInputOf).sort().join("\u0000");
+}
+
+/** Whether two binding lists are the same bindings, by identity, in order. */
+function sameBindings(a: readonly Binding[], b: readonly Binding[]): boolean {
+   return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/**
+ * `compiled` answering for `bindings`, whose compile key is its own: the same
+ * compile, with each binding it reports (re-rooted, aliased) replaced by the
+ * one of `bindings` that reads alike, so an answer reports the pin's
+ * freshness, never the compile's. Undefined when two of `bindings` read
+ * alike, since which is which cannot be told.
+ */
+function reboundTo(
+   compiled: Compiled,
+   bindings: readonly Binding[],
+): Compiled | undefined {
+   const byInput = new Map<string, Binding>();
+   for (const b of bindings) {
+      const input = compileInputOf(b);
+      if (byInput.has(input)) return undefined;
+      byInput.set(input, b);
+   }
+   const now = (b: Binding): Binding => byInput.get(compileInputOf(b)) ?? b;
+   const rerooted = compiled.rerooted.map(now);
+   return {
+      ...compiled,
+      over: bindings,
+      rerooted,
+      aliased: rerooted.map((b, i) => ({
+         ...b,
+         destinationName: compiled.aliased[i].destinationName,
+      })),
+   };
+}
+
 /** One model's served copy. */
 export class ServedCopyServe {
    private packagePath?: string;
@@ -606,7 +676,6 @@ export class ServedCopyServe {
       number,
       {
          key: string;
-         over: readonly Binding[];
          generation: number;
          promise: Promise<Compiled>;
       }
@@ -1275,40 +1344,37 @@ export class ServedCopyServe {
     */
    private async ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
       const bindings = this.freshBindings(pinned);
-      const over = pinned.snapshot.bindings;
-      const key = [
-         ...bindings
-            .map(
-               (b) =>
-                  `${b.sourceName}@${isColocated(b) ? "colocated:" : ""}${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshnessFallback ?? ""}`,
-            )
-            .sort(),
-      ].join("|");
       const generation = this.generation;
       const current = this.compiledLanes.get(lane);
+      // The same bindings as the copy compiled over, by identity: no key to
+      // read (a query's usual case).
       if (
          current &&
-         current.key === key &&
-         current.over === over &&
-         current.generation === generation
+         current.generation === generation &&
+         sameBindings(current.over, bindings)
       ) {
          return current;
+      }
+      const key = compileKeyOf(bindings);
+      if (current && current.key === key && current.generation === generation) {
+         const reused = reboundTo(current, bindings);
+         if (reused) {
+            this.compiledLanes.set(lane, reused);
+            return reused;
+         }
       }
       let inFlight = this.inFlightLanes.get(lane);
       if (
          !inFlight ||
          inFlight.key !== key ||
-         inFlight.over !== over ||
          inFlight.generation !== generation
       ) {
          const started = {
             key,
-            over,
             generation,
             promise: this.compile(
                key,
                generation,
-               over,
                bindings,
                lane,
                pinned.asOf.getTime(),
@@ -1322,7 +1388,23 @@ export class ServedCopyServe {
          });
          inFlight = started;
       }
-      const compiled = await inFlight.promise;
+      const awaited = await inFlight.promise;
+      // A compile this pin joined over bindings that differ only in what the
+      // compile does not read answers with this pin's bindings.
+      const rebound = sameBindings(awaited.over, bindings)
+         ? awaited
+         : reboundTo(awaited, bindings);
+      // Two of this pin's bindings read alike, so which is which cannot be
+      // told: compile over them as they are.
+      const compiled =
+         rebound ??
+         (await this.compile(
+            key,
+            generation,
+            bindings,
+            lane,
+            pinned.asOf.getTime(),
+         ));
       // An invalidation while it compiled makes it stale: keep it only when
       // it is still the current generation's. A copy over another snapshot
       // is kept too: the latest compile is what the warnings report.
@@ -1959,12 +2041,12 @@ export class ServedCopyServe {
    private async compile(
       key: string,
       generation: number,
-      over: readonly Binding[],
       bindings: Binding[],
       lane = 0,
       /** The pin's time, which a remembered failure is held against. */
       asOf = 0,
    ): Promise<Compiled> {
+      const over = bindings;
       const problems: ServedCopyProblem[] = [];
       // Storage bindings reach here only with destinations (`usable`); a
       // copy of colocated tables alone needs none.
