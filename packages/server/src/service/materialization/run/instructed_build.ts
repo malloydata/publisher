@@ -34,6 +34,7 @@ import type {
 import { BuildRunFailedError, combineRetryable } from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import {
+   BuildCancelledError,
    BadRequestError,
    MaterializationEligibilityError,
 } from "../../../errors";
@@ -406,7 +407,7 @@ export class InstructedBuild {
                );
             }
             for (const persistSource of sourcesInBuildOrder(build, tables)) {
-               if (signal.aborted) throw new Error("Build cancelled");
+               if (signal.aborted) throw new BuildCancelledError();
                await withSpan(
                   "publisher.materialization.build_source",
                   // Nested under the run's span, which names the package.

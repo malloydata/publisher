@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
    BadRequestError,
+   BuildCancelledError,
    EnvironmentNotFoundError,
    InvalidStateTransitionError,
    MaterializationConflictError,
@@ -1294,7 +1295,7 @@ describe("runInBackground (terminal recording)", () => {
       const bg = background();
       bg.runInBackground("bg-own", async () => {
          bg.runningAbortControllers.get("bg-own")!.abort();
-         throw new Error("Build cancelled");
+         throw new BuildCancelledError();
       });
       await flush();
 
@@ -1490,14 +1491,15 @@ describe("transition (state machine)", () => {
       id: string,
       next: MaterializationStatus,
    ) => Promise<unknown> {
-      return (
-         ctx.service as unknown as {
+      const { lifecycle } = ctx.service as unknown as {
+         lifecycle: {
             transition: (
                id: string,
                next: MaterializationStatus,
             ) => Promise<unknown>;
-         }
-      ).transition.bind(ctx.service);
+         };
+      };
+      return lifecycle.transition.bind(lifecycle);
    }
 
    it("throws MaterializationNotFoundError when the record is gone", async () => {

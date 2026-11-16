@@ -22,6 +22,7 @@
 
 import { createHash } from "node:crypto";
 import { tableIdentity } from "../../versions/materialization_scope";
+import { isActiveRun } from "./materialization_run_support";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import type { KeyUniqueness, ManifestEntry } from "../domain/types";
 import type {
@@ -569,13 +570,6 @@ export async function runRollupKeyCheck(
    }
 }
 
-/** A run that can write nothing more. */
-const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-]);
-
 /**
  * The newest of a package's runs, when its records may be relied on: it is
  * the most recently created, it committed, it was an auto-run, and every
@@ -610,7 +604,7 @@ export function uncontestedAutoRun<
    const began = at(previous.startedAt ?? previous.createdAt);
    for (const other of runs) {
       if (other === previous) continue;
-      if (!TERMINAL_RUN_STATUSES.has(other.status)) return undefined;
+      if (isActiveRun(other.status)) return undefined;
       const ended = at(other.completedAt ?? other.updatedAt);
       if (!(ended <= began)) return undefined;
    }

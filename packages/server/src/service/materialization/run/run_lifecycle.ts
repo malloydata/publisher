@@ -14,6 +14,7 @@
  */
 
 import {
+   BuildCancelledError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationNotFoundError,
@@ -250,7 +251,7 @@ export class RunLifecycle {
  * signal between sources), rather than a failure the cancel raced.
  */
 function isOwnCancellation(err: unknown): boolean {
-   return err instanceof Error && err.message === "Build cancelled";
+   return err instanceof BuildCancelledError;
 }
 
 /**

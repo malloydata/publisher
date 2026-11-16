@@ -12,6 +12,7 @@
 import type { KeyCheckCompiler } from "../domain/key_check";
 import { modelDefOf, primaryKeyOf } from "../../governance/ir/compiled_model";
 import { MODEL_FILE_SUFFIX } from "../../../constants";
+import { BuildCancelledError } from "../../../errors";
 import { logger } from "../../../logger";
 import { recordConnectionDigestSkipped } from "../../../materialization_metrics";
 import {
@@ -94,7 +95,7 @@ export async function compilePackageBuildPlan(
       // a turn between models so requests are not held for the whole plan.
       // Checked after the yield, so a cancel that lands during it is seen.
       await yielder.maybeYield();
-      if (signal?.aborted) throw new Error("Build cancelled");
+      if (signal?.aborted) throw new BuildCancelledError();
 
       const authorFiles = packageFiles(
          pkg.getPackagePath(),

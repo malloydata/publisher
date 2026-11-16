@@ -26,6 +26,7 @@ import {
    type WriteTarget,
 } from "../../versions/materialization_scope";
 import { BuildInstruction } from "../domain/types";
+import { isActiveRun } from "./materialization_run_support";
 
 /**
  * Which tables an active run of a package writes, so two runs never write one
@@ -76,9 +77,7 @@ export class TableClaims {
       );
       for (const m of runs) {
          if (m.id === excludeId) continue;
-         if (m.status !== "PENDING" && m.status !== "MANIFEST_ROWS_READY") {
-            continue;
-         }
+         if (!isActiveRun(m.status)) continue;
          const clash = tableNamesIn(m.metadata, WRITES_TABLES_KEY).find((t) =>
             wanted.has(tableIdentity(t)),
          );

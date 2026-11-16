@@ -26,7 +26,6 @@ import { getPersistCollisionEnforce } from "../../../config";
 import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
-   MaterializationUpdate,
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
@@ -57,7 +56,6 @@ import {
    LedgerEntry,
    ManifestEntry,
    ManifestReference,
-   MaterializationStatus,
    RefusedSource,
 } from "../domain/types";
 import {
@@ -80,6 +78,7 @@ import {
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
 import {
+   isActiveRun,
    outcomeFor,
    packageRelativeRun,
    tallySources,
@@ -408,17 +407,12 @@ export class MaterializationService {
 
    // ==================== STATE MACHINE ====================
 
-   /** In-flight runs, so they can be cancelled. In-process only. */
-   private get runningAbortControllers(): Map<string, AbortController> {
+   /**
+    * In-flight runs (the lifecycle's). Unread here: specs read it to wait for
+    * or abort a background run.
+    */
+   protected get runningAbortControllers(): Map<string, AbortController> {
       return this.lifecycle.runningAbortControllers;
-   }
-
-   private transition(
-      id: string,
-      next: MaterializationStatus,
-      extra?: Omit<MaterializationUpdate, "status">,
-   ): Promise<Materialization> {
-      return this.lifecycle.transition(id, next, extra);
    }
 
    private runInBackground(
@@ -1036,7 +1030,7 @@ export class MaterializationService {
          const committed = await this.commitRun(run, target, derived, built);
          await this.finishCommittedRun(run, target, derived, committed, state);
       } catch (err) {
-         const outcome = outcomeFor(err, signal);
+         const outcome = outcomeFor(signal);
          this.lifecycle.recordRun(mode, outcome, startedAt);
          telemetry.finished(outcome, Date.now() - startedAt, err);
          markRunFailureReported(err);
@@ -1693,25 +1687,14 @@ export class MaterializationService {
          versionId,
       );
 
-      const cancellable: MaterializationStatus[] = [
-         "PENDING",
-         "MANIFEST_ROWS_READY",
-      ];
-      if (!cancellable.includes(m.status)) {
+      if (!isActiveRun(m.status)) {
          throw new InvalidStateTransitionError(
             `Materialization ${id} is ${m.status}, cannot stop`,
          );
       }
-
-      const abortController = this.runningAbortControllers.get(id);
-      if (abortController) {
-         abortController.abort();
-         return m;
-      }
-      return this.transition(id, "CANCELLED", {
-         completedAt: new Date(),
-         error: "Cancelled",
-      });
+      // Undefined when the run was aborted in this process: it records
+      // CANCELLED itself as it unwinds.
+      return (await this.lifecycle.cancel(id)) ?? m;
    }
 
    /**
@@ -1732,12 +1715,7 @@ export class MaterializationService {
          options.versionId,
       );
 
-      const terminal: MaterializationStatus[] = [
-         "MANIFEST_FILE_READY",
-         "FAILED",
-         "CANCELLED",
-      ];
-      if (!terminal.includes(m.status)) {
+      if (isActiveRun(m.status)) {
          throw new InvalidStateTransitionError(
             `Cannot delete materialization ${id} while it is ${m.status}`,
          );

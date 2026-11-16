@@ -42,6 +42,7 @@ import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
    BuildEnvironment,
    connectionMetadataLayers,
+   isActiveRun,
    redactConnectionSecrets,
    tableKeyOf,
 } from "./materialization_run_support";
@@ -1119,10 +1120,7 @@ export class Reclaimer {
          { version: versionId },
       );
       for (const m of runs) {
-         if (
-            m.metadata?.mode !== "auto" ||
-            (m.status !== "PENDING" && m.status !== "MANIFEST_ROWS_READY")
-         ) {
+         if (m.metadata?.mode !== "auto" || !isActiveRun(m.status)) {
             continue;
          }
          await this.deps.lifecycle.cancel(m.id);
@@ -1156,8 +1154,7 @@ export class Reclaimer {
          (m) =>
             isVersionOwnedRun(m) &&
             m.metadata?.mode === "auto" &&
-            m.status !== "PENDING" &&
-            m.status !== "MANIFEST_ROWS_READY",
+            !isActiveRun(m.status),
       );
       if (runs.length === 0) return;
       const reclaimed = new Set(runs.map((m) => m.id));
