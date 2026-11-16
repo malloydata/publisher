@@ -120,7 +120,7 @@ function handlingOf(
    source: NonNullable<BuildPlan["sources"]>[string],
    mismatches: readonly StoredColumnTypeMismatch[],
 ): (m: StoredColumnTypeMismatch) => MismatchHandling {
-   if (binding.kind === "view") {
+   if (binding.kind === "view" || binding.kind === "query") {
       const cast = new Set(
          serveTypePlan(mismatches).casts.map((c) => c.column),
       );
