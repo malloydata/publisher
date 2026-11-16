@@ -474,6 +474,18 @@ describe("service/filter", () => {
             expect(refusal(inFilter, ["us", null])).toContain(
                "not an array holding null",
             );
+            // A single-value filter reads only the first element, and is
+            // refused all the same.
+            for (const filter of [
+               equalFilter,
+               likeFilter,
+               gtFilter,
+               ltFilter,
+            ]) {
+               expect(refusal(filter, ["us", 2])).toContain(
+                  "not an array holding a number",
+               );
+            }
          });
 
          it("reads a null value as no value, as an omitted one", () => {
