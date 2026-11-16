@@ -87,14 +87,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the inherited zone: hour(ts)",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -166,14 +166,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the inherited zone: a day truncation",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -239,14 +239,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the zone-setting stage: its stored hour",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -390,14 +390,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "through a join: a truncation of the inherited-zone column",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -469,14 +469,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the inherited zone: hour(ts)",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -548,14 +548,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the inherited zone: a day truncation",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -621,14 +621,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the zone-setting stage: its stored hour",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -772,14 +772,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "through a join: a truncation of the inherited-zone column",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

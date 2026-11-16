@@ -634,13 +634,13 @@
         "servedBy": {
           "kind": "view",
           "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a colocated view",
       "servedBy": "view",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {

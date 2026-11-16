@@ -109,14 +109,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a none-classed column",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -184,14 +184,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a pii-classed column",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -259,14 +259,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a none-classed column",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -334,14 +334,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a pii-classed column",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

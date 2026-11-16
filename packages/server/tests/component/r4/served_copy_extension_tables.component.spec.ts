@@ -246,7 +246,7 @@ describe("R4: extension tables answer equal to live", () => {
                expect(run.servedVia).toBe("served_copy");
                // A colocated table is the source's own warehouse.
                expect(run.servedFrom).toBe(
-                  label === "colocated" ? "colocated" : "storage",
+                  label === "colocated" ? "database" : "storage",
                );
                expect(run.live.length).toBeGreaterThan(0);
                expect(rowDifference(run.live, run.served)).toBeUndefined();

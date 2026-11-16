@@ -119,7 +119,7 @@ A green run is not proof, and neither is a fast query (on small data a live reco
 3. **The query names the table.** A query's full result (the REST query response without `compactJson`) carries the SQL it ran. Served from the table, its `FROM` names the physical table; computed live, it carries the source's own SQL instead. This is the per-query proof.
 4. **A reload unbinds them.** Reloading the package - including the automatic reload when a watched file is saved - drops the binding, and queries compute live until the next materialization run, which reuses unchanged tables and binds them again. (A server *restart* re-establishes the bindings from its store; a reload does not.) After editing a model, run a build before you trust a timing.
 
-A query response's `servedFrom` field names the tier that answered: `colocated` for a table built in the source's own connection, `storage` for a `storage=` table, `live_fallback` when a `storage=` read failed and live answered, and empty when no table answered. The path report's `servedBy.tier` names the same tier.
+A query response's `servedFrom` field names the tier that answered: `database` for a table built in the source's own connection, `storage` for a `storage=` table, `live_fallback` when a `storage=` read failed and live answered, and empty when no table answered. The path report's `servedBy.tier` names the same tier.
 
 ## Debugging a no-op build
 

@@ -8520,7 +8520,7 @@ components:
             exactly that many rows is a complete answer.
         servedFrom:
           type: ["string", "null"]
-          enum: [storage, colocated, live_fallback, null]
+          enum: [storage, database, live_fallback, null]
           description: >-
             Which tier answered this query, when a materialized table did.
 
@@ -8528,8 +8528,8 @@ components:
             destination, via the virtual-source transform. The source's own
             warehouse was not queried.
 
-            `colocated` — served from a materialized table in the source's own
-            warehouse: a colocated `#@ persist` table Malloy substituted, a
+            `database` — served from a materialized table in the source's own
+            database (the colocated tier): a colocated `#@ persist` table Malloy substituted, a
             colocated `#(materialize)` table the served copy read, or a
             colocated rollup or persisted view.
 
@@ -8742,10 +8742,10 @@ components:
           description: The table that answered. Absent when `kind` is `live`.
         tier:
           type: string
-          enum: [colocated, storage]
+          enum: [database, storage]
           description: >-
-            Where the table that answered lives: `colocated`, the source's own
-            warehouse, or `storage`, a `storage=` destination. The same tier the
+            Where the table that answered lives: `database`, the source's own
+            database (the colocated tier), or `storage`, a `storage=` destination. The same tier the
             query result's `servedFrom` reports. Absent when `kind` is `live`.
         dataAsOf:
           type: string

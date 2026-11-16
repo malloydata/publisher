@@ -74,14 +74,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the source the split tag persists",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -145,14 +145,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the source the split tag persists",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

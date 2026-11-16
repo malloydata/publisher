@@ -80,14 +80,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the colocated source alone",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -286,14 +286,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the colocated source alone",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {

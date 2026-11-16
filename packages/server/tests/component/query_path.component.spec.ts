@@ -229,7 +229,7 @@ describe("the path report over colocated #@ persist", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "materialized",
-         tier: "colocated",
+         tier: "database",
          tableId: entityIdOf(pkg, "daily"),
          dataAsOf: "2026-11-01T00:00:00.000Z",
          via: "served_copy",
@@ -442,7 +442,7 @@ describe("the path report over a colocated rollup", () => {
       expect(report.servedBy).toEqual({
          kind: "rollup",
          tableId: rollupId,
-         tier: "colocated",
+         tier: "database",
       });
       expect(report.considered).toEqual([
          { tableId: rollupId, kind: "rollup", outcome: "used" },

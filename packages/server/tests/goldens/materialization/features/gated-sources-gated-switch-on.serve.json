@@ -448,13 +448,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a row filter over a rollup",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -542,13 +542,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a lock admitting over a rollup",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {

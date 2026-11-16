@@ -78,7 +78,7 @@ export { order_facts, c_only }
       const joined = await servedBy(THROUGH_JOIN);
       expect(joined).toEqual({
          kind: "materialized",
-         tier: "colocated",
+         tier: "database",
          tableId: facts!.tableId,
          via: "served_copy",
       });

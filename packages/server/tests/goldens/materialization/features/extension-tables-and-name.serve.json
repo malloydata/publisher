@@ -644,14 +644,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a colocated extension",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -1260,14 +1260,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a colocated extension",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

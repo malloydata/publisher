@@ -412,7 +412,7 @@ for (const shape of SHAPES) {
                   }
                   expect(s.answer.servedBy).toBe("materialized");
                   if (variant === "colocated" || want === "colocated") {
-                     expect(s.answer.servedFrom).toBe("colocated");
+                     expect(s.answer.servedFrom).toBe("database");
                      // After the cutover a colocated table is read by the
                      // served copy, never Malloy's build manifest.
                      if (on === "cutover") {

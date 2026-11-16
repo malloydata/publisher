@@ -141,7 +141,7 @@ source: wide is ${h.head} extend {
                   } else {
                      expect(run.servedVia).toBe("served_copy");
                      expect(run.servedFrom).toBe(
-                        colocated ? "colocated" : "storage",
+                        colocated ? "database" : "storage",
                      );
                   }
                } finally {

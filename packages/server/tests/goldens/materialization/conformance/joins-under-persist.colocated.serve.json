@@ -111,14 +111,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a persisted query through a join_many",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -197,14 +197,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a persisted query through a join_cross",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -283,14 +283,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the declared join_many, unread",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -370,14 +370,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the declared join_many, read",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -468,14 +468,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a persisted query through a join_many",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -554,14 +554,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a persisted query through a join_cross",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -640,14 +640,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the declared join_many, unread",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -727,14 +727,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the declared join_many, read",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

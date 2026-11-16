@@ -76,14 +76,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "through the index's re-export",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -147,14 +147,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension through the re-export",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -218,14 +218,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "imported under another name, in the importer",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -289,14 +289,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an importer's extension of the renamed import",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -360,14 +360,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an importer's query-shaped source over it",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -431,14 +431,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "through the index's re-export",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -502,14 +502,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension through the re-export",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -573,14 +573,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "imported under another name, in the importer",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -644,14 +644,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an importer's extension of the renamed import",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -715,14 +715,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "59d4ddddd6f5bab96fa706a9cfdc282e29caaf772da4c47b93b896997392a632",
-          "tier": "colocated",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an importer's query-shaped source over it",
       "servedBy": "materialized",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

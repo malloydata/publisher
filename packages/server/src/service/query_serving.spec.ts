@@ -110,7 +110,7 @@ describe("Answer", () => {
       expect(answer.leg).toBe("rollup");
       expect(answer.answer.rollupMember).toBe("orders__by_day");
       expect(answer.answer.virtualMap).toBeUndefined();
-      expect(servedFromOf(answer)).toBe("colocated");
+      expect(servedFromOf(answer)).toBe("database");
    });
 
    it("reads a storage= #(preaggregate) rollup route as a storage hit", () => {

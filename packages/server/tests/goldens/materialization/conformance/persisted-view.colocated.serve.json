@@ -260,13 +260,13 @@
         "servedBy": {
           "kind": "view",
           "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "the view called",
       "servedBy": "view",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -330,13 +330,13 @@
         "servedBy": {
           "kind": "view",
           "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a later stage after the view",
       "servedBy": "view",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {

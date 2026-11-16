@@ -464,13 +464,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "8ee590c7caa5a8e27b612492f2abec261baa65e65ea067328c7af3a037c1effc",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a colocated rollup",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -604,13 +604,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "8ee590c7caa5a8e27b612492f2abec261baa65e65ea067328c7af3a037c1effc",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a declared view",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {

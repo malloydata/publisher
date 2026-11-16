@@ -734,13 +734,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a rollup, no zone",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {

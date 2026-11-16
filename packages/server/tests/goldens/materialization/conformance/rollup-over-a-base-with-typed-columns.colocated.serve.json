@@ -101,13 +101,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a BIGINT sum past 2^53",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -171,13 +171,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a DECIMAL sum",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -241,13 +241,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "2f2aed1542b2e149ed951f3e604311ce8e823dc4c0278a2e77709ed9b731b12a",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a DECIMAL grain",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -311,13 +311,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "c444edfd5a5741c760d9495684adbea67c59fc03012797c891f6ac0ae9f3eaa1",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a TIMESTAMPTZ grain",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -381,13 +381,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a BIGINT sum past 2^53",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -451,13 +451,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "5c1c053fa54529388c833f7ecd094d930dbe6d35bbd41903bd6e2ea7b1ae870e",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a DECIMAL sum",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -521,13 +521,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "2f2aed1542b2e149ed951f3e604311ce8e823dc4c0278a2e77709ed9b731b12a",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a DECIMAL grain",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -591,13 +591,13 @@
         "servedBy": {
           "kind": "rollup",
           "tableId": "c444edfd5a5741c760d9495684adbea67c59fc03012797c891f6ac0ae9f3eaa1",
-          "tier": "colocated"
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a TIMESTAMPTZ grain",
       "servedBy": "rollup",
-      "servedFrom": "colocated",
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

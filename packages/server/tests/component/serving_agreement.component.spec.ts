@@ -137,7 +137,7 @@ describe("a rollup on a source an index.malloy re-exports", () => {
          expect(JSON.stringify(result)).toContain("built_rollup");
          expect(result.path?.servedBy).toEqual({
             kind: "rollup",
-            tier: "colocated",
+            tier: "database",
             tableId: rollupId,
          });
          expect(result.path?.considered).toEqual([
@@ -261,7 +261,7 @@ describe("serving after a connection edit and a rebuild", () => {
       expect(JSON.stringify(second)).toContain("built_after");
       expect(second.path?.servedBy).toEqual({
          kind: "materialized",
-         tier: "colocated",
+         tier: "database",
          tableId: after,
          via: "served_copy",
       });

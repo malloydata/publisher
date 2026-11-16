@@ -172,7 +172,7 @@ describe("buildQueryPath", () => {
       expect(missed.servedBy).toEqual({
          kind: "materialized",
          tableId: "id_orders",
-         tier: "colocated",
+         tier: "database",
       });
       expect(missed.considered).toEqual([
          {
@@ -402,7 +402,7 @@ describe("buildQueryPath", () => {
       expect(read.servedBy).toEqual({
          kind: "materialized",
          tableId: "id_orders",
-         tier: "colocated",
+         tier: "database",
       });
    });
 
@@ -515,7 +515,7 @@ describe("buildQueryPath", () => {
       expect(warned.servedBy).toEqual({
          kind: "materialized",
          tableId: "id_daily",
-         tier: "colocated",
+         tier: "database",
       });
       // No warning (a destination missing while the tier is on): the storage
       // table is left out, and an unbuilt colocated twin is not invented.
@@ -562,7 +562,7 @@ describe("buildQueryPath", () => {
                rollupMember: "orders_rollup",
             }),
          ).servedBy,
-      ).toEqual({ kind: "rollup", tableId: "id_b", tier: "colocated" });
+      ).toEqual({ kind: "rollup", tableId: "id_b", tier: "database" });
       expect(ownModel.considered).toEqual([]);
       // A third model with the same name: ambiguous, so no table is named.
       expect(

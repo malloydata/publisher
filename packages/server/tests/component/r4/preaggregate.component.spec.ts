@@ -515,14 +515,14 @@ function scenarioSuite(label: string, placement: string): void {
          expect(internals.servedCopy.hasBindings()).toBe(false);
       });
 
-      it(`reports servedFrom ${placement ? "storage" : "colocated"} for a rollup answer`, async () => {
+      it(`reports servedFrom ${placement ? "storage" : "database"} for a rollup answer`, async () => {
          const run = await fixture.run({
             name: "servedFrom",
             malloy: "run: orders -> { group_by: category; aggregate: total }",
          });
          expectServedFromRollup(run);
          // `storage` means a table in a `storage=` destination answered.
-         expect(run.servedFrom).toBe(placement ? "storage" : "colocated");
+         expect(run.servedFrom).toBe(placement ? "storage" : "database");
       });
 
       it("routes a query that supplies a given (A5)", async () => {

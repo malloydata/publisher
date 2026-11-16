@@ -359,11 +359,11 @@ for (const tier of TIERS)
          expect(served.path?.servedBy).toMatchObject({
             kind: "materialized",
             tableId: address,
-            tier: "colocated",
+            tier: "database",
             via: "served_copy",
          });
          // The source's own warehouse: a colocated hit, not a storage one.
-         expect(served.servedFrom).toBe("colocated");
+         expect(served.servedFrom).toBe("database");
       }
 
       it(
