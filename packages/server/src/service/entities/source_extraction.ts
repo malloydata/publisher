@@ -30,6 +30,7 @@ import type {
 
 import { type Refuse, throwRefusal } from "./dim_index_discovery";
 import { errMessage } from "../../utils";
+import { marksAgentHidden } from "../annotation_reader";
 import { extractCodeFromEntity } from "./model_text";
 import {
    parseGateAnnotation,
@@ -1134,7 +1135,7 @@ const planMetadataFromExplores = (
       // routes exactly as `#(agent-hidden)` does, and missing it leaves a
       // source the author meant to hide visible to agents.
       const sourceLevelAgentHidden = getDirectTaglines(explore).some((t) =>
-         /^#\|?\s*[([{<]?\s*agent-hidden\b/.test(t),
+         marksAgentHidden(t, "source"),
       );
       const definedInThisModelFile = modelFileUrl
          ? explore.location?.url === modelFileUrl

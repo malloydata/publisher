@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
 import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../../src/test_helpers/settings_env";
-import { duckdbTypeToMalloy } from "../../../src/service/materialization/serve/materialization_serve_transform";
+import { duckdbTypeToMalloyType } from "../../../src/service/materialization/stored_column_types";
 import { storedSchemaOf } from "../../../src/service/materialization/what_if";
 import { buildScenario, disposeScenarios, type R4Fixture } from "./harness";
 
@@ -27,6 +27,12 @@ afterAll(async () => {
    restoreSettings();
    await disposeScenarios();
 });
+
+/** A stored column's Malloy type; `json` where none maps (as the serve side reads it). */
+function malloyTypeOf(duckdbType: string): string {
+   const mapped = duckdbTypeToMalloyType(duckdbType);
+   return "type" in mapped ? mapped.type : "json";
+}
 
 const QUERIES = [
    "run: daily -> { group_by: order_date; aggregate: t is total.sum() }",
@@ -90,22 +96,14 @@ source: daily_ext is daily extend {
       try {
          fixture.setBindings(fixture.bindings);
          for (const query of QUERIES) await fixture.routeOnly(query);
+         // One routing counter since #1779 (was variant + storage routing).
          expect(
-            await harness.collectCounter(
-               "publisher_query_variant_routing_total",
-            ),
+            await harness.collectCounter("publisher_query_route_total"),
          ).toBe(0);
-         expect(
-            await harness.collectCounter(
-               "publisher_storage_serve_routing_total",
-            ),
-         ).toBe(0);
-         // A real run of the same query does record them.
+         // A real run of the same query does record it.
          await fixture.runAsIs(QUERIES[0]);
          expect(
-            await harness.collectCounter(
-               "publisher_query_variant_routing_total",
-            ),
+            await harness.collectCounter("publisher_query_route_total"),
          ).toBeGreaterThan(0);
       } finally {
          resetMaterializationTelemetryForTesting();
@@ -125,7 +123,7 @@ source: daily_ext is daily extend {
                schema: storedSchemaOf(
                   binding.schema.map((column) => ({
                      name: column.name,
-                     type: duckdbTypeToMalloy(column.type),
+                     type: malloyTypeOf(column.type),
                   })),
                ),
             })),

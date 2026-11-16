@@ -1,0 +1,15 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [],
+    "droppedPersistSources": [],
+    "kinds": {},
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {},
+    "sourceModelPaths": {}
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": null
+}

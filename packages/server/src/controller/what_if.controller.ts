@@ -10,10 +10,8 @@ import {
    parsePackageName,
    VersionRef,
 } from "../service/identity";
-import {
-   parseWhatIfQueries,
-   runWhatIf,
-} from "../service/materialization/what_if";
+import { parseWhatIfQueries, runWhatIf } from "../service/materialization";
+import { logger } from "../logger";
 import { parseOverlayFiles } from "../service/request_overlay";
 import { runHypothetical } from "../hypothetical_scope";
 import { withSpan } from "../telemetry";
@@ -87,6 +85,11 @@ export class WhatIfController {
                queries: parsedQueries,
                includeHiddenFilesAndSources:
                   !!options.includeHiddenFilesAndSources,
+               // At debug, inside the hypothetical scope (logger.ts).
+               onInternalError: (detail) =>
+                  logger.debug("What-if could not route a query", {
+                     error: detail,
+                  }),
                ...(givens !== undefined
                   ? { givens: givens as Record<string, GivenValue> }
                   : {}),

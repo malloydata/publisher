@@ -3,10 +3,10 @@
 
 import { describe, expect, it } from "bun:test";
 
+import { snowflakeCostSQL } from "./warehouse_sql";
 import {
    bigQueryReadCost,
    pickSnowflakeReadRow,
-   snowflakeCostSQL,
    snowflakeReadCost,
 } from "./build_read_cost";
 

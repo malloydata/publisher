@@ -20,7 +20,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import type { ServeBinding } from "./materialization/serve/materialization_serve_transform";
+import type { Binding } from "./materialization/domain/binding";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import { startMetricsHarness } from "../test_helpers/metrics_harness";
@@ -37,7 +37,9 @@ const MODEL = `source: X is duckdb.sql("SELECT 1 AS id, 'east' AS region, 10 AS 
 `;
 
 /** Declares every column but `region`, as a table built without it would. */
-const BINDING: ServeBinding = {
+const BINDING: Binding = {
+   kind: "persist",
+   tier: "storage",
    sourceName: "X",
    destinationName: "duckdb",
    virtualHandle: "h",
@@ -94,13 +96,15 @@ async function buildModel(
       serveConfig.wrapConnections(() => connections);
       model.setServeDestinationConfig(() => serveConfig);
    }
+   // The preview compiles a served copy of the author's own files.
+   model.setServedCopyContext(DIR, new Map([["duckdb", duckdb]]));
    return model;
 }
 
 describe("previewing a stored source's views", () => {
    it("serves the views of a shape that reproduces them", async () => {
       const model = await buildModel(true);
-      const full: ServeBinding = {
+      const full: Binding = {
          ...BINDING,
          schema: [...BINDING.schema, { name: "region", type: "VARCHAR" }],
       };
@@ -113,16 +117,44 @@ describe("previewing a stored source's views", () => {
       expect(model.servedStorageSourceNames()).toEqual([]);
    });
 
-   // What serving does today: one view the stored columns cannot answer drops
-   // every view of the source from the shape, so the preview says so for each.
-   it("says a source's views are live when one of them cannot compile against the stored columns", async () => {
+   // A table that lacks a column the source declares (`region`) leaves the
+   // source as written in the served copy, so every view of it answers live,
+   // each with the reason. (The retired serve shape dropped only the view
+   // that read the column; the preview reports what the served copy will
+   // actually do.)
+   it("reports every view live, with the column the table lacks, when the source cannot be re-rooted", async () => {
       const model = await buildModel(true);
       const views = (await model.previewStorageViews([BINDING])).get("X");
       expect(views?.map((v) => [v.view, v.verdict])).toEqual([
          ["totals", "live"],
          ["by_region", "live"],
       ]);
-      expect(views?.[0].detail).toContain("drops all of them");
+      expect(views?.[1].detail).toContain("region");
+   });
+
+   // A DuckLake destination is looked up by attaching its catalog, which
+   // fails before the first build has created it. Malloy learns the dialect
+   // from that lookup, so a failed one left the dialect unknown and every view
+   // previewed live with "Cannot determine dialect".
+   it("serves the views of a destination whose catalog cannot be attached yet", async () => {
+      const model = await buildModel(true);
+      const unattachable = new MalloyConfig({ connections: {} });
+      unattachable.wrapConnections(() => ({
+         lookupConnection: async () => {
+            throw new Error(
+               'Existing DuckLake at metadata catalog "postgres:…" does not exist - and creating a new DuckLake is explicitly disabled',
+            );
+         },
+      }));
+      model.setServeDestinationConfig(() => unattachable);
+      const full: Binding = {
+         ...BINDING,
+         schema: [...BINDING.schema, { name: "region", type: "VARCHAR" }],
+      };
+      expect((await model.previewStorageViews([full])).get("X")).toEqual([
+         { view: "totals", verdict: "serves" },
+         { view: "by_region", verdict: "serves" },
+      ]);
    });
 
    it("says nothing without a storage destination, since nothing serves from storage then", async () => {
@@ -147,7 +179,7 @@ describe("previewing a stored source's views", () => {
             { name: "REGIONS", type: "filter<string>" },
          ],
       );
-      const full: ServeBinding = {
+      const full: Binding = {
          ...BINDING,
          schema: [...BINDING.schema, { name: "region", type: "VARCHAR" }],
       };
@@ -167,15 +199,12 @@ describe("previewing a stored source's views", () => {
       const info = spyOn(logger, "info");
       try {
          const model = await buildModel(true);
-         // BINDING lacks `region`, so the shape drops a tier compiling it.
+         // BINDING lacks `region`, so the served copy cannot re-root X.
          await model.previewStorageViews([BINDING]);
          expect(warn).not.toHaveBeenCalled();
          expect(info).not.toHaveBeenCalled();
          expect(
-            await harness.collectCounter(
-               "publisher_storage_serve_shape_tier_drop_total",
-               {},
-            ),
+            await harness.collectCounter("publisher_query_route_total", {}),
          ).toBe(0);
       } finally {
          warn.mockRestore();

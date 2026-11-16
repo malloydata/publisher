@@ -1,6 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * A run's state machine and its life in this process ({@link RunLifecycle}):
+ * every status change through the transitions `VALID_TRANSITIONS` admits,
+ * cooperative cancellation, and a background run's settle, recording its
+ * terminal status and its failure. Read by the materialization service, the
+ * manifest committer and the reclaimer.
+ *
+ * Effects: writes the run store, logs a failed or cancelled run (secrets
+ * redacted), counts each run's outcome. In-process only: a run on another
+ * process cannot be cancelled from here.
+ */
+
+import { BuildCancelledError } from "../domain/build_cancelled";
 import {
    InvalidStateTransitionError,
    MaterializationConflictError,
@@ -19,8 +32,10 @@ import {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
-import { MaterializationStatus } from "../types";
+import { MaterializationStatus } from "../domain/types";
 import { VALID_TRANSITIONS } from "./materialization_run_support";
+import { errorCodeOf } from "./error_code";
+import { runFailureReported } from "./run_telemetry";
 
 /**
  * A run's state machine and its life in this process: every status change goes
@@ -47,33 +62,40 @@ export class RunLifecycle {
       }
    }
 
+   /**
+    * Move a run to `next`. The write lands only while the run's status
+    * admits `next` (one conditional statement); the record is read only on a
+    * miss, to say why.
+    */
    async transition(
       id: string,
       next: MaterializationStatus,
       extra?: Omit<MaterializationUpdate, "status">,
    ): Promise<Materialization> {
-      const current = await this.repository().getMaterializationById(id);
-      if (!current) {
-         throw new MaterializationNotFoundError(
-            `Materialization ${id} not found`,
+      const updated = await this.repository().updateMaterializationFrom(
+         id,
+         { status: next, ...extra },
+         statusesInto(next),
+      );
+      if (updated === null) {
+         const current = await this.repository().getMaterializationById(id);
+         if (!current) {
+            throw new MaterializationNotFoundError(
+               `Materialization ${id} not found`,
+            );
+         }
+         this.validateTransition(current.status, next);
+         // Admitted now, but not when written: it moved meanwhile.
+         throw new InvalidStateTransitionError(
+            `Cannot transition to ${next}: materialization ${id} changed while it was written`,
          );
       }
-      this.validateTransition(current.status, next);
       // Terminal transitions log at info; the MANIFEST_ROWS_READY hop at debug.
-      const terminal =
-         next === "MANIFEST_FILE_READY" ||
-         next === "FAILED" ||
-         next === "CANCELLED";
-      logger[terminal ? "info" : "debug"]("Materialization transition", {
-         materializationId: id,
-         packageName: current.packageName,
-         from: current.status,
-         to: next,
-      });
-      return this.repository().updateMaterialization(id, {
-         status: next,
-         ...extra,
-      });
+      logger[TERMINAL.has(next) ? "info" : "debug"](
+         "Materialization transition",
+         { materializationId: id, packageName: updated?.packageName, to: next },
+      );
+      return updated;
    }
 
    /**
@@ -134,59 +156,99 @@ export class RunLifecycle {
             const message = redactPgSecrets(errMessage(err));
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
-            // A background throw answers no request, so log it (with the stack)
-            // or it is invisible in the server's output.
-            if (cancelled) {
-               // An abort racing a genuine failure records "Cancelled"; this log
-               // is then the only place the real error appears.
-               logger.info("Materialization run cancelled", {
-                  materializationId: id,
-                  error: message,
-               });
-            } else {
-               logger.error("Materialization run failed", {
-                  materializationId: id,
-                  error: message,
-                  stack: err instanceof Error ? err.stack : undefined,
-               });
-            }
+            const code = errorCodeOf(err);
+            // Whether retrying the run could help, for a consumer that
+            // decides on retries: a failed run commits no manifest, so no
+            // per-source `failures` carry it. Omitted when unclassified, and
+            // for a cancel, which was asked for.
+            const retryable = cancelled ? undefined : classifyRunFailure(err);
+            const extra: Record<string, unknown> = {
+               ...(retryable !== undefined
+                  ? { errorRetryable: retryable }
+                  : {}),
+               // A cancel that raced a genuine failure records "Cancelled" as
+               // the run's error, and the logs carry only its code: the real
+               // message is kept here, on the record.
+               ...(cancelled && !isOwnCancellation(err)
+                  ? { errorAtCancel: message }
+                  : {}),
+            };
+            // A background throw answers no request, so log it (with the
+            // stack's frames) or it is invisible in the server's output,
+            // unless the run's own `materialization.run.finished` reported it
+            // already. Its code, never its message: a whole-run failure joins
+            // its sources' driver errors, which can quote SQL or a value. The
+            // message is on the run's record either way.
+            const report = () => {
+               if (runFailureReported(err)) return;
+               if (cancelled) {
+                  logger.info("Materialization run cancelled", {
+                     materializationId: id,
+                     code,
+                  });
+               } else {
+                  logger.error("Materialization run failed", {
+                     materializationId: id,
+                     code,
+                     stack: stackFrames(err),
+                  });
+               }
+            };
             try {
-               // Whether retrying the run could help, for a consumer that
-               // decides on retries: a failed run commits no manifest, so no
-               // per-source `failures` carry it. Omitted when unclassified,
-               // and for a cancel, which was asked for.
-               const retryable = cancelled
-                  ? undefined
-                  : classifyRunFailure(err);
+               // Read only for the metadata the settle merges into. A failed
+               // read never costs the status write, which would leave the run
+               // active and block the package's next one.
                let metadata: Record<string, unknown> | undefined;
-               if (retryable !== undefined) {
-                  // Its own try: a failed read must never cost the status
-                  // transition, which would leave the run active and block
-                  // the package's next one.
+               if (Object.keys(extra).length > 0) {
                   try {
                      const current =
                         await this.repository().getMaterializationById(id);
-                     metadata = {
-                        ...(current?.metadata ?? {}),
-                        errorRetryable: retryable,
-                     };
+                     metadata = { ...(current?.metadata ?? {}), ...extra };
                   } catch (readErr) {
                      logger.warn(
-                        "Could not read a failed run's metadata; recording its status without errorRetryable",
+                        "Could not read a run's record; recording its status without its metadata",
                         { materializationId: id, error: errMessage(readErr) },
                      );
                   }
                }
-               await this.repository().updateMaterialization(id, {
-                  status: next,
-                  completedAt: new Date(),
-                  error: cancelled ? "Cancelled" : message,
-                  ...(metadata ? { metadata } : {}),
-               });
+               // The settle is a transition like any other: a record already
+               // terminal (this run's manifest committed before a late throw,
+               // or another process stopped it) is kept, and the late throw
+               // is not reported as the run's failure.
+               const settled =
+                  await this.repository().updateMaterializationFrom(
+                     id,
+                     {
+                        status: next,
+                        completedAt: new Date(),
+                        error: cancelled ? "Cancelled" : message,
+                        ...(metadata ? { metadata } : {}),
+                     },
+                     statusesInto(next),
+                  );
+               if (settled !== null) {
+                  report();
+               } else {
+                  const now = await this.repository()
+                     .getMaterializationById(id)
+                     .catch(() => undefined);
+                  logger.warn(
+                     now
+                        ? "Materialization run threw after its status was recorded; keeping it"
+                        : "Materialization run threw after its record was deleted",
+                     {
+                        materializationId: id,
+                        ...(now ? { status: now.status } : {}),
+                        code,
+                        stack: stackFrames(err),
+                     },
+                  );
+               }
             } catch (transitionErr) {
+               report();
                logger.error("Failed to record materialization failure", {
                   materializationId: id,
-                  originalError: message,
+                  code,
                   transitionError: errMessage(transitionErr),
                });
             }
@@ -196,4 +258,55 @@ export class RunLifecycle {
             onSettled?.();
          });
    }
+}
+
+const TERMINAL: ReadonlySet<MaterializationStatus> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
+
+/** The statuses `VALID_TRANSITIONS` admits a move to `next` from. */
+function statusesInto(next: MaterializationStatus): MaterializationStatus[] {
+   return (Object.keys(VALID_TRANSITIONS) as MaterializationStatus[]).filter(
+      (from) => VALID_TRANSITIONS[from].includes(next),
+   );
+}
+
+/**
+ * Whether `err` is the build loop's own answer to the cancel (it checks the
+ * signal between sources), rather than a failure the cancel raced.
+ */
+function isOwnCancellation(err: unknown): boolean {
+   return err instanceof BuildCancelledError;
+}
+
+/**
+ * An error's stack frames without the message it opens with: where a failure
+ * was thrown, for a log that may not carry what it said. The message is cut
+ * off by its own text, since a line of it (a quoted row value) can look like
+ * a frame. A stack whose header is not the message, because the message
+ * changed after the stack was read, gives no frames.
+ */
+export function stackFrames(err: unknown): string | undefined {
+   if (!(err instanceof Error) || typeof err.stack !== "string") {
+      return undefined;
+   }
+   const { stack, message } = err;
+   // With no message, the header is the error's name alone.
+   const at = message === "" ? 0 : stack.indexOf(message);
+   const end = message === "" ? stack.indexOf("\n") : at + message.length;
+   if (
+      at < 0 ||
+      end < 0 ||
+      stack.slice(0, at).includes("\n") ||
+      (end < stack.length && stack[end] !== "\n")
+   ) {
+      return undefined;
+   }
+   const frames = stack
+      .slice(end)
+      .split("\n")
+      .filter((line) => /^\s+at /.test(line));
+   return frames.length > 0 ? frames.join("\n") : undefined;
 }

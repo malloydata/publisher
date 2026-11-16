@@ -36,17 +36,16 @@ import {
    NotQueryableError,
    QueryCompileError,
 } from "../../errors";
-import { logger } from "../../logger";
 import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../../constants";
 import type { OverlayFile } from "../request_overlay";
-import type { Package } from "../package";
-import type { Environment } from "../environment";
+import type { PackageMaterializationView } from "./package_materialization";
 import { formatPublishRejections } from "../publish_checks";
-import type { FreshnessManifest, ManifestEntry } from "./types";
+import type { FreshnessManifest, ManifestEntry } from "./domain/types";
+import { PREVIEW_STORED_TYPES } from "./serve_verdicts";
 import { errMessage } from "../../utils";
 
 type ApiBuildPlan = components["schemas"]["BuildPlan"];
@@ -56,15 +55,60 @@ type ApiWhatIfAnswer = components["schemas"]["WhatIfAnswer"];
 type ApiWhatIfSource = components["schemas"]["WhatIfSource"];
 type ApiWhatIfRefusal = components["schemas"]["WhatIfRefusal"];
 
+type ApiQueryPath = components["schemas"]["QueryPath"];
+
+/**
+ * What what-if reads of a package, the one served now and the throwaway load
+ * alike: typed here rather than against `Package`, which would close an
+ * import cycle through `environment.ts` (import_cycles.spec.ts).
+ */
+type PublishCheckedPackage = Parameters<typeof formatPublishRejections>[0];
+
+interface WhatIfPackage extends PublishCheckedPackage {
+   getBuildPlan(): ApiBuildPlan | null;
+   isBuildPlanUnavailable(): boolean;
+   getPackagePath(): string;
+   getModel(modelPath: string): WhatIfModel | undefined;
+   materialization(): Pick<
+      PackageMaterializationView,
+      "servingEligibility" | "bind"
+   >;
+}
+
+/** What what-if reads of one model: its compile-only route. */
+interface WhatIfModel {
+   prepareServedCopy(): Promise<void>;
+   routeWithoutRunning(request: {
+      query?: string;
+      sourceName?: string;
+      queryName?: string;
+      givens?: Record<string, GivenValue>;
+      includeHiddenFilesAndSources?: boolean;
+   }): Promise<ApiQueryPath>;
+}
+
+/** The environment's dry-run load, which what-if loads the proposal with. */
+interface WhatIfEnvironment {
+   dryRunInstall<T>(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+      options: {
+         validate?: (pkg: WhatIfPackage) => string | undefined;
+         readVersion: boolean;
+         describe: (pkg: WhatIfPackage) => T | Promise<T>;
+      },
+   ): Promise<T>;
+}
+
 /** One query to route: ad-hoc text, or a named view or query. */
-export interface WhatIfQuery {
+interface WhatIfQuery {
    modelPath: string;
    query?: string;
    sourceName?: string;
    queryName?: string;
 }
 
-export interface WhatIfRequest {
+interface WhatIfRequest {
    /** The proposed files, each replacing (or adding) one package file. */
    files: OverlayFile[];
    queries: WhatIfQuery[];
@@ -76,25 +120,15 @@ export interface WhatIfRequest {
     * planned source, as `GET …/build-plan` does.
     */
    includeHiddenFilesAndSources?: boolean;
+   /**
+    * Told the detail of a query that failed for an internal reason, which
+    * its answer reports generically; the shell logs it.
+    */
+   onInternalError?: (detail: string) => void;
 }
 
 /** At most this many queries per request: each is a compile, or several. */
 export const MAX_WHAT_IF_QUERIES = 50;
-
-/**
- * The DuckDB type a `storage=` table would store a column of each Malloy type
- * as. A column of any other type is left off the declared table, so a query
- * reading it would not be answered from storage (which is what a real build's
- * serve side decides for a type it cannot serve faithfully).
- */
-const STORED_TYPE_OF: Readonly<Record<string, string>> = {
-   string: "VARCHAR",
-   number: "DOUBLE",
-   boolean: "BOOLEAN",
-   date: "DATE",
-   timestamp: "TIMESTAMP",
-   timestamptz: "TIMESTAMP WITH TIME ZONE",
-};
 
 /**
  * The table a `storage=` build would store `columns` (name and Malloy type)
@@ -105,7 +139,8 @@ export function storedSchemaOf(
    columns: readonly { name?: string; type?: string }[],
 ): { name: string; type: string }[] {
    return columns.flatMap((column) => {
-      const type = column.type ? STORED_TYPE_OF[column.type] : undefined;
+      // The types the dry-run preview declares a stored column as.
+      const type = column.type ? PREVIEW_STORED_TYPES[column.type] : undefined;
       return column.name && type ? [{ name: column.name, type }] : [];
    });
 }
@@ -239,14 +274,15 @@ export function diffPlans(
  * eligibility gates. Returns the sources a build would refuse, with why;
  * they stay unbound and serve live.
  */
-async function bindProposedTables(
-   pkg: Package,
+function bindProposedTables(
+   pkg: WhatIfPackage,
    plan: ApiBuildPlan,
-): Promise<ApiWhatIfRefusal[]> {
+): ApiWhatIfRefusal[] {
    // Pre-filtered against the same gates the bind applies, so each refusal is
    // reported with its reason rather than dropped by the bind.
-   const { storage: storageEligibility, colocated: colocatedEligibility } =
-      pkg.servingEligibility();
+   const { storage: storageEligibility, colocated: colocatedEligibility } = pkg
+      .materialization()
+      .servingEligibility();
    const refusals: ApiWhatIfRefusal[] = [];
    for (const refused of Object.values(plan.refusedSources ?? {})) {
       refusals.push({
@@ -273,13 +309,14 @@ async function bindProposedTables(
          continue;
       }
       if (destination) {
-         if (!storageEligibility?.eligible.includes(source.name)) {
+         // Keyed by sourceID, as the bind keys it.
+         if (!storageEligibility?.eligible.includes(source.sourceID)) {
             refusals.push({
                name: source.name,
                sourceID: source.sourceID,
                reason: "not_eligible",
                message:
-                  storageEligibility?.refused[source.name] ??
+                  storageEligibility?.refused[source.sourceID] ??
                   "the build plan could not examine this source",
             });
             continue;
@@ -308,12 +345,13 @@ async function bindProposedTables(
       }
       colocated[source.sourceEntityId] = {
          tableName: placeholderTable(source),
+         // Quoted for its dialect at bind, as the dry-run preview's are.
+         connectionName: source.connectionName,
       };
    }
-   pkg.bindColocatedServeManifest(colocated);
-   pkg.bindStorageServeBindings(stored);
-   // The companion compiles against the manifest just bound.
-   await pkg.pushPreaggregateServeModels();
+   // One bind, as a run's manifest is bound. The bind admits through the same
+   // gates, so nothing pre-filtered above is dropped silently.
+   pkg.materialization().bind({ colocated, storage: stored });
    return refusals;
 }
 
@@ -321,10 +359,13 @@ async function bindProposedTables(
  * The error text an answer may carry: what the query route would tell the
  * caller (a compile error in their own query, a 400, the boundary's 404).
  * Anything else is an internal failure, whose text can name connections or
- * paths; it is logged (at debug, inside the hypothetical scope) and answered
- * generically.
+ * paths; it is handed to `onInternal` (the shell logs it, at debug inside the
+ * hypothetical scope) and answered generically.
  */
-export function answerErrorText(error: unknown): string {
+export function answerErrorText(
+   error: unknown,
+   onInternal: (detail: string) => void = () => {},
+): string {
    if (
       error instanceof QueryCompileError ||
       error instanceof BadRequestError ||
@@ -332,18 +373,17 @@ export function answerErrorText(error: unknown): string {
    ) {
       return error.message;
    }
-   logger.debug("What-if could not route a query", {
-      error: errMessage(error),
-   });
+   onInternal(errMessage(error));
    return "This query could not be routed against the proposal.";
 }
 
 /** Route each query against the bound proposal, one answer each. */
 async function answerQueries(
-   pkg: Package,
+   pkg: WhatIfPackage,
    queries: readonly WhatIfQuery[],
    givens: Record<string, GivenValue> | undefined,
    includeHiddenFilesAndSources: boolean,
+   onInternalError: ((detail: string) => void) | undefined,
 ): Promise<ApiWhatIfAnswer[]> {
    const answers: ApiWhatIfAnswer[] = [];
    for (const query of queries) {
@@ -366,6 +406,9 @@ async function answerQueries(
          continue;
       }
       try {
+         // The bind compiles each model's served copy in the background; the
+         // route reads it, so it must be compiled over the proposal first.
+         await model.prepareServedCopy();
          const path = await model.routeWithoutRunning({
             query: query.query,
             sourceName: query.sourceName,
@@ -375,7 +418,10 @@ async function answerQueries(
          });
          answers.push({ ...echo, path });
       } catch (error) {
-         answers.push({ ...echo, error: answerErrorText(error) });
+         answers.push({
+            ...echo,
+            error: answerErrorText(error, onInternalError),
+         });
       }
    }
    return answers;
@@ -387,8 +433,8 @@ async function answerQueries(
  * with the publish's own 400.
  */
 export async function runWhatIf(
-   environment: Environment,
-   current: Package,
+   environment: WhatIfEnvironment,
+   current: WhatIfPackage,
    packageName: string,
    request: WhatIfRequest,
 ): Promise<ApiWhatIf> {
@@ -415,7 +461,7 @@ export async function runWhatIf(
                );
             }
             const plan = pkg.getBuildPlan() ?? { graphs: [], sources: {} };
-            const refused = await bindProposedTables(pkg, plan);
+            const refused = bindProposedTables(pkg, plan);
             return {
                plan: diffPlans(currentPlan, plan),
                refused,
@@ -424,6 +470,7 @@ export async function runWhatIf(
                   request.queries,
                   request.givens,
                   !!request.includeHiddenFilesAndSources,
+                  request.onInternalError,
                ),
             };
          },

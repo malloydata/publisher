@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 // ms2data/service#6642 on a real DuckLake, the production destination: a build
-// that casts to the declared types keeps its partition layout, and the deltas
-// an incremental source applies afterwards land in the cast columns. Each delta
+// casts to the declared types, and the deltas an incremental source applies
+// afterwards land in the cast columns. Each delta
 // is computed by the warehouse, uncast, so it relies on DuckDB converting the
 // warehouse's types on INSERT, which is what these tests pin.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -64,53 +64,33 @@ async function rows(conn: DuckDBConnection): Promise<unknown[]> {
    return result.rows.map((r) => ({ ...r, id: Number(r.id) }));
 }
 
-async function partitionDirs(conn: DuckDBConnection): Promise<string[]> {
-   const files = await conn.runSQL(
-      "SELECT data_file FROM ducklake_list_files('lake', 't')",
-   );
-   return [
-      ...new Set(
-         (files.rows as { data_file: string }[]).map(
-            (r) => /\/(d=[^/]+)\//.exec(r.data_file.replaceAll("\\", "/"))?.[1],
-         ),
-      ),
-   ].sort() as string[];
-}
-
-describe("a declared-type cast on a partitioned DuckLake build", () => {
-   it("stores the declared types and lays the table out on the cast column", async () => {
+describe("a declared-type cast on a DuckLake build", () => {
+   it("stores the declared types", async () => {
       const conn = await lake();
-      const schema = await createTableWithDeclaredTypes(
-         conn,
-         "lake.t",
-         SEED,
-         { columns: DECLARED },
-         ["d"],
-      );
+      const schema = await createTableWithDeclaredTypes(conn, "lake.t", SEED, {
+         columns: DECLARED,
+      });
       expect(schema).toEqual([
          { name: "id", type: "INTEGER" },
          { name: "d", type: "DATE" },
          { name: "flag", type: "BOOLEAN" },
       ]);
-      // One directory per DATE, not per timestamp rendering.
-      expect(await partitionDirs(conn)).toEqual([
-         "d=2026-01-15",
-         "d=2026-02-03",
-         "d=2026-02-20",
+      expect(await rows(conn)).toEqual([
+         { id: 1, d: "2026-01-15", flag: true },
+         { id: 2, d: "2026-02-03", flag: false },
+         { id: 3, d: "2026-02-20", flag: true },
       ]);
    }, 120000);
 
-   it("falls back to the warehouse's types, still laid out, when a cast cannot convert a value", async () => {
+   it("falls back to the warehouse's types when a cast cannot convert a value", async () => {
       const conn = await lake();
       const schema = await createTableWithDeclaredTypes(
          conn,
          "lake.t",
          `SELECT 1 AS id, DATE '2026-01-15' AS d, 'open' AS flag`,
          { columns: DECLARED },
-         ["d"],
       );
       expect(schema.find((c) => c.name === "flag")?.type).toBe("VARCHAR");
-      expect(await partitionDirs(conn)).toEqual(["d=2026-01-15"]);
    }, 120000);
 });
 
@@ -127,17 +107,13 @@ describe("a delta into a table the build cast", () => {
 
    async function seeded(): Promise<DuckDBConnection> {
       const conn = await lake();
-      await createTableWithDeclaredTypes(
-         conn,
-         "lake.t",
-         SEED,
-         { columns: DECLARED },
-         ["d"],
-      );
+      await createTableWithDeclaredTypes(conn, "lake.t", SEED, {
+         columns: DECLARED,
+      });
       return conn;
    }
 
-   it("range-replaces into the laid-out table, converting the warehouse's types", async () => {
+   it("range-replaces into the table, converting the warehouse's types", async () => {
       const conn = await seeded();
       for (const sql of deltaStatements({
          dialect: "duckdb",
@@ -163,7 +139,6 @@ describe("a delta into a table the build cast", () => {
          ["d", "DATE"],
          ["flag", "BOOLEAN"],
       ]);
-      expect(await partitionDirs(conn)).toContain("d=2026-02-25");
    }, 120000);
 
    it("merges by key into the cast columns", async () => {
@@ -194,6 +169,122 @@ describe("a delta into a table the build cast", () => {
       );
       expect((await rows(conn)).map((r) => (r as { id: number }).id)).toEqual([
          1, 3,
+      ]);
+   }, 120000);
+});
+
+// A Postgres `bytea` or `interval`: Postgres's dialect declares both `string`,
+// and live answers them in Postgres's own text, which DuckDB's cast to VARCHAR
+// does not write. The build keeps the BLOB and INTERVAL the session reads them
+// as, so the served copy leaves them out and a query reading one answers live.
+describe("a Postgres build keeps a binary or interval column's warehouse type", () => {
+   const declared = [
+      { name: "id", type: "number" },
+      { name: "name", type: "string" },
+      { name: "code", type: "string" },
+      { name: "bin", type: "string" },
+      { name: "iv", type: "string" },
+   ];
+   const seed = `SELECT * FROM (VALUES
+      (1, 'a', 7, '\\x0102'::BLOB, INTERVAL 3 MONTH)
+   ) AS t(id, name, code, bin, iv)`;
+   const typesOf = (schema: { name?: string; type?: string }[]) =>
+      Object.fromEntries(schema.map((c) => [c.name, c.type]));
+
+   it("stores them uncast, and still casts every other declared string", async () => {
+      const conn = await lake();
+      const schema = await createTableWithDeclaredTypes(
+         conn,
+         "lake.t",
+         seed,
+         { columns: declared },
+         { sourceType: "postgres" },
+      );
+      expect(typesOf(schema)).toEqual({
+         id: "INTEGER",
+         name: "VARCHAR",
+         code: "VARCHAR",
+         bin: "BLOB",
+         iv: "INTERVAL",
+      });
+   });
+
+   // Only a Postgres passthrough is described: describing another engine's
+   // may run its query.
+   it.each([["bigquery" as const], [undefined]])(
+      "casts every declared string for a %s source, as before",
+      async (sourceType) => {
+         const conn = await lake();
+         const schema = await createTableWithDeclaredTypes(
+            conn,
+            "lake.t",
+            seed,
+            { columns: declared },
+            sourceType ? { sourceType } : {},
+         );
+         expect(typesOf(schema)).toMatchObject({
+            bin: "VARCHAR",
+            iv: "VARCHAR",
+         });
+      },
+   );
+});
+
+// `partition=` is retired, and with it the bounds (one thread, a low
+// partitioned_write_flush_threshold) a delta into a laid-out table ran under.
+// They are not needed: a table an earlier `partition=` build laid out is never
+// the target of a delta. The ledger is keyed by table, and its entry records the
+// address the boundary was measured under; that address folded the layout in,
+// so it no longer matches (incremental_build.spec): a standalone run seeds, and
+// a caller-supplied entry fails the run until it is reseeded. Either way the
+// next build is full, and a full build replaces the table. This pins that the
+// replacement drops the layout, so the delta that follows writes unpartitioned
+// files.
+describe("a table an earlier partition= build laid out", () => {
+   async function laidOutFiles(conn: DuckDBConnection): Promise<string[]> {
+      const files = await conn.runSQL(
+         "SELECT data_file FROM ducklake_list_files('lake', 't')",
+      );
+      return (files.rows as { data_file: string }[])
+         .map((r) => r.data_file.replaceAll("\\", "/"))
+         .filter((f) => /\/d=[^/]+\//.test(f));
+   }
+
+   it("is rebuilt unpartitioned, and a delta after it writes no partition files", async () => {
+      const conn = await lake();
+      // What a `partition="d"` build wrote before the upgrade.
+      await conn.runSQL(`CREATE TABLE lake.t AS (${SEED}) WITH NO DATA`);
+      await conn.runSQL("ALTER TABLE lake.t SET PARTITIONED BY (d)");
+      await conn.runSQL(`INSERT INTO lake.t (${SEED})`);
+      expect((await laidOutFiles(conn)).length).toBeGreaterThan(0);
+
+      // The full build the new address forces.
+      await createTableWithDeclaredTypes(conn, "lake.t", SEED, {
+         columns: DECLARED,
+      });
+      expect(await laidOutFiles(conn)).toEqual([]);
+
+      // The next refresh, a delta into the rebuilt table.
+      for (const sql of deltaStatements({
+         dialect: "duckdb",
+         quotedTablePath: "lake.t",
+         deltaSQL: `SELECT * FROM (VALUES
+            (4, TIMESTAMP '2026-02-25 00:00:00', 0)
+         ) AS w(id, d, flag)`,
+         columns: ["id", "d", "flag"],
+         mergeKeys: [],
+         watermarkName: "d",
+         start: { malloyType: "date", value: "2026-02-21" },
+         end: { malloyType: "date", value: "2026-03-01" },
+      })) {
+         await conn.runSQL(sql);
+      }
+      expect(await laidOutFiles(conn)).toEqual([]);
+      expect(await rows(conn)).toEqual([
+         { id: 1, d: "2026-01-15", flag: true },
+         { id: 2, d: "2026-02-03", flag: false },
+         { id: 3, d: "2026-02-20", flag: true },
+         { id: 4, d: "2026-02-25", flag: false },
       ]);
    }, 120000);
 });

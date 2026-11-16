@@ -10,6 +10,7 @@ import {
    FrozenConfigError,
    PackageAdmissionRefusedError,
    PackageVersionError,
+   BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    internalErrorToHttpError,
    ServiceUnavailableError,
@@ -57,10 +58,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
@@ -107,10 +105,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       const versions = versionsPublishing(mockPackage);
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -160,10 +155,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       // installPackage mimics the real contract: invoke the validator and, if it
       // returns a message, throw BadRequestError (after its internal rollback).
@@ -221,10 +213,7 @@ describe("deprecated: explores — PackageController.addPackage validation", () 
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
       const getEnvironment = sinon
@@ -268,10 +257,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -309,10 +295,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       const environment = {
          getVersionService: () => versionsPublishing(mockPackage),
@@ -348,10 +331,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       const installPackage = sinon
          .stub()
@@ -410,10 +390,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => incrementalMsg,
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => incrementalMsg,
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -451,10 +428,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
       const getEnvironment = sinon
@@ -495,10 +469,7 @@ describe("deprecated: explores — PackageController.updatePackage validation", 
          formatInvalidExplores: (override?: string[]) =>
             override?.includes("nope.malloy") ? invalidMsg : "",
          formatInvalidPersistencePolicy: () => "",
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       };
       const installPackage = sinon
          .stub()
@@ -789,10 +760,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
                   getPackageMetadata: () => fetched,
                   formatInvalidExplores: () => "",
                   formatInvalidPersistencePolicy: () => "",
-                  formatUnparseableAnnotations: () => "",
-                  formatInvalidIncrementalPolicy: () => "",
-                  formatInvalidPreaggregatePolicy: () => "",
-                  formatPersistenceCollisionRejections: () => "",
+                  formatLoadGateText: () => "",
                });
                admitted = options.admit(
                   options.update,
@@ -1336,10 +1304,7 @@ describe("PackageController.addPackage manifestLocation", () => {
    const installedPackage = {
       formatInvalidExplores: () => "",
       formatInvalidPersistencePolicy: () => "",
-      formatUnparseableAnnotations: () => "",
-      formatInvalidIncrementalPolicy: () => "",
-      formatInvalidPreaggregatePolicy: () => "",
-      formatPersistenceCollisionRejections: () => "",
+      formatLoadGateText: () => "",
    };
 
    function addPackageController(environment: object) {
@@ -1414,10 +1379,7 @@ describe("PackageController.addPackage manifestLocation", () => {
       const installPackage = sinon.stub().resolves({
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
-         formatUnparseableAnnotations: () => "",
-         formatInvalidIncrementalPolicy: () => "",
-         formatInvalidPreaggregatePolicy: () => "",
-         formatPersistenceCollisionRejections: () => "",
+         formatLoadGateText: () => "",
       });
       const environment = { getVersionService: () => null, installPackage };
       const environmentStore = fakeOf<PackageAdmin>({
@@ -1629,10 +1591,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
    const installedPackage = {
       formatInvalidExplores: () => "",
       formatInvalidPersistencePolicy: () => "",
-      formatUnparseableAnnotations: () => "",
-      formatInvalidIncrementalPolicy: () => "",
-      formatInvalidPreaggregatePolicy: () => "",
-      formatPersistenceCollisionRejections: () => "",
+      formatLoadGateText: () => "",
    };
 
    afterEach(() => {
@@ -1817,10 +1776,14 @@ describe("PackageController.getPackageBuildPlan", () => {
    function controllerServing(pkg: {
       getBuildPlan: () => unknown;
       isBuildPlanUnavailable: () => boolean;
+      whenBuildPlanCurrent?: () => Promise<void>;
    }): PackageController {
       const environmentStore = fakeOf<PackageAdmin>({
          getEnvironment: sinon.stub().resolves({
-            getPackage: sinon.stub().resolves(pkg),
+            getPackage: sinon.stub().resolves({
+               whenBuildPlanCurrent: () => Promise.resolve(),
+               ...pkg,
+            }),
          }),
       });
       return new PackageController(
@@ -1839,6 +1802,48 @@ describe("PackageController.getPackageBuildPlan", () => {
       expect(await controller.getPackageBuildPlan("env", "pkg")).toBe(plan);
    });
 
+   it("waits for a re-derivation a connection edit started (ms2data/service#6145)", async () => {
+      // A connection edit can move content addresses; the route must never
+      // hand out the plan from before it.
+      const stale = { graphs: [], sources: { s: { sourceEntityId: "old" } } };
+      const fresh = { graphs: [], sources: { s: { sourceEntityId: "new" } } };
+      let current: unknown = stale;
+      let finish!: () => void;
+      const refreshed = new Promise<void>((resolve) => {
+         finish = () => {
+            current = fresh;
+            resolve();
+         };
+      });
+      const controller = controllerServing({
+         getBuildPlan: () => current,
+         isBuildPlanUnavailable: () => false,
+         whenBuildPlanCurrent: () => refreshed,
+      });
+      const read = controller.getPackageBuildPlan("env", "pkg");
+      // Let the route reach the plan read before the refresh lands.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      finish();
+      expect(await read).toBe(fresh as unknown as Awaited<typeof read>);
+   });
+
+   it("answers 503 with Retry-After when the re-derivation outlasts the wait (BuildPlanRefreshingError)", async () => {
+      const controller = controllerServing({
+         getBuildPlan: () => null,
+         isBuildPlanUnavailable: () => false,
+         whenBuildPlanCurrent: () =>
+            Promise.reject(new BuildPlanRefreshingError("refreshing")),
+      });
+      const err = await controller
+         .getPackageBuildPlan("env", "pkg")
+         .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BuildPlanRefreshingError);
+      const answer = internalErrorToHttpError(err as Error, { log: false });
+      expect(answer.status).toBe(503);
+      expect(answer.headers).toEqual({ "Retry-After": "5" });
+      expect(answer.json.reason).toBe("BUILD_PLAN_REFRESHING");
+   });
+
    it("is an empty plan when the package declares no persist source", async () => {
       const controller = controllerServing({
          getBuildPlan: () => null,
@@ -1847,7 +1852,33 @@ describe("PackageController.getPackageBuildPlan", () => {
       expect(await controller.getPackageBuildPlan("env", "pkg")).toEqual({
          graphs: [],
          sources: {},
+         refusedSources: {},
+         // A plan with nothing in it is complete: nothing was left out.
+         omittedSources: [],
+         omittedFiles: [],
       });
+   });
+
+   it("hands out the plan's omittedSources as the package derived them", async () => {
+      const plan = {
+         graphs: [],
+         sources: {},
+         refusedSources: {},
+         omittedSources: [
+            {
+               sourceID:
+                  "orders__rollup__category__1@file:///p/m.malloy.preaggregate.malloy",
+               reason: "rollup_companion_failed",
+            },
+         ],
+      };
+      const controller = controllerServing({
+         getBuildPlan: () => plan,
+         isBuildPlanUnavailable: () => false,
+      });
+      expect(
+         (await controller.getPackageBuildPlan("env", "pkg")).omittedSources,
+      ).toEqual(plan.omittedSources);
    });
 
    it("is a 409 BUILD_PLAN_UNAVAILABLE when the plan could not be derived at load", async () => {

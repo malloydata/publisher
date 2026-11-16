@@ -154,6 +154,15 @@ export async function performGracefulShutdownAfterDrain(
    ]);
 
    try {
+      // No build-plan retry may fire against an environment while the process
+      // exits. Lazy-imported to keep the environment out of this module's graph.
+      const { Environment } = await import("./service/environment");
+      Environment.cancelAllPlanRefreshes();
+   } catch (_error) {
+      /* do nothing: cancelling retries never fails a shutdown */
+   }
+
+   try {
       // The workload log's buffered records, now that no request can add one.
       // Lazy-imported, like the pool below, to keep it out of this module's
       // import graph.

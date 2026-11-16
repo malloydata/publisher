@@ -70,6 +70,32 @@ async function loadPackageFiles(
    return env.getPackage(parsePackageName("pkg"), false);
 }
 
+/**
+ * Whether the plan refuses `sourceName`, for the gate it reads from a source
+ * it derives from (an inherited row filter: never built, as the served copy
+ * cannot graft it onto a table and would decline every query).
+ */
+function refusedForInheritedGate(pkg: Package, sourceName: string): boolean {
+   const plan = pkg.getBuildPlan() as unknown as {
+      sources?: Record<string, { name: string }>;
+      refusedSources?: Record<
+         string,
+         { name: string; reason: string; message: string }
+      >;
+   };
+   const planned = Object.values(plan?.sources ?? {}).some(
+      (s) => s.name === sourceName,
+   );
+   const refusal = Object.values(plan?.refusedSources ?? {}).find(
+      (r) => r.name === sourceName,
+   );
+   return (
+      !planned &&
+      refusal?.reason === "authorize" &&
+      refusal.message.includes("reads an #(access_filter) row-level gate")
+   );
+}
+
 /** Run `query` against `model.malloy` with the given `givens` and return rows. */
 async function run(
    pkg: Package,
@@ -118,10 +144,12 @@ async function buildAndBindColocated(
    if (!source) {
       throw new Error(`persist source '${sourceName}' not in build plan`);
    }
-   pkg.bindColocatedServeManifest({
-      [source.sourceEntityId]: {
-         tableName: physicalTableName,
-         connectionName: "duckdb",
+   pkg.materialization().bind({
+      colocated: {
+         [source.sourceEntityId]: {
+            tableName: physicalTableName,
+            connectionName: "duckdb",
+         },
       },
    });
 }
@@ -179,7 +207,7 @@ source: orders is base -> { select: org_id, amount } extend {}
    );
 
    it(
-      "a gate inherited (not re-declared) through a projecting query-source derivation: builds and filters correctly (this used to fail closed under the DIMENSION form — see task-3-report.md)",
+      "a gate inherited (not re-declared) through a projecting query-source derivation: refused at plan, and live filters correctly",
       async () => {
          // Under the DIMENSION form this shape used to fail closed: the graft
          // there names the gate FIELD, and `derived`'s own query-source
@@ -209,31 +237,19 @@ source: derived is locked extend {} -> { select: org_id, amount }
 `,
          });
 
-         // Unlike the DIMENSION form (see task-3-report.md for
-         // the prior version of this test), the source-line form's note lives
-         // on `locked` itself, not on a field `derived`'s projection has to
-         // carry forward — so `derived` inherits it the same way the STRING
-         // form always did, and the persist source builds normally.
-         const plan = pkg.getBuildPlan();
-         expect(
-            Object.values(plan?.sources ?? {}).some(
-               (s) => s.name === "derived",
-            ),
-         ).toBe(true);
-
-         await buildAndBindColocated(
-            pkg,
-            "derived",
-            "derived_materialized",
-            `SELECT * FROM (VALUES (1, 1000), (2, 2000)) AS t(org_id, amount)`,
-         );
+         // `derived` inherits the gate (the source-line form's note lives on
+         // `locked` itself), and so is refused at plan: a table of it would
+         // hold every org's rows, and the served copy, which re-roots
+         // `derived` and so replaces `locked`, cannot graft the gate onto it.
+         expect(refusedForInheritedGate(pkg, "derived")).toBe(true);
 
          const org1 = await run(
             pkg,
             "run: derived -> { select: org_id, amount }",
             { ORG: 1 },
          );
-         expect(org1).toEqual([{ org_id: 1, amount: 1000 }]);
+         // Live, filtered by the gate: no table holds every org's rows.
+         expect(org1).toEqual([{ org_id: 1, amount: 10 }]);
       },
       { timeout: 60000 },
    );
@@ -332,7 +348,7 @@ source: orders is base -> { select: org_id, amount } extend {}
    );
 
    it(
-      "a chained persist over a gated persist: the downstream builds and filters — the upstream's gate is inherited, not re-declared (this used to fail closed under the DIMENSION form — see task-3-report.md)",
+      "a chained persist over a gated persist: the upstream builds, the downstream that inherits its gate is refused at plan, and live filters correctly",
       async () => {
          // `base_orders` declares its OWN gate. `rollup`, one hop further,
          // does NOT re-declare it — it only inherits `base_orders`'s gate via
@@ -362,30 +378,28 @@ source: base_orders is raw -> { select: org_id, amount }
 source: rollup is base_orders -> { select: org_id, amount }
 `,
          });
-         await buildAndBindColocated(
-            pkg,
-            "rollup",
-            "rollup_materialized",
-            `SELECT * FROM (VALUES (1, 1000), (2, 2000)) AS t(org_id, amount)`,
-         );
-
-         const plan = pkg.getBuildPlan();
+         // `base_orders` declares its own gate and builds; `rollup` inherits
+         // it, so it is refused at plan (see the test above).
          expect(
-            Object.values(plan?.sources ?? {}).some((s) => s.name === "rollup"),
+            Object.values(pkg.getBuildPlan()?.sources ?? {}).some(
+               (s) => s.name === "base_orders",
+            ),
          ).toBe(true);
+         expect(refusedForInheritedGate(pkg, "rollup")).toBe(true);
 
          const org1 = await run(
             pkg,
             "run: rollup -> { select: org_id, amount }",
             { ORG: 1 },
          );
-         expect(org1).toEqual([{ org_id: 1, amount: 1000 }]);
+         // Live, filtered by the gate: no table holds every org's rows.
+         expect(org1).toEqual([{ org_id: 1, amount: 10 }]);
       },
       { timeout: 60000 },
    );
 
    it(
-      "a persist source over a composite entry point, gated on one member: builds and filters correctly (this used to fail closed under the DIMENSION form — see task-3-report.md)",
+      "a persist source over a composite entry point, gated on one member: refused at plan, and live filters correctly",
       async () => {
          // `comp` is a query_source over `compose(member_a, member_b)`. Only
          // `member_a` carries the gate. Malloy resolves the composite to ONE
@@ -425,24 +439,18 @@ source: combo is compose(member_a, member_b)
 source: comp is combo -> { select: org_id, amount }
 `,
          });
-         const plan = pkg.getBuildPlan();
-         expect(
-            Object.values(plan?.sources ?? {}).some((s) => s.name === "comp"),
-         ).toBe(true);
-
-         await buildAndBindColocated(
-            pkg,
-            "comp",
-            "comp_materialized",
-            `SELECT * FROM (VALUES (7, 1000), (8, 2000)) AS t(org_id, amount)`,
-         );
+         // `comp` reads `member_a`'s gate, and so is refused at plan (see
+         // the first test above).
+         expect(refusedForInheritedGate(pkg, "comp")).toBe(true);
 
          const rows = await run(
             pkg,
             "run: comp -> { select: org_id, amount; order_by: org_id }",
             { GROUPS: [7] },
          );
-         expect(rows).toEqual([{ org_id: 7, amount: 1000 }]);
+         // Live, filtered by the gate: no table holds every org's rows.
+         // The composite resolves to the gated member_a (1, not 51).
+         expect(rows).toEqual([{ org_id: 7, amount: 1 }]);
       },
       { timeout: 60000 },
    );

@@ -1,0 +1,24 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "materialize-retired-key",
+        "message": "#(materialize) on source \"orders\" is invalid: #(materialize) no longer reads `partition=`; remove it: partition= is not supported, and the stored table is written unpartitioned. It was a layout choice only, so the cost is scan time; what each caller sees is unchanged.",
+        "model": "pcs.malloy",
+        "route": "materialize",
+        "subject": "orders",
+        "tier": "malformed"
+      }
+    ],
+    "builds": [],
+    "droppedPersistSources": [],
+    "kinds": {},
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {},
+    "sourceModelPaths": {}
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": null
+}

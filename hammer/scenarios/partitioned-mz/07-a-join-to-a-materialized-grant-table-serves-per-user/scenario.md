@@ -17,11 +17,11 @@ every tenant.
 
 Neither artifact is filtered by user. `opps`'s build is its relation alone — a
 persisted source's joins and dimensions are not in its build — and `grants`
-leaves its extend-block `where:` out like any other. At read, the serve shape
-re-emits `grants` with its terms bound to the caller's values, and re-emits the
-join on `opps` against that binding. So the `visible` dimension is evaluated
-over exactly the grant rows the live query would join, and two users of the same
-org get different answers from the same two tables.
+leaves its extend-block `where:` out like any other. At read, the served copy
+re-roots `grants` with its `where:` kept, bound to the caller's values, and keeps
+the join on `opps` as written, reading that re-rooted `grants`. So the `visible`
+dimension is evaluated over exactly the grant rows the live query would join, and
+two users of the same org get different answers from the same two tables.
 
 The join is admitted because its target is itself a persisted, storage-bound
 source this gate admits, joined by name. The gate still refuses the shapes the
@@ -76,18 +76,18 @@ source: raw_opps is orders_pg.sql('SELECT opp_id, org_id, restricted, amount FRO
 source: raw_grants is orders_pg.sql('SELECT org_id, user_id, opp_id FROM public.pvj_grants')
 source: raw_accounts is orders_pg.sql('SELECT account_id, org_id FROM public.pvj_accounts')
 
-#@ persist name="pvj_accounts" storage=lake partition="org_id"
+#@ persist name="pvj_accounts" storage=lake
 source: accounts is raw_accounts -> { select: * } extend {
   where: org_id = $ORG_ID
   measure: account_count is count()
 }
 
-#@ persist name="pvj_grants" storage=lake partition="org_id"
+#@ persist name="pvj_grants" storage=lake
 source: grants is raw_grants -> { select: * } extend {
   where: org_id = $ORG_ID and user_id = $USER_ID
 }
 
-#@ persist name="pvj_opps" storage=lake partition="org_id"
+#@ persist name="pvj_opps" storage=lake
 source: opps is raw_opps -> { select: * } extend {
   where: org_id = $ORG_ID
   join_one: g is grants on opp_id = g.opp_id
@@ -251,8 +251,10 @@ window with a live fallback, so the grant table's binding is withheld.
 
 ## Query user 7 sees, with the grant table withheld
 
-Without `grants` on the shape, the join on `opps` cannot be re-emitted, so
-`opps` is withheld with it and serves live, from the warehouse, where the
+With `grants` left out of the query's pin, the served copy keeps `grants` as
+written on `orders_pg`, and the join from `opps`'s lake table to it is refused
+across connections. The served copy leaves that join out with what reads it, so
+this query, which reads `visible`, is answered live, from the warehouse, where the
 revocation above has landed: 100, and two opps hidden. 300 would mean `visible`
 was evaluated over the stored grants the host withheld; any other answer would
 mean it was evaluated against no grants at all.
@@ -272,9 +274,9 @@ Expect:
 ## Query accounts, with the grant table withheld
 
 `accounts` joins nothing caller-scoped, so it keeps every refinement — including
-the model measure below — and serves from its own table. Withholding `opps`
-rather than thinning the shape is what keeps it here: the failure costs the one
-source that needs the withheld table, and no sibling.
+the model measure below — and serves from its own table. Leaving out only what
+reads the stale table is what keeps it here: the failure costs the definitions
+that need the withheld table, and no sibling.
 
 ```malloy
 run: accounts -> { aggregate: account_count }

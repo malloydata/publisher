@@ -10,6 +10,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
+import { recordConnectionsAsForTests } from "../../../src/service/connection_type";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,7 +36,15 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    let baseUrl: string;
    let tmpDir: string;
 
+   // The fixture's sources are on the package's DuckDB sandbox, which stands
+   // in for a warehouse here: the serve side admits a `storage=` binding only
+   // for a source whose connection a `storage=` build can read.
+   let restoreConnectionTypes: (() => void) | undefined;
+
    beforeAll(async () => {
+      restoreConnectionTypes = recordConnectionsAsForTests({
+         duckdb: "postgres",
+      });
       env = await startRestE2E();
       baseUrl = env.baseUrl;
       tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "manifest-bind-"));
@@ -68,6 +77,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       await env?.stop();
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       env = null;
+      restoreConnectionTypes?.();
    });
 
    function url(p: string): string {

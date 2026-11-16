@@ -351,9 +351,14 @@ gh workflow run release.yml --repo malloydata/publisher --ref main -f bump=minor
 gh workflow run release.yml --repo malloydata/publisher --ref main -f version=<next>
 ```
 
+The run starts with `main-thread-check`, the main-thread regression gate
+(`main-thread-regression.yml`, main against the anchor release), which adds
+about 10 minutes before `prepare` cuts anything.
+
 **Do not merge to `main` while it runs.** `publish-packages` aborts if `main`
 moves under a watched path mid-release. A `RELEASE_NOTES.md`-only merge is not
-watched, but the window is short — just wait. **Do not push to
+watched, but just wait: the window is the whole run, about 10 minutes longer
+than it was before the gate. **Do not push to
 `release/v<version>` while it runs either**: `npm-sdk.yml` and
 `docker-image.yml` check it out by name, so a push mid-run can publish two
 different commits under one version.
@@ -469,8 +474,17 @@ gh release view "v$V" --repo malloydata/publisher --json body -q .body | head -4
 ```
 
 If the release page is missing narrative that `[$V]` sections on the branch
-carry, `gh-release` logged a `could not read RELEASE_NOTES.md` warning. Add the
-output of `extract "$V"` to the page by hand with `gh release edit`.
+carry, `gh-release` logged a `could not read RELEASE_NOTES.md` or `could not
+fit the release body` warning. Add the output of `extract "$V"` to the page by
+hand with `gh release edit`.
+
+A page that lists the section titles under "This release's notes are longer
+than a GitHub release page allows" is not a failure. GitHub caps a release
+body at 125,000 characters, so when the narrative and the PR list would not fit,
+`gh-release` (`release-notes.mjs fit`) puts an index of the titles on the page
+with a link to `RELEASE_NOTES.md` at the tag, and truncates the PR list to its
+compare link if it has to; the run logs a notice saying which. The titles
+should still match step 4's `extract "$V" | grep '^## '`.
 
 Left unmerged, `release-sync.yml` fails on `main` and on every PR, naming
 this version; merging this PR is the only fix. Confirm it went green on `main`
@@ -478,6 +492,19 @@ after the merge (the first command in step 3).
 
 ## If it fails
 
+- **Only `main-thread-check` is red** → nothing was cut or published. Read its
+  job summary. A harness error (titled *Main-thread harness error (not a
+  performance verdict)*) or a flake → *Re-run failed jobs*. A real FAIL → fix
+  `main` and dispatch again. Dispatch with `-f skip_main_thread_check=true` only
+  when the check itself is known to be wrong. An INVALID verdict (its own
+  `::error`, *Main-thread check INVALID*) says nothing about `main`: a re-run
+  clears a busy runner, but **not** a runner-CPU-count INVALID (the runner is
+  not the 4-vCPU kind the budgets were calibrated on). That one needs
+  `skip_main_thread_check=true` for this release, or a recalibration.
+- **The gate fails on legitimate growth.** `main` is measured against the
+  anchor release (`packages/server/tests/perf/main-thread/anchor.json`), so
+  main-thread growth above about 1.3x that is wanted still blocks the release.
+  Move the anchor forward in a PR of its own, then dispatch again.
 - **Only `build-python-sdk` or `publish-python-sdk` is red** → npm and Docker are
   unaffected; neither job is in `gh-release`'s `needs`. *Re-run failed jobs*:
   the publish job skips a version PyPI already holds, and reuses the verified

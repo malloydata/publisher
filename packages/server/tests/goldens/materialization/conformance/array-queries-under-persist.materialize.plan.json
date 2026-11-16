@@ -1,0 +1,209 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "cart_rows@<pkg>/m.malloy": [],
+          "cart_totals@<pkg>/m.malloy": []
+        },
+        "order": [
+          "cart_rows@<pkg>/m.malloy",
+          "cart_totals@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "cart_rows@<pkg>/m.malloy": "materialize",
+      "cart_totals@<pkg>/m.malloy": "materialize"
+    },
+    "materializePlans": {
+      "cart_rows@<pkg>/m.malloy": {
+        "buildSourceName": "cart_rows__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "g",
+            "computed": false,
+            "dimension": "g"
+          },
+          {
+            "column": "items",
+            "computed": false,
+            "dimension": "items"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "cart_rows",
+          "storage": "lake"
+        },
+        "sourceID": "cart_rows@<pkg>/m.malloy",
+        "sourceName": "cart_rows",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "BIGINT"
+          },
+          {
+            "name": "g",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "items",
+            "type": "STRUCT(\"sku\" VARCHAR, \"price\" DOUBLE)[]"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "cart_totals@<pkg>/m.malloy": {
+        "buildSourceName": "cart_totals__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "g",
+            "computed": false,
+            "dimension": "g"
+          },
+          {
+            "column": "t",
+            "computed": false,
+            "dimension": "t"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "cart_totals",
+          "storage": "lake"
+        },
+        "sourceID": "cart_totals@<pkg>/m.malloy",
+        "sourceName": "cart_totals",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "BIGINT"
+          },
+          {
+            "name": "g",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "t",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "cart_rows@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "cart_totals@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "cart_rows@<pkg>/m.malloy": "m.malloy",
+      "cart_totals@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "cart_rows@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "cart_totals@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "cart_rows@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "cart_rows",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "g",
+            "type": "string"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "cart_rows",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "94337d64da6f769f74675d99ec9a24e277d11f5b4659313035fad98e3123a032",
+        "sourceID": "cart_rows@<pkg>/m.malloy",
+        "sql": "sha256:d2d559a96b286f79"
+      },
+      "cart_totals@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "cart_totals",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "g",
+            "type": "string"
+          },
+          {
+            "name": "t",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "cart_totals",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "b8c77013015fb5c71865cb71ce01dce1056f7ae465d383a91776c24f2ca6e286",
+        "sourceID": "cart_totals@<pkg>/m.malloy",
+        "sql": "sha256:48c48565d0cbaec6"
+      }
+    }
+  }
+}

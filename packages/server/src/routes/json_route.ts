@@ -83,7 +83,7 @@ export function sendRouteError(
    errorBody: ErrorBodyShape = (mapped) => mapped,
 ): void {
    let logged = false;
-   const { json, status } = internalErrorToHttpError(error, {
+   const { json, status, headers } = internalErrorToHttpError(error, {
       onLogged: () => (logged = true),
    });
    if (status < 500) {
@@ -96,6 +96,7 @@ export function sendRouteError(
    ) {
       logInternalFailure("Request failed", error);
    }
+   if (headers) res.set(headers);
    res.status(status).json(errorBody(json));
 }
 

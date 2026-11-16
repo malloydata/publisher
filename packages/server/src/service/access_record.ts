@@ -68,7 +68,7 @@ export function accessIdentityOf(
 }
 
 /** A field the compiled query read, with its classes as the model declares or infers them. */
-export interface FieldRead {
+interface FieldRead {
    path: string;
    classifications: string[];
    /** Classes its inputs carry that it declares below; present only when some. */
@@ -79,7 +79,7 @@ export interface FieldRead {
  * What the query service knows about one admitted query's access, built
  * once the gates have run and the query has returned.
  */
-export interface QueryAccessSummary {
+interface QueryAccessSummary {
    /** The source the query entered, when it could be resolved. */
    source?: string;
    /** The gates in force on that source, as the model declares them. */
@@ -284,7 +284,7 @@ export async function summarizeQueryAccess(args: {
 }
 
 /** How the route answered, from the gate's point of view. */
-export type AccessOutcome =
+type AccessOutcome =
    | "ok"
    | "denied_lock"
    | "refused_surface"
@@ -302,6 +302,76 @@ export function outcomeOf(error: unknown, status: number): AccessOutcome {
    if (status === 403) return "denied_lock";
    if (status === 400) return "bad_request";
    return "error";
+}
+
+/** A table the router considered for a query, as the access record keeps it. */
+interface AccessPathCandidate {
+   tableId: string;
+   kind: string;
+   outcome: string;
+   reason?: string;
+   /** The serve verdict's reason on a `WARNED` skip, when the report gives one. */
+   code?: string;
+}
+
+/** The access record's copy of a query's path report: see `AccessRecord.path`. */
+interface AccessPath {
+   /**
+    * `via: "served_copy"` when the served copy answered, which is how a query
+    * through a row-level gate is answered from a stored table (R3).
+    */
+   servedBy: { kind: string; tableId?: string; via?: "served_copy" };
+   considered: AccessPathCandidate[];
+}
+
+/**
+ * The access record's copy of a path report: which table answered and each
+ * table considered. Structural, so it reads the API's `QueryPath` without this
+ * module importing the materialization code that builds it.
+ *
+ * `undefined` when the query answered live with nothing considered, the
+ * common case in a package with nothing materialized: that copy would say no
+ * more than `servedFrom` and would add bytes to every record.
+ */
+/** The shape of a verdict code the record keeps (`storage_mode`, `unreachable`). */
+const SAFE_CODE = /^[a-z_]+$/;
+
+export function accessPathOf(report: {
+   servedBy: { kind: string; tableId?: string; via?: string };
+   considered: readonly {
+      tableId: string;
+      kind: string;
+      outcome: string;
+      reason?: string;
+      code?: string;
+   }[];
+}): AccessPath | undefined {
+   if (report.servedBy.kind === "live" && report.considered.length === 0) {
+      return undefined;
+   }
+   return {
+      servedBy: {
+         kind: report.servedBy.kind,
+         ...(report.servedBy.tableId !== undefined
+            ? { tableId: report.servedBy.tableId }
+            : {}),
+         // The one value it can take; anything else is dropped.
+         ...(report.servedBy.via === "served_copy"
+            ? { via: "served_copy" as const }
+            : {}),
+      },
+      considered: report.considered.map((c) => ({
+         tableId: c.tableId,
+         kind: c.kind,
+         outcome: c.outcome,
+         ...(c.reason !== undefined ? { reason: c.reason } : {}),
+         // A coded value only: anything else is dropped, so free text can
+         // never reach the log or the local store.
+         ...(c.code !== undefined && SAFE_CODE.test(c.code)
+            ? { code: c.code }
+            : {}),
+      })),
+   };
 }
 
 /** One emitted record. */
@@ -332,10 +402,21 @@ export interface AccessRecord extends Partial<QueryAccessSummary> {
     * (BigQuery today). Absent is not zero.
     */
    scannedBytes?: number;
-   // The path report (materialization v2, D1) attaches here as `path` when
-   // it lands: which variants the router considered and why each was
-   // skipped. The workload log stores whatever the record carries, so it
-   // needs no change for it.
+   /**
+    * What answered the query, from its path report (materialization v2, D1),
+    * kept compact: the table that answered and each table considered, with
+    * why it was skipped, which is what a workload analysis counts. The query's
+    * shape is `shape`; the report's nearby tables and skip details stay on the
+    * query result. Absent when the query answered live with nothing
+    * considered.
+    */
+   path?: AccessPath;
+   /**
+    * True when the query answered but its path report could not be
+    * assembled, so an absent `path` reads as "unknown", not as "answered
+    * live with nothing considered".
+    */
+   pathUnavailable?: true;
    /** The refusal's message, on a non-ok outcome. Never a gate's detail: the route already redacts those. */
    error?: string;
 }
@@ -393,6 +474,8 @@ export interface QueryAudit {
    servedFrom?: string | null;
    executionTimeMs?: number;
    scannedBytes?: number;
+   path?: AccessPath;
+   pathUnavailable?: true;
 }
 
 /** What a route knows before it runs the request. */
@@ -501,6 +584,8 @@ export async function withAccessRecord<T>(
       ...(audit.scannedBytes !== undefined
          ? { scannedBytes: audit.scannedBytes }
          : {}),
+      ...(audit.path !== undefined ? { path: audit.path } : {}),
+      ...(audit.pathUnavailable ? { pathUnavailable: true as const } : {}),
    }));
    return result;
 }

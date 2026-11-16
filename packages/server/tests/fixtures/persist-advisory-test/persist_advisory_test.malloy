@@ -5,10 +5,9 @@ source: raw_orders is duckdb.sql("""
          100 AS amount, 'o-1' AS order_id
 """)
 
-// `mergekey` is not a #@ persist key. The publisher passes an unknown key
-// through by design, so this is legal — and a typo of `merge_key=` is the one
-// thing that makes it worth a warning. No refresh= at all, so nothing here is a
-// rejection: the package must load and serve, carrying the advisory.
+// `mergekey` is not a #@ persist key: a typo of `merge_key=`. Every
+// materialization route's key set is closed, so this is an invalid annotation
+// (`persist-unknown-key`) and the package fails to load, on every path.
 #@ persist name="daily_orders" mergekey="order_id"
 source: daily_orders is raw_orders -> {
   group_by: order_date, category

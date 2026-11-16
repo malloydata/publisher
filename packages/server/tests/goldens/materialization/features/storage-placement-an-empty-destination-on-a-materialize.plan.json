@@ -1,0 +1,3 @@
+{
+  "loadError": "m.malloy: #(materialize) on source \"m_empty\" is invalid: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse. [materialize-invalid]"
+}

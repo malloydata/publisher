@@ -738,6 +738,66 @@ run: mid_ungated -> { aggregate: c }`,
       }
    });
 
+   it("judges render tags once per prepared content: a hit on the same, a miss on changed text or schema", async () => {
+      writeManifest();
+      const { renderTagFindingsCache } = await import(
+         "../../src/service/render_tag_findings_cache"
+      );
+      const validator = await import("@malloydata/render-validator");
+      const validate = spyOn(validator, "validateRenderTags");
+      const model = (sparkline: string) =>
+         `source: cached is duckdb.table('cached.csv') extend {
+  measure: total is a.sum()
+  # big_value { sparkline=${sparkline} }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`;
+      fs.writeFileSync(path.join(tempDir, "cached.csv"), "a,b\n1,2\n");
+      fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("trend"));
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      const load = async () => {
+         validate.mockClear();
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         return {
+            calls: validate.mock.calls.length,
+            warnings: pkg.getPackageMetadata().warnings ?? [],
+         };
+      };
+      try {
+         renderTagFindingsCache.clear();
+         const first = await load();
+         expect(first.calls).toBe(1);
+         expect(
+            first.warnings.some(
+               (w) => w.subject === "cached -> card" && w.severity === "error",
+            ),
+         ).toBe(true);
+
+         // The same content: the findings come from the cache, unchanged.
+         const again = await load();
+         expect(again.calls).toBe(0);
+         expect(again.warnings).toEqual(first.warnings);
+
+         // Changed model text: judged afresh.
+         fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("other"));
+         expect((await load()).calls).toBe(1);
+
+         // The same text over a table whose schema changed: judged afresh,
+         // which a key on model text alone would miss.
+         fs.writeFileSync(path.join(tempDir, "cached.csv"), "a,b\n1.5,2\n");
+         fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("trend"));
+         expect((await load()).calls).toBe(1);
+         expect((await load()).calls).toBe(0);
+      } finally {
+         validate.mockRestore();
+         await duckdb.close();
+      }
+   });
+
    it("reads a model's report facts once while validating its render tags, not once per target", async () => {
       writeManifest();
       // Ten annotated views: ten render-tag targets in one model.
@@ -1004,7 +1064,8 @@ run: mid_ungated -> { aggregate: c }`,
       [
          "JSON that is not an object",
          `["pkg"]`,
-         /Invalid publisher\.json: expected a JSON object, got \["pkg"\]/,
+         // The kind of value, never the value: the file is not quoted.
+         /Invalid publisher\.json: expected a JSON object, got an array\./,
       ],
       [
          "an unknown retrieval key",
@@ -1252,9 +1313,18 @@ source: orders is duckdb.sql("""
             ).toEqual([
                "persist:by_category",
                "persist:gated",
-               "persist:stored",
-               "preaggregate:orders__preagg__category__edb2cd3b",
+               // The rollup leg's name for the v1 rollup (the v1 cutover, G4).
+               "preaggregate:orders__rollup__category__81e09214",
             ]);
+            // `stored` is a `storage=` source on the package's DuckDB
+            // sandbox, which a storage build cannot read: the worker, which
+            // knows the sandbox only from the main thread's connection
+            // metadata, refuses it as the main thread does.
+            expect(
+               Object.values(mainThread.plan?.refusedSources ?? {})
+                  .filter((source) => source.name === "stored")
+                  .map((source) => source.reason),
+            ).toEqual(["storage_source_unsupported"]);
 
             // A plan the worker left at its soft deadline is derived here, and
             // it is the same plan.
@@ -1431,7 +1501,11 @@ source: t is base -> { group_by: a }
       const logSpy = spyOn(logger, "log");
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
-         await Package.create("env", "pkg", tempDir, malloyConfig);
+         // The tag is invalid, so the load fails; the worker's log still
+         // reaches this thread first.
+         await expect(
+            Package.create("env", "pkg", tempDir, malloyConfig),
+         ).rejects.toThrow("[persist-unparseable]");
          expect(
             logSpy.mock.calls.some(([entry]) => {
                const { message, modelPath } = entry as unknown as Record<
@@ -1452,7 +1526,7 @@ source: t is base -> { group_by: a }
       }
    });
 
-   it("hydrates the pre-aggregation companion the worker compiled, without compiling it here", async () => {
+   it("compiles no pre-aggregation companion, in the worker or here", async () => {
       writeManifest();
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
@@ -1466,15 +1540,13 @@ source: orders is duckdb.sql("""
 }
 `,
       );
-      const { Model } = await import("../../src/service/model");
-      const runtimeSpy = spyOn(Model, "getModelRuntime");
+      const modelRuntime = await import("../../src/service/model_runtime");
+      const runtimeSpy = spyOn(modelRuntime, "createModelRuntime");
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("orders.malloy") as unknown as {
-            preaggregateServeMaterializer?: unknown;
-         };
-         expect(model.preaggregateServeMaterializer).toBeDefined();
+         await Package.create("env", "pkg", tempDir, malloyConfig);
+         // A v1 rollup is the rollup leg's: no composite companion is
+         // compiled in the worker, and none is compiled here in its place.
          expect(runtimeSpy).not.toHaveBeenCalled();
       } finally {
          runtimeSpy.mockRestore();

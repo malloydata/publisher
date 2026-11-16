@@ -7,18 +7,6 @@ import { formatProblem, locateProblemsInCallerText } from "./query_text";
 import { translatorMalloyError } from "./translator_error";
 
 /**
- * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
- * query string. Escapes backslashes and backticks (in that order) so a name
- * that needs Malloy quoting (hyphen, space, reserved word, leading digit) or
- * contains an embedded backtick cannot break out of the quotes. Mirrors
- * malloy's internal `identifierCode` / `escapeIdentifier` (to_stable.ts), which
- * is not exported.
- */
-export function quoteMalloyIdentifier(name: string | undefined): string {
-   return "`" + (name ?? "").replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
-}
-
-/**
  * What ad-hoc query text is compiled behind. Compile problems are located in
  * the compiled document, so their line numbers are shifted back by this
  * prefix's line count before a caller sees them.

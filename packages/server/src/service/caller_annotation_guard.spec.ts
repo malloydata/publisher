@@ -296,15 +296,17 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          return performance.now() - started;
       };
       time(prose(1000));
-      const small = Math.min(time(prose(16250)), time(prose(16250)));
-      const large = Math.min(time(prose(65000)), time(prose(65000)));
+      const fastest = (lines: number) =>
+         Math.min(time(prose(lines)), time(prose(lines)), time(prose(lines)));
+      const small = fastest(16250);
+      const large = fastest(65000);
       console.log(
          `caller-annotation guard, three asks: ${Math.round(small)}ms at ~245KB, ${Math.round(large)}ms at ~975KB`,
       );
-      // Four times the text: linear takes about 4x, quadratic 16x. 8x keeps
-      // that apart with room for a shared runner's noise, which a 2x step
-      // (2x against 4x) did not: Windows CI measured 3.5x on linear code.
-      expect(large).toBeLessThan(8 * small + 50);
+      // Four times the text: linear takes about 4x, quadratic 16x. Shared
+      // runners have measured up to 8.9x on linear code, so the bound sits at
+      // 12x, still well short of quadratic, on the fastest of three runs.
+      expect(large).toBeLessThan(12 * small + 50);
       expect(
          hasCallerAuthorizeAnnotation(`${prose(65000)}\n#(authorize) y\n`),
       ).toBe(true);

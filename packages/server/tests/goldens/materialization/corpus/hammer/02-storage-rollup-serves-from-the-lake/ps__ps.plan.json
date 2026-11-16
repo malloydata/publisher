@@ -1,0 +1,147 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy": "rollup"
+    },
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "orders",
+        "baseGated": false,
+        "baseSourceID": "orders@<hammer>/ps/ps.malloy",
+        "baseSourceName": "orders",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "category"
+        ],
+        "internalGrain": [],
+        "keyCheck": {
+          "keyColumn": "category",
+          "sql": "SELECT \n   base.\"category\" as \"category\",\n   COUNT(1) as \"key_rows__check\"\nFROM public.ps_orders as base\nWHERE base.\"category\" IS NOT NULL\nGROUP BY 1\nHAVING (COUNT(1))>1\nORDER BY 2 desc NULLS LAST\nLIMIT 1\n"
+        },
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "orders__rollup__category__dd9e4c1c",
+        "storage": "lake",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy": "ps.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ps.malloy",
+        "name": "orders__rollup__category__dd9e4c1c",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "category"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "e41e495afa2573d878d28ac199a392ebc6799aff2003d0a5401dc46194418ad3",
+        "sourceID": "orders__rollup__category__dd9e4c1c@<hammer>/ps/ps.malloy.preaggregate.malloy",
+        "sql": "sha256:e40c0366cfe6ead1"
+      }
+    }
+  }
+}

@@ -1,6 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Whether retrying a failed build could succeed: one source's error
+ * ({@link classifyBuildError}), a source's failure in the context of its run
+ * ({@link classifySourceFailure}, which inherits a failed upstream's answer),
+ * and a whole run that built nothing ({@link BuildRunFailedError},
+ * {@link classifyRunFailure}). Read by the instructed build, the run lifecycle
+ * and run telemetry.
+ *
+ * Pure: it reads an error's class, cause chain and message, and never logs.
+ * Conservative on purpose: an unrecognized failure answers `undefined`, never a
+ * guess.
+ */
+
 import { MalloyError } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -12,6 +25,7 @@ import {
    MaterializationEligibilityError,
    ModelCompilationError,
    UnconfiguredConnectionError,
+   WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import {
    causeChain,
@@ -19,7 +33,11 @@ import {
    isCredentialRejection,
 } from "../../../driver_errors";
 import { errMessage } from "../../../utils";
-import { strictMissSourceId } from "./materialization_run_support";
+import {
+   HostSuppliedWrongTierError,
+   strictMissSourceId,
+} from "./materialization_run_support";
+import { InlinedJoinNotUniqueError } from "./inline_uniqueness";
 
 /**
  * Whether retrying one source's failed build could succeed, as reported on
@@ -108,7 +126,7 @@ const TRANSIENT_CODES_IN_MESSAGES: readonly string[] = [
  * {@link BuildRetryable}); {@link classifySourceFailure} classifies it when
  * the upstream failed in this run.
  */
-export function isUpstreamMissingError(err: unknown): boolean {
+function isUpstreamMissingError(err: unknown): boolean {
    return (
       err instanceof ChainedUpstreamMissingError ||
       strictMissSourceId(err) !== undefined
@@ -120,11 +138,18 @@ export function isUpstreamMissingError(err: unknown): boolean {
  * of the run. See {@link BuildRetryable} for the three answers.
  */
 export function classifyBuildError(err: unknown): BuildRetryable {
+   // The host supplied an upstream at the wrong tier: the same instructions
+   // fail the same way, so the host must change them.
+   if (err instanceof HostSuppliedWrongTierError) return false;
+   // The instructions refused the only build there is (warehouseReach:
+   // refuse): the same instructions refuse it again.
+   if (err instanceof WarehouseRecomputeRefusedError) return false;
    // An upstream no manifest holds: unclassified on its own (see above).
    if (isUpstreamMissingError(err)) return undefined;
    // A property of the model, the package or the environment's configuration.
    if (
       err instanceof MaterializationEligibilityError ||
+      err instanceof InlinedJoinNotUniqueError ||
       err instanceof ChainedShapeNotCarriedError ||
       err instanceof ModelCompilationError ||
       err instanceof MalloyError ||

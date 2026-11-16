@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { EMPTY_SNAPSHOT } from "./materialization/domain/binding";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { Connection } from "@malloydata/malloy";
 import {
@@ -33,7 +34,7 @@ describe("ModelPolicy.standalone", () => {
          isQueryEntryPoint: true,
       });
       expect(policy.siblingModelDefResolver()).toBeUndefined();
-      expect(policy.freshBuildManifestEntries()).toBeUndefined();
+      expect(policy.snapshot()).toBeUndefined();
       expect(policy.preaggregateEntityIds()).toBeUndefined();
    });
 
@@ -72,12 +73,12 @@ describe("PackageModelPolicy", () => {
       expect(view.discoveryCurationEnabled()).toBe(true);
       // A path the package did not decide stays refused.
       expect(other.queryBoundary().isQueryEntryPoint).toBe(false);
-      expect(view.freshBuildManifestEntries()).toBeUndefined();
-      policy.setFreshnessResolvers({
-         manifest: () => ({}),
+      expect(view.snapshot()).toBeUndefined();
+      policy.setServingResolvers({
+         snapshot: () => EMPTY_SNAPSHOT,
          preaggregateEntityIds: () => new Set(["x"]),
       });
-      expect(view.freshBuildManifestEntries()).toEqual({});
+      expect(view.snapshot()).toBe(EMPTY_SNAPSHOT);
       expect(view.preaggregateEntityIds()).toEqual(new Set(["x"]));
    });
 });

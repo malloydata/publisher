@@ -7,7 +7,15 @@
  * and not another, the storage mode, a bind, and the publish warning that
  * names a materialized source nothing can query.
  */
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   spyOn,
+} from "bun:test";
 import { logger } from "../logger";
 import { installSettings } from "../test_helpers/settings_env";
 import {
@@ -20,6 +28,16 @@ import {
    type PackageMaterializationOwner,
 } from "./materialization/package_materialization";
 import { MATERIALIZATION_UNREACHABLE_CODE } from "./materialization/serve/serve_verdict";
+import { recordConnectionsAsForTests } from "./connection_type";
+
+// The package sandbox stands in for a warehouse in these fixtures: a
+// `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
+// source on it (storage_source_unsupported).
+let restoreConnectionTypes: () => void;
+beforeAll(() => {
+   restoreConnectionTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+});
+afterAll(() => restoreConnectionTypes());
 
 const ROWS = `duckdb.sql("select * from (values (1, 'east', 10), (2, 'west', 20)) as t(id, region, amount)")`;
 
@@ -60,7 +78,7 @@ describe("a package's serve verdicts", () => {
          "orders.malloy": ORDERS,
          "index.malloy": `import "orders.malloy"\nexport { orders_public }\n`,
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders).toMatchObject({
          tier: "colocated",
          verdict: "not_built",
@@ -84,7 +102,7 @@ describe("a package's serve verdicts", () => {
 
    it("finds every source reached when nothing is curated", async () => {
       loaded = await loadTempPackage({ "orders.malloy": ORDERS });
-      const verdicts = loaded.pkg.getServeVerdicts();
+      const verdicts = loaded.pkg.materialization().serveVerdicts();
       // orders_public extends a persisted source, so it inherits #@ persist.
       expect(verdicts.map((v) => [v.sourceName, v.verdict])).toEqual([
          ["orders", "not_built"],
@@ -109,7 +127,7 @@ source: joined is ${ROWS} extend {
 export { by_region, joined }
 `,
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.staging.verdict).toBe("not_built");
       expect(verdicts.orders.verdict).toBe("not_built");
    });
@@ -122,7 +140,7 @@ query: top_regions is staging -> { group_by: region; aggregate: t is total.sum()
 export { orders_public, top_regions }
 `,
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.staging.verdict).toBe("not_built");
       expect(
          (loaded.pkg.getPackageMetadata().warnings ?? []).some(
@@ -139,7 +157,7 @@ given: ROLE :: string[]
 source: orders is ${ROWS} -> { select: * }
 
 #(authorize) 'finance' in $ROLE
-source: secure_orders is orders extend {}
+source: secure_orders is orders -> { select: * }
 `;
 
       it("sends a stored source live when every published entry point over it is gated", async () => {
@@ -150,7 +168,53 @@ source: secure_orders is orders extend {}
             "orders.malloy": GATED,
             "index.malloy": `import "orders.malloy"\nexport { secure_orders }\n`,
          });
-         expect(byName(loaded.pkg.getServeVerdicts()).orders).toMatchObject({
+         expect(
+            byName(loaded.pkg.materialization().serveVerdicts()).orders,
+         ).toMatchObject({
+            tier: "storage",
+            verdict: "live",
+            reason: "row_level_gate",
+         });
+      });
+
+      it("serves it under G3 when the gated entry point shares its table, as an extension that inherits the annotation does", async () => {
+         restoreSettings = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+         // `secure_orders` inherits `#@ persist` and stores into the same
+         // table under its own lock: plan admits that table past it.
+         loaded = await loadTempPackage({
+            "orders.malloy": GATED.replace(
+               "source: secure_orders is orders -> { select: * }",
+               "source: secure_orders is orders extend {}",
+            ),
+            "index.malloy": `import "orders.malloy"\nexport { secure_orders }\n`,
+         });
+         expect(
+            byName(loaded.pkg.materialization().serveVerdicts()).orders,
+         ).toMatchObject({
+            tier: "storage",
+            verdict: "not_built",
+         });
+      });
+
+      it("sends it live when the only entry point is a named query over a gated source written inline", async () => {
+         restoreSettings = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+         // The query's run target extends the gated source in place, so it
+         // has no name of its own: its gate is the one it inherits, as the
+         // router's walk finds it.
+         loaded = await loadTempPackage({
+            "orders.malloy": GATED,
+            "index.malloy": `import "orders.malloy"
+query: by_one is secure_orders extend { dimension: one is 1 } -> { group_by: one }
+export { by_one }
+`,
+         });
+         expect(
+            byName(loaded.pkg.materialization().serveVerdicts()).orders,
+         ).toMatchObject({
             tier: "storage",
             verdict: "live",
             reason: "row_level_gate",
@@ -163,10 +227,31 @@ source: secure_orders is orders extend {}
          }).restore;
          // Nothing curated: `orders` itself is queryable, with no gate.
          loaded = await loadTempPackage({ "orders.malloy": GATED });
-         expect(byName(loaded.pkg.getServeVerdicts()).orders.verdict).toBe(
-            "not_built",
-         );
+         expect(
+            byName(loaded.pkg.materialization().serveVerdicts()).orders.verdict,
+         ).toBe("not_built");
       });
+   });
+
+   it("codes the warning for a persisted source a compile-time gate refuses", async () => {
+      // A given read inside the persisted query: the gate refuses the source.
+      loaded = await loadTempPackage({
+         "orders.malloy": `##! experimental { persistence givens }
+given: REGION :: string
+
+#@ persist name="orders_t"
+source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
+`,
+      });
+      const warnings = loaded.pkg.getPackageMetadata().warnings ?? [];
+      const refused = warnings.filter((w) => w.code === "persist-not-built");
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toMatchObject({ subject: "orders", severity: "warn" });
+      // Its former code, beside it with the same message, for one release.
+      const alias = warnings.filter((w) => w.code === "persist-source-refused");
+      expect(alias).toEqual([
+         { ...refused[0], code: "persist-source-refused" },
+      ]);
    });
 
    // GET …/status reads the verdicts on every poll: the entry-point walk is
@@ -176,7 +261,7 @@ source: secure_orders is orders extend {}
          "orders.malloy": ORDERS,
          "index.malloy": `import "orders.malloy"\nexport { orders_public }\n`,
       });
-      const first = loaded.pkg.getServeVerdicts();
+      const first = loaded.pkg.materialization().serveVerdicts();
       const models = [
          ...(
             loaded.pkg as unknown as { models: Map<string, object> }
@@ -187,7 +272,7 @@ source: secure_orders is orders extend {}
       );
       try {
          for (let i = 0; i < 3; i++) {
-            expect(loaded.pkg.getServeVerdicts()).toEqual(first);
+            expect(loaded.pkg.materialization().serveVerdicts()).toEqual(first);
          }
          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
       } finally {
@@ -202,10 +287,12 @@ source: secure_orders is orders extend {}
          (s) => s.name === "orders",
       );
       expect(orders).toBeDefined();
-      loaded.pkg.bindColocatedServeManifest({
-         [orders!.sourceEntityId]: { tableName: "orders_t" },
+      loaded.pkg.materialization().bind({
+         colocated: {
+            [orders!.sourceEntityId]: { tableName: "orders_t" },
+         },
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders.verdict).toBe("serves");
       expect(verdicts.staging.verdict).toBe("not_built");
    });
@@ -220,7 +307,7 @@ source: secure_orders is orders extend {}
             '#@ persist name="orders_t" storage="lake"',
          ),
       });
-      const verdicts = byName(loaded.pkg.getServeVerdicts());
+      const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders).toMatchObject({
          tier: "storage",
          verdict: "live",
@@ -243,10 +330,7 @@ describe("a serve verdict that cannot be computed", () => {
          models: () => new Map([["m.malloy", broken]]),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      (materialization as unknown as { buildPlan: unknown }).buildPlan = {
-         graphs: [],
-         sources: {},
-      };
+      materialization.plan.buildPlan = { graphs: [], sources: {} };
       const warn = spyOn(logger, "warn");
       try {
          expect(materialization.serveVerdicts()).toEqual([]);
@@ -258,7 +342,33 @@ describe("a serve verdict that cannot be computed", () => {
       } finally {
          warn.mockRestore();
       }
-      expect(materialization.unreachableMaterializationWarnings()).toEqual([]);
+      expect(materialization.verdictWarnings()).toEqual([]);
       expect(await materialization.previewServeVerdicts()).toEqual([]);
+   });
+});
+
+describe("the deployment facts (P13) on the memoized path-report verdicts", () => {
+   usePackageLoadPool();
+
+   it("re-reads a fact that changes under a loaded package, with no reload", async () => {
+      loaded = await loadTempPackage({ "orders.malloy": ORDERS });
+      let canHold: boolean | undefined = true;
+      loaded.pkg.materialization().setDeploymentFacts({
+         destinationNames: () => [],
+         connectionCanHoldTable: () => canHold,
+      });
+      const materialization = loaded.pkg.materialization();
+      const reasons = () =>
+         [...(materialization.verdicts.tableCatalog().sourceVerdicts ?? [])]
+            .filter(([, v]) => v.sourceName === "orders")
+            .map(([, v]) => v.reason);
+
+      expect(reasons()).toEqual([]);
+      // The connection's type changes under the package: the memo must not
+      // keep answering from before.
+      canHold = false;
+      expect(reasons()).toEqual(["connection_cannot_hold_table"]);
+      canHold = true;
+      expect(reasons()).toEqual([]);
    });
 });

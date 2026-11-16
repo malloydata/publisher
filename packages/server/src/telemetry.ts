@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { AsyncLocalStorage } from "async_hooks";
 import {
-   createNoopMeter,
    metrics,
    SpanStatusCode,
    trace,
@@ -13,7 +13,6 @@ import {
    type Histogram,
    type Meter,
 } from "@opentelemetry/api";
-import { isHypothetical } from "./hypothetical_scope";
 
 /**
  * Single source of truth for the OpenTelemetry meter name. Every
@@ -53,27 +52,58 @@ export function lazyInstrument<T>(create: () => T): () => T {
    return () => (instrument ??= create());
 }
 
-/** Instruments that record nothing, handed out inside a hypothetical scope. */
-const noopMeter = createNoopMeter();
-const noopCounter = noopMeter.createCounter("hypothetical");
-const noopHistogram = noopMeter.createHistogram("hypothetical");
+/**
+ * Set inside work no caller asked for whose metrics would count a caller's
+ * request twice: the v1 cutover's shadow comparison, which runs a query a
+ * caller already ran ({@link withoutMetrics}).
+ */
+const metricsSuppressed = new AsyncLocalStorage<true>();
 
 /**
- * A counter that records nothing for hypothetical work (a what-if), so a
- * proposal that serves no one never moves a production metric.
+ * Run `fn` with every counter and histogram from this module recording
+ * nothing, through everything it awaits. For a second run of a request a
+ * caller already made (the shadow comparison): its security, governance,
+ * routing and query metrics were counted by the run that answered.
  */
+export function withoutMetrics<T>(fn: () => Promise<T>): Promise<T> {
+   return metricsSuppressed.run(true, fn);
+}
+
+/** Whether the current async context records no metrics. */
+export function metricsAreSuppressed(): boolean {
+   return metricsSuppressed.getStore() === true;
+}
+
+/** A counter that records nothing under {@link withoutMetrics}. */
+export function suppressibleCounter(inner: Counter): Counter {
+   return {
+      add: (value, attributes, context) => {
+         if (!metricsAreSuppressed()) inner.add(value, attributes, context);
+      },
+   };
+}
+
+function suppressibleHistogram(inner: Histogram): Histogram {
+   return {
+      record: (value, attributes, context) => {
+         if (!metricsAreSuppressed()) inner.record(value, attributes, context);
+      },
+   };
+}
+
 export function lazyCounter(
    name: string,
    description: string,
    unit?: string,
 ): () => Counter {
-   const instrument = lazyInstrument(() =>
-      publisherMeter().createCounter(name, {
-         description,
-         ...(unit ? { unit } : {}),
-      }),
+   return lazyInstrument(() =>
+      suppressibleCounter(
+         publisherMeter().createCounter(name, {
+            description,
+            ...(unit ? { unit } : {}),
+         }),
+      ),
    );
-   return () => (isHypothetical() ? noopCounter : instrument());
 }
 
 export function lazyHistogram(
@@ -81,15 +111,18 @@ export function lazyHistogram(
    description: string,
    { unit = "ms", buckets }: { unit?: string; buckets?: number[] } = {},
 ): () => Histogram {
-   const instrument = lazyInstrument(() =>
-      publisherMeter().createHistogram(name, {
-         description,
-         // "" means a dimensionless histogram (a count), created with no unit.
-         ...(unit ? { unit } : {}),
-         ...(buckets ? { advice: { explicitBucketBoundaries: buckets } } : {}),
-      }),
+   return lazyInstrument(() =>
+      suppressibleHistogram(
+         publisherMeter().createHistogram(name, {
+            description,
+            // "" means a dimensionless histogram (a count), created with no unit.
+            ...(unit ? { unit } : {}),
+            ...(buckets
+               ? { advice: { explicitBucketBoundaries: buckets } }
+               : {}),
+         }),
+      ),
    );
-   return () => (isHypothetical() ? noopHistogram : instrument());
 }
 
 /** Drop every lazily created instrument so the next use binds to the current provider. */

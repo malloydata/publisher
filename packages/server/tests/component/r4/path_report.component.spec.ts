@@ -8,6 +8,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { buildScenario, disposeScenarios, type R4Fixture } from "./harness";
+import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
+import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
 
 let restoreSettings: () => void;
 beforeAll(() => {
@@ -53,7 +55,13 @@ source: daily is orders -> {
          "run: daily -> { group_by: region; aggregate: t is total.sum() }",
       );
       expect(servedFrom).toBe("storage");
-      expect(path?.servedBy).toEqual({ kind: "materialized", tableId: daily });
+      // The served copy answers a v1 `storage=` table (the v1 cutover).
+      expect(path?.servedBy).toEqual({
+         kind: "materialized",
+         tier: "storage",
+         tableId: daily,
+         via: "served_copy",
+      });
       expect(path?.considered).toEqual([
          { tableId: daily, kind: "materialized", outcome: "used" },
       ]);
@@ -100,6 +108,41 @@ source: daily is orders -> {
             reason: "STALE",
          },
       ]);
+   });
+
+   it("counts the served copy's decline of a stale table as STALE, as the path report says", async () => {
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      try {
+         fixture.setBindings(
+            fixture.bindings.map((b) => ({
+               ...b,
+               freshAsOf: "2020-01-01T00:00:00.000Z",
+               freshnessWindowSeconds: 60,
+               freshnessFallback: "live" as const,
+            })),
+         );
+         await fixture.runAsIs(
+            "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+         );
+         expect(
+            await harness.collectCounter("publisher_query_route_total", {
+               leg: "served",
+               outcome: "skipped",
+               reason: "STALE",
+            }),
+         ).toBe(1);
+         expect(
+            await harness.collectCounter("publisher_query_route_total", {
+               leg: "served",
+               outcome: "skipped",
+               reason: "WARNED",
+            }),
+         ).toBe(0);
+      } finally {
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
    });
 
    it("reports a chosen table whose read failed as RUN_FAILED, answered live", async () => {

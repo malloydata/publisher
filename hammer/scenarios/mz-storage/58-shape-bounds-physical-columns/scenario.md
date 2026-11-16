@@ -8,21 +8,20 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# The declared serve shape bounds which physical columns are reachable
+# The served copy's declared columns bound which physical columns are reachable
 
-A column that exists in the stored table but is absent from the source's declared
-`::Shape` must not resolve through the source. This is the second of the two
-independent defenses behind a hidden column — the first is the build-time
-projection that keeps it out of the table at all (`visibility-leak-guard`) — and
-it is the one that decides whether a projection failure is an access-control hole
-or an at-rest concern. Worth pinning on its own: nothing else exercises a
+A column that exists in the stored table but is absent from the `type:` the served
+copy declares the stored table with must not resolve through the source. This is
+the second of two independent defenses behind a hidden column — the first is the
+build-time projection that keeps it out of the table at all
+(`visibility-leak-guard`). Worth pinning on its own: nothing else exercises a
 physically-present-but-undeclared column, because on every other path the
 projection already removed it.
 
 `daily` is built normally, so the captured schema (and therefore the declared
-shape) is exactly `order_date, total`. The operator then adds a populated
+`type:`) is exactly `order_date, total`. The operator then adds a populated
 `secret_col` to the stored table out-of-band, making the physical table strictly
-wider than the shape. Three probes then reference it: a direct select, a
+wider than the declared `type:`. Three probes then reference it: a direct select, a
 `group_by`, and a `select: *` expansion.
 
 Expected: the two direct references fail to resolve, and `select: *` expands over
@@ -32,10 +31,12 @@ came from the snapshot, so the probes really did exercise the storage path again
 the widened table rather than falling back to live.
 
 Note on scope: this constructs the state with a column that was never captured,
-whereas a build-time projection failure produces one that was captured and then
-narrowed away. Both leave the same declared shape reaching Malloy, which is what
-bounds resolution, but the equivalence is an argument rather than something
-measured here — a source cannot be made to hide a column without a rebuild over
+whereas a build-time projection failure produces one that was captured. A captured
+column no field of the source names is declared on the stored table's `type:` and
+removed again by the author's own text (the `except:` the served copy keeps), and
+a source whose text does not remove it is left as written; that case rests on the
+author's text rather than on the declared columns, and it is not measured here — a
+source cannot be made to hide a column without a rebuild over
 REST (`--init` wipes the store; a plain restart keeps the old model).
 
 ## Publisher
@@ -87,7 +88,7 @@ Expect:
 
 Smuggle a column into the stored table, out-of-band through the operator's own
 read-write DuckLake client. The publisher's captured schema still says
-`order_date, total`, so the declared shape does not know this column exists.
+`order_date, total`, so the declared `type:` does not know this column exists.
 
 ```sql
 ALTER TABLE shp_daily ADD COLUMN secret_col VARCHAR;
@@ -98,7 +99,7 @@ UPDATE shp_daily SET secret_col = 'LEAKED';
 
 Change the live source so a stale answer is a positive proof of storage routing —
 otherwise a refusal could just be the live model refusing an undefined column,
-which says nothing about the shape.
+which says nothing about the declared columns.
 
 ```sql
 INSERT INTO shp_orders VALUES (4, '2026-01-01', 1000);
