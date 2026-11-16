@@ -241,7 +241,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    } catch (error) {
       retrievalConfig = undefined;
       logger.error(
-         `Could not read the retrieval settings from publisher.config.json; retrieval runs with its defaults until this is fixed and the server restarted. ${
+         `Could not read the retrieval settings; retrieval runs with its defaults until this is fixed and the server restarted. ${
             error instanceof Error ? error.message : String(error)
          }`,
       );
