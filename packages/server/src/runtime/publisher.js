@@ -26,17 +26,22 @@
 // posts size updates to the parent window so Publisher.embed() in the host
 // can resize the iframe.
 //
-// Inside the in-app viewer's iframe it also posts a "publisher:query" message
-// after each query: what the page asked (model, query, filters, givens) and
-// what came back (row count and the first rows, or the error). A host that
-// frames the app, such as a chat beside it, can then say what the reader is
-// looking at. Never on a hosted embed surface (/apps/...): that page belongs
-// to a customer's site, and its results are not the framing page's to read.
+// Inside the in-app viewer's iframe, once the framing page has asked for them
+// with a "publisher:subscribe" message, it also posts a "publisher:query"
+// message after each query: what the page asked (model, query, filters,
+// givens) and what came back (row count and the first rows, or the error). A
+// host that frames the app, such as a chat beside it, can then say what the
+// reader is looking at. Reports go only to the origin that subscribed, never
+// to "*"; the last few from before the subscribe are kept and sent when it
+// arrives. Never on a hosted embed surface (/apps/...): that page belongs to a
+// customer's site, and its results are not the framing page's to read.
 //
 // The "publisher:resize" postMessage protocol below is the SAME contract the
 // SPA host consumes. Its canonical definition lives in
 // packages/sdk/src/utils/dataAppEmbed.ts (PUBLISHER_RESIZE_MESSAGE_TYPE /
-// PublisherResizeMessage), as does "publisher:query"'s (PUBLISHER_QUERY_MESSAGE_TYPE /
+// PublisherResizeMessage), as do "publisher:subscribe"'s and
+// "publisher:query"'s (PUBLISHER_SUBSCRIBE_MESSAGE_TYPE /
+// PublisherSubscribeMessage, PUBLISHER_QUERY_MESSAGE_TYPE /
 // PublisherQueryMessage). This file is build-step-free vanilla JS and can't
 // import it, so keep the message types/shapes here in sync with that module.
 
@@ -145,6 +150,9 @@
    // copy of the result.
    var QUERY_REPORT_MAX_ROWS = 20;
    var QUERY_REPORT_MAX_CHARS = 16000;
+   // How many reports from before the framing page subscribes are kept for it:
+   // the latest few, enough to say what is on screen when it starts listening.
+   var QUERY_REPORT_BACKLOG = 10;
    var reportsQueries = (function () {
       if (!inAppMatch) return false;
       try {
@@ -153,6 +161,30 @@
          return true; // cross-origin parent: framed
       }
    })();
+   // The origin of the framing page that subscribed; until then, reports wait.
+   var reportOrigin = null;
+   var reportBacklog = [];
+
+   if (reportsQueries) {
+      window.addEventListener("message", function (event) {
+         if (event.source !== window.parent) return;
+         if (!event.data || event.data.type !== "publisher:subscribe") return;
+         // An opaque origin ("null") is not one postMessage can address.
+         if (!event.origin || event.origin === "null") return;
+         reportOrigin = event.origin;
+         var backlog = reportBacklog;
+         reportBacklog = [];
+         for (var i = 0; i < backlog.length; i++) sendQueryReport(backlog[i]);
+      });
+   }
+
+   function sendQueryReport(report) {
+      try {
+         window.parent.postMessage(report, reportOrigin);
+      } catch (_e) {
+         /* a report that can't be cloned is not worth failing the query */
+      }
+   }
 
    function postQueryReport(target, modelPath, malloyQuery, opts, outcome) {
       if (!reportsQueries) return;
@@ -181,10 +213,11 @@
          }
          report.rows = rows;
       }
-      try {
-         window.parent.postMessage(report, "*");
-      } catch (_e) {
-         /* a report that can't be cloned is not worth failing the query */
+      if (reportOrigin) {
+         sendQueryReport(report);
+      } else {
+         reportBacklog.push(report);
+         if (reportBacklog.length > QUERY_REPORT_BACKLOG) reportBacklog.shift();
       }
    }
 

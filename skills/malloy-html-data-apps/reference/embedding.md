@@ -32,7 +32,17 @@ Do not rely on `body { min-height: 100vh }` to drive the frame height. The runti
 
 ## Query reports to the host
 
-Inside the in-app viewer's frame (`/environments/<env>/packages/<pkg>/...`), the runtime also posts a `publisher:query` message to the host after each `Publisher.query` or `queryFull`: the model, the query text or named view, the `filterParams` and `givens` the page passed, and the row count with the first rows, or the error. A host such as a chat beside the app uses it to know what the reader is looking at. You write none of this either; pass filters as `givens` or `filterParams` rather than baking them into query text, so the host can name them. It is never posted on a hosted embed surface (`/apps/...`).
+Inside the in-app viewer's frame (`/environments/<env>/packages/<pkg>/...`), the runtime can also tell the host what each `Publisher.query` or `queryFull` asked and got back: the model, the query text or named view, the `filterParams` and `givens` the page passed, and the row count with the first rows, or the error. A host such as a chat beside the app uses it to know what the reader is looking at.
+
+The host opts in. It posts `{ type: "publisher:subscribe" }` to the frame, with the frame's origin as the target:
+
+```js
+iframe.contentWindow.postMessage({ type: "publisher:subscribe" }, frameOrigin);
+```
+
+The runtime accepts that only from its parent window, then posts a `publisher:query` message after each query to the origin the subscribe came from, never to `"*"`. The latest reports from before the subscribe, at most 10, are sent in order when it arrives; a frame nobody subscribes to sends nothing. Reports are never posted on a hosted embed surface (`/apps/...`) or by a page opened in its own tab.
+
+The app's author writes none of this; pass filters as `givens` or `filterParams` rather than baking them into query text, so the host can name them.
 
 ## Inside the frame there is no viewport
 

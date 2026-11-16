@@ -36,10 +36,28 @@ export function isPublisherResizeMessage(
 }
 
 /**
+ * postMessage `type` a host posts to an embedded data app's frame to ask for
+ * its {@link PublisherQueryMessage} reports: `iframe.contentWindow.postMessage(
+ * { type: "publisher:subscribe" }, frameOrigin)`. The runtime accepts it only
+ * from its parent window, and from then on posts its reports to the origin the
+ * subscribe came from, never `"*"`. The latest reports from before the
+ * subscribe (at most 10) are sent, in order, when it arrives. Payload shape is
+ * {@link PublisherSubscribeMessage}.
+ */
+export const PUBLISHER_SUBSCRIBE_MESSAGE_TYPE = "publisher:subscribe";
+
+/** Subscribe message a host posts to an embedded data app's frame. */
+export interface PublisherSubscribeMessage {
+   type: typeof PUBLISHER_SUBSCRIBE_MESSAGE_TYPE;
+}
+
+/**
  * postMessage `type` an embedded data app's runtime emits to its host frame
- * after each query, in the in-app viewer only (never on a hosted `/apps/`
- * embed surface). Payload shape is {@link PublisherQueryMessage}. A host uses
- * it to say what the reader is looking at, e.g. to a chat beside the app.
+ * after each query, once the host has subscribed with a
+ * {@link PublisherSubscribeMessage}, in the in-app viewer only (never on a
+ * hosted `/apps/` embed surface). Payload shape is
+ * {@link PublisherQueryMessage}. A host uses it to say what the reader is
+ * looking at, e.g. to a chat beside the app.
  */
 export const PUBLISHER_QUERY_MESSAGE_TYPE = "publisher:query";
 
