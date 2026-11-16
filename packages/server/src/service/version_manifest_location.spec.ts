@@ -17,14 +17,19 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { ManifestEntry } from "../storage/DatabaseInterface";
-import type { ResourceRepository } from "../storage/DatabaseInterface";
+import type {
+   ManifestEntry,
+   Materialization,
+   ResourceRepository,
+} from "../storage/DatabaseInterface";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import { initializeSchema } from "../storage/duckdb/schema";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { unrecordedAudit } from "./access_record";
 import { Environment } from "./environment";
+import type { EnvironmentStore } from "./environment_store";
+import { MaterializationService } from "./materialization/run/materialization_service";
 import { parsePackageName, VersionRef } from "./identity";
 import { QueryPrivileges } from "./model_query_request";
 import type { Package } from "./package";
@@ -208,6 +213,29 @@ function writeManifest(
 const tableOf = (pkg: Package, id: string) =>
    pkg.getBuildManifestEntries()?.[id]?.tableName;
 
+/** A run, once it has ended and its service stopped tracking it. */
+async function settled(
+   service: MaterializationService,
+   id: string,
+): Promise<Materialization> {
+   const deadline = Date.now() + 60_000;
+   const running = (
+      service as unknown as { runningAbortControllers: Map<string, unknown> }
+   ).runningAbortControllers;
+   for (;;) {
+      const m = await repo.getMaterializationById(id);
+      if (
+         m &&
+         ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(m.status) &&
+         !running.has(id)
+      ) {
+         return m;
+      }
+      if (Date.now() > deadline) throw new Error(`run ${id} never settled`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+   }
+}
+
 type Rebinder = {
    bindManifest(pkg: Package, uri: string): Promise<void>;
    bindVersionManifest(pkg: Package, uri: string | null): Promise<void>;
@@ -281,6 +309,41 @@ describe("a version's manifestLocation is its registry row's", () => {
       expect(await total(pkg)).toBe(42);
       // The host-bound version never asked the local store.
       expect(resolver).not.toHaveBeenCalled();
+   });
+
+   it("keeps serving the host's tables after a local materialization of it", async () => {
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      await versions().setManifest(PKG, "1.0.0", host);
+      const pkg = await loadedVersion("1.0.0");
+      await storeTables(pkg);
+      expect(await total(pkg)).toBe(42);
+
+      // A run on this server builds `summary` and commits its rows.
+      const store = {
+         storageManager: { getRepository: () => repo },
+         getEnvironment: async () => env,
+         getLoadedEnvironments: () => [env],
+      } as unknown as EnvironmentStore;
+      const service = new MaterializationService(store);
+      const run = await settled(
+         service,
+         (
+            await service.createMaterialization(ENV, PKG, {
+               versionId: VersionRef.parse("1.0.0"),
+            })
+         ).id,
+      );
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      const built = (run.manifest as { entries?: Record<string, unknown> })
+         ?.entries;
+      expect(Object.keys(built ?? {})).toContain(id);
+      expect(run.metadata?.autoLoad).toBe("loaded");
+
+      // What the version serves is still the host's.
+      expect(pkg.getManifestLocation()).toBe(host);
+      expect(tableOf(pkg, id)).toBe('"summary_host"');
+      expect(await total(pkg)).toBe(42);
    });
 
    it("is bound from the local run store when bound to no manifest", async () => {

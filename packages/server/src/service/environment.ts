@@ -3974,6 +3974,11 @@ export class Environment {
     * run is MANIFEST_FILE_READY, so it binds this run's manifest, never the
     * one before it. A version that is not loaded binds from the store when
     * it next loads, which is after `commit`, so it counts as loaded.
+    *
+    * A package or version bound to a host manifest (`manifestLocation`)
+    * serves the host's tables: the run's entries, neither tier, are applied
+    * to it. The run still commits its rows, and counts as loaded, as one for
+    * a version not loaded does; it changes nothing that is served.
     */
    public async loadRunManifest(params: {
       packageName: string;
@@ -3998,6 +4003,15 @@ export class Environment {
                     error: `Package ${packageName} is not loaded`,
                  };
          }
+         // With a manifestLocation the host is authoritative, for both tiers.
+         if (pkg.getManifestLocation()) {
+            logger.info(
+               "Auto-run: committed without changing what is served: the " +
+                  "package is bound to a host manifest (host authoritative)",
+               { packageName, versionId },
+            );
+            return { loaded: true };
+         }
          try {
             const has = Object.keys(params.colocated).length > 0;
             if (has || pkg.hasBoundTableNameManifest()) {
@@ -4007,10 +4021,7 @@ export class Environment {
             return { loaded: false, step: "reload", error: errMessage(err) };
          }
          try {
-            // With a manifestLocation the host is authoritative.
-            if (!pkg.getManifestLocation()) {
-               pkg.bindStorageServeBindings(params.storage);
-            }
+            pkg.bindStorageServeBindings(params.storage);
          } catch (err) {
             return { loaded: false, step: "bind", error: errMessage(err) };
          }
