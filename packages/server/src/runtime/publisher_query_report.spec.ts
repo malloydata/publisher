@@ -258,8 +258,9 @@ describe("publisher:query reports", () => {
       expect(reports()[0].rows).toEqual(many.slice(0, 20));
    });
 
-   it("drops rows until the report fits", async () => {
-      const wide = Array.from({ length: 20 }, () => ({
+   it("drops rows one at a time from the end until the whole report fits", async () => {
+      const wide = Array.from({ length: 20 }, (_, i) => ({
+         i,
          note: "x".repeat(2000),
       }));
       const { Publisher, reports, deliver } = runtime({
@@ -270,11 +271,67 @@ describe("publisher:query reports", () => {
          },
       });
       deliver();
-      await Publisher.query("sales.malloy", "run: x", {});
-      const rows = reports()[0].rows as unknown[];
-      expect(rows.length).toBeLessThan(20);
-      expect(JSON.stringify(rows).length).toBeLessThanOrEqual(16000);
-      expect(reports()[0].rowCount).toBe(20);
+      await Publisher.query("sales.malloy", "run: x", {
+         givens: { region: "EMEA" },
+      });
+      const report = reports()[0];
+      const rows = report.rows as unknown[];
+      // The leading rows, as many as fit: one more would not.
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows).toEqual(wide.slice(0, rows.length));
+      expect(JSON.stringify(report).length).toBeLessThanOrEqual(16000);
+      expect(
+         JSON.stringify({ ...report, rows: wide.slice(0, rows.length + 1) })
+            .length,
+      ).toBeGreaterThan(16000);
+      expect(report.rowCount).toBe(20);
+      expect(report).not.toHaveProperty("truncated");
+   });
+
+   it("cuts the query text, and says so, when no rows leave room for it", async () => {
+      const longQuery = "run: orders -> { where: " + "x".repeat(30000) + " }";
+      const { Publisher, reports, deliver } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", longQuery, {
+         givens: { region: "EMEA" },
+      });
+      const report = reports()[0];
+      const size = JSON.stringify(report).length;
+      expect(size).toBeLessThanOrEqual(16000);
+      // Cut to fit, not dropped: the text fills what the report has left.
+      expect(size).toBeGreaterThan(15900);
+      expect(report.truncated).toBe(true);
+      expect(longQuery.startsWith((report.query as string).slice(0, -1))).toBe(
+         true,
+      );
+      expect(report.rows).toEqual([]);
+      expect(report.rowCount).toBe(1);
+      expect(report.givens).toEqual({ region: "EMEA" });
+   });
+
+   it("drops givens and filters too large to fit, and says so", async () => {
+      const { Publisher, reports, deliver } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {
+         givens: { note: "x".repeat(30000) },
+         filterParams: { region: "EMEA" },
+      });
+      const report = reports()[0];
+      expect(JSON.stringify(report).length).toBeLessThanOrEqual(16000);
+      expect(report.truncated).toBe(true);
+      expect(report).not.toHaveProperty("givens");
+      expect(report).not.toHaveProperty("filterParams");
+   });
+
+   it("sends no report it cannot fit, and still answers the page", async () => {
+      const { Publisher, sent, deliver } = runtime();
+      deliver();
+      const rows = await Publisher.query("sales.malloy", undefined, {
+         sourceName: "s".repeat(20000),
+         queryName: "by_region",
+      });
+      expect(rows).toEqual([{ region: "EMEA", revenue: 120 }]);
+      expect(sent()).toEqual([]);
    });
 
    it("posts nothing on a hosted embed surface, even to a subscriber", async () => {

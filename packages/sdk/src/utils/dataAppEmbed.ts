@@ -78,10 +78,19 @@ export interface PublisherQueryMessage {
    givens?: Record<string, unknown>;
    /** Rows returned, when the query succeeded and returned rows. */
    rowCount?: number;
-   /** The first rows (at most 20, and at most 16,000 characters serialized). */
+   /**
+    * The first rows: at most 20, and only as many as keep the whole report
+    * within 16,000 characters serialized.
+    */
    rows?: Record<string, unknown>[];
    /** The error message, when the query failed. */
    error?: string;
+   /**
+    * True when the report reached 16,000 characters serialized with no rows
+    * left to drop, so the query text or error was cut short, or the givens and
+    * filterParams were left out, to fit.
+    */
+   truncated?: boolean;
 }
 
 /** Type guard for a {@link PublisherQueryMessage} arriving via postMessage. */

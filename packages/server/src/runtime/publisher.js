@@ -248,6 +248,53 @@
       return key && key in cell ? cell[key] : null;
    }
 
+   function reportSize(report) {
+      return JSON.stringify(report).length;
+   }
+
+   // Fit a report into QUERY_REPORT_MAX_CHARS, serialized. Rows go first, from
+   // the end, since a host reads the first ones; then the page's own text is
+   // cut, and the report marked truncated. False when it still does not fit.
+   function fitQueryReport(report) {
+      if (report.rows) {
+         // Drop rows one at a time from the end, measuring each row once: the
+         // report with n rows is the report with none, plus those rows, plus a
+         // comma between each two.
+         var rows = report.rows;
+         report.rows = [];
+         var size = reportSize(report);
+         var kept = 0;
+         while (kept < rows.length) {
+            var next =
+               size + JSON.stringify(rows[kept]).length + (kept > 0 ? 1 : 0);
+            if (next > QUERY_REPORT_MAX_CHARS) break;
+            size = next;
+            kept++;
+         }
+         report.rows = rows.slice(0, kept);
+      }
+      if (reportSize(report) <= QUERY_REPORT_MAX_CHARS) return true;
+      report.truncated = true;
+      cutText(report, "query");
+      cutText(report, "error");
+      if (reportSize(report) > QUERY_REPORT_MAX_CHARS) {
+         delete report.givens;
+         delete report.filterParams;
+      }
+      return reportSize(report) <= QUERY_REPORT_MAX_CHARS;
+   }
+
+   // Shorten report[key] until the report fits, ending it with an ellipsis.
+   function cutText(report, key) {
+      var text = report[key];
+      var over = reportSize(report) - QUERY_REPORT_MAX_CHARS;
+      while (typeof text === "string" && text.length > 0 && over > 0) {
+         text = text.slice(0, Math.max(0, text.length - over - 1));
+         report[key] = text + "\u2026";
+         over = reportSize(report) - QUERY_REPORT_MAX_CHARS;
+      }
+   }
+
    function postQueryReport(target, modelPath, malloyQuery, opts, outcome) {
       if (!reportsQueries) return;
       var report = {
@@ -266,15 +313,12 @@
          report.error = String(outcome.error);
       } else if (all) {
          report.rowCount = all.count;
-         var rows = all.first(QUERY_REPORT_MAX_ROWS);
-         // Drop rows from the end until the report fits; a host reads the first.
-         while (
-            rows.length > 0 &&
-            JSON.stringify(rows).length > QUERY_REPORT_MAX_CHARS
-         ) {
-            rows = rows.slice(0, Math.floor(rows.length / 2));
-         }
-         report.rows = rows;
+         report.rows = all.first(QUERY_REPORT_MAX_ROWS);
+      }
+      try {
+         if (!fitQueryReport(report)) return;
+      } catch (_e) {
+         return; // a report that can't be serialized is not worth failing the query
       }
       if (reportOrigin) {
          sendQueryReport(report);
