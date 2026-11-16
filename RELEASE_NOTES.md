@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Table stats: what each materialized table costs and how often it answers
+
+`GET …/packages/{pkg}/table-stats` reports, for each table a package's build plan materializes, its last build (row count, build time, the bytes its read scanned), its build counts across recorded runs, its columns, and, with the workload log's local store on, how often it answered queries in a window and why it was skipped for the rest, counted by skip reason. It reads only what Publisher already holds and queries no warehouse. With the store off, `workload.available` is `false` and no table carries `use`, so unknown never reads as zero. See [docs/materialization.md](docs/materialization.md#table-stats).
+
 ## [Unreleased] — every answer from a materialized table reports its tier: `servedFrom: "database"` and `path.servedBy.tier`
 
 A query answered from a table in the source's own database (the colocated tier) now reports `servedFrom: "database"`, where it reported `null` before. This covers a colocated `#@ persist` table Malloy substituted, a colocated `#(materialize)` table the served copy read, and a colocated rollup or persisted view. `storage` and `live_fallback` are unchanged, and `null` now means only that no materialized table answered. The path report's `servedBy` gains `tier` (`database` or `storage`) whenever a table answered, the same tier `servedFrom` names. The access record's `servedFrom`, the workload log's `served_from` and the `malloy.model.query.served_from` attribute on `malloy_model_query_duration` carry the new value too.

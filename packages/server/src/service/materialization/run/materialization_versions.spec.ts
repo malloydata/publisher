@@ -1837,7 +1837,7 @@ describe("what a run's load binds, read back from the store", () => {
          commit: async () => {},
       });
       const reloads = spyOn(pkg, "reloadAllModels");
-      const bindings = spyOn(pkg, "bindStorageServeBindings");
+      const bindings = spyOn(pkg.materialization(), "bind");
       try {
          // The store gives the same entry back with its keys in another order.
          const reversed = (o: object) =>

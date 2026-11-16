@@ -72,6 +72,7 @@ listed with the step that removes it in
 | `host.ts`                    | What the module needs from the rest of the server, as interfaces it owns (the host port)                                           | the service, the facade                     |
 | `stored_column_types.ts`     | A stored column's type against the type Malloy declares, both directions                                                           | the `storage=` build, the served copy       |
 | `subselect.ts`               | `FROM (<select>) AS <alias>`, safe for any SELECT a build produces                                                                 | `stored_column_types.ts`, the build session |
+| `table_stats.ts`             | Table stats (parked for phase 6): each planned table's builds, columns and workload use, from what Publisher holds                 | the service                                 |
 
 ## Glossary
 
