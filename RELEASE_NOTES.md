@@ -21,6 +21,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a version bound to a host manifest keeps it across reloads, and is never overlaid with this server's own runs
+
+A published version now keeps the build manifest its registry row names (`manifestLocation`) through every bind. Before, a bind that recompiled or rebound its models re-read `manifestLocation` from the version's `publisher.json`, which is immutable content and usually names none, so the version then reported no manifest although it was serving one. Two things followed:
+
+- **This server's own run-store entries were laid over a host-bound version.** The local-store rebinds that run after a load, and after a materialization on this server rebinds the other loaded versions, skip a version bound to a host manifest, since the host is authoritative for it. With its `manifestLocation` lost they no longer skipped it, and replaced the host manifest's colocated tables with this server's own runs' tables for the same sources. A version bound to a host manifest now serves the host's tables. Only servers that both bind versions to a host manifest and run materializations locally were affected; with an empty run store, the usual hosted case, the overlay changed nothing.
+- **A publish or `setManifest` naming the manifest a version already served bound it again.** It now binds nothing more, as intended. Those extra binds were redundant, not wrong.
+
+A `setManifest` to none still clears the manifest and serves live. A package with no versions keeps reading `manifestLocation` from its `publisher.json` on a reload, exactly as before.
+
 ## [Unreleased] — `/status` keeps retrying a failed version read, and lists a loaded version meanwhile
 
 When `/status` cannot re-read a package's version rows from the database after a write, it now keeps retrying in the background until a read lands: 250 ms backing off to 30 s, then every 30 s. In 0.14.0 it gave up after eight attempts (about a minute), and a version committed in that window read as absent until the next write to the environment, so a control plane reconciling against `/status` dispatched it again. While the read is failing, a version this server holds loaded is listed even though no row read names it yet, with `loaded: true`, `archiveStatus: unarchive` and the `latestVersion` of the package's last successful read (`null` for a package new since then), as a version still publishing is listed. The rows already read stay listed as they were. An error is logged once the retries pass eight attempts, where the give-up was logged before.
