@@ -280,7 +280,7 @@ const runDuration = lazyHistogram(
 const buildCounter = lazyCounter(
    "publisher_materialization_build_total",
    "Source builds, one per source per run at its finish or failure. Labels: " +
-      "kind ('materialize'|'persist'|'rollup'|'view'|'pair'), tier " +
+      "kind ('materialize'|'persist'|'rollup'|'view'|'query'|'pair'), tier " +
       "('colocated'|'storage'), outcome ('built'|'reused'|'refused'|'failed'|" +
       "'cancelled'), failure_class ('none' unless outcome is 'failed'; then " +
       "'deterministic'|'transient'|'unclassified'|'billed_read_lost'). " +
