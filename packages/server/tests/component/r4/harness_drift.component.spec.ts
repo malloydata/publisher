@@ -362,7 +362,7 @@ describe("R4 harness drift: colocated tables agree with a real run", () => {
    // Last: it writes a marker row into the `#@ persist` tables. A colocated
    // `#@ persist` table is read through the build manifest, which the path
    // does not report, so the marker is what shows a side reads its table.
-   it("answers a colocated #@ persist source from its table, where the harness answers it live", async () => {
+   it("known gap in the harness: answers a colocated #@ persist source from its table, where the harness answers it live", async () => {
       const query =
          "run: by_cat_v1 -> { group_by: cat; aggregate: t is total.sum(); order_by: cat }";
       const marker = "INSERT INTO %t VALUES ('zz', 99.0)";
@@ -377,8 +377,8 @@ describe("R4 harness drift: colocated tables agree with a real run", () => {
          marker.replace("%t", await harnessTable(r4v1, "r4_by_cat_v1_")),
       );
       expect((await ask(f!, query)).map((r) => r.cat)).toContain("zz");
-      // The harness binds the table but never reads it: its served answer is
-      // live's. When the harness reads it, this expectation flips.
+      // Known gap: the harness binds the table but never reads it, so its
+      // served answer is live's. When the harness reads it, this flips.
       const harness = await r4v1.run({ name: "persist", malloy: query });
       expect(harness.served.map((r) => r.cat)).not.toContain("zz");
       expect(harness.servedBy?.kind).toBe("live");

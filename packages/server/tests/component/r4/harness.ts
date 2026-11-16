@@ -205,8 +205,12 @@ export interface R4Scenario {
     */
    persistedViews?: boolean;
    /**
-    * Planned sources, by name, bound colocated: their tables are read through
-    * the build manifest (Malloy substitutes them), not a storage binding.
+    * Planned sources, by name, built colocated: each table is built in the
+    * scenario's database and put in the build manifest, not a storage
+    * binding. Known gap: a colocated `#@ persist` source's table is bound but
+    * never read, so its served run answers live where a real run reads the
+    * table (harness_drift.component.spec.ts pins it). A persisted view's
+    * companion source is read through the view path.
     */
    colocated?: string[];
    /**

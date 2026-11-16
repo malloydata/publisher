@@ -335,7 +335,11 @@ describe("RollupVariantServe (storage=)", () => {
       ).toMatchObject({ code: "rollup_not_built" });
    });
 
-   it("declines, as a compile failure, a stored partial whose type the measure cannot merge", async () => {
+   // Known gap: a stored partial the measure cannot merge is declined as a
+   // missing field that fails to compile, with a warning each time, where the
+   // view leg refuses the same case as a type mismatch. When it is refused as
+   // one, this expectation flips.
+   it("known gap: declines, as a compile failure rather than a type mismatch, a stored partial whose type the measure cannot merge", async () => {
       const warn = sinon.stub(logger, "warn");
       try {
          const binding = bindingFor(f, {

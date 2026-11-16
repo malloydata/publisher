@@ -18,7 +18,7 @@ import { seededDuckdb, writeTempPackage } from "../test_helpers/temp_package";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER, val VARCHAR);
-INSERT INTO orgtable VALUES (1, 1, 'a'), (2, 1, 'b'), (3, 2, 'c'), (4, 2, 'd');
+INSERT INTO orgtable VALUES (1, 1, 'a'), (2, 2, 'b'), (3, 2, 'c'), (4, 2, 'd');
 `;
 
 const MODEL = `##! experimental.givens
@@ -144,12 +144,16 @@ describe("a linear report's query cells under the model's gates", () => {
 
    describe("a row-filtered cell", () => {
       it("grafts the caller's groups onto the cell", async () => {
-         expect(countOf(await run(cells.gated, { GROUPS: [1] }))).toBe(2);
+         // Org 1 holds one row and org 2 three, so each count names the org.
+         expect(countOf(await run(cells.gated, { GROUPS: [1] }))).toBe(1);
+         expect(countOf(await run(cells.gated, { GROUPS: [2] }))).toBe(3);
          expect(countOf(await run(cells.gated, { GROUPS: [1, 2] }))).toBe(4);
          expect(countOf(await run(cells.gated, { GROUPS: [] }))).toBe(0);
       });
 
-      it("refuses a caller who supplies no groups with the compiler's missing-given error, where the query path answers a 403", async () => {
+      // Known gap: the query path answers this caller a 403. When the cell path
+      // does too, this expectation flips.
+      it("known gap: refuses a caller who supplies no groups with the compiler's missing-given error, not a 403", async () => {
          const refused = await run(cells.gated).then(
             () => undefined,
             (err: unknown) => err,
@@ -214,7 +218,10 @@ describe("a linear report's query cells under the model's gates", () => {
       it("admits only past the lock, then needs the groups its filter reads", async () => {
          expect(
             countOf(await run(cells.both, { ROLE: "admin", GROUPS: [2] })),
-         ).toBe(2);
+         ).toBe(3);
+         expect(
+            countOf(await run(cells.both, { ROLE: "admin", GROUPS: [1] })),
+         ).toBe(1);
          await expect(
             run(cells.both, { ROLE: "guest", GROUPS: [1, 2] }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
@@ -258,7 +265,14 @@ describe("a linear report's query cells under the model's gates", () => {
                   org: "2",
                }),
             ),
-         ).toBe(2);
+         ).toBe(3);
+         expect(
+            countOf(
+               await run(cells.refined, { ROLE: "admin" }, undefined, {
+                  org: "1",
+               }),
+            ),
+         ).toBe(1);
       });
 
       it("denies a refused caller with a 403 before it validates the filter values", async () => {
@@ -268,6 +282,25 @@ describe("a linear report's query cells under the model's gates", () => {
          await expect(
             run(cells.refined, { ROLE: "guest" }, undefined, { org: "2" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      // Known gap: a numeric filter value is not validated; building its
+      // clause throws a type error, which the cell path reports as a bad
+      // request. When the value is validated, this expectation tightens.
+      it("known gap: answers a numeric filter value with a bad request from a type error, not a validation message", async () => {
+         const refused = await run(
+            cells.refined,
+            { ROLE: "admin" },
+            undefined,
+            {
+               org: 2,
+            },
+         ).then(
+            () => undefined,
+            (err: unknown) => err,
+         );
+         expect(refused).toBeInstanceOf(BadRequestError);
+         expect((refused as Error).message).toContain("toLowerCase");
       });
 
       it("answers an admitted caller missing a required filter with a bad request", async () => {
