@@ -13,22 +13,29 @@
  * Each shape ends in a `check_*` query whose answer the fixture's data fixes,
  * so an import resolved to the wrong file, one importer's refinement reaching
  * another, or a stalled load shows up here as a wrong number, a compile error
- * or a timeout. The same load pins which models report the dot-folder file's
- * warning (each importer, since it is not a package model) and the data styles
- * merged in the order Malloy reads imports.
+ * or a timeout. The same load pins how many imports came from the load's cache
+ * (an import the load's scan misses still answers right, and only costs
+ * reuse), which models report the dot-folder file's warning (each importer,
+ * since it is not a package model) and the data styles merged in the order
+ * Malloy reads imports. The notebook's two query cells are run as well.
  *
  * The package is also small and self-contained (DuckDB over inline values), so
  * it can be published as-is to a deployed server and its `check_*` queries run
  * there for the same answers.
  */
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { unrecordedAudit } from "../service/access_record";
 import { Package } from "../service/package";
-import { PackageLoadPool, type LoadPackageOutcome } from "./package_load_pool";
+import { memoryDuckdbConfig } from "../test_helpers/memory_duckdb";
+import {
+   PackageLoadPool,
+   __setPackageLoadPoolForTests,
+   type LoadPackageOutcome,
+} from "./package_load_pool";
 
 type LoadedModel = LoadPackageOutcome["models"][number];
 
@@ -73,19 +80,36 @@ const CHECKS: [model: string, query: string, row: Record<string, number>][] = [
    ["selective/upper.malloy", "check_upper", { row_count: 6, v_total: 210 }],
 ];
 
-async function duckdbConfig() {
-   const { MalloyConfig, FixedConnectionMap } = await import(
-      "@malloydata/malloy"
+/** The notebook's query cells, by cell index, and the row each must return. */
+const NOTEBOOK = "notebooks/shapes.malloynb";
+const NOTEBOOK_CELLS: [cell: number, row: Record<string, number>][] = [
+   [2, { row_count: 6, left_total: 420, right_total: 1050 }],
+   [3, { order_count: 3, amount_total: 600 }],
+];
+
+/** A query result's rows, with DuckDB's bigints as numbers. */
+function rowsOf(compactResult: unknown): unknown {
+   return JSON.parse(
+      JSON.stringify(compactResult ?? [], (_k, v) =>
+         typeof v === "bigint" ? Number(v) : v,
+      ),
    );
-   const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   const connections = new FixedConnectionMap(
-      new Map([["duckdb", duckdb]]),
-      "duckdb",
+}
+
+/** A notebook cell's result (a Malloy `Result`, as JSON) as one object per row. */
+function cellRows(result: string | undefined): unknown {
+   const { schema, data } = JSON.parse(result ?? "{}") as {
+      schema?: { fields: { name: string }[] };
+      data?: { array_value: { record_value: { number_value: number }[] }[] };
+   };
+   return data?.array_value.map((record) =>
+      Object.fromEntries(
+         record.record_value.map((cell, i) => [
+            schema?.fields[i].name,
+            cell.number_value,
+         ]),
+      ),
    );
-   const malloyConfig = new MalloyConfig({ connections: {} });
-   malloyConfig.wrapConnections(() => connections);
-   return { malloyConfig, duckdb };
 }
 
 /** The package-relative file a problem is located in. */
@@ -98,43 +122,47 @@ function problemFile(problem: unknown, packagePath: string): string {
 describe("the load-shapes fixture", () => {
    let rootDir: string;
    let packagePath: string;
-   let pool: PackageLoadPool;
+   let outcome: LoadPackageOutcome;
    let models: Map<string, LoadedModel>;
    let pkg: Package;
-   const closers: (() => Promise<void>)[] = [];
+   let closeDuckdb: () => Promise<void>;
 
    beforeAll(async () => {
       rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-shapes-"));
       packagePath = path.join(rootDir, "load-shapes");
       await fs.cp(FIXTURE, packagePath, { recursive: true });
 
-      pool = new PackageLoadPool(2);
-      const pooled = await duckdbConfig();
-      closers.push(() => pooled.duckdb.close());
-      const outcome = await pool.loadPackage({
-         packagePath,
-         packageName: "load-shapes",
-         environmentName: "env",
-         malloyConfig: pooled.malloyConfig,
-         defaultConnectionName: "duckdb",
-         collectProblems: true,
-         withEntities: true,
+      // One load, the one `Package.create` makes through the pool: the
+      // assertions on the load's outcome and the queries run on the package
+      // both read it. It is asked for its problems as well, which a served
+      // load does not collect.
+      const pool = new PackageLoadPool(2);
+      await __setPackageLoadPoolForTests(pool);
+      const loadPackage = pool.loadPackage.bind(pool);
+      const loads: Promise<LoadPackageOutcome>[] = [];
+      spyOn(pool, "loadPackage").mockImplementation((request) => {
+         const load = loadPackage({ ...request, collectProblems: true });
+         loads.push(load);
+         return load;
       });
-      models = new Map(outcome.models.map((m) => [m.modelPath, m]));
 
-      const served = await duckdbConfig();
-      closers.push(() => served.duckdb.close());
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
+      closeDuckdb = () => duckdb.close();
       pkg = await Package.create(
          "env",
          "load-shapes",
          packagePath,
-         served.malloyConfig,
+         malloyConfig,
       );
+      expect(loads).toHaveLength(1);
+      outcome = await loads[0];
+      models = new Map(outcome.models.map((m) => [m.modelPath, m]));
    }, 60_000);
 
    afterAll(async () => {
-      await pool?.shutdown();
-      for (const close of closers) await close().catch(() => {});
+      // Shuts the pool down.
+      await __setPackageLoadPoolForTests(null);
+      await closeDuckdb?.().catch(() => {});
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
@@ -179,25 +207,48 @@ describe("the load-shapes fixture", () => {
       }
    });
 
-   it("reports the dot-folder file's warning from each model that imports it", () => {
+   it("takes every package import from the load's cache, however it is written", () => {
+      // An import the load's scan of the files misses costs only reuse: the
+      // importer does not wait for the file, translates it itself, and its
+      // queries answer the same. So the reuse count is what fails when the
+      // scan stops matching a way of writing an import (`import { items }
+      // from`, `IMPORT`, `../`, a percent-encoded path).
+      //
+      // Every model waits for the package models it imports, so each of its
+      // imports comes from the cache: 30 across the package. (The notebook
+      // compiles outside the cache.)
+      expect(outcome.timings.translationsReused).toBe(30);
+      // Stored: the 18 package models another model imports under the path
+      // the load lists them by, plus `spelled/my models/bäse.malloy`, whose
+      // importers ask for it under another spelling than its own translation
+      // has. Its two importers start together, so it is stored by the first,
+      // or by both when the second asks before the first has finished.
+      expect([19, 20]).toContain(outcome.timings.translationsStored ?? 0);
+   });
+
+   it("reports the dot-folder file's warning once from each model that imports it", () => {
       // `.lib/shared.malloy` is not a package model, so only its importers
       // translate it, and each must report its warning: second imports first
-      // (so it compiles after first has translated the file) and must not take
-      // first's translation without its problems.
-      const warned = [...models.values()]
-         .filter((m) =>
-            (m.problems ?? []).some(
-               (p) => problemFile(p, packagePath) === ".lib/shared.malloy",
-            ),
-         )
-         .map((m) => m.modelPath)
-         .sort();
-      expect(warned).toEqual(["dotfile/first.malloy", "dotfile/second.malloy"]);
+      // (so it compiles after first has translated the file) and must
+      // translate the file itself rather than take first's translation, which
+      // comes without its problems.
+      const warnings = new Map<string, unknown[]>();
+      for (const m of models.values()) {
+         const codes = (m.problems ?? [])
+            .filter((p) => problemFile(p, packagePath) === ".lib/shared.malloy")
+            .map((p) => (p as { code?: string }).code);
+         if (codes.length > 0) warnings.set(m.modelPath, codes);
+      }
+      expect(Object.fromEntries(warnings)).toEqual({
+         "dotfile/first.malloy": ["null-typed-field-definition"],
+         "dotfile/second.malloy": ["null-typed-field-definition"],
+      });
    });
 
    it("merges each model's data styles in the order Malloy reads its imports", () => {
-      // root imports b then c; b's subtree (d, e) is read before c's (f), so
-      // f, read last, wins for root.
+      // root imports b then c; b's subtree (d, then e) is read before c's (f),
+      // so f, read last, wins for root. A level-by-level order would read e
+      // last.
       expect(models.get("styles/root.malloy")?.dataStyles).toEqual({
          k: { renderer: "bar_chart" },
       });
@@ -215,12 +266,17 @@ describe("the load-shapes fixture", () => {
          const result = await pkg
             .getModel(model)!
             .runQuery(unrecordedAudit(), { query: `run: ${query}` });
-         const rows = JSON.parse(
-            JSON.stringify(result.compactResult ?? [], (_k, v) =>
-               typeof v === "bigint" ? Number(v) : v,
-            ),
-         );
-         expect(rows).toEqual([row]);
+         expect(rowsOf(result.compactResult)).toEqual([row]);
+      },
+   );
+
+   it.each(NOTEBOOK_CELLS)(
+      "the notebook's cell %d returns its fixed answer",
+      async (cell, row) => {
+         const ran = await pkg
+            .getModel(NOTEBOOK)!
+            .executeNotebookCell(unrecordedAudit(), cell);
+         expect(cellRows(ran.result)).toEqual([row]);
       },
    );
 });

@@ -33,5 +33,8 @@ Every model compiles. Each `check_*` query returns one row:
 | `selective/pick.malloy :: check_selective` | `{"row_count": 6, "v_total": 210}` |
 | `selective/upper.malloy :: check_upper` | `{"row_count": 6, "v_total": 210}` |
 
+The notebook's two query cells return the rows of the queries they run: `run: check_diamond` (cell 2) the `check_diamond` row, and `run: check_nested` (cell 3) the `check_nested` row.
+
 - Only `dotfile/first.malloy` and `dotfile/second.malloy` carry a warning located in `.lib/shared.malloy` (`null-typed-field-definition`), one each.
+- A load takes 30 imports from its cache (`translationsReused`) and stores 19 or 20 translations (`translationsStored`): 20 when both importers of `spelled/my models/bäse.malloy` translate it before either has stored it. A load that misses an import still answers every query, with fewer reused.
 - Data styles: `styles/root.malloy` and `styles/c.malloy` → `bar_chart`, `styles/b.malloy` → `line_chart`.

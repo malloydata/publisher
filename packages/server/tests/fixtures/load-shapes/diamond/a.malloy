@@ -1,8 +1,10 @@
 import "b.malloy"
 import "base.malloy"
 
-// a defines `scaled` as v * 3 over the same `items` b refines as v * 2: if one
-// importer's refinement reached the other, a_scaled or b_scaled would be wrong.
+// a and b each define `scaled` over the same `items`: v * 3 here, v * 2 in b.
+// If b's `scaled` reached `items` itself, `dimension: scaled` below would
+// redefine it and this model would not compile. So a compile error is how that
+// shows; the totals pin that a_scaled and b_scaled each use their own.
 source: a_items is items extend {
   dimension: scaled is v * 3
   measure: scaled_total is scaled.sum()
