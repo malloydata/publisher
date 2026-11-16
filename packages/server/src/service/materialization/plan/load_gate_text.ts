@@ -17,6 +17,7 @@ import {
    codedLine,
    MATERIALIZATION_TABLE_COLLISION_CODE,
    MATERIALIZE_INVALID_CODE,
+   MATERIALIZE_NOT_BUILT_CODE,
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
    PERSIST_VIEW_INVALID_CODE,
@@ -100,7 +101,7 @@ export function relaxedCollision(
       // Each source under its own not-built code.
       code:
          finding.route !== "@"
-            ? "materialize-not-built"
+            ? MATERIALIZE_NOT_BUILT_CODE
             : finding.message.startsWith("#@ persist on view")
               ? PERSIST_VIEW_NOT_BUILT
               : finding.message.startsWith("#@ persist on query")

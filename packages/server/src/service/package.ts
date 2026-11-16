@@ -420,8 +420,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz;
    }
    // The load path is the only writer of these; the accessors let a spec that
-   // isolates a filter set them on the package, where they used to live
-   // (protected, not private: nothing in this class reads the setters).
+   // isolates a filter set them on the package.
    private get buildPlan(): BuildPlan | null {
       return this.mz.plan.buildPlan;
    }

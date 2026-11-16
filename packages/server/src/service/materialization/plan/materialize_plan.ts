@@ -49,6 +49,7 @@ import {
    PUBLISHER_ROUTES,
    MATERIALIZE_INVALID_CODE,
    MATERIALIZE_KEYS,
+   MATERIALIZE_NOT_BUILT_CODE,
    nearestKey,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -2015,7 +2016,7 @@ export function materializeRefusalFinding(
    return {
       route: MATERIALIZE_ROUTE,
       tier: refusal.malformedCode ? "malformed" : "unservable",
-      code: refusal.malformedCode ?? "materialize-not-built",
+      code: refusal.malformedCode ?? MATERIALIZE_NOT_BUILT_CODE,
       message: refusal.malformedCode
          ? `#(materialize) on source "${refusal.sourceName}" is invalid: ` +
            `${refusal.reason}.`

@@ -25,7 +25,6 @@ import type { components } from "./api";
 import type {
    BindDeclineReason,
    ServedCopyProblemReason,
-   SourceDeclineReason,
 } from "./service/materialization/domain/source_decline";
 
 /**
@@ -142,10 +141,10 @@ export const ROUTE_LEGS = [
    "served",
    "live",
 ] as const;
-export type RouteLeg = (typeof ROUTE_LEGS)[number];
+type RouteLeg = (typeof ROUTE_LEGS)[number];
 /** `publisher_query_route_total{outcome}`. */
 export const ROUTE_OUTCOMES = ["used", "skipped", "fallback"] as const;
-export type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
+type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
 type SkipReason = components["schemas"]["SkipReason"];
 /**
  * `publisher_query_route_total{reason}`: `NONE` when used, else the public
@@ -173,7 +172,6 @@ void ROUTE_REASONS_COVER_SKIP_REASONS;
 
 /** `publisher_served_copy_bind_total{scope}`. */
 export const BIND_SCOPES = ["manifest", "source"] as const;
-export type BindScope = (typeof BIND_SCOPES)[number];
 /** `publisher_served_copy_bind_total{outcome}`, by scope. */
 export const BIND_OUTCOMES = [
    "success",
@@ -183,9 +181,6 @@ export const BIND_OUTCOMES = [
    "partial",
    "declined",
 ] as const;
-export type BindOutcome = (typeof BIND_OUTCOMES)[number];
-/** `publisher_served_copy_bind_total{reason}`: `none`, or a source decline (`domain/source_decline.ts`). */
-export type BindReason = "none" | SourceDeclineReason;
 /**
  * Why a table was dropped (`publisher_materialization_drop_tables_total`):
  * `delete`, a caller deleted the run or the destination table; `reclaim`,
@@ -223,7 +218,7 @@ export const KEY_CHECK_OUTCOMES = [
    "not_run",
    "reused",
 ] as const;
-export type KeyCheckOutcome = (typeof KEY_CHECK_OUTCOMES)[number];
+type KeyCheckOutcome = (typeof KEY_CHECK_OUTCOMES)[number];
 
 /**
  * Which engine a table drop ran against (`publisher_materialization_drop_tables_total`):
