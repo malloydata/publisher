@@ -353,6 +353,126 @@ function tablesStillReferenced(
    return stillReferenced;
 }
 
+/**
+ * Whether a run's entry is left in place without a drop: another committed
+ * run still references its table, or another package has marked the table as
+ * its own since this run built it (it holds that package's `name=` now), so
+ * it is no longer this package's to drop: retired, not owed
+ * (table_ownership.ts). Logged either way.
+ */
+async function keptInPlace(
+   entry: ManifestEntry,
+   connectionName: string,
+   physicalTableName: string,
+   stillReferenced: Set<string>,
+   { viewContext, owner }: ReturnType<typeof dropReach>,
+   materializationId: string,
+): Promise<boolean> {
+   const destForKey = entry.storageDestinationName ?? connectionName;
+   if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
+      logger.info(
+         "Skipping drop: table still referenced by another materialization",
+         { materializationId, physicalTableName, destination: destForKey },
+      );
+      return true;
+   }
+   const markedBy = await atTableSite(
+      {
+         connectionName,
+         ...(entry.storageDestinationName
+            ? { storageDestinationName: entry.storageDestinationName }
+            : {}),
+      },
+      viewContext,
+      (site) => ownedElsewhere(site, physicalTableName, owner),
+   ).catch(() => undefined);
+   if (markedBy !== undefined) {
+      logger.warn(
+         "Skipping drop: another package has built and marked this table since",
+         {
+            materializationId,
+            physicalTableName,
+            destination: destForKey,
+            markedBy,
+         },
+      );
+      return true;
+   }
+   return false;
+}
+
+/**
+ * Drop one colocated table, with its staging and backup names, on its own
+ * connection. Best-effort: `owed` when the drop failed, which is logged;
+ * `skipped` when the table lived in an unloaded version's in-memory duckdb.
+ */
+async function dropColocatedTable(
+   environment: MaterializationEnvironment,
+   environmentName: string,
+   packageName: string,
+   materializationId: string,
+   entry: ManifestEntry,
+   connectionName: string,
+   { cachedConnection, retireIfReplacedByView }: ReturnType<typeof dropReach>,
+): Promise<"dropped" | "owed" | "skipped"> {
+   const physicalTableName = entry.physicalTableName;
+   try {
+      const connection = await cachedConnection(connectionName);
+      if (!connection) {
+         logger.info(
+            "Skipping drop: the table lived in an unloaded version's in-memory duckdb",
+            { materializationId, physicalTableName },
+         );
+         return "skipped";
+      }
+      await COLOCATED.drop(
+         {
+            connection,
+            // Tagged for attribution like a build, but as `ops`.
+            runOptions: dropRunSQLOptions(
+               environment,
+               connectionName,
+               environmentName,
+               packageName,
+               materializationId,
+            ),
+         },
+         {
+            physicalTableName,
+            // Its staging and backup names, which a crash part-way through a
+            // build can leave.
+            leftoversOf: entry.sourceEntityId,
+            onDropFailed: retireIfReplacedByView(entry),
+         },
+      );
+      recordDropTables("success", "in_warehouse");
+      logger.info("Dropped materialized table on delete", {
+         materializationId,
+         physicalTableName,
+         connectionName,
+      });
+      return "dropped";
+   } catch (err) {
+      recordDropTables("failure", "in_warehouse");
+      logger.warn("Failed to drop materialized table on delete", {
+         materializationId,
+         physicalTableName,
+         connectionName,
+         error: errMessage(err),
+      });
+      return "owed";
+   }
+}
+
+/** The {@link renamedKey} of the table a reclaimable entry names. */
+function entryRenamedKey(entry: ManifestEntry): string {
+   return renamedKey({
+      previousName: entry.physicalTableName,
+      connectionName: entry.connectionName ?? "",
+      storageDestinationName: entry.storageDestinationName,
+   });
+}
+
 /** A drop of a run's manifest entries; see {@link Reclaimer.dropManifestEntries}. */
 type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
@@ -536,14 +656,14 @@ export class Reclaimer {
    ): Promise<ManifestEntry[]> {
       const m = { id: materializationId };
       const owed: ManifestEntry[] = [];
-      const { cachedConnection, viewContext, owner, retireIfReplacedByView } =
-         dropReach(
-            environment,
-            environmentName,
-            packageName,
-            materializationId,
-            connectionFor,
-         );
+      const reach = dropReach(
+         environment,
+         environmentName,
+         packageName,
+         materializationId,
+         connectionFor,
+      );
+      const { viewContext, owner, retireIfReplacedByView } = reach;
       for (const entry of entries) {
          const connectionName = entry.connectionName;
          const physicalTableName = entry.physicalTableName;
@@ -555,43 +675,16 @@ export class Reclaimer {
             continue;
          }
 
-         const destForKey = entry.storageDestinationName ?? connectionName;
-         if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
-            logger.info(
-               "Skipping drop: table still referenced by another materialization",
-               {
-                  materializationId: m.id,
-                  physicalTableName,
-                  destination: destForKey,
-               },
-            );
-            skipped?.push(entry);
-            continue;
-         }
-
-         // A table another package has marked as its own since this run
-         // built it (it holds that package's `name=` now) is no longer this
-         // package's to drop. Retired, not owed (table_ownership.ts).
-         const markedBy = await atTableSite(
-            {
+         if (
+            await keptInPlace(
+               entry,
                connectionName,
-               ...(entry.storageDestinationName
-                  ? { storageDestinationName: entry.storageDestinationName }
-                  : {}),
-            },
-            viewContext,
-            (site) => ownedElsewhere(site, physicalTableName, owner),
-         ).catch(() => undefined);
-         if (markedBy !== undefined) {
-            logger.warn(
-               "Skipping drop: another package has built and marked this table since",
-               {
-                  materializationId: m.id,
-                  physicalTableName,
-                  destination: destForKey,
-                  markedBy,
-               },
-            );
+               physicalTableName,
+               stillReferenced,
+               reach,
+               materializationId,
+            )
+         ) {
             skipped?.push(entry);
             continue;
          }
@@ -622,52 +715,17 @@ export class Reclaimer {
             continue;
          }
 
-         try {
-            const connection = await cachedConnection(connectionName);
-            if (!connection) {
-               logger.info(
-                  "Skipping drop: the table lived in an unloaded version's in-memory duckdb",
-                  { materializationId: m.id, physicalTableName },
-               );
-               skipped?.push(entry);
-               continue;
-            }
-            await COLOCATED.drop(
-               {
-                  connection,
-                  // Tagged for attribution like a build, but as `ops`.
-                  runOptions: dropRunSQLOptions(
-                     environment,
-                     connectionName,
-                     environmentName,
-                     packageName,
-                     m.id,
-                  ),
-               },
-               {
-                  physicalTableName,
-                  // Its staging and backup names, which a crash part-way
-                  // through a build can leave.
-                  leftoversOf: entry.sourceEntityId,
-                  onDropFailed: retireIfReplacedByView(entry),
-               },
-            );
-            recordDropTables("success", "in_warehouse");
-            logger.info("Dropped materialized table on delete", {
-               materializationId: m.id,
-               physicalTableName,
-               connectionName,
-            });
-         } catch (err) {
-            owed.push(entry);
-            recordDropTables("failure", "in_warehouse");
-            logger.warn("Failed to drop materialized table on delete", {
-               materializationId: m.id,
-               physicalTableName,
-               connectionName,
-               error: errMessage(err),
-            });
-         }
+         const dropped = await dropColocatedTable(
+            environment,
+            environmentName,
+            packageName,
+            materializationId,
+            entry,
+            connectionName,
+            reach,
+         );
+         if (dropped === "skipped") skipped?.push(entry);
+         if (dropped === "owed") owed.push(entry);
       }
       return owed;
    }
@@ -733,35 +791,12 @@ export class Reclaimer {
                renamedTablesIn(m.metadata ?? null).length > 0,
          );
          if (recordedOn.length === 0) return;
-         const decided = new Set<string>();
-         const retried = new Set<string>();
-         const reclaimable: ManifestEntry[] = [];
-         for (const table of recordedOn.flatMap((m) =>
-            renamedTablesIn(m.metadata ?? null),
-         )) {
-            const key = renamedKey(table);
-            if (decided.has(key)) continue;
-            const kept = this.renamedTableGuard(table, run, runs, reader);
-            decided.add(key);
-            // A guard that a later run may find passing keeps the record.
-            if (kept && TRANSIENT_GUARDS.has(kept)) retried.add(key);
-            if (kept) {
-               logger.info("Keeping a table a readable name replaced", {
-                  physicalTableName: table.previousName,
-                  replacedBy: table.physicalTableName,
-                  guard: kept,
-               });
-               continue;
-            }
-            reclaimable.push({
-               sourceEntityId: table.sourceEntityId,
-               physicalTableName: table.previousName,
-               connectionName: table.connectionName,
-               ...(table.storageDestinationName
-                  ? { storageDestinationName: table.storageDestinationName }
-                  : {}),
-            });
-         }
+         const { decided, retried, reclaimable } = this.decideRenamedTables(
+            recordedOn,
+            run,
+            runs,
+            reader,
+         );
          let owed: ManifestEntry[] = [];
          const skipped: ManifestEntry[] = [];
          if (reclaimable.length > 0 && !(await ensureBound())) {
@@ -793,56 +828,23 @@ export class Reclaimer {
                skipped,
             );
          }
-         const skippedKeys = new Set(
-            skipped.map((e) =>
-               renamedKey({
-                  previousName: e.physicalTableName,
-                  connectionName: e.connectionName ?? "",
-                  storageDestinationName: e.storageDestinationName,
-               }),
-            ),
-         );
-         const owedKeys = new Set(
-            owed.map((e) =>
-               renamedKey({
-                  previousName: e.physicalTableName,
-                  connectionName: e.connectionName ?? "",
-                  storageDestinationName: e.storageDestinationName,
-               }),
-            ),
-         );
+         const skippedKeys = new Set(skipped.map(entryRenamedKey));
+         const owedKeys = new Set(owed.map(entryRenamedKey));
          for (const entry of owed) {
             logger.warn("Could not drop a table a readable name replaced", {
                physicalTableName: entry.physicalTableName,
             });
          }
          // A dropped table's incremental boundary describes nothing now.
-         for (const entry of reclaimable) {
-            const key = renamedKey({
-               previousName: entry.physicalTableName,
-               connectionName: entry.connectionName ?? "",
-               storageDestinationName: entry.storageDestinationName,
-            });
-            // Owed, or left in place by the drop: not dropped.
-            if (owedKeys.has(key) || skippedKeys.has(key)) continue;
-            await this.repository
-               .deleteIncrementalLedgerEntry(environmentId, {
-                  connectionName: entry.connectionName ?? "",
-                  ...(entry.storageDestinationName
-                     ? { storageDestinationName: entry.storageDestinationName }
-                     : {}),
-                  physicalTableName: entry.physicalTableName,
-               })
-               .catch((err) =>
-                  logger.warn(
-                     "Could not forget the incremental boundary of a dropped table",
-                     {
-                        physicalTableName: entry.physicalTableName,
-                        error: errMessage(err),
-                     },
-                  ),
-               );
-         }
+         // Owed, or left in place by the drop: not dropped.
+         await this.forgetBoundaries(
+            environmentId,
+            reclaimable.filter(
+               (e) =>
+                  !owedKeys.has(entryRenamedKey(e)) &&
+                  !skippedKeys.has(entryRenamedKey(e)),
+            ),
+         );
          // Forget what was decided; keep what a drop still owes, what it left
          // in place, and what a passing guard may yet let a later run drop.
          for (const m of recordedOn) {
@@ -865,6 +867,79 @@ export class Reclaimer {
             "Reclaiming tables readable names replaced did not complete",
             { error: errMessage(err) },
          );
+      }
+   }
+
+   /**
+    * Decide each table recorded on `recordedOn` once: kept by a guard of
+    * {@link reclaimRenamedTables} (logged, and `retried` when a later run may
+    * find that guard passing), else reclaimable.
+    */
+   private decideRenamedTables(
+      recordedOn: Materialization[],
+      run: Materialization,
+      runs: Materialization[],
+      reader: ServingReader,
+   ): {
+      decided: Set<string>;
+      retried: Set<string>;
+      reclaimable: ManifestEntry[];
+   } {
+      const decided = new Set<string>();
+      const retried = new Set<string>();
+      const reclaimable: ManifestEntry[] = [];
+      for (const table of recordedOn.flatMap((m) =>
+         renamedTablesIn(m.metadata ?? null),
+      )) {
+         const key = renamedKey(table);
+         if (decided.has(key)) continue;
+         const kept = this.renamedTableGuard(table, run, runs, reader);
+         decided.add(key);
+         // A guard that a later run may find passing keeps the record.
+         if (kept && TRANSIENT_GUARDS.has(kept)) retried.add(key);
+         if (kept) {
+            logger.info("Keeping a table a readable name replaced", {
+               physicalTableName: table.previousName,
+               replacedBy: table.physicalTableName,
+               guard: kept,
+            });
+            continue;
+         }
+         reclaimable.push({
+            sourceEntityId: table.sourceEntityId,
+            physicalTableName: table.previousName,
+            connectionName: table.connectionName,
+            ...(table.storageDestinationName
+               ? { storageDestinationName: table.storageDestinationName }
+               : {}),
+         });
+      }
+      return { decided, retried, reclaimable };
+   }
+
+   /** Forget the incremental boundaries of dropped tables; best-effort. */
+   private async forgetBoundaries(
+      environmentId: string,
+      dropped: ManifestEntry[],
+   ): Promise<void> {
+      for (const entry of dropped) {
+         await this.repository
+            .deleteIncrementalLedgerEntry(environmentId, {
+               connectionName: entry.connectionName ?? "",
+               ...(entry.storageDestinationName
+                  ? { storageDestinationName: entry.storageDestinationName }
+                  : {}),
+               physicalTableName: entry.physicalTableName,
+            })
+            .catch((err) =>
+               logger.warn(
+                  "Could not forget the incremental boundary of a dropped table",
+                  {
+                     physicalTableName: entry.physicalTableName,
+                     error: errMessage(err),
+                  },
+               ),
+            );
       }
    }
 

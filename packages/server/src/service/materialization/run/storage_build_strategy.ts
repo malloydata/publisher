@@ -341,6 +341,259 @@ function reportStoredColumns(
 }
 
 /**
+ * What follows a failed build over the stored parents: the reason to
+ * recompute the upstream from raw, or, where the failure or the run forbids
+ * that recompute, the refusal thrown in its place.
+ */
+function recomputeAfterStackFailure(
+   err: unknown,
+   ctx: StorageBuildContext,
+): { result: undefined; upstreamRecomputeReason: string } {
+   const {
+      params,
+      planFacts,
+      destinationName,
+      sourceConnection,
+      destinationConnection,
+   } = ctx;
+   const { persistSource, manifest } = params;
+   // Redact: a failed read-write ATTACH or CTAS can echo the SQL,
+   // catalog `password=` included, into the run `error` or the log.
+   const safeDetail = redactConnectionSecrets(
+      errMessage(err),
+      sourceConnection,
+      destinationConnection,
+   );
+   // Only a SHAPE failure justifies recomputing from raw. An INFRA
+   // failure (attach, CTAS, destination down) would fail the same way
+   // against the same destination, so it throws.
+   //
+   // Under strict, a missing upstream or an uncarried shape would
+   // recompute tables the orchestrator pinned, so it is refused. A
+   // downstream that reaches the source warehouse has no build over the
+   // parents, so strict permits the recompute, and it is reported.
+   const pinnedRecompute =
+      err instanceof ChainedUpstreamMissingError ||
+      err instanceof ChainedShapeNotCarriedError;
+   if (!pinnedRecompute && !(err instanceof MaterializationEligibilityError)) {
+      recordChainedStorageBuild("infra_failure");
+      throw new Error(
+         `Failed to materialize chained source '${persistSource.name}' ` +
+            `into storage destination '${destinationName}': ${safeDetail}`,
+      );
+   }
+   // A host-instructed build refuses a host-supplied upstream entry
+   // at the wrong tier, strict or not, instead of recomputing it.
+   // Only the upstreams whose own entry is at the wrong tier are named,
+   // each with its own reason: one host-supplied wrong-tier entry is
+   // enough to refuse, whatever else is missing.
+   const wrongTierUpstreams =
+      planFacts.hostInstructed && err instanceof ChainedUpstreamMissingError
+         ? err.details
+            ? err.details.filter((d) => d.detail.includes(WRONG_TIER_MARKER))
+            : // A thrower that gives no per-name reasons: the whole
+              // message is the reason for each missing upstream.
+              safeDetail.includes(WRONG_TIER_MARKER)
+              ? err.missing.map((name) => ({
+                   name,
+                   detail: safeDetail,
+                }))
+              : []
+         : [];
+   if (wrongTierUpstreams.length > 0) {
+      recordChainedStorageBuild("strict_refused");
+      throw new HostSuppliedWrongTierError(
+         persistSource.name,
+         wrongTierUpstreams,
+      );
+   }
+   if (manifest.strict && pinnedRecompute) {
+      recordChainedStorageBuild("strict_refused");
+      const message =
+         `Failed to materialize chained source '${persistSource.name}' ` +
+         `into storage destination '${destinationName}' by reading ` +
+         `its materialized upstream, and strict upstreams forbid ` +
+         `recomputing it from raw: ${safeDetail}`;
+      // Re-raised as the same type, so the run can classify the
+      // failure (build_failure_class.ts): a missing upstream that
+      // failed earlier in the run, or a shape no retry can carry.
+      throw err instanceof ChainedUpstreamMissingError
+         ? new ChainedUpstreamMissingError(err.missing, message)
+         : new ChainedShapeNotCarriedError(message);
+   }
+   // The orchestrator may refuse the one recompute strict permits
+   // (`warehouseReach: refuse`): the source fails with the reason the
+   // entry would have carried, and nothing reads the warehouse.
+   if (
+      manifest.strict &&
+      planFacts.warehouseReach === "refuse" &&
+      err instanceof MaterializationEligibilityError
+   ) {
+      recordChainedStorageBuild("strict_refused");
+      throw new WarehouseRecomputeRefusedError(
+         persistSource.name,
+         destinationName,
+         safeDetail,
+      );
+   }
+   recordChainedStorageBuild(
+      manifest.strict ? "strict_shape_fallback" : "inline_fallback",
+   );
+   const upstreamRecomputeReason = safeDetail;
+   logger.warn(
+      "Chained storage build could not reuse the parent table; " +
+         "recomputing the upstream from raw",
+      {
+         sourceName: persistSource.name,
+         destinationName,
+         strict: manifest.strict,
+         // The reason is on the entry (upstreamRecomputeReason); a
+         // compile error in it can quote the build's text.
+         code: errorCodeOf(err),
+      },
+   );
+   // A recompute because a parent's entry is at the wrong tier reads
+   // the warehouse; counted once per run per parent.
+   if (
+      err instanceof ChainedUpstreamMissingError &&
+      safeDetail.includes(WRONG_TIER_MARKER)
+   ) {
+      for (const upstream of err.missing) {
+         noteWrongTierRecompute({
+            planFacts,
+            build: "storage",
+            sourceName: persistSource.name,
+            upstream,
+            detail: safeDetail,
+         });
+      }
+   }
+   return { result: undefined, upstreamRecomputeReason };
+}
+
+/**
+ * The stored upstreams a chained build can stack on in `destinationName`, and
+ * the entries they come from: each upstream under every name for its table,
+ * only at the destination its source is declared in now, and only where the
+ * downstream's model means that source.
+ */
+function storedUpstreamsIn(
+   destinationName: string,
+   builtEntries: Record<string, ManifestEntry>,
+   environment: BuildEnvironment,
+   planFacts: ChainedPlanFacts,
+   lift: ReturnType<typeof authorModelLiftContext>,
+): {
+   upstreams: Binding[];
+   currentEntries: ReturnType<typeof currentUpstreamEntries>;
+} {
+   // Every upstream in THIS destination, under every name for its table: a
+   // rename (`source: x is daily`) reads the same table, as on the serve
+   // path. An EXTENSION adds refinements the table lacks, so it stays as
+   // written over its base. A parent in another destination is reported
+   // missing below.
+   const aliasesForBinding: Record<string, string[]> = {};
+   for (const [name, aliases] of Object.entries(
+      planFacts.aliasesBySourceName,
+   )) {
+      aliasesForBinding[name] = aliases.filter(
+         (alias) => typeof lift.contents[alias]?.extends !== "string",
+      );
+   }
+   // Only an entry at the destination its source is declared in NOW: a
+   // stored table left from before the source moved is stale.
+   const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
+   const upstreams: Binding[] = deriveServeBindings(
+      currentEntries,
+      aliasesForBinding,
+      (name) => {
+         try {
+            return destinationSchemaOf(environment.getStorageDestination(name));
+         } catch {
+            return undefined;
+         }
+      },
+      planFacts.sourceIDsFor,
+   )
+      .filter((b) => b.destinationName === destinationName)
+      // A binding names the source by NAME, so an upstream materializing
+      // another model's same-named source would stand in for this model's
+      // own and be built into the table. Kept only where the downstream's
+      // model means that source.
+      .filter((b) => bindingServesModelSource(b, lift.contents))
+      // A rollup is never an upstream (its synthesized name is in no model
+      // file). Filtering it also keeps the legible "no materialized upstream"
+      // refusal for a destination holding only rollups.
+      .filter((b) => b.kind !== "rollup");
+   return { upstreams, currentEntries };
+}
+
+/**
+ * The stored tables `persistSource` reads, directly or transitively, and the
+ * stops among them that are its upstreams; throws naming any upstream absent
+ * from `present`, this destination's parents, before any compile, which would
+ * report only "undefined object".
+ */
+function storedParentsReached(
+   persistSource: PersistSource,
+   destinationName: string,
+   builtEntries: Record<string, ManifestEntry>,
+   planFacts: ChainedPlanFacts,
+   lift: ReturnType<typeof authorModelLiftContext>,
+   rootAddress: string,
+   present: ReadonlySet<string>,
+): {
+   reached: ReturnType<typeof reachPersisted>;
+   stops: ReturnType<typeof reachPersisted>["persisted"];
+} {
+   // Stored tables the downstream reads, directly or transitively. One absent
+   // from this destination's parents is named here, before any compile, which
+   // would report only "undefined object".
+   const reached = reachPersisted(lift, persistSource.name, (_name, sourceID) =>
+      planFacts.persistSourceIds.has(sourceID),
+   );
+   // The stops that are upstreams: one sharing the root's address is the
+   // table being built (a persisted extension and its base), not a parent.
+   const stops = reached.persisted.filter(
+      (p) => planFacts.addressBySourceId[p.sourceID] !== rootAddress,
+   );
+   const missing = missingPersistedTables(
+      stops.map((p) => p.name),
+      planFacts.aliasesBySourceName,
+      present,
+   );
+   if (missing.length > 0) {
+      // Say where the table is, not only where it is not.
+      const where = (name: string): string => {
+         const sourceID = reached.persisted.find(
+            (p) => p.name === name,
+         )?.sourceID;
+         const address =
+            sourceID === undefined
+               ? undefined
+               : planFacts.addressBySourceId[sourceID];
+         return upstreamPlacement(
+            name,
+            address,
+            address === undefined ? undefined : builtEntries[address],
+            destinationName,
+            planFacts,
+         );
+      };
+      const details = missing.map((name) => ({ name, detail: where(name) }));
+      throw new ChainedUpstreamMissingError(
+         missing,
+         `persisted upstream of '${persistSource.name}': ` +
+            `${details.map((d) => d.detail).join("; ")} — the build cannot ` +
+            `stack on it, and the recompute that remains would rebuild the ` +
+            `stored tables its SQL inlines`,
+         details,
+      );
+   }
+   return { reached, stops };
+}
+
+/**
  * The storage tier: materialize a source into a `storage=` destination
  * (DuckDB/DuckLake), never the source or serve connection. A source that
  * reads a stored upstream stacks on that parent's table when it can, and
@@ -666,16 +919,9 @@ export class StorageBuildStrategy
          lift,
          physicalTableName,
          destinationName,
-         sourceConnection,
          destinationConnection,
       } = ctx;
-      const {
-         persistSource,
-         instruction,
-         manifest,
-         environment,
-         builtEntries,
-      } = params;
+      const { persistSource, instruction, environment, builtEntries } = params;
       // An extension table (P10) builds over its parent's stored table from
       // the chain its plan carries, never by lifting author text by name.
       const extension = storedExtensionOf(
@@ -730,124 +976,7 @@ export class StorageBuildStrategy
          recordChainedStorageBuild("parent_reuse");
          return { result };
       } catch (err) {
-         // Redact: a failed read-write ATTACH or CTAS can echo the SQL,
-         // catalog `password=` included, into the run `error` or the log.
-         const safeDetail = redactConnectionSecrets(
-            errMessage(err),
-            sourceConnection,
-            destinationConnection,
-         );
-         // Only a SHAPE failure justifies recomputing from raw. An INFRA
-         // failure (attach, CTAS, destination down) would fail the same way
-         // against the same destination, so it throws.
-         //
-         // Under strict, a missing upstream or an uncarried shape would
-         // recompute tables the orchestrator pinned, so it is refused. A
-         // downstream that reaches the source warehouse has no build over the
-         // parents, so strict permits the recompute, and it is reported.
-         const pinnedRecompute =
-            err instanceof ChainedUpstreamMissingError ||
-            err instanceof ChainedShapeNotCarriedError;
-         if (
-            !pinnedRecompute &&
-            !(err instanceof MaterializationEligibilityError)
-         ) {
-            recordChainedStorageBuild("infra_failure");
-            throw new Error(
-               `Failed to materialize chained source '${persistSource.name}' ` +
-                  `into storage destination '${destinationName}': ${safeDetail}`,
-            );
-         }
-         // A host-instructed build refuses a host-supplied upstream entry
-         // at the wrong tier, strict or not, instead of recomputing it.
-         // Only the upstreams whose own entry is at the wrong tier are named,
-         // each with its own reason: one host-supplied wrong-tier entry is
-         // enough to refuse, whatever else is missing.
-         const wrongTierUpstreams =
-            planFacts.hostInstructed &&
-            err instanceof ChainedUpstreamMissingError
-               ? err.details
-                  ? err.details.filter((d) =>
-                       d.detail.includes(WRONG_TIER_MARKER),
-                    )
-                  : // A thrower that gives no per-name reasons: the whole
-                    // message is the reason for each missing upstream.
-                    safeDetail.includes(WRONG_TIER_MARKER)
-                    ? err.missing.map((name) => ({
-                         name,
-                         detail: safeDetail,
-                      }))
-                    : []
-               : [];
-         if (wrongTierUpstreams.length > 0) {
-            recordChainedStorageBuild("strict_refused");
-            throw new HostSuppliedWrongTierError(
-               persistSource.name,
-               wrongTierUpstreams,
-            );
-         }
-         if (manifest.strict && pinnedRecompute) {
-            recordChainedStorageBuild("strict_refused");
-            const message =
-               `Failed to materialize chained source '${persistSource.name}' ` +
-               `into storage destination '${destinationName}' by reading ` +
-               `its materialized upstream, and strict upstreams forbid ` +
-               `recomputing it from raw: ${safeDetail}`;
-            // Re-raised as the same type, so the run can classify the
-            // failure (build_failure_class.ts): a missing upstream that
-            // failed earlier in the run, or a shape no retry can carry.
-            throw err instanceof ChainedUpstreamMissingError
-               ? new ChainedUpstreamMissingError(err.missing, message)
-               : new ChainedShapeNotCarriedError(message);
-         }
-         // The orchestrator may refuse the one recompute strict permits
-         // (`warehouseReach: refuse`): the source fails with the reason the
-         // entry would have carried, and nothing reads the warehouse.
-         if (
-            manifest.strict &&
-            planFacts.warehouseReach === "refuse" &&
-            err instanceof MaterializationEligibilityError
-         ) {
-            recordChainedStorageBuild("strict_refused");
-            throw new WarehouseRecomputeRefusedError(
-               persistSource.name,
-               destinationName,
-               safeDetail,
-            );
-         }
-         recordChainedStorageBuild(
-            manifest.strict ? "strict_shape_fallback" : "inline_fallback",
-         );
-         const upstreamRecomputeReason = safeDetail;
-         logger.warn(
-            "Chained storage build could not reuse the parent table; " +
-               "recomputing the upstream from raw",
-            {
-               sourceName: persistSource.name,
-               destinationName,
-               strict: manifest.strict,
-               // The reason is on the entry (upstreamRecomputeReason); a
-               // compile error in it can quote the build's text.
-               code: errorCodeOf(err),
-            },
-         );
-         // A recompute because a parent's entry is at the wrong tier reads
-         // the warehouse; counted once per run per parent.
-         if (
-            err instanceof ChainedUpstreamMissingError &&
-            safeDetail.includes(WRONG_TIER_MARKER)
-         ) {
-            for (const upstream of err.missing) {
-               noteWrongTierRecompute({
-                  planFacts,
-                  build: "storage",
-                  sourceName: persistSource.name,
-                  upstream,
-                  detail: safeDetail,
-               });
-            }
-         }
-         return { result: undefined, upstreamRecomputeReason };
+         return recomputeAfterStackFailure(err, ctx);
       }
    }
 
@@ -876,93 +1005,22 @@ export class StorageBuildStrategy
       /** See StorageBuildRequest.replacesView. */
       replacesView?: string[],
    ): Promise<StorageBuildResult> {
-      // Every upstream in THIS destination, under every name for its table: a
-      // rename (`source: x is daily`) reads the same table, as on the serve
-      // path. An EXTENSION adds refinements the table lacks, so it stays as
-      // written over its base. A parent in another destination is reported
-      // missing below.
-      const aliasesForBinding: Record<string, string[]> = {};
-      for (const [name, aliases] of Object.entries(
-         planFacts.aliasesBySourceName,
-      )) {
-         aliasesForBinding[name] = aliases.filter(
-            (alias) => typeof lift.contents[alias]?.extends !== "string",
-         );
-      }
-      // Only an entry at the destination its source is declared in NOW: a
-      // stored table left from before the source moved is stale.
-      const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
-      const upstreams: Binding[] = deriveServeBindings(
-         currentEntries,
-         aliasesForBinding,
-         (name) => {
-            try {
-               return destinationSchemaOf(
-                  environment.getStorageDestination(name),
-               );
-            } catch {
-               return undefined;
-            }
-         },
-         planFacts.sourceIDsFor,
-      )
-         .filter((b) => b.destinationName === destinationName)
-         // A binding names the source by NAME, so an upstream materializing
-         // another model's same-named source would stand in for this model's
-         // own and be built into the table. Kept only where the downstream's
-         // model means that source.
-         .filter((b) => bindingServesModelSource(b, lift.contents))
-         // A rollup is never an upstream (its synthesized name is in no model
-         // file). Filtering it also keeps the legible "no materialized upstream"
-         // refusal for a destination holding only rollups.
-         .filter((b) => b.kind !== "rollup");
-      const present = new Set(upstreams.map((b) => b.sourceName));
-      // Stored tables the downstream reads, directly or transitively. One absent
-      // from this destination's parents is named here, before any compile, which
-      // would report only "undefined object".
-      const reached = reachPersisted(
+      const { upstreams, currentEntries } = storedUpstreamsIn(
+         destinationName,
+         builtEntries,
+         environment,
+         planFacts,
          lift,
-         persistSource.name,
-         (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),
       );
-      // The stops that are upstreams: one sharing the root's address is the
-      // table being built (a persisted extension and its base), not a parent.
-      const stops = reached.persisted.filter(
-         (p) => planFacts.addressBySourceId[p.sourceID] !== rootAddress,
+      const { reached, stops } = storedParentsReached(
+         persistSource,
+         destinationName,
+         builtEntries,
+         planFacts,
+         lift,
+         rootAddress,
+         new Set(upstreams.map((b) => b.sourceName)),
       );
-      const missing = missingPersistedTables(
-         stops.map((p) => p.name),
-         planFacts.aliasesBySourceName,
-         present,
-      );
-      if (missing.length > 0) {
-         // Say where the table is, not only where it is not.
-         const where = (name: string): string => {
-            const sourceID = reached.persisted.find(
-               (p) => p.name === name,
-            )?.sourceID;
-            const address =
-               sourceID === undefined
-                  ? undefined
-                  : planFacts.addressBySourceId[sourceID];
-            return upstreamPlacement(
-               name,
-               address,
-               address === undefined ? undefined : builtEntries[address],
-               destinationName,
-               planFacts,
-            );
-         };
-         const details = missing.map((name) => ({ name, detail: where(name) }));
-         throw new ChainedUpstreamMissingError(
-            missing,
-            `persisted upstream of '${persistSource.name}': ` +
-               `${details.map((d) => d.detail).join("; ")} — the build cannot ` +
-               `stack on it, and the recompute that remains would rebuild the ` +
-               `stored tables its SQL inlines`,
-            details,
-         );
-      }
       // A path to the source warehouse (a joined table, a SQL source) has no
       // stored stand-in, so only a recompute can build it. Decided from the
       // model, not the compile, because strict treats "cannot express" and
