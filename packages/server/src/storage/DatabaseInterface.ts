@@ -206,13 +206,12 @@ export interface ResourceRepository {
    /**
     * Update a run only while its status is one of `fromStatuses`, in one
     * statement: null when it is not (or the run is gone), and nothing is
-    * written. What makes a status change safe against another writer
-    * between its read and its write.
+    * written.
     */
-   updateMaterialization(
+   updateMaterializationFrom(
       id: string,
       updates: MaterializationUpdate,
-      options: { fromStatuses: readonly MaterializationStatus[] },
+      fromStatuses: readonly MaterializationStatus[],
    ): Promise<Materialization | null>;
    deleteMaterialization(id: string): Promise<void>;
 

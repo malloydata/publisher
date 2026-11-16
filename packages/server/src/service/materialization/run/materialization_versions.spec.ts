@@ -283,12 +283,12 @@ function holdRuns(): () => void {
    let release!: () => void;
    const gate = new Promise<void>((resolve) => (release = resolve));
    const update = repo.updateMaterialization.bind(repo);
-   const spy = spyOn(repo, "updateMaterialization").mockImplementation((async (
-      ...args: Parameters<typeof repo.updateMaterialization>
-   ) => {
-      if (args[1].startedAt !== undefined) await gate;
-      return update(...args);
-   }) as never);
+   const spy = spyOn(repo, "updateMaterialization").mockImplementation(
+      async (...args: Parameters<typeof repo.updateMaterialization>) => {
+         if (args[1].startedAt !== undefined) await gate;
+         return update(...args);
+      },
+   );
    return () => {
       spy.mockRestore();
       release();

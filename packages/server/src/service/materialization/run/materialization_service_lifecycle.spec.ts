@@ -1505,7 +1505,7 @@ describe("transition (state machine)", () => {
    }
 
    it("throws MaterializationNotFoundError when the record is gone", async () => {
-      ctx.repository.getMaterializationById.resolves(undefined);
+      ctx.repository.getMaterializationById.resolves(null);
       await expect(
          transition()("mat-1", "MANIFEST_ROWS_READY"),
       ).rejects.toThrow(MaterializationNotFoundError);

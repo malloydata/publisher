@@ -43,13 +43,12 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets } from "../../../pg_helpers";
-import type { Materialization } from "../../../storage/DatabaseInterface";
+import type { InstructedBuildOptions } from "./instructed_build";
 import { addressSQL, computeSourceEntityId } from "../plan/build_plan";
 import {
    sourcesInBuildOrder,
    type CompiledBuildPlan,
 } from "../domain/compiled_build_plan";
-import type { IncrementalRunContext } from "./incremental_build";
 import {
    classifySourceFailure,
    failedUpstreamsOf,
@@ -58,11 +57,8 @@ import {
 import {
    declaredStorage,
    redactConnectionSecrets,
-   type BuildEnvironment,
-   type BuildQueryMetadata,
    type ChainedPlanFacts,
 } from "./materialization_run_support";
-import type { UniquenessLedger } from "./inline_uniqueness";
 import { tableNameParts, tableNamesMeet } from "../domain/table_name";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
@@ -75,15 +71,18 @@ export type EligibilityTier = "storage" | "colocated";
  * run's fixed inputs, and the per-source outcomes the loop accumulates and the
  * run reports when it ends.
  */
-export interface InstructedRun {
-   compiled: CompiledBuildPlan;
-   environment: BuildEnvironment;
-   owner?: { environmentId: string; packageName: string };
-   buildMetadata?: BuildQueryMetadata;
-   incremental?: IncrementalRunContext;
-   clearedTiers?: ReadonlyMap<string, EligibilityTier>;
-   /** See InstructedBuildOptions.packageRuns. */
-   packageRuns?: () => Promise<Materialization[]>;
+export interface InstructedRun
+   extends Pick<
+      InstructedBuildOptions,
+      | "compiled"
+      | "environment"
+      | "owner"
+      | "buildMetadata"
+      | "incremental"
+      | "clearedTiers"
+      | "packageRuns"
+      | "uniqueness"
+   > {
    planFacts: ChainedPlanFacts;
    index: InstructionIndex;
    manifest: Manifest;
@@ -146,11 +145,6 @@ export interface InstructedRun {
     * second route to one takes that failure instead of building it again.
     */
    failedTargets?: Map<string, { sourceEntityId: string; err: unknown }>;
-   /**
-    * Auto-run's inline uniqueness passes: the run before's, and this run's
-    * own (inline_uniqueness.ts). Absent: every check runs as compiled.
-    */
-   uniqueness?: UniquenessLedger;
    /** The run's cancellation: a source failing after it is `cancelled`. */
    signal?: AbortSignal;
 }

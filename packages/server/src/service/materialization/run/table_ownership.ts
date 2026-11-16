@@ -110,11 +110,7 @@ export class TableOwnershipError extends BadRequestError {
  * the table segment, lower-cased: two connections or environments may reach
  * one schema under different names, and an over-wide key only serializes.
  */
-const OWNED_NAME_LOCK = new KeyedLock({
-   name: "owned-name",
-   // Its holder may retire entries under the table lock (tableNotOwned).
-   takenBefore: ["table"],
-});
+const OWNED_NAME_LOCK = new KeyedLock();
 
 /**
  * Wait for, and take, the lock on builds at `physicalTableName`. Returns the

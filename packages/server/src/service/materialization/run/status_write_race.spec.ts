@@ -9,7 +9,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { InvalidStateTransitionError } from "../../../errors";
+import {
+   InvalidStateTransitionError,
+   MaterializationNotFoundError,
+} from "../../../errors";
 import type { ResourceRepository } from "../../../storage/DatabaseInterface";
 import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
@@ -51,17 +54,17 @@ describe("the run store's conditional status write", () => {
    it("writes only over a listed status, and answers null otherwise", async () => {
       const run = await repository.createMaterialization(ENV_ID, "pkg");
       expect(
-         await repository.updateMaterialization(
+         await repository.updateMaterializationFrom(
             run.id,
             { status: "CANCELLED", error: "Cancelled" },
-            { fromStatuses: ["MANIFEST_ROWS_READY"] },
+            ["MANIFEST_ROWS_READY"],
          ),
       ).toBeNull();
       expect(await statusOf(run.id)).toBe("PENDING");
-      const moved = await repository.updateMaterialization(
+      const moved = await repository.updateMaterializationFrom(
          run.id,
          { status: "CANCELLED", error: "Cancelled" },
-         { fromStatuses: ["PENDING", "MANIFEST_ROWS_READY"] },
+         ["PENDING", "MANIFEST_ROWS_READY"],
       );
       expect(moved?.status).toBe("CANCELLED");
       expect(moved?.error).toBe("Cancelled");
@@ -69,11 +72,9 @@ describe("the run store's conditional status write", () => {
 
    it("frees the run's slot when it settles, as the unconditional write does", async () => {
       const run = await repository.createMaterialization(ENV_ID, "pkg");
-      await repository.updateMaterialization(
-         run.id,
-         { status: "FAILED" },
-         { fromStatuses: ["PENDING"] },
-      );
+      await repository.updateMaterializationFrom(run.id, { status: "FAILED" }, [
+         "PENDING",
+      ]);
       expect(
          await repository.getActiveMaterialization(ENV_ID, "pkg"),
       ).toBeNull();
@@ -83,16 +84,17 @@ describe("the run store's conditional status write", () => {
 
    it("lets exactly one of two racing settles land", async () => {
       const run = await repository.createMaterialization(ENV_ID, "pkg");
+      const active = ["PENDING", "MANIFEST_ROWS_READY"] as const;
       const [cancel, fail] = await Promise.all([
-         repository.updateMaterialization(
+         repository.updateMaterializationFrom(
             run.id,
             { status: "CANCELLED" },
-            { fromStatuses: ["PENDING", "MANIFEST_ROWS_READY"] },
+            active,
          ),
-         repository.updateMaterialization(
+         repository.updateMaterializationFrom(
             run.id,
             { status: "FAILED" },
-            { fromStatuses: ["PENDING", "MANIFEST_ROWS_READY"] },
+            active,
          ),
       ]);
       expect([cancel, fail].filter((r) => r !== null)).toHaveLength(1);
@@ -103,75 +105,125 @@ describe("the run store's conditional status write", () => {
 
    it("answers null for a run that is gone", async () => {
       expect(
-         await repository.updateMaterialization(
+         await repository.updateMaterializationFrom(
             "no-such-run",
             { status: "FAILED" },
-            { fromStatuses: ["PENDING"] },
+            ["PENDING"],
          ),
       ).toBeNull();
    });
 });
 
-describe("a transition over a status that changed after it was read", () => {
-   it("refuses, and leaves the newer status, where it would have overwritten it", async () => {
-      const lifecycle = new RunLifecycle(() => repository);
+describe("a transition", () => {
+   it("refuses, and leaves the newer status, when another writer moved it first", async () => {
       const run = await repository.createMaterialization(ENV_ID, "pkg");
-      // Read while PENDING; another writer cancels the run before the write.
-      const read = (await repository.getMaterializationById(run.id))!;
-      await repository.updateMaterialization(run.id, { status: "CANCELLED" });
+      // Another writer cancels the run between the caller's decision and
+      // its write.
+      const racing: ResourceRepository = {
+         ...repository,
+         updateMaterializationFrom: async (id, updates, fromStatuses) => {
+            await repository.updateMaterialization(id, { status: "CANCELLED" });
+            return repository.updateMaterializationFrom(
+               id,
+               updates,
+               fromStatuses,
+            );
+         },
+      };
       await expect(
-         lifecycle.transition(run.id, "MANIFEST_ROWS_READY", {}, read),
+         new RunLifecycle(() => racing).transition(
+            run.id,
+            "MANIFEST_ROWS_READY",
+         ),
       ).rejects.toThrow(InvalidStateTransitionError);
       expect(await statusOf(run.id)).toBe("CANCELLED");
    });
 
-   it("still lands when the status moved to another that admits it", async () => {
+   it("lands from any status that admits it", async () => {
       const lifecycle = new RunLifecycle(() => repository);
       const run = await repository.createMaterialization(ENV_ID, "pkg");
-      const read = (await repository.getMaterializationById(run.id))!;
       await repository.updateMaterialization(run.id, {
          status: "MANIFEST_ROWS_READY",
       });
-      const cancelled = await lifecycle.transition(
-         run.id,
-         "CANCELLED",
-         { error: "Cancelled" },
-         read,
-      );
+      const cancelled = await lifecycle.transition(run.id, "CANCELLED", {
+         error: "Cancelled",
+      });
       expect(cancelled.status).toBe("CANCELLED");
+   });
+
+   it("answers not found for a run that is gone", async () => {
+      const lifecycle = new RunLifecycle(() => repository);
+      const run = await repository.createMaterialization(ENV_ID, "pkg");
+      await repository.deleteMaterialization(run.id);
+      await expect(lifecycle.transition(run.id, "CANCELLED")).rejects.toThrow(
+         MaterializationNotFoundError,
+      );
    });
 });
 
-describe("a background run's settle after its record settled", () => {
-   it("keeps a status recorded between the settle's read and its write", async () => {
+/** Settle a background run of `id` that throws, its abort first when `cancel`. */
+async function settle(
+   lifecycle: RunLifecycle,
+   id: string,
+   cancel = false,
+): Promise<void> {
+   await new Promise<void>((resolve) =>
+      lifecycle.runInBackground(
+         id,
+         async () => {
+            if (cancel) lifecycle.runningAbortControllers.get(id)!.abort();
+            throw new Error("a late failure");
+         },
+         resolve,
+      ),
+   );
+}
+
+describe("a background run's settle", () => {
+   it("keeps a status another writer recorded first", async () => {
       const run = await repository.createMaterialization(ENV_ID, "pkg");
-      // The record commits between the settle's read and its write.
+      // The record commits just before the settle's write.
       const racing: ResourceRepository = {
          ...repository,
-         getMaterializationById: async (id: string) => {
-            const current = await repository.getMaterializationById(id);
+         updateMaterializationFrom: async (id, updates, fromStatuses) => {
             await repository.updateMaterialization(id, {
                status: "MANIFEST_ROWS_READY",
             });
             await repository.updateMaterialization(id, {
                status: "MANIFEST_FILE_READY",
             });
-            return current;
+            return repository.updateMaterializationFrom(
+               id,
+               updates,
+               fromStatuses,
+            );
          },
       };
-      const lifecycle = new RunLifecycle(() => racing);
-      const settled = new Promise<void>((resolve) =>
-         lifecycle.runInBackground(
-            run.id,
-            async () => {
-               throw new Error("a late failure");
-            },
-            resolve,
-         ),
-      );
-      await settled;
+      await settle(new RunLifecycle(() => racing), run.id);
       const record = await repository.getMaterializationById(run.id);
       expect(record?.status).toBe("MANIFEST_FILE_READY");
       expect(record?.error).toBeNull();
+   });
+
+   it("still records the status when its record cannot be read", async () => {
+      const run = await repository.createMaterialization(ENV_ID, "pkg");
+      const unreadable: ResourceRepository = {
+         ...repository,
+         getMaterializationById: async () => {
+            throw new Error("store unavailable");
+         },
+      };
+      // A cancel that raced a failure has metadata to merge, so it reads.
+      await settle(new RunLifecycle(() => unreadable), run.id, true);
+      const record = await repository.getMaterializationById(run.id);
+      expect(record?.status).toBe("CANCELLED");
+      expect(record?.error).toBe("Cancelled");
+   });
+
+   it("writes nothing for a run that is gone", async () => {
+      const run = await repository.createMaterialization(ENV_ID, "pkg");
+      await repository.deleteMaterialization(run.id);
+      await settle(new RunLifecycle(() => repository), run.id);
+      expect(await repository.getMaterializationById(run.id)).toBeNull();
    });
 });

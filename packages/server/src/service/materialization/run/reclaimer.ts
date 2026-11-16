@@ -1176,8 +1176,9 @@ export class Reclaimer {
       versionId: string,
       cause: "archived" | "deleted",
    ): Promise<void> {
-      // Read once: the version's lock is held, so none of its runs changes
-      // meanwhile, and the references are read with the runs they exclude.
+      // Read once, the references with the runs they exclude: the version is
+      // out of service, so it starts no run, and its tables carry its name,
+      // so no other version's run writes them.
       const listed =
          (await this.repository.listMaterializations(
             environmentId,

@@ -652,12 +652,15 @@ export class StorageBuildStrategy
       table: string,
    ): Promise<KeyCheckRecord | undefined> {
       try {
-         return await withDestinationSession(site, (session) =>
-            runRollupKeyCheck(
-               check,
-               session as unknown as MalloyConnection,
-               table,
-            ),
+         return await withDestinationSession(
+            site,
+            { purpose: "view" },
+            (session) =>
+               runRollupKeyCheck(
+                  check,
+                  session as unknown as MalloyConnection,
+                  table,
+               ),
          );
       } catch {
          return undefined;

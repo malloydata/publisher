@@ -46,6 +46,7 @@ function mostRecentEntries(
    envId: string,
    pkg: string,
    excludeId: string,
+   reader?: { versionId?: string; owned?: string },
 ) => Promise<Record<string, unknown>> {
    const { committer } = service as unknown as {
       committer: {
@@ -53,6 +54,7 @@ function mostRecentEntries(
             envId: string,
             pkg: string,
             excludeId: string,
+            reader?: { versionId?: string; owned?: string },
          ) => Promise<Record<string, unknown>>;
       };
    };
@@ -552,5 +554,54 @@ describe("getMostRecentManifestEntries", () => {
       );
 
       expect(Object.keys(entries)).toEqual(["healthy"]);
+   });
+
+   it("reads a scope: version version's own runs, never another version's newer one", async () => {
+      const entriesOf = (table: string) => ({
+         b1: {
+            sourceEntityId: "b1",
+            physicalTableName: table,
+            connectionName: "duckdb",
+         },
+      });
+      ctx.repository.listMaterializations.resolves([
+         makeMaterialization({
+            id: "v2-run",
+            version: "2.0.0",
+            status: "MANIFEST_FILE_READY",
+            metadata: { mode: "auto", scope: "version" },
+            completedAt: new Date("2026-02-01T00:00:00Z"),
+            manifest: {
+               builtAt: "t",
+               strict: false,
+               entries: entriesOf("t_v2"),
+            },
+         }),
+         makeMaterialization({
+            id: "v1-run",
+            version: "1.0.0",
+            status: "MANIFEST_FILE_READY",
+            metadata: { mode: "auto", scope: "version" },
+            completedAt: new Date("2026-01-01T00:00:00Z"),
+            manifest: {
+               builtAt: "t",
+               strict: false,
+               entries: entriesOf("t_v1"),
+            },
+         }),
+      ]);
+
+      const entries = await mostRecentEntries(ctx.service)(
+         "env-1",
+         "pkg",
+         "mat-current",
+         { versionId: "1.0.0", owned: "1.0.0" },
+      );
+
+      expect(entries).toEqual(entriesOf("t_v1"));
+      // Asked of the store for that version's runs alone.
+      expect(ctx.repository.listMaterializations.firstCall.args[2]).toEqual({
+         version: "1.0.0",
+      });
    });
 });

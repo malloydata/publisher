@@ -62,49 +62,40 @@ export class RunLifecycle {
       }
    }
 
+   /**
+    * Move a run to `next`. The write lands only while the run's status
+    * admits `next` (one conditional statement); the record is read only on a
+    * miss, to say why.
+    */
    async transition(
       id: string,
       next: MaterializationStatus,
       extra?: Omit<MaterializationUpdate, "status">,
-      // The record as the caller has just read it, so it is not read again.
-      read?: Materialization,
    ): Promise<Materialization> {
-      const current =
-         read ?? (await this.repository().getMaterializationById(id));
-      if (!current) {
-         throw new MaterializationNotFoundError(
-            `Materialization ${id} not found`,
-         );
-      }
-      this.validateTransition(current.status, next);
-      // Terminal transitions log at info; the MANIFEST_ROWS_READY hop at debug.
-      const terminal =
-         next === "MANIFEST_FILE_READY" ||
-         next === "FAILED" ||
-         next === "CANCELLED";
-      logger[terminal ? "info" : "debug"]("Materialization transition", {
-         materializationId: id,
-         packageName: current.packageName,
-         from: current.status,
-         to: next,
-      });
-      // Written only while the status still admits `next`: another writer
-      // may have moved it since the read.
-      const updated = await this.repository().updateMaterialization(
+      const updated = await this.repository().updateMaterializationFrom(
          id,
          { status: next, ...extra },
-         { fromStatuses: statusesInto(next) },
+         statusesInto(next),
       );
-      if (updated) return updated;
-      const now = await this.repository().getMaterializationById(id);
-      if (!now) {
-         throw new MaterializationNotFoundError(
-            `Materialization ${id} not found`,
+      if (updated === null) {
+         const current = await this.repository().getMaterializationById(id);
+         if (!current) {
+            throw new MaterializationNotFoundError(
+               `Materialization ${id} not found`,
+            );
+         }
+         this.validateTransition(current.status, next);
+         // Admitted now, but not when written: it moved meanwhile.
+         throw new InvalidStateTransitionError(
+            `Cannot transition to ${next}: materialization ${id} changed while it was written`,
          );
       }
-      throw new InvalidStateTransitionError(
-         `Cannot transition from ${now.status} to ${next}`,
+      // Terminal transitions log at info; the MANIFEST_ROWS_READY hop at debug.
+      logger[TERMINAL.has(next) ? "info" : "debug"](
+         "Materialization transition",
+         { materializationId: id, packageName: updated?.packageName, to: next },
       );
+      return updated;
    }
 
    /**
@@ -166,104 +157,98 @@ export class RunLifecycle {
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
             const code = errorCodeOf(err);
-            // The settle is a transition like any other: a record already
-            // terminal (this run's manifest committed before a late throw, or
-            // another process stopped it) is kept, and the late throw is not
-            // reported as the run's failure. A failed read must never cost the
-            // status write, which would leave the run active and block the
-            // package's next one, so the run is then settled unchecked.
-            let read = false;
-            let current: Materialization | null = null;
-            try {
-               current = await this.repository().getMaterializationById(id);
-               read = true;
-            } catch (readErr) {
-               logger.warn(
-                  "Could not read a run's record; recording its status unchecked",
-                  { materializationId: id, error: errMessage(readErr) },
-               );
-            }
-            if (current && !VALID_TRANSITIONS[current.status].includes(next)) {
-               logger.warn(
-                  "Materialization run threw after its status was recorded; keeping it",
-                  {
-                     materializationId: id,
-                     status: current.status,
-                     code,
-                     stack: stackFrames(err),
-                  },
-               );
-               return;
-            }
+            // Whether retrying the run could help, for a consumer that
+            // decides on retries: a failed run commits no manifest, so no
+            // per-source `failures` carry it. Omitted when unclassified, and
+            // for a cancel, which was asked for.
+            const retryable = cancelled ? undefined : classifyRunFailure(err);
+            const extra: Record<string, unknown> = {
+               ...(retryable !== undefined
+                  ? { errorRetryable: retryable }
+                  : {}),
+               // A cancel that raced a genuine failure records "Cancelled" as
+               // the run's error, and the logs carry only its code: the real
+               // message is kept here, on the record.
+               ...(cancelled && !isOwnCancellation(err)
+                  ? { errorAtCancel: message }
+                  : {}),
+            };
             // A background throw answers no request, so log it (with the
             // stack's frames) or it is invisible in the server's output,
             // unless the run's own `materialization.run.finished` reported it
             // already. Its code, never its message: a whole-run failure joins
             // its sources' driver errors, which can quote SQL or a value. The
             // message is on the run's record either way.
-            if (runFailureReported(err)) {
-               // Logged once already, by the run.
-            } else if (cancelled) {
-               // An abort racing a genuine failure records "Cancelled", with the
-               // real message in the record's `errorAtCancel`; this log has its
-               // code.
-               logger.info("Materialization run cancelled", {
-                  materializationId: id,
-                  code,
-               });
-            } else {
-               logger.error("Materialization run failed", {
-                  materializationId: id,
-                  code,
-                  stack: stackFrames(err),
-               });
-            }
+            const report = () => {
+               if (runFailureReported(err)) return;
+               if (cancelled) {
+                  logger.info("Materialization run cancelled", {
+                     materializationId: id,
+                     code,
+                  });
+               } else {
+                  logger.error("Materialization run failed", {
+                     materializationId: id,
+                     code,
+                     stack: stackFrames(err),
+                  });
+               }
+            };
             try {
-               // Whether retrying the run could help, for a consumer that
-               // decides on retries: a failed run commits no manifest, so no
-               // per-source `failures` carry it. Omitted when unclassified,
-               // and for a cancel, which was asked for.
-               const retryable = cancelled
-                  ? undefined
-                  : classifyRunFailure(err);
-               const extra: Record<string, unknown> = {
-                  ...(retryable !== undefined
-                     ? { errorRetryable: retryable }
-                     : {}),
-                  // A cancel that raced a genuine failure records "Cancelled"
-                  // as the run's error, and the logs carry only its code: the
-                  // real message is kept here, on the record.
-                  ...(cancelled && !isOwnCancellation(err)
-                     ? { errorAtCancel: message }
-                     : {}),
-               };
-               const metadata =
-                  read && Object.keys(extra).length > 0
-                     ? { ...(current?.metadata ?? {}), ...extra }
-                     : undefined;
-               // Only over a status that admits it: a record that settled
-               // since the read (its manifest committed, another process
-               // stopped it) is kept, as one found settled is above.
-               const settled = await this.repository().updateMaterialization(
-                  id,
-                  {
-                     status: next,
-                     completedAt: new Date(),
-                     error: cancelled ? "Cancelled" : message,
-                     ...(metadata ? { metadata } : {}),
-                  },
-                  { fromStatuses: statusesInto(next) },
-               );
-               if (!settled) {
+               // Read only for the metadata the settle merges into. A failed
+               // read never costs the status write, which would leave the run
+               // active and block the package's next one.
+               let metadata: Record<string, unknown> | undefined;
+               if (Object.keys(extra).length > 0) {
+                  try {
+                     const current =
+                        await this.repository().getMaterializationById(id);
+                     metadata = { ...(current?.metadata ?? {}), ...extra };
+                  } catch (readErr) {
+                     logger.warn(
+                        "Could not read a run's record; recording its status without its metadata",
+                        { materializationId: id, error: errMessage(readErr) },
+                     );
+                  }
+               }
+               // The settle is a transition like any other: a record already
+               // terminal (this run's manifest committed before a late throw,
+               // or another process stopped it) is kept, and the late throw
+               // is not reported as the run's failure.
+               const settled =
+                  await this.repository().updateMaterializationFrom(
+                     id,
+                     {
+                        status: next,
+                        completedAt: new Date(),
+                        error: cancelled ? "Cancelled" : message,
+                        ...(metadata ? { metadata } : {}),
+                     },
+                     statusesInto(next),
+                  );
+               if (settled !== null) {
+                  report();
+               } else {
+                  const now = await this.repository()
+                     .getMaterializationById(id)
+                     .catch(() => undefined);
                   logger.warn(
-                     "Materialization run threw after its status was recorded; keeping it",
-                     { materializationId: id, code, stack: stackFrames(err) },
+                     now
+                        ? "Materialization run threw after its status was recorded; keeping it"
+                        : "Materialization run threw after its record was deleted",
+                     {
+                        materializationId: id,
+                        ...(now ? { status: now.status } : {}),
+                        code,
+                        stack: stackFrames(err),
+                     },
                   );
                }
             } catch (transitionErr) {
+               report();
                logger.error("Failed to record materialization failure", {
                   materializationId: id,
-                  code: errorCodeOf(err),
+                  code,
                   transitionError: errMessage(transitionErr),
                });
             }
@@ -274,6 +259,12 @@ export class RunLifecycle {
          });
    }
 }
+
+const TERMINAL: ReadonlySet<MaterializationStatus> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
 
 /** The statuses `VALID_TRANSITIONS` admits a move to `next` from. */
 function statusesInto(next: MaterializationStatus): MaterializationStatus[] {

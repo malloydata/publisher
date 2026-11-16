@@ -18,10 +18,7 @@ import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
 import { logger } from "../../../logger";
 import { recordAutoLoadOutcome } from "../../../materialization_metrics";
-import {
-   Materialization,
-   ResourceRepository,
-} from "../../../storage/DatabaseInterface";
+import { ResourceRepository } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
 import { parseEnvironmentName } from "../../identity";
 import { resolveEnvironmentId } from "../../resolve_environment";
@@ -214,25 +211,18 @@ export class ManifestCommitter {
          const write = async () => {
             const current = await this.repository.getMaterializationById(id);
             const superseded = current?.metadata?.[SUPERSEDED_TABLES_KEY];
-            await this.deps.lifecycle.transition(
-               id,
-               "MANIFEST_FILE_READY",
-               {
-                  completedAt: new Date(),
-                  manifest,
-                  metadata: {
-                     ...metadata,
-                     ...(superseded !== undefined
-                        ? { [SUPERSEDED_TABLES_KEY]: superseded }
-                        : {}),
-                     ...served.metadata,
-                  },
-                  ...(served.error !== undefined
-                     ? { error: served.error }
+            await this.deps.lifecycle.transition(id, "MANIFEST_FILE_READY", {
+               completedAt: new Date(),
+               manifest,
+               metadata: {
+                  ...metadata,
+                  ...(superseded !== undefined
+                     ? { [SUPERSEDED_TABLES_KEY]: superseded }
                      : {}),
+                  ...served.metadata,
                },
-               current ?? undefined,
-            );
+               ...(served.error !== undefined ? { error: served.error } : {}),
+            });
          };
          if (this.deps.withTableLock && rowsReady) {
             await this.deps.withTableLock(
@@ -378,17 +368,13 @@ export class ManifestCommitter {
       packageName: string,
       excludeId: string,
       reader: ServingReader = {},
-      // The package's runs, when the caller has read them already.
-      runs?: Materialization[],
    ): Promise<Record<string, ManifestEntry>> {
-      const owned = reader.owned;
-      const list = runs
-         ? runs.filter((m) => owned === undefined || m.version === owned)
-         : ((await this.repository.listMaterializations(
-              environmentId,
-              packageName,
-              owned !== undefined ? { version: owned } : undefined,
-           )) ?? []);
+      const list =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+            reader.owned !== undefined ? { version: reader.owned } : undefined,
+         )) ?? [];
       return storedServingEntries(list, reader, excludeId);
    }
 
@@ -426,8 +412,6 @@ export class ManifestCommitter {
       excludeId: string,
       // Whose runs the references resolve against (see ServingReader).
       reader: ServingReader = {},
-      // The package's runs, read once for the run (see mostRecentEntries).
-      runs?: () => Promise<Materialization[]>,
    ): Promise<void> {
       let cached: Record<string, ManifestEntry>;
       try {
@@ -436,7 +420,6 @@ export class ManifestCommitter {
             packageName,
             excludeId,
             reader,
-            await runs?.(),
          );
       } catch (err) {
          logger.warn(

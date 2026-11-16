@@ -650,19 +650,16 @@ export async function withIsolatedSession<T>(
 }
 
 /**
- * Run `fn` on an isolated session with a `storage=` destination attached
- * read-write (the serve attach is read-only; isolation keeps the attach from
- * colliding with another tenant's, see {@link createIsolatedBuildSession}).
+ * Run `fn` on an isolated session named `<purpose>_<destination>`, with a
+ * `storage=` destination attached read-write (as `attachAs`, its own name by
+ * default): the serve attach is read-only, and isolation keeps the attach
+ * from colliding with another tenant's ({@link createIsolatedBuildSession}).
  *
- * - `purpose` names the session (`build_<destination>`, ...).
- * - `attachAs`: the alias the destination is attached under; its own name by
- *   default.
- * - `buildTarget`: a build writes a table here, so the destination's schema
- *   must exist and DuckLake row inlining is off for the session, so rows land
- *   as Parquet in the data store and not in the catalog database (in a shared
- *   catalog, inlining would push tenant data into the catalog Postgres). The
- *   catalog's persisted options are untouched.
- * - `pinUTC`: see {@link pinSessionToUTC}.
+ * `build`: a build writes a table here, so the destination's schema must
+ * exist, DuckLake row inlining is off (rows land as Parquet in the data
+ * store, never in a shared catalog's Postgres; the catalog's persisted
+ * options are untouched), and the session is pinned to UTC
+ * ({@link pinSessionToUTC}).
  */
 export async function withDestinationSession<T>(
    destination: {
@@ -670,20 +667,15 @@ export async function withDestinationSession<T>(
       destinationConnection: ApiConnection;
       environmentPath: string;
    },
+   options: { purpose: string; attachAs?: string; build?: boolean },
    fn: (session: DuckDBConnection) => Promise<T>,
-   options: {
-      purpose?: string;
-      attachAs?: string;
-      buildTarget?: boolean;
-      pinUTC?: boolean;
-   } = {},
 ): Promise<T> {
    const { destinationName, destinationConnection, environmentPath } =
       destination;
    assertSupportedDestination(destinationName, destinationConnection);
    const alias = options.attachAs ?? destinationName;
    return withIsolatedSession(
-      `${options.purpose ?? "view"}_${destinationName}`,
+      `${options.purpose}_${destinationName}`,
       async (session) => {
          await attachDestinationReadWrite(
             session,
@@ -691,7 +683,7 @@ export async function withDestinationSession<T>(
             destinationConnection,
             environmentPath,
          );
-         if (options.buildTarget) {
+         if (options.build) {
             await assertDestinationSchemaExists(
                session,
                alias,
@@ -703,8 +695,8 @@ export async function withDestinationSession<T>(
                   "SET ducklake_default_data_inlining_row_limit=0",
                );
             }
+            await pinSessionToUTC(session);
          }
-         if (options.pinUTC) await pinSessionToUTC(session);
          return fn(session);
       },
    );
@@ -901,6 +893,7 @@ export async function buildSourceIntoStorage(params: {
    try {
       return await withDestinationSession(
          params,
+         { purpose: "build", build: true },
          async (session) => {
             const federated = await federate(
                session,
@@ -923,8 +916,6 @@ export async function buildSourceIntoStorage(params: {
                );
             }
          },
-         // Before any predicate is rendered (incremental refresh only).
-         { purpose: "build", buildTarget: true, pinUTC: true },
       );
    } finally {
       // The tunnel, once the attach using it is gone. Best-effort.
@@ -1082,6 +1073,7 @@ async function buildSameCatalogIntoStorage(params: {
    }
    return withDestinationSession(
       params,
+      { purpose: "build", attachAs: alias, build: true },
       async (session) => {
          await session.runSQL(managedSearchPathSql(alias));
          const target = quoteManifestTablePath(
@@ -1107,7 +1099,6 @@ async function buildSameCatalogIntoStorage(params: {
             readCost: null,
          };
       },
-      { purpose: "build", attachAs: alias, buildTarget: true, pinUTC: true },
    );
 }
 
@@ -1349,6 +1340,7 @@ export async function buildDownstreamIntoStorage(params: {
 
    return withDestinationSession(
       { destinationName, destinationConnection, environmentPath },
+      { purpose: "build", build: true },
       async (session) => {
          const connectionName = params.connectionName ?? destinationName;
          const { sql, downstream } = await planChainedDownstream({
@@ -1390,9 +1382,6 @@ export async function buildDownstreamIntoStorage(params: {
             upstreamReuse: "reused",
          };
       },
-      // No predicate runs here (chained sources are excluded from the delta
-      // path); pinned so lifting that exclusion stays correct.
-      { purpose: "build", buildTarget: true, pinUTC: true },
    );
 }
 
@@ -1436,6 +1425,7 @@ export async function dropStorageTable(params: {
    } = params;
    return withDestinationSession(
       { destinationName, destinationConnection, environmentPath },
+      { purpose: "gc" },
       async (session) => {
          const schema = destinationSchemaOf(destinationConnection);
          let dropErr: unknown;
@@ -1453,7 +1443,6 @@ export async function dropStorageTable(params: {
          }
          if (dropErr !== undefined) throw dropErr;
       },
-      { purpose: "gc" },
    );
 }
 

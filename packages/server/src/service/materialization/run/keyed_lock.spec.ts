@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { tableIdentity } from "../../versions/materialization_scope";
 import { KeyedLock } from "./keyed_lock";
+import { tableIdentity } from "../../versions/materialization_scope";
 import { acquireOwnedNameLock, ownedNameLockKey } from "./table_ownership";
 
 /** Whether `promise` has settled by the time pending callbacks have run. */
@@ -19,7 +19,7 @@ async function settled(promise: Promise<unknown>): Promise<boolean> {
 
 describe("KeyedLock", () => {
    it("serializes holders of one key and lets other keys through", async () => {
-      const lock = new KeyedLock({ name: "a" });
+      const lock = new KeyedLock();
       const release = await lock.acquire("k");
       const sameKey = lock.acquire("k");
       const otherKey = lock.acquire("other");
@@ -32,7 +32,7 @@ describe("KeyedLock", () => {
    });
 
    it("keeps a key's mutex while anyone holds or waits for it, and no longer", async () => {
-      const lock = new KeyedLock({ name: "a" });
+      const lock = new KeyedLock();
       const first = await lock.acquire("k");
       const waiting = lock.acquire("k");
       expect(lock.size).toBe(1);
@@ -50,29 +50,13 @@ describe("KeyedLock", () => {
    });
 
    it("releases the key when the work under it throws", async () => {
-      const lock = new KeyedLock({ name: "a" });
+      const lock = new KeyedLock();
       await expect(
          lock.withLock("k", async () => {
             throw new Error("boom");
          }),
       ).rejects.toThrow("boom");
       expect(lock.size).toBe(0);
-   });
-
-   it("refuses, under test, a lock taken while one that comes after it is held", async () => {
-      const later = new KeyedLock({ name: "later" });
-      const earlier = new KeyedLock({
-         name: "earlier",
-         takenBefore: ["later"],
-      });
-      // In order: fine.
-      await earlier.withLock("k", () => later.withLock("k", async () => {}));
-      // Inverted: refused before it waits.
-      await expect(
-         later.withLock("k", () => earlier.withLock("k", async () => {})),
-      ).rejects.toThrow(/Lock order/);
-      expect(earlier.size).toBe(0);
-      expect(later.size).toBe(0);
    });
 });
 

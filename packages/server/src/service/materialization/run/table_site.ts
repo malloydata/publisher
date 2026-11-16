@@ -98,6 +98,7 @@ export async function atTableSite<T>(
             destinationConnection,
             environmentPath: context.environmentPath,
          },
+         { purpose: "view" },
          (session) =>
             fn(
                storageTableSite(

@@ -1,11 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   MaterializationStatus,
-   MaterializationUpdate,
-   ResourceRepository,
-} from "../DatabaseInterface";
+import { ResourceRepository } from "../DatabaseInterface";
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { EnvironmentRepository } from "./EnvironmentRepository";
@@ -155,17 +151,10 @@ export function createDuckDBRepository(
             metadata,
             options,
          ),
-      updateMaterialization: ((
-         id: string,
-         updates: MaterializationUpdate,
-         options?: { fromStatuses: readonly MaterializationStatus[] },
-      ) =>
-         options
-            ? materializations.updateFrom(id, updates, options.fromStatuses)
-            : materializations.update(
-                 id,
-                 updates,
-              )) as ResourceRepository["updateMaterialization"],
+      updateMaterialization: (id, updates) =>
+         materializations.update(id, updates),
+      updateMaterializationFrom: (id, updates, fromStatuses) =>
+         materializations.updateFrom(id, updates, fromStatuses),
       deleteMaterialization: (id) => materializations.deleteById(id),
 
       getIncrementalLedgerEntry: (environmentId, table) =>

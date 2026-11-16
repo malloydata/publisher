@@ -35,7 +35,7 @@ import { KeyedLock } from "./keyed_lock";
  * package, in-process: one publisher owns its store.
  */
 export class TableClaims {
-   private readonly tableLock = new KeyedLock({ name: "table" });
+   private readonly tableLock = new KeyedLock();
 
    constructor(private readonly repository: () => ResourceRepository) {}
 

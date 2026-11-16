@@ -302,7 +302,7 @@ function recordGatedSourceFailure(
 }
 
 /** One instructed run: what {@link InstructedBuild.run} reads. */
-interface InstructedBuildOptions {
+export interface InstructedBuildOptions {
    compiled: CompiledBuildPlan;
    environment: BuildEnvironment;
    instructions: BuildInstruction[];
