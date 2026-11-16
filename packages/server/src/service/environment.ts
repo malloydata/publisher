@@ -3058,14 +3058,18 @@ export class Environment {
                      }
                      try {
                         const entries = await read(servingReaderOf(pkg));
-                        const split = this.splitStoreEntries(pkg, entries);
                         if (
                            options.onlyIfMoved &&
-                           this.storeBindingReads.get(pkg) === split.signature
+                           this.storeBindingReads.get(pkg) ===
+                              this.splitStoreEntries(pkg, entries, true)
+                                 .signature
                         ) {
                            return "done";
                         }
-                        await this.bindStoreEntries(pkg, split);
+                        await this.bindStoreEntries(
+                           pkg,
+                           this.splitStoreEntries(pkg, entries),
+                        );
                         return "done";
                      } catch (error) {
                         if (
@@ -3136,11 +3140,14 @@ export class Environment {
 
    /**
     * Store entries split by tier, as a bind reads them, with the signature
-    * of what they bind ({@link storeBindingSignature}).
+    * of what they bind ({@link storeBindingSignature}). `quiet` for a split
+    * that only compares: its skipped entries are logged by the bind, if one
+    * follows.
     */
    private splitStoreEntries(
       pkg: Package,
       entries: Record<string, ManifestEntry>,
+      quiet = false,
    ): FetchedManifest & { signature: string } {
       const packageName = pkg.getPackageName();
       const versionId = pkg.getVersionId();
@@ -3152,6 +3159,7 @@ export class Environment {
          // From the store, with the key checks its newest run stands behind
          // (withRollupKeyRecords).
          "store",
+         { quiet },
       );
       return {
          tableNameManifest,
@@ -4147,6 +4155,8 @@ export class Environment {
                      params.storage,
                      `run (package ${packageName} version ${versionId})`,
                      "store",
+                     // Compared, not bound: the load bound these above.
+                     { quiet: true },
                   ).storageEntries,
                ),
             );
