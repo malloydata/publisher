@@ -88,7 +88,7 @@ To query runs in a warehouse of your own:
 python3 skills/eval-loop/scripts/eval.py export --set <set> --label baseline-01
 ```
 
-This writes seven CSV files and a `manifest.json` into `<run>/export/`. Every
+This writes eight CSV files and a `manifest.json` into `<run>/export/`. Every
 row carries `run_id`.
 
 | table | one row per | holds |
@@ -100,11 +100,16 @@ row carries `run_id`.
 | `eval_cases` | case | the set as it was run, keyed by `dataset_sha`: question, tags, split, golden |
 | `eval_query_timings` | query, in a query replay | median and max time, where it was served from, the rows' hash; empty for any other run |
 | `eval_files` | other file of the run's record | `path` and `text`: a replay's `summary.json` and `results.jsonl`, the diagnosis, the coverage report, the model snapshot |
+| `eval_improve_attempts` | edit an improve routine tried after the run | what the edit changed, accepted, rejected or skipped and why, its effect on the target cases, the lesson, cost, the branch, the candidate runs; the routine's record and the `attempts.jsonl` line as text. Empty when no improve routine followed the run |
 
 `manifest.json` names each file and the table name to load it under
 (`eval_attempts__<run id>`). The export refuses a set whose `datasetSha` differs
 from the run's, because `eval_cases` must hold the cases the verdicts were
 about: check out the set's commit first.
+
+`eval_improve_attempts` is read from `<workdir>/routines/` and the set's
+`attempts.jsonl`, so export an improve run on the machine that ran it. It is the
+record of what was tried, not part of the run: `import-run` does not read it.
 
 CSV, not JSON lines, because a loader infers each file's column types on its
 own: from JSON lines, a column null in every row of one run reads as JSON and

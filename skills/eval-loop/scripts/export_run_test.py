@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for export_run.py: the seven tables, their fixed columns, and the refusals."""
+"""Tests for export_run.py: the eight tables, their fixed columns, and the refusals."""
 import csv
 import json
 import pathlib
@@ -48,7 +48,7 @@ class Export(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_seven_tables_with_fixed_columns_and_a_manifest(self):
+    def test_eight_tables_with_fixed_columns_and_a_manifest(self):
         out = self.root / "out"
         m = ex.export(self.run, self.set, out)
         self.assertEqual(sorted(m["tables"]), sorted(ex.TABLES))
@@ -70,6 +70,69 @@ class Export(unittest.TestCase):
         cases = read_csv(out / "eval_cases.csv")
         self.assertEqual(json.loads(cases[0]["golden"])["value"], {"n": 3})
         self.assertEqual(m["tables"]["eval_attempts"]["name"], "eval_attempts__base_01")
+        # No improve routine followed this run: the table is there, with no rows.
+        self.assertEqual(m["tables"]["eval_improve_attempts"]["rows"], 0)
+        self.assertEqual(m["tables"]["eval_improve_attempts"]["name"],
+                         "eval_improve_attempts__base_01")
+
+    def improve_night(self):
+        """A routine record for Base-01 with three edits, and the set's attempts file."""
+        edits = [{"issue": "Base-01:a", "targets": ["q1"], "what": "doc a", "outcome": "accepted",
+                  "runs": ["Base-01-c1-1", "Base-01-c1-2"], "commit": "c0ffee", "costUsd": 1.5},
+                 {"issue": "Base-01:b", "targets": ["q2"], "what": "doc b", "outcome": "rejected",
+                  "runs": ["Base-01-c2-1", "Base-01-c2-2"], "why": "regressions: q1",
+                  "costUsd": 1.25},
+                 {"issue": "Base-01:c", "targets": ["q2"], "what": "doc c", "outcome": "skipped",
+                  "why": "the edit could not be committed", "costUsd": 0.5}]
+        routines = self.root / "work" / "routines"
+        routines.mkdir()
+        (routines / "night.json").write_text(json.dumps({
+            "label": "night", "run": "Base-01", "mode": "improve",
+            "improve": {"branch": "eval/night", "base": "abc", "edits": edits, "accepted": 1}}))
+        (routines / "other.json").write_text(json.dumps({
+            "run": "Base-02", "improve": {"edits": [{"issue": "x", "outcome": "accepted"}]}}))
+        lines = [{"baseline": "Base-01", "candidates": ["Base-01-c1-1", "Base-01-c1-2"],
+                  "outcome": "accepted", "effect": {"targetsFixed": 1}, "failedRules": {},
+                  "lesson": "net sales exclude returns", "patchSha": "p1", "at": "t1"},
+                 {"baseline": "Base-01", "candidates": ["Base-01-c2-1", "Base-01-c2-2"],
+                  "outcome": "rejected", "effect": {"regressions": ["q1"]},
+                  "failedRules": {"no_regressions": "q1"}, "patchSha": "p2", "at": "t2"},
+                 {"baseline": "Base-00", "candidates": ["Base-01-c1-1", "Base-01-c1-2"],
+                  "outcome": "accepted", "lesson": "from another night"}]
+        text = "".join(json.dumps(l) + "\n" for l in lines)
+        (self.set / "attempts.jsonl").write_text(text)
+        return text.splitlines()
+
+    def test_an_improve_night_exports_every_edit_it_tried(self):
+        raw = self.improve_night()
+        out = self.root / "out"
+        m = ex.export(self.run, self.set, out)
+        rows = read_csv(out / "eval_improve_attempts.csv")
+        self.assertEqual(m["tables"]["eval_improve_attempts"]["rows"], 3)
+        self.assertEqual([(r["edit_index"], r["issue"], r["outcome"], r["cost_usd"], r["branch"])
+                          for r in rows],
+                         [("1", "Base-01:a", "accepted", "1.5", "eval/night"),
+                          ("2", "Base-01:b", "rejected", "1.25", "eval/night"),
+                          ("3", "Base-01:c", "skipped", "0.5", "eval/night")])
+        a, b, c = rows
+        self.assertEqual((a["lesson"], a["commit"], a["patch_sha"], a["attempt"]),
+                         ("net sales exclude returns", "c0ffee", "p1", raw[0]))
+        self.assertEqual(json.loads(a["candidate_runs"]), ["Base-01-c1-1", "Base-01-c1-2"])
+        self.assertEqual((b["why"], json.loads(b["failed_rules"]), b["attempt"]),
+                         ("regressions: q1", {"no_regressions": "q1"}, raw[1]))
+        # Skipped before the acceptance check: no attempts line to match.
+        self.assertEqual((c["why"], c["attempt"], c["effect"]),
+                         ("the edit could not be committed", "", ""))
+        self.assertEqual(json.loads(a["edit"])["what"], "doc a")
+
+    def test_the_summary_leaves_out_what_improve_tried(self):
+        self.improve_night()
+        out = self.root / "sum"
+        m = ex.export_summary(self.run, self.set, out)
+        self.assertEqual(list(m["tables"]), ["eval_summary"])
+        text = (out / "eval_summary.csv").read_text()
+        for leak in ("doc a", "net sales", "Base-01:a"):
+            self.assertNotIn(leak, text, leak)
 
     def test_the_summary_holds_the_numbers_and_nothing_that_names_a_case_or_an_answer(self):
         out = self.root / "sum"

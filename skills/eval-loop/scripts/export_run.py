@@ -5,7 +5,7 @@ database a team can query. Stdlib only.
   python3 export_run.py --run <run-dir> --set <set-dir> [--out <dir>]
   # or: python3 eval.py export --set <set-dir> --label baseline-01
 
-Runs do not go in git. This is how a run leaves the laptop instead: seven CSV
+Runs do not go in git. This is how a run leaves the laptop instead: eight CSV
 files in `<run>/export/` (or `--out`), each row carrying `run_id`, plus a
 `manifest.json` naming each file and the table name to load it under. It calls nothing remote. Where the files go is the caller's choice:
 `reference/sharing-runs.md` lists the options, and a host can ship its own
@@ -24,11 +24,18 @@ upload step that reads `manifest.json`.
   eval_files        one row per other file of the run's record, as text:
                     summary.json and results.jsonl of a replay, the diagnosis,
                     the coverage report, the model snapshot
+  eval_improve_attempts  one row per edit an improve routine tried after this
+                    run: what it changed, the outcome and why, its effect on
+                    the target cases, cost, branch and candidate runs. Read
+                    from <workdir>/routines/ and the set's attempts.jsonl;
+                    empty for a run no improve routine followed
 
 The tables are also the run itself. `eval_runs.run_json`, `eval_events.event`
 and `eval_files.text` hold run.json, each line of events.jsonl and each record
 file exactly as written, so `import_run.py` rebuilds the run directory from
-them, byte for byte, wherever the tables were loaded.
+them, byte for byte, wherever the tables were loaded. `eval_improve_attempts`
+is not part of the run directory and is not imported back: it is the record
+of what was tried, kept beside the run so a team can query it.
 
 Every row of a table has the same columns, in a fixed order, and a nested value
 (a list, an object) is written as JSON text. CSV and not JSON lines, because a
@@ -71,7 +78,7 @@ from ledger import read_jsonl  # noqa: E402
 from run_index import runs as index_runs  # noqa: E402
 
 TABLES = ("eval_runs", "eval_attempts", "eval_events", "eval_transcripts", "eval_cases",
-          "eval_query_timings", "eval_files")
+          "eval_query_timings", "eval_files", "eval_improve_attempts")
 # The files of a run that are its record, beside run.json and events.jsonl,
 # which have columns of their own. Only what sits at the top of the run
 # directory: artifacts/ is in eval_transcripts, and rows/ (a replay's first 500
@@ -135,6 +142,11 @@ ATTEMPT_COLUMNS = ("run_id", "qid", "sample", "phase", "question_sha", "golden_r
                    "final_query", "n_get_context", "n_execute", "n_execute_errors",
                    "contaminated", "answer_captured", "cost_usd", "num_turns",
                    "wall_seconds", "recall", "recall_exact", "precision", "error")
+
+
+IMPROVE_COLUMNS = ("run_id", "edit_index", "issue", "targets", "what", "outcome", "why",
+                   "effect", "failed_rules", "lesson", "cost_usd", "branch", "base", "commit",
+                   "candidate_runs", "patch_sha", "at", "edit", "attempt")
 
 
 def rows_attempts(run: pathlib.Path, events: list[dict], cases: dict[str, dict]) -> list[dict]:
@@ -332,10 +344,63 @@ COLUMNS = {
                    "golden_revision", "golden", "case"),
     "eval_query_timings": TIMING_COLUMNS,
     "eval_files": ("run_id", "path", "text"),
+    "eval_improve_attempts": IMPROVE_COLUMNS,
 }
 
 
 SUMMARY_COLUMNS = tuple(c for c in COLUMNS["eval_runs"] if c not in NOT_IN_SUMMARY) + SUMMARY_EXTRA
+
+
+def routine_record(run: pathlib.Path) -> dict[str, Any]:
+    """The routine result whose run is this one, or {}: <workdir>/routines/<label>.json."""
+    folder = run.parent.parent / "routines"
+    named = folder / f"{run.name}.json"
+    for f in [named] + sorted(p for p in folder.glob("*.json") if p != named):
+        try:
+            r = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(r, dict) and r.get("run") == run.name:
+            return r
+    return {}
+
+
+def rows_improve(run: pathlib.Path, set_dir: pathlib.Path) -> list[dict[str, Any]]:
+    """One row per edit the improve routine after this run tried, in order.
+
+    The routine's record says what happened to each edit, skipped ones
+    included. The set's attempts.jsonl line, when the acceptance check wrote
+    one, adds the effect, the rules that failed, the lesson and the patch. It
+    is matched on this run as the baseline and the edit's candidate runs, and
+    kept as written in `attempt`.
+    """
+    imp = routine_record(run).get("improve") or {}
+    if not imp.get("edits"):
+        return []
+    lines: list[tuple[str, dict[str, Any]]] = []
+    for line in (read_text(set_dir / "attempts.jsonl") or "").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("baseline") == run.name:
+            lines.append((line, row))
+    out = []
+    for k, e in enumerate(imp["edits"], 1):
+        raw, att = next(((l, r) for l, r in lines if e.get("runs")
+                         and r.get("candidates") == e.get("runs")), (None, {}))
+        out.append({
+            "run_id": run.name, "edit_index": k, "issue": e.get("issue"),
+            "targets": e.get("targets"), "what": e.get("what"),
+            "outcome": e.get("outcome"), "why": e.get("why"),
+            "effect": att.get("effect"), "failed_rules": att.get("failedRules"),
+            "lesson": att.get("lesson"), "cost_usd": e.get("costUsd"),
+            "branch": imp.get("branch"), "base": imp.get("base"), "commit": e.get("commit"),
+            "candidate_runs": e.get("runs"), "patch_sha": att.get("patchSha"),
+            "at": att.get("at"),
+            "edit": json.dumps(e, ensure_ascii=False, sort_keys=True), "attempt": raw,
+        })
+    return out
 
 
 def write_csv(path: pathlib.Path, rows: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
@@ -353,7 +418,7 @@ def write_csv(path: pathlib.Path, rows: list[dict[str, Any]], columns: tuple[str
 
 
 def export(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[str, Any]:
-    """Write the seven files and manifest.json; return the manifest."""
+    """Write the eight files and manifest.json; return the manifest."""
     meta = json.loads((run / "run.json").read_text())
     events = read_jsonl(run / "events.jsonl") if (run / "events.jsonl").is_file() else []
     case_list = read_jsonl(set_dir / "cases.jsonl")
@@ -374,6 +439,7 @@ def export(run: pathlib.Path, set_dir: pathlib.Path, out: pathlib.Path) -> dict[
         "eval_cases": rows_cases(run.name, sha, case_list),
         "eval_query_timings": rows_timings(run, meta),
         "eval_files": rows_files(run),
+        "eval_improve_attempts": rows_improve(run, set_dir),
     }
     out.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {"runId": run.name, "setName": meta.get("setName"),
