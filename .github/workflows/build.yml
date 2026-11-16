@@ -221,11 +221,11 @@ jobs:
             # on the bundled entry file. This validates direct Bun execution of
             # the built server artifact without depending on Node.
             echo "→ bun run ./dist/server.mjs"
-            bun run ./dist/server.mjs --port ${{ matrix.port }} --server_root ./ \
+            bun run ./dist/server.mjs --port ${{ matrix.port }} --root ./ \
               > /tmp/server.log 2>&1 &
           else
             echo "→ npx malloy-publisher (uses #!/usr/bin/env node shebang)"
-            npx malloy-publisher --port ${{ matrix.port }} --server_root ./ \
+            npx malloy-publisher --port ${{ matrix.port }} --root ./ \
               > /tmp/server.log 2>&1 &
           fi
           echo $! > /tmp/server.pid
@@ -693,7 +693,7 @@ jobs:
       - name: Start the server
         working-directory: packages/server
         run: |
-          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --server_root ./ \
+          bun run ./dist/server.mjs --port "$PUBLISHER_PORT" --root ./ \
             > "$RUNNER_TEMP/server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/server.pid"
 
