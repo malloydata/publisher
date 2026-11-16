@@ -44,7 +44,7 @@ function kindOf(value: unknown): string {
    return typeof value;
 }
 
-type Expect = "string" | "number" | "object" | "array" | "string[]";
+type Expect = "string" | "number" | "boolean" | "object" | "array" | "string[]";
 
 function matches(value: unknown, expect: Expect): boolean {
    switch (expect) {
@@ -52,6 +52,8 @@ function matches(value: unknown, expect: Expect): boolean {
          return typeof value === "string";
       case "number":
          return typeof value === "number";
+      case "boolean":
+         return typeof value === "boolean";
       case "object":
          return isRecord(value);
       case "array":
@@ -80,8 +82,10 @@ const OPTIONAL_MODEL_FIELDS: ReadonlyArray<[keyof SerializedModel, Expect]> = [
    ["compilationError", "object"],
    ["authorizeWarnings", "string[]"],
    ["renderTagResults", "array"],
+   ["renderTagResultsDigest", "string"],
    ["preaggregateCompanion", "object"],
    ["entities", "object"],
+   ["governsAccess", "boolean"],
 ];
 
 /** The arrays a planned `SerializedModel.entities` carries. */

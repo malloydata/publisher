@@ -112,13 +112,41 @@ describe("Materialization Commands", () => {
       }),
     } as unknown as PublisherClient;
 
-    await materializationCommands.materialize(mockClient, "env", "pkg", {
-      wait: true,
-      pollIntervalMs: 1,
-      timeoutMs: 1000,
-    });
+    const code = await materializationCommands.materialize(
+      mockClient,
+      "env",
+      "pkg",
+      { wait: true, pollIntervalMs: 1, timeoutMs: 1000 },
+    );
 
+    expect(code).toBe(0);
     expect(calls).toBeGreaterThanOrEqual(3);
+  });
+
+  test("materialize with wait exits 2 when the run built but its manifest did not load", async () => {
+    const mockClient = {
+      createMaterialization: mock(() =>
+        Promise.resolve({ id: "m1", status: "PENDING" }),
+      ),
+      getMaterialization: mock(() =>
+        Promise.resolve({
+          id: "m1",
+          status: "MANIFEST_FILE_READY",
+          metadata: { autoLoad: "failed", autoLoadError: "does not compile" },
+        }),
+      ),
+    } as unknown as PublisherClient;
+    // The command returns the code rather than setting process.exitCode: a
+    // test that sets it cannot put it back under Bun, which ignores
+    // `process.exitCode = undefined`, so the whole run would exit 2.
+    const code = await materializationCommands.materialize(
+      mockClient,
+      "env",
+      "pkg",
+      { wait: true, pollIntervalMs: 1, timeoutMs: 1000 },
+    );
+    expect(code).toBe(materializationCommands.BUILT_NOT_SERVED_EXIT_CODE);
+    expect(process.exitCode).toBeFalsy();
   });
 
   test("materialize with wait throws on a FAILED build (non-zero exit)", async () => {

@@ -38,6 +38,7 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { logger } from "../logger";
+import { ImportOutsidePackageError } from "../utils";
 import { Settings, settings } from "../settings";
 import type {
    PackageMaterializationConfig,
@@ -64,6 +65,7 @@ import type {
    WorkerToMainMessage,
 } from "./protocol";
 import { checkLoadPackageResult } from "./protocol_decode";
+import { connectionTypeOf } from "../service/connection_type";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
@@ -210,6 +212,8 @@ export interface LoadPackageJob {
    computeBuildPlan?: boolean;
    /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
    withPreaggregateCompanions?: boolean;
+   /** See {@link LoadPackageRequest.publishedVersion}. */
+   publishedVersion?: boolean;
    /** See {@link LoadPackageRequest.withEntities}. */
    withEntities?: boolean;
    /**
@@ -329,6 +333,11 @@ export class PackageLoadPool {
 
    get size(): number {
       return this.workers.filter((w) => !w.exited).length;
+   }
+
+   /** Test-only: whether shutdown() has been called. */
+   get isShutDownForTests(): boolean {
+      return this.shuttingDown;
    }
 
    /**
@@ -463,6 +472,7 @@ export class PackageLoadPool {
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
          withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         ...(qj.request.publishedVersion ? { publishedVersion: true } : {}),
          withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
@@ -748,6 +758,7 @@ export class PackageLoadPool {
             metadata: {
                name: msg.connectionName,
                dialectName: conn.dialectName,
+               connectionType: connectionTypeOf(conn),
                digest:
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()
@@ -959,13 +970,13 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
 export { deserializeError, serializeError } from "./error_wire";
 import { deserializeError, serializeError } from "./error_wire";
 
+// The worker reads `file:` URLs itself, confined to the package, and asks
+// here only for any other scheme. A package's model reads nothing but its own
+// files, so every such read is refused (reading the URL as a path would
+// resolve it against the server's working directory).
 const defaultUrlReader = {
-   readURL: async (url: URL): Promise<string> => {
-      const { promises: fs } = await import("fs");
-      const { fileURLToPath } = await import("url");
-      const filePath =
-         url.protocol === "file:" ? fileURLToPath(url) : url.toString();
-      return fs.readFile(filePath, "utf8");
+   readURL: async (_url: URL): Promise<string> => {
+      throw new ImportOutsidePackageError();
    },
 };
 
@@ -975,7 +986,13 @@ const defaultUrlReader = {
 
 let singleton: PackageLoadPool | null = null;
 
+/** Test-only: what makes the pool when there is none; see the setter below. */
+let poolFactoryForTests: (() => PackageLoadPool) | undefined;
+
 export function getPackageLoadPool(): PackageLoadPool {
+   if (singleton === null && poolFactoryForTests) {
+      singleton = poolFactoryForTests();
+   }
    if (singleton === null) {
       const n = getPackageLoadWorkerCount();
       singleton = new PackageLoadPool(n);
@@ -987,12 +1004,27 @@ export function getPackageLoadPool(): PackageLoadPool {
    return singleton;
 }
 
-/** Test-only: replace the singleton (and shut down the previous one). */
+/**
+ * Test-only: replace the singleton, and shut down the previous one unless
+ * `keep` holds it (a test helper that reuses pools; see freshLoadPool).
+ */
 export async function __setPackageLoadPoolForTests(
    pool: PackageLoadPool | null,
+   keep?: ReadonlySet<PackageLoadPool>,
 ): Promise<void> {
-   if (singleton && singleton !== pool) {
+   if (singleton && singleton !== pool && !keep?.has(singleton)) {
       await singleton.shutdown();
    }
    singleton = pool;
+}
+
+/**
+ * Test-only: make the pool, when there is none, with `factory` rather than a
+ * new one. It runs at the first load after the pool was cleared, so it sees
+ * the settings that load runs under.
+ */
+export function __setPackageLoadPoolFactoryForTests(
+   factory: (() => PackageLoadPool) | undefined,
+): void {
+   poolFactoryForTests = factory;
 }

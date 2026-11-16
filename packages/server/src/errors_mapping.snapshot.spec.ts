@@ -13,6 +13,7 @@ import {
    BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    ChainedShapeNotCarriedError,
+   WarehouseRecomputeRefusedError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -340,6 +341,15 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "ChainedShapeNotCarriedError",
       () => new ChainedShapeNotCarriedError("shape not carried"),
+   ],
+   [
+      "WarehouseRecomputeRefusedError",
+      () =>
+         new WarehouseRecomputeRefusedError(
+            "rollup",
+            "lake",
+            "'rollup' reads the source warehouse (regions) through 'via'",
+         ),
    ],
    [
       "PublisherConfigError",

@@ -530,6 +530,25 @@ describe("accessPathOf", () => {
       });
    });
 
+   it("keeps that the served copy answered, and no other via", () => {
+      const of = (via: string) =>
+         accessPathOf({
+            servedBy: { kind: "materialized", tableId: "abc", via },
+            considered: [
+               { tableId: "abc", kind: "materialized", outcome: "used" },
+            ],
+         })?.servedBy;
+      expect(of("served_copy")).toEqual({
+         kind: "materialized",
+         tableId: "abc",
+         via: "served_copy",
+      });
+      expect(of("anything else")).toEqual({
+         kind: "materialized",
+         tableId: "abc",
+      });
+   });
+
    it("drops a code that is not a plain lower-case code, so free text never reaches the record", () => {
       const path = accessPathOf({
          servedBy: { kind: "live" },

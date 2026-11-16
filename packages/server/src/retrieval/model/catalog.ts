@@ -21,10 +21,11 @@
  */
 
 import type { ModelDef } from "@malloydata/malloy";
-import { isOnRoute } from "../../service/annotation_reader";
+import { isOnRoute, marksAgentHidden } from "../../service/annotation_reader";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import { splitSourceId } from "../../service/source_id";
+import { forEachFieldPath } from "../../service/governance/ir/array_query";
 import {
    collectRecordMembers,
    entityDocs,
@@ -603,10 +604,6 @@ function ownNoteTexts(
    return own.map((n) => n.text ?? "").filter(Boolean);
 }
 
-/** `#(agent-hidden)` on a source; any bracket pair Malloy routes, as hosted reads it. */
-const AGENT_HIDDEN_SOURCE = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
-/** `##(agent-hidden)` on a model file: hides the sources served through that file. */
-const AGENT_HIDDEN_FILE = /^##\|?\s*[([{<]?\s*agent-hidden\b/;
 /** An access gate a source writes itself: it changes which rows a caller sees. */
 const OWN_GATE = /^#\|?\s*[([{<]?\s*(access_filter|authorize)\b/;
 
@@ -623,7 +620,7 @@ function isAgentHidden(
 ): boolean {
    if (!compiled) return false;
    return ownNoteTexts(models, compiled).some((t) =>
-      AGENT_HIDDEN_SOURCE.test(t),
+      marksAgentHidden(t, "source"),
    );
 }
 
@@ -653,7 +650,7 @@ function agentHiddenFiles(
          if (modelPathOfUrl(url, modelPaths) !== model.modelPath) continue;
          if (
             (entry.ownNotes?.notes ?? []).some((n) =>
-               AGENT_HIDDEN_FILE.test(n.text ?? ""),
+               marksAgentHidden(n.text ?? "", "file"),
             )
          ) {
             files.add(model.modelPath);
@@ -780,27 +777,21 @@ export function nodeKeyOf(kind: string, sourceKey: string, name: string) {
    return `${kind}:${sourceKey}:${name}`;
 }
 
-/** Every `{node: "field", path}` an expression tree reads, in walk order. */
+/**
+ * Every `{node: "field", path}` an expression tree reads, in walk order; one
+ * inside an array query is re-rooted under its array.
+ */
 export function referencedPaths(e: unknown): string[][] {
    const out: string[][] = [];
-   const walk = (v: unknown, depth: number) => {
-      if (depth > 64 || v === null || typeof v !== "object") return;
-      if (Array.isArray(v)) {
-         for (const x of v) walk(x, depth + 1);
-         return;
-      }
-      const o = v as Record<string, unknown>;
-      if (o.node === "field" && Array.isArray(o.path)) {
-         out.push(o.path.map(String));
-      }
-      for (const [k, x] of Object.entries(o)) {
-         // `at` is a location, never an expression.
-         if (k !== "at" && k !== "path") walk(x, depth + 1);
-      }
-   };
-   walk(e, 0);
+   // `at` is a location, never an expression.
+   forEachFieldPath(e, (path) => out.push(path), {
+      skipKeys: REFERENCED_PATH_SKIPPED_KEYS,
+      maxDepth: 64,
+   });
    return out;
 }
+
+const REFERENCED_PATH_SKIPPED_KEYS = new Set(["at", "path"]);
 
 /** Whether a field's annotations carry an `#(index)` tag. */
 function hasIndexTag(field: {

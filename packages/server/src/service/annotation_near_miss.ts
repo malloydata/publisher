@@ -9,7 +9,10 @@
  *
  * Every finding is a coded publish warning (`annotation-near-miss`), never a
  * refusal: a route that merely looks like one of ours may be another app's,
- * and the outcome rule warns on what it cannot be sure of. The gate spellings
+ * and the outcome rule warns on what it cannot be sure of. The one exception
+ * is a near miss of a materialization route or directive (`#(materialise)`,
+ * `#@ persits`), which fails the load (`materialization-near-miss`), as a
+ * misspelled gate does. The gate spellings
  * the load refuses (`collectAuthorizeNearMisses`), including a misspelled
  * gate such as `#(authorise)` (`misspelledGateRoute`), are left to that
  * refusal, and the matching itself is shared with it (`isRouteAttempt`).
@@ -24,9 +27,12 @@
 
 import type { DocumentLocation, ModelDef, StructDef } from "@malloydata/malloy";
 import { isSourceDef } from "@malloydata/malloy";
+import { getMaterializeEnabled } from "../config";
 import {
    editDistance,
    foldRouteName,
+   MATERIALIZATION_NEAR_MISS_CODE,
+   MATERIALIZE_V2_ROUTES,
    payloadOfNote,
    PUBLISHER_ROUTES,
    publisherRouteOf,
@@ -54,10 +60,39 @@ export const ANNOTATION_MALFORMED_ROUTE_CODE = "annotation-malformed-route";
  */
 export const ANNOTATION_GATE_NEAR_MISS_CODE = "annotation-gate-near-miss";
 
-/** The bracketed app routes Publisher owns, as `#(name)`. */
+/** The bracketed app routes Publisher owns, as `#(name)`, v2's included. */
 const OWNED_ROUTES: readonly string[] = Object.keys(PUBLISHER_ROUTES)
    .filter((route) => !isReservedRoute(route))
    .sort();
+
+/** {@link OWNED_ROUTES} without the materialization v2 routes. */
+const OWNED_V1_ROUTES: readonly string[] = OWNED_ROUTES.filter(
+   (route) => !MATERIALIZE_V2_ROUTES.has(route),
+);
+
+/**
+ * The owned routes in force: the v2 routes only with the materialize switch
+ * on. Off, nothing reads `#(materialize)` or `#(preaggregate)`, so the scan
+ * reads them as it did before they were registered: `#(preaggregate)` is
+ * reaching for `#@ preaggregate`, which works there.
+ */
+function ownedRoutes(): readonly string[] {
+   return getMaterializeEnabled() ? OWNED_ROUTES : OWNED_V1_ROUTES;
+}
+
+/** Whether Publisher reads `route` now (a v2 route only with the switch on). */
+function routeIsRead(route: string): boolean {
+   return (
+      route in PUBLISHER_ROUTES &&
+      (!MATERIALIZE_V2_ROUTES.has(route) || getMaterializeEnabled())
+   );
+}
+
+/** The routes a materialization declaration is written on. */
+const MATERIALIZATION_ROUTES: ReadonlySet<string> = new Set([
+   "@",
+   ...MATERIALIZE_V2_ROUTES,
+]);
 
 /** The `#@` directives that make a source persist or roll up. */
 const PERSIST_DIRECTIVES: readonly string[] = ["persist", "preaggregate"];
@@ -89,7 +124,7 @@ function misspelledOwnedRoute(name: string): Intended | undefined {
    const folded = foldRouteName(name);
    if (folded === "") return undefined;
    let best: { route: string; distance: number } | undefined;
-   for (const route of OWNED_ROUTES) {
+   for (const route of ownedRoutes()) {
       const target = foldRouteName(route);
       const distance = editDistance(folded, target);
       const limit = target.length <= 5 ? 1 : 2;
@@ -162,10 +197,7 @@ function intendedRoute(text: string): Intended | "malformed" | undefined {
    }
    // On a route Publisher reads, or a sigil route such as a glued `#"…`
    // doc string, which Publisher reads too.
-   if (
-      read !== undefined &&
-      (read in PUBLISHER_ROUTES || isReservedRoute(read))
-   ) {
+   if (read !== undefined && (routeIsRead(read) || isReservedRoute(read))) {
       return undefined;
    }
 
@@ -231,10 +263,20 @@ export function annotationNearMisses(
          });
          continue;
       }
+      // A near miss of a materialization route or directive fails the load,
+      // as a misspelled gate does: a declaration that silently does nothing
+      // is an invalid annotation. Not when the route is spelled exactly but
+      // switched off (`#(preaggregate)` with PUBLISHER_MATERIALIZE=false):
+      // that is the deployment's choice, not the author's mistake.
+      const materialization =
+         MATERIALIZATION_ROUTES.has(intended.route) &&
+         !MATERIALIZE_V2_ROUTES.has(routeOfNote(note.text.trimStart()) ?? "");
       findings.push({
          route: intended.route,
-         tier: "unservable",
-         code: ANNOTATION_NEAR_MISS_CODE,
+         tier: materialization ? "malformed" : "unservable",
+         code: materialization
+            ? MATERIALIZATION_NEAR_MISS_CODE
+            : ANNOTATION_NEAR_MISS_CODE,
          message:
             `\`${written}\` is not read as \`${intended.spelling}\`, so it does ` +
             `nothing (did you mean \`${intended.spelling}\`?)`,

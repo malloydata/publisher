@@ -1989,6 +1989,44 @@
       ]
     }
   },
+  "WarehouseRecomputeRefusedError": {
+    "class": "WarehouseRecomputeRefusedError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Failed to materialize source 'rollup' into storage destination 'lake': its only build recomputes its stored upstreams from the source warehouse, and the build instructions refuse that (warehouseReach: refuse): 'rollup' reads the source warehouse (regions) through 'via'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Failed to materialize source 'rollup' into storage destination 'lake': its only build recomputes its stored upstreams from the source warehouse, and the build instructions refuse that (warehouseReach: refuse): 'rollup' reads the source warehouse (regions) through 'via'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "PublisherConfigError": {
     "class": "PublisherConfigError",
     "http": {

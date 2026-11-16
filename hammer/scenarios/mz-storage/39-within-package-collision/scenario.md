@@ -22,15 +22,19 @@ Here `alpha` and `beta` both declare `name="col_dup" storage=lake`. The package
 loads and still serves (the warning is non-fatal), and the collision is visible on
 the status `warnings` array.
 
-The escalation — rejecting a *publish* of a colliding package once
-`PERSIST_COLLISION_ENFORCE` is set — is a deployment-level switch fixed at process
-start; it is covered by the `persistence_policy` unit tests (the harness starts
-publishers at a `PERSIST_STORAGE_MODE` only, so it can't yet flip that flag
-per-publisher).
+Neither source is served from the shared table, which holds whichever build ran
+last: queries on both are answered live.
+
+Rejecting a *publish* of a colliding package (the default; `PERSIST_COLLISION_ENFORCE=false`
+opts out) is covered by `collision-enforce-refuses-publish`.
 
 ## Publisher
 
+The harness publishes the package, and a colliding publish is refused by
+default, so this publisher opts out to reach the load-time warning.
+
 - PERSIST_STORAGE_MODE: on
+- PERSIST_COLLISION_ENFORCE: false
 
 ## Data orders_pg.col_orders
 
@@ -68,7 +72,8 @@ cites: resolve to the same materialized table
 
 ## Query alpha
 
-The package still serves despite the collision — the warning is non-fatal.
+The package still answers despite the collision — the warning is non-fatal —
+from the warehouse, not from the table the two sources share.
 
 ```malloy
 run: alpha -> { select: order_date, n; order_by: order_date asc }

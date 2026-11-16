@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { installSignalTeardown, type SignalHost } from "./signals";
 
-type Signal = "SIGINT" | "SIGTERM";
+type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
 function fakeHost() {
    const listeners = new Map<Signal, Set<() => void>>();
@@ -45,6 +45,16 @@ describe("tearing a run down on a signal", () => {
       expect(exits).toEqual([143]);
    });
 
+   it("exits 129 on SIGHUP, when the terminal running it closes", async () => {
+      const { host, send, exits } = fakeHost();
+      let tornDown = 0;
+      installSignalTeardown(async () => void tornDown++, host, quiet);
+      send("SIGHUP");
+      await tick();
+      expect(tornDown).toBe(1);
+      expect(exits).toEqual([129]);
+   });
+
    it("exits at once on a second Ctrl-C while the teardown hangs", async () => {
       const { host, send, exits } = fakeHost();
       installSignalTeardown(() => new Promise(() => {}), host, quiet);
@@ -74,5 +84,6 @@ describe("tearing a run down on a signal", () => {
       remove();
       expect(listeners.get("SIGINT")?.size).toBe(0);
       expect(listeners.get("SIGTERM")?.size).toBe(0);
+      expect(listeners.get("SIGHUP")?.size).toBe(0);
    });
 });

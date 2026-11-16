@@ -14,9 +14,10 @@ Proof that there is no value in persisting a source that merely `extend`s anothe
 persisted source. `daily_with_avg` extends `daily` to add an average that is
 computed at query time — the extension's added fields (dimensions, measures, joins)
 are query-time constructs, NOT materialized columns, so its persisted relation is
-byte-identical to `daily`'s. The two are content-addressed identically (same
-`sourceEntityId`), so even with DISTINCT persist names the publisher materializes a
-SINGLE physical table and both serve from it — the second `#@ persist` is a no-op.
+byte-identical to `daily`'s. The two compile to the same build, but each declares
+its OWN `name=`, and a different `name=` is a different table: the publisher builds
+both, each under its own name, and each serves from its own. The second `#@
+persist` buys nothing but a second copy of the same rows.
 
 (Contrast `chained-persist` (11): a `->` DERIVED source — e.g. `monthly is daily ->
 { group_by: order_date.month }` — defines a NEW relation at a different grain and
@@ -61,8 +62,8 @@ source: daily_with_avg is daily extend {
 
 ## Publish
 
-Both declare `#@ persist`, but they are content-identical, so only one physical
-table is materialized (see the hook).
+Both declare `#@ persist` with distinct names, so two physical tables are
+materialized, with the same rows.
 
 ## Query daily
 
@@ -79,9 +80,9 @@ Expect:
 
 ## Query daily_with_avg
 
-`daily_with_avg` reads the SAME materialized relation as `daily` — the shared
-columns are identical, and its `avg_order_value` is computed at query time (not a
-stored column).
+`daily_with_avg` reads its own table, which holds the same relation as `daily`'s —
+the shared columns are identical, and its `avg_order_value` is computed at query
+time (not a stored column).
 
 ```malloy
 run: daily_with_avg -> { select: order_date, total_amount, avg_order_value; order_by: order_date asc }
@@ -96,50 +97,31 @@ Expect:
 
 ## Build targets
 
-Both sources are targets, each declaring its OWN physical name — and they share one
-content address (`entity` label `A`), which is why the build dedups them to a single
-table below.
+Both sources are targets, each declaring its OWN physical name, so each has its own
+content address (`entity` labels `A` and `B`): the same build, folded with each
+`name=`.
 
 Expect:
 
 | source         | writes             | entity |
 | -------------- | ------------------ | ------ |
 | daily          | daily_tbl          | A      |
-| daily_with_avg | daily_with_avg_tbl | A      |
+| daily_with_avg | daily_with_avg_tbl | B      |
 
-## Connection lake_probe (rows=1)
+## Connection lake_probe (rows=2)
 
-Exactly ONE of the two declared names is physically materialized — the other is
-deduped away. A row count rather than a name, because which one wins depends on
-build iteration order.
+Both declared names are physically materialized, whatever the build order.
 
 ```sql
 SELECT table_name FROM information_schema.tables
 WHERE table_name IN ('daily_tbl','daily_with_avg_tbl')
 ```
 
-## Note (since=2026-07-24)
+## Note (since=2026-11-15)
 
-> Surprising behavior worth a decision. Two persist sources declaring DISTINCT
-> physical names (`daily_tbl`, `daily_with_avg_tbl`) silently collapse to a SINGLE
-> physical table, and which of the two names wins is non-deterministic (build
-> iteration order). The mechanism — they share a `sourceEntityId` (content address)
-> and the build dedups on it — is invisible to the author, who reasonably expects
-> two names to mean two tables.
->
-> The deeper concern: the build's reuse/dedup keys on `sourceEntityId` ALONE. That
-> is correct for the intended optimization — the SAME logical source across
-> versions reusing its prior table when content is unchanged — but it also
-> collapses TWO DIFFERENT sources that merely happen to share a content address,
-> conflating their identity (name, freshness, access, GC lifecycle: dropping one's
-> table drops the other's). Options to consider: (a) scope content-addressed reuse
-> to the same declared name/destination, so a shared `sourceEntityId` across
-> DIFFERENT names does not silently share a table; and/or (b) error (or warn) when
-> two distinctly-named persist targets resolve to one `sourceEntityId` — an
-> ambiguous "which name wins?" that is almost always a modeling mistake. This
-> pins the current (silent-collapse) behavior so a change flags loudly.
->
-> Related: whether a source should carry `#@ persist` on an `extend` at all — malloy
+> The distinct-names question this scenario raised is decided: a `name=` is part of
+> what identifies a table, so the two names now get two tables (they used to
+> collapse to one, named by build order). Still open: whether a source should carry `#@ persist` on an `extend` at all — malloy
 > PR 3012 stops an *inherited* persist from making the reader a build target; an
 > *own* persist on an extend (this scenario) is still accepted but is redundant
 > (identical relation to the base). See also the publisher's

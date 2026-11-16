@@ -34,6 +34,7 @@
  * fail-closed deny.
  */
 
+import type { SerializedNotebookCell } from "./notebook_cell_wire";
 import type { EligibilityRefusalReason } from "../materialization_metrics";
 import type { BuildPlanOutcome } from "../service/materialization/plan/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
@@ -55,8 +56,13 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  *
  * 2: `SerializedModel.entities`, the model's entities plan
  * (`LoadPackageRequest.withEntities`).
+ *
+ * 3: `SerializedModel.governsAccess`.
+ *
+ * 4: every field of a build plan's outcome is sent (`BuildPlanOutcome`), so
+ * the pool reads none as missing.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 2;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 4;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -70,6 +76,12 @@ export const PACKAGE_LOAD_PROTOCOL_VERSION = 2;
 export interface ConnectionMetadata {
    name: string;
    dialectName: string;
+   /**
+    * The connection's configured type (`postgres`, `duckdb`, `ducklake`, ...),
+    * which the build plan's `storage=` eligibility reads; absent when the main
+    * thread recorded none.
+    */
+   connectionType?: string;
    digest: string;
    /**
     * Identifies the main thread's connection instance, so the worker's schema
@@ -129,6 +141,13 @@ export interface LoadPackageRequest {
     * that serve the package; a compile preview does not serve it.
     */
    withPreaggregateCompanions?: boolean;
+   /**
+    * The package is a published version (its version owns its runs' tables
+    * when its scope is `"version"`), so its tables take readable names whose
+    * hash covers the version, which decides which sources share a table.
+    * Absent: unversioned, whose `name=`s are written as given.
+    */
+   publishedVersion?: boolean;
    /**
     * Plan each `.malloy` model's entities for the main thread to resolve (see
     * SerializedModel.entities). Set by the loads that compute the package's
@@ -191,6 +210,15 @@ export interface SerializedModel {
     */
    renderTagResults?: { label: string; result?: unknown }[];
    /**
+    * SHA-256 of `renderTagResults` as JSON, set only when they cover every
+    * render-tag target. The results are the whole input of the tag check, so
+    * the main thread keys its findings cache on this digest and skips the
+    * check for a model it has already judged (ms2data/service#7795). It
+    * covers what model text alone would miss: a table whose schema changed
+    * under the same text prepares different results.
+    */
+   renderTagResultsDigest?: string;
+   /**
     * The model's pre-aggregation companion, for the main thread to hydrate
     * rather than compile (see Model.buildPreaggregateServeModel). `{}` when
     * there is none or it failed; absent when not attempted, and the main
@@ -205,22 +233,16 @@ export interface SerializedModel {
     * then plans it itself.
     */
    entities?: ModelEntitiesPlan;
+   /**
+    * Whether `modelDef` governs access (`governsAccess` in
+    * governance/ir/array_query.ts), answered here so the main thread never
+    * walks a model that governs nothing; it notes this on the hydrated
+    * `modelDef`. Absent when the model did not compile.
+    */
+   governsAccess?: boolean;
 }
 
-export interface SerializedNotebookCell {
-   type: "code" | "markdown";
-   /** Raw cell text. */
-   text: string;
-   /**
-    * The cell's ModelDef at its point in the `extendModel` chain, hydrated by
-    * the main thread so cell-level queries compile in the right scope.
-    */
-   cellModelDef?: unknown;
-   /** The cell's final QueryDef, hydrated by the main thread without recompiling. */
-   cellQueryDef?: unknown;
-   newSources?: unknown[];
-   queryInfo?: unknown;
-}
+export type { SerializedNotebookCell } from "./notebook_cell_wire";
 
 export interface LoadPackageResult {
    type: "load-package-result";

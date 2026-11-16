@@ -117,6 +117,18 @@ function drillCode(
    meta: NonNullable<ResultField["resultMetadata"]>,
 ): string | null | undefined {
    const { sourceField, sourceExpression, drillExpression } = meta;
+   // A field the served copy redefines over its stored column (a stored
+   // timeframe truncated again, a column an older build typed cast on read:
+   // `order_month is order_month__stored.month`) would name that internal
+   // column, which no live compile has; the field's own name filters the
+   // same rows in both.
+   if (
+      sourceExpression &&
+      sourceField &&
+      !sourceField.includes(".") &&
+      storedInternalName(sourceField).test(sourceExpression)
+   )
+      return sourceField;
    // A dotted source field is a field declared in a join. Its declaration
    // text names the join's fields, so its path is the code.
    if (sourceExpression)
@@ -134,4 +146,14 @@ function drillCode(
          drillExpression.truncation,
       ].join(".");
    return null;
+}
+
+/**
+ * The served copy's internal name for `field`'s stored column
+ * (`<field>__stored`, or `<field>__stored_<n>` past a collision), as the
+ * start of an expression, quoted or not.
+ */
+function storedInternalName(field: string): RegExp {
+   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`^\\(?\\s*\`?${escaped}__stored(_\\d+)?\\b`);
 }

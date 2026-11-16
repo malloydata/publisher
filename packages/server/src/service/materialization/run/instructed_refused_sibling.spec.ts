@@ -16,7 +16,7 @@ import {
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
 
@@ -43,10 +43,13 @@ function harness(order: string[][]) {
    );
    const built: string[] = [];
    const buildOneSource = sinon.fake(
-      async (
-         source: { name: string },
-         instruction: BuildInstruction,
-      ): Promise<ManifestEntry> => {
+      async ({
+         persistSource: source,
+         instruction,
+      }: {
+         persistSource: { name: string };
+         instruction: BuildInstruction;
+      }): Promise<ManifestEntry> => {
          built.push(source.name);
          return {
             sourceEntityId: ADDRESS,
@@ -70,10 +73,10 @@ function harness(order: string[][]) {
       getEnvironmentPath: () => "/tmp/env",
    } as unknown as BuildEnvironment;
    const run = () =>
-      build.run(
+      build.run({
          compiled,
          environment,
-         [
+         instructions: [
             {
                sourceEntityId: ADDRESS,
                materializedTableId: "mt-shared",
@@ -82,9 +85,9 @@ function harness(order: string[][]) {
                destination: "lake",
             },
          ],
-         {},
-         new AbortController().signal,
-      );
+         seedEntries: {},
+         signal: new AbortController().signal,
+      });
    return { run, built };
 }
 

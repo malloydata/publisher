@@ -3,12 +3,27 @@
 
 import { PublisherClient } from "../api/client.js";
 import Table from "cli-table3";
-import { logSuccess, logInfo, logOutput, truncate } from "../utils/logger.js";
+import {
+  logSuccess,
+  logInfo,
+  logOutput,
+  logWarning,
+  truncate,
+} from "../utils/logger.js";
 
-// A build settles at MANIFEST_FILE_READY (the full build + load completed) or
-// a failure/cancellation.
+// A build settles at MANIFEST_FILE_READY or a failure/cancellation. For an
+// auto-run, MANIFEST_FILE_READY means the tables are built and the package
+// serves them: the manifest was loaded into it before the status moved (its
+// metadata says `autoLoad: "failed"` when that load did not take).
 const SETTLED_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 const SUCCESS_STATUSES = ["MANIFEST_FILE_READY"];
+
+/**
+ * The exit code of `--wait` for a run that built but whose manifest did not
+ * load into the package (`metadata.autoLoad: "failed"`): not 0, since queries
+ * are not answered from the new tables, and not 1, which is a failed build.
+ */
+export const BUILT_NOT_SERVED_EXIT_CODE = 2;
 
 // Each run records metadata.trigger (SCHEDULER | ON_DEMAND) so a scheduled
 // rebuild is distinguishable from a manual one; it lives in the free-form
@@ -72,6 +87,9 @@ export async function getMaterialization(
  * table names, builds every persist source, and auto-loads the manifest,
  * settling at MANIFEST_FILE_READY. With `wait`, poll until the run settles;
  * without it, return immediately with a status hint.
+ *
+ * Resolves to the process exit code the caller should set: 0, or
+ * BUILT_NOT_SERVED_EXIT_CODE. A failed or timed-out build throws instead.
  */
 export async function materialize(
   client: PublisherClient,
@@ -84,7 +102,7 @@ export async function materialize(
     pollIntervalMs?: number;
     timeoutMs?: number;
   } = {},
-): Promise<void> {
+): Promise<number> {
   const created = await client.createMaterialization(
     environmentName,
     packageName,
@@ -103,7 +121,7 @@ export async function materialize(
     logInfo(
       `Run "malloy-pub get materialization ${id} --environment ${environmentName} --package ${packageName}" to check status.`,
     );
-    return;
+    return 0;
   }
 
   const settledStatuses = SETTLED_STATUSES;
@@ -123,8 +141,20 @@ export async function materialize(
   logOutput(JSON.stringify(current, null, 2));
 
   if (successStatuses.includes(current.status)) {
+    // Built, but its manifest did not load into the package: queries are not
+    // answered from the new tables. Not a failure of the build, so its own
+    // exit code, distinct from 1.
+    const metadata = (current.metadata ?? {}) as Record<string, unknown>;
+    if (metadata.autoLoad === "failed") {
+      logWarning(
+        `Materialization ${id} built but not served: ${String(
+          metadata.autoLoadError ?? current.error ?? "the manifest load failed",
+        )}`,
+      );
+      return BUILT_NOT_SERVED_EXIT_CODE;
+    }
     logSuccess(`Materialization ${id} ready: ${current.status}`);
-    return;
+    return 0;
   }
 
   // Non-success: throw so the CLI exits non-zero. The index.ts action's catch

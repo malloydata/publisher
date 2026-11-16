@@ -2,53 +2,40 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Serving one query: which compiled form answers it, and the one record of
- * what happened that every reader derives from.
+ * Routing one query over the serving legs, and the reports that read how it
+ * was served.
  *
- * `Model.runQueryResults` asks the router (`routeQuery`) over the candidates
- * {@link routeCandidates} lists, then runs the chosen runnable. What the
- * router decided and what the run did are captured in an immutable
- * {@link Answer}: built once from the route ({@link routedAnswer}), replaced
- * (never mutated) when a storage run fails and falls back live
- * ({@link liveFallbackAnswer}), and finished with the manifest entries the
- * answering run read ({@link answeredWith}). `servedFrom`, the routing metrics,
- * the path report, the access record's `path`/`pathUnavailable` and the
- * workload log all read that one record, so no two of them can disagree about
- * how a query was served.
+ * The query pipeline (`model_serving.ts`) makes the legs for its pin
+ * (`makeLegs`, serve/leg.ts) and routes over them with {@link variantsOf}:
+ * each leg becomes one router candidate, and this is where the gate policy is
+ * asked (before an attempt, by leg kind; after it, over the bindings the
+ * answer read), where a `LegDecline` is read for the path report, and where a
+ * leg's skip is logged. A leg does neither. {@link answerOf} turns the
+ * router's decision into the {@link Answer} every reader derives from, and
+ * {@link queryPathFor} assembles the path report from it.
  *
- * Adding a leg. Phase 3's re-rooted served copy, phase 4's persisted-view and
- * join-to-rollup legs plug in here without touching the query path in
- * `model.ts`: add the variant kind to `query_router.ts`'s `VariantKind`, its
- * run-time extras to {@link RoutedExtra}, its candidate to
- * {@link routeCandidates} (with its own logs and metrics), and how it maps onto
- * {@link Answer} in {@link routedAnswer}. The path report and metrics then read
- * it through the record. The query path keeps one rule: route, govern, run the
- * runnable the answer names, and on a run failure ask
- * {@link canDegradeToLive}.
+ * Adding a leg needs nothing here: a leg module, its `makeLegs` entry and its
+ * decline rows, and the router, the gate policy and the reports read it
+ * through the answer.
  */
 
-import type {
-   GivenValue,
-   ModelDef,
-   ModelMaterializer,
-   QueryMaterializer,
-   VirtualMap,
-} from "@malloydata/malloy";
-import { getPersistStorageMode } from "../config";
+import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
+import { gateSwitches, getPersistStorageMode } from "../config";
+import {
+   answerKeepsGates,
+   GATE_LEGS,
+   legMayPassGate,
+} from "./materialization/domain/gate_policy";
 import { logger } from "../logger";
-import { recordStorageServeRouting } from "../materialization_metrics";
-import { sourceChain } from "./materialization/plan/source_map";
+import { sourceChain } from "./materialization/text/source_map";
 import {
-   RollupCoverageError,
-   rollupCoverageViolation,
-   rollupMeasuresByMember,
-} from "./materialization/plan/preaggregation_coverage";
-import type { RollupPlan } from "./materialization/plan/preaggregation_synthesis";
-import {
-   type ServeBinding,
-   serveShapeDiagnostics,
-} from "./materialization/serve/materialization_serve_transform";
-import type { StorageServeShape } from "./materialization/serve/model_serve_shape";
+   type Binding,
+   isColocated,
+   type Pinned,
+   type Snapshot,
+} from "./materialization/domain/binding";
+import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
+import { isDeclineOf } from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -56,267 +43,212 @@ import {
    queryShapeOf,
    type StorageTable,
 } from "./materialization/serve/query_path";
-import type { BuildManifest } from "./materialization/types";
+import type { BuildManifest } from "./materialization/domain/types";
+import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import type { PersistedViewServe } from "./materialization/serve/view_variants";
+import type {
+   Answer,
+   Leg,
+   LegAnswer,
+   LegContext,
+   LegKind,
+   QueryFacts,
+} from "./materialization/serve/leg";
 import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "./governance/ir/prepared_query";
 import type {
-   ConsideredVariant,
    RouteDecision,
    Variant,
    VariantSkipExplanation,
 } from "./query_router";
 
-/**
- * How a query's answer was ultimately produced, once it reached the storage
- * routing decision at all. `storage` = served from the materialized table via
- * the virtual-source transform. `live_fallback` = it routed, then a run-time
- * store failure degraded it to the live warehouse (a success the caller cannot
- * distinguish from a storage hit, which is exactly why it is reported
- * separately; on the error metric, the live retry failed too). Absent means
- * the query never had a storage binding to consider.
- */
-export type ServedFrom = "storage" | "live_fallback";
+/** The decline vocabulary's name for each leg's codes. */
+const DECLINING_LEG = {
+   view: "view",
+   // The query leg declines in the view leg's codes (`view_*`).
+   query: "view",
+   rollup: "rollup",
+   served: "served_copy",
+} as const satisfies Record<LegKind, string>;
+
+/** What each leg's skip is logged as, at debug. */
+const SKIP_MESSAGE: Record<LegKind, string> = {
+   view: "the persisted view does not answer this query",
+   query: "the persisted named query does not answer this query",
+   rollup: "no #(preaggregate) rollup answers this query",
+   served: "served copy cannot answer this query",
+};
 
 /**
- * What a routed variant carries into the run, by kind: the storage tier needs
- * its virtual map and the bindings that produced the shape; a rollup needs
- * nothing beyond its runnable.
+ * The router's candidates for one query: one per leg, in the legs' order.
+ * The gate policy (`domain/gate_policy.ts`) decides, its switches read once
+ * for the query, whether a leg may be tried past an entry-point gate (R3:
+ * the leg compiles the author's own text, gates included, so `govern()`
+ * grafts and proves the gate on it) and whether the answer it produced keeps
+ * the gates given the tables it read.
  */
-export type RoutedExtra =
-   | {
-        kind: "storage";
-        virtualMap: VirtualMap;
-        bindings: ServeBinding[];
-        origin: "persist" | "preaggregate";
-        tablesRead: ServeBinding[];
-     }
-   | {
-        kind: "rollup";
-        /**
-         * The composite member the compiled query resolved to: the rollup that
-         * answered, or the base when no rollup's grain covers the query.
-         */
-        resolvedMember?: string;
-     };
-
-/**
- * One query's serving, as the router decided it and the run carried it out.
- * Immutable: each stage returns a new record. Everything that reports how a
- * query was served derives from it.
- */
-export interface Answer {
-   /** Each candidate the router considered, and what it decided. */
-   readonly considered: readonly ConsideredVariant[];
-   /** The tier the router chose: a stored table, a rollup, or live. */
-   readonly tier: "storage" | "rollup" | "live";
-   /** The routed runnable, or undefined when live answers (the caller's own compile runs). */
-   readonly routedRunnable: QueryMaterializer | undefined;
-   /** For a storage answer: how the shape's virtual sources resolve to tables. */
-   readonly virtualMap: VirtualMap | undefined;
-   /** For a storage answer: the bindings that produced the shape (decide per-binding behaviour from these, never the package-wide set). */
-   readonly serveShapeBindings: readonly ServeBinding[];
-   /** For a storage answer: the stored tables the query reads. */
-   readonly storageTablesRead: readonly ServeBinding[] | undefined;
-   /** For a rollup answer: the composite member the compile resolved to. */
-   readonly rollupMember: string | undefined;
-   /** A storage read failed at run time and the query was answered live. */
-   readonly runFailed: boolean;
-   /** The colocated manifest entries the answering run read. */
-   readonly colocatedRead: ReadonlySet<string>;
-}
-
-/** The answer before routing, and when nothing could route. */
-export const LIVE_ANSWER: Answer = Object.freeze({
-   considered: [],
-   tier: "live",
-   routedRunnable: undefined,
-   virtualMap: undefined,
-   serveShapeBindings: [],
-   storageTablesRead: undefined,
-   rollupMember: undefined,
-   runFailed: false,
-   colocatedRead: new Set<string>(),
-});
-
-/** The answer the router's decision describes, before anything runs. */
-export function routedAnswer(route: RouteDecision<RoutedExtra>): Answer {
-   if (route.served !== "variant") {
-      return Object.freeze({ ...LIVE_ANSWER, considered: route.considered });
-   }
-   if (route.extra.kind === "storage") {
-      return Object.freeze({
-         ...LIVE_ANSWER,
-         considered: route.considered,
-         tier: "storage",
-         routedRunnable: route.runnable,
-         virtualMap: route.extra.virtualMap,
-         serveShapeBindings: route.extra.bindings,
-         storageTablesRead: route.extra.tablesRead,
-      });
-   }
-   return Object.freeze({
-      ...LIVE_ANSWER,
-      considered: route.considered,
-      tier: "rollup",
-      routedRunnable: route.runnable,
-      rollupMember: route.extra.resolvedMember,
+export function variantsOf(
+   legs: readonly Leg[],
+   facts: QueryFacts,
+   pinned: Pinned,
+   args: {
+      modelPath: string;
+      /**
+       * The v1 cutover's contracts at read for colocated tables (G3): the
+       * served copy goes past an entry-point gate when every table it reads
+       * is colocated, even with `materialize.gatedSources` off, since a
+       * colocated table never leaves the author's warehouse.
+       */
+      colocatedKeepsContracts?: boolean;
+   },
+): Variant<LegAnswer>[] {
+   const switches = gateSwitches();
+   const gateContext = {
+      colocatedReadsKeepGates: !!args.colocatedKeepsContracts,
+   };
+   return legs.map((leg) => {
+      // A leg with no row in the gate policy (the query leg) is never tried
+      // past an entry-point gate: the policy fails closed.
+      const gateLeg = (GATE_LEGS as readonly LegKind[]).includes(leg.kind)
+         ? (leg.kind as (typeof GATE_LEGS)[number])
+         : undefined;
+      return {
+         kind: leg.kind,
+         applicable: leg.applies(facts, pinned),
+         keepsContracts:
+            gateLeg !== undefined &&
+            legMayPassGate(gateLeg, switches, gateContext),
+         keepsContractsFor: (answer: LegAnswer) =>
+            gateLeg !== undefined &&
+            answerKeepsGates(
+               gateLeg,
+               answer.gateTablesRead ?? answer.tablesRead ?? [],
+               switches,
+               gateContext,
+            ),
+         attempt: async () => {
+            const answer = await leg.attempt(facts, pinned);
+            if (leg.kind === "served") {
+               logger.debug("Serving query from the served copy (virtual)", {
+                  modelPath: args.modelPath,
+                  tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
+               });
+            }
+            return { runnable: answer.runnable, extra: answer };
+         },
+         explain: (err): VariantSkipExplanation | undefined =>
+            isDeclineOf(err, DECLINING_LEG[leg.kind])
+               ? {
+                    code: err.code,
+                    ...(err.callerDetail
+                       ? { callerDetail: err.callerDetail }
+                       : {}),
+                 }
+               : undefined,
+         onSkip: (err) => {
+            logger.debug(SKIP_MESSAGE[leg.kind], {
+               modelPath: args.modelPath,
+               error: err instanceof Error ? err.message : String(err),
+            });
+         },
+      };
    });
 }
 
-/** The same answer after its storage run failed and the live retry ran. */
-export function liveFallbackAnswer(answer: Answer): Answer {
-   return Object.freeze({ ...answer, runFailed: true });
-}
-
-/** The answer with the manifest entries its answering run read. */
-export function answeredWith(
-   answer: Answer,
-   colocatedRead: ReadonlySet<string>,
-): Answer {
-   return Object.freeze({ ...answer, colocatedRead });
-}
-
-/**
- * `servedFrom` for the answer: a storage hit, a storage run that fell back
- * live (`live_fallback`, a success that must NOT count as a storage hit), or
- * undefined for everything else.
- */
-export function servedFromOf(answer: Answer): ServedFrom | undefined {
-   if (answer.runFailed) return "live_fallback";
-   return answer.tier === "storage" ? "storage" : undefined;
-}
-
-/**
- * The manifest a run is handed for this answer: none for the serve shape
- * (it resolves through `virtualMap` and lacks `##! experimental.persistence`),
- * the FULL manifest (rollup entries) only for the pre-aggregation companion,
- * and the manifest without rollup entries for every other runnable.
- */
-export function buildManifestFor(
-   answer: Answer,
-   full: BuildManifest | undefined,
-   withoutRollups: BuildManifest | undefined,
-): BuildManifest | undefined {
-   if (answer.runFailed) return withoutRollups;
-   if (answer.virtualMap) return undefined;
-   return answer.tier === "rollup" ? full : withoutRollups;
-}
-
-/**
- * Whether a run-time store failure may be retried against the live warehouse,
- * decided from the bindings that produced the serve shape. Exported for tests.
- *
- * An authored binding declaring anything but `live` vetoes for the whole shape
- * (deliberately coarse). A rollup binding never vetoes and never enables on its
- * own: pre-aggregation has no correctness dimension (docs/preaggregation.md: a
- * stale rollup recomputes from the base with the same answer), so a rollup must
- * not error on a store failure. A rollup must also not be filtered out, or a
- * rollup-only package could never degrade. Empty is false: nothing routed.
- */
-export function bindingsAllowDegradeToLive(
-   bindings: readonly ServeBinding[],
-): boolean {
-   return (
-      bindings.length > 0 &&
-      bindings.every(
-         (b) => b.origin === "preaggregate" || b.freshnessFallback === "live",
-      )
-   );
-}
-
-/**
- * Whether a run failure under this answer may be retried live:
- * `freshnessFallback=live` marks the tier as an optimisation, not a
- * dependency. Deliberately narrow: only a storage answer, only per
- * {@link bindingsAllowDegradeToLive} over the bindings that produced THIS
- * shape (a sibling source must not decide), never for a client error (a bad
- * given) or an abort.
- */
-export function canDegradeToLive(
-   answer: Answer,
-   error: unknown,
-   opts: { hasLiveRunnable: boolean; aborted: boolean },
-): boolean {
-   return (
-      !!answer.virtualMap &&
-      opts.hasLiveRunnable &&
-      !opts.aborted &&
-      !String((error as { code?: string })?.code ?? "").startsWith(
-         "runtime-given-",
-      ) &&
-      bindingsAllowDegradeToLive(answer.serveShapeBindings)
-   );
-}
-
-/**
- * Record the serve-routing metric from the router's decision, once per query:
- * a storage hit (with the origin that answered), a storage miss
- * (`live_fallback`: the transform could not answer, whatever answered next),
- * or `blocked_by_row_level_gate`, a row-level gate that vetoed every applicable
- * candidate (storage, rollup, or both) before any was tried. Otherwise nothing
- * when the storage tier was not a candidate.
- */
-export function recordRoutingDecision(route: RouteDecision<RoutedExtra>): void {
-   // The gate vetoes every applicable candidate at once, before any compile,
-   // so it is recorded once per query whichever tiers were candidates: the
-   // label's contract (see recordStorageServeRouting) covers both tiers.
-   if (route.considered.some((c) => c.reason === "row_level_gate")) {
-      recordStorageServeRouting("blocked_by_row_level_gate");
-      return;
+/** The answer the router's decision describes, before anything runs. */
+export function answerOf(route: RouteDecision<LegAnswer>): Answer {
+   if (route.served !== "variant") {
+      return Object.freeze({
+         leg: "live",
+         considered: route.considered,
+         colocatedRead: new Set<string>(),
+      });
    }
-   const storage = route.considered.find((c) => c.kind === "storage");
-   if (!storage) return;
-   if (route.served === "variant" && route.extra.kind === "storage") {
-      recordStorageServeRouting("storage", route.extra.origin);
-   } else if (storage.reason === "does_not_answer") {
-      recordStorageServeRouting("live_fallback");
-   }
+   return Object.freeze({
+      leg: route.kind,
+      considered: route.considered,
+      answer: route.extra,
+      pastEntryPointGate: route.pastEntryPointGate === true,
+      runFailed: false,
+      colocatedRead: new Set<string>(),
+   });
 }
 
 /**
  * The build manifest a run is handed, wrapped to record which entries Malloy
  * looked up and found: the colocated tables it substituted. Malloy looks a
- * persisted source up by its key in exactly one place (`persistedTableFor`),
- * so a hit is a table the SQL reads, with no reading of the SQL text.
+ * persisted source up by its key in exactly one place (`persistedTableFor`,
+ * `buildManifest.entries[buildId]`), so a hit is a table the SQL reads, with no
+ * reading of the SQL text.
+ *
+ * Malloy also ENUMERATES the entries before it compiles (it checks every
+ * entry's table path), and an enumeration reads each value too. Those reads
+ * are not lookups: recording them reported every bound table as having
+ * answered, including for a `#@ -persist` reader that recomputes and for a
+ * source Malloy never substitutes.
+ *
+ * The two are told apart by which object they read, not by the order of the
+ * reads. Every read of `manifest.entries` is handed a fresh view of the same
+ * entries, and a view's reads are lookups only while nothing has enumerated
+ * that view. Every enumeration (`Object.entries`, `Object.keys`,
+ * `Object.values`, spread, `for…in`, `JSON.stringify`, `Object.assign`) asks
+ * for the object's own keys first ([[OwnPropertyKeys]], the `ownKeys` trap),
+ * and a keyed lookup never does, whether it reads the value alone or checks
+ * `hasOwn` first (Malloy's `safeRecordGet`). So this holds for any enumeration
+ * and any lookup form, in any order, sync or async. (The order heuristic this
+ * replaced, "a read right after its own key's descriptor is an enumeration",
+ * missed `JSON.stringify`, which describes every key before reading any, and
+ * would have dropped every real lookup had Malloy guarded it with `hasOwn`, as
+ * its own `safeRecordGet` does.) It assumes only that Malloy reaches
+ * `entries` afresh for a lookup, as `persistedTableFor` does, rather than
+ * enumerating and then looking up through one held reference, or re-reading
+ * `entries` for each value of an enumeration (`for (k in m.entries)
+ * m.entries[k]`). `query_serving_malloy.spec.ts` runs a real compile against
+ * the pinned Malloy and fails loudly if either assumption stops holding.
  */
 export function recordingManifest(
    manifest: BuildManifest | undefined,
    read: Set<string>,
 ): BuildManifest | undefined {
    if (!manifest) return undefined;
-   const entries = new Proxy(manifest.entries, {
-      get(target, key, receiver) {
-         if (typeof key === "string" && Object.hasOwn(target, key)) {
-            read.add(key);
-         }
-         return Reflect.get(target, key, receiver);
-      },
+   const target = manifest.entries;
+   const view = (): BuildManifest["entries"] => {
+      let enumerated = false;
+      return new Proxy(target, {
+         ownKeys(t) {
+            enumerated = true;
+            return Reflect.ownKeys(t);
+         },
+         get(t, key, receiver) {
+            if (
+               !enumerated &&
+               typeof key === "string" &&
+               Object.hasOwn(t, key)
+            ) {
+               read.add(key);
+            }
+            return Reflect.get(t, key, receiver);
+         },
+      });
+   };
+   const wrapped = { ...manifest } as BuildManifest;
+   Object.defineProperty(wrapped, "entries", {
+      get: view,
+      enumerable: true,
+      configurable: true,
    });
-   return { ...manifest, entries };
-}
-
-/**
- * A variant's account of a rollup coverage refusal, for the path report: a
- * typed code, and the violation in the caller's own terms. Any other failure
- * (a compile error against the stored form) is left unexplained, so its
- * message, which can name storage paths and synthesized sources, stays in the
- * logs.
- */
-function explainCoverageSkip(
-   error: unknown,
-): VariantSkipExplanation | undefined {
-   if (!(error instanceof RollupCoverageError)) return undefined;
-   return { code: `rollup_${error.reason}`, callerDetail: error.detail };
+   return wrapped;
 }
 
 /** What serving reads from the model that owns the query. */
 export interface QueryServingHost {
    readonly modelPath: string;
-   readonly storageServe: StorageServeShape;
-   /** The rollups the model's `#@ preaggregate` declarations describe. */
-   rollupPlans(): readonly RollupPlan[];
+   /** The model's own `#@ persist` `storage=` tables in a snapshot, for the path report. */
+   storageTables(snapshot: Snapshot): readonly Binding[];
+   /** The served copy on `virtual` (materialization v2), the `served` candidate. */
+   readonly servedCopy: ServedCopyServe;
    modelDef(): ModelDef | undefined;
    materializedTables(): MaterializedTableCatalog | undefined;
    /** The discovery surface's names, or undefined when everything is listed. */
@@ -324,183 +256,18 @@ export interface QueryServingHost {
    admitsSourceByName(name: string): boolean;
    /** Every source's `sourceID` chain in the model. */
    sourceChains(): ReadonlyMap<string, readonly string[]>;
-}
-
-/**
- * The router's candidates for one query, in catalog order: the `storage=`
- * serve shape, then the pre-aggregation companion. A candidate is listed
- * only when its variant exists for this model (so the gate check runs
- * exactly when one could route), and is inapplicable when it cannot help
- * this request. Each keeps its own logs and metrics.
- */
-export function routeCandidates(
-   host: QueryServingHost,
-   args: {
-      queryString: string;
-      surfaceGivens: Record<string, GivenValue> | undefined;
-      buildManifest: BuildManifest | undefined;
-      storageRoutingPossible: boolean;
-      preaggServeMaterializer: ModelMaterializer | undefined;
-   },
-): Variant<RoutedExtra>[] {
-   const {
-      queryString,
-      surfaceGivens,
-      buildManifest,
-      storageRoutingPossible,
-      preaggServeMaterializer,
-   } = args;
-   const candidates: Variant<RoutedExtra>[] = [];
-   // storage= serve routing: compile against the serve-shape model
-   // (materialized sources rebound to virtual sources). If it does not
-   // compile, the next candidate (or live) answers.
-   if (storageRoutingPossible) {
-      candidates.push({
-         kind: "storage",
-         applicable: true,
-         attempt: async () => {
-            const shaped = await host.storageServe.loadServeShapeQuery(
-               queryString,
-               surfaceGivens,
-            );
-            logger.debug("Serving query from storage tier (virtual-source)", {
-               modelPath: host.modelPath,
-               origin: shaped.origin,
-               // The shape's sources (stale bindings are dropped).
-               storageSources: shaped.bindings.map((b) => b.sourceName),
-            });
-            return {
-               runnable: shaped.runnable,
-               extra: {
-                  kind: "storage",
-                  virtualMap: shaped.virtualMap,
-                  bindings: shaped.bindings,
-                  origin: shaped.origin,
-                  tablesRead: shaped.tablesRead,
-               },
-            };
-         },
-         explain: explainCoverageSkip,
-         onSkip: (shapeErr) => {
-            // A rollup refused for this query's aggregates is per-query and
-            // expected, not a reason the package never serves from storage.
-            if (shapeErr instanceof RollupCoverageError) {
-               logger.debug(
-                  "storage rollup cannot answer this query; serving live",
-                  { modelPath: host.modelPath, error: shapeErr.message },
-               );
-               return;
-            }
-            // info, not debug: a fallback is otherwise silent (the query
-            // succeeds), so this is how an operator learns why a package
-            // never serves from storage. The compiler's "undefined object"
-            // reads the same for an unpersisted and a stale source, so both
-            // sets are reported.
-            const { shapeSources, staleSources } = serveShapeDiagnostics(
-               host.storageServe.serveBindings,
-               host.storageServe.freshServeBindings(Date.now()),
-            );
-            logger.info(
-               "storage serve-shape ineligible for this query; serving live",
-               {
-                  modelPath: host.modelPath,
-                  error:
-                     shapeErr instanceof Error
-                        ? shapeErr.message
-                        : String(shapeErr),
-                  // A name absent from both sets is not materialized at all.
-                  shapeSources,
-                  // Bound, but withheld by the freshness gate for this query.
-                  staleSources,
-               },
-            );
-         },
-      });
-   }
-
-   // Pre-aggregation serve routing: compile against the synthesized model,
-   // where each annotated source is a composite of its rollups and itself.
-   // Malloy picks a rollup when one covers the query, so this only offers
-   // the choice. Tried only when storage did not route (that runnable
-   // resolves through `virtualMap`).
-   //
-   // Blocked for a row-level-gated entry point as defence in depth: today
-   // the build gates refuse to materialize a rollup over a gated base, but
-   // that refusal (`referencesAuthorize`) has partial join reach, and a
-   // rollup that did build would serve rows pre-aggregated across every
-   // tenant. Blocking here keeps the invariant local to this decision.
-   //
-   // Inapplicable when EVERY rollup is storage-bound: storage rollups are
-   // not companion members, so the composite degenerates to the base and
-   // the probe would succeed for no gain. A mixed model keeps its
-   // colocated members.
-   if (preaggServeMaterializer) {
-      const plans = host.rollupPlans();
-      const everyRollupIsStorageBound =
-         plans.length > 0 && plans.every((plan) => !!plan.storage);
-      candidates.push({
-         kind: "rollup",
-         applicable: !everyRollupIsStorageBound,
-         attempt: async () => {
-            const candidate =
-               preaggServeMaterializer.loadRestrictedQuery(queryString);
-            // Compile eagerly (Malloy compiles lazily), so a failure falls to
-            // live here instead of escaping as a 400 at prepare/run. Probe
-            // with exactly what the run uses: the build manifest and the
-            // givens. A model `given:` does not cross the companion's
-            // `import`, so a given-supplying query must fail HERE and serve
-            // live (see preaggregation_seams.spec.ts).
-            await candidate.getSQL({
-               givens: surfaceGivens,
-               buildManifest,
-            });
-            // Compiling proves only that the chosen member DEFINES every
-            // field used; `count()` uses none and resolves to a rollup.
-            const compiled = (await candidate.getPreparedQuery())._query;
-            const uncovered = rollupCoverageViolation(
-               compiled,
-               rollupMeasuresByMember([...host.rollupPlans()]),
-            );
-            if (uncovered) throw new RollupCoverageError(uncovered);
-            const resolvedMember = (
-               compiled as
-                  | { compositeResolvedSourceDef?: { as?: unknown } }
-                  | undefined
-            )?.compositeResolvedSourceDef?.as;
-            return {
-               runnable: candidate,
-               extra: {
-                  kind: "rollup",
-                  ...(typeof resolvedMember === "string"
-                     ? { resolvedMember }
-                     : {}),
-               },
-            };
-         },
-         explain: explainCoverageSkip,
-         onSkip: (preaggErr) => {
-            // Expected and common: the companion imports only the sources it
-            // rolls up, and a rollup stores only its declared measures.
-            logger.debug(
-               "query cannot be served from the pre-aggregation model; serving live",
-               {
-                  modelPath: host.modelPath,
-                  error:
-                     preaggErr instanceof Error
-                        ? preaggErr.message
-                        : String(preaggErr),
-               },
-            );
-         },
-      });
-   }
-   return candidates;
+   /** The `#(preaggregate)` rollup leg (materialization v2, phase 4). */
+   readonly rollupVariants: RollupVariantServe;
+   /** The `#@ persist` view leg (materialization v2, phase 4, P14). */
+   readonly persistedViews: PersistedViewServe;
+   /** The `#@ persist` named-query leg. */
+   readonly persistedQueries: NonNullable<LegContext["persistedQueries"]>;
 }
 
 /**
  * The path report for one answered query, or undefined when it cannot be
  * assembled (logged at debug). Reads the author's compile, the
- * {@link Answer} and the fresh manifest; changes nothing.
+ * {@link Answer} and the query's pin; changes nothing.
  */
 export async function queryPathFor(
    host: QueryServingHost,
@@ -510,8 +277,11 @@ export async function queryPathFor(
       runnable: QueryMaterializer;
       sourceName: string | undefined;
       viewName: string | undefined;
-      freshManifest: BuildManifest | undefined;
+      /** The query's pinned tables: what it could read, at its instant. */
+      pinned: Pinned;
       includeHidden: boolean;
+      /** The text the router saw, to name the persisted view it calls. */
+      queryString?: string;
    },
 ): Promise<ApiQueryPath | undefined> {
    try {
@@ -530,14 +300,33 @@ export async function queryPathFor(
          sourceName,
          viewName: args.viewName,
       });
-      const catalog = host.materializedTables();
-      const plans = host.rollupPlans();
+      const { pinned } = args;
+      // The colocated tables bound when the query was pinned.
+      const planned = host.materializedTables();
+      const catalog = planned && {
+         ...planned,
+         bound: pinned.snapshot.entries,
+      };
+      const variantRollups = host.rollupVariants.hasRollups()
+         ? host.rollupVariants.rollups()
+         : [];
+      // The persisted view or named query the query calls, if any: its table
+      // is the first candidate (R1), whatever the router decided about it.
+      const routed = answer.leg === "live" ? undefined : answer.answer;
+      const viewTable =
+         routed?.viewTable ??
+         (args.queryString !== undefined
+            ? (host.persistedViews.reportedTable(args.queryString, pinned) ??
+              host.persistedQueries.reportedTable(args.queryString, pinned))
+            : undefined);
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
       if (
          (catalog?.planned.size ?? 0) === 0 &&
-         host.storageServe.serveBindings.length === 0 &&
-         plans.length === 0 &&
+         host.storageTables(pinned.snapshot).length === 0 &&
+         host.servedCopy.materializeBindings(pinned, "bound").length === 0 &&
+         variantRollups.length === 0 &&
+         viewTable === undefined &&
          answer.considered.length === 0
       ) {
          return {
@@ -548,41 +337,70 @@ export async function queryPathFor(
             warnings: [],
          };
       }
-      const toTable = (b: ServeBinding): StorageTable => ({
+      const toTable = (b: Binding): StorageTable => ({
          sourceName: b.sourceName,
          sourceIDs: b.sourceIDs,
-         origin: b.origin,
+         origin: b.kind === "rollup" ? "preaggregate" : "persist",
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
+         ...(isColocated(b) ? { colocated: true as const } : {}),
       });
+      const storageTables = host.storageTables(pinned.snapshot);
       const published = args.includeHidden ? undefined : host.publishedNames();
       return buildQueryPath({
          shape,
          modelPath: host.modelPath,
          chain: sourceChain(struct, modelDef),
          catalog,
-         freshColocated: args.freshManifest
-            ? new Set(Object.keys(args.freshManifest.entries))
+         freshColocated: pinned.hasEntries
+            ? new Set(Object.keys(pinned.compilerManifest.entries))
             : undefined,
+         // The `storage=` tables, the `#(materialize)` tables the served copy
+         // reads and the rollup tables, so a table on the chain is named
+         // whichever candidate answered.
          storage: {
-            all: host.storageServe.serveBindings.map(toTable),
-            fresh: host.storageServe
-               .freshServeBindings(Date.now())
-               .map(toTable),
+            all: [
+               ...storageTables,
+               ...host.servedCopy.materializeBindings(pinned, "bound"),
+               ...host.rollupVariants.rollupBindings(pinned, "bound"),
+            ].map(toTable),
+            fresh: [
+               ...storageTables.filter((b) => pinned.serves(b)),
+               ...host.servedCopy.materializeBindings(pinned, "fresh"),
+               ...host.rollupVariants.rollupBindings(pinned, "fresh"),
+            ].map(toTable),
          },
-         rollups: plans.map((p) => ({
-            rollupSourceName: p.rollupSourceName,
-            baseSourceName: p.baseSourceName,
-            ...(p.baseSourceID ? { baseSourceID: p.baseSourceID } : {}),
-         })),
+         rollups: variantRollups.map((r) => ({ ...r, variant: true })),
          // Every `storage=` source carries a package warning when the tier
          // is off or write-only (see storageWarnings).
          storageWarned: getPersistStorageMode() !== "on",
          considered: answer.considered,
-         storageTablesRead: answer.storageTablesRead?.map(toTable),
-         runFailed: answer.runFailed,
+         storageTablesRead: routed?.tablesRead?.map(toTable),
+         ...(answer.leg === "rollup"
+            ? {
+                 rollupTablesRead: answer.answer.shapeBindings
+                    .filter((b) => b.kind !== "rollup")
+                    .map(toTable),
+              }
+            : {}),
+         ...(answer.leg === "served" ? { via: "served_copy" as const } : {}),
+         servedCopyTables: new Set(
+            host.servedCopy
+               .materializeBindings(pinned, "bound")
+               .map((b) => b.tablePath),
+         ),
+         runFailed: answer.leg !== "live" && answer.runFailed,
          colocatedRead: answer.colocatedRead,
-         ...(answer.rollupMember ? { rollupMember: answer.rollupMember } : {}),
+         ...(viewTable ? { view: viewTable } : {}),
+         ...(routed?.rollupMember ? { rollupMember: routed.rollupMember } : {}),
+         ...(variantRollups.length > 0
+            ? {
+                 joinedRollupBases: host.rollupVariants.joinedRollupBaseIDs(
+                    struct,
+                    prepared,
+                 ),
+              }
+            : {}),
          chains: host.sourceChains(),
          // The discovery surface: a name the caller cannot list is never
          // named, unless the caller may see hidden sources.

@@ -254,6 +254,10 @@ source research carries [none, phi.clinical]; this query reads x, which is class
   is held to the list like the first stage's, against what the stage before it returned. A
   `compose(…)` source is held to the ceiling of the member Malloy resolved for the query as well as
   its own.
+- A query on an array (`items -> { aggregate: t is price.sum() }`) reads the array, with its
+  class, and the fields of its elements under it (`items.price`). A join written inside one reads
+  a source no check here can follow, so a model that declares `#(carries)` or `#(classification)`
+  refuses it, at load and per query.
 - What counts as a read: every field the query selects, aggregates, groups, filters, nests or
   indexes on, a field a caller's `extend:` adds with the classes of what it reads, and each
   reference in the `on` of a join the caller writes. An `internal:` field is not exempt here; it
@@ -264,6 +268,12 @@ source research carries [none, phi.clinical]; this query reads x, which is class
   check at load, so one that reads past the list refuses the package rather than the first request.
 - A source with no `#(carries)` is not checked, and neither is a request carrying the
   data-management bypass.
+- The check reads the compile that answers. A query answered from a materialized source's
+  stored table through the served copy ([materialization](materialization.md#the-served-copy-materialization-v2-publisher_materialize))
+  is checked on the served copy's own compile, which is your text re-rooted on the stored
+  tables with every `#(classification)` and `#(carries)` kept, and on the live compile as well
+  whenever that compiles. Anything the served copy's compile cannot show is refused, and a
+  served answer that falls back to live is checked against live.
 
 This is breaking for a query that reads past a `#(carries)` source's list, which 0.12.0 served.
 
@@ -286,6 +296,9 @@ Both follow what a caller can reach, not what a file declares:
   is never reachable. A caller's own query can re-expose an `internal:` field through `extend`, so
   `#(carries)` is enforced again per query, on what the query reads: classify any `internal:` field a
   caller could read (see [The ceiling is checked per query](#the-ceiling-is-checked-per-query)).
+  Since `#(carries)` holds what a caller can reach, a hidden column of a class the list leaves out
+  may be stored in a `storage=` destination, where anyone with direct access to it can read it
+  ([what a `storage=` table holds](materialization.md#where-a-table-is-built-storage)).
 - A source locked with `#(authorize) false` publishes nothing a caller can read, so coverage does
   not report its own fields (its fields reached through a join from an open source are). A
   `#(carries)` on it is still enforced.
@@ -293,7 +306,11 @@ Both follow what a caller can reach, not what a file declares:
   fields it reads. A join names a relationship and is not classified.
 - A record or array dimension is a field. One built by an expression (`{ v is ssn }`, `[ssn]`)
   carries what the expression reads, and each of its parts carries the same. A struct column is
-  charged the union of its parts. A part that cannot be resolved fails closed.
+  charged the union of its parts, and a part of a classified record or array column
+  (`purchases.ssn`, under `#(classification) "phi.direct_identifier" rename: purchases is items`)
+  carries the classes of the nearest column around it that declares some, read directly or inside
+  a query on the array (`purchases -> { select: ssn }`). A read of the whole column lists only the
+  column. A part that cannot be resolved fails closed.
 
 ## Known gaps
 

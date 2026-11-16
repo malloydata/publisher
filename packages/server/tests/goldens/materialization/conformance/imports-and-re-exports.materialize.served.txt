@@ -1,0 +1,23 @@
+// conformance: imports and re-exports [materialize]: files generated while serving
+
+// ==== <pkg>/facts.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: daily__served is {
+   region::string,
+   status::string,
+   order_date::date,
+   total::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: daily is __served_copy_alias_of_lake.virtual('a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9')::daily__served extend {
+  measure: grand is total.sum()
+}
+
+source: daily_ext is daily extend {
+  measure: orders is n.sum()
+}

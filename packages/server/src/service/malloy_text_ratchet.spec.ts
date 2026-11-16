@@ -66,6 +66,9 @@ const QUOTING_EMITTERS = new Set([
    "stringLiteral",
    "doubleQuotedString",
    "annotationValue",
+   "nowComparison",
+   "numberLiteral",
+   "functionName",
 ]);
 /** Escapes but does not quote: safe only between quotes. */
 const ESCAPING_EMITTERS = new Set(["escapeString"]);

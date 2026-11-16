@@ -314,7 +314,15 @@ export class PackageController {
             `The build plan of package ${packageName} could not be derived (at load, or after a connection change). Reload the package to derive it again; retrying the read does not.`,
          );
       }
-      return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
+      return (
+         pkg.getBuildPlan() ?? {
+            graphs: [],
+            sources: {},
+            refusedSources: {},
+            omittedSources: [],
+            omittedFiles: [],
+         }
+      );
    }
 
    /**

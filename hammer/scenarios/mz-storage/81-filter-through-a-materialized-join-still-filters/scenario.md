@@ -10,18 +10,17 @@ SPDX-License-Identifier: MIT
 
 # A filter reaching through a materialized join still serves only the rows it selects
 
-`north_orders` filters through a join to `regions`, and `regions` IS materialized,
-so the join is re-declared on the serve shape and the filter resolves at the
-richest tier. `broken_orders` next to it filters through a join to a source that
-is NOT materialized and cannot be served at all, which forces the shape down to
-its floor and makes the publisher isolate the bindings it can still serve.
+`north_orders` filters through a join to `regions`, and `regions` IS materialized
+into the same lake, so in the served copy both are re-rooted there, the join is
+kept as written, and the filter resolves over the stored tables. `broken_orders`
+next to it filters through a join to `tiers`, which is NOT materialized and stays
+on `orders_pg`. Malloy refuses that join across connections, and the served copy
+leaves it out with what reads it, which through its `where:` is `broken_orders`
+itself, so `broken_orders` answers live.
 
-The floor carries no joins. So `north_orders` — servable at the richest tier —
-fails the isolation probe and is withheld along with the genuinely unservable
-one. That is a known limit (see `bindingsWhoseFiltersCompile`), it is fail-safe,
-and this scenario deliberately does NOT assert which tier answers: the rule is
-that the rows are the rows the filter selects, and a fix that let the join
-survive the probe must keep it that way.
+This scenario deliberately does NOT assert which tier answers `north_orders`: the
+rule is that the rows are the rows the filter selects, whichever path answers
+them.
 
 What it does pin is that no arrangement here serves `north_orders` unfiltered —
 375 rather than 150 is the failure this guards against — and that `big_orders`,
@@ -60,8 +59,8 @@ current tier and turn a fix into a red scenario.
 
 ## Model fmj.malloy
 
-`regions` is materialized, so a join to it is carried onto the shape. `tiers` is
-not, so a filter through it can never be reproduced.
+`regions` is materialized, so a join to it reads its stored table in the served
+copy. `tiers` is not, so a filter through it is never answered from storage.
 
 ```malloy
 ##! experimental.persistence

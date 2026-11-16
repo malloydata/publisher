@@ -40,14 +40,14 @@ import {
    computeSqlFingerprint,
    type DimIndexFingerprintInputs,
 } from "./dim_index_entity_id";
-import { errMessage } from "../../utils";
+import { errMessage, packageURLReader } from "../../utils";
+import { marksAgentHidden } from "../annotation_reader";
 import {
    BoundaryDescents,
    type QueryabilityGuard,
    splitSourcePath,
 } from "./explore_walk";
 import type { Given, SourceInfo } from "./internal_types";
-import { FileURLReader } from "./field_helpers";
 import { withModelTextCache } from "./model_text";
 import {
    type ExploreMetadataPlan,
@@ -154,7 +154,9 @@ export async function planModelFileEntities(
    options: PlanModelEntitiesOptions,
 ): Promise<ModelEntitiesPlan> {
    const run = () => planOrFail(file, options);
-   return options.texts ? withModelTextCache(run, options.texts) : run();
+   return options.texts
+      ? withModelTextCache(run, options.texts, options.packageRoot)
+      : run();
 }
 
 async function planOrFail(
@@ -188,7 +190,7 @@ async function plan(
    // routes: `#[agent-hidden]` routes exactly as `#(agent-hidden)` does.
    const isAgentHiddenTagPresentOnModelFile = compiledModel
       .getTaglines()
-      .some((t) => /^##\|?\s*[([{<]?\s*agent-hidden\b/.test(t));
+      .some((t) => marksAgentHidden(t, "file"));
 
    // Every annotation the index refuses, so the load names them all.
    const findings: Guarded<EntitiesFinding>[] = [];
@@ -239,6 +241,7 @@ async function plan(
       candidates,
       connections: options.connections,
       modelFilePath: file.relativePath,
+      packageRoot,
       refuse,
    });
 
@@ -298,6 +301,7 @@ async function buildDimIndexFingerprintLookup(args: {
    candidates: DimIndexCandidate[];
    connections: LookupConnection<InfoConnection>;
    modelFilePath: string;
+   packageRoot: string;
    refuse: Refuse;
 }): Promise<{
    fingerprints: Map<string, DimIndexFingerprintInputs>;
@@ -316,7 +320,7 @@ async function buildDimIndexFingerprintLookup(args: {
    } catch {
       // Each compile below builds its own.
    }
-   const urlReader = new FileURLReader();
+   const urlReader = packageURLReader(args.packageRoot);
    for (const candidate of candidates) {
       try {
          assertAtMostOneRequiredFilterPerIndexedDimension(

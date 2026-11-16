@@ -41,6 +41,28 @@ export async function closeCorpus(): Promise<void> {
    scratch = undefined;
 }
 
+/**
+ * Each model of `corpus` in turn, its connections closed once the loop body
+ * is done with it. The corpus is a few hundred models with a DuckDB instance
+ * each; held open together until {@link closeCorpus}, they are most of the
+ * instances a serial unit run holds at its peak.
+ */
+export async function* releasingEach(
+   corpus: CorpusModel[],
+): AsyncGenerator<CorpusModel> {
+   for (const model of corpus) {
+      try {
+         yield model;
+      } finally {
+         for (const c of model.connections.values()) {
+            const at = opened.indexOf(c);
+            if (at >= 0) opened.splice(at, 1);
+            await c.close().catch(() => {});
+         }
+      }
+   }
+}
+
 /** One model to plan: its files, entry file, and connections. */
 export interface CorpusModel {
    label: string;
@@ -64,6 +86,14 @@ function connection(name: string, workingDirectory?: string): DuckDBConnection {
 const persists = (text: string): boolean =>
    /^\s*##!\s*experimental[^\n]*persistence/m.test(text) &&
    /#@\s*(persist|preaggregate)/.test(text);
+
+/**
+ * A model that materializes anything: a v1 `#@ persist` or `#@ preaggregate`
+ * under the persistence flag ({@link persists}), or a v2 `#(materialize)` or
+ * `#(preaggregate)`, which needs no flag.
+ */
+export const materializes = (text: string): boolean =>
+   persists(text) || /#\((materialize|preaggregate)\)/.test(text);
 
 /** The persist fixtures, each compiled as its own package. */
 export function fixtureModels(): CorpusModel[] {
@@ -163,8 +193,14 @@ const DUCK_TYPES: Record<string, string> = {
 
 const sqlString = (v: string) => `'${v.replace(/'/g, "''")}'`;
 
-/** Each scenario's persisting models, over DuckDB stand-ins for its data. */
-export async function hammerModels(): Promise<{
+/**
+ * Each scenario's persisting models, over DuckDB stand-ins for its data.
+ * `select` picks the models (default: a v1 `#@ persist` or `#@ preaggregate`
+ * under the persistence flag; {@link materializes} adds the v2 annotations).
+ */
+export async function hammerModels(
+   select: (text: string) => boolean = persists,
+): Promise<{
    models: CorpusModel[];
    skipped: string[];
 }> {
@@ -181,7 +217,7 @@ export async function hammerModels(): Promise<{
    }
    for (const dir of dirs) {
       const scenario = parseScenario(dir);
-      const persisting = [...scenario.models].filter(([, t]) => persists(t));
+      const persisting = [...scenario.models].filter(([, t]) => select(t));
       if (persisting.length === 0) continue;
       try {
          const connections = new Map<string, DuckDBConnection>();

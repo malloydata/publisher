@@ -36,19 +36,19 @@ describe("routeQuery", () => {
       const calls: string[] = [];
       const decision = await routeQuery(
          [
-            variant("storage", "answers", calls),
+            variant("served", "answers", calls),
             variant("rollup", "answers", calls),
          ],
          async () => false,
       );
       expect(decision).toMatchObject({
          served: "variant",
-         kind: "storage",
-         extra: "storage-extra",
+         kind: "served",
+         extra: "served-extra",
       });
-      expect(calls).toEqual(["attempt:storage"]);
+      expect(calls).toEqual(["attempt:served"]);
       expect(decision.considered).toEqual([
-         { kind: "storage", outcome: "used" },
+         { kind: "served", outcome: "used" },
       ]);
    });
 
@@ -56,23 +56,23 @@ describe("routeQuery", () => {
       const calls: string[] = [];
       const decision = await routeQuery(
          [
-            variant("storage", "misses", calls),
+            variant("served", "misses", calls),
             variant("rollup", "answers", calls),
          ],
          async () => false,
       );
       expect(decision).toMatchObject({ served: "variant", kind: "rollup" });
       expect(calls).toEqual([
-         "attempt:storage",
-         "skip:storage",
+         "attempt:served",
+         "skip:served",
          "attempt:rollup",
       ]);
       expect(decision.considered).toEqual([
          {
-            kind: "storage",
+            kind: "served",
             outcome: "skipped",
             reason: "does_not_answer",
-            detail: "storage cannot answer",
+            detail: "served cannot answer",
          },
          { kind: "rollup", outcome: "used" },
       ]);
@@ -82,7 +82,7 @@ describe("routeQuery", () => {
       const calls: string[] = [];
       const decision = await routeQuery(
          [
-            variant("storage", "misses", calls),
+            variant("served", "misses", calls),
             variant("rollup", "misses", calls),
          ],
          async () => false,
@@ -98,7 +98,7 @@ describe("routeQuery", () => {
       const calls: string[] = [];
       const decision = await routeQuery(
          [
-            variant("storage", "answers", calls),
+            variant("served", "answers", calls),
             variant("rollup", "answers", calls),
          ],
          async () => true,
@@ -111,6 +111,65 @@ describe("routeQuery", () => {
       ]);
    });
 
+   it("lets a candidate that keeps the contracts past an entry-point gate only", async () => {
+      for (const [veto, expected] of [
+         ["entry_point", ["row_level_gate", undefined]],
+         [true, ["row_level_gate", "row_level_gate"]],
+      ] as const) {
+         const calls: string[] = [];
+         const decision = await routeQuery(
+            [
+               variant("served", "answers", calls),
+               { ...variant("served", "answers", calls), keepsContracts: true },
+            ],
+            async () => veto,
+         );
+         expect(decision.considered.map((c) => c.reason)).toEqual([
+            ...expected,
+         ]);
+         expect(decision.served).toBe(veto === true ? "live" : "variant");
+      }
+   });
+
+   it("narrows keeping the contracts per answer: an answer the candidate does not keep them for is skipped past an entry-point gate", async () => {
+      const narrowed = (keeps: boolean) => ({
+         ...variant("served", "answers", []),
+         keepsContracts: true,
+         keepsContractsFor: (extra: string) =>
+            keeps && extra === "served-extra",
+      });
+      const skipped = await routeQuery(
+         [narrowed(false), variant("rollup", "answers", [])],
+         async () => "entry_point",
+      );
+      expect(skipped.served).toBe("live");
+      expect(skipped.considered).toEqual([
+         { kind: "served", outcome: "skipped", reason: "row_level_gate" },
+         { kind: "rollup", outcome: "skipped", reason: "row_level_gate" },
+      ]);
+      const kept = await routeQuery(
+         [narrowed(true)],
+         async () => "entry_point",
+      );
+      expect(kept.served === "variant" && kept.pastEntryPointGate).toBe(true);
+      // Ungated, the narrowing is never asked: every answer is used.
+      const ungated = await routeQuery([narrowed(false)], async () => false);
+      expect(ungated.served).toBe("variant");
+   });
+
+   it("marks an answer let past an entry-point gate, so governing it re-proves the gate", async () => {
+      const served = {
+         ...variant("served", "answers", []),
+         keepsContracts: true,
+      };
+      const past = await routeQuery([served], async () => "entry_point");
+      expect(past.served === "variant" && past.pastEntryPointGate).toBe(true);
+      const ungated = await routeQuery([served], async () => false);
+      expect(ungated.served === "variant" && ungated.pastEntryPointGate).toBe(
+         undefined,
+      );
+   });
+
    it("asks about the gate once when a candidate applies, and never when none does", async () => {
       let asked = 0;
       const gate = async () => {
@@ -118,7 +177,7 @@ describe("routeQuery", () => {
          return false;
       };
       await routeQuery(
-         [variant("storage", "misses", []), variant("rollup", "answers", [])],
+         [variant("served", "misses", []), variant("rollup", "answers", [])],
          gate,
       );
       expect(asked).toBe(1);
@@ -144,7 +203,7 @@ describe("routeQuery", () => {
 
    it("records a candidate's own explanation of its skip, and survives one that throws", async () => {
       const explained: Variant<string> = {
-         ...variant("storage", "misses", []),
+         ...variant("served", "misses", []),
          explain: () => ({ code: "rollup_missing_field", callerDetail: "x" }),
       };
       const broken: Variant<string> = {
@@ -156,10 +215,10 @@ describe("routeQuery", () => {
       const decision = await routeQuery([explained, broken], async () => false);
       expect(decision.considered).toEqual([
          {
-            kind: "storage",
+            kind: "served",
             outcome: "skipped",
             reason: "does_not_answer",
-            detail: "storage cannot answer",
+            detail: "served cannot answer",
             code: "rollup_missing_field",
             callerDetail: "x",
          },
@@ -185,58 +244,90 @@ describe("routeQuery metrics", () => {
    });
 
    const count = (labels: Record<string, string>) =>
-      harness.collectCounter("publisher_query_variant_routing_total", labels);
+      harness.collectCounter("publisher_query_route_total", labels);
 
-   it("counts each candidate by variant, outcome and reason", async () => {
+   it("counts each candidate by leg, outcome and public reason", async () => {
       await routeQuery(
-         [variant("storage", "misses", []), variant("rollup", "answers", [])],
+         [variant("served", "misses", []), variant("rollup", "answers", [])],
+         async () => false,
+      );
+      // Unexplained, as the path report reads it.
+      expect(
+         await count({
+            leg: "served",
+            outcome: "skipped",
+            reason: "MISSING_FIELD",
+         }),
+      ).toBe(1);
+      expect(
+         await count({ leg: "rollup", outcome: "used", reason: "NONE" }),
+      ).toBe(1);
+      expect(await count({ leg: "live" })).toBe(0);
+   });
+
+   it("counts an explained decline by its code's SkipReason", async () => {
+      await routeQuery(
+         [
+            {
+               ...variant("rollup", "misses", []),
+               explain: () => ({ code: "rollup_grain_too_coarse" }),
+            },
+         ],
          async () => false,
       );
       expect(
          await count({
-            variant: "storage",
+            leg: "rollup",
             outcome: "skipped",
-            reason: "does_not_answer",
+            reason: "GRAIN_TOO_COARSE",
          }),
       ).toBe(1);
       expect(
-         await count({ variant: "rollup", outcome: "used", reason: "none" }),
+         await count({ leg: "live", outcome: "used", reason: "NONE" }),
       ).toBe(1);
    });
 
-   it("counts a chosen variant whose run failed as skipped run_failed, not used", async () => {
+   it("counts a chosen variant whose run failed as fallback RUN_FAILED, answered live", async () => {
       const decision = await routeQuery(
-         [variant("storage", "answers", [])],
+         [variant("served", "answers", [])],
          async () => false,
          { recordMetrics: false },
       );
       recordVariantRouting(decision.considered, true);
       expect(
-         await count({ variant: "storage", outcome: "used", reason: "none" }),
+         await count({ leg: "served", outcome: "used", reason: "NONE" }),
       ).toBe(0);
       expect(
          await count({
-            variant: "storage",
-            outcome: "skipped",
-            reason: "run_failed",
+            leg: "served",
+            outcome: "fallback",
+            reason: "RUN_FAILED",
          }),
+      ).toBe(1);
+      expect(
+         await count({ leg: "live", outcome: "used", reason: "NONE" }),
       ).toBe(1);
    });
 
-   it("counts a gated skip, and nothing for a hypothetical route", async () => {
+   it("counts a gated skip as CONTRACT, nothing for an inapplicable leg or a hypothetical route", async () => {
       await routeQuery([variant("rollup", "answers", [])], async () => true);
       await routeQuery([variant("rollup", "answers", [])], async () => false, {
          recordMetrics: false,
       });
+      await routeQuery(
+         [variant("view", "inapplicable", [])],
+         async () => false,
+      );
       expect(
          await count({
-            variant: "rollup",
+            leg: "rollup",
             outcome: "skipped",
-            reason: "row_level_gate",
+            reason: "CONTRACT",
          }),
       ).toBe(1);
       expect(
-         await count({ variant: "rollup", outcome: "used", reason: "none" }),
+         await count({ leg: "rollup", outcome: "used", reason: "NONE" }),
       ).toBe(0);
+      expect(await count({ leg: "view" })).toBe(0);
    });
 });

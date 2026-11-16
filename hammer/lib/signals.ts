@@ -1,10 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Ctrl-C and SIGTERM must still tear a run down: an interrupted run otherwise
-// leaves its Postgres container behind under a name no later run will find.
+// Ctrl-C, SIGTERM and SIGHUP (a closed terminal) must still tear a run down: an
+// interrupted run otherwise leaves its Postgres container behind until its
+// watchdog or a later run's reaper finds it.
 
-type Signal = "SIGINT" | "SIGTERM";
+type Signal = "SIGINT" | "SIGTERM" | "SIGHUP";
 
 /** What the handler needs from the process, injected in tests. */
 export interface SignalHost {
@@ -15,12 +16,13 @@ export interface SignalHost {
 
 /** The exit code a shell reports for a run ended by `signal`. */
 export const SIGNAL_EXIT_CODE: Record<Signal, number> = {
+   SIGHUP: 129,
    SIGINT: 130,
    SIGTERM: 143,
 };
 
 /**
- * On the first SIGINT or SIGTERM, run `teardown` and exit with the signal's
+ * On the first SIGINT, SIGTERM or SIGHUP, run `teardown` and exit with the signal's
  * code; a second signal while it runs exits at once (code 1), so a stuck
  * teardown never traps the user. Returns a function that removes the handlers,
  * for when the run finishes normally.
@@ -36,7 +38,7 @@ export function installSignalTeardown(
 ): () => void {
    let tearingDown = false;
    const handlers = new Map<Signal, () => void>();
-   for (const signal of ["SIGINT", "SIGTERM"] as const) {
+   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
       const handler = (): void => {
          if (tearingDown) {
             say(`${signal} again: exiting without finishing teardown`);

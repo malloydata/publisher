@@ -1,0 +1,46 @@
+{
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "preaggregate-time-zone",
+        "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/New_York'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "model": "m.malloy",
+        "route": "preaggregate",
+        "subject": "zoned.total",
+        "tier": "unservable"
+      },
+      {
+        "code": "preaggregate-time-zone",
+        "message": "#(preaggregate) on measure \"n\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/New_York'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "model": "m.malloy",
+        "route": "preaggregate",
+        "subject": "zoned.n",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [],
+    "droppedPersistSources": [],
+    "kinds": {},
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {},
+    "sourceModelPaths": {}
+  },
+  "loadWarnings": [
+    {
+      "code": "preaggregate-time-zone",
+      "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/New_York'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "zoned.total"
+    },
+    {
+      "code": "preaggregate-time-zone",
+      "message": "#(preaggregate) on measure \"n\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/New_York'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "zoned.n"
+    }
+  ],
+  "wirePlan": null
+}

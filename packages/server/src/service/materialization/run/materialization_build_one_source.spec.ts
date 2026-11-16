@@ -5,7 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import { linesMentioning } from "../../../test_helpers/log_lines";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
@@ -51,23 +51,26 @@ describe("buildOneSource", () => {
          realization: "COPY",
       };
       return (
-         ctx.service as unknown as {
-            buildOneSource: (
-               s: unknown,
-               i: BuildInstruction,
-               c: unknown,
-               m: Manifest,
-               env: unknown,
-               built: Record<string, unknown>,
-               buildMetadata?: unknown,
-            ) => Promise<{ sourceEntityId: string; physicalTableName: string }>;
+         ctx.service.collaborators as unknown as {
+            buildOneSource: (options: {
+               persistSource: unknown;
+               instruction: BuildInstruction;
+               connection: unknown;
+               manifest: Manifest;
+               environment: unknown;
+               builtEntries: Record<string, unknown>;
+               buildMetadata?: unknown;
+            }) => Promise<{
+               sourceEntityId: string;
+               physicalTableName: string;
+            }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
          connection,
          manifest,
-         {
+         environment: {
             getApiConnection: () => {
                if (metadata?.connection) {
                   return { queryMetadata: metadata.connection };
@@ -76,8 +79,9 @@ describe("buildOneSource", () => {
             },
             getEnvironmentPath: () => "/tmp/env",
          },
-         {}, // builtEntries — colocated build with no prior storage upstreams
-         metadata
+         // A colocated build with no prior storage upstreams.
+         builtEntries: {},
+         buildMetadata: metadata
             ? {
                  packageMaterialization: metadata.package
                     ? {
@@ -89,7 +93,7 @@ describe("buildOneSource", () => {
                  context: metadata.context ?? { queryClass: "materialize" },
               }
             : undefined,
-      );
+      });
    }
 
    it("tags every statement of the build with the resolved metadata", async () => {
@@ -104,7 +108,9 @@ describe("buildOneSource", () => {
       });
 
       const bags = runSQL.getCalls().map((c) => c.args[1]?.queryMetadata);
-      expect(bags).toHaveLength(3);
+      // The staging drop, the CTAS, the swap, and the read of the built
+      // table's column types (colocated_native_types.ts).
+      expect(bags).toHaveLength(4);
       for (const bag of bags) {
          expect(bag).toEqual({
             deployment: "eu",
@@ -159,6 +165,8 @@ describe("buildOneSource", () => {
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          'BEGIN TRANSACTION;\nDROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";\nCOMMIT;',
+         // Then the built table's column types (colocated_native_types.ts).
+         'DESCRIBE "orders_v1"',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
       expect(entry.sourceEntityId).toBe("abcdef1234567890");
@@ -186,6 +194,7 @@ describe("buildOneSource", () => {
          'ALTER TABLE "MY_SCHEMA"."orders_v1" RENAME TO "MY_SCHEMA"."orders_v1_oabcdef12345"',
          'ALTER TABLE "MY_SCHEMA"."orders_v1_abcdef123456" RENAME TO "MY_SCHEMA"."orders_v1"',
          'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_oabcdef12345"',
+         "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders_v1') AND lower(table_schema) = lower('MY_SCHEMA') ORDER BY ordinal_position",
       ]);
       // The manifest keeps the logical name the control plane sent.
       expect(entry.physicalTableName).toBe("MY_SCHEMA.orders_v1");
@@ -281,6 +290,7 @@ describe("buildOneSource", () => {
          "ALTER TABLE `ds`.`orders_v1` RENAME TO `orders_v1_oabcdef12345`",
          "ALTER TABLE `ds`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
          "DROP TABLE IF EXISTS `ds`.`orders_v1_oabcdef12345`",
+         "SELECT column_name, data_type FROM `ds`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'orders_v1' ORDER BY ordinal_position",
       ]);
       expect(entry.physicalTableName).toBe("ds.orders_v1");
    });
@@ -324,27 +334,28 @@ describe("buildOneSource", () => {
          },
       };
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...a: unknown[]) => Promise<unknown>;
          }
-      ).buildOneSource(
-         down,
-         {
+      ).buildOneSource({
+         persistSource: down,
+         // No destination: colocated.
+         instruction: {
             sourceEntityId: "downdowndowndown",
             materializedTableId: "mt",
             physicalTableName: "down_v1",
             realization: "COPY",
-         }, // no destination ⇒ colocated
-         { runSQL },
+         },
+         connection: { runSQL },
          manifest,
-         {
+         environment: {
             getApiConnection: () => {
                throw new Error("unused in the colocated build");
             },
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries,
-      );
+      });
       const [buildRender, compareRender] = seenManifests;
       expect(buildRender?.entries?.up_storage).toBeUndefined();
       expect(buildRender?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
@@ -435,27 +446,24 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
          realization: "COPY",
       };
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                upstreamReuse?: string;
                upstreamRecomputeReason?: string;
             }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
-         { runSQL: sinon.stub().resolves(undefined) },
+         connection: { runSQL: sinon.stub().resolves(undefined) },
          manifest,
-         {
+         environment: {
             getApiConnection: () => ({}),
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries,
-         undefined,
-         undefined,
-         undefined,
          planFacts,
-      );
+      });
    }
 
    it("reused when the upstream's address is in the manifest, even as a thin reference with no name", async () => {

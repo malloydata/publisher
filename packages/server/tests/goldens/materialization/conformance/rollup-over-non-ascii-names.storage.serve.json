@@ -1,0 +1,176 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "bestellungen__rollup______278821ac",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [],
+    "warnings": [
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure summe on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "bestellungen"
+      },
+      {
+        "code": "deprecated-preaggregate-annotation",
+        "message": "Measure 件数 on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "subject": "bestellungen"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "summe"
+          },
+          {
+            "classifications": [],
+            "path": "件数"
+          },
+          {
+            "classifications": [],
+            "path": "地域"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "地域"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "44a3143934c21a49",
+          "kind": "reduce",
+          "measures": [
+            "summe",
+            "件数"
+          ],
+          "source": "bestellungen",
+          "stages": 1
+        },
+        "source": "bestellungen"
+      },
+      "equalToLive": true,
+      "malloy": "run: bestellungen -> { group_by: 地域; aggregate: summe, 件数 }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "地域"
+          ],
+          "measures": [
+            "summe",
+            "件数"
+          ],
+          "sourceName": "bestellungen"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
+        },
+        "warnings": []
+      },
+      "query": "by the non-ASCII grain",
+      "servedBy": "rollup",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "summe"
+          },
+          {
+            "classifications": [],
+            "path": "件数"
+          },
+          {
+            "classifications": [],
+            "path": "地域"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "地域"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "44a3143934c21a49",
+          "kind": "reduce",
+          "measures": [
+            "summe",
+            "件数"
+          ],
+          "source": "bestellungen",
+          "stages": 1
+        },
+        "source": "bestellungen"
+      },
+      "equalToLive": true,
+      "malloy": "run: bestellungen -> { group_by: 地域; aggregate: summe, 件数 }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "outcome": "used",
+            "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "地域"
+          ],
+          "measures": [
+            "summe",
+            "件数"
+          ],
+          "sourceName": "bestellungen"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
+        },
+        "warnings": []
+      },
+      "query": "by the non-ASCII grain",
+      "servedBy": "rollup",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

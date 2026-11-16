@@ -31,25 +31,47 @@ export const log = {
    },
 };
 
-/** Poll `fn` until it returns truthy or the deadline passes. Returns the value or throws. */
+/** Like `sleep`, but ends early (without throwing) once `signal` aborts. */
+function sleepUnless(ms: number, signal?: AbortSignal): Promise<void> {
+   if (!signal) return sleep(ms);
+   return new Promise((resolve) => {
+      if (signal.aborted) return resolve();
+      const done = (): void => {
+         clearTimeout(timer);
+         signal.removeEventListener("abort", done);
+         resolve();
+      };
+      const timer = setTimeout(done, ms);
+      signal.addEventListener("abort", done);
+   });
+}
+
+/**
+ * Poll `fn` until it returns truthy or the deadline passes. Returns the value or
+ * throws. An aborted `signal` ends the wait at once, mid-interval included; `fn`
+ * should pass the same signal to anything it awaits (a fetch) so an attempt in
+ * flight stops too.
+ */
 export async function waitFor<T>(
    what: string,
    fn: () => Promise<T | undefined | null | false>,
-   opts: { timeoutMs?: number; intervalMs?: number } = {},
+   opts: { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
    const timeoutMs = opts.timeoutMs ?? 60_000;
    const intervalMs = opts.intervalMs ?? 500;
    const deadline = Date.now() + timeoutMs;
    let lastErr: unknown;
    while (Date.now() < deadline) {
+      if (opts.signal?.aborted) throw new Error(`stopped waiting for ${what}`);
       try {
          const v = await fn();
          if (v) return v as T;
       } catch (e) {
          lastErr = e;
       }
-      await sleep(intervalMs);
+      await sleepUnless(intervalMs, opts.signal);
    }
+   if (opts.signal?.aborted) throw new Error(`stopped waiting for ${what}`);
    throw new Error(
       `Timed out after ${timeoutMs}ms waiting for ${what}` +
          (lastErr ? ` (last error: ${(lastErr as Error).message})` : ""),

@@ -12,12 +12,18 @@
  * text, compile it, and let the compiler judge it.
  */
 
+import {
+   NOW_OFFSET_UNITS,
+   type NowComparisonOp,
+   type NowOffsetUnit,
+} from "./materialization/domain/read_time_terms";
+
 /** A name Malloy reads as one identifier without quoting. */
 const PLAIN_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * The Malloy keywords spelled as a bare word (statement keywords end in `:` and
- * cannot collide with a name). A bare keyword where a name is expected does not
+ * The Malloy keywords spelled as a bare word (statement keywords, which end in
+ * `:`, are {@link MALLOY_STATEMENT_KEYWORDS}). A bare keyword where a name is expected does not
  * compile, or compiles as the keyword: `date` is a type, `count` an aggregate,
  * `source` a declaration. A spec pins this list against Malloy's own lexer, so
  * a keyword Malloy adds fails the build here rather than a generated model.
@@ -94,6 +100,54 @@ export const MALLOY_BARE_KEYWORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The Malloy statement keywords, spelled without their colon. The lexer reads
+ * a statement keyword together with the `:` after it, so a bare name of one of
+ * these words is fine in an expression but not where a `:` follows it: in a
+ * `type:` field (`select::string` lexes as `select:` and then `:string`) or a
+ * named argument. A spec pins this list against Malloy's own lexer too.
+ */
+export const MALLOY_STATEMENT_KEYWORDS: ReadonlySet<string> = new Set([
+   "accept",
+   "aggregate",
+   "calculate",
+   "calculation",
+   "connection",
+   "declare",
+   "dimension",
+   "drill",
+   "except",
+   "extend",
+   "given",
+   "group_by",
+   "grouped_by",
+   "having",
+   "index",
+   "internal",
+   "join_cross",
+   "join_many",
+   "join_one",
+   "limit",
+   "measure",
+   "nest",
+   "order_by",
+   "partition_by",
+   "primary_key",
+   "private",
+   "public",
+   "query",
+   "rename",
+   "run",
+   "sample",
+   "select",
+   "source",
+   "timezone",
+   "top",
+   "type",
+   "view",
+   "where",
+]);
+
+/**
  * Escape a name's text for the inside of backticks: backslash first, so the
  * backtick's own escape is not doubled and a trailing backslash cannot swallow
  * the closing quote. Malloy escapes with a backslash, never by doubling.
@@ -137,7 +191,10 @@ export function quotedIdentifier(name: string): string {
  * person may read (serve shapes, rollup companions).
  */
 export function identifier(name: string): string {
-   return PLAIN_NAME.test(name) && !MALLOY_BARE_KEYWORDS.has(name.toLowerCase())
+   const word = name.toLowerCase();
+   return PLAIN_NAME.test(name) &&
+      !MALLOY_BARE_KEYWORDS.has(word) &&
+      !MALLOY_STATEMENT_KEYWORDS.has(word)
       ? name
       : quotedIdentifier(name);
 }
@@ -185,4 +242,58 @@ export function doubleQuotedString(value: string): string {
  */
 export function annotationValue(value: string): string {
    return JSON.stringify(value);
+}
+
+/**
+ * A comparison of a field with the current time, `<field> <op> now [± <n>
+ * <unit>s]`, as a `where:` term re-applies a rolling window at read. Every part
+ * is checked against a closed set (the field is quoted as an identifier), so
+ * the text cannot carry anything but the comparison.
+ */
+export function nowComparison(
+   field: string,
+   op: NowComparisonOp,
+   offset?: { sign: 1 | -1; amount: number; unit: NowOffsetUnit },
+): string {
+   if (![">=", ">", "<", "<="].includes(op)) {
+      throw new Error(`not a comparison: ${op}`);
+   }
+   let now = "now";
+   if (offset) {
+      if (!Number.isSafeInteger(offset.amount) || offset.amount < 0) {
+         throw new Error(`not a whole offset: ${offset.amount}`);
+      }
+      if (!(NOW_OFFSET_UNITS as readonly string[]).includes(offset.unit)) {
+         throw new Error(`not a time unit: ${offset.unit}`);
+      }
+      now = `now ${offset.sign < 0 ? "-" : "+"} ${offset.amount} ${offset.unit}s`;
+   }
+   return `${identifier(field)} ${op} ${now}`;
+}
+
+/** A Malloy number literal: digits, an optional fraction and exponent. */
+const NUMBER_LITERAL = /^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$/;
+
+/**
+ * A number as a Malloy number literal, for a value read back from Malloy text
+ * (a grammar re-emitting an author's expression). Throws on anything else, so
+ * a token that is not a plain number can never be spliced as one.
+ */
+export function numberLiteral(text: string): string {
+   if (!NUMBER_LITERAL.test(text)) {
+      throw new Error(`not a Malloy number literal: ${JSON.stringify(text)}`);
+   }
+   return text;
+}
+
+/**
+ * A function's name in a call (`coalesce(…)`), always bare: Malloy reads a
+ * quoted name before `(` as a field, and `count` or `sum` quoted is no longer
+ * the aggregate. Throws on a name that is not one plain identifier.
+ */
+export function functionName(name: string): string {
+   if (!PLAIN_NAME.test(name)) {
+      throw new Error(`not a plain function name: ${JSON.stringify(name)}`);
+   }
+   return name;
 }

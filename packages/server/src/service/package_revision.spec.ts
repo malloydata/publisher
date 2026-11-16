@@ -121,6 +121,7 @@ describe("Package serving identity", () => {
                   getDeclaredSourceQueryMetadata: () => [],
                   preaggregateViolations: () => [],
                   declaredFilterSourceNames: () => [],
+                  declaredDeprecatedPersistAnnotations: () => [],
                } as unknown as Model,
             ],
          ]),

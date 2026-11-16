@@ -15,6 +15,7 @@ import {
    escapeString,
    identifier,
    MALLOY_BARE_KEYWORDS,
+   MALLOY_STATEMENT_KEYWORDS,
    quotedIdentifier,
    quotedPath,
    stringLiteral,
@@ -249,5 +250,46 @@ describe("MALLOY_BARE_KEYWORDS", () => {
       for (const word of lexer) {
          expect(MALLOY_BARE_KEYWORDS.has(word.toLowerCase())).toBe(true);
       }
+   });
+
+   it("MALLOY_STATEMENT_KEYWORDS covers every statement keyword, without its colon", () => {
+      const file = path.join(
+         path.dirname(require.resolve("@malloydata/malloy")),
+         "lang/lib/Malloy/keyword-display-names.js",
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { KEYWORD_DISPLAY_NAMES } = require(file) as {
+         KEYWORD_DISPLAY_NAMES: Record<string, string>;
+      };
+      const statements = Object.values(KEYWORD_DISPLAY_NAMES)
+         .filter((s) => /^[A-Za-z_][A-Za-z0-9_]*:$/.test(s))
+         .map((s) => s.slice(0, -1).toLowerCase());
+      expect(statements.length).toBeGreaterThan(0);
+      expect([...MALLOY_STATEMENT_KEYWORDS].sort()).toEqual(
+         [...new Set(statements)].sort(),
+      );
+   });
+
+   it("quotes a statement keyword, which a following colon would lex as one", async () => {
+      expect(identifier("select")).toBe("`select`");
+      expect(identifier("order")).toBe("order");
+      // `select::string` in a `type:` lexes as `select:`; quoted, it compiles.
+      const typed = (name: (n: string) => string) =>
+         "##! experimental { virtual_source }\n" +
+         `type: t is { ${name("select")}::string, ${name("group_by")}::number }\n`;
+      const load = (model: string) =>
+         new Runtime({
+            urlReader: new InMemoryURLReader(
+               new Map([["file:///m.malloy", model]]),
+            ),
+            connections: new FixedConnectionMap(
+               new Map([["duckdb", duckdb]]),
+               "duckdb",
+            ),
+         })
+            .loadModel(new URL("file:///m.malloy"))
+            .getModel();
+      await expect(load(typed(identifier))).resolves.toBeDefined();
+      await expect(load(typed((n) => n))).rejects.toThrow();
    });
 });

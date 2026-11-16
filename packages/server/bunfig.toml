@@ -3,8 +3,12 @@
 
 [test]
 # Every suite runs with package versioning on (the file says how a spec turns
-# it off).
-preload = ["./src/test_helpers/package_versioning.ts"]
+# it off), and each DuckDB instance a test opens gets a capped thread pool
+# (duckdb_test_threads.ts says why).
+preload = [
+   "./src/test_helpers/package_versioning.ts",
+   "./src/test_helpers/duckdb_test_threads.ts",
+]
 # The coverage settings are read only when a run asks for coverage (`bun run
 # test:coverage`); a plain `bun test` collects none. Reported, not enforced:
 # there is no threshold.

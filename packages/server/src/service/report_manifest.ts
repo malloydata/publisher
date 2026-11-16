@@ -34,6 +34,7 @@ import type {
 import type { Tag } from "@malloydata/malloy-tag";
 import { ownModelNoteObjects } from "./annotations";
 import { referencedGivenNames } from "./authorize";
+import { queryGivenUsageIds } from "./governance/ir/prepared_query";
 import {
    dashboardDescriptionNotes,
    isMarkdownNote,
@@ -1792,11 +1793,11 @@ export async function compileTileGivens(
          continue;
       }
       await onPrepared?.(tile, prepared);
-      const usage = prepared._query?.givenUsage;
+      const usage = queryGivenUsageIds(prepared);
       if (!usage) continue;
       const registry = prepared._modelDef?.givens ?? fallbackRegistry ?? {};
       const reads = usage
-         .map((given) => registry[given.id]?.name)
+         .map((id) => registry[id]?.name)
          .filter((name): name is string => name !== undefined);
       const target = prepared._query?.structRef;
       const sourceName =

@@ -5,8 +5,9 @@ import { Materialization, MaterializationStatus } from "../../client";
 
 /**
  * Non-terminal phases of a build: PENDING (building) -> MANIFEST_ROWS_READY
- * (tables built) -> MANIFEST_FILE_READY (terminal). Any non-terminal phase may
- * be polled and stopped.
+ * (tables built, manifest recorded, and an auto-run's manifest loading into
+ * its package) -> MANIFEST_FILE_READY (terminal: an auto-run's package serves
+ * the new tables). Any non-terminal phase may be polled and stopped.
  */
 export function isActiveStatus(status?: MaterializationStatus): boolean {
    return (
@@ -64,6 +65,32 @@ export function statusColor(status?: MaterializationStatus): ChipColor {
 }
 
 /**
+ * Whether an auto-run built its tables but its manifest did not load into the
+ * package (`metadata.autoLoad: "failed"`): it reached MANIFEST_FILE_READY, but
+ * queries are not answered from the new tables.
+ */
+export function builtNotServed(materialization: Materialization): boolean {
+   return (
+      materialization.status === MaterializationStatus.ManifestFileReady &&
+      parseMetadata(materialization).autoLoad === "failed"
+   );
+}
+
+/** {@link statusLabel} for a run, which reads a built-but-not-served run apart. */
+export function runLabel(materialization: Materialization): string {
+   return builtNotServed(materialization)
+      ? "Built, not served"
+      : statusLabel(materialization.status);
+}
+
+/** {@link statusColor} for a run: a built-but-not-served run is a warning. */
+export function runColor(materialization: Materialization): ChipColor {
+   return builtNotServed(materialization)
+      ? "warning"
+      : statusColor(materialization.status);
+}
+
+/**
  * Shape of Materialization.metadata. The generated client types it as
  * `object | null`, so callers must read it through parseMetadata(), which
  * narrows defensively and tolerates a missing or differently-shaped object.
@@ -93,6 +120,14 @@ export interface MaterializationMetadata {
     * `refused`; {@link refusedSourcesOf} reads both.
     */
    refusedSources?: Record<string, { name: string; message: string }>;
+   /**
+    * An auto-run's manifest load, recorded when it reaches MANIFEST_FILE_READY:
+    * `loaded`, or `failed` with the step and error. Absent on an orchestrated
+    * run, which loads nothing.
+    */
+   autoLoad?: "loaded" | "failed";
+   autoLoadStep?: string;
+   autoLoadError?: string;
 }
 
 /** One source a run did not build because the eligibility gate refused it. */

@@ -1,0 +1,27 @@
+// conformance: renames [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: daily_r__served is {
+   area::string,
+   order_date::date,
+   total::number
+}
+
+import "raw.malloy"
+
+#@ persist name="daily_r"
+source: daily_r is duckdb.virtual('610a61e5c5ec7535205405f43a14d7dc85aa4f8bde6e4f35f3cb2ba1073294e5')::daily_r__served extend {
+  rename: order_day is order_date
+  measure: grand is total.sum()
+}
+
+source: daily_r2 is daily_r extend {
+  rename: zone is area
+}
+
+source: daily_r3 is daily_r2 extend {
+  rename: territory is zone
+  dimension: day_month is order_day.month
+}

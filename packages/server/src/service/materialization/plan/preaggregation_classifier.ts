@@ -63,12 +63,10 @@
  */
 
 import type { Expr, ExpressionType } from "@malloydata/malloy";
+import type { ReaggregateFunction } from "../domain/rollup_measures";
 
 /** The aggregate functions whose partials can be merged. */
 export type AdditiveAggregate = "sum" | "count" | "min" | "max";
-
-/** The aggregate applied to the STORED partial column to merge it. */
-export type ReaggregateFunction = "sum" | "min" | "max";
 
 /**
  * How each additive aggregate merges. `count: "sum"` is the point of this

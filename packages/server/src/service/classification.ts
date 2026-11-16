@@ -72,6 +72,7 @@ import {
    resolveCompositeResolvedBase,
    resolveQuerySourceBase,
 } from "./governance/ir/source_graph";
+import { forEachFieldPath } from "./governance/ir/array_query";
 
 export type ApiPackageWarning = NonNullable<
    components["schemas"]["Package"]["warnings"]
@@ -333,33 +334,22 @@ function isPassthrough(e: unknown): boolean {
    return false;
 }
 
-/** Every `{node: "field", path}` or `{type: "fieldref", path}` a tree reads. */
+/**
+ * Every `{node: "field", path}` or `{type: "fieldref", path}` a tree reads,
+ * a read inside an array query re-rooted under its array
+ * ({@link forEachFieldPath}).
+ */
 function fieldReferences(e: unknown): string[][] {
    const out: string[][] = [];
-   const seen = new Set<object>();
-   const visit = (node: unknown): void => {
-      if (!node || typeof node !== "object" || seen.has(node)) return;
-      seen.add(node);
-      if (Array.isArray(node)) {
-         for (const item of node) visit(item);
-         return;
-      }
-      const obj = node as Record<string, unknown>;
-      if (
-         (obj.node === "field" || obj.type === "fieldref") &&
-         Array.isArray(obj.path)
-      ) {
-         out.push(obj.path.map(String));
-      }
-      for (const [key, value] of Object.entries(obj)) {
-         // Positions are not expressions, and nothing a reference hides in.
-         if (key === "at" || key === "location") continue;
-         visit(value);
-      }
-   };
-   visit(e);
+   // Positions are not expressions, and nothing a reference hides in.
+   forEachFieldPath(e, (path) => out.push(path), {
+      skipKeys: FIELD_REFERENCE_SKIPPED_KEYS,
+      fieldrefs: true,
+   });
    return out;
 }
+
+const FIELD_REFERENCE_SKIPPED_KEYS = new Set(["at", "location"]);
 
 /**
  * The structs a query runs on: the source it names and, for a composite, the
@@ -918,6 +908,30 @@ function computesValue(
    return reads !== undefined && !reads.nest;
 }
 
+/**
+ * The element expression of a part of a record literal (`r is { a is x }`),
+ * with the owner the record's expression reads from, or undefined for any
+ * other field: the record's IR keeps each element's expression in its
+ * literal's `kids` by name, so a part reads what its own element reads
+ * rather than the whole record's value.
+ */
+function recordLiteralPart(
+   entry: { field: IrField; record?: string },
+   byPath: ReadonlyMap<string, { field: IrField; owner: string }>,
+): { e: unknown; owner: string } | undefined {
+   if (entry.record === undefined) return undefined;
+   const record = byPath.get(entry.record);
+   const e = record?.field.e as
+      | { node?: unknown; kids?: Record<string, unknown> }
+      | undefined;
+   if (!record || e?.node !== "recordLiteral" || !e.kids) return undefined;
+   const name = activeName(entry.field);
+   if (!name || !Object.prototype.hasOwnProperty.call(e.kids, name)) {
+      return undefined;
+   }
+   return { e: e.kids[name], owner: record.owner };
+}
+
 function walkSourceClassifications(
    fields: IrField[] | undefined,
    outputs: QueryOutputs | undefined,
@@ -1023,6 +1037,8 @@ function walkSourceClassifications(
    );
 
    const visiting = new Set<string>();
+   // Parts whose only classes are those of a column around them.
+   const inheritedOnly = new Set<string>();
    const resolve = (path: string): FieldClassification | undefined => {
       const done = resolved.get(path);
       if (done) return done;
@@ -1039,7 +1055,9 @@ function walkSourceClassifications(
       const own = readClassification(texts);
       const outReads = out ? out.outputs.reads.get(out.rel) : undefined;
       // A part of a computed record carries no expression of its own: it returns a piece of the record.
-      const partOf = outReads ? undefined : entry.record;
+      // A part of a record literal (`r is { a is x, b is y }`) is its own element, read beside the record.
+      const literal = outReads ? undefined : recordLiteralPart(entry, byPath);
+      const partOf = outReads || literal ? undefined : entry.record;
       // A record with no one value, such as a struct column or a nest, returns its parts.
       const parts =
          isRecordField(field) && !computesValue(field, out, entry.record)
@@ -1053,13 +1071,22 @@ function walkSourceClassifications(
          ? // A nest's own summary names what its extend declares; its outputs carry what they read.
            { value: [], filter: [], passthrough: false }
          : (outReads ?? {
-              value: out || partOf ? [] : fieldReferences(field.e),
+              value:
+                 out || partOf ? [] : fieldReferences(literal?.e ?? field.e),
               filter: [],
               // An output whose reads are unknown may be a copy.
-              passthrough: out || partOf ? true : isPassthrough(field.e),
+              passthrough:
+                 out || partOf ? true : isPassthrough(literal?.e ?? field.e),
            });
       const inputs: ClassifiedInput[] = [];
       const seenInput = new Set<string>();
+      // A part of a record or array column (`purchases.ssn`) is a piece of
+      // that column's value, so with no class of its own it carries the
+      // classes of the nearest column around it that declares some.
+      const enclosing =
+         own.values.length === 0 && !out && !partOf && !literal
+            ? enclosingColumnClasses(entry, byPath)
+            : [];
       const unresolved: string[] = [];
       const unresolvedRead = (refPath: string): void => {
          if (!unresolved.includes(refPath)) unresolved.push(refPath);
@@ -1079,7 +1106,8 @@ function walkSourceClassifications(
       const read = (refs: string[][]): void => {
          for (const ref of refs) {
             const name = ref.join(".");
-            const refPath = owner && !out ? `${owner}.${name}` : name;
+            const from = literal ? literal.owner : owner;
+            const refPath = from && !out ? `${from}.${name}` : name;
             if (refPath === path && !out) continue;
             readInput(
                refPath,
@@ -1123,7 +1151,17 @@ function walkSourceClassifications(
          filters.push(...input.filtered);
       };
       read(reads.value);
-      for (const p of partOf ? [partOf] : parts) readInput(p, resolve(p));
+      for (const p of partOf ? [partOf] : parts) {
+         const part = resolve(p);
+         // A part that only carries the class of a column around it adds
+         // nothing to that column, so the column does not list it as read.
+         readInput(
+            p,
+            part && !partOf && inheritedOnly.has(p)
+               ? { ...part, classifications: [] }
+               : part,
+         );
+      }
       const valueInputs = inputs.length;
       read(reads.filter);
       take(filters);
@@ -1131,7 +1169,7 @@ function walkSourceClassifications(
       visiting.delete(path);
       const classesOf = (list: ClassifiedInput[]): string[] =>
          tokenSet(list.flatMap((i) => i.classifications));
-      const wouldBe = classesOf(inputs);
+      const wouldBe = tokenSet([...enclosing, ...classesOf(inputs)]);
       const result: FieldClassification = {
          declared: own.values,
          inferred: own.values.length > 0 ? [] : wouldBe,
@@ -1155,11 +1193,38 @@ function walkSourceClassifications(
          ceilings,
          ceilingUnresolved,
       };
+      if (enclosing.length > 0 && inputs.length === 0) inheritedOnly.add(path);
       resolved.set(path, result);
       return result;
    };
    for (const path of byPath.keys()) resolve(path);
    return resolved;
+}
+
+/**
+ * The classes declared on the nearest record or array column that holds
+ * `entry` as a part (directly, or through columns that declare none), or
+ * none when a join to a source, a computed value or nothing encloses it.
+ * Read off the column's own note, never its lineage: a column reads its
+ * parts, so resolving it from a part would go round in a circle.
+ */
+function enclosingColumnClasses(
+   entry: { owner: string },
+   byPath: ReadonlyMap<
+      string,
+      { field: IrField; owner: string; out?: OutputScope; record?: string }
+   >,
+): string[] {
+   for (let at = byPath.get(entry.owner); at; at = byPath.get(at.owner)) {
+      const { field } = at;
+      if (!isRecordField(field) || at.out || at.record !== undefined) break;
+      if (field.e !== undefined) break;
+      const declared = readClassification(
+         annotationTexts(field.annotations),
+      ).values;
+      if (declared.length > 0) return declared;
+   }
+   return [];
 }
 
 /** What the outputs of one `->` query read, and the lineage they read it from. */

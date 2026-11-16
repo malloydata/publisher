@@ -261,7 +261,9 @@ export function buildFilterClause(
          continue;
       }
 
-      predicates.push(buildPredicate(filter, params[filter.name]));
+      predicates.push(
+         buildPredicate(filter, validatedValue(filter, params[filter.name])),
+      );
    }
 
    if (predicates.length === 0) {
@@ -269,6 +271,44 @@ export function buildFilterClause(
    }
 
    return predicates.join(" and ");
+}
+
+/**
+ * `value` as {@link FilterParams} types it, or a {@link FilterValidationError}
+ * naming the filter. A request body is JSON, so a value may arrive as a number,
+ * a boolean or an object, none of which a predicate is built from.
+ */
+function validatedValue(
+   filter: FilterDefinition,
+   value: unknown,
+): string | string[] {
+   if (typeof value === "string") return value;
+   if (Array.isArray(value)) {
+      const other = value.find((v) => typeof v !== "string");
+      if (other === undefined) return value as string[];
+      throw new FilterValidationError(
+         `Filter "${filter.name}" takes a string or an array of strings, not an array holding ${jsonTypeOf(other)}`,
+      );
+   }
+   throw new FilterValidationError(
+      `Filter "${filter.name}" takes a string or an array of strings, not ${jsonTypeOf(value)}`,
+   );
+}
+
+/** The JSON type of `value`, with its article. */
+function jsonTypeOf(value: unknown): string {
+   if (value === null) return "null";
+   if (Array.isArray(value)) return "an array";
+   switch (typeof value) {
+      case "number":
+         return "a number";
+      case "boolean":
+         return "a boolean";
+      case "object":
+         return "an object";
+      default:
+         return `a ${typeof value}`;
+   }
 }
 
 /**
@@ -304,7 +344,7 @@ export class FilterValidationError extends Error {
 // ---------------------------------------------------------------------------
 
 /** Split on whitespace, respecting quotes: `name="Foo Bar" dimension=status`. */
-export function tokenize(input: string): string[] {
+function tokenize(input: string): string[] {
    const tokens: string[] = [];
    let current = "";
    let inQuote = false;

@@ -67,7 +67,7 @@ export const access = [
       type: boolean(),
       default: true,
       description: "Log response bodies.",
-      notes: "Set to `true` or `1` to suppress response-body logging.",
+      notes: "Whether response bodies are logged. The deprecated `DISABLE_RESPONSE_LOGGING` says the opposite: `DISABLE_RESPONSE_LOGGING=true` (or `1`) is `false` here.",
       aliases: {
          env: ["DISABLE_RESPONSE_LOGGING"],
          negated: true,

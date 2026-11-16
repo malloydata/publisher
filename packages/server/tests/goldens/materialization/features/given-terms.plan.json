@@ -1,0 +1,319 @@
+{
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "materialize-not-built",
+        "message": "#(materialize) on source \"both\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+        "model": "m.malloy",
+        "route": "materialize",
+        "subject": "both",
+        "tier": "unservable"
+      },
+      {
+        "code": "materialize-not-built",
+        "message": "#(materialize) on source \"by_base_dimension\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+        "model": "m.malloy",
+        "route": "materialize",
+        "subject": "by_base_dimension",
+        "tier": "unservable"
+      },
+      {
+        "code": "materialize-not-built",
+        "message": "#(materialize) on source \"inherited\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+        "model": "m.malloy",
+        "route": "materialize",
+        "subject": "inherited",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "own@<pkg>/m.malloy": []
+        },
+        "order": [
+          "own@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "own@<pkg>/m.malloy": "materialize"
+    },
+    "materializePlans": {
+      "own@<pkg>/m.malloy": {
+        "buildSourceName": "own__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 14
+            },
+            "start": {
+              "character": 8,
+              "line": 9
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "givenDeclarations": [
+          {
+            "name": "REGION",
+            "url": "<pkg>/m.malloy"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "own",
+          "storage": "lake"
+        },
+        "readTimeTerms": [
+          {
+            "at": [
+              {
+                "range": {
+                  "end": {
+                    "character": 15,
+                    "line": 10
+                  },
+                  "start": {
+                    "character": 9,
+                    "line": 10
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              },
+              {
+                "range": {
+                  "end": {
+                    "character": 25,
+                    "line": 10
+                  },
+                  "start": {
+                    "character": 18,
+                    "line": 10
+                  }
+                },
+                "url": "<pkg>/m.malloy"
+              }
+            ],
+            "code": "region = $REGION",
+            "columns": [
+              "region"
+            ],
+            "givens": [
+              "REGION"
+            ],
+            "kind": "given"
+          }
+        ],
+        "sourceID": "own@<pkg>/m.malloy",
+        "sourceName": "own",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "own@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "own@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "materialize-not-built",
+      "message": "#(materialize) on source \"both\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "both"
+    },
+    {
+      "code": "materialize-not-built",
+      "message": "#(materialize) on source \"by_base_dimension\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "by_base_dimension"
+    },
+    {
+      "code": "materialize-not-built",
+      "message": "#(materialize) on source \"inherited\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "inherited"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "own@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "own@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "own",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "own",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+        "sourceID": "own@<pkg>/m.malloy",
+        "sql": "sha256:313cac3479f4fa00",
+        "strippedTerms": [
+          {
+            "code": "region = $REGION",
+            "givens": [
+              "REGION"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

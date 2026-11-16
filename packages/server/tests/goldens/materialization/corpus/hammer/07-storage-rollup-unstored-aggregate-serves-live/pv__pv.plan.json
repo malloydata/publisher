@@ -1,0 +1,149 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy": "rollup"
+    },
+    "materializePlans": {},
+    "rollupPlans": {
+      "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "orders",
+        "baseGated": false,
+        "baseSourceID": "orders@<hammer>/pv/pv.malloy",
+        "baseSourceName": "orders",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "category",
+          "qty"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "orders__rollup__category_qty__3eb75032",
+        "storage": "lake",
+        "variant": true
+      }
+    },
+    "sourceGateOutcomes": {
+      "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy": "pv.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "qty",
+            "type": "number"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "pv.malloy",
+        "name": "orders__rollup__category_qty__3eb75032",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "orders",
+          "grainDimensions": [
+            "category",
+            "qty"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "068a7a95c90d97a93a56ecc6dd01c907558c76bc520e060c6f16e07b9893109b",
+        "sourceID": "orders__rollup__category_qty__3eb75032@<hammer>/pv/pv.malloy.preaggregate.malloy",
+        "sql": "sha256:8fccaa1fc4206f1b"
+      }
+    }
+  }
+}

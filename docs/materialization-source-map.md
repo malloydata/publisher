@@ -35,7 +35,7 @@ reads it.
 | Joins (relationship, target, added or inherited, cross-connection mark) | PR 3 (rewriter) and PR 4 (joins) |
 | Annotations per segment, origin connection | PR 2 (generator) |
 | Links to stored tables by `(sourceEntityId, destination)`, and a package-wide union by `sourceID` | PR 3, with the router's catalog |
-| Hop readers moved into `governance/ir/source_graph.ts` | Not yet: the rename and pipeline readers live in `source_map.ts` until governance needs them |
+| Hop readers moved into `governance/ir/source_graph.ts` | The base edge (`sourceBaseEdge`, `nextSourceInChain`, with the inferred edge of a table-backed extension) moved with extension tables; the pipeline reader lives in `source_map.ts` until governance needs it. The map still walks pipelines itself (`pipelineReferences`, `reachableSourceIDs`) and holds no text ranges; moving those walks into `source_graph.ts`, and one reader of author text, are phase 5's simplification pass (decided 2026-11-12) |
 
 ## The keying rule
 
@@ -71,9 +71,17 @@ One node per declaration, keyed by `sourceID`:
   composite (`compose(a, b)`, with its members in order; a composite has no
   single base).
 - **Base edge:** the one source it is built from, with the hop that reaches
-  it: `extends` (an `extend`), `referenceID` (a rename), or `query.structRef`
-  (a query-shaped segment, including a query over a composite, whose base is
-  the composite). A table, SQL source or composite has none; the member Malloy
+  it: `referenceID` (a rename, read first: Malloy copies the referent's own
+  `extends` onto a rename, so a rename's `extends` names the grandparent),
+  `extends` (an `extend`), or `query.structRef` (a query-shaped segment,
+  including a query over a composite, whose base is the composite). Malloy
+  records `extends` only on an extension of a query or SQL source; for an
+  extension of a table-backed source the base is read from the compiled
+  structure, never from text: the annotations object it shares with its base
+  (or its own object's `inherits`), the same table, its base's fields copied
+  unchanged or renamed, its base's filters opening its own, and a declaration
+  order the model shows. Two candidates neither of which holds the other, or
+  one of unknown order, give no edge. A table, SQL source or composite has none; the member Malloy
   resolves for a query over a composite (`query.compositeResolvedSourceDef`)
   is read by reachability, not recorded as a base. When a hop does not
   resolve in the model, the chain falls through to the next hop, as the walks
@@ -157,17 +165,14 @@ which of their tables) a build reads.
 
 ## Cross-connection joins
 
-A join whose target is on a different origin connection is marked. Phase 0's
-probe (Evidence 7) showed the consequences the map has to carry:
-
-- the author's file with such a join does not compile live, so the generator
-  plans builds from the file with those joins removed, and the map for build
-  planning is built over that compile;
-- the served copy is the compile of record for serving, and the map over it is
-  what the rewriter and router read;
-- a query that reaches a side not yet built is refused from build state (its
-  handle is left out of the `virtualMap`), so the map reports which joins
-  depend on which tables.
+A join whose target is on a different origin connection is marked. Malloy
+refuses such a join in the author's file (`join-connection-mismatch`), so a
+model that has one fails to load and never reaches the map. The mark matters
+for the served copy: a re-root moves a source onto its destination, and a
+reference join it keeps to a source that is not stored there now crosses
+connections. The served copy leaves that join out (with what reads it), so
+the map reports which joins depend on which tables, and a query through one is
+answered live.
 
 ## Who consumes it
 
@@ -191,7 +196,8 @@ verdict tests stay green.
 
 - The map module, on `source_graph.ts`.
 - The three hand-written chain walkers are replaced by map walks:
-  - `reachedPersistedSources` (`materialization_serve_transform.ts`), the
+  - `reachedPersistedSources` (`materialization_serve_transform.ts`, since
+    deleted; the walk is now `reachPersisted` in `text/source_map.ts`), the
     build-side reach that stops at persisted sources;
   - `sourceChainOf` (`query_path.ts`), the chain the path report and router
     candidates read;
@@ -215,12 +221,11 @@ verdict tests stay green.
 
 ## Open points
 
-1. **One listing per rollup.** Today a rollup appears once per model file that
-   declares or imports its base (`model.malloy.preagg.malloy`,
-   `index.malloy.preagg.malloy`), all sharing one table. The map dedupes by
-   `sourceID`, so the build plan could list each rollup once. That changes
-   which keys `GET …/build-plan` returns, so it belongs with PR 2's build-side
-   changes rather than here.
+1. **One listing per rollup.** Resolved for `#(preaggregate)` (phase 4 PR 1):
+   a rollup is planned only in the model that declares its base, keyed by its
+   own `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`), so the
+   build plan lists it once. `#@ preaggregate` keeps its per-model companions,
+   and their duplicate listings, until its reader is removed.
 2. **Pipeline references and inheritance.** `#@ persist` is not inherited
    across a query-shaped segment; a pipeline reference reads another source's
    table but never inherits its annotations. The map records the reference
