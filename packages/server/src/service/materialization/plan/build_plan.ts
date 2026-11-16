@@ -924,6 +924,13 @@ async function collectGeneratedRollups(
          kind: "rollup",
          ...plannedFacts(source, args.modelPath),
          rollup: plan,
+         // Only a candidate: any other rollup keeps its place in the order.
+         ...(generated.overStoredCandidates.has(source.sourceID)
+            ? {
+                 overStoredBase: async () =>
+                    (await generated.overStoredBases()).get(source.sourceID),
+              }
+            : {}),
          gate: await classifyPersistSourceGate(
             source,
             modelDefOf(generated.model),
@@ -1591,7 +1598,11 @@ function wireSourceOf(
       // Verbatim; the resolved declaration is deliberately not a wire field
       // (see resolveIncrementalDeclaration).
       refresh: annotationFields.refresh ?? null,
-      freshness: resolveFreshness(source, packageMaterialization),
+      freshness: resolveFreshness(
+         source,
+         packageMaterialization,
+         rollup?.freshness,
+      ),
       queryMetadata: resolveQueryMetadata(source, packageMaterialization),
       columns: deriveColumns(source),
       // Resolved, not passed through; a source failing either is in

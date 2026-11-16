@@ -14,6 +14,8 @@
  * Types only.
  */
 
+import type { DeclaredFreshness } from "./freshness";
+
 /** The aggregates whose partials merge. */
 export type MergeableAggregate = "sum" | "count" | "min" | "max";
 
@@ -126,4 +128,12 @@ export interface RollupPlan {
     * compiler gave none.
     */
    baseSourceID?: string;
+   /**
+    * The rollup's source-level freshness: what its declarations say
+    * (`freshness.window=`, `freshness.fallback=` on `#(preaggregate)` or
+    * `#@ preaggregate`), per field over what its base's own declaration says.
+    * The model-file and package layers resolve under it as for any source
+    * (plan_layers.ts). Absent: neither declares any.
+    */
+   freshness?: DeclaredFreshness;
 }

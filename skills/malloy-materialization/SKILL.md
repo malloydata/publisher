@@ -93,7 +93,7 @@ What is different about v2, briefly:
    }
    ```
    - **`scope`** is a package-level contract about sharing tables across versions; on a standalone server it changes nothing except gating `schedule`. Its deprecated root-level home still works, but the two homes disagreeing **fails the load**.
-   - **`freshness`** is the objective a **hosted control plane** enforces by refreshing the table; a **standalone** Publisher does not act on it at all. `fail` behaves like `live` today; only `stale_ok` keeps serving a stale table.
+   - **`freshness`** bounds how old a served table may be, the same way on every mechanism (rollups included) and in both deployments: a standalone run stamps the window on the tables it builds and rebuilds one past it on its next run; a **hosted control plane** stamps its own manifest and schedules refreshes to meet it. `fail` behaves like `live` today; only `stale_ok` keeps serving a stale table.
    - **`queryMetadata`** tags every build statement and every query for the backend's cost attribution. Root level; the home inside `materialization` is deprecated. Observability only.
    - **`schedule`** is a 5-field UTC cron that **requires `scope: "version"`** and **excludes `freshness`**; it fires only on a standalone server whose scheduler is enabled.
 

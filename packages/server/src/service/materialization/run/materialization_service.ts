@@ -99,6 +99,11 @@ import {
    withRunTelemetry,
 } from "./run_telemetry";
 import {
+   declaredFreshnessIndex,
+   pastDeclaredWindow,
+   stampDeclaredFreshness,
+} from "./freshness_stamp";
+import {
    deriveSelfInstructions,
    type RenamedTable,
    validateInstructions,
@@ -1170,6 +1175,7 @@ export class MaterializationService {
             reader,
          );
          let recheck: Record<string, BuildInstruction>;
+         const freshness = declaredFreshnessIndex(pkg.getBuildPlan());
          ({
             instructions,
             carried,
@@ -1188,7 +1194,21 @@ export class MaterializationService {
                packagePath: pkg.getPackagePath(),
                ...(owned !== undefined ? { ownedVersion: owned } : {}),
             },
-            { forceRefresh: opts.forceRefresh ?? false },
+            {
+               forceRefresh: opts.forceRefresh ?? false,
+               pastWindow: (sourceEntityId, prior) =>
+                  pastDeclaredWindow(
+                     prior,
+                     freshness.factsAt(sourceEntityId),
+                     new Date(run.startedAt),
+                  ),
+               upstreams: {
+                  windowSecondsAt: (address) =>
+                     freshness.factsAt(address)?.freshnessWindowSeconds,
+                  upstreamsOf: (address) => freshness.upstreamsOf(address),
+                  at: new Date(run.startedAt),
+               },
+            },
          ));
          // A carried table at the author's `name=` is reused only while
          // it is still marked as this package's (table_ownership.ts).
@@ -1337,6 +1357,14 @@ export class MaterializationService {
          clearedTiers,
          hostInstructed: orchestrated,
          warehouseReach: opts.warehouseReach,
+         freshness: (() => {
+            const index = declaredFreshnessIndex(pkg.getBuildPlan());
+            return {
+               windowSecondsAt: (address: string) =>
+                  index.factsAt(address)?.freshnessWindowSeconds,
+               at: new Date(run.startedAt),
+            };
+         })(),
          // Auto-run only: Publisher owns every write to its tables, so it
          // can tell a joined table that has not changed since a check
          // passed. A host's tables are its own.
@@ -1421,9 +1449,20 @@ export class MaterializationService {
       const sourcesRefused =
          Object.keys(derivedRefused).length + instructedRefused;
       const durationMs = Date.now() - startedAt;
+      // A standalone run stamps its tables' declared freshness, as a host
+      // stamps the manifest it distributes; a host's run leaves it to the host.
+      const committedEntries = orchestrated
+         ? entries
+         : stampDeclaredFreshness(
+              entries,
+              declaredFreshnessIndex(pkg.getBuildPlan()),
+              new Set(Object.keys(carried)),
+              new Date(startedAt),
+              built.readFrom,
+           );
       const served = await this.collaborators.commitManifest(
          id,
-         entries,
+         committedEntries,
          failures,
          {
             // Recorded before any is dropped, so a crash between this
@@ -1474,7 +1513,7 @@ export class MaterializationService {
                  this.collaborators.autoLoadManifest(
                     environment,
                     packageName,
-                    entries,
+                    committedEntries,
                     versionId,
                     uniquenessChecks?.rollupKeys,
                     // A stop that landed during the load did not cut it

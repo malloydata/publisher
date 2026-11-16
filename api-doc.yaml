@@ -10988,12 +10988,16 @@ components:
             declaring either on a source is a publish-time manifest error.)
 
 
-            A synthesized rollup (`origin: preaggregate`) declares nothing of its
-            own and gets no freshness policy of its own: it INHERITS its base's,
-            so what is reported here is the base source's effective objective
-            resolved by the rule above. A rollup and its base therefore go stale
-            together, which is what makes "serve the base when the rollup is
-            stale" a safe degradation rather than a change of answer.
+            A synthesized rollup (`origin: preaggregate`) resolves the same way,
+            with its source level being its own `freshness.window=` /
+            `freshness.fallback=` (on `#(preaggregate)` or `#@ preaggregate`),
+            field by field over its base's own source-level declaration. A
+            rollup that declares nothing therefore goes stale with its base,
+            and a stale rollup is answered from the base, the same answer.
+
+            A standalone run stamps this resolution on the manifest entries it
+            commits (`freshnessWindowSeconds`, `freshnessFallback`, `dataAsOf`),
+            as a control plane does on the manifest it distributes.
         queryMetadata:
           oneOf:
             - $ref: "#/components/schemas/QueryMetadata"
