@@ -13,7 +13,10 @@ import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parseEnvironmentName, parsePackageName } from "./identity";
 import { startedStore } from "../test_helpers/started_store";
-import type { VersionService } from "./versions/version_service";
+import {
+   type VersionService,
+   VersionService as VersionServiceClass,
+} from "./versions/version_service";
 import type { Version } from "../storage/DatabaseInterface";
 import { StatusSnapshot, type StatusVersionRecords } from "./status_snapshot";
 
@@ -488,6 +491,57 @@ describe("/status snapshot version rows", () => {
       expect(comparable(await store!.getStatus())).toEqual(
          comparable(await store!.computeStatusFromListings()),
       );
+   });
+
+   it("lists every loaded version, latestVersion null, while the boot read of the rows fails", async () => {
+      await boot([{ name: "org", packages: ["anchor"] }], {
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+      });
+      const dir = source("sales", "1.0.0");
+      const versions = (await environmentOf("org")).getVersionService()!;
+      await versions.publish("sales", copyFrom(dir), {
+         sourceLocation: dir,
+         promotion: "on-publish",
+      });
+      // Restart with the prime's read failing.
+      const listAll = sinon
+         .stub(VersionServiceClass.prototype, "listAllVersions")
+         .rejects(new Error("database busy"));
+      await restart();
+      const org = await environmentOf("org");
+      expect(listAll.called).toBe(true);
+      await org.getPackage(parsePackageName("sales"), false);
+      const sales = (await store!.getStatus()).environments[0].packages?.find(
+         (p) => p.name === "sales",
+      );
+      expect(sales).toMatchObject({
+         versionId: "1.0.0",
+         loaded: true,
+         archiveStatus: "unarchive",
+         latestVersion: null,
+      });
+      listAll.restore();
+   });
+
+   it("stops re-reading once its environment is closed", async () => {
+      await boot([{ name: "org", packages: ["anchor"] }], {
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+      });
+      const org = await environmentOf("org");
+      const retry = org as unknown as {
+         statusVersionsRetry: ReturnType<typeof setTimeout> | undefined;
+         scheduleStatusVersionsRetry(): void;
+         retryStatusVersions(): Promise<void>;
+      };
+      const versions = org.getVersionService() as VersionService<Package>;
+      const listAll = sinon.spy(versions, "listAllVersions");
+      const records = sinon.spy(versions, "versionRecords");
+      await org.closeAllConnections();
+      retry.scheduleStatusVersionsRetry();
+      expect(retry.statusVersionsRetry).toBeUndefined();
+      await retry.retryStatusVersions();
+      expect(listAll.called).toBe(false);
+      expect(records.called).toBe(false);
    });
 
    it("primes a new environment's version rows without reading any", async () => {

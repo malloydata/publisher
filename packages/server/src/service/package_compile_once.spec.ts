@@ -26,6 +26,7 @@ import { unrecordedAudit } from "./access_record";
 import { Environment } from "./environment";
 import type { FreshnessManifest } from "./materialization/domain/types";
 import { QueryPrivileges } from "./model_query_request";
+import { governsAccess } from "./governance/ir/array_query";
 import type { Package } from "./package";
 
 const MODEL = `##! experimental.persistence
@@ -153,6 +154,12 @@ describe("a package compiles once per thing a compile reads", () => {
       await storeTable(once);
 
       expect(once.getOperationalFields().manifestBindingStatus).toBe("bound");
+      // The reload a bind ran before re-read `manifestLocation` from
+      // publisher.json (none here), over the registry row's path; the bind
+      // that stands in for it does the same, so `boundManifestOf` and the
+      // local-store layering read what they read before.
+      expect(before.getManifestLocation()).toBeNull();
+      expect(once.getManifestLocation()).toBeNull();
       expect(once.getBuildManifestEntries()).toEqual(
          before.getBuildManifestEntries(),
       );
@@ -245,6 +252,40 @@ describe("a package compiles once per thing a compile reads", () => {
          ),
       ).toBe(true);
       expect(compiles).toHaveBeenCalledTimes(2);
+      expect(pkg.getManifestLocation()).toBeNull();
+   });
+
+   it("leaves manifestLocation as a reload left it, after a version load and a table-changing rebind", async () => {
+      const probe = await loadVersion(null);
+      const { file, entries } = await writeManifest(probe);
+      const [id] = Object.keys(entries);
+      const pkg = await loadVersion(file);
+      expect(pkg.getManifestLocation()).toBeNull();
+      // The PATCH-style path: the stored location is set to the manifest,
+      // then a rebind to other tables reloads, which reads publisher.json.
+      pkg.updateStoredMetadata({ manifestLocation: file });
+      expect(
+         await pkg.reloadAllModels(
+            { [id]: { ...entries[id], tableName: "summary_b" } },
+            { ifChanged: true },
+         ),
+      ).toBe(true);
+      expect(pkg.getManifestLocation()).toBeNull();
+      // And a freshness-only rebind, which binds in place of that reload.
+      pkg.updateStoredMetadata({ manifestLocation: file });
+      expect(
+         await pkg.reloadAllModels(
+            {
+               [id]: {
+                  ...entries[id],
+                  tableName: "summary_b",
+                  dataAsOf: "2026-11-02T00:00:00Z",
+               },
+            },
+            { ifChanged: true },
+         ),
+      ).toBe(false);
+      expect(pkg.getManifestLocation()).toBeNull();
    });
 
    it("ships whether each model governs access with the model", async () => {
@@ -252,7 +293,7 @@ describe("a package compiles once per thing a compile reads", () => {
          "m.malloy": MODEL,
          "gated.malloy": GOVERNED,
       });
-      await loadVersion(null);
+      const pkg = await loadVersion(null);
       const outcome = (await compiles.mock.results[0].value) as {
          models: { modelPath: string; governsAccess?: boolean }[];
       };
@@ -260,5 +301,12 @@ describe("a package compiles once per thing a compile reads", () => {
          outcome.models.map((m) => [m.modelPath, m.governsAccess]),
       );
       expect(shipped).toEqual({ "m.malloy": false, "gated.malloy": true });
+      // Noted on the hydrated model: the lookup answers what the worker did.
+      expect(governsAccess(pkg.getModel("gated.malloy")!.getModelDef())).toBe(
+         true,
+      );
+      expect(governsAccess(pkg.getModel("m.malloy")!.getModelDef())).toBe(
+         false,
+      );
    });
 });

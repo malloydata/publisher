@@ -2508,6 +2508,8 @@ export class Environment {
    private statusVersionsPriming: Promise<void> | undefined;
    private statusVersionsRetry: ReturnType<typeof setTimeout> | undefined;
    private statusVersionsRetryAttempt = 0;
+   /** Set by {@link closeAllConnections}: nothing is retried after it. */
+   private closed = false;
 
    /**
     * Re-read one package's version rows for `/status` after a write to them,
@@ -2547,7 +2549,7 @@ export class Environment {
     * versions this server holds loaded (see {@link statusVersionEntries}).
     */
    private scheduleStatusVersionsRetry(): void {
-      if (this.statusVersionsRetry !== undefined) return;
+      if (this.closed || this.statusVersionsRetry !== undefined) return;
       const attempt = this.statusVersionsRetryAttempt++;
       if (attempt === STATUS_VERSIONS_RETRIES_BEFORE_ERROR) {
          logger.error(
@@ -2575,7 +2577,7 @@ export class Environment {
 
    private async retryStatusVersions(): Promise<void> {
       const versions = this.versionService;
-      if (!versions) return;
+      if (!versions || this.closed) return;
       if (!this.statusVersionsPrimed) {
          await this.primeStatusVersions();
          return;
@@ -5022,6 +5024,9 @@ export class Environment {
    }
 
    public async closeAllConnections(): Promise<void> {
+      // A closed (deleted) environment stops re-reading version rows, so no
+      // timer keeps it alive.
+      this.closed = true;
       this.cancelPlanRefreshes();
       clearTimeout(this.statusVersionsRetry);
       this.statusVersionsRetry = undefined;
