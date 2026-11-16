@@ -269,6 +269,51 @@ function dropReach(
    return { cachedConnection, viewContext, owner, retireIfReplacedByView };
 }
 
+/**
+ * Drop one `storage=` table in its destination, through a READ-WRITE attach
+ * (the serve attach is read-only). Best-effort: false when the destination is
+ * no longer configured or the drop failed, which is logged.
+ */
+async function dropStorageTable(
+   environment: BuildEnvironment,
+   destinationName: string,
+   table: Parameters<typeof STORAGE.drop>[1],
+   materializationId?: string,
+): Promise<boolean> {
+   const destinationConnection = destinationForCleanup(
+      environment,
+      destinationName,
+   );
+   if (!destinationConnection) return false;
+   const context = {
+      ...(materializationId ? { materializationId } : {}),
+      physicalTableName: table.physicalTableName,
+      storageDestinationName: destinationName,
+   };
+   try {
+      await STORAGE.drop(
+         {
+            destinationName,
+            destinationConnection,
+            environmentPath: environment.getEnvironmentPath(),
+         },
+         table,
+      );
+      recordDropTables("success", "storage");
+      logger.info("Dropped a materialized storage table", context);
+      return true;
+   } catch (err) {
+      recordDropTables("failure", "storage");
+      logger.warn("Failed to drop a materialized storage table", {
+         ...context,
+         // The drop attaches read-write, so a failure can echo the catalog
+         // connstring.
+         error: redactConnectionSecrets(errMessage(err), destinationConnection),
+      });
+      return false;
+   }
+}
+
 /** A drop of a run's manifest entries; see {@link Reclaimer.dropManifestEntries}. */
 type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
@@ -328,23 +373,11 @@ export class Reclaimer {
    ): Promise<void> {
       if (builtThisRun.length === 0) return;
       try {
-         const tableKey = (dest: string, table: string) => `${dest}:${table}`;
-         const stillReferenced = new Set<string>();
-         const others =
-            (await this.repository.listMaterializations(
-               owner.environmentId,
-               owner.packageName,
-            )) ?? [];
-         for (const other of others) {
-            if (other.status !== "MANIFEST_FILE_READY") continue;
-            for (const e of Object.values(other.manifest?.entries ?? {})) {
-               const dest = e.storageDestinationName ?? e.connectionName;
-               if (dest && e.physicalTableName) {
-                  stillReferenced.add(tableKey(dest, e.physicalTableName));
-               }
-            }
-         }
-
+         const stillReferenced = await this.tablesStillReferenced(
+            owner.environmentId,
+            owner.packageName,
+            () => true,
+         );
          for (const entry of builtThisRun) {
             const dest = entry.storageDestinationName;
             const table = entry.physicalTableName;
@@ -356,39 +389,9 @@ export class Reclaimer {
                );
                continue;
             }
-            const destinationConnection = destinationForCleanup(
-               environment,
-               dest,
-            );
-            if (!destinationConnection) continue;
-            try {
-               await STORAGE.drop(
-                  {
-                     destinationName: dest,
-                     destinationConnection,
-                     environmentPath: environment.getEnvironmentPath(),
-                  },
-                  { physicalTableName: table },
-               );
-               recordDropTables("success", "storage");
-               logger.info("Reclaimed a table stranded by a failed build", {
-                  destinationName: dest,
-                  physicalTableName: table,
-               });
-            } catch (dropErr) {
-               recordDropTables("failure", "storage");
-               logger.warn(
-                  "Failed to reclaim a table stranded by a failed build",
-                  {
-                     destinationName: dest,
-                     physicalTableName: table,
-                     error: redactConnectionSecrets(
-                        errMessage(dropErr),
-                        destinationConnection,
-                     ),
-                  },
-               );
-            }
+            await dropStorageTable(environment, dest, {
+               physicalTableName: table,
+            });
          }
       } catch (err) {
          // Never let cleanup mask the build failure that triggered it.
@@ -610,56 +613,23 @@ export class Reclaimer {
             await dropLeftoverNameViews(entry, nameViews, owner, viewContext);
          }
 
-         // A storage= table lives in the destination, not the source warehouse,
-         // and needs a READ-WRITE attach (the serve attach is read-only). A
-         // failure is logged and the sweep continues.
+         // A storage= table lives in its destination, not the source
+         // warehouse. A failure is logged and the sweep continues.
          if (entry.storageDestinationName) {
-            const destinationConnection = destinationForCleanup(
+            const dropped = await dropStorageTable(
                environment,
                entry.storageDestinationName,
+               {
+                  physicalTableName,
+                  // Its backup name, where an earlier release's `name=` view
+                  // replacement kept the table until its run committed, as a
+                  // crash or a failed restore may have left it.
+                  leftoversOf: entry.sourceEntityId,
+                  onDropFailed: retireIfReplacedByView(entry),
+               },
+               m.id,
             );
-            if (!destinationConnection) {
-               owed.push(entry);
-               continue;
-            }
-            try {
-               await STORAGE.drop(
-                  {
-                     destinationName: entry.storageDestinationName,
-                     destinationConnection,
-                     environmentPath: environment.getEnvironmentPath(),
-                  },
-                  {
-                     physicalTableName,
-                     // Its backup name, where an earlier release's `name=`
-                     // view replacement kept the table until its run
-                     // committed, as a crash or a failed restore may have
-                     // left it.
-                     leftoversOf: entry.sourceEntityId,
-                     onDropFailed: retireIfReplacedByView(entry),
-                  },
-               );
-               recordDropTables("success", "storage");
-               logger.info("Dropped materialized storage table on delete", {
-                  materializationId: m.id,
-                  physicalTableName,
-                  storageDestinationName: entry.storageDestinationName,
-               });
-            } catch (err) {
-               owed.push(entry);
-               recordDropTables("failure", "storage");
-               logger.warn("Failed to drop a storage-materialized table", {
-                  materializationId: m.id,
-                  physicalTableName,
-                  storageDestinationName: entry.storageDestinationName,
-                  // The drop attaches read-write, so a failure can echo the
-                  // catalog connstring.
-                  error: redactConnectionSecrets(
-                     errMessage(err),
-                     destinationConnection,
-                  ),
-               });
-            }
+            if (!dropped) owed.push(entry);
             continue;
          }
 
