@@ -92,7 +92,10 @@ function warningsWith(pkg: Package, code: string) {
 }
 
 function verdictOf(pkg: Package, sourceName: string) {
-   return pkg.getServeVerdicts().find((v) => v.sourceName === sourceName);
+   return pkg
+      .materialization()
+      .serveVerdicts()
+      .find((v) => v.sourceName === sourceName);
 }
 
 describe("a storage= destination the environment does not configure (P13)", () => {
@@ -168,7 +171,7 @@ describe("a colocated source on a connection that cannot hold a table (P13)", ()
       // connection type this test can reach is read-only, so the package's
       // fact source is replaced with one that answers as a read-only type does.
       let canHold = false;
-      pkg.setDeploymentFacts({
+      pkg.materialization().setDeploymentFacts({
          destinationNames: () => ["lake"],
          connectionCanHoldTable: (name) => (name === "duckdb" ? canHold : true),
       });

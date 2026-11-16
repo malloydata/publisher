@@ -423,14 +423,26 @@ export function assertColocatedPersistNotAuthorizeGated(
          message: inheritedRowFilterRefusal(sourceName, "colocated"),
       });
    }
+   // G3, the gate policy's: the entry point's own gate compiles to a row
+   // filter and nothing else is reachable beneath it, so colocated serving
+   // grafts exactly what a live query would.
    if (
       origin === "persist" &&
-      gateOutcome?.classification === "row_level" &&
-      gateOutcome.attributed
+      tableKeepsGates(
+         {
+            kind: "persist",
+            tier: "colocated",
+            v1: true,
+            gate: {
+               rowLevel: gateOutcome?.classification === "row_level",
+               attributed: gateOutcome?.attributed === true,
+               // Refused above, with its own message.
+               inheritedRowFilter: false,
+            },
+         },
+         gateSwitches(),
+      )
    ) {
-      // Proven safe above: the entry point's own gate compiles to a row
-      // filter and nothing else is reachable beneath it, so colocated serving
-      // grafts exactly what a live query would.
       return;
    }
 

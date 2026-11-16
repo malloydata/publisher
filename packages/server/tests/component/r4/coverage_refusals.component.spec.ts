@@ -129,7 +129,7 @@ async function expectAsLive(l: Loaded, p: Probe): Promise<void> {
          return;
       case "colocated":
          expect(served.answer.servedBy).toBe("materialized");
-         expect(served.answer.servedFrom).toBeNull();
+         expect(served.answer.servedFrom).toBe("database");
          return;
       case "storage":
          expect(served.answer.servedBy).toBe("materialized");
@@ -296,7 +296,8 @@ source: orders is orders_raw extend {
          },
       "neither colliding view is served from a table, the third is": (l) => {
          const views = l.fixture.pkg
-            .getServeVerdicts()
+            .materialization()
+            .serveVerdicts()
             .map(
                (v) =>
                   `${v.sourceName}:${v.verdict}${v.reason ? `:${v.reason}` : ""}`,
@@ -552,7 +553,8 @@ source: stored_base is orders_raw -> { select: id, region, status, amount } exte
          "the rollup is planned and served, not left out as rollup_over_stored_base":
             async (l) => {
                const verdicts = l.fixture.pkg
-                  .getServeVerdicts()
+                  .materialization()
+                  .serveVerdicts()
                   .map(
                      (v) =>
                         `${v.origin}:${v.verdict}${v.reason ? `:${v.reason}` : ""}`,

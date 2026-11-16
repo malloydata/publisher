@@ -155,8 +155,20 @@ export interface LegContext {
 export function makeLegs(p: Pinned, ctx: LegContext): readonly Leg[] {
    const legs: Leg[] = [];
    const { persistedViews, persistedQueries, rollupVariants, servedCopy } = ctx;
-   if (persistedViews) legs.push(viewLeg(persistedViews));
-   if (persistedQueries) legs.push(queryLeg(persistedQueries));
+   if (persistedViews) {
+      legs.push(
+         persistedResultLeg("view", persistedViews, (text) =>
+            persistedViews.calledView(text),
+         ),
+      );
+   }
+   if (persistedQueries) {
+      legs.push(
+         persistedResultLeg("query", persistedQueries, (text) =>
+            persistedQueries.calledQuery(text),
+         ),
+      );
+   }
    if (rollupVariants) legs.push(rollupLeg(rollupVariants));
    if (servedCopy?.hasBindings(p.snapshot)) legs.push(servedLeg(servedCopy));
    return legs;
@@ -168,15 +180,22 @@ function pinnedManifest(p: Pinned): BuildManifest | undefined {
 }
 
 /**
- * A persisted view first (R1): applicable only when the text calls one, so a
- * look-alike or a nest never costs a compile.
+ * A persisted view (R1), then a persisted named query by exact call (`run:
+ * q`, `run: q -> { … }`): each applicable only when the text calls one, so a
+ * look-alike or a nest never costs a compile. The gate policy has no row for
+ * the query leg, so it is never tried past an entry-point gate: a persisted
+ * query is never built over a gated source.
  */
-function viewLeg(views: PersistedViewServe): Leg {
+function persistedResultLeg(
+   kind: "view" | "query",
+   serve: Pick<PersistedViewServe | PersistedQueryServe, "attempt">,
+   called: (text: string) => unknown,
+): Leg {
    return {
-      kind: "view",
-      applies: (q) => !!views.calledView(q.queryString),
+      kind,
+      applies: (q) => !!called(q.queryString),
       attempt: async (q, p) => {
-         const answer = await views.attempt({
+         const answer = await serve.attempt({
             queryString: q.queryString,
             givens: q.givens,
             authorRunnable: q.authorRunnable,
@@ -189,36 +208,8 @@ function viewLeg(views: PersistedViewServe): Leg {
             shapeBindings: answer.binding ? [answer.binding] : [],
             virtualMap: answer.virtualMap,
             graftScope: answer.graftScope,
-            viewTable: answer.table,
-         };
-      },
-   };
-}
-
-/**
- * A persisted named query by exact call (`run: q`, `run: q -> { … }`), after
- * the view leg. The gate policy has no row for it, so it is never tried past
- * an entry-point gate: a persisted query is never built over a gated source.
- */
-function queryLeg(queries: PersistedQueryServe): Leg {
-   return {
-      kind: "query",
-      applies: (q) => !!queries.calledQuery(q.queryString),
-      attempt: async (q, p) => {
-         const answer = await queries.attempt({
-            queryString: q.queryString,
-            givens: q.givens,
-            authorRunnable: q.authorRunnable,
-            pinned: p,
-            buildManifest: pinnedManifest(p),
-         });
-         return {
-            runnable: answer.runnable,
-            tablesRead: answer.binding ? [answer.binding] : undefined,
-            shapeBindings: answer.binding ? [answer.binding] : [],
-            virtualMap: answer.virtualMap,
-            graftScope: answer.graftScope,
-            viewTable: { ...answer.table, kind: "query" },
+            viewTable:
+               kind === "query" ? { ...answer.table, kind } : answer.table,
          };
       },
    };
@@ -301,40 +292,32 @@ export function answeredWith(
 }
 
 /**
- * How a query's answer was ultimately produced, once it reached a stored
- * table at all. `storage` = served from a stored table through `virtual()`.
- * `live_fallback` = it routed, then a run-time store failure degraded it to
- * the live warehouse (a success the caller cannot distinguish from a storage
- * hit, which is exactly why it is reported separately; on the error metric,
- * the live retry failed too). Absent means no stored table answered.
+ * Which tier answered a query, when a stored table did: `storage`, a table in
+ * a `storage=` destination read through `virtual()`; `database`, a table in
+ * the source's own database (Malloy's substitution, the served copy over a
+ * colocated table, a colocated rollup or persisted view); `live_fallback`, a
+ * routed answer whose stored run failed and degraded to live (a success that
+ * must NOT count as a storage hit). Absent means no stored table answered.
  */
-export type ServedFrom = "storage" | "live_fallback";
+export type ServedFrom = "storage" | "database" | "live_fallback";
 
-/**
- * `servedFrom` for the answer: a storage hit, a storage run that fell back
- * live (`live_fallback`, a success that must NOT count as a storage hit), or
- * undefined for everything else.
- */
+/** `servedFrom` for the answer, the same tier the path report's `servedBy` names. */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
-   if (answer.leg === "live") return undefined;
+   if (answer.leg === "live") {
+      return answer.colocatedRead.size > 0 ? "database" : undefined;
+   }
    if (answer.runFailed) return "live_fallback";
    const { tablesRead, virtualMap } = answer.answer;
-   // A served-copy answer that read only colocated `#(materialize)` tables
-   // read the source's own warehouse, as a colocated `#@ persist` answer
-   // does, which reports no storage hit; its path report names the table.
-   if (
-      answer.leg === "served" &&
-      tablesRead !== undefined &&
-      tablesRead.length > 0 &&
-      tablesRead.every(isColocated)
-   ) {
-      return undefined;
+   if (answer.leg === "served") {
+      return tablesRead !== undefined &&
+         tablesRead.length > 0 &&
+         tablesRead.every(isColocated)
+         ? "database"
+         : "storage";
    }
-   // A `storage=` persisted view or `#(preaggregate)` rollup reads the
-   // storage tier too, through `virtual()`.
-   return answer.leg === "served" || virtualMap !== undefined
-      ? "storage"
-      : undefined;
+   // A `storage=` persisted view or rollup reads through `virtual()`; a
+   // colocated one through the build manifest.
+   return virtualMap !== undefined ? "storage" : "database";
 }
 
 /**

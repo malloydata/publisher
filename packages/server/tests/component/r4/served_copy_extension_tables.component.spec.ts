@@ -244,9 +244,9 @@ describe("R4: extension tables answer equal to live", () => {
             it(name, async () => {
                const run = await fixture().run({ name, malloy });
                expect(run.servedVia).toBe("served_copy");
-               // A colocated table is the source's own warehouse: no storage hit.
+               // A colocated table is the source's own warehouse.
                expect(run.servedFrom).toBe(
-                  label === "colocated" ? null : "storage",
+                  label === "colocated" ? "database" : "storage",
                );
                expect(run.live.length).toBeGreaterThan(0);
                expect(rowDifference(run.live, run.served)).toBeUndefined();

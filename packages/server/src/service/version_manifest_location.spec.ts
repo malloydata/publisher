@@ -215,7 +215,7 @@ function writeManifest(
 }
 
 const tableOf = (pkg: Package, id: string) =>
-   pkg.getBuildManifestEntries()?.[id]?.tableName;
+   pkg.materialization().getBuildManifestEntries()?.[id]?.tableName;
 
 /** A MaterializationService over `env`, as main_server.ts wires it. */
 function materializationService(): MaterializationService {
@@ -428,7 +428,7 @@ describe("a version's manifestLocation is its registry row's", () => {
       await versions().setManifest(PKG, "1.0.0", null);
       expect(await rowOf("1.0.0")).toBeNull();
       expect(pkg.getManifestLocation()).toBeNull();
-      expect(pkg.getBuildManifestEntries() ?? {}).toEqual({});
+      expect(pkg.materialization().getBuildManifestEntries() ?? {}).toEqual({});
       expect(await total(pkg)).toBe(1);
       // And a load afresh stays live.
       const reloaded = await loadAfresh("1.0.0");

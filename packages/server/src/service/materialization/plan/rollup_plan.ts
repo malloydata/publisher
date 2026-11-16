@@ -74,6 +74,7 @@ import {
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
+import { byReadCost } from "../domain/read_cost";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { hasFanoutJoin } from "./preaggregation_validation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
@@ -493,8 +494,8 @@ interface RollupPlanContext {
 }
 
 /**
- * Plan the rollups `node` declares (its own `#(preaggregate)` notes only), in
- * coarsest-first order (fewest grain dimensions, then name).
+ * Plan the rollups `node` declares (its own `#(preaggregate)` notes only),
+ * cheapest read first ({@link byReadCost}).
  */
 export function planSourceRollups(
    map: SourceMap,
@@ -597,11 +598,7 @@ export function planSourceRollups(
          ...(freshness ? { freshness } : {}),
       });
    }
-   plans.sort(
-      (a, b) =>
-         a.grainDimensions.length - b.grainDimensions.length ||
-         byCodepoint(a.rollupSourceName, b.rollupSourceName),
-   );
+   plans.sort(byReadCost);
    return { plans, refused };
 }
 

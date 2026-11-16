@@ -201,12 +201,62 @@ describe("the gate policy, frozen until the security review (plan question 14)",
 // `materialize colocated` and `pair colocated` rows with `gs=0`), and on the
 // same conditions to a `storage=` table: the `materialize storage` and
 // `pair storage` rows with `gs=0`, and every `persist storage` row (v1, which
-// reads no switch, as v1 colocated does not). The legs' `keeps served
+// reads no switch, as v1 colocated does not). The `persist colocated` rows are
+// plan's colocated `#@ persist` rule since the v1 cutover, decided here rather
+// than restated in plan; they add no table plan did not already admit. The legs' `keeps served
 // read=own*` rows with `gs=0` are the router's half: an answer reading only
 // G3 tables, colocated or `storage=` admitted past its own gate. A `storage=`
 // table plan did not admit still keeps an answer off G3 (`read=own_storage`).
 // prettier-ignore
 const FROZEN_TABLE_ROWS: readonly string[] = [
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=1 rr=1",
    "persist storage v1=0 gate=110 proven=- mz=0 gs=0 rr=0",
    "persist storage v1=0 gate=110 proven=- mz=1 gs=0 rr=0",
    "persist storage v1=0 gate=110 proven=- mz=0 gs=1 rr=0",

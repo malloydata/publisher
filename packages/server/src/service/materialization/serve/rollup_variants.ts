@@ -73,7 +73,8 @@
  * variant's own scope; a denial there is a defect, not a routing outcome. A
  * join branch (A7) carries no gate, so it declines past one.
  *
- * Rollups are offered coarsest first; the first that answers is used. A
+ * Rollups are offered in the plan's order, cheapest read first (coarsest,
+ * then colocated before `storage=`); the first that answers is used. A
  * `#(preaggregate)` rollup is read only with `materialize.enabled` on; a v1
  * `#@ preaggregate` one is read either way.
  */
@@ -160,7 +161,10 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
-import { bigIntegerReadOf, storedTypeServesAs } from "../stored_column_types";
+import {
+   storedColumnReadPlan,
+   storedTypeServesAs,
+} from "../stored_column_types";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import { type Binding, type Pinned } from "../domain/binding";
@@ -1613,10 +1617,7 @@ export class RollupVariantServe {
       const blanked = await authorFiles.blanked(this.host.modelDef());
       if (!blanked) return { error: "a `#@` line could not be left out" };
       for (const [url, file] of blanked) overlay.set(url, file);
-      const built = `${plan.rollupSourceName}__built`;
-      const declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, this.host.modelDef())}
-}
+      const declaration = `${colocatedRollupSource(plan, this.host.modelDef(), servedName, relativeImport(queryModelURL, companion.href))}
 ${sourceOverRollup(plan, use, servedName, "")}`;
       const modelText = queryModelText(
          this.host.modelDef(),
@@ -1732,14 +1733,12 @@ ${declaration}
          queryModelURL: ctx.queryModelURL,
          flags: flagLine(modelDef),
          declare: async ({
-            gates: authorGates,
+            gates,
             sourceName,
             copyName,
             declaringURL,
             addFile,
          }) => {
-            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
-            const gates = authorGates;
             // What the run target adds over the rollup's fields: an
             // extension's dimensions over the grain, and the views the
             // query reads, as the author wrote them.
@@ -1782,10 +1781,7 @@ ${gates}${over}`;
             );
             if (!text) return { error: "no companion" };
             addFile(companion, text);
-            const built = `${plan.rollupSourceName}__built`;
-            return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(declaringURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
-}
+            return `${colocatedRollupSource(plan, modelDef, servedName, relativeImport(declaringURL, companion.href))}
 ${gates}${over}`;
          },
       });
@@ -2063,6 +2059,23 @@ async function variantAdditions(
    return { text, views: declared };
 }
 
+/**
+ * A colocated rollup's served source: its build source imported from the
+ * rollup companion (`from`, relative to the importing file), so the build
+ * manifest substitutes its table, extended with the rollup's merged measures.
+ */
+function colocatedRollupSource(
+   plan: RollupVariantPlan,
+   modelDef: unknown,
+   servedName: string,
+   from: string | undefined,
+): string {
+   const built = `${plan.rollupSourceName}__built`;
+   return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(from ?? "")}
+source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
+}`;
+}
+
 /** The rollup's own `sourceID`, as its build companion declares it. */
 function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    const declared = splitSourceID(plan.baseSourceID);
@@ -2091,7 +2104,7 @@ interface StoredRollupReads {
  *   type's `timestamp`);
  * - a big integer (a grain dimension, or the partial of a measure live types
  *   as a `bigint` number) is read through its native type
- *   ({@link bigIntegerReadOf}): a `type:` declares it only as a `number`,
+ *   ({@link storedColumnReadPlan}): a `type:` declares it only as a `number`,
  *   which Malloy reads through a JavaScript number and rounds above 2^53.
  *   One stored where no cast reads it exactly (a float, its digits already
  *   lost) is the refusal.
@@ -2120,13 +2133,16 @@ function storedRollupReads(
       const storedColumn = stored.get(column.name);
       const field = fields.get(fieldName);
       if (storedColumn) {
-         const big = bigIntegerReadOf(field, storedColumn, {
-            dialect: base?.dialect,
-         });
-         if (big && !big.castTo) {
+         const plan = storedColumnReadPlan(
+            [storedColumn],
+            [{ name: column.name, type: "", field }],
+            { dialect: base?.dialect },
+         );
+         if (plan.refusals.length > 0) {
             return `the stored \`${fieldName}\` (${storedColumn.type}) cannot hold live's integer exactly`;
          }
-         if (big?.castTo) casts.set(column.name, { nativeCast: big.castTo });
+         const [big] = plan.casts;
+         if (big) casts.set(column.name, { nativeCast: big.castTo });
          if (
             column.kind === "dimension" &&
             field?.type === "timestamptz" &&

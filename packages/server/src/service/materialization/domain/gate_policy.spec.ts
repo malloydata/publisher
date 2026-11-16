@@ -86,7 +86,7 @@ describe("the gate policy's rows", () => {
       );
    });
 
-   it("keeps a v1 storage= table's own row-level gate under G3, whatever the switches, and nothing else of v1", () => {
+   it("keeps a v1 table's own row-level gate under G3 on either tier, whatever the switches, and nothing else of v1", () => {
       const persist = (t: Partial<GatedTable>) =>
          table({ kind: "persist", v1: true, ...t });
       const NONE: GateSwitches = {
@@ -96,8 +96,7 @@ describe("the gate policy's rows", () => {
       };
       for (const s of [ON, NONE]) {
          expect(tableKeepsGates(persist({ tier: "storage" }), s)).toBe(true);
-         // A colocated one is plan's colocated tier check's to decide.
-         expect(tableKeepsGates(persist({ tier: "colocated" }), s)).toBe(false);
+         expect(tableKeepsGates(persist({ tier: "colocated" }), s)).toBe(true);
          for (const gate of [
             { ...OWN_GATE, rowLevel: false },
             { ...OWN_GATE, attributed: false },
@@ -190,20 +189,19 @@ describe("the gate policy's rows at their edges", () => {
       }
    });
 
-   it("keeps a persist table's gate only on the storage tier and only its own row-level gate (G3), under every switch", () => {
+   it("keeps a persist table's gate on either tier, and only its own row-level gate (G3), under every switch", () => {
       const all: GateSwitches = {
          materialize: true,
          gatedSources: true,
          gatedStorageRollupsReviewed: true,
       };
       for (const v1 of [true, false]) {
-         // A colocated v1 table is the colocated tier check's to decide.
          expect(
             tableKeepsGates(
                table({ kind: "persist", v1, tier: "colocated" }),
                all,
             ),
-         ).toBe(false);
+         ).toBe(true);
          expect(
             tableKeepsGates(
                table({ kind: "persist", v1, tier: "storage" }),

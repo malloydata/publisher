@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — every answer from a materialized table reports its tier: `servedFrom: "database"` and `path.servedBy.tier`
+
+A query answered from a table in the source's own database (the colocated tier) now reports `servedFrom: "database"`, where it reported `null` before. This covers a colocated `#@ persist` table Malloy substituted, a colocated `#(materialize)` table the served copy read, and a colocated rollup or persisted view. `storage` and `live_fallback` are unchanged, and `null` now means only that no materialized table answered. The path report's `servedBy` gains `tier` (`database` or `storage`) whenever a table answered, the same tier `servedFrom` names. The access record's `servedFrom`, the workload log's `served_from` and the `malloy.model.query.served_from` attribute on `malloy_model_query_duration` carry the new value too.
+
+- **Regenerate strict clients before upgrading.** A client generated from `api-doc.yaml` that validates enums rejects a response carrying the new value. This includes pydantic validators such as Credible's pycommon `QueryResult` and `DataManagementQueryResult`, which reject `servedFrom: "database"`, and a closed `servedBy` schema rejects `tier`. Regenerate the client from this release's `api-doc.yaml` before the server is upgraded.
+- **A client that treats any non-null `servedFrom` as a storage hit** now counts database hits as well. Compare against `"storage"` to keep counting the `storage=` tier alone.
+- **A dashboard that read colocated hits as live** sees them move from `null` to `database`, with no change in which table answered or what it returned.
+
 ## [Unreleased] — one freshness model on every mechanism, and a rollup builds from its base's stored table
 
 `freshness.window=` and `freshness.fallback=` now mean the same thing on `#@ persist`, `#(materialize)` and rollups, colocated and `storage=`, on a standalone server and under a control plane.

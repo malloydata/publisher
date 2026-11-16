@@ -105,12 +105,12 @@ describe("Answer", () => {
       expect(servedFromOf(answer)).toBe("storage");
    });
 
-   it("reads a rollup route as a rollup, not a storage hit", () => {
+   it("reads a colocated rollup route as a colocated hit, not a storage hit", () => {
       const answer = answerOf(rollupRoute) as RoutedAnswer;
       expect(answer.leg).toBe("rollup");
       expect(answer.answer.rollupMember).toBe("orders__by_day");
       expect(answer.answer.virtualMap).toBeUndefined();
-      expect(servedFromOf(answer)).toBeUndefined();
+      expect(servedFromOf(answer)).toBe("database");
    });
 
    it("reads a storage= #(preaggregate) rollup route as a storage hit", () => {
@@ -378,7 +378,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
             authorRunnable: runnable,
          },
          pinned,
-         { modelPath: "m.malloy", colocatedKeepsContracts: true },
+         { modelPath: "m.malloy" },
       ).find((c) => c.kind === "served")!;
    const withG3 = async <T>(run: () => Promise<T>): Promise<T> => {
       const { restore } = installSettings({

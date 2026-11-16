@@ -160,8 +160,8 @@ describe("a package compiles once per thing a compile reads", () => {
       // Each keeps its registry row's manifest: none, and the manifest.
       expect(before.getManifestLocation()).toBeNull();
       expect(once.getManifestLocation()).toBe(file);
-      expect(once.getBuildManifestEntries()).toEqual(
-         before.getBuildManifestEntries(),
+      expect(once.materialization().getBuildManifestEntries()).toEqual(
+         before.materialization().getBuildManifestEntries(),
       );
       await once.getModel("m.malloy")!.prepareServedCopy();
       await before.getModel("m.malloy")!.prepareServedCopy();
@@ -189,7 +189,7 @@ describe("a package compiles once per thing a compile reads", () => {
       expect(pkg.getOperationalFields().manifestBindingStatus).toBe(
          "live_fallback",
       );
-      expect(pkg.getBuildManifestEntries()).toBeUndefined();
+      expect(pkg.materialization().getBuildManifestEntries()).toBeUndefined();
       expect(await total(pkg)).toBe(1);
    });
 
@@ -231,10 +231,10 @@ describe("a package compiles once per thing a compile reads", () => {
       expect(compiles).toHaveBeenCalledTimes(1);
       expect(pkg.getModel("m.malloy")).toBe(model);
       const bound = (
-         pkg as unknown as {
-            materialization: { boundColocatedEntries(): FreshnessManifest };
+         pkg.materialization() as unknown as {
+            boundColocatedEntries(): FreshnessManifest;
          }
-      ).materialization.boundColocatedEntries();
+      ).boundColocatedEntries();
       expect(bound[id]).toMatchObject({
          dataAsOf: "2026-11-02T00:00:00Z",
          schema: [

@@ -16,7 +16,7 @@
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import { type ModelDef } from "@malloydata/malloy";
 import { compiledTextReader } from "../../../utils";
-import { storedColumnsWithAccess } from "./served_copy_serve";
+import { v1StoredColumns } from "./served_copy_serve";
 import { type Binding, bindingServesModelSource } from "../domain/binding";
 import {
    authorModelLiftContext,
@@ -25,8 +25,7 @@ import {
 import {
    declaredColumnsOf,
    type ReadCast,
-   serveTypePlan,
-   storedColumnTypeMismatches,
+   storedColumnReadPlan,
    type StoredColumnTypeMismatch,
 } from "../stored_column_types";
 
@@ -176,16 +175,14 @@ function typePlanFor(
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>,
 ): Omit<BindingTypeFinding, "binding"> {
    const def = contents?.[binding.sourceName];
-   const fields = def?.fields;
-   const stored = storedColumnsWithAccess(binding.schema, fields).map(
-      ({ name, type }) => ({ name, type }),
+   const plan = storedColumnReadPlan(
+      v1StoredColumns(binding.schema, def?.fields),
+      declaredColumnsOf(def?.fields),
+      { queryTimezone: queryTimezoneOf(def) },
    );
-   const mismatches = storedColumnTypeMismatches(
-      stored,
-      declaredColumnsOf(fields),
-   );
-   const { casts, unservable } = serveTypePlan(mismatches, {
-      queryTimezone: queryTimezoneOf(def),
-   });
-   return { casts, unservable, mismatches };
+   return {
+      casts: plan.casts,
+      unservable: plan.leftOut,
+      mismatches: plan.mismatches,
+   };
 }

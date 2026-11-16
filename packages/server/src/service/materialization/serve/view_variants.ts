@@ -88,11 +88,7 @@ import { TIMEFRAMES } from "./served_copy";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
-import {
-   bigIntegerReadOf,
-   serveTypePlan,
-   storedColumnTypeMismatches,
-} from "../stored_column_types";
+import { storedColumnReadPlan } from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
@@ -468,96 +464,168 @@ export class PersistedViewServe {
          return { error: "no context" };
       }
       const shape = await viewShape(author, modelDef, plan, localName);
-      const modelPath = this.host.modelPath();
-      const modelFile = path.join(packagePath, modelPath);
-      const destinations = this.host.serveDestinationConfig();
-      const config =
-         table.binding && destinations
-            ? servedCopyConfig(
-                 packageConfig,
-                 destinations(),
-                 new Set([table.binding.destinationName]),
-              )
-            : packageConfig;
       const view = viewDeclaration(plan.viewName, shape);
       if ("refusal" in view) return { refusal: view.refusal };
-      // A stored column whose type or value does not serve as live's is read
-      // through the served copy's faithful cast (a date truncation a build
-      // stored as a TIMESTAMP, a big integer as HUGEINT), or refuses the
-      // variant.
-      const read = table.binding
-         ? storedColumnCasts(table.binding.schema, shape)
-         : { casts: new Map<string, ColumnCast>() };
-      if ("refusal" in read) return { refusal: read.refusal };
-      const { casts } = read;
       // malloy-text: viewDeclaration's text, every value through identifier or noteSource
       const viewBody = view.text;
-      // The source's own time zone, on the variant's source: a `storage=`
-      // read truncates each stored truncation again, and a later stage
-      // truncates a stored timestamp, each in the zone live computes it in,
-      // never UTC.
-      const sourceTimezone = shape.sourceTimezone
-         ? `\n  timezone: ${stringLiteral(shape.sourceTimezone)}`
-         : "";
-      return compileDeclaringFileVariant({
+      return compilePersistedResultVariant({
          packagePath,
-         modelPath,
          packageConfig,
-         config,
          modelDef,
-         sourceID: plan.sourceID,
-         copySuffix: ".view-author.malloy",
-         queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
-         flags: VARIANT_FLAGS,
-         declare: ({
-            gates: authorGates,
-            sourceName: source,
-            copyName,
-            declaringURL,
-            addFile,
-         }) => {
+         modelPath: this.host.modelPath(),
+         destinations: this.host.serveDestinationConfig(),
+         companionPlans: () => ({
+            views: this.host.planModelPersistedViews(modelDef).plans,
+            queries: this.host.planModelPersistedQueries(modelDef).plans,
+         }),
+         plan,
+         table,
+         shape,
+         redeclare: { sourceID: plan.sourceID },
+         colocatedAlias: `${plan.buildSourceName}__built`,
+         emit: (read) => {
             // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
-            const gates = authorGates;
-            if (table.binding) {
-               const typeName = `${plan.buildSourceName}__type`;
-               const stored = `${plan.buildSourceName}__stored`;
-               const { typeText, timeframes } = storedTypedSource({
-                  columns: shape.columns,
-                  casts,
-                  binding: table.binding,
-                  typeName,
-                  stored,
-               });
+            const gates = read.gates;
+            // malloy-text: the source's own `timezone:` statement, its zone through stringLiteral
+            const zone = read.sourceTimezone;
+            const declared = `${gates}source: ${identifier(read.sourceName)} is ${identifier(read.stored.name)}`;
+            if ("typeText" in read.stored) {
+               // malloy-text: storedTypedSource's text, names through identifier
+               const typeText = read.stored.typeText;
                // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
-               const restated = timeframes;
-               // malloy-text: storedTypedSource's text, the author's gate and view notes (single lines), and names through identifier
+               const timeframes = read.stored.timeframes;
                return `${typeText}
-${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${sourceTimezone}${restated}
+${declared} extend {${zone}${timeframes}
 ${viewBody}
 }`;
             }
-            // The companion over the copy, so its build SQL (and so its
-            // address) is the one the build plan computed.
-            const text = generatePersistedResultFile(
-               this.host
-                  .planModelPersistedViews(modelDef)
-                  .plans.filter((p) => p.declaringURL === declared.url),
-               this.host
-                  .planModelPersistedQueries(modelDef)
-                  .plans.filter((p) => p.declaringURL === declared.url),
-               copyName,
-            );
-            if (!text) return { error: "no companion" };
-            const companion = persistedViewCompanionHref(declaringURL.href);
-            addFile(new URL(companion), text);
-            const built = `${plan.buildSourceName}__built`;
-            return `import { ${identifier(built)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}
-${gates}source: ${identifier(source)} is ${identifier(built)} extend {${sourceTimezone}
+            // malloy-text: the companion import, names through identifier and its file through doubleQuotedString
+            const importLine = read.stored.importLine;
+            return `${importLine}
+${declared} extend {${zone}
 ${viewBody}
 }`;
          },
       });
    }
+}
+
+/**
+ * Compile a persisted result's variant, the view leg's and the query leg's
+ * alike: the source it reads redeclared over its table in an overlay of its
+ * own declaring file, so it keeps the author's `sourceID` and every gate the
+ * governor keys on it finds its graft target, as the served copy keeps it by
+ * re-rooting the author's own file. A `storage=` table is read through a
+ * typed source, each stored column whose type or value does not serve as
+ * live's through the served copy's faithful cast (or the variant is refused);
+ * a colocated one through its build source, imported from the companion over
+ * the copy so its address is the one the build plan computed. `emit` writes
+ * the leg's own declarations over that stored source.
+ */
+export async function compilePersistedResultVariant(args: {
+   packagePath: string;
+   packageConfig: ModelConnectionInput;
+   modelDef: ModelDef;
+   modelPath: string;
+   destinations: (() => MalloyConfig) | undefined;
+   /** Every persisted view and named query the model sees: the companion's. */
+   companionPlans(): {
+      views: readonly PersistedViewPlan[];
+      queries: readonly PersistedQueryPlan[];
+   };
+   plan: { buildSourceName: string; declaringURL: string };
+   table: ResolvedTable;
+   shape: ViewShape;
+   /** What the variant redeclares: a source by `sourceID`, or its declaring file. */
+   redeclare:
+      | { sourceID: string; alsoRedeclared?: string[] }
+      | {
+           declaringURL: string;
+           alsoRedeclared: string[];
+           alsoExported?: string[];
+        };
+   /** The name a colocated build source is imported under. */
+   colocatedAlias: string;
+   emit(read: {
+      gates: string;
+      sourceName: string;
+      /** The source's own `timezone:` statement, or "". */
+      sourceTimezone: string;
+      stored:
+         | { name: string; typeText: string; timeframes: string }
+         | { name: string; importLine: string };
+   }): string;
+}): Promise<CompiledVariant> {
+   const { packagePath, packageConfig, plan, table, shape } = args;
+   const read = table.binding
+      ? storedColumnCasts(table.binding.schema, shape)
+      : { casts: new Map<string, ColumnCast>() };
+   if ("refusal" in read) return { refusal: read.refusal };
+   // The source's own time zone: a `storage=` read truncates each stored
+   // truncation again, and a later stage truncates a stored timestamp, each
+   // in the zone live computes it in, never UTC.
+   const sourceTimezone = shape.sourceTimezone
+      ? `\n  timezone: ${stringLiteral(shape.sourceTimezone)}`
+      : "";
+   const modelFile = path.join(packagePath, args.modelPath);
+   const config =
+      table.binding && args.destinations
+         ? servedCopyConfig(
+              packageConfig,
+              args.destinations(),
+              new Set([table.binding.destinationName]),
+           )
+         : packageConfig;
+   return compileDeclaringFileVariant({
+      packagePath,
+      modelPath: args.modelPath,
+      packageConfig,
+      config,
+      modelDef: args.modelDef,
+      ...args.redeclare,
+      copySuffix: ".view-author.malloy",
+      queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
+      flags: VARIANT_FLAGS,
+      declare: ({ gates, sourceName, copyName, declaringURL, addFile }) => {
+         if (table.binding) {
+            const name = `${plan.buildSourceName}__stored`;
+            const { typeText, timeframes } = storedTypedSource({
+               columns: shape.columns,
+               casts: read.casts,
+               binding: table.binding,
+               typeName: `${plan.buildSourceName}__type`,
+               stored: name,
+            });
+            return args.emit({
+               gates,
+               sourceName,
+               sourceTimezone,
+               stored: { name, typeText, timeframes },
+            });
+         }
+         const ownFile = (p: { declaringURL: string }) =>
+            p.declaringURL === plan.declaringURL;
+         const { views, queries } = args.companionPlans();
+         const text = generatePersistedResultFile(
+            views.filter(ownFile),
+            queries.filter(ownFile),
+            copyName,
+         );
+         if (!text) return { error: "no companion" };
+         const companion = persistedViewCompanionHref(declaringURL.href);
+         addFile(new URL(companion), text);
+         const name = args.colocatedAlias;
+         return args.emit({
+            gates,
+            sourceName,
+            sourceTimezone,
+            stored: {
+               name,
+               importLine: `import { ${identifier(name)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}`,
+            },
+         });
+      },
+   });
 }
 
 /**
@@ -646,7 +714,7 @@ export async function readStoredVariant(args: {
 }
 
 /** The flags every generated variant file declares. */
-export const VARIANT_FLAGS =
+const VARIANT_FLAGS =
    "##! experimental { access_modifiers givens persistence virtual_source }";
 
 /** What the variant reproduces of the view's result. */
@@ -826,24 +894,12 @@ async function viewShape(
 
 /**
  * The stored columns of a `storage=` view's table read through a cast, by
- * name, or why the stored table cannot give live's values:
- *
- * - `DATE` or `BOOLEAN`, the served copy's faithful casts
- *   ({@link serveTypePlan}). A build stores each column as its declared type
- *   where it can, but one whose cast it declined (a view or source with a
- *   query time zone) or a build whose casts failed and stored what the
- *   warehouse returned holds a date truncation as a TIMESTAMP, which the
- *   `type:` would declare a timestamp where live types it a date.
- * - `HUGEINT` for a column live types as a `bigint` number (a BIGINT, a max
- *   over one), the served copy's big-integer read ({@link bigIntegerReadOf}):
- *   a `type:` declares it only as a `number`, which Malloy reads through a
- *   JavaScript number and rounds above 2^53.
- *
- * The refusal, so the query answers live, for a column no faithful cast reads
- * as live's type, a big integer stored as a float (its digits already lost),
- * and a column live answers as a warehouse-native value (`sql native`: a
- * TIMESTAMP_NS, whose digits past the millisecond a `timestamp` drops) or
- * JSON, which no `type:` reads back as live does.
+ * name ({@link storedColumnReadPlan}: a faithful `DATE` or `BOOLEAN`, or a big
+ * integer's native read), or why the stored table cannot give live's values:
+ * a column no faithful cast reads as live's type, a big integer stored as a
+ * float (its digits already lost), or a column live answers as a
+ * warehouse-native value (`sql native`) or JSON, which no `type:` reads back
+ * as live does.
  */
 export function storedColumnCasts(
    schema: readonly { name: string; type: string }[],
@@ -859,36 +915,33 @@ export function storedColumnCasts(
    }
    const declared = shape.columns
       .filter((c) => c.kind !== "nest" && c.type !== "")
-      .map((c) => ({ name: c.name, type: c.type }));
-   const mismatches = storedColumnTypeMismatches(schema, declared);
-   const plan = serveTypePlan(mismatches, {
+      .map((c) => ({ name: c.name, type: c.type, field: c.field }));
+   const plan = storedColumnReadPlan(schema, declared, {
       queryTimezone: shape.queryTimezone,
+      dialect: shape.dialect,
    });
-   const [unservable] = plan.unservable;
+   const [unservable] = plan.leftOut;
    if (unservable) {
       return {
          refusal: `the stored \`${unservable.column}\` (${unservable.storedType}) cannot be read as live's ${unservable.declaredType}`,
       };
    }
-   const casts = new Map<string, ColumnCast>(
-      plan.casts.map((c) => [
-         c.column,
-         { castTo: c.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
-      ]),
-   );
-   for (const c of shape.columns) {
-      const stored = schema.find((s) => s.name === c.name);
-      if (!stored || casts.has(c.name)) continue;
-      const big = bigIntegerReadOf(c.field, stored, { dialect: shape.dialect });
-      if (!big) continue;
-      if (!big.castTo) {
-         return {
-            refusal: `the stored \`${c.name}\` (${stored.type}) cannot hold live's integer exactly`,
-         };
-      }
-      casts.set(c.name, { nativeCast: big.castTo });
+   const [lost] = plan.refusals;
+   if (lost) {
+      return {
+         refusal: `the stored \`${lost.column}\` (${lost.storedType}) cannot hold live's integer exactly`,
+      };
    }
-   return { casts };
+   return {
+      casts: new Map(
+         plan.casts.map((c): [string, ColumnCast] => [
+            c.column,
+            c.native
+               ? { nativeCast: c.castTo }
+               : { castTo: c.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
+         ]),
+      ),
+   };
 }
 
 /**

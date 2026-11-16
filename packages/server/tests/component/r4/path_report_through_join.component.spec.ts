@@ -62,7 +62,7 @@ export { order_facts, c_only }
       const model = fixture.pkg.getModel("index.malloy")!;
       const result = await model.runQuery(unrecordedAudit(), { query });
       return result.path?.servedBy as
-         | { kind: string; tableId?: string; via?: string }
+         | { kind: string; tableId?: string; tier?: string; via?: string }
          | undefined;
    }
 
@@ -78,6 +78,7 @@ export { order_facts, c_only }
       const joined = await servedBy(THROUGH_JOIN);
       expect(joined).toEqual({
          kind: "materialized",
+         tier: "database",
          tableId: facts!.tableId,
          via: "served_copy",
       });

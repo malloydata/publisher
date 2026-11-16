@@ -306,7 +306,8 @@ for (const flag of [true, false])
                const first = await build();
                expect(first.status).toBe("MANIFEST_FILE_READY");
                const verdicts = (await pkg())
-                  .getServeVerdicts()
+                  .materialization()
+                  .serveVerdicts()
                   .map((v) => `${v.sourceName}:${v.verdict}`)
                   .sort();
                expect(verdicts).toEqual(["ev_all:serves", "ev_inc:serves"]);

@@ -24,7 +24,7 @@ describe("Package.annotationFindingWarnings", () => {
          severity: "warn" as const,
       });
       const self = {
-         materialization: {
+         mz: {
             droppedPersistWarnings: () => [],
             annotationFindingWarnings: () => [],
             incrementalPolicyAdvisories: () => [

@@ -99,7 +99,7 @@ async function buildAndBind(
          ...extra,
       };
    }
-   pkg.bindColocatedServeManifest(bound as never);
+   pkg.materialization().bind({ colocated: bound as never });
 }
 
 async function pathOf(
@@ -229,6 +229,7 @@ describe("the path report over colocated #@ persist", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "materialized",
+         tier: "database",
          tableId: entityIdOf(pkg, "daily"),
          dataAsOf: "2026-11-01T00:00:00.000Z",
          via: "served_copy",
@@ -370,7 +371,8 @@ describe("the path report reading the serve verdicts", () => {
          "index.malloy": 'import "model.malloy"\nexport { daily }\n',
       });
       const verdict = pkg
-         .getServeVerdicts()
+         .materialization()
+         .serveVerdicts()
          .find((v) => v.sourceName === "by_region");
       expect(verdict).toMatchObject({ verdict: "live", reason: "unreachable" });
 
@@ -412,7 +414,7 @@ describe("the path report reading the serve verdicts", () => {
 describe("the path report over a colocated rollup", () => {
    async function builtRollup(): Promise<{ pkg: Package; rollupId: string }> {
       const pkg = await loadPackage(ROLLUP_MODEL);
-      const [rollupId] = [...pkg.getPreaggregateEntityIds()];
+      const [rollupId] = [...pkg.materialization().getPreaggregateEntityIds()];
       const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
          (s) => s.sourceEntityId === rollupId,
       );
@@ -423,9 +425,11 @@ describe("the path report over a colocated rollup", () => {
       await connection.runSQL(
          `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
       );
-      pkg.bindColocatedServeManifest({
-         [rollupId]: { tableName: "built_rollup", connectionName: "duckdb" },
-      } as never);
+      pkg.materialization().bind({
+         colocated: {
+            [rollupId]: { tableName: "built_rollup", connectionName: "duckdb" },
+         } as never,
+      });
       return { pkg, rollupId };
    }
 
@@ -435,7 +439,11 @@ describe("the path report over a colocated rollup", () => {
          pkg,
          "run: orders -> { group_by: category; aggregate: total }",
       );
-      expect(report.servedBy).toEqual({ kind: "rollup", tableId: rollupId });
+      expect(report.servedBy).toEqual({
+         kind: "rollup",
+         tableId: rollupId,
+         tier: "database",
+      });
       expect(report.considered).toEqual([
          { tableId: rollupId, kind: "rollup", outcome: "used" },
       ]);
@@ -654,7 +662,9 @@ describe("a table past its freshness window, bound by a host's reload", () => {
       it(`answers live when the only fresh table is a rollup [${mode}]`, async () => {
          await underMode(mode);
          const pkg = await loadPackage(STRIP_ROLLUP_MODEL);
-         const [rollupId] = [...pkg.getPreaggregateEntityIds()];
+         const [rollupId] = [
+            ...pkg.materialization().getPreaggregateEntityIds(),
+         ];
          const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
             (s) => s.sourceEntityId === rollupId,
          );

@@ -99,7 +99,6 @@ import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
-   ManifestEntry,
 } from "./materialization/domain/types";
 import type {
    ChainBuildRequest,
@@ -118,8 +117,8 @@ import type {
    SourceEligibility,
 } from "./materialization/plan/build_plan";
 import {
-   type DeploymentFacts,
    PackageMaterialization,
+   type PackageMaterializationView,
    toTableNameManifest,
 } from "./materialization/package_materialization";
 import {
@@ -402,7 +401,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * The package's materialization state: build plan, eligibility, bound
     * manifest, serve routing and persistence-policy findings.
     */
-   private readonly materialization = new PackageMaterialization({
+   private readonly mz = new PackageMaterialization({
       packageName: () => this.packageName,
       versionId: () => this.getVersionId(),
       metadata: () => this.packageMetadata,
@@ -413,22 +412,29 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       buildPlanPackage: this,
       publishedSurface: () => this.publishedSurface(),
    });
+   /**
+    * The package's materialization: its plan, bindings, verdicts and
+    * warnings. Callers reach the facade through this one accessor.
+    */
+   public materialization(): PackageMaterializationView {
+      return this.mz;
+   }
    // The load path is the only writer of these; the accessors let a spec that
    // isolates a filter set them on the package, where they used to live
    // (protected, not private: nothing in this class reads the setters).
    private get buildPlan(): BuildPlan | null {
-      return this.materialization.buildPlan;
+      return this.mz.plan.buildPlan;
    }
    private set buildPlan(plan: BuildPlan | null) {
-      this.materialization.buildPlan = plan;
+      this.mz.plan.buildPlan = plan;
    }
    protected set sourceEligibility(eligibility: SourceEligibility | undefined) {
-      this.materialization.sourceEligibility = eligibility;
+      this.mz.plan.sourceEligibility = eligibility;
    }
    protected set colocatedSourceEligibility(
       eligibility: ColocatedSourceEligibility | undefined,
    ) {
-      this.materialization.colocatedSourceEligibility = eligibility;
+      this.mz.plan.colocatedSourceEligibility = eligibility;
    }
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
@@ -1561,14 +1567,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             pkg.updateStoredMetadata({ versionId });
          }
          // No manifest is bound yet, so this serves live until a bind.
-         pkg.materialization.wireServingResolvers();
+         pkg.mz.wireServingResolvers();
          pkg.refreshServingIdentity();
 
-         buildPlanMs = await pkg.materialization.applyLoadBuildPlan(
-            outcome.buildPlan,
-         );
+         buildPlanMs = await pkg.mz.applyLoadBuildPlan(outcome.buildPlan);
          // Before any bind, so a colocated rollup bound later is routed.
-         pkg.materialization.pushServedCopyContextToModels();
+         pkg.mz.pushServedCopyContextToModels();
 
          await applyLoadGates(pkg);
          const entitiesStarted = performance.now();
@@ -1647,19 +1651,28 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.packageName;
    }
 
+   /**
+    * The host port's `forgetKeyUniqueness`: a run about to write these
+    * tables drops their bound key checks first (see
+    * PackageMaterialization.forgetKeyUniqueness).
+    */
+   public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      this.mz.forgetKeyUniqueness(sourceEntityIds);
+   }
+
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
    public chainBuildText(request: ChainBuildRequest): ChainBuildText {
-      return this.materialization.chainBuildText(request);
+      return this.mz.chainBuildText(request);
    }
 
    /** The persist build plan, or null when the package declares no persist source. */
    public getBuildPlan(): BuildPlan | null {
-      return this.materialization.getBuildPlan();
+      return this.mz.getBuildPlan();
    }
 
    /** Whether the build plan could not be derived at load, so `getBuildPlan` says nothing. */
    public isBuildPlanUnavailable(): boolean {
-      return this.materialization.isBuildPlanUnavailable();
+      return this.mz.isBuildPlanUnavailable();
    }
 
    /** The package-level `materialization` config, the least specific layer; null when none. */
@@ -2084,16 +2097,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             message,
             severity: "warn" as const,
          })),
-         ...this.materialization.storageWarnings(),
-         ...this.materialization.storedColumnTypeWarnings(),
-         ...this.materialization.nativeSchemaWarnings(),
-         ...this.materialization.servedCopyWarnings(),
-         ...this.materialization.repeatedJoinOneKeyWarnings(),
-         ...this.materialization.annotationFindingWarnings(),
+         ...this.mz.storageWarnings(),
+         ...this.mz.storedColumnTypeWarnings(),
+         ...this.mz.nativeSchemaWarnings(),
+         ...this.mz.servedCopyWarnings(),
+         ...this.mz.repeatedJoinOneKeyWarnings(),
+         ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
-         ...this.materialization.persistRefusalWarnings(),
+         ...this.mz.persistRefusalWarnings(),
          // One verdict pass: unreachable, and the deployment facts (P13).
-         ...this.materialization.verdictWarnings(),
+         ...this.mz.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
@@ -2108,10 +2121,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          // A collision spans sources, so it has no subject; the message names
          // them. Only under PERSIST_COLLISION_ENFORCE=false: otherwise it
          // fails the load (formatInvalidAnnotations).
-         ...this.materialization.persistenceCollisionRefusals(),
+         ...this.mz.persistenceCollisionRefusals(),
          ...this.preaggregateAccessWarnings(),
          // Legal but probably unintended, e.g. a typo'd merge_key=.
-         ...this.materialization.incrementalPolicyAdvisories(),
+         ...this.mz.incrementalPolicyAdvisories(),
          ...materializationConfigWarnings({
             declarations: this.queryMetadataDeclarations(),
             effectiveMerges: this.queryMetadataEffectiveMerges(),
@@ -2141,7 +2154,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       | "sourceContentSha"
       | "storageServeBindings"
    > {
-      const binding = this.materialization.bindingState();
+      const binding = this.mz.bindingState();
       return {
          manifestBindingStatus: binding.manifestBindingStatus,
          manifestEntryCount: binding.manifestEntryCount,
@@ -2154,99 +2167,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       };
    }
 
-   /** The bound manifest entries, or undefined when serving live; reused by /compile. */
-   public getBuildManifestEntries(): BuildManifest["entries"] | undefined {
-      return this.materialization.getBuildManifestEntries();
-   }
-
-   /** See {@link PackageMaterialization.getFreshBuildManifest}. */
-   public getFreshBuildManifest(): BuildManifest["entries"] | undefined {
-      return this.materialization.getFreshBuildManifest();
-   }
-
-   /** See {@link PackageMaterialization.hasBoundTableNameManifest}. */
-   public hasBoundTableNameManifest(): boolean {
-      return this.materialization.hasBoundTableNameManifest();
-   }
-
-   /** See {@link PackageMaterialization.hasStorageServeBindings}. */
-   public hasStorageServeBindings(): boolean {
-      return this.materialization.hasStorageServeBindings();
-   }
-
-   /** See {@link PackageMaterialization.getPreaggregateEntityIds}. */
-   public getPreaggregateEntityIds(): ReadonlySet<string> {
-      return this.materialization.getPreaggregateEntityIds();
-   }
-
-   /** See {@link PackageMaterialization.markManifestBound}. */
-   public markManifestBound(uri: string): void {
-      this.materialization.markManifestBound(uri);
-   }
-
-   /** See {@link PackageMaterialization.markManifestBindFailed}. */
-   public markManifestBindFailed(): void {
-      this.materialization.markManifestBindFailed();
-   }
-
-   /** The colocated half of {@link PackageMaterialization.bind}. */
-   public bindColocatedServeManifest(entries: FreshnessManifest): void {
-      this.materialization.bind({ colocated: entries });
-   }
-
-   /** See {@link PackageMaterialization.forgetKeyUniqueness}. */
-   public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
-      this.materialization.forgetKeyUniqueness(sourceEntityIds);
-   }
-
-   /** The `storage=` half of {@link PackageMaterialization.bind}. */
-   public bindStorageServeBindings(
-      entries: Record<string, ManifestEntry>,
-   ): void {
-      this.materialization.bind({ storage: entries });
-   }
-
-   /** See {@link PackageMaterialization.setServeDestinationSchema}. */
-   public setServeDestinationSchema(
-      resolver: (destinationName: string) => string | undefined,
-   ): void {
-      this.materialization.setServeDestinationSchema(resolver);
-   }
-
-   /** See {@link PackageMaterialization.setDeploymentFacts}. */
-   public setDeploymentFacts(facts: DeploymentFacts): void {
-      this.materialization.setDeploymentFacts(facts);
-   }
-
-   /** See {@link PackageMaterialization.setServeDestinationConfig}. */
-   public setServeDestinationConfig(provider: () => MalloyConfig): void {
-      this.materialization.setServeDestinationConfig(provider);
-   }
-
-   /** See {@link PackageMaterialization.invalidateCompiledLegs}. */
-   public invalidateCompiledLegs(): void {
-      this.materialization.invalidateCompiledLegs();
-   }
-
    /** See {@link PackageMaterialization.markBuildPlanStale}. */
    public markBuildPlanStale(changedConnections: Iterable<string> = []): void {
       this.connectionEdits++;
-      this.materialization.markBuildPlanStale(changedConnections);
-   }
-
-   /** See {@link PackageMaterialization.lastBuildPlanRefreshFailedTransiently}. */
-   public lastBuildPlanRefreshFailedTransiently(): boolean {
-      return this.materialization.lastBuildPlanRefreshFailedTransiently();
-   }
-
-   /** See {@link PackageMaterialization.isBuildPlanStale}. */
-   public isBuildPlanStale(): boolean {
-      return this.materialization.isBuildPlanStale();
-   }
-
-   /** See {@link PackageMaterialization.planConnectionNames}. */
-   public planConnectionNames(): ReadonlySet<string> | null {
-      return this.materialization.planConnectionNames();
+      this.mz.markBuildPlanStale(changedConnections);
    }
 
    /**
@@ -2259,7 +2183,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    public refreshBuildPlan(
       options: { retryFailed?: boolean; isStale?: () => boolean } = {},
    ): Promise<boolean> {
-      return this.materialization.refreshBuildPlan(async () => {
+      return this.mz.refreshBuildPlan(async () => {
          const outcome = await loadOutcomeOrThrow(
             getPackageLoadPool().loadPackage({
                packagePath: this.packagePath,
@@ -2283,7 +2207,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /** See {@link PackageMaterialization.whenBuildPlanCurrent}. */
    public whenBuildPlanCurrent(timeoutMs?: number): Promise<void> {
-      return this.materialization.whenBuildPlanCurrent(timeoutMs);
+      return this.mz.whenBuildPlanCurrent(timeoutMs);
    }
 
    /**
@@ -2340,22 +2264,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /** See {@link PackageMaterialization.persistencePolicyWarnings}. */
    public persistencePolicyWarnings(): string[] {
-      return this.materialization.persistencePolicyWarnings();
+      return this.mz.persistencePolicyWarnings();
    }
 
    /** See {@link PackageMaterialization.formatInvalidPersistencePolicy}. */
    public formatInvalidPersistencePolicy(): string {
-      return this.materialization.formatInvalidPersistencePolicy();
-   }
-
-   /** See {@link PackageMaterialization.incrementalPolicyWarnings}. */
-   public incrementalPolicyWarnings(): string[] {
-      return this.materialization.incrementalPolicyWarnings();
-   }
-
-   /** See {@link PackageMaterialization.formatInvalidIncrementalPolicy}. */
-   public formatInvalidIncrementalPolicy(): string {
-      return this.materialization.formatInvalidIncrementalPolicy();
+      return this.mz.formatInvalidPersistencePolicy();
    }
 
    /**
@@ -2470,11 +2384,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }));
    }
 
-   /** See {@link PackageMaterialization.formatInvalidPreaggregatePolicy}. */
-   public formatInvalidPreaggregatePolicy(): string {
-      return this.materialization.formatInvalidPreaggregatePolicy();
-   }
-
    /**
     * Every invalid materialization annotation, one per line, or "": the
     * package's own ({@link PackageMaterialization.formatInvalidAnnotations})
@@ -2483,7 +2392,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    public formatInvalidAnnotations(): string {
       return [
-         this.materialization.formatInvalidAnnotations(),
+         this.mz.formatInvalidAnnotations(),
          ...this.materializationNearMissLines(),
       ]
          .filter(Boolean)
@@ -2505,7 +2414,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    public formatLoadGateText(): string {
       return [
-         this.materialization.formatLoadGateText(),
+         this.mz.formatLoadGateText(),
          ...this.materializationNearMissLines(),
       ]
          .filter(Boolean)
@@ -2519,14 +2428,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    public annotationFindingWarnings(): ApiPackageWarning[] {
       return [
-         ...this.materialization.annotationFindingWarnings(),
+         ...this.mz.annotationFindingWarnings(),
          // Not materialization-unreachable: it reports what the surface
          // curates, not an annotation finding.
          ...this.preaggregateAccessWarnings(),
          ...this.annotationNearMissWarnings(),
          // The incremental declaration's own advisory is about the annotation;
          // the shared-address one is about the SQL, so it is not counted.
-         ...this.materialization
+         ...this.mz
             .incrementalPolicyAdvisories()
             .filter((w) => w.code === INCREMENTAL_NO_MERGE_KEY_CODE),
       ].filter((warning) => warning.code !== undefined);
@@ -2566,33 +2475,18 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * Each materialized source's serve verdict, as the binding stands now (see
-    * {@link PackageMaterialization.serveVerdicts}). Served at
-    * `GET …/packages/{pkg}/status`: the entry-point walk is memoized per load,
-    * so a poll only loops over the plan.
-    */
-   public getServeVerdicts(): ApiServeVerdict[] {
-      return this.materialization.serveVerdicts();
-   }
-
-   /**
     * {@link getServeVerdicts} with each stored source's named views compiled
     * against a compile-only served copy over bindings declared from the
     * plan's output columns, before anything is built. For a dry run: it
     * compiles.
     */
    public async previewServeVerdicts(): Promise<ApiServeVerdict[]> {
-      return this.materialization.previewServeVerdicts();
+      return this.mz.previewServeVerdicts();
    }
 
    /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */
    public preaggregateAccessWarnings(): ApiPackageWarning[] {
-      return this.materialization.preaggregateAccessWarnings();
-   }
-
-   /** See {@link PackageMaterialization.persistenceCollisionWarnings}. */
-   public persistenceCollisionWarnings(): string[] {
-      return this.materialization.persistenceCollisionWarnings();
+      return this.mz.preaggregateAccessWarnings();
    }
 
    /**
@@ -2854,7 +2748,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             last.quotedFrom === requested
                ? last.quoted
                : await this.quoteBoundTableNames(entries);
-         this.materialization.bind({
+         this.mz.bind({
             colocated: quoted,
             colocatedAsGiven: true,
             // The first bind over a load's models publishes to them, as the
@@ -2940,9 +2834,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // their served copies over it now, once: the destinations and the
       // entries they were compiled with go first, so the one compile the
       // publish starts is not invalidated and started again.
-      this.materialization.wireServingResolvers();
-      this.materialization.pushServeDestinationConfigToModels();
-      this.materialization.bind({
+      this.mz.wireServingResolvers();
+      this.mz.pushServeDestinationConfigToModels();
+      this.mz.bind({
          colocated: entries,
          colocatedAsGiven: true,
          models: "installed",
@@ -3002,8 +2896,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          quotedFrom: quoting.from,
          quoted: quoting.quoted,
          models: this.models,
-         colocated: this.materialization.boundColocatedEntries(),
-         buildPlan: this.materialization.buildPlan,
+         colocated: this.mz.boundColocatedEntries(),
+         buildPlan: this.mz.getBuildPlan(),
          connectionEdits: this.connectionEdits,
       };
    }
@@ -3017,7 +2911,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       if (!last) return false;
       // A plan a connection edit made stale may not hold the tables its
       // re-derivation will; recompile, as before, rather than keep them.
-      if (this.materialization.isBuildPlanStale()) return false;
+      if (this.mz.isBuildPlanStale()) return false;
       // A model a reload left as a placeholder may compile now.
       for (const model of this.models.values()) {
          if (model.getCompilationError()) return false;
@@ -3025,8 +2919,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return (
          last.compiledFor === compiledFor &&
          last.models === this.models &&
-         last.colocated === this.materialization.boundColocatedEntries() &&
-         last.buildPlan === this.materialization.buildPlan &&
+         last.colocated === this.mz.boundColocatedEntries() &&
+         last.buildPlan === this.mz.getBuildPlan() &&
          last.connectionEdits === this.connectionEdits
       );
    }

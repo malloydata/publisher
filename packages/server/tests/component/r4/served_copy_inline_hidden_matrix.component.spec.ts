@@ -140,7 +140,9 @@ source: wide is ${h.head} extend {
                      expect(run.servedVia).toBeUndefined();
                   } else {
                      expect(run.servedVia).toBe("served_copy");
-                     expect(run.servedFrom).toBe(colocated ? null : "storage");
+                     expect(run.servedFrom).toBe(
+                        colocated ? "database" : "storage",
+                     );
                   }
                } finally {
                   restore();

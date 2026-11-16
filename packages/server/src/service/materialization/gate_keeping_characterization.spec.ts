@@ -215,17 +215,15 @@ async function loadRows(
          rows[s.name] = [`refused ${s.reason}`];
       }
       const verdicts = (
-         pkg as unknown as {
-            materialization: {
-               serveVerdicts(): {
-                  sourceName: string;
-                  tier: string;
-                  verdict: string;
-                  reason?: string;
-               }[];
-            };
+         pkg.materialization() as unknown as {
+            serveVerdicts(): {
+               sourceName: string;
+               tier: string;
+               verdict: string;
+               reason?: string;
+            }[];
          }
-      ).materialization.serveVerdicts();
+      ).serveVerdicts();
       for (const v of verdicts) {
          const key = v.sourceName;
          if (!rows[key]) continue;
@@ -648,26 +646,6 @@ const ROUTER: Record<string, Record<string, string>> = {
          "served, a kept and another storage table": "used, past the gate",
          "served, no table": "used, past the gate",
       },
-   "materialize on, gated sources on, the colocated rule off": {
-      "view, colocated tables": "used, past the gate",
-      "view, storage tables": "used, past the gate",
-      "view, colocated and storage tables": "used, past the gate",
-      "view, storage tables kept past their own gate": "used, past the gate",
-      "view, a kept and another storage table": "used, past the gate",
-      "view, no table": "used, past the gate",
-      "rollup, colocated tables": "used, past the gate",
-      "rollup, storage tables": "used, past the gate",
-      "rollup, colocated and storage tables": "used, past the gate",
-      "rollup, storage tables kept past their own gate": "used, past the gate",
-      "rollup, a kept and another storage table": "used, past the gate",
-      "rollup, no table": "used, past the gate",
-      "served, colocated tables": "used, past the gate",
-      "served, storage tables": "used, past the gate",
-      "served, colocated and storage tables": "used, past the gate",
-      "served, storage tables kept past their own gate": "used, past the gate",
-      "served, a kept and another storage table": "used, past the gate",
-      "served, no table": "used, past the gate",
-   },
    "materialize on, gated sources off, the colocated rule on (as every model passes it)":
       {
          "view, colocated tables": "skipped row_level_gate",
@@ -692,28 +670,6 @@ const ROUTER: Record<string, Record<string, string>> = {
          "served, a kept and another storage table": "skipped row_level_gate",
          "served, no table": "skipped row_level_gate",
       },
-   "materialize on, gated sources off, the colocated rule off": {
-      "view, colocated tables": "skipped row_level_gate",
-      "view, storage tables": "skipped row_level_gate",
-      "view, colocated and storage tables": "skipped row_level_gate",
-      "view, storage tables kept past their own gate": "skipped row_level_gate",
-      "view, a kept and another storage table": "skipped row_level_gate",
-      "view, no table": "skipped row_level_gate",
-      "rollup, colocated tables": "skipped row_level_gate",
-      "rollup, storage tables": "skipped row_level_gate",
-      "rollup, colocated and storage tables": "skipped row_level_gate",
-      "rollup, storage tables kept past their own gate":
-         "skipped row_level_gate",
-      "rollup, a kept and another storage table": "skipped row_level_gate",
-      "rollup, no table": "skipped row_level_gate",
-      "served, colocated tables": "skipped row_level_gate",
-      "served, storage tables": "skipped row_level_gate",
-      "served, colocated and storage tables": "skipped row_level_gate",
-      "served, storage tables kept past their own gate":
-         "skipped row_level_gate",
-      "served, a kept and another storage table": "skipped row_level_gate",
-      "served, no table": "skipped row_level_gate",
-   },
    "materialize off, gated sources on, the colocated rule on (as every model passes it)":
       {
          "view, colocated tables": "used, past the gate",
@@ -737,26 +693,6 @@ const ROUTER: Record<string, Record<string, string>> = {
          "served, a kept and another storage table": "used, past the gate",
          "served, no table": "used, past the gate",
       },
-   "materialize off, gated sources on, the colocated rule off": {
-      "view, colocated tables": "used, past the gate",
-      "view, storage tables": "used, past the gate",
-      "view, colocated and storage tables": "used, past the gate",
-      "view, storage tables kept past their own gate": "used, past the gate",
-      "view, a kept and another storage table": "used, past the gate",
-      "view, no table": "used, past the gate",
-      "rollup, colocated tables": "used, past the gate",
-      "rollup, storage tables": "used, past the gate",
-      "rollup, colocated and storage tables": "used, past the gate",
-      "rollup, storage tables kept past their own gate": "used, past the gate",
-      "rollup, a kept and another storage table": "used, past the gate",
-      "rollup, no table": "used, past the gate",
-      "served, colocated tables": "used, past the gate",
-      "served, storage tables": "used, past the gate",
-      "served, colocated and storage tables": "used, past the gate",
-      "served, storage tables kept past their own gate": "used, past the gate",
-      "served, a kept and another storage table": "used, past the gate",
-      "served, no table": "used, past the gate",
-   },
    "materialize off, gated sources off, the colocated rule on (as every model passes it)":
       {
          "view, colocated tables": "skipped row_level_gate",
@@ -781,28 +717,6 @@ const ROUTER: Record<string, Record<string, string>> = {
          "served, a kept and another storage table": "skipped row_level_gate",
          "served, no table": "skipped row_level_gate",
       },
-   "materialize off, gated sources off, the colocated rule off": {
-      "view, colocated tables": "skipped row_level_gate",
-      "view, storage tables": "skipped row_level_gate",
-      "view, colocated and storage tables": "skipped row_level_gate",
-      "view, storage tables kept past their own gate": "skipped row_level_gate",
-      "view, a kept and another storage table": "skipped row_level_gate",
-      "view, no table": "skipped row_level_gate",
-      "rollup, colocated tables": "skipped row_level_gate",
-      "rollup, storage tables": "skipped row_level_gate",
-      "rollup, colocated and storage tables": "skipped row_level_gate",
-      "rollup, storage tables kept past their own gate":
-         "skipped row_level_gate",
-      "rollup, a kept and another storage table": "skipped row_level_gate",
-      "rollup, no table": "skipped row_level_gate",
-      "served, colocated tables": "skipped row_level_gate",
-      "served, storage tables": "skipped row_level_gate",
-      "served, colocated and storage tables": "skipped row_level_gate",
-      "served, storage tables kept past their own gate":
-         "skipped row_level_gate",
-      "served, a kept and another storage table": "skipped row_level_gate",
-      "served, no table": "skipped row_level_gate",
-   },
 };
 
 describe("gate keeping at the router, under an entry-point veto", () => {
@@ -869,65 +783,63 @@ describe("gate keeping at the router, under an entry-point veto", () => {
    }
 
    for (const s of SWITCHES) {
-      for (const colocatedKeepsContracts of [true, false]) {
-         const label = `${switchLabel(s)}, the colocated rule ${colocatedKeepsContracts ? "on (as every model passes it)" : "off"}`;
-         it(label, async () => {
-            const restore = installSettings({
-               env: {
-                  PUBLISHER_MATERIALIZE: String(s.materialize),
-                  PUBLISHER_MATERIALIZE_GATED_SOURCES: String(s.gatedSources),
-               },
-            }).restore;
-            try {
-               const rows: Record<string, string> = {};
-               for (const leg of ["view", "rollup", "served"] as const) {
-                  for (const [read, tables] of Object.entries(reads)) {
-                     const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
-                     const legs = host(tables);
-                     const candidates = variantsOf(
-                        makeLegs(pinned, {
-                           ...(leg === "served"
-                              ? { servedCopy: legs.servedCopy }
-                              : {}),
-                           ...(leg === "rollup"
-                              ? { rollupVariants: legs.rollupVariants }
-                              : {}),
-                           ...(leg === "view"
-                              ? { persistedViews: legs.persistedViews }
-                              : {}),
-                        }),
-                        {
-                           queryString: "run: s -> v",
-                           givens: undefined,
-                           authorRunnable: runnable,
-                        },
-                        pinned,
-                        { modelPath: "m.malloy", colocatedKeepsContracts },
-                     );
-                     const decision = await routeQuery(
-                        candidates,
-                        async () => "entry_point",
-                        { recordMetrics: false },
-                     );
-                     const c = decision.considered[0];
-                     // A use under the veto is a use past the gate, which is
-                     // what sends the answer to `govern()` to graft and prove.
-                     expect(
-                        decision.served === "variant" &&
-                           decision.pastEntryPointGate === true,
-                     ).toBe(c.outcome === "used");
-                     rows[`${leg}, ${read}`] =
-                        c.outcome === "used"
-                           ? "used, past the gate"
-                           : `skipped ${c.reason}`;
-                  }
+      const label = `${switchLabel(s)}, the colocated rule on (as every model passes it)`;
+      it(label, async () => {
+         const restore = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: String(s.materialize),
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: String(s.gatedSources),
+            },
+         }).restore;
+         try {
+            const rows: Record<string, string> = {};
+            for (const leg of ["view", "rollup", "served"] as const) {
+               for (const [read, tables] of Object.entries(reads)) {
+                  const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                  const legs = host(tables);
+                  const candidates = variantsOf(
+                     makeLegs(pinned, {
+                        ...(leg === "served"
+                           ? { servedCopy: legs.servedCopy }
+                           : {}),
+                        ...(leg === "rollup"
+                           ? { rollupVariants: legs.rollupVariants }
+                           : {}),
+                        ...(leg === "view"
+                           ? { persistedViews: legs.persistedViews }
+                           : {}),
+                     }),
+                     {
+                        queryString: "run: s -> v",
+                        givens: undefined,
+                        authorRunnable: runnable,
+                     },
+                     pinned,
+                     { modelPath: "m.malloy" },
+                  );
+                  const decision = await routeQuery(
+                     candidates,
+                     async () => "entry_point",
+                     { recordMetrics: false },
+                  );
+                  const c = decision.considered[0];
+                  // A use under the veto is a use past the gate, which is
+                  // what sends the answer to `govern()` to graft and prove.
+                  expect(
+                     decision.served === "variant" &&
+                        decision.pastEntryPointGate === true,
+                  ).toBe(c.outcome === "used");
+                  rows[`${leg}, ${read}`] =
+                     c.outcome === "used"
+                        ? "used, past the gate"
+                        : `skipped ${c.reason}`;
                }
-               if (DUMP) dumped[`router ${label}`] = rows;
-               else expect(rows).toEqual(ROUTER[label]);
-            } finally {
-               restore();
             }
-         });
-      }
+            if (DUMP) dumped[`router ${label}`] = rows;
+            else expect(rows).toEqual(ROUTER[label]);
+         } finally {
+            restore();
+         }
+      });
    }
 });

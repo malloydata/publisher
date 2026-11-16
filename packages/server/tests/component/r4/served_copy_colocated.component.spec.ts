@@ -313,8 +313,8 @@ for (const tier of tiers) {
             expectPairServedVia(run, PATH_COUNTS);
             // A count through the pair table's join is answered live.
             if (run.servedVia === undefined) return;
-            // The source's own warehouse: not a storage hit.
-            expect(run.servedFrom).toBeNull();
+            // The source's own warehouse: a colocated hit, not a storage one.
+            expect(run.servedFrom).toBe("database");
             expect(run.servedBy?.kind).toBe("materialized");
          });
       }
@@ -429,8 +429,9 @@ source: gated is orders_raw extend {
          expect(fixture.verdicts).toEqual(["gated:serves"]);
          // A colocated bind alone (no storage bind after it) reaches the
          // served copy: unbound, the query is live; bound again, served.
-         const entries = fixture.pkg.getBuildManifestEntries() ?? {};
-         fixture.pkg.bindColocatedServeManifest({});
+         const entries =
+            fixture.pkg.materialization().getBuildManifestEntries() ?? {};
+         fixture.pkg.materialization().bind({ colocated: {} });
          const unbound = await fixture.run("m.malloy", QUERY, {
             REGIONS: CALLERS[0],
          });
@@ -439,26 +440,22 @@ source: gated is orders_raw extend {
          // Eligibility unknown (a plan that could not be re-derived) admits
          // nothing, even through a bind that records the manifest unfiltered
          // (a reload): the served copy's bind applies it itself.
-         const materialization = (
-            fixture.pkg as unknown as {
-               materialization: {
-                  colocatedSourceEligibility: unknown;
-                  bind(update: {
-                     colocated: Record<string, unknown>;
-                     colocatedAsGiven: true;
-                  }): void;
-               };
-            }
-         ).materialization;
-         const known = materialization.colocatedSourceEligibility;
-         materialization.colocatedSourceEligibility = undefined;
+         const materialization = fixture.pkg.materialization() as unknown as {
+            plan: { colocatedSourceEligibility: unknown };
+            bind(update: {
+               colocated: Record<string, unknown>;
+               colocatedAsGiven: true;
+            }): void;
+         };
+         const known = materialization.plan.colocatedSourceEligibility;
+         materialization.plan.colocatedSourceEligibility = undefined;
          materialization.bind({ colocated: entries, colocatedAsGiven: true });
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };
          expect(model.servedCopy.hasBindings()).toBe(false);
-         materialization.colocatedSourceEligibility = known;
-         fixture.pkg.bindColocatedServeManifest(entries);
+         materialization.plan.colocatedSourceEligibility = known;
+         fixture.pkg.materialization().bind({ colocated: entries });
          expect(model.servedCopy.hasBindings()).toBe(true);
          for (const [i, REGIONS] of CALLERS.entries()) {
             const outcome = await fixture.run("m.malloy", QUERY, { REGIONS });

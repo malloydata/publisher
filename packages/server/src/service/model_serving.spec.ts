@@ -388,10 +388,13 @@ describe("the query pipeline over a fake leg list", () => {
       expect(
          servedFromOf(routed("served", { tablesRead: [binding("orders")] })),
       ).toBe("storage");
+      expect(servedFromOf(routed("served", { tablesRead: [colocated] }))).toBe(
+         "database",
+      );
+      expect(servedFromOf(routed("rollup", {}))).toBe("database");
       expect(
-         servedFromOf(routed("served", { tablesRead: [colocated] })),
-      ).toBeUndefined();
-      expect(servedFromOf(routed("rollup", {}))).toBeUndefined();
+         servedFromOf({ ...LIVE_ANSWER, colocatedRead: new Set(["a"]) }),
+      ).toBe("database");
       expect(servedFromOf(routed("view", { virtualMap }))).toBe("storage");
    });
 });
