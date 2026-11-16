@@ -139,7 +139,7 @@ given: ROLE :: string[]
 source: orders is ${ROWS} -> { select: * }
 
 #(authorize) 'finance' in $ROLE
-source: secure_orders is orders extend {}
+source: secure_orders is orders -> { select: * }
 `;
 
       it("sends a stored source live when every published entry point over it is gated", async () => {
@@ -154,6 +154,25 @@ source: secure_orders is orders extend {}
             tier: "storage",
             verdict: "live",
             reason: "row_level_gate",
+         });
+      });
+
+      it("serves it under G3 when the gated entry point shares its table, as an extension that inherits the annotation does", async () => {
+         restoreSettings = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+         // `secure_orders` inherits `#@ persist` and stores into the same
+         // table under its own lock: plan admits that table past it.
+         loaded = await loadTempPackage({
+            "orders.malloy": GATED.replace(
+               "source: secure_orders is orders -> { select: * }",
+               "source: secure_orders is orders extend {}",
+            ),
+            "index.malloy": `import "orders.malloy"\nexport { secure_orders }\n`,
+         });
+         expect(byName(loaded.pkg.getServeVerdicts()).orders).toMatchObject({
+            tier: "storage",
+            verdict: "not_built",
          });
       });
 

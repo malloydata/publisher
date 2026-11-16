@@ -131,6 +131,22 @@ describe("computeServeVerdicts", () => {
       expect(colocated.verdict).toBe("not_built");
    });
 
+   it("serves a gated stored source plan admitted past its own gate (G3) as a colocated one, and no other stored source", () => {
+      const bound = {
+         gated: () => true,
+         boundStorageNames: new Set(["orders", "other"]),
+         servedStorageNames: new Set(["orders", "other"]),
+         storageKeepsOwnGate: (id: string) => id.startsWith("orders@"),
+      };
+      const verdicts = computeServeVerdicts(
+         facts([plan("orders", STORAGE), plan("other", STORAGE)], bound),
+      );
+      expect(verdicts.map((v) => [v.sourceName, v.verdict, v.reason])).toEqual([
+         ["orders", "serves", undefined],
+         ["other", "live", "row_level_gate"],
+      ]);
+   });
+
    it("serves a gated stored source when the served copy keeps its gates (R3), never a gated rollup", () => {
       const keeps = {
          gated: () => true,
