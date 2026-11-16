@@ -192,7 +192,7 @@ describe.skipIf(process.platform === "win32")(
          }));
          for (const p of PACKAGES.filter((p) => p.tier === "storage")) {
             const pkg = await env.getPackage(parsePackageName(p.name), false);
-            pkg.setServeDestinationConfig(() => config);
+            pkg.materialization().setServeDestinationConfig(() => config);
          }
       }
 
