@@ -33,7 +33,7 @@
  * `__v<version>_<hash>`, see hasReservedTableSuffix) is refused,
  * `table-owned-elsewhere`: it may be another package's default-named table,
  * which carries no mark. And one server builds one `name=` at a time
- * (acquireOwnedNameLock), from the check until the mark is written, so two
+ * (withOwnedNameLock), from the check until the mark is written, so two
  * packages that find the name free at once never both build it.
  *
  * The mark is a comment on the table, `malloy-publisher:table owner=<env>/<pkg>`
@@ -56,9 +56,11 @@
  * the same names write the same mark.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { PersistSource } from "@malloydata/malloy";
 import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
+import { externalEnv } from "../../../settings/external";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
 import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
@@ -73,6 +75,7 @@ import {
 } from "./table_mark_sql";
 import { ownedTableProbeSql, tableCommentSql } from "./warehouse_sql";
 import { KeyedLock } from "./keyed_lock";
+import { tableIdentity } from "../../versions/materialization_scope";
 import {
    atTableSite,
    type TableSite,
@@ -107,26 +110,50 @@ export class TableOwnershipError extends BadRequestError {
  * packages that probe one free name at once would both build it, and each
  * serve whichever wrote last. Held from the ownership check until the mark is
  * written, so the second build's check sees the first one's mark. Keyed by
- * the table segment, lower-cased: two connections or environments may reach
- * one schema under different names, and an over-wide key only serializes.
+ * `tableIdentity` (the last segment, unquoted, lower-cased): two connections
+ * or environments may reach one schema under different names, and an
+ * over-wide key only serializes.
  */
 const OWNED_NAME_LOCK = new KeyedLock();
 
 /**
- * Wait for, and take, the lock on builds at `physicalTableName`. Returns the
- * release, which must be called exactly once.
+ * The owned-name holds of this async context, each marked released once
+ * done: work its holder started without waiting inherits the context, not
+ * the hold.
  */
-export function acquireOwnedNameLock(
+const ownedNameHolds = new AsyncLocalStorage<{ held: boolean }>();
+
+/**
+ * Run `fn` holding the lock on builds at `physicalTableName`. It is the last
+ * lock in the order (run/README.md): nothing else is taken while it is held,
+ * which {@link assertNoOwnedNameHeld} checks.
+ */
+export async function withOwnedNameLock<T>(
    physicalTableName: string,
-): Promise<() => void> {
-   return OWNED_NAME_LOCK.acquire(ownedNameLockKey(physicalTableName));
+   fn: () => Promise<T>,
+): Promise<T> {
+   return OWNED_NAME_LOCK.withLock(
+      tableIdentity(physicalTableName),
+      async () => {
+         const hold = { held: true };
+         try {
+            return await ownedNameHolds.run(hold, fn);
+         } finally {
+            hold.held = false;
+         }
+      },
+   );
 }
 
-/** The key {@link acquireOwnedNameLock} serializes a name's builds by. */
-export function ownedNameLockKey(physicalTableName: string): string {
-   return physicalTableName
-      .slice(physicalTableName.lastIndexOf(".") + 1)
-      .toLowerCase();
+/**
+ * Refuse, under test, taking the `lock` lock while an owned-name lock is
+ * held, which comes after it in the lock order; logged otherwise.
+ */
+export function assertNoOwnedNameHeld(lock: string): void {
+   if (!ownedNameHolds.getStore()?.held) return;
+   const message = `Lock order: the ${lock} lock was taken while an owned-name lock was held`;
+   if (externalEnv("NODE_ENV") === "test") throw new Error(message);
+   logger.error(message);
 }
 
 /**

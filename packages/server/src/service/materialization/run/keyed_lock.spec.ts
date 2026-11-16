@@ -3,8 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 import { KeyedLock } from "./keyed_lock";
-import { tableIdentity } from "../../versions/materialization_scope";
-import { acquireOwnedNameLock, ownedNameLockKey } from "./table_ownership";
+import { TableClaims } from "./table_claims";
+import { withOwnedNameLock } from "./table_ownership";
 
 /** Whether `promise` has settled by the time pending callbacks have run. */
 async function settled(promise: Promise<unknown>): Promise<boolean> {
@@ -60,31 +60,53 @@ describe("KeyedLock", () => {
    });
 });
 
-describe("the owned-name lock's key", () => {
-   it("serializes two spellings of one name that differ only in case or schema", async () => {
-      expect(ownedNameLockKey("analytics.Summary")).toBe(
-         ownedNameLockKey("summary"),
-      );
-      const release = await acquireOwnedNameLock("analytics.Summary");
-      const other = acquireOwnedNameLock("SUMMARY");
-      expect(await settled(other)).toBe(false);
-      release();
-      (await other)();
+/** Hold the owned-name lock on `name` until the returned release is called. */
+async function holdOwnedName(name: string): Promise<() => void> {
+   let release!: () => void;
+   const done = new Promise<void>((resolve) => (release = resolve));
+   let entered!: () => void;
+   const held = new Promise<void>((resolve) => (entered = resolve));
+   void withOwnedNameLock(name, async () => {
+      entered();
+      await done;
+   });
+   await held;
+   return release;
+}
+
+describe("the owned-name lock", () => {
+   it("serializes spellings of one name that differ in case, schema or quoting", async () => {
+      for (const other of [
+         "SUMMARY",
+         "summary",
+         "analytics.summary",
+         'analytics."summary"',
+      ]) {
+         const release = await holdOwnedName('analytics."Summary"');
+         const waiting = withOwnedNameLock(other, async () => {});
+         expect(await settled(waiting)).toBe(false);
+         release();
+         await waiting;
+      }
    });
 
-   // A quoted spelling and a bare one can name the same table (Postgres folds
-   // a bare `summary` to the table `"summary"`), and tableIdentity reads them
-   // as one; the owned-name lock does not strip quotes, so it gives them two
-   // keys and two builds at that name are not serialized. Pinned as found.
-   it("gives a quoted spelling and a bare one of one table different keys", async () => {
-      expect(tableIdentity('"summary"')).toBe(tableIdentity("summary"));
-      expect(ownedNameLockKey('"summary"')).not.toBe(
-         ownedNameLockKey("summary"),
+   it("lets builds at different names through", async () => {
+      const release = await holdOwnedName("analytics.summary");
+      const other = withOwnedNameLock("analytics.details", async () => {});
+      expect(await settled(other)).toBe(true);
+      release();
+   });
+
+   it("comes last in the lock order: the table lock is refused under it, under test", async () => {
+      const claims = new TableClaims(() => ({}) as never);
+      await expect(
+         withOwnedNameLock("analytics.summary", () =>
+            claims.withTableLock("env", "pkg", async () => {}),
+         ),
+      ).rejects.toThrow(/Lock order/);
+      // Taken in order, or once the hold is done, it is fine.
+      await claims.withTableLock("env", "pkg", () =>
+         withOwnedNameLock("analytics.summary", async () => {}),
       );
-      const quoted = await acquireOwnedNameLock('analytics."summary"');
-      const bare = acquireOwnedNameLock("analytics.summary");
-      expect(await settled(bare)).toBe(true);
-      quoted();
-      (await bare)();
    });
 });

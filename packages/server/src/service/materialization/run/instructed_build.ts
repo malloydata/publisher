@@ -108,7 +108,7 @@ import {
 import { packageOwner } from "./table_mark_sql";
 import { atTableSite, type TableSiteContext } from "./table_site";
 import {
-   acquireOwnedNameLock,
+   withOwnedNameLock,
    assertTableOwnable,
    hasAuthorTableName,
    markOwnedTable,
@@ -188,8 +188,6 @@ async function checkBuiltKeys(
       await checkAndRecordKey(
          run.uniqueness,
          sourceEntityId,
-         // The storage tier answers a check that threw as one that did not
-         // run.
          () =>
             STORAGE.checkKey(
                {
@@ -603,45 +601,27 @@ export class InstructedBuild {
    }
 
    /**
-    * {@link assertOwnable} for a source at its author's `name=`; a table this
-    * package cannot prove its own also retires the package's entries for it
-    * (`tableNotOwned`), best-effort, before the refusal is rethrown.
+    * Retire this package's entries for a table at its author's `name=` that
+    * it cannot prove its own (`tableNotOwned`); best-effort.
     */
-   private async assertOwnableOrRetire(
+   private async retireNotOwned(
       run: InstructedRun,
       persistSource: PersistSource,
-      instruction: BuildInstruction,
       ownedTarget: OwnedTableTarget,
-      connection: MalloyConnection,
-   ): Promise<string[] | undefined> {
-      try {
-         return await this.assertOwnable(
-            run,
-            authorNamedInstructions(run).get(instruction) ?? persistSource.name,
-            ownedTarget,
-            connection,
+   ): Promise<void> {
+      const pkg = runPackageOf(run);
+      if (!pkg) return;
+      await this.seams
+         .tableNotOwned?.(pkg.environmentName, pkg.packageName, ownedTarget)
+         .catch((retireErr) =>
+            logger.warn(
+               "Could not retire a package's entries for a table it does not own",
+               {
+                  sourceName: persistSource.name,
+                  error: errMessage(retireErr),
+               },
+            ),
          );
-      } catch (err) {
-         const pkg = runPackageOf(run);
-         if (err instanceof TableOwnershipError && pkg) {
-            await this.seams
-               .tableNotOwned?.(
-                  pkg.environmentName,
-                  pkg.packageName,
-                  ownedTarget,
-               )
-               .catch((retireErr) =>
-                  logger.warn(
-                     "Could not retire a package's entries for a table it does not own",
-                     {
-                        sourceName: persistSource.name,
-                        error: errMessage(retireErr),
-                     },
-                  ),
-               );
-         }
-         throw err;
-      }
    }
 
    /**
@@ -979,40 +959,24 @@ export class InstructedBuild {
          instruction,
          orchestrated,
       );
-      let entry;
+      let entry: ManifestEntry | undefined;
       // Set once the build itself starts: a source that fails before it
       // (ownership, uniqueness) ran no build to time.
       let buildStartedAt: number | undefined;
-      // Held from the ownership check until the mark is written, so another
-      // package building the same `name=` at once waits, then sees the mark.
-      let releaseOwnedName: (() => void) | undefined;
-      // This package's own leftover view at the name, which the build's own
-      // transaction drops before its table takes the name (DuckDB, Postgres).
-      let replacesView: string[] | undefined;
-      try {
-         // An instructed destination that cannot be honored REFUSES, never
-         // falls through to a colocated build: that would write the caller's
-         // name into the source's own warehouse and answer success.
-         assertInstructedDestinationWritable(
-            persistSource,
-            instruction,
-            compiled,
-         );
-
+      const checkBuildAndMark = async (): Promise<ManifestEntry> => {
          // A `name=` another package holds fails the source before anything
-         // is written, the uniqueness check included.
-         if (ownedTarget) {
-            releaseOwnedName = await acquireOwnedNameLock(
-               ownedTarget.physicalTableName,
-            );
-            replacesView = await this.assertOwnableOrRetire(
-               run,
-               persistSource,
-               instruction,
-               ownedTarget,
-               connection,
-            );
-         }
+         // is written, the uniqueness check included. This package's own
+         // leftover view at the name is dropped by the build's own
+         // transaction before its table takes the name (DuckDB, Postgres).
+         const replacesView = ownedTarget
+            ? await this.assertOwnable(
+                 run,
+                 authorNamedInstructions(run).get(instruction) ??
+                    persistSource.name,
+                 ownedTarget,
+                 connection,
+              )
+            : undefined;
 
          // An inlined join_one must match at most one row (P8): checked on
          // the source's own connection before anything is written.
@@ -1041,7 +1005,7 @@ export class InstructedBuild {
          );
 
          buildStartedAt = performance.now();
-         entry = await this.seams.buildOneSource({
+         let built = await this.seams.buildOneSource({
             persistSource,
             instruction,
             connection,
@@ -1058,11 +1022,11 @@ export class InstructedBuild {
             ...(replacesView ? { replacesView } : {}),
          });
          // A manifest travels without its build plan, so this is the only
-         // signal that a table belongs to a rollup in no model file; served as
-         // an ordinary binding it would be silently dropped (see
+         // signal that a table belongs to a rollup in no model file; served
+         // as an ordinary binding it would be silently dropped (see
          // preaggregation_serve_bindings).
          if (compiled.tables[persistSource.sourceID]?.rollup) {
-            entry = { ...entry, origin: "preaggregate" as const };
+            built = { ...built, origin: "preaggregate" as const };
          }
          if (ownedTarget) {
             await markBuiltOwnedTable(
@@ -1072,7 +1036,32 @@ export class InstructedBuild {
                connection,
             );
          }
+         return built;
+      };
+      try {
+         // An instructed destination that cannot be honored REFUSES, never
+         // falls through to a colocated build: that would write the caller's
+         // name into the source's own warehouse and answer success.
+         assertInstructedDestinationWritable(
+            persistSource,
+            instruction,
+            compiled,
+         );
+         // At an author's `name=`, held from the ownership check until the
+         // mark is written, so another package building the same name at
+         // once waits, then sees the mark.
+         entry = ownedTarget
+            ? await withOwnedNameLock(
+                 ownedTarget.physicalTableName,
+                 checkBuildAndMark,
+              )
+            : await checkBuildAndMark();
       } catch (buildErr) {
+         // Retired once the name's lock is let go: the retire takes the
+         // table, package and version locks (run/README.md).
+         if (ownedTarget && buildErr instanceof TableOwnershipError) {
+            await this.retireNotOwned(run, persistSource, ownedTarget);
+         }
          recordGatedSourceFailure(
             run,
             persistSource,
@@ -1081,8 +1070,6 @@ export class InstructedBuild {
             buildStartedAt,
          );
          return undefined;
-      } finally {
-         releaseOwnedName?.();
       }
       return entry;
    }
@@ -1631,7 +1618,6 @@ async function checkRollupKeys(
       await checkAndRecordKey(
          ledger,
          address,
-         // The colocated tier lets a check that threw fail the build.
          () => COLOCATED.checkKey({ connection }, own, table),
          {
             notRun:
@@ -1807,10 +1793,11 @@ function storedKeyCheckOf(
 /**
  * Run one key check, warn when it did not run or found the key repeated, and
  * record what it found under `address` (and `sourceID`, for a check of a
- * source other than the table's own). A check that does not run records
- * nothing.
+ * source other than the table's own). A check that does not run, or throws,
+ * on either tier, reads as unknown: it warns, records nothing, and never
+ * fails the build.
  */
-async function checkAndRecordKey(
+export async function checkAndRecordKey(
    ledger: UniquenessLedger,
    address: string,
    runCheck: () => Promise<KeyCheckRecord | undefined>,
@@ -1818,7 +1805,7 @@ async function checkAndRecordKey(
    logContext: Record<string, unknown>,
    sourceID?: string,
 ): Promise<void> {
-   const record = await runCheck();
+   const record = await runCheck().catch(() => undefined);
    if (!record) {
       logger.warn(messages.notRun, logContext);
       return;
