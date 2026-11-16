@@ -220,7 +220,7 @@
 
    function recordOf(cell, fields) {
       var row = {};
-      var values = cell.record_value || [];
+      var values = (cell && cell.record_value) || [];
       for (var i = 0; i < fields.length && i < values.length; i++) {
          row[fields[i].name] = cellValue(values[i], fields[i].type);
       }
@@ -320,22 +320,24 @@
       if (opts.queryName) report.queryName = opts.queryName;
       if (opts.filterParams) report.filterParams = opts.filterParams;
       if (opts.givens) report.givens = opts.givens;
-      var all = outcome.error ? undefined : resultRows(outcome);
-      if (outcome.error) {
-         report.error = String(outcome.error);
-      } else if (all) {
-         report.rowCount = all.count;
-         report.rows = all.first(QUERY_REPORT_MAX_ROWS);
-      }
       try {
+         var all = outcome.error ? undefined : resultRows(outcome);
+         if (outcome.error) {
+            report.error = String(outcome.error);
+         } else if (all) {
+            report.rowCount = all.count;
+            report.rows = all.first(QUERY_REPORT_MAX_ROWS);
+         }
          if (!fitQueryReport(report)) return;
       } catch (_e) {
-         return; // a report that can't be serialized is not worth failing the query
+         return; // a report that can't be built is not worth failing the query
       }
       if (reportOrigin) {
          sendQueryReport(report);
       } else {
-         reportBacklog.push(report);
+         // A copy: the page may change the givens or filters it passed before
+         // the report goes out.
+         reportBacklog.push(JSON.parse(JSON.stringify(report)));
          if (reportBacklog.length > QUERY_REPORT_BACKLOG) reportBacklog.shift();
       }
    }

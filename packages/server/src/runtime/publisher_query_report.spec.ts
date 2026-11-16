@@ -399,6 +399,31 @@ describe("publisher:subscribe handshake", () => {
       expect(reports()[10].query).toBe("run: after");
    });
 
+   it("keeps a waiting report as it was asked, though the page reuses its givens", async () => {
+      const { Publisher, reports, deliver } = runtime();
+      const givens = { region: "EMEA" };
+      await Publisher.query("sales.malloy", "run: x", { givens });
+      givens.region = "APAC";
+      deliver();
+      expect(reports()[0].givens).toEqual({ region: "EMEA" });
+   });
+
+   it("still answers the page when a result's rows cannot be read", async () => {
+      const odd = { data: { kind: "array_cell", array_value: [null] } };
+      const { Publisher, sent, deliver } = runtime({
+         answer: {
+            ok: true,
+            status: 200,
+            body: { result: JSON.stringify(odd) },
+         },
+      });
+      deliver();
+      expect(await Publisher.queryFull("sales.malloy", "run: x", {})).toEqual(
+         odd,
+      );
+      expect(sent()).toHaveLength(1);
+   });
+
    it("ignores a subscribe from a window other than its parent", async () => {
       const { Publisher, sent, deliver } = runtime();
       deliver({ source: {} });
