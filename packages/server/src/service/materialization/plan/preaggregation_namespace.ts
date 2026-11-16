@@ -32,7 +32,7 @@ const NAMESPACE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$-]*$/;
  *
  * An empty string is refused by the per-segment test, which `""` fails.
  */
-export function isSpliceableNamespace(namespace: string): boolean {
+function isSpliceableNamespace(namespace: string): boolean {
    return namespace.split(".").every((s) => NAMESPACE_SEGMENT.test(s));
 }
 
@@ -59,7 +59,7 @@ export function nameContainer(name: string | undefined): string | undefined {
 }
 
 /** A rollup line's placement key, read: its container, or why it is invalid. */
-export type RollupContainer =
+type RollupContainer =
    | {
         container?: string;
         /** Read from the deprecated `namespace=`. */
