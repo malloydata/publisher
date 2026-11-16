@@ -994,8 +994,12 @@ export class MaterializationService {
          // rest of the run's sources.
          for (const refusal of Object.values(derived.refused)) {
             reportSourceRefused(
-               buildKindOf(compiled, refusal.sourceID),
-               refusal.tier === "storage" ? "storage" : "colocated",
+               {
+                  kind: buildKindOf(compiled, refusal.sourceID),
+                  tier: refusal.tier === "storage" ? "storage" : "colocated",
+                  sourceName: refusal.name,
+               },
+               refusal.reason,
             );
          }
 

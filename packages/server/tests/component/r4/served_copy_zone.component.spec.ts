@@ -31,6 +31,7 @@
 
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { logger } from "../../../src/logger";
+import { resetSkipLogSamplingForTesting } from "../../../src/service/query_serving";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -301,6 +302,9 @@ for (const tier of ["colocated", "storage"] as const) {
       async function servedCopyDecline(
          malloy: string,
       ): Promise<string | undefined> {
+         // The skip line is sampled, and written only at debug.
+         resetSkipLogSamplingForTesting();
+         const enabled = spyOn(logger, "isDebugEnabled").mockReturnValue(true);
          const debug = spyOn(logger, "debug");
          try {
             await fixture.runAsIs(malloy);
@@ -317,6 +321,7 @@ for (const tier of ["colocated", "storage"] as const) {
                )[0];
          } finally {
             debug.mockRestore();
+            enabled.mockRestore();
          }
       }
 

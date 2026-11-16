@@ -8543,9 +8543,10 @@ components:
             Null means no materialized table answered: the query was served
             live. `path`, the path report, says why each table that could have
             answered did not, and `path.servedBy.tier` names the same tier this
-            field does. The server also logs one
-            `served copy cannot answer this query` line at DEBUG per declined
-            query, carrying the error that declined it.
+            field does. The server also logs a
+            `served copy cannot answer this query` line at DEBUG, carrying the
+            error that declined the query, at most once a minute per model and
+            decline code, with how many it left out since.
 
             ⚠️ **`live_fallback` here is not `manifestBindingStatus`'s.** On this
             field it means the store failed at run time; `manifestBindingStatus`

@@ -40,7 +40,9 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import {
+   type KeyCheckKind,
    recordDuplicateTargetSkipped,
+   recordKeyCheck,
    recordManifestBindDegraded,
 } from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
@@ -185,6 +187,7 @@ async function checkBuiltKeys(
       await checkAndRecordKey(
          run.uniqueness,
          sourceEntityId,
+         "stored",
          () =>
             STORAGE.checkKey(
                {
@@ -1369,19 +1372,18 @@ function recordPendingRefusal(
    const reason = errMessage(err);
    run.refusals.push(err);
    reportSourceRefused(
-      buildKindOf(run.compiled, persistSource.sourceID),
-      buildTierOf(instruction),
+      {
+         kind: buildKindOf(run.compiled, persistSource.sourceID),
+         tier: buildTierOf(instruction),
+         sourceEntityId: instruction.sourceEntityId,
+         sourceName: persistSource.name,
+      },
+      err.reason,
    );
    run.failedBySourceID.set(persistSource.sourceID, {
       name: persistSource.name,
       reason,
       retryable: false,
-   });
-   logger.warn("Instructed source refused by the eligibility gate", {
-      packageName: run.owner?.packageName,
-      sourceName: persistSource.name,
-      physicalTableName: instruction.physicalTableName,
-      reason,
    });
    run.pendingRefusals.push({
       failedKey,
@@ -1636,6 +1638,7 @@ async function checkRollupKeys(
       await checkAndRecordKey(
          ledger,
          address,
+         "rollup",
          () => COLOCATED.checkKey({ connection }, own, table),
          {
             notRun:
@@ -1705,6 +1708,7 @@ async function checkParentKeys(
       await checkAndRecordKey(
          ledger,
          address,
+         "parent",
          () => COLOCATED.checkKey({ connection }, check, table),
          {
             notRun:
@@ -1741,6 +1745,7 @@ async function checkPairLeafKeys(
       await checkAndRecordKey(
          ledger,
          address,
+         "pair_leaf",
          () => COLOCATED.checkKey({ connection }, check, table),
          {
             notRun:
@@ -1818,6 +1823,7 @@ function storedKeyCheckOf(
 export async function checkAndRecordKey(
    ledger: UniquenessLedger,
    address: string,
+   kind: KeyCheckKind,
    runCheck: () => Promise<KeyCheckRecord | undefined>,
    messages: { notRun: string; notUnique: string },
    logContext: Record<string, unknown>,
@@ -1827,13 +1833,16 @@ export async function checkAndRecordKey(
    try {
       record = await runCheck();
    } catch (err) {
+      recordKeyCheck(kind, "not_run");
       logger.warn(messages.notRun, { ...logContext, error: errMessage(err) });
       return;
    }
    if (!record) {
+      recordKeyCheck(kind, "not_run");
       logger.warn(messages.notRun, logContext);
       return;
    }
+   recordKeyCheck(kind, record.unique ? "unique" : "not_unique");
    if (!record.unique) logger.warn(messages.notUnique, logContext);
    ledger.recordRollupKey(
       address,

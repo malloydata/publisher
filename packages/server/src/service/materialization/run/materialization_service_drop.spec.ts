@@ -13,6 +13,7 @@ import {
 } from "../../../test_helpers/materialization_service_harness";
 import { MaterializationService } from "./materialization_service";
 import { isReclaimableStorageTable } from "./materialization_run_support";
+import { Reclaimer } from "./reclaimer";
 import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import {
@@ -504,7 +505,7 @@ describe("deleteMaterialization telemetry", () => {
       );
    }
 
-   it("meters a successful physical-table drop as outcome=success", async () => {
+   it("meters a successful physical-table drop as outcome=success, occasion=delete", async () => {
       dropTablesFixture(sinon.stub().resolves());
 
       await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
@@ -512,10 +513,52 @@ describe("deleteMaterialization telemetry", () => {
       });
 
       expect(
-         await harness.collectCounter(DROP_COUNTER, { outcome: "success" }),
+         await harness.collectCounter(DROP_COUNTER, {
+            outcome: "success",
+            engine: "in_warehouse",
+            occasion: "delete",
+         }),
       ).toBe(1);
       expect(
          await harness.collectCounter(DROP_COUNTER, { outcome: "failure" }),
+      ).toBe(0);
+   });
+
+   it("meters a drop Publisher makes on its own as occasion=reclaim", async () => {
+      const runSQL = sinon.stub().resolves();
+      const reclaimer = new Reclaimer({
+         repository: () => ctx.repository,
+         host: {} as never,
+         lifecycle: {} as never,
+         dropManifestEntries: async () => [],
+      });
+      const owed = await reclaimer.dropManifestEntries(
+         { getApiConnection: () => undefined } as never,
+         "my-env",
+         "pkg",
+         "mat-1",
+         "reclaim",
+         [
+            {
+               sourceEntityId: "b1",
+               physicalTableName: "orders_mz",
+               connectionName: "duckdb",
+            },
+         ],
+         new Set(),
+         async () => ({ runSQL, dialectName: "duckdb" }) as never,
+      );
+
+      expect(owed).toEqual([]);
+      expect(
+         await harness.collectCounter(DROP_COUNTER, {
+            outcome: "success",
+            engine: "in_warehouse",
+            occasion: "reclaim",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter(DROP_COUNTER, { occasion: "delete" }),
       ).toBe(0);
    });
 

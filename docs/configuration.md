@@ -772,11 +772,9 @@ Under the same `publisher` meter, with bounded labels.
 | `publisher_connection_save_failures_total{path}`                                 | Counter            | Environment saves whose connection rows did not all save: on a `request` (it then fails), or at `boot` or on a read's `load` or `reload` (it still loads). |
 | `publisher_interrupted_run_sweep_failures_total`                                 | Counter            | Startup sweeps of interrupted materialization runs that threw. The server still starts, logging the error.                             |
 | `publisher_mcp_row_limit_hits_total`                                             | Counter            | `execute_query` answers that landed on the server's default row limit, so the agent saw a sample.                                      |
-| `publisher_query_route_total{leg,outcome,reason}`                                | Counter            | Each serving leg the router considered for a query (`leg` `query` is a persisted named query): `used`, `skipped` with the path report's reason, or `fallback` (`RUN_FAILED`), plus `live` when live answered.|
-| `publisher_served_copy_bind_total{scope,outcome,reason}`                         | Counter            | Each manifest bind (`success`, `failure`, `timeout`) and each source entry it `bound`, `partial` (served, with a join read as written or left out) or `declined`, with the reason; binds count per stored table per bind, the served copy per source per model per snapshot. |
-| `publisher_materialization_build_total{kind,tier,outcome,failure_class}`         | Counter            | Source builds per run, by outcome. `failure_class`: `none` unless failed, else its class (retryable or not, `billed_read_lost`).       |
-| `publisher_materialization_build_duration_ms{kind,tier,method}`                  | Histogram          | How long each source build ran (`full` or `delta`), failed ones included; a skipped incremental refresh is not timed.                  |
-| `publisher_materialization_build_read_bytes{tier}`                               | Histogram          | Warehouse bytes a build scanned, when the warehouse reported a count.                                                                  |
+
+Materialization, serving from stored tables and the router have their own table, under
+[Materialization metrics](#materialization-metrics).
 
 Every REST error is logged once: a 4xx at `warn` (`Request refused`, with the path and status), a 5xx
 at `error`. Each MCP tool call logs one `MCP tool call` line at `info` with the tool, outcome and
@@ -784,9 +782,15 @@ duration; per-request transport detail is at `debug`.
 
 A materialization run logs `materialization.run.started` and `materialization.run.finished` (`info`;
 `warn` when partial, `error` when failed), and each source it builds `materialization.build.finished`
-or `materialization.build.failed` (`warn`; `error` when nothing recognized the failure). Each carries
-`runId`, the run's id, to join it to the run's record, which holds the failure's message: the log
-carries only its code, since a driver's message can quote SQL or a value.
+or `materialization.build.failed` (`warn`; `error` when nothing recognized the failure). Each source
+the eligibility gate refuses logs `materialization.build.refused` with the refusal's `reason` code
+(`warn` on an orchestrated run, `info` on an auto-run). Each carries `runId`, the run's id, to join
+it to the run's record, which holds the failure's or the refusal's message: the log carries only its
+code, since a driver's message can quote SQL or a value.
+
+Every materialization log line names the same things by the same fields: `runId` (the run),
+`destinationName` (a `storage=` destination), `error` (an error's message, where one is logged),
+`environmentName` and `packageName`.
 
 With `OTEL_EXPORTER_OTLP_ENDPOINT` set, queries are traced as a `publisher.query` span (package,
 model path, the tier it was served from) with `publisher.query.execute` beneath it, and compiles as
@@ -829,6 +833,46 @@ URL. Its fields:
 | `traceId`    | The request's trace: the HTTP span's, which continues an incoming `traceparent`, else the `traceparent` header's own. Absent when there is neither.                    |
 | `payload`    | The request body, **only when `LOG_LEVEL` is `debug`** (the default) or `silly`. Credential fields are masked by key name; query text and given values are not, so a production log at `info` leaves the body out. A body over 2048 characters of JSON is logged as `{truncated, length, head}`. |
 | `response`   | The response body, under the same rule: only at `debug` or `silly`, unless `DISABLE_RESPONSE_LOGGING` turns it off. It holds query result rows. Masked and truncated the same way. |
+
+## Materialization metrics
+
+Under the same `publisher` meter. Every label is a closed list; none is a package, environment,
+source, model, table, destination, connection or query.
+
+| Metric | Type | What it counts |
+| ------ | ---- | -------------- |
+| `publisher_materialization_runs_total{mode,outcome}` | Counter | Runs finished. `mode`: `auto` or `orchestrated`; `outcome`: `success`, `partial` (a manifest committed with some sources failed), `failed`, `cancelled`. |
+| `publisher_materialization_run_duration_ms{mode,outcome}` | Histogram | How long each of those runs took, with the same labels. |
+| `publisher_materialization_build_total{kind,tier,outcome,failure_class}` | Counter | One per source per run. `kind`: `materialize`, `persist`, `rollup`, `view`, `pair`; `tier`: `colocated` or `storage`; `outcome`: `built`, `reused`, `refused`, `failed`, `cancelled`; `failure_class`: `none` unless failed, else `deterministic`, `transient`, `unclassified` or `billed_read_lost` (the read was charged and its rows were not captured). |
+| `publisher_materialization_build_duration_ms{kind,tier,method}` | Histogram | How long each source build ran (`method` `full` or `delta`), failed ones included; a skipped incremental refresh is not timed. |
+| `publisher_materialization_build_read_bytes{tier}` | Histogram | Warehouse bytes a build scanned, when the warehouse reported a count. |
+| `publisher_materialization_incremental_step_total{step,reason}` | Counter | Refreshes of a `refresh="incremental"` source: `delta`, `seed` (a full rebuild, with why) or `skip` (with why). |
+| `publisher_materialization_key_check_total{kind,outcome}` | Counter | Key checks a run made. `kind`: `inline_join` (an inlined join_one's key; `not_unique` fails the build), `rollup`, `parent` (a query source's primary key beside a rollup), `pair_leaf`, `stored`; `outcome`: `unique`, `not_unique`, `not_run`, `reused` (a pass the run held still described the table). Outside `inline_join`, `not_unique` and `not_run` leave the key repeated or unknown, so queries that need it unique are answered live. |
+| `publisher_materialization_eligibility_refused_total{reason}` | Counter | Sources a build plan or a run refused as not materializable, once per source per plan, by the bounded reason `refusedSources` names. |
+| `publisher_materialization_build_plan_compute_duration_ms{computed_in}` | Histogram | Deriving a package's build plan at load, in the package-load `worker` or on the `main_thread`. |
+| `publisher_materialization_build_plan_compute_failed_total` | Counter | Loads whose build plan failed to compute; every colocated source of that package answers live until a load succeeds. |
+| `publisher_materialization_auto_load_total{outcome}` | Counter | An auto-run binding its new manifest to the package: `success` or `failure` (the tables were built and are not served until the next reload). |
+| `publisher_materialization_connection_digest_skipped_total` | Counter | Connection digests left out of a build plan because the connection did not resolve. |
+| `publisher_materialization_manifest_bind_degraded_total` | Counter | Manifest entries bound with an unquoted table path because their connection could not be resolved. |
+| `publisher_materialization_duplicate_target_skipped_total` | Counter | Sources skipped because the table they name was already built in the run. |
+| `publisher_materialization_shared_address_instructions_total` | Counter | Content addresses a host instructed into more than one table. Wasteful, not wrong. |
+| `publisher_materialization_table_collision_total` | Counter | Two definitions writing one table. Refused before any write unless `PERSIST_COLLISION_ENFORCE=false`. Alert on it. |
+| `publisher_materialization_drop_tables_total{outcome,engine,occasion}` | Counter | Tables dropped: `success` or `failure`, `in_warehouse` or `storage`, and `occasion` `delete` (a caller deleted the run or the table) or `reclaim` (Publisher dropped it: a failed run's tables, a table a readable name replaced, an archived or deleted version's). |
+| `publisher_materialization_scheduled_fires_total{outcome}` | Counter | The standalone scheduler firing a package's `materialization.schedule`: `fired`, `conflict` (a run was active) or `error`. |
+| `publisher_materialization_stale_upstream_entry_total{build}` | Counter | Builds that recomputed an upstream from raw because its manifest entry is at another tier than it is declared on now, by the recomputing build's tier. |
+| `publisher_annotation_findings_total{code,tier}` | Counter | Coded findings on authored annotations, once per accepted load: `malformed` (error) or `unservable` (warn). |
+| `publisher_served_copy_bind_total{scope,outcome,reason}` | Counter | Each manifest bind (`success`, `failure`, `timeout`) and each source entry it `bound`, `partial` (served, with a join read as written or left out) or `declined`, with the reason; binds count per stored table per bind, the served copy per source per model per snapshot. |
+| `publisher_query_route_total{leg,outcome,reason}` | Counter | Each serving leg the router considered for a query (`leg` `query` is a persisted named query): `used`, `skipped` with the path report's reason, or `fallback` (`RUN_FAILED`), plus `live` when live answered. |
+| `publisher_query_route_duration_ms{leg}` | Histogram | How long the router took to choose, for a query with at least one serving leg that applied, by the leg that answered (`live` included). The veto and each leg's compile, not the query's run. |
+| `publisher_storage_tables_retained_total` | Counter | Tables a failed run left in a destination on purpose (an incremental source's possible serving name). An upper bound on what accumulates. |
+| `publisher_storage_build_attribution_skipped_total{reason}` | Counter | `storage=` builds whose warehouse read went out untagged while tagging was on. |
+| `publisher_storage_serve_shape_type_fallback_total{kind}` | Counter | Captured DuckDB column types carried as json in a stored table's declared type (`array` or `unrecognized`). |
+| `publisher_storage_column_type_mismatch_total{stage,declared}` | Counter | Stored columns whose type does not serve as Malloy declares it, found at `build` or at `serve` (cast on read, or left out and answered live). |
+| `publisher_storage_chained_build_total{outcome}` | Counter | Chained `storage=` builds: `parent_reuse`, `inline_fallback`, `strict_shape_fallback`, `strict_refused`, `infra_failure`. |
+
+`table_collision_total` and `build_plan_compute_failed_total` are the ones to alert on: the first is
+two sources answering from one table's rows, the second a package whose stored tables all went live.
+A rising `incremental_step_total{step="seed"}` means incremental refresh is not engaging.
 
 ## Report and deprecation metrics
 

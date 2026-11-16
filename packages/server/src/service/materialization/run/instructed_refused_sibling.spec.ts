@@ -17,7 +17,9 @@ import {
 } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
+import { logger } from "../../../logger";
 import { InstructedBuild } from "./instructed_build";
+import { RunTelemetry, withRunTelemetry } from "./run_telemetry";
 import type { BuildEnvironment } from "./materialization_run_support";
 
 const ADDRESS = "bshared7078storage";
@@ -115,4 +117,33 @@ describe("a refused sibling on a storage address (ms2data/service#7078)", () => 
          ).toEqual(["ext"]);
       });
    }
+});
+
+describe("materialization.build.refused", () => {
+   it("logs the refusal with its run, source and reason code, and no prose", async () => {
+      const { run } = harness([["base"], ["ext"]]);
+      const warn = sinon.stub(logger, "warn");
+      try {
+         await withRunTelemetry(
+            new RunTelemetry("run-7", "orchestrated", "pkg"),
+            run,
+         );
+         const refused = warn
+            .getCalls()
+            .map((c) => c.args as unknown[])
+            .filter((args) => args[0] === "materialization.build.refused");
+         expect(refused).toHaveLength(1);
+         expect(refused[0][1]).toEqual({
+            runId: "run-7",
+            packageName: "pkg",
+            sourceEntityId: ADDRESS,
+            sourceName: "ext",
+            kind: "persist",
+            tier: "storage",
+            reason: "authorize",
+         });
+      } finally {
+         warn.restore();
+      }
+   });
 });

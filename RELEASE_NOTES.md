@@ -21,6 +21,30 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — materialization telemetry: standard log fields, refusal events, key-check and routing metrics
+
+**Log queries may need updating.** Materialization log lines now name the same things by the same fields: `runId`, `destinationName`, `error`, `environmentName`, `packageName`. Renamed:
+
+- `materializationId` → `runId`: the run transition, cancelled and failed lines and their settle warnings (`run_lifecycle.ts`), every table-drop and reclaim line (`Dropped materialized table on delete`, `Failed to drop materialized table on delete`, `Dropped a materialized storage table`, `Failed to drop a materialized storage table`, `Skipping drop: …`, `Skipped drop: a name= view …`, `Skipping manifest entry with no connection/table`, `Reclaiming a version left tables it could not drop …`), the table-claim lines (`table_claims.ts`) and `Marked a materialization FAILED: the server restarted during its run`.
+- `destination` → `destinationName`: the two `Skipping drop: …` lines, `materialization.build.failed`, and the warning that a connection reaches a storage destination.
+- `storageDestinationName` → `destinationName`: `Dropped a materialized storage table` and `Failed to drop a materialized storage table`.
+
+Log lines removed or quieter:
+
+- `Instructed source refused by the eligibility gate` (warn, with the gate's prose) is replaced by `materialization.build.refused`, carrying `runId`, `packageName`, `sourceName`, `kind`, `tier` and the refusal's `reason` code. It is `warn` on an orchestrated run and `info` on an auto-run, which now logs its refusals too. The gate's message stays on the run's record.
+- `Materialization transition` is `debug` for every status; `materialization.run.finished` is the run's `info` event.
+- `Built materialized source …` and `Built materialized source … into storage` / `Refreshed materialized source … in storage` (debug) are gone; `materialization.build.finished` is the build's event.
+- The router's per-query skip lines (`served copy cannot answer this query` and the other legs') are logged at most once a minute per model, leg and decline code, with a `code` field and a `suppressed` count of the ones left out since.
+
+Metrics:
+
+- **New** `publisher_materialization_key_check_total{kind,outcome}`: each key check a run makes (`inline_join`, `rollup`, `parent`, `pair_leaf`, `stored`; `unique`, `not_unique`, `not_run`, `reused`).
+- **New** `publisher_query_route_duration_ms{leg}`: the time the router took to choose, by the leg that answered.
+- `publisher_materialization_run_duration_ms` gains `outcome`, the same label `publisher_materialization_runs_total` carries.
+- `publisher_materialization_drop_tables_total` gains `occasion`: `delete` when a caller deleted the run or the table, `reclaim` when Publisher dropped it. The counter already counted both under one series, so a query summing over `outcome` sees no change; filter on `occasion="delete"` for deletes alone.
+
+Every materialization metric is listed, with its labels, in `docs/configuration.md` under "Materialization metrics".
+
 ## [Unreleased] — one code per mistake on every materialization route, `realization=` retired, and a persisted query reports as `query`
 
 Every case below still fails the publish and the load; only the code it fails with, or the code it is counted under, changes.

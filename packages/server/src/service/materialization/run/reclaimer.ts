@@ -18,7 +18,10 @@
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
-import { recordDropTables } from "../../../materialization_metrics";
+import {
+   type DropOccasion,
+   recordDropTables,
+} from "../../../materialization_metrics";
 import {
    Materialization,
    ResourceRepository,
@@ -213,6 +216,7 @@ function dropReach(
    environmentName: string,
    packageName: string,
    materializationId: string,
+   occasion: DropOccasion,
    connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
 ) {
    const connectionCache = new Map<string, MalloyConnection>();
@@ -266,7 +270,13 @@ function dropReach(
          if (!(await replacedByOwnView(entry))) throw err;
          logRetiredByView(materializationId, entry.physicalTableName);
       };
-   return { cachedConnection, viewContext, owner, retireIfReplacedByView };
+   return {
+      cachedConnection,
+      viewContext,
+      owner,
+      retireIfReplacedByView,
+      occasion,
+   };
 }
 
 /**
@@ -278,6 +288,7 @@ async function dropStorageTable(
    environment: BuildEnvironment,
    destinationName: string,
    table: Parameters<typeof STORAGE.drop>[1],
+   occasion: DropOccasion,
    materializationId?: string,
 ): Promise<boolean> {
    const destinationConnection = destinationForCleanup(
@@ -286,9 +297,9 @@ async function dropStorageTable(
    );
    if (!destinationConnection) return false;
    const context = {
-      ...(materializationId ? { materializationId } : {}),
+      ...(materializationId ? { runId: materializationId } : {}),
       physicalTableName: table.physicalTableName,
-      storageDestinationName: destinationName,
+      destinationName,
    };
    try {
       await STORAGE.drop(
@@ -299,11 +310,11 @@ async function dropStorageTable(
          },
          table,
       );
-      recordDropTables("success", "storage");
+      recordDropTables("success", "storage", occasion);
       logger.info("Dropped a materialized storage table", context);
       return true;
    } catch (err) {
-      recordDropTables("failure", "storage");
+      recordDropTables("failure", "storage", occasion);
       logger.warn("Failed to drop a materialized storage table", {
          ...context,
          // The drop attaches read-write, so a failure can echo the catalog
@@ -372,7 +383,11 @@ async function keptInPlace(
    if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
       logger.info(
          "Skipping drop: table still referenced by another materialization",
-         { materializationId, physicalTableName, destination: destForKey },
+         {
+            runId: materializationId,
+            physicalTableName,
+            destinationName: destForKey,
+         },
       );
       return true;
    }
@@ -390,9 +405,9 @@ async function keptInPlace(
       logger.warn(
          "Skipping drop: another package has built and marked this table since",
          {
-            materializationId,
+            runId: materializationId,
             physicalTableName,
-            destination: destForKey,
+            destinationName: destForKey,
             markedBy,
          },
       );
@@ -413,7 +428,11 @@ async function dropColocatedTable(
    materializationId: string,
    entry: ManifestEntry,
    connectionName: string,
-   { cachedConnection, retireIfReplacedByView }: ReturnType<typeof dropReach>,
+   {
+      cachedConnection,
+      retireIfReplacedByView,
+      occasion,
+   }: ReturnType<typeof dropReach>,
 ): Promise<"dropped" | "owed" | "skipped"> {
    const physicalTableName = entry.physicalTableName;
    try {
@@ -421,7 +440,7 @@ async function dropColocatedTable(
       if (!connection) {
          logger.info(
             "Skipping drop: the table lived in an unloaded version's in-memory duckdb",
-            { materializationId, physicalTableName },
+            { runId: materializationId, physicalTableName },
          );
          return "skipped";
       }
@@ -445,17 +464,17 @@ async function dropColocatedTable(
             onDropFailed: retireIfReplacedByView(entry),
          },
       );
-      recordDropTables("success", "in_warehouse");
+      recordDropTables("success", "in_warehouse", occasion);
       logger.info("Dropped materialized table on delete", {
-         materializationId,
+         runId: materializationId,
          physicalTableName,
          connectionName,
       });
       return "dropped";
    } catch (err) {
-      recordDropTables("failure", "in_warehouse");
+      recordDropTables("failure", "in_warehouse", occasion);
       logger.warn("Failed to drop materialized table on delete", {
-         materializationId,
+         runId: materializationId,
          physicalTableName,
          connectionName,
          error: errMessage(err),
@@ -550,9 +569,12 @@ export class Reclaimer {
                );
                continue;
             }
-            await dropStorageTable(environment, dest, {
-               physicalTableName: table,
-            });
+            await dropStorageTable(
+               environment,
+               dest,
+               { physicalTableName: table },
+               "reclaim",
+            );
          }
       } catch (err) {
          // Never let cleanup mask the build failure that triggered it.
@@ -600,6 +622,7 @@ export class Reclaimer {
          environmentName,
          packageName,
          m.id,
+         "delete",
          Object.values(entries),
          tablesStillReferenced(listed, (other) => other.id !== m.id),
          await this.connectionResolverFor(environment, packageName, m.version),
@@ -643,6 +666,7 @@ export class Reclaimer {
       environmentName: string,
       packageName: string,
       materializationId: string,
+      occasion: DropOccasion,
       entries: ManifestEntry[],
       stillReferenced: Set<string>,
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
@@ -661,6 +685,7 @@ export class Reclaimer {
          environmentName,
          packageName,
          materializationId,
+         occasion,
          connectionFor,
       );
       const { viewContext, owner, retireIfReplacedByView } = reach;
@@ -669,7 +694,7 @@ export class Reclaimer {
          const physicalTableName = entry.physicalTableName;
          if (!connectionName || !physicalTableName) {
             logger.warn("Skipping manifest entry with no connection/table", {
-               materializationId: m.id,
+               runId: m.id,
                sourceEntityId: entry.sourceEntityId,
             });
             continue;
@@ -709,6 +734,7 @@ export class Reclaimer {
                   leftoversOf: entry.sourceEntityId,
                   onDropFailed: retireIfReplacedByView(entry),
                },
+               occasion,
                m.id,
             );
             if (!dropped) owed.push(entry);
@@ -817,6 +843,7 @@ export class Reclaimer {
                environmentName,
                packageName,
                runId,
+               "reclaim",
                reclaimable,
                new Set(),
                await this.connectionResolverFor(
@@ -1211,6 +1238,7 @@ export class Reclaimer {
             environmentName,
             packageName,
             m.id,
+            "reclaim",
             reclaimableEntries(m),
             stillReferenced,
             connectionFor,
@@ -1225,7 +1253,7 @@ export class Reclaimer {
                   packageName,
                   version: versionId,
                   cause,
-                  materializationId: m.id,
+                  runId: m.id,
                   tables: owed.map((e) => e.physicalTableName),
                },
             );
@@ -1316,6 +1344,6 @@ function logRetiredByView(
 ): void {
    logger.info(
       "Skipped drop: a name= view this package made in an earlier release replaced the table, which is gone",
-      { materializationId, physicalTableName },
+      { runId: materializationId, physicalTableName },
    );
 }

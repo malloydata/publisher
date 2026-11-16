@@ -985,7 +985,7 @@ describe("reclaiming an archived version's tables", () => {
             dropManifestEntries: async (...args) => {
                if (failed) return real.dropManifestEntries(...args);
                failed = true;
-               return args[4];
+               return args[5];
             },
          };
       });

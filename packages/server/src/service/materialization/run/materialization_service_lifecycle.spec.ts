@@ -1325,10 +1325,10 @@ describe("runInBackground (terminal recording)", () => {
          expect(errorStub.calledOnce).toBe(true);
          const [message, meta] = errorStub.firstCall.args as unknown as [
             string,
-            { materializationId: string; code: string; stack?: string },
+            { runId: string; code: string; stack?: string },
          ];
          expect(message).toBe("Materialization run failed");
-         expect(meta.materializationId).toBe("bg-4");
+         expect(meta.runId).toBe("bg-4");
          expect(meta.code).toBe("XX000");
          // The stack's frames locate the throw; its message line, which can
          // quote SQL, is left off (it is on the run's record).

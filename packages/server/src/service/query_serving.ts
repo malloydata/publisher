@@ -84,6 +84,41 @@ const SKIP_MESSAGE: Record<LegKind, string> = {
 };
 
 /**
+ * A leg's skip is logged at most once a minute per model, leg and decline
+ * code, carrying how many like it were left out since: a skip repeats on
+ * every query of a dashboard, and the path report and
+ * `publisher_query_route_total` already say why each one was skipped.
+ */
+const SKIP_LOG_INTERVAL_MS = 60_000;
+const SKIP_LOG_KEYS_MAX = 1_000;
+const skipLogs = new Map<string, { at: number; suppressed: number }>();
+
+function logSkip(kind: LegKind, modelPath: string, err: unknown): void {
+   if (!logger.isDebugEnabled()) return;
+   const code = isDeclineOf(err, DECLINING_LEG[kind]) ? err.code : "error";
+   const key = `${modelPath}\u0000${kind}\u0000${code}`;
+   const now = Date.now();
+   const last = skipLogs.get(key);
+   if (last && now - last.at < SKIP_LOG_INTERVAL_MS) {
+      last.suppressed++;
+      return;
+   }
+   if (!last && skipLogs.size >= SKIP_LOG_KEYS_MAX) skipLogs.clear();
+   skipLogs.set(key, { at: now, suppressed: 0 });
+   logger.debug(SKIP_MESSAGE[kind], {
+      modelPath,
+      code,
+      error: err instanceof Error ? err.message : String(err),
+      ...(last?.suppressed ? { suppressed: last.suppressed } : {}),
+   });
+}
+
+/** Visible for tests: forget which skips were logged. */
+export function resetSkipLogSamplingForTesting(): void {
+   skipLogs.clear();
+}
+
+/**
  * The router's candidates for one query: one per leg, in the legs' order.
  * The gate policy (`domain/gate_policy.ts`) decides, its switches read once
  * for the query, whether a leg may be tried past an entry-point gate (R3:
@@ -137,12 +172,7 @@ export function variantsOf(
                        : {}),
                  }
                : undefined,
-         onSkip: (err) => {
-            logger.debug(SKIP_MESSAGE[leg.kind], {
-               modelPath: args.modelPath,
-               error: err instanceof Error ? err.message : String(err),
-            });
-         },
+         onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };
    });
 }

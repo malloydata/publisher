@@ -104,6 +104,7 @@ async function reclaim(
          _en,
          _p,
          _id,
+         _occasion,
          entries,
          _ref,
          _conn,

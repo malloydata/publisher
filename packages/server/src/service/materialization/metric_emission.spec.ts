@@ -189,7 +189,7 @@ describe("a run's instruments", () => {
          );
    }
 
-   it("publisher_materialization_run_duration_ms: one sample per run, by mode", async () => {
+   it("publisher_materialization_run_duration_ms: one sample per run, by mode and outcome", async () => {
       const ctx = createMocks();
       await stubbedRun(ctx)();
       expect(
@@ -206,7 +206,7 @@ describe("a run's instruments", () => {
          await harness.collectAttributes(
             "publisher_materialization_run_duration_ms",
          ),
-      ).toEqual([{ mode: "auto" }]);
+      ).toEqual([{ mode: "auto", outcome: "success" }]);
    });
 
    it("publisher_materialization_auto_load_total: once per commit, by the load's outcome", async () => {

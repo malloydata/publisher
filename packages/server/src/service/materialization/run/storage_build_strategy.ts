@@ -767,25 +767,6 @@ export class StorageBuildStrategy
       manifest.update(sourceEntityId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
-      // Debug: the run's `materialization.build.finished` is the build's
-      // event, and the build histogram times it (a SKIP is not timed).
-      logger.debug(
-         result.refresh
-            ? `Refreshed materialized source ${persistSource.name} in storage`
-            : `Built materialized source ${persistSource.name} into storage`,
-         {
-            physicalTableName,
-            storageDestinationName: result.storageDestinationName,
-            columns: result.schema.length,
-            durationMs,
-            refresh: result.refresh?.refresh,
-            // The whole cost and the warehouse job ids, which the manifest has
-            // no room for. Null means nothing was reported, not free (see
-            // BuildReadCost).
-            readCost: result.readCost,
-         },
-      );
-
       return {
          sourceEntityId,
          sourceName: persistSource.name,
