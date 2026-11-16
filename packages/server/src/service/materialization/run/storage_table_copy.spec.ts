@@ -1,23 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   afterAll,
-   afterEach,
-   beforeAll,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   spyOn,
-} from "bun:test";
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { components } from "../../../api";
 import { BadRequestError } from "../../../errors";
 import * as connection from "../../connection";
+import { createIsolatedBuildSession } from "./materialization_build_session";
 import { copyStorageTable } from "./storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -104,14 +96,12 @@ describe("copyStorageTable on file catalogs", () => {
          );
       };
 
-   beforeAll(() => {
-      dir = mkdtempSync(join(tmpdir(), "storage-table-copy-"));
-   });
-   afterAll(() => {
-      rmSync(dir, { recursive: true, force: true });
-   });
-
+   // Each test has its own catalogs, and every session that attached one is
+   // closed for good (a plain close keeps the instance, and its files, open
+   // until it is collected), so a file a later attach or the cleanup needs is
+   // never still held: Windows refuses to open or remove a file held open.
    beforeEach(async () => {
+      dir = mkdtempSync(join(tmpdir(), "storage-table-copy-"));
       spies.push(
          spyOn(connection, "attachDuckLakeReadWrite").mockImplementation(
             attachFile(false),
@@ -121,7 +111,7 @@ describe("copyStorageTable on file catalogs", () => {
          ),
       );
       // The source catalog: a partitioned table of three rows.
-      const seed = new DuckDBConnection("seed", join(dir, "seed.duckdb"));
+      const { session: seed, dispose } = createIsolatedBuildSession("seed");
       try {
          await attachFile(false)(
             seed,
@@ -136,11 +126,12 @@ describe("copyStorageTable on file catalogs", () => {
          );
          await seed.runSQL("DETACH src");
       } finally {
-         await seed.close();
+         await dispose();
       }
    });
    afterEach(() => {
       for (const spy of spies.splice(0)) spy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
    });
 
    it("copies a table across catalogs, with its rows, columns and partition layout", async () => {

@@ -43,7 +43,6 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets } from "../../../pg_helpers";
-import type { InstructedBuildOptions } from "./instructed_build";
 import { addressSQL, computeSourceEntityId } from "../plan/build_plan";
 import {
    sourcesInBuildOrder,
@@ -57,11 +56,62 @@ import {
 import {
    declaredStorage,
    redactConnectionSecrets,
+   type BuildEnvironment,
+   type BuildQueryMetadata,
    type ChainedPlanFacts,
+   type WarehouseReach,
 } from "./materialization_run_support";
+import type { IncrementalRunContext } from "./incremental_build";
+import type { UniquenessLedger } from "./inline_uniqueness";
+import type { Materialization } from "../../../storage/DatabaseInterface";
 import { tableNameParts, tableNamesMeet } from "../domain/table_name";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
+
+/** One instructed run: what `InstructedBuild.run` reads. */
+export interface InstructedBuildOptions {
+   compiled: CompiledBuildPlan;
+   environment: BuildEnvironment;
+   instructions: BuildInstruction[];
+   seedEntries: Record<string, ManifestEntry>;
+   signal: AbortSignal;
+   strict?: boolean;
+   /** Used only to reclaim this run's storage tables on failure. */
+   owner?: { environmentId: string; packageName: string };
+   buildMetadata?: BuildQueryMetadata;
+   /** Undefined leaves every source on the full-rebuild path. */
+   incremental?: IncrementalRunContext;
+   /**
+    * Auto-run refusals, named in the error of a run whose every instructed
+    * source failed so it accounts for every unbuilt source.
+    */
+   priorRefusals?: RefusedSource[];
+   /**
+    * Tiers auto-run already cleared (see deriveSelfInstructions); a listed
+    * source is not asserted again.
+    */
+   clearedTiers?: ReadonlyMap<string, EligibilityTier>;
+   /**
+    * The host instructed this run (orchestrated): a host-supplied upstream
+    * entry at the wrong tier is refused, not recomputed (see
+    * ChainedPlanFacts.hostInstructed).
+    */
+   hostInstructed?: boolean;
+   /** What a strict build does with the warehouse recompute. */
+   warehouseReach?: WarehouseReach;
+   /**
+    * Auto-run only: the inline uniqueness checks' passes, read from the run
+    * before and recorded for the run after (inline_uniqueness.ts). Undefined
+    * runs every check as compiled.
+    */
+   uniqueness?: UniquenessLedger;
+   /**
+    * The package's runs, from its own records: what tells a table at a
+    * `name=` this package wrote from anyone else's (table_ownership.ts).
+    * Absent: no such table is ever recognized, and every one refuses.
+    */
+   packageRuns?: () => Promise<Materialization[]>;
+}
 
 /** The eligibility gate a source was cleared by. */
 export type EligibilityTier = "storage" | "colocated";

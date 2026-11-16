@@ -911,18 +911,6 @@ export class MaterializationEligibilityError extends Error {
 }
 
 /**
- * A materialization build stopping at a checkpoint because its run was
- * cancelled. Never answers a request (a cancelled run settles as CANCELLED),
- * so it has no row in the error table.
- */
-export class BuildCancelledError extends Error {
-   constructor() {
-      super("Build cancelled");
-      this.name = "BuildCancelledError";
-   }
-}
-
-/**
  * A chained `storage=` build depends on a persisted upstream it has no table
  * for (not built this run, not supplied, or in another destination).
  * Recomputing it from raw would rebuild a stored table nobody asked for, so

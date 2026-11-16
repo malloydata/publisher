@@ -1,11 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
    BadRequestError,
-   BuildCancelledError,
    EnvironmentNotFoundError,
    InvalidStateTransitionError,
    MaterializationConflictError,
