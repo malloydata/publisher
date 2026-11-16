@@ -615,9 +615,10 @@ describe("service/package", () => {
    // WHETHER the source may be served frozen — that is decided by compiling the
    // model. These assert the gate that enforces it, because the failure is silent:
    // an admitted binding for a `given`-filtered source serves one caller's rows to
-   // everyone, and no error is raised. Scenarios
-   // `host-binding-honors-row-level-access` and `host-binding-of-unplanned-source`
-   // prove it end to end; these keep it from being refactored away.
+   // everyone, and no error is raised. Scenario
+   // `host-binding-honors-row-level-access` proves it end to end: its forged
+   // binding names a source absent from `plan.sources`. These keep the gate from
+   // being refactored away.
    describe("bindStorageServeBindings eligibility gate", () => {
       /** A structurally complete manifest entry — the shape a host sends. */
       const entry = (sourceName: string, table: string) => ({
@@ -760,9 +761,8 @@ describe("service/package", () => {
       });
 
       it("refuses a source the plan never contained", () => {
-         // Malloy admits only query-shaped sources as build roots, so `#@ persist`
-         // on a filtered pass-through produces no plan entry — neither eligible nor
-         // refused. Absence is not eligibility.
+         // A source with no `#@ persist` annotation produces no plan entry —
+         // neither eligible nor refused. Absence is not eligibility.
          const pkg = packageWith({ eligible: ["all_rows"], refused: {} });
 
          pkg.bindStorageServeBindings({
