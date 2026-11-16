@@ -93,9 +93,11 @@ import {
 } from "../../annotations";
 import {
    declaredFieldNotes,
+   declaredNotes,
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
+import { canonicalAuthorizeRoute } from "../../authorize_routes";
 import {
    PREAGGREGATE_INVALID_CODE,
    PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
@@ -189,20 +191,37 @@ export interface ParentKeyNeed {
 
 /**
  * Whether a rollup at `placement` over a gated base may be read past its
- * base's gate (and so is worth building), by the gate policy: under
- * `materialize.gatedSources`, colocated, or in a storage destination once the
- * managed-tier review allows it.
+ * base's gate (and so is worth building), by the gate policy: colocated,
+ * under `materialize.gatedSources` or, with it off, under G3 when every gate
+ * is the base's `own`; in a storage destination once the managed-tier review
+ * allows it.
  */
-function rollupsServeGatedBases(placement: { storage?: string }): boolean {
+function rollupsServeGatedBases(
+   placement: { storage?: string },
+   own: boolean,
+): boolean {
    return tableKeepsGates(
       {
          kind: "rollup",
          tier: placement.storage === undefined ? "colocated" : "storage",
          v1: false,
          baseGateProven: true,
+         gate: baseGateOf(own),
       },
       gateSwitches(),
    );
+}
+
+/**
+ * A rollup base's gates as the gate policy reads them: row-level, and
+ * `attributed` when every one is the base's own (G3 for rollups).
+ */
+function baseGateOf(own: boolean): {
+   rowLevel: boolean;
+   attributed: boolean;
+   inheritedRowFilter: boolean;
+} {
+   return { rowLevel: true, attributed: own, inheritedRowFilter: !own };
 }
 
 /**
@@ -243,6 +262,7 @@ export function rollupGateEnforcedAtRead(plan: unknown): boolean {
                : "storage",
          v1: !variant,
          baseGateProven: variant && plan.baseGated === true,
+         gate: baseGateOf(variant && plan.baseGateOwn === true),
       },
       gateSwitches(),
    );
@@ -866,7 +886,13 @@ function rollupFactsOf(
    const joins = new Map(map.joinsOf(node.sourceID).map((j) => [j.name, j]));
    const joinUsage = map.fieldJoinsOf(node.sourceID);
    const declaredName = splitSourceID(node.sourceID)?.name ?? sourceName;
-   const gate = gateFieldNames(def, byName, map.model(), joinUsage);
+   const gate = gateFieldNames(
+      def,
+      byName,
+      map.model(),
+      joinUsage,
+      scopeOf(map),
+   );
    // S25b: what reads the current time. A rollup stores what its build saw,
    // and a live query re-reads `now` every time, so anything here that reads
    // it (a rolling window on the source or a query-shaped base, a grain
@@ -1092,13 +1118,16 @@ function declarationRefusal(
    // Row 21: a gated base's rollup is built only where a query can read
    // it past the gate; elsewhere its table would cost a build no query
    // reads.
-   if (gate.declared && !(ctx.readUnderGates ?? rollupsServeGatedBases(decl))) {
+   if (
+      gate.declared &&
+      !(ctx.readUnderGates ?? rollupsServeGatedBases(decl, gate.own))
+   ) {
       return unservable(
          "access_filter",
          decl,
-         decl.storage !== undefined && gateSwitches().gatedSources
+         decl.storage !== undefined
             ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
-            : "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
+            : "the source's row-level gate (`#(access_filter)` or `#(authorize)`) is inherited from a source it extends, and a rollup keeps only its base's own gate unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
       );
    }
    // A gate on a source the base joins is not the base's to graft: the
@@ -1255,6 +1284,7 @@ function rollupPlanOf(
       })),
       rollupMeasures: sorted,
       baseGated: gate.declared,
+      ...(gate.declared && gate.own ? { baseGateOwn: true as const } : {}),
       internalGrain: decl.grain.filter(
          (g) => byName.get(g)?.accessModifier === "internal",
       ),
@@ -1337,11 +1367,14 @@ function gateFieldNames(
    byName: ReadonlyMap<string, FieldLike>,
    modelDef: unknown,
    joinUsage: ReturnType<SourceMap["fieldJoinsOf"]>,
+   scope: SourceScope,
 ): {
    dimensions: string[];
    unkeepable: string[];
    declared: boolean;
    joinGated: boolean;
+   /** Every gate is the base's own: none inherited, none from a derivation. */
+   own: boolean;
 } {
    const dimensions = new Set<string>();
    const unkeepable = new Set<string>();
@@ -1388,7 +1421,28 @@ function gateFieldNames(
       unkeepable: [...unkeepable].sort(byCodepoint),
       declared: entries.length > 0,
       joinGated,
+      own:
+         entries.length > 0 &&
+         unkeepable.size === 0 &&
+         entries.every((e) => !e.selfContained && e.struct !== undefined) &&
+         gateNotesDeclaredBy(def, scope),
    };
+}
+
+/**
+ * Whether every gate note on `def`'s own level is one its own statement
+ * declared ({@link declaredNotes}): Malloy copies a base's notes onto a source
+ * that extends it, so a gate the walk reads as the entry point's may be
+ * inherited. Only a base's own gate is kept under G3.
+ */
+function gateNotesDeclaredBy(def: SourceLike, scope: SourceScope): boolean {
+   const gates = ownLevelNotes(def.annotations).filter(
+      (n) => canonicalAuthorizeRoute(routeOfNote(n.text)) !== undefined,
+   );
+   const declared = new Set(
+      declaredNotes(def as NotedSourceDef, scope as Record<string, unknown>),
+   );
+   return gates.length > 0 && gates.every((n) => declared.has(n));
 }
 
 /** Whether a joined source carries a row-level gate (fails closed). */

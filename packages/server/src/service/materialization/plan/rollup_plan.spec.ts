@@ -254,23 +254,23 @@ describe("#(preaggregate) access filters (A4)", () => {
    });
 });
 
-describe("#(preaggregate) over a gated source with gated sources off (row 21)", () => {
-   it("plans no rollup over a gated source, even one whose grain keeps the gate's field", async () => {
+describe("#(preaggregate) over a gated source with gated sources off (G3 for rollups)", () => {
+   it("plans a colocated rollup over the base's own gate when its grain keeps the gate's field, and no other", async () => {
       expect(rollupGateEnforcedAtRead({ variant: true, baseGated: true })).toBe(
          false,
       );
       const { plans, refused } = await plan(GATED);
-      expect(plans).toEqual([]);
+      expect(plans.map((p) => [p.grainDimensions, p.baseGateOwn])).toEqual([
+         [["category", "region"], true],
+      ]);
+      expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
+      // The grain that drops the gate's field.
       expect(refused.map((r) => [r.tier, why(r)])).toEqual([
          ["unservable", "access_filter"],
-         ["unservable", "access_filter"],
       ]);
-      expect(refused[0]?.message).toContain(
-         "PUBLISHER_MATERIALIZE_GATED_SOURCES",
-      );
    });
 
-   it("plans none under an #(authorize) gate that reads no field", async () => {
+   it("plans one under the base's own #(authorize) gate that reads no field", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
 given: ROLE :: string is 'viewer'
@@ -280,12 +280,12 @@ source: orders is ${ROWS} extend {
   measure: total is amount.sum()
 }`,
       });
-      expect(plans).toEqual([]);
-      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
+      expect(plans.map((p) => p.baseGateOwn)).toEqual([true]);
+      expect(refused).toEqual([]);
    });
 
    it("plans none over an extension that inherits the gate, and still plans the ungated", async () => {
-      const { plans } = await plan({
+      const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
 given: REGION :: string is 'x'
 #(access_filter) region = $REGION
@@ -300,6 +300,24 @@ source: open is ${ROWS} extend {
 }`,
       });
       expect(plans.map((p) => p.baseSourceName)).toEqual(["open"]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
+      expect(refused[0]?.message).toContain(
+         "PUBLISHER_MATERIALIZE_GATED_SOURCES",
+      );
+   });
+
+   it("plans none in a storage destination, whose gate awaits its review", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental.givens
+given: REGION :: string is 'x'
+#(access_filter) region = $REGION
+source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category", "region"] storage="lake"
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
    });
 });
 

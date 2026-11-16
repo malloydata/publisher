@@ -5,10 +5,11 @@
  * Rows 1 and 21 on the build side: a `#(preaggregate)` rollup over a gated
  * base is planned and built (not refused by the colocated tier's `authorize`
  * check) only when a query can read it past the gate, which is
- * `rollupGateEnforcedAtRead`: `materialize.gatedSources` on, colocated.
- * With the switch off it is not planned at all (`preaggregate-not-built`, reason `access_filter`),
- * and a `storage=` one waits for question 14's review either way. Drives
- * `Package.create` on the worker path, as the package warnings specs do.
+ * `rollupGateEnforcedAtRead`: colocated, with `materialize.gatedSources` on,
+ * or off under G3 when every gate is the base's own (as here). A `storage=`
+ * one waits for question 14's review either way (`preaggregate-not-built`,
+ * reason `access_filter`). Drives `Package.create` on the worker path, as the
+ * package warnings specs do.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
@@ -45,7 +46,7 @@ source: hidden is ${ROWS} extend {
 `;
 
 for (const gated of [true, false]) {
-   describe(`#(preaggregate) over a gated base, gated sources ${gated ? "on" : "off"} (rows 1, 21)`, () => {
+   describe(`#(preaggregate) over a gated base, gated sources ${gated ? "on" : "off (G3)"} (rows 1, 21)`, () => {
       let tempDir: string;
       let pool: PackageLoadPool;
       let duckdb: DuckDBConnection;
@@ -96,59 +97,42 @@ for (const gated of [true, false]) {
             .filter((r) => r.reason === "access_filter")
             .map((r) => r.name);
 
-      it(
-         gated
-            ? "plans the colocated rollup and does not refuse it for its gate"
-            : "plans no rollup over the gated base, with a warning",
-         () => {
-            const colocated = planned().filter((n) =>
-               n.startsWith("gated__rollup__"),
-            );
-            expect(colocated.length).toBe(gated ? 1 : 0);
-            expect(refused().some((n) => n.startsWith("gated__rollup__"))).toBe(
-               false,
-            );
-            expect(warned()).toContain(
-               gated ? "gated.stored_total" : "gated.total",
-            );
-         },
-      );
+      it("plans the colocated rollup and does not refuse it for its gate", () => {
+         const colocated = planned().filter((n) =>
+            n.startsWith("gated__rollup__"),
+         );
+         expect(colocated.length).toBe(1);
+         expect(refused().some((n) => n.startsWith("gated__rollup__"))).toBe(
+            false,
+         );
+         expect(warned()).toEqual(["gated.stored_total"]);
+      });
 
-      it(
-         gated
-            ? "reports the gated rollup's serve verdict without a gate veto (row 1)"
-            : "plans nothing to report a verdict on",
-         () => {
-            const verdicts = (
-               pkg.materialization() as unknown as {
-                  serveVerdicts(): { sourceName: string; reason?: string }[];
-               }
-            )
-               .serveVerdicts()
-               .filter((v) => v.sourceName.startsWith("gated__rollup__"));
-            expect(verdicts.length).toBe(gated ? 1 : 0);
-            for (const v of verdicts) {
-               expect(v.reason).not.toBe("row_level_gate");
+      it("reports the gated rollup's serve verdict without a gate veto (row 1)", () => {
+         const verdicts = (
+            pkg.materialization() as unknown as {
+               serveVerdicts(): { sourceName: string; reason?: string }[];
             }
-         },
-      );
+         )
+            .serveVerdicts()
+            .filter((v) => v.sourceName.startsWith("gated__rollup__"));
+         expect(verdicts.length).toBe(1);
+         for (const v of verdicts) {
+            expect(v.reason).not.toBe("row_level_gate");
+         }
+      });
 
       it("leaves the storage= rollup out until the managed-tier review", () => {
          expect(warned()).toContain("gated.stored_total");
       });
 
-      it(
-         gated
-            ? "plans a rollup whose grain stores an internal gate field"
-            : "plans no rollup over the internal-gated base",
-         () => {
-            expect(
-               planned().some((n) => n.startsWith("hidden__rollup__")),
-            ).toBe(gated);
-            expect(
-               refused().some((n) => n.startsWith("hidden__rollup__")),
-            ).toBe(false);
-         },
-      );
+      it("plans a rollup whose grain stores an internal gate field", () => {
+         expect(planned().some((n) => n.startsWith("hidden__rollup__"))).toBe(
+            true,
+         );
+         expect(refused().some((n) => n.startsWith("hidden__rollup__"))).toBe(
+            false,
+         );
+      });
    });
 }
