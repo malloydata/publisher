@@ -41,8 +41,6 @@ import {
    type RollupVariantPlan,
 } from "../domain/table_plans";
 
-export { PERSISTED_VIEW_COMPANION_SUFFIX };
-
 /** The companion URL for a declaring file, as an `href`. */
 export function persistedViewCompanionHref(declaringURL: string): string {
    return `${declaringURL}${PERSISTED_VIEW_COMPANION_SUFFIX}`;

@@ -433,25 +433,23 @@ export type TableFolds = Readonly<Record<string, string>>;
 
 /**
  * Each planned source's content address, its table fold applied, by
- * sourceID; null where it cannot be addressed (refused on its own path).
+ * sourceID, or why it cannot be addressed (it is refused on its own path).
  * Computed once, over the whole plan, once its folds are decided
  * (`CompiledBuildPlan.addresses`).
  */
-export type PlanAddresses = Readonly<Record<string, string | null>>;
+export type PlanAddresses = Readonly<
+   Record<string, string | { unaddressable: string }>
+>;
 
-/** The slice of a plan its addresses are computed from. */
-interface AddressedPlan {
+/** {@link PlanAddresses} for `plan`. */
+export function planAddresses(plan: {
    tables: Readonly<
       Record<string, { source: PersistSource; target?: BuildTarget }>
    >;
    connectionDigests: Record<string, string>;
    tableFolds?: TableFolds;
-   addresses?: PlanAddresses;
-}
-
-/** {@link PlanAddresses} for `plan`. */
-export function planAddresses(plan: AddressedPlan): PlanAddresses {
-   const addresses: Record<string, string | null> = {};
+}): PlanAddresses {
+   const addresses: Record<string, string | { unaddressable: string }> = {};
    for (const [sourceID, { source, target }] of Object.entries(plan.tables)) {
       try {
          addresses[sourceID] = computeSourceEntityId(
@@ -460,27 +458,27 @@ export function planAddresses(plan: AddressedPlan): PlanAddresses {
             target,
             plan.tableFolds,
          );
-      } catch {
-         addresses[sourceID] = null;
+      } catch (err) {
+         addresses[sourceID] = {
+            unaddressable: err instanceof Error ? err.message : String(err),
+         };
       }
    }
    return addresses;
 }
 
 /**
- * The content address of the plan's source `sourceID`: read from the plan's
- * {@link PlanAddresses}, computed for a plan that carries none (one made by
- * hand). A source that cannot be addressed throws why.
+ * The content address of the plan's source `sourceID`, read from its
+ * {@link PlanAddresses}. A source that cannot be addressed throws why.
  */
-export function planAddressOf(plan: AddressedPlan, sourceID: string): string {
-   const known = plan.addresses?.[sourceID];
-   if (typeof known === "string") return known;
-   const { source, target } = plan.tables[sourceID];
-   return computeSourceEntityId(
-      source,
-      plan.connectionDigests,
-      target,
-      plan.tableFolds,
+export function planAddressOf(
+   plan: { addresses: PlanAddresses },
+   sourceID: string,
+): string {
+   const address = plan.addresses[sourceID];
+   if (typeof address === "string") return address;
+   throw new Error(
+      address?.unaddressable ?? `'${sourceID}' has no planned address`,
    );
 }
 
@@ -489,9 +487,13 @@ export function planAddressOf(plan: AddressedPlan, sourceID: string): string {
  * build (one address, say gated differently at read) but name different
  * tables are each addressed with their name folded in, so every plan, build,
  * manifest and bind path keys two tables. A source with no `name=` of its
- * own (a defaulted readable name, a rollup) keeps the plain address, as does
- * every source of an address whose sources all name one table: the same
- * source reached from two models, or identical SQL with no `name=`.
+ * own (a defaulted readable name, a rollup) names no table: it never moves,
+ * keeping the plain address and its own readable table, and beside a source
+ * that does name one it is still told apart, so the named source moves to an
+ * address of its own (a defaulted name is Publisher's table, a `name=` the
+ * author's; see hasAuthorTableName). Only an address whose sources all name
+ * one table, or all name none, keeps every source on the plain address: the
+ * same source reached from two models, or identical SQL with no `name=`.
  *
  * Likewise two `storage=` declarations of one build that store different
  * columns (one keeps a column `private:`, the other drops it with `except:`):

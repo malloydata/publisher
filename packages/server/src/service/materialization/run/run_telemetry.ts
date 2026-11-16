@@ -37,7 +37,7 @@ import {
    recordBuildReadBytes,
 } from "../../../materialization_metrics";
 import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
+import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../domain/table_plans";
 import type {
    BuildInstruction,
    BuildPlan,

@@ -8,7 +8,8 @@ import {
    collectModelBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
-   deriveBuildPlan,
+   deriveBuildPlan as wirePlanOf,
+   planAddresses,
    emptyBuildPlanParts,
    plannedSources,
    projectToStoredColumns,
@@ -33,6 +34,16 @@ import {
    sourcesIn,
 } from "../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../test_helpers/settings_env";
+
+/** {@link wirePlanOf} over a hand-made plan, its addresses computed. */
+function deriveBuildPlan(
+   plan: Omit<Parameters<typeof wirePlanOf>[0], "addresses">,
+   ...rest: Parameters<typeof wirePlanOf> extends [unknown, ...infer R]
+      ? R
+      : never
+): ReturnType<typeof wirePlanOf> {
+   return wirePlanOf({ ...plan, addresses: planAddresses(plan) }, ...rest);
+}
 
 describe("source builds from getBuildTargets", () => {
    // a <- b <- c, plus `a_ext`, which extends `a` without changing its SQL and

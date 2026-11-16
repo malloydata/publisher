@@ -130,7 +130,7 @@ import {
    renameBuildSourceIDs,
    withoutSourceIDs,
    sourceBuildsOf,
-   type TableFolds,
+   type PlanAddresses,
 } from "./addressing";
 import {
    materializePlansOf,
@@ -168,6 +168,7 @@ export {
    compilerBuildId,
    computeSourceEntityId,
    foldDistinctTableNames,
+   planAddresses,
    plannedSources,
    resolveConnectionDigests,
    setTestAddressForTarget,
@@ -211,6 +212,24 @@ export type { BuildPlanPackage };
  * annotation findings typed as the planner reports them.
  */
 export type CompiledBuildPlan = PlannedBuild<PackageAnnotationFinding>;
+
+/**
+ * A compiled build plan {@link finishBuildPlan} finished: its folds and
+ * addresses decided, its sources refused alone, and every part a plan's
+ * outcome reads present.
+ */
+export type FinishedBuildPlan = CompiledBuildPlan &
+   Required<
+      Pick<
+         CompiledBuildPlan,
+         | "tableFolds"
+         | "addresses"
+         | "droppedPersistSources"
+         | "annotationFindings"
+         | "modelGateLines"
+         | "omittedSources"
+      >
+   >;
 
 function wireTerm(term: DynamicTerm): WireStrippedTerm {
    return { code: term.code, givens: term.givens };
@@ -663,8 +682,8 @@ function plannedFacts(
 
 /** The declaring file's URL in a Malloy `sourceID` (`<name>@<url>`). */
 function sourceIDFileURL(sourceID: string): string | undefined {
-   const at = sourceID.indexOf("@file:");
-   return at >= 0 ? sourceID.slice(at + 1) : undefined;
+   const url = splitSourceID(sourceID)?.url;
+   return url?.startsWith("file:") ? url : undefined;
 }
 
 /**
@@ -1469,8 +1488,7 @@ export function deriveBuildPlan(
       | "connectionTypes"
       | "omittedSources"
       | "tableFolds"
-      | "addresses"
-   >,
+   > & { addresses: PlanAddresses },
    packageMaterialization?: WirePackageMaterialization | null,
    verdicts: ReadonlyMap<string, TableVerdict> = planVerdicts(compiled),
 ): BuildPlan {
@@ -1596,8 +1614,8 @@ function wireSourceOf(
 function refuseColocatedTablesSharedWithARefusal(
    compiled: Pick<
       CompiledBuildPlan,
-      "tables" | "connectionDigests" | "tableFolds" | "addresses"
-   >,
+      "tables" | "connectionDigests" | "tableFolds"
+   > & { addresses: PlanAddresses },
    verdicts: ReadonlyMap<string, TableVerdict>,
    wireSources: Record<string, WirePersistSourcePlan>,
    refusedSources: Record<string, WireRefusedSource>,
@@ -1690,8 +1708,11 @@ export interface RefusedRollup {
  * A package's collected parts as its compiled build plan, the one tail of
  * both plan paths (compilePackageBuildPlan on the main thread, and the load
  * worker): each author `name=` its own table, decided over every source
- * before any is refused, then the sources refused alone
- * ({@link refuseAloneInPlan}).
+ * before any is refused, and every address once, then the sources refused
+ * alone, in one order: an author collision first
+ * ({@link refuseCollidingMaterialize}, invalid whatever else is wrong with
+ * the source), then a valid incremental declaration this deployment cannot
+ * honour.
  */
 export function finishBuildPlan(
    parts: BuildPlanParts,
@@ -1708,7 +1729,7 @@ export function finishBuildPlan(
        */
       keepIncrementalUnbuildable?: boolean;
    },
-): CompiledBuildPlan & { tableFolds: TableFolds } {
+): FinishedBuildPlan {
    const plan = {
       ...(ctx.versionScoped ? { versionScoped: true } : {}),
       ...parts,
@@ -1721,14 +1742,14 @@ export function finishBuildPlan(
    };
    // Each `storage=` source's stored columns read as its build writes them.
    const tableFolds = foldDistinctTableNames(plan, storedColumnNames);
-   const folded = {
+   const refused = refuseCollidingMaterialize({
       ...plan,
       tableFolds,
       addresses: planAddresses({ ...plan, tableFolds }),
-   };
+   });
    return ctx.keepIncrementalUnbuildable
-      ? refuseCollidingMaterialize(folded)
-      : refuseAloneInPlan(folded);
+      ? refused
+      : refuseIncrementalUnbuildable(refused);
 }
 
 /**
@@ -1737,17 +1758,9 @@ export function finishBuildPlan(
  * runs the same in the package-load worker as on the main thread.
  */
 export function deriveBuildPlanOutcome(
-   compiled: Omit<CompiledBuildPlan, "connections">,
+   compiled: Omit<FinishedBuildPlan, "connections">,
    materializationConfig: WirePackageMaterialization | null,
 ): BuildPlanOutcome {
-   // Its sources refused alone already: a plan that never was would serve
-   // a source an author collision refuses.
-   if (compiled.tableFolds === undefined) {
-      throw new Error(
-         "A build plan is derived once finishBuildPlan refused it",
-      );
-   }
-   const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.tables,
    );
@@ -1760,17 +1773,14 @@ export function deriveBuildPlanOutcome(
    // A plan that lost sources is not "no plan": it is kept, so a host reads
    // `omittedSources` rather than an empty plan.
    const plan =
-      compiled.builds.length === 0 && !compiled.omittedSources?.length
+      compiled.builds.length === 0 && !compiled.omittedSources.length
          ? null
          : deriveBuildPlan(compiled, materializationConfig, verdicts);
    return {
       plan,
-      droppedPersistSources,
-      annotationFindings: compiled.annotationFindings ?? [],
-      modelGateLines: compiled.modelGateLines ?? {
-         preaggregate: [],
-         nearMiss: [],
-      },
+      droppedPersistSources: compiled.droppedPersistSources,
+      annotationFindings: compiled.annotationFindings,
+      modelGateLines: compiled.modelGateLines,
       sourceEligibility: collectSourceEligibility(compiled, verdicts),
       colocatedSourceEligibility: collectColocatedSourceEligibility(
          compiled,
@@ -1798,8 +1808,8 @@ export function deriveBuildPlanOutcome(
 function compilerKeysOf(
    compiled: Pick<
       CompiledBuildPlan,
-      "tables" | "connectionDigests" | "tableFolds" | "addresses"
-   >,
+      "tables" | "connectionDigests" | "tableFolds"
+   > & { addresses: PlanAddresses },
 ): Record<string, string> {
    const keys: Record<string, string> = {};
    for (const [sourceID, { source, target }] of Object.entries(
@@ -1817,21 +1827,6 @@ function compilerKeysOf(
 }
 
 /**
- * The sources a plan refuses alone before anything reads it, in the one
- * order every path applies ({@link finishBuildPlan}): an author collision
- * first ({@link refuseCollidingMaterialize}, invalid whatever else is wrong
- * with the source), then a valid incremental declaration this deployment
- * cannot honour.
- */
-function refuseAloneInPlan<
-   T extends Omit<CompiledBuildPlan, "connections"> & {
-      tableFolds: TableFolds;
-   },
->(compiled: T): T {
-   return refuseIncrementalUnbuildable(refuseCollidingMaterialize(compiled));
-}
-
-/**
  * The compiled plan less each source whose VALID incremental declaration this
  * deployment cannot honour (incremental_policy's rules 6, 7 and 12), each
  * reported as its route's `*-not-built` warning: not built, answered live,
@@ -1839,7 +1834,7 @@ function refuseAloneInPlan<
  * the load's incremental gate to fail.
  */
 function refuseIncrementalUnbuildable<
-   T extends Omit<CompiledBuildPlan, "connections">,
+   T extends Omit<FinishedBuildPlan, "connections">,
 >(compiled: T): T {
    const declarations = collectIncrementalDeclarations(compiled.tables);
    const findings: PackageAnnotationFinding[] = [];

@@ -83,12 +83,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
     */
    tableFolds?: Readonly<Record<string, string>>;
    /**
-    * Each planned source's content address, its fold applied, by sourceID;
-    * null where it cannot be addressed (`PlanAddresses` in `plan/`).
-    * Computed once the folds are decided; every plan-side reader of an
-    * address reads it.
+    * Each planned source's content address, its fold applied, by sourceID,
+    * or why it cannot be addressed (`PlanAddresses` in `plan/`). Computed
+    * once the folds are decided; every plan-side reader of an address reads
+    * it.
     */
-   addresses?: Readonly<Record<string, string | null>>;
+   addresses?: Readonly<Record<string, string | { unaddressable: string }>>;
    /**
     * `#@ persist` sources Malloy's build walk did NOT recognize as persistable
     * (`detectDroppedPersistSources` in `plan/`). Callers surface these as a

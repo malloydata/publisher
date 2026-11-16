@@ -23,7 +23,7 @@ import {
    resolvePackageConnections,
    type BuildPlanOutcome,
    type BuildPlanPackage,
-   type CompiledBuildPlan,
+   type FinishedBuildPlan,
 } from "./build_plan";
 import { loadGateText } from "./load_gate_text";
 import {
@@ -58,7 +58,7 @@ export async function compilePackageBuildPlan(
        */
       keepIncrementalUnbuildable?: boolean;
    } = {},
-): Promise<CompiledBuildPlan> {
+): Promise<FinishedBuildPlan> {
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
    const joinOneKeys = new Set<string>();
@@ -224,7 +224,7 @@ export async function computePackageBuildPlan(
  * when the files carry no invalid materialization annotation.
  */
 export function runLoadGateText(
-   compiled: CompiledBuildPlan,
+   compiled: FinishedBuildPlan,
    pkg: BuildPlanPackage,
    judgement: { versionScoped: boolean; enforceCollisions: boolean },
 ): string {

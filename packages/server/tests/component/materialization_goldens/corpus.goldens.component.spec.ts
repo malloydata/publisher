@@ -41,7 +41,7 @@ import {
    deriveBuildPlanOutcome,
    finishBuildPlan,
    emptyBuildPlanParts,
-   type CompiledBuildPlan,
+   type FinishedBuildPlan,
 } from "../../../src/service/materialization/plan/build_plan";
 import { overlayKey } from "../../../src/service/overlay_key";
 import {
@@ -115,7 +115,7 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    const generated = new GeneratedFiles();
    const runtimeOver = (overlay?: ReadonlyMap<string, string>) =>
       new Runtime({ urlReader: readerOf(files, overlay), connections });
-   let compiled: CompiledBuildPlan;
+   let compiled: FinishedBuildPlan;
    try {
       const runtime = runtimeOver();
       const materializer = runtime.loadModel(entry);

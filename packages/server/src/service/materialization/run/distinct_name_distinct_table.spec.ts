@@ -21,7 +21,11 @@ import { deriveBuildPlanOutcome, sharedTables } from "../plan/build_plan";
 import { loadGateText } from "../plan/load_gate_text";
 import type { BuildInstruction } from "../domain/types";
 import { computeSourceEntityId } from "../plan/addressing";
-import { foldDistinctTableNames, storedColumnNames } from "../plan/build_plan";
+import {
+   foldDistinctTableNames,
+   planAddresses,
+   storedColumnNames,
+} from "../plan/build_plan";
 import {
    assertNoTableCollisions,
    indexInstructions,
@@ -444,7 +448,12 @@ describe("a bare name between two schemas", () => {
                   );
                return {
                   addresses: ["a", "b", "c"].map(addressOf),
-                  shared: [...sharedTables(compiled).keys()].sort(),
+                  shared: [
+                     ...sharedTables({
+                        ...compiled,
+                        addresses: planAddresses(compiled),
+                     }).keys(),
+                  ].sort(),
                };
             }),
          );

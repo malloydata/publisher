@@ -41,6 +41,7 @@ import {
 import {
    computeSourceEntityId,
    foldDistinctTableNames,
+   planAddresses,
    sharedTables,
    storedColumnNames,
    tierGateInputs,
@@ -145,7 +146,12 @@ function gateSources(
       foldDistinctTableNames(compiled, storedColumnNames);
    // Two definitions writing one table (sharedTables): neither is built,
    // whether or not the other is rebuilt this run or carried.
-   const shared = sharedTables({ ...compiled, tableFolds });
+   const shared = sharedTables({
+      ...compiled,
+      tableFolds,
+      addresses:
+         compiled.addresses ?? planAddresses({ ...compiled, tableFolds }),
+   });
    for (const build of compiled.builds) {
       for (const persistSource of sourcesInBuildOrder(build, compiled.tables)) {
          if (include && !include.has(persistSource.name)) continue;

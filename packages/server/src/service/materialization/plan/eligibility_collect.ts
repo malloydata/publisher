@@ -54,7 +54,7 @@ interface EligibilityPlan {
    /** The plan's table folds (CompiledBuildPlan.tableFolds). */
    tableFolds?: TableFolds;
    /** The plan's addresses (CompiledBuildPlan.addresses). */
-   addresses?: PlanAddresses;
+   addresses: PlanAddresses;
    /** See `CompiledBuildPlan.connectionTypes`. */
    connectionTypes?: Record<string, string>;
    /** See `CompiledBuildPlan.versionScoped` ({@link persistTableTarget}). */
@@ -404,7 +404,9 @@ export function withoutSources<
 }
 
 /** A compiled plan as the tier gate reads it. */
-export function tierGateInputs(compiled: EligibilityPlan): TierGateInputs {
+export function tierGateInputs(
+   compiled: Pick<EligibilityPlan, "tables" | "connectionTypes">,
+): TierGateInputs {
    return {
       tables: compiled.tables,
       connectionTypes: compiled.connectionTypes,
@@ -482,13 +484,11 @@ export function collectColocatedSourceEligibility(
 ): ColocatedSourceEligibility {
    const eligibleEntityIds = new Set<string>();
    const refused: Record<string, string> = {};
-   const shared = sharedTables(compiled);
    for (const [sourceID, { source }] of Object.entries(compiled.tables)) {
       try {
-         const gate = verdicts.get(sourceID)!.colocated;
-         if (gate !== undefined) throw gate;
-         const sharing = shared.get(sourceID);
-         if (sharing !== undefined) throw new Error(sharing);
+         const { colocated, shared } = verdicts.get(sourceID)!;
+         if (colocated !== undefined) throw colocated;
+         if (shared !== undefined) throw new Error(shared);
       } catch (err) {
          // Gated BEFORE computeSourceEntityId: the gate never addresses the
          // source, so it refuses cleanly even when addressing would throw.
@@ -696,13 +696,19 @@ export interface TableVerdict {
       | (WireVerdict & { annotationFields: Record<string, string> })
       | { failed: unknown };
    /** Whether it may be served from a stored table ({@link SourceEligibility}). */
-   storage: { refused: string; error?: unknown } | { gateKept: boolean };
+   storage: { refused: string } | { gateKept: boolean };
    /**
     * The colocated gate's refusal, before any table it shares
     * ({@link ColocatedSourceEligibility}, the colocated sibling rule).
     */
    colocated?: unknown;
-   /** The reason it is counted under: its first refusal, once per plan. */
+   /** Why it shares its table with another source ({@link sharedTables}). */
+   shared?: string;
+   /**
+    * The reason a refused source is counted under, once per plan: its wire
+    * refusal (`refusedSources`), or the colocated gate's when the wire
+    * projection could not decide.
+    */
    counted?: NonNullable<MaterializationEligibilityError["reason"]>;
 }
 
@@ -734,20 +740,18 @@ export function planVerdicts(
       } catch (err) {
          wire = { failed: err };
       }
-      const storage = storageVerdict(sourceID, compiled, gateInputs, shared);
-      const refusals = [
-         "failed" in wire ? undefined : wire.refusal,
-         "error" in storage ? storage.error : undefined,
-         colocated,
-      ];
-      const counted = refusals.find(
-         (err): err is MaterializationEligibilityError =>
-            err instanceof MaterializationEligibilityError && !!err.reason,
-      )?.reason;
+      const sharing = shared.get(sourceID);
+      const storage = storageVerdict(sourceID, compiled, gateInputs, sharing);
+      const refusal = "failed" in wire ? colocated : wire.refusal;
+      const counted =
+         refusal instanceof MaterializationEligibilityError
+            ? refusal.reason
+            : undefined;
       verdicts.set(sourceID, {
          wire,
          storage,
          ...(colocated !== undefined ? { colocated } : {}),
+         ...(sharing !== undefined ? { shared: sharing } : {}),
          ...(counted ? { counted } : {}),
       });
    }
@@ -762,9 +766,8 @@ function storageVerdict(
    sourceID: string,
    compiled: EligibilityPlan,
    gate: TierGateInputs,
-   shared: ReadonlyMap<string, string>,
+   sharing: string | undefined,
 ): TableVerdict["storage"] {
-   const sharing = shared.get(sourceID);
    if (sharing !== undefined) return { refused: sharing };
    const { source } = compiled.tables[sourceID];
    try {
@@ -773,11 +776,12 @@ function storageVerdict(
          gateEnforcedAtRead: kept,
          connectionTypes: compiled.connectionTypes,
       });
-      // A table built before this refusal existed is not served either.
+      // A table whose build reads the current time is not served, however it
+      // was built.
       assertBuildReadsNoCurrentTime(source, gate);
       return { gateKept: kept && storageKeepsOwnGate(source, compiled) };
    } catch (err) {
-      return { refused: errMessage(err), error: err };
+      return { refused: errMessage(err) };
    }
 }
 
