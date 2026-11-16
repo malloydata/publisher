@@ -17,9 +17,8 @@ import { recordConnectionDigestSkipped } from "../../../materialization_metrics"
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
-   refuseAloneInPlan,
    emptyBuildPlanParts,
-   planTableFolds,
+   finishBuildPlan,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanOutcome,
@@ -27,7 +26,6 @@ import {
    type CompiledBuildPlan,
 } from "./build_plan";
 import { loadGateText } from "./load_gate_text";
-import { refuseCollidingMaterialize } from "./eligibility_collect";
 import {
    joinOneKey,
    joinOneKeysOf,
@@ -45,7 +43,6 @@ import {
 import { SourceMap } from "../text/source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { packageFiles } from "../text/package_files";
-import { resolveConnectionTypes } from "../../connection_type";
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
@@ -192,28 +189,16 @@ export async function compilePackageBuildPlan(
       },
    );
 
-   const versionScoped = versionOwnsTables(pkg);
-   // Before anything addresses a source: each author `name=` its own table,
-   // decided over every source before any is refused.
-   const tableFolds = planTableFolds({ ...parts, connectionDigests });
    // The build path reads this plan directly: a `#(materialize)` source
    // refused for its table name, or a source whose incremental declaration
    // this deployment cannot honour, must not build here either.
-   const compiled = refuseCollidingMaterialize({
-      ...(versionScoped ? { versionScoped: true } : {}),
-      builds: parts.builds,
-      tables: parts.tables,
+   return finishBuildPlan(parts, {
       connectionDigests,
-      connectionTypes: resolveConnectionTypes(connections),
       connections,
-      tableFolds,
-      droppedPersistSources: parts.droppedPersistSources,
-      annotationFindings: parts.annotationFindings,
-      modelGateLines: parts.modelGateLines,
-      ...(keyCheckCompilers.size > 0 ? { keyCheckCompilers } : {}),
-      omittedSources: parts.omittedSources,
+      versionScoped: versionOwnsTables(pkg),
+      keyCheckCompilers,
+      keepIncrementalUnbuildable,
    });
-   return keepIncrementalUnbuildable ? compiled : refuseAloneInPlan(compiled);
 }
 
 /**
@@ -230,7 +215,6 @@ export async function computePackageBuildPlan(
    return deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
-      versionOwnsTables(pkg) ? "version" : undefined,
    );
 }
 
@@ -247,7 +231,6 @@ export function runLoadGateText(
    const derived = deriveBuildPlanOutcome(
       compiled,
       pkg.getMaterializationConfig?.() ?? null,
-      judgement.versionScoped ? "version" : undefined,
    );
    return loadGateText(
       {

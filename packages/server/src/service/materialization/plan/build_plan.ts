@@ -120,6 +120,7 @@ import { compileV1BuildCompanion } from "./v1_build_companion";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
 import { getMaterializeEnabled } from "../../../config";
+import { resolveConnectionTypes } from "../../connection_type";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
 import { deriveAnnotationFields, deriveColumns } from "./persist_source_fields";
 import { quoteIdentifier } from "../../quoting";
@@ -1894,28 +1895,60 @@ export interface RefusedRollup {
 }
 
 /**
- * Project a compiled build plan into what a package load keeps. Reads the
- * connection digests, never the live connections, so it runs the same in the
- * package-load worker as on the main thread.
+ * A package's collected parts as its compiled build plan, the one tail of
+ * both plan paths (compilePackageBuildPlan on the main thread, and the load
+ * worker): each author `name=` its own table, decided over every source
+ * before any is refused, then the sources refused alone
+ * ({@link refuseAloneInPlan}).
+ */
+export function finishBuildPlan(
+   parts: BuildPlanParts,
+   ctx: {
+      connectionDigests: Record<string, string>;
+      connections: Map<string, MalloyConnection>;
+      /** The package names its tables per version (`scope: "version"`). */
+      versionScoped: boolean;
+      keyCheckCompilers?: ReadonlyMap<string, KeyCheckCompiler>;
+      /**
+       * Refuse author collisions only, keeping a source whose valid
+       * incremental declaration this deployment cannot honour. For a spec
+       * that plans incremental machinery on DuckDB, which no load or run does.
+       */
+      keepIncrementalUnbuildable?: boolean;
+   },
+): CompiledBuildPlan & { tableFolds: TableFolds } {
+   const plan = {
+      ...(ctx.versionScoped ? { versionScoped: true } : {}),
+      ...parts,
+      connectionDigests: ctx.connectionDigests,
+      connectionTypes: resolveConnectionTypes(ctx.connections),
+      connections: ctx.connections,
+      ...(ctx.keyCheckCompilers && ctx.keyCheckCompilers.size > 0
+         ? { keyCheckCompilers: ctx.keyCheckCompilers }
+         : {}),
+   };
+   const folded = { ...plan, tableFolds: planTableFolds(plan) };
+   return ctx.keepIncrementalUnbuildable
+      ? refuseCollidingMaterialize(folded)
+      : refuseAloneInPlan(folded);
+}
+
+/**
+ * Project a finished build plan ({@link finishBuildPlan}) into what a package
+ * load keeps. Reads the connection digests, never the live connections, so it
+ * runs the same in the package-load worker as on the main thread.
  */
 export function deriveBuildPlanOutcome(
-   collected: Omit<CompiledBuildPlan, "connections">,
+   compiled: Omit<CompiledBuildPlan, "connections">,
    materializationConfig: WirePackageMaterialization | null,
-   /** The package's materialization `scope` (`"version"` suffixes every name). */
-   scope?: string | null,
 ): BuildPlanOutcome {
-   // Before anything addresses a source: each author `name=` its own table,
-   // decided over the whole package unless the compile already decided it.
-   const tableFolds = collected.tableFolds ?? planTableFolds(collected);
-   // Before anything reads the plan: a refused source is neither built nor
-   // served, and its warning replaces it. A valid incremental declaration
-   // this deployment cannot honour was refused alone where the plan was
-   // compiled (compilePackageBuildPlan, or the load worker).
-   const compiled = refuseCollidingMaterialize({
-      ...collected,
-      tableFolds,
-      ...(scope === "version" ? { versionScoped: true } : {}),
-   });
+   // Its sources refused alone already: a plan that never was would serve
+   // a source an author collision refuses.
+   if (compiled.tableFolds === undefined) {
+      throw new Error(
+         "A build plan is derived once finishBuildPlan refused it",
+      );
+   }
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.tables,
@@ -1984,20 +2017,17 @@ function compilerKeysOf(
 
 /**
  * The sources a plan refuses alone before anything reads it, in the one
- * order every path applies (compilePackageBuildPlan, the load worker): an
- * author collision first ({@link refuseCollidingMaterialize}, invalid
- * whatever else is wrong with the source), then a valid incremental
- * declaration this deployment cannot honour.
+ * order every path applies ({@link finishBuildPlan}): an author collision
+ * first ({@link refuseCollidingMaterialize}, invalid whatever else is wrong
+ * with the source), then a valid incremental declaration this deployment
+ * cannot honour.
  */
-export function refuseAloneInPlan<
-   T extends Omit<CompiledBuildPlan, "connections">,
+function refuseAloneInPlan<
+   T extends Omit<CompiledBuildPlan, "connections"> & {
+      tableFolds: TableFolds;
+   },
 >(compiled: T): T {
-   // Each author `name=` its own table first, decided over every source.
-   const folded =
-      compiled.tableFolds !== undefined
-         ? compiled
-         : { ...compiled, tableFolds: planTableFolds(compiled) };
-   return refuseIncrementalUnbuildable(refuseCollidingMaterialize(folded));
+   return refuseIncrementalUnbuildable(refuseCollidingMaterialize(compiled));
 }
 
 /**

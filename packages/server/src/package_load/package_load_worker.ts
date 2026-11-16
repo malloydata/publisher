@@ -102,16 +102,13 @@ import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
-import {
-   recordConnectionType,
-   resolveConnectionTypes,
-} from "../service/connection_type";
+import { recordConnectionType } from "../service/connection_type";
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
+   finishBuildPlan,
    mergeBuildPlanParts,
-   refuseAloneInPlan,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanParts,
@@ -1566,16 +1563,12 @@ async function finishWorkerBuildPlan(
          (name) => digestSkipped.push(name),
       );
       const outcome = deriveBuildPlanOutcome(
-         // The sources refused alone, in the order compilePackageBuildPlan
-         // refuses them (a collision first).
-         refuseAloneInPlan({
-            ...parts,
+         finishBuildPlan(parts, {
             connectionDigests,
-            connectionTypes: resolveConnectionTypes(connections),
-            ...(scope === "version" ? { versionScoped: true } : {}),
+            connections,
+            versionScoped: scope === "version",
          }),
          materializationConfig,
-         scope,
       );
       return {
          ok: true,

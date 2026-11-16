@@ -27,6 +27,7 @@ import {
    collectModelBuildPlan,
    deriveBuildPlan,
    deriveBuildPlanOutcome,
+   finishBuildPlan,
    emptyBuildPlanParts,
    plannedSources,
    type BuildPlanParts,
@@ -137,7 +138,12 @@ async function plan(
 /** The wire plan a package load would keep from `parts`. */
 function wirePlan(parts: BuildPlanParts) {
    return deriveBuildPlanOutcome(
-      { ...parts, connectionDigests: { duckdb: "digest" } },
+      finishBuildPlan(parts, {
+         connectionDigests: { duckdb: "digest" },
+         connections: new Map(),
+         versionScoped: false,
+         keepIncrementalUnbuildable: true,
+      }),
       null,
    ).plan;
 }

@@ -39,7 +39,7 @@ import { pathToFileURL } from "url";
 import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
-   planTableFolds,
+   finishBuildPlan,
    emptyBuildPlanParts,
    type CompiledBuildPlan,
 } from "../../../src/service/materialization/plan/build_plan";
@@ -139,11 +139,14 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
       for (const [name, c] of model.connections) {
          connectionDigests[name] = await c.getDigest();
       }
-      compiled = {
-         ...parts,
+      // As a package's plan is: each `name=` its own table, before anything
+      // reads an address, and every author collision refused.
+      compiled = finishBuildPlan(parts, {
          connectionDigests,
          connections: new Map([...model.connections]),
-      };
+         versionScoped: false,
+         keepIncrementalUnbuildable: true,
+      });
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
@@ -155,9 +158,6 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
          build: undefined,
       };
    }
-   // As a package's plan is: each `name=` its own table, before anything
-   // reads an address.
-   compiled = { ...compiled, tableFolds: planTableFolds(compiled) };
    const addresses = addressesOf(compiled);
    learnAddresses(normalizer, addresses);
    const { connections: _connections, ...collected } = compiled;
