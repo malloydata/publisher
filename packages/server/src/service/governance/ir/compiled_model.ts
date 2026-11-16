@@ -105,3 +105,62 @@ export function queryTimezoneOf(structDef: unknown): string | undefined {
    }
    return typeof tz === "string" && tz !== "" ? tz : undefined;
 }
+
+/** Max IR depth to walk; deep enough for real sources, a hang backstop. */
+const MAX_WALK_DEPTH = 200;
+
+/**
+ * Whether a slice of compiled IR reads a given, by EITHER a `{node:'given'}`
+ * reference or a non-empty `givenUsage` summary, so a compiler that prunes one
+ * of the two signals cannot make a given read clean. Throws past a depth
+ * bound, which every caller treats as a read.
+ */
+export function readsAGiven(
+   node: unknown,
+   seen: WeakSet<object> = new WeakSet(),
+   depth = 0,
+): boolean {
+   if (depth > MAX_WALK_DEPTH) {
+      throw new Error("given walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return false;
+   if (seen.has(node as object)) return false;
+   seen.add(node as object);
+
+   if (Array.isArray(node)) {
+      return node.some((item) => readsAGiven(item, seen, depth + 1));
+   }
+   const record = node as Record<string, unknown>;
+   if (record.node === "given" || record.node === "givenReference") return true;
+   if (record.givenRef !== undefined) return true;
+   const summary = record.refSummary as { givenUsage?: unknown[] } | undefined;
+   if (summary?.givenUsage && summary.givenUsage.length > 0) return true;
+   if (Array.isArray(record.givenUsage) && record.givenUsage.length > 0) {
+      return true;
+   }
+   return Object.values(record).some((v) => readsAGiven(v, seen, depth + 1));
+}
+
+/**
+ * The verbatim text of each of a compiled source's `where:` terms that reads
+ * a given ({@link readsAGiven}), sorted: what a routed compile that writes
+ * them again must carry, compared with live's by text. Undefined when the
+ * filter list, or a given-reading term's text, cannot be read (fail closed).
+ */
+export function givenWhereCodes(def: unknown): string[] | undefined {
+   const list = (def as { filterList?: unknown } | undefined)?.filterList;
+   if (list === undefined) return [];
+   if (!Array.isArray(list)) return undefined;
+   const codes: string[] = [];
+   try {
+      for (const term of list) {
+         if (!readsAGiven(term)) continue;
+         const code = (term as { code?: unknown } | null)?.code;
+         if (typeof code !== "string" || code === "") return undefined;
+         codes.push(code);
+      }
+   } catch {
+      return undefined;
+   }
+   return codes.sort();
+}

@@ -673,15 +673,13 @@ describe("a rollup may not store what the source hides", () => {
       expect(violations[0].fieldName).toBe("revenue");
    });
 
-   it("refuses a grain naming a private dimension", async () => {
+   it("leaves a grain naming a hidden dimension to the rollup leg, which stores it unexposed", async () => {
       const violations = await validateWithAccess(
          `  #@ preaggregate grain="category"
   measure: revenue is amount.sum()`,
          "  public: revenue, amount, order_id, order_time, order_date\n  private: category",
       );
-      expect(violations.map((v) => v.code)).toEqual([
-         "grain_dimension_not_public",
-      ]);
+      expect(violations.map((v) => v.code)).toEqual([]);
    });
 
    it("a public measure at a public grain is unaffected", async () => {

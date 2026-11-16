@@ -171,6 +171,14 @@ function refusalOf(
          `\`${name}\` joins a source with a gate of its own, which its rollup does not carry`,
       );
    }
+   // A `where:` re-applied per caller on the rollup's own variant: through a
+   // join no variant of it is declared, so its rows would be every caller's.
+   if ((plan.readTimeTerms ?? []).length > 0) {
+      return refuse(
+         "rollup_count_semantics",
+         `\`${name}\`'s rollup re-applies a \`where:\` that reads a given, which a join to it does not carry`,
+      );
+   }
    if (
       join.keyColumn === undefined ||
       join.baseKey === undefined ||

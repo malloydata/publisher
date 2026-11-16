@@ -49,8 +49,13 @@
  *   joins a gated source, is a publish warning and the rollup is not built.
  *   A gated base's rollups are built only when a query can read them past
  *   their gate ({@link rollupGateEnforcedAtRead}); otherwise none is (row 21).
- *   An `internal` grain dimension a gate reads is the one hidden field a
- *   rollup stores, redeclared `internal` on the variant.
+ *   A hidden grain dimension is stored, redeclared with its modifier on
+ *   the variant (a `private` one only when the base itself declares it,
+ *   read through its build copy).
+ * - **Given-reading terms.** A `where:` of the base's own that reads a given,
+ *   over grain dimensions only, is left out of the build (its build copy
+ *   replaces it by `true`) and written again on the variant, where each
+ *   caller's givens bind it; any other is `reads_given`.
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
@@ -122,6 +127,9 @@ import {
    currentTimeFields,
    readsCurrentTime,
 } from "./persist_dynamic_terms";
+import { declarationOf, readTimeTermsOf } from "./materialize_read_time";
+import type { SourceDefLike } from "./build_file_generator";
+import type { GivenReadTerm, TermUse } from "../domain/read_time_terms";
 import {
    namespaceRewrite,
    readRollupContainer,
@@ -326,6 +334,24 @@ const isDimension = (f: FieldLike) =>
 /** Fails closed, as `isHidden` does elsewhere: anything but `public` is hidden. */
 const isHidden = (f: FieldLike | undefined) =>
    f?.accessModifier != null && f.accessModifier !== "public";
+
+/** Whether `f` is declared inside the base's own statement (its location). */
+function declaredWithin(
+   f: FieldLike,
+   facts: Pick<RollupFacts, "declaration">,
+): boolean {
+   const at = (f as { location?: TermUse }).location;
+   const within = facts.declaration;
+   if (!at?.range || !within || at.url !== within.url) return false;
+   const before = (
+      a: { line: number; character: number },
+      b: { line: number; character: number },
+   ) => a.line < b.line || (a.line === b.line && a.character <= b.character);
+   return (
+      before(within.range.start, at.range.start) &&
+      before(at.range.end, within.range.end)
+   );
+}
 
 /** Every compiled source of `map`, once per map: what A1's reader looks among. */
 const scopes = new WeakMap<SourceMap, unknown[]>();
@@ -807,6 +833,13 @@ interface RollupFacts {
    gate: ReturnType<typeof gateFieldNames>;
    /** The source's rows read the current time (S25b). */
    windowed: boolean;
+   /**
+    * The base's own given-reading `where:` terms, re-applied on the variant
+    * (each over grain dimensions only), or why they cannot be.
+    */
+   given: { terms: GivenReadTerm[] } | { refused: string };
+   /** Where the base is declared, for its build copy's edits. */
+   declaration: TermUse | undefined;
    timeFields: ReturnType<typeof currentTimeFields>;
    /** The time zone the source sets, and whether a source in it joins it. */
    zone: ReturnType<typeof timezoneOf>;
@@ -846,6 +879,21 @@ function rollupFactsOf(
             t.dependsOn.kind === "given_and_current_time",
       ) || readsCurrentTime((def as { query?: unknown }).query);
    const timeFields = currentTimeFields(def.fields);
+   // A given-reading `where:` of the base's own, over its dimensions, is left
+   // out of the build and written again on the variant, as the served copy
+   // re-applies one (P2); an inherited one, or one over anything else, is
+   // refused (`reads_given`), as on `#(materialize)`.
+   const read = readTimeTermsOf(
+      def as SourceDefLike,
+      classifyWhereTerms(def).filter((t) => t.dependsOn.kind === "given"),
+      [...byName].flatMap(([n, f]) =>
+         isDimension(f) ? [{ column: n }] : [],
+      ) as never,
+      ((map.model() as { givens?: Record<string, unknown> } | undefined)
+         ?.givens ?? {}) as Record<string, unknown>,
+   );
+   const given = read.ok ? { terms: read.terms } : { refused: read.reason };
+   const declaration = declarationOf(def as SourceDefLike);
    // A source that sets its own `timezone:` (or inherits one) built its
    // times in that zone, and the base branch reads no query on it from a
    // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
@@ -921,6 +969,8 @@ function rollupFactsOf(
       declaredName,
       gate,
       windowed,
+      given,
+      declaration,
       timeFields,
       zone,
       joinedInZone: joinersInZone.length > 0,
@@ -1004,23 +1054,39 @@ function declarationRefusal(
          `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (${noJoin}), so its table would cost a build no query reads`,
       );
    }
-   // An `internal` grain dimension a gate reads is stored (A4): the gate
-   // needs it on the rollup's rows, and the variant redeclares it
-   // `internal`, so no query selects it. Any other hidden field is not.
-   const hiddenGrain = decl.grain.find(
-      (g) =>
-         isHidden(byName.get(g)) &&
-         !(
-            byName.get(g)?.accessModifier === "internal" &&
-            gate.dimensions.includes(g)
-         ),
-   );
+   // A hidden grain dimension is stored and redeclared with its modifier on
+   // the variant, so no query selects it, as the served copy stores a hidden
+   // column: `internal` lifted by the build's `include { public: * }`,
+   // `private` by its build copy, which lifts only what the base's own
+   // statement declares. One private on a source it extends stays private,
+   // and is never stored.
+   const hiddenGrain = decl.grain.find((g) => {
+      const f = byName.get(g);
+      return (
+         isHidden(f) &&
+         f?.accessModifier !== "internal" &&
+         !(f?.accessModifier === "private" && declaredWithin(f, facts))
+      );
+   });
    if (hiddenGrain) {
-      if (decl.v1) return "skip";
       return unservable(
          "hidden_field",
          decl,
-         `its grain dimension \`${hiddenGrain}\` is not public, and a rollup would publish it`,
+         `its grain dimension \`${hiddenGrain}\` is private on a source it extends, which a rollup's build cannot read`,
+      );
+   }
+   if ("refused" in facts.given) {
+      return unservable("reads_given", decl, facts.given.refused);
+   }
+   const ungrained = facts.given.terms
+      .flatMap((t) => t.columns)
+      .filter((c) => !decl.grain.includes(c));
+   if (ungrained.length > 0) {
+      return unservable(
+         "reads_given",
+         decl,
+         // malloy-text: a warning message for a person, not Malloy
+         `the source's \`where:\` reads a given and ${[...new Set(ungrained)].map((c) => `\`${c}\``).join(", ")}, which the grain does not keep, so it could not be re-applied to the rollup's rows per caller`,
       );
    }
    // Row 21: a gated base's rollup is built only where a query can read
@@ -1169,6 +1235,9 @@ function rollupPlanOf(
    const relativeID = ctx.packageRelativeSourceID(node.sourceID);
    const name = rollupName(declaredName, relativeID, decl.grain, decl);
    const sorted = [...measures].sort((a, b) => byCodepoint(a.name, b.name));
+   const privateGrain = decl.grain.filter(
+      (g) => byName.get(g)?.accessModifier === "private",
+   );
    return {
       variant: true,
       baseSourceName: sourceName,
@@ -1189,6 +1258,15 @@ function rollupPlanOf(
       internalGrain: decl.grain.filter(
          (g) => byName.get(g)?.accessModifier === "internal",
       ),
+      ...(privateGrain.length > 0 ? { privateGrain } : {}),
+      ...("terms" in facts.given && facts.given.terms.length > 0
+         ? { readTimeTerms: facts.given.terms }
+         : {}),
+      ...((privateGrain.length > 0 ||
+         ("terms" in facts.given && facts.given.terms.length > 0)) &&
+      facts.declaration
+         ? { declaration: facts.declaration }
+         : {}),
       fanOutDimensions: decl.grain.filter((g) => {
          const usage = joinUsage.get(g);
          if (usage === undefined) return joinUsage.has(g);

@@ -62,7 +62,6 @@ export type PreaggregateViolationCode =
    | "grain_dimension_is_measure"
    | "grain_dimension_is_view"
    | "grain_dimension_is_join"
-   | "grain_dimension_not_public"
    | "grain_path_through_join"
    | "grain_truncation_expression"
    | "truncation_on_non_temporal"
@@ -241,13 +240,6 @@ function validateGrainDimension(
       return violation(
          "grain_truncation_expression",
          `Measure \`${measure}\` declares a grain of \`${grainDimension}\`. A grain may name only dimensions \`${sourceName}\` already declares, not a truncation written inline: a rollup built this way either answers untruncated queries from truncated rows, or is never used at all. Add \`dimension: ${suggested} is ${grainDimension}\` to \`${sourceName}\` and write \`grain="${suggested}"\`. Queries that group by \`${suggested}\`, or by a coarser truncation of it, will then be served by the rollup.`,
-      );
-   }
-
-   if (isAccessRestricted(field)) {
-      return violation(
-         "grain_dimension_not_public",
-         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which \`${sourceName}\` does not publicly expose. A rollup STORES its grain, and the stored table is served without the source's field visibility applying to it, so no rollup is built at this grain. Group by a public dimension, or expose \`${grainDimension}\` publicly.`,
       );
    }
 

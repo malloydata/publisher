@@ -721,6 +721,9 @@ export class ModelServing {
             callerQueryText: query,
             routedPastEntryPointGate:
                answer.leg !== "live" && answer.pastEntryPointGate,
+            // A rollup's variant writes again the given-reading terms its
+            // build left out: re-proven on it.
+            reprovesGivenTerms: answer.leg === "rollup",
          },
       });
       const { runnable: governed, decision } = await governor.govern(
@@ -1738,6 +1741,7 @@ function governRequestOf(r: {
       | "callerRegion"
       | "callerQueryText"
       | "routedPastEntryPointGate"
+      | "reprovesGivenTerms"
    >;
 }): GovernRequest {
    return {

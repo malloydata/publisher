@@ -673,7 +673,7 @@ source: orders is ${ROWS} extend {
       expect(rollupGateEnforcedAtRead(plans[0])).toBe(false);
    });
 
-   it("stores an internal gate field in the grain, and no other hidden field (A4)", async () => {
+   it("stores an internal gate field in the grain, and a private one its source declares, each redeclared hidden (A4)", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental { givens access_modifiers }
 given: TENANT :: string is 'x'
@@ -686,12 +686,17 @@ source: orders is ${ROWS} extend {
   measure: total is amount.sum()
 }`,
       });
-      expect(plans.map((p) => [p.grainDimensions, p.internalGrain])).toEqual([
-         [["category", "tenant"], ["tenant"]],
+      expect(
+         plans.map((p) => [p.grainDimensions, p.internalGrain, p.privateGrain]),
+      ).toEqual([
+         [["category", "tenant"], ["tenant"], undefined],
+         [["category", "secret", "tenant"], ["tenant"], ["secret"]],
       ]);
-      expect(refused.map((r) => why(r))).toEqual(["hidden_field"]);
+      expect(refused).toEqual([]);
       const text = generateRollupBuildFile(plans, "orders.malloy") ?? "";
       expect(text).toContain("include { public: * } -> {");
+      // The private one is read from the base's build copy, which lifts it.
+      expect(text).toContain('from "orders.malloy.orders.rollup-build.malloy"');
    });
 
    it("walks an inherited gate as the governor does, on an extension's own rollup", async () => {

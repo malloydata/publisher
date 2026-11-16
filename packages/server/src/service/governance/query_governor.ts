@@ -87,6 +87,7 @@ import {
    type GovernedRunnable,
 } from "./governed_runnable";
 import { derivedStructsReachable } from "./ir/source_graph";
+import { givenWhereCodes } from "./ir/compiled_model";
 import {
    arrayQueryJoinRefusal,
    arrayQueryJoins,
@@ -265,6 +266,15 @@ export interface GovernRequest {
     * live entry point carries (see `sameGateSet`), or the query is denied.
     */
    routedPastEntryPointGate?: boolean;
+   /**
+    * The routed compile writes again the run target's given-reading `where:`
+    * terms its stored table left out (a `#(preaggregate)` rollup's variant).
+    * Re-proven on that compile: its run target must apply exactly the
+    * given-reading terms the live run target does, by text, or the query is
+    * denied, so a variant that lost one never answers with every caller's
+    * rows.
+    */
+   reprovesGivenTerms?: boolean;
    /** See `authorizeAndBindRunnable`'s options. */
    bypassAlreadyNoted?: boolean;
    /**
@@ -707,6 +717,22 @@ export class QueryGovernor {
             );
          }
       }
+      if (request.reprovesGivenTerms && !request.bypassAuthorize) {
+         const [expected, written] = await Promise.all([
+            live ? this.runTargetGivenTerms(live) : undefined,
+            this.runTargetGivenTerms(compiled.runnable),
+         ]);
+         if (
+            !expected ||
+            !written ||
+            expected.join("\u0000") !== written.join("\u0000")
+         ) {
+            await this.denyRoutedPastGate(
+               compiled.runnable,
+               "given_terms_differ",
+            );
+         }
+      }
       // The compile that runs: live, or the served copy when it answers.
       await this.assertNoArrayQueryJoin(runnable);
       if (request.ceiling && !request.bypassAuthorize) {
@@ -742,7 +768,11 @@ export class QueryGovernor {
     */
    private async denyRoutedPastGate(
       routed: QueryMaterializer,
-      why: "no_graft_scope" | "no_gate_found" | "gate_set_differs",
+      why:
+         | "no_graft_scope"
+         | "no_gate_found"
+         | "gate_set_differs"
+         | "given_terms_differ",
    ): Promise<never> {
       const source = await this.resolveAuthorizeSourceFromRunnable(routed);
       recordRowLevelGateDecision("denied_by_gate", "entry_point");
@@ -751,6 +781,18 @@ export class QueryGovernor {
          { modelPath: this.modelPath, source, why },
       );
       throw AccessDeniedError.forSource(source ?? "unknown");
+   }
+
+   /** The run target's given-reading `where:` terms, by text; undefined fails closed. */
+   private async runTargetGivenTerms(
+      runnable: QueryMaterializer,
+   ): Promise<string[] | undefined> {
+      try {
+         const { struct } = await this.resolveRunTargetStruct(runnable);
+         return struct ? givenWhereCodes(struct) : undefined;
+      } catch {
+         return undefined;
+      }
    }
 
    /**

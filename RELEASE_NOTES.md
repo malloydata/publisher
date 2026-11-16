@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — rollups placed by `name=`; an unplaceable BigQuery table refused at plan
+## [Unreleased] — rollups placed by `name=`; an unplaceable BigQuery table refused at plan; rollups over hidden grains, given-reading `where:` and zoned queries
 
 **Contract change: one placement key.** A rollup, `#(preaggregate)` or `#@ preaggregate`, now takes `name=`: everything before its last dot is the schema or dataset its table is created in, and its leaf is not used, since Publisher names a rollup's table itself (`<pkg>__<file>__<base>_by_<grain>__p<hash>`). A `name=` with no container, or beside `storage=` or `namespace=`, fails the publish and the load (`preaggregate-invalid`).
 
@@ -30,6 +30,12 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 - **Fixed: one grain placed in two containers** (two lines of one measure, `name="a.t"` and `name="b.t"`, or the same with `namespace=`) built one table, at whichever container came last, and the other was never written. Each is now its own table at its own address. A rollup's table is never its base's, whatever the two `name=`s say.
 
 **Contract change: an unplaceable BigQuery table is refused at plan, on every mechanism.** A colocated table on BigQuery needs a dataset, and only a dotted `name=` gives it one. A `#(materialize)` source with none was already refused at plan; a `#@ persist` source, a persisted view or named query, and a rollup with no container of its own or its base's reached the build and failed there. Each is now refused alone at plan, before any warehouse work: its mechanism's `*-not-built` warning, and a `refusedSources` entry with the existing reason `needs_qualified_name`, now documented for every mechanism. It answers live, and the package loads. **A deployment whose host supplies a dataset of its own** for such a table, rather than the author's `name=`, now sees it refused; give it a dataset-qualified `name=`.
+
+**Rollups serve three shapes they refused.** No contract changes, but rollups that were refused are now built, and queries that answered live are answered from them, each equal to live:
+
+- **A hidden grain dimension.** A `private` or `internal` dimension in a grain is stored and stays hidden on the rollup, so no query selects it, as a stored source keeps its hidden columns. It was refused (`hidden_field`). A `private` dimension the base inherits from a source it extends is still refused, since its build cannot read it.
+- **A given-reading `where:`.** A `where:` of the source's own that reads a given, over grain dimensions only, is left out of the rollup's build (so its table holds every caller's groups) and written again on the rollup at read, where each caller's givens bind it. `govern()` re-proves it on the routed answer, as a gate: the answer's source must apply exactly the given-reading terms the live source does, or the query is denied. It was refused (`reads_given`); a term over a field the grain drops, or an inherited one, still is. **Security review:** this re-applies a caller-scoped filter on stored aggregates, so it is listed for the question-14 review.
+- **A zoned query that reads no time.** A query that sets its own `timezone:` is answered from a rollup when nothing it reads (directly, through a dimension or stored measure, or the base's `where:`) is a date or timestamp, and nothing reads through a join. One reading a stored truncation is still answered live (`TIME_ZONE`).
 
 ## [Unreleased] — materialization telemetry: standard log fields, refusal events, key-check and routing metrics
 
