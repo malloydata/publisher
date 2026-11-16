@@ -29,14 +29,28 @@ describe("flags read with the variables", () => {
       );
    });
 
-   it("appends repeated --watch-env to an existing PUBLISHER_WATCH", () => {
+   it("adds up a repeated --watch-env, which wins over the variable", () => {
       withSettings(
          {
-            env: { PUBLISHER_WATCH: "a" },
+            env: { PUBLISHER_WATCH_ENVIRONMENTS: "a" },
             argv: ["--watch-env", "b", "--watch-env", "c"],
          },
          () => {
-            expect(settings.get("watchEnvironments")).toEqual(["a", "b", "c"]);
+            expect(settings.get("watchEnvironments")).toEqual(["b", "c"]);
+         },
+      );
+   });
+
+   it("fails an old PUBLISHER_WATCH that differs from --watch-env, rather than adding to it", () => {
+      withSettings(
+         {
+            env: { PUBLISHER_WATCH: "a" },
+            argv: ["--watch-env", "b"],
+         },
+         () => {
+            expect(() => settings.get("watchEnvironments")).toThrow(
+               "given different values under its old and new names",
+            );
          },
       );
    });
