@@ -3,6 +3,7 @@
 
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
+import { recordConnectionType } from "./connection_type";
 import { nearMissGateLines } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
@@ -61,6 +62,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
+import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";
 import {
    recordReportDiscovery,
@@ -135,6 +137,7 @@ import {
    arrayQueryJoinRefusal,
    arrayQueryJoins,
    governsAccess,
+   noteGovernsAccess,
 } from "./governance/ir/array_query";
 import {
    carriesCeilingLeaks,
@@ -431,14 +434,26 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
    /**
-    * What the last {@link reloadAllModels} compiled against, so a rebind of
-    * the same manifest can skip it. Every part but the
-    * entries is compared by identity: any other reload, colocated bind or
-    * plan change since makes the next rebind recompile.
+    * `manifestLocation` as the last load or reload read it from
+    * publisher.json, which a reload writes over the stored one.
+    */
+   private manifestLocationOnDisk: string | null = null;
+   /**
+    * What the models were last compiled against (by {@link reloadAllModels},
+    * or by a load given its manifest), so a rebind can skip the compile.
+    * `compiledFor` is the part of the entries a compile reads
+    * ({@link compileKeyOf}); `bound` the whole entries last bound (freshness
+    * and schemas too), undefined while none has been; `quoted` the entries
+    * the compile quoted, from `quotedFrom`. Every other part is compared by
+    * identity: any other reload, colocated bind or plan change since makes
+    * the next rebind recompile.
     */
    private reloadedFor:
       | {
-           entries: string;
+           compiledFor: string;
+           bound: string | undefined;
+           quotedFrom: string;
+           quoted: FreshnessManifest;
            models: Map<string, Model>;
            colocated: unknown;
            buildPlan: unknown;
@@ -923,6 +938,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
           * the collision check keys the names the version's runs write.
           */
          versionId?: string;
+         /**
+          * The colocated entries of the manifest the package is about to be
+          * bound to, read while it compiles: its models are hydrated over
+          * them, so the bind that follows (`reloadAllModels` with
+          * `ifChanged`) binds without compiling the package a second time.
+          * Undefined, or a read that fails, loads it as with none; nothing is
+          * bound until that bind.
+          */
+         colocated?: Promise<FreshnessManifest | undefined>;
       } = {},
    ): Promise<Package> {
       return withSpan(
@@ -944,6 +968,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   cleanupDirectoryOnFailure,
                   options.dryRun === true,
                   options.versionId,
+                  options.colocated,
                ),
             ),
       );
@@ -957,6 +982,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       cleanupDirectoryOnFailure: boolean,
       dryRun: boolean,
       versionId?: string,
+      colocated?: Promise<FreshnessManifest | undefined>,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -989,17 +1015,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             manifestValidationTime,
             dryRun,
             versionId,
+            colocated,
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
          // connections (the package DuckDB the load opened) close here; the
          // environment's connections are not the package's and stay open.
-         await malloyConfig?.shutdown("close").catch((shutdownError) => {
-            logger.warn(
-               `Failed to close the connections of package ${packageName} after a failed load`,
-               { error: errMessage(shutdownError) },
-            );
-         });
+         if (malloyConfig) {
+            await closeMalloyConfig(malloyConfig).catch((shutdownError) => {
+               logger.warn(
+                  `Failed to close the connections of package ${packageName} after a failed load`,
+                  { error: errMessage(shutdownError) },
+               );
+            });
+         }
          Package.reportFailedLoad(packageName, error, startTime, dryRun);
          if (cleanupDirectoryOnFailure) {
             await Package.removeFailedPackageDirectory(packagePath);
@@ -1230,6 +1259,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          } finally {
             timings.hydrateMs += performance.now() - hydrateStart;
          }
+         // The worker walked its own copy of the IR to answer this, so the
+         // load gate and the governor never walk a model that governs nothing.
+         if (sm.governsAccess !== undefined) {
+            noteGovernsAccess(model.getModelDef(), sm.governsAccess);
+         }
          let warnings: Awaited<ReturnType<Model["validateRenderTags"]>>;
          const validationStart = performance.now();
          try {
@@ -1381,6 +1415,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       manifestValidationTime: number,
       dryRun: boolean,
       versionId?: string,
+      colocated?: Promise<FreshnessManifest | undefined>,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
@@ -1398,12 +1433,40 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             ...(versionId !== undefined ? { publishedVersion: true } : {}),
          }),
       );
-      const [outcome, databases] = await Promise.all([
+      const [outcome, databases, colocatedEntries] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
+         // The bind that follows reports a failed read; this load serves live.
+         colocated?.catch(() => undefined),
       ]);
       assertOutcomeStagesAvailable(outcome);
       const workerDoneTime = performance.now();
+      // The worker compiled without them: a build manifest changes the SQL
+      // a query generates (through the hydration runtime), never the IR a
+      // compile produces, and the build plan describes the canonical build.
+      // So hydrating over them serves what a reload against them serves.
+      let compiledFor:
+         | {
+              key: string;
+              requested: string;
+              quoted: FreshnessManifest;
+           }
+         | undefined;
+      if (colocatedEntries && Object.keys(colocatedEntries).length > 0) {
+         compiledFor = {
+            key: Package.compileKeyOf(colocatedEntries),
+            requested: JSON.stringify(colocatedEntries),
+            quoted: await Package.quoteTableNames(
+               packageName,
+               (connectionName) =>
+                  malloyConfig.connections.lookupConnection(connectionName),
+               colocatedEntries,
+            ),
+         };
+      }
+      const buildManifest = compiledFor
+         ? toTableNameManifest(compiledFor.quoted)
+         : undefined;
       logger.info("Package load via worker pool completed", {
          packageName,
          manifestValidationMs: dispatchTime - manifestValidationTime,
@@ -1439,7 +1502,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             timings: hydrationTimings,
          } = await Package.hydrateWorkerModels(
             outcome,
-            { packageName, packagePath, malloyConfig, modelPolicy },
+            {
+               packageName,
+               packagePath,
+               malloyConfig,
+               modelPolicy,
+               buildManifest,
+            },
             "throw",
             async (sm) => {
                // Reject an unquoted `#@ persist name=`: it is dropped from the
@@ -1492,9 +1561,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          pkg.renderTagWarnings =
             pkg.surfacedRenderTagWarnings(renderTagWarnings);
          pkg.adoptOutcomeMetadata(outcome);
+         pkg.manifestLocationOnDisk =
+            outcome.packageMetadata.manifestLocation ?? null;
          // Before the gates judge it: a version names its tables per version.
          if (versionId !== undefined) {
-            pkg.setPackageMetadata({ ...pkg.getPackageMetadata(), versionId });
+            pkg.updateStoredMetadata({ versionId });
          }
          // No manifest is bound yet, so this serves live until a bind.
          pkg.materialization.wireServingResolvers();
@@ -1511,6 +1582,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          await pkg.computeEntities(Package.entityPlansOf(outcome));
          entitiesMs = performance.now() - entitiesStarted;
          pkg.logEmptyDiscoveryWarnings();
+         // Compiled against them, bound to none yet (see `colocated`).
+         if (compiledFor) {
+            pkg.reloadedFor = pkg.reloadKey(compiledFor.key, undefined, {
+               from: compiledFor.requested,
+               quoted: compiledFor.quoted,
+            });
+         }
       } catch (err) {
          if (!dryRun) {
             recordPackageLoadPhases(
@@ -1556,6 +1634,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** The published version this package is, or undefined for a package with none. */
    public getVersionId(): string | undefined {
       return this.packageMetadata.versionId ?? undefined;
+   }
+
+   /** `getPackageMetadata().scope`, without building the rest of the metadata. */
+   public getMaterializationScope(): string | null | undefined {
+      return this.packageMetadata.scope;
    }
 
    /**
@@ -2326,8 +2409,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const messages: string[] = [];
       for (const [modelPath, model] of this.models) {
          const modelDef = model.getModelDef();
-         // Governance first: it stops at the first governing note, where the
-         // join walk reads every node, and most models govern nothing.
+         // Governance first, and most models govern nothing: the load worker
+         // answered it for a model it compiled (noted at hydration), so such
+         // a model costs a lookup here, where the join walk reads every node.
          if (!governsAccess(modelDef)) continue;
          const joins = arrayQueryJoins(modelDef);
          const refusal = arrayQueryJoinRefusal(`Model ${modelPath}`, joins);
@@ -2668,7 +2752,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * misconfiguration; that entry is degraded and logged at ERROR, not the
     * whole bind, since it could not serve anyway).
     */
-   private async quoteBoundTableNames(
+   private quoteBoundTableNames(
+      entries: FreshnessManifest,
+   ): Promise<FreshnessManifest> {
+      return Package.quoteTableNames(
+         this.packageName,
+         (connectionName) => this.getMalloyConnection(connectionName),
+         entries,
+      );
+   }
+
+   /** {@link quoteBoundTableNames} for a package not constructed yet. */
+   private static async quoteTableNames(
+      packageName: string,
+      lookupConnection: (connectionName: string) => Promise<Connection>,
       entries: FreshnessManifest,
    ): Promise<FreshnessManifest> {
       const out: FreshnessManifest = {};
@@ -2676,9 +2773,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          let tableName = entry.tableName;
          if (entry.connectionName && !isQuotedIdentifierPath(tableName)) {
             try {
-               const connection = await this.getMalloyConnection(
-                  entry.connectionName,
-               );
+               const connection = await lookupConnection(entry.connectionName);
                tableName = quoteManifestTablePath(
                   tableName,
                   connection.dialectName,
@@ -2695,7 +2790,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                      `'${entry.connectionName}' exists in this package's ` +
                      `config, or rebuild the manifest against the current config.`,
                   {
-                     packageName: this.packageName,
+                     packageName,
                      sourceEntityId,
                      connectionName: entry.connectionName,
                      error: err instanceof Error ? err.message : String(err),
@@ -2706,6 +2801,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          out[sourceEntityId] = { ...entry, tableName };
       }
       return out;
+   }
+
+   /**
+    * Close this package's own connections (its DuckDB sandbox), freeing the
+    * sandbox's native database once its last query settles
+    * (duckdb_hard_close.ts). The environment's connections are not the
+    * package's and stay open.
+    */
+   public releaseConnections(): Promise<void> {
+      return closeMalloyConfig(this.malloyConfig);
    }
 
    public getMalloyConfig(): MalloyConfig {
@@ -2737,8 +2842,41 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       options: { ifChanged?: boolean } = {},
    ): Promise<boolean> {
       const requested = JSON.stringify(entries);
-      if (options.ifChanged && this.isReloadedFor(requested)) {
-         logger.debug("Skipped reloading models: the manifest is unchanged", {
+      const compiledFor = Package.compileKeyOf(entries);
+      if (options.ifChanged && this.isCompiledFor(compiledFor)) {
+         const last = this.reloadedFor!;
+         if (last.bound === requested) {
+            logger.debug(
+               "Skipped reloading models: the manifest is unchanged",
+               {
+                  packageName: this.packageName,
+               },
+            );
+            return false;
+         }
+         // The same tables, with other freshness or schemas (or not bound
+         // yet, after a load that compiled against them): what a compile
+         // reads is unchanged, so only the bind moves.
+         const quoted =
+            last.quotedFrom === requested
+               ? last.quoted
+               : await this.quoteBoundTableNames(entries);
+         this.materialization.bind({
+            colocated: quoted,
+            colocatedAsGiven: true,
+            // The first bind over a load's models publishes to them, as the
+            // reload it stands in for would have.
+            ...(last.bound === undefined ? { models: "installed" } : {}),
+         });
+         // The reload this stands in for re-read `manifestLocation` from
+         // publisher.json, replacing a registry row's path; so does this, to
+         // serve what a reload served (`boundManifestOf`, the local store).
+         this.packageMetadata.manifestLocation = this.manifestLocationOnDisk;
+         this.reloadedFor = this.reloadKey(compiledFor, requested, {
+            from: requested,
+            quoted,
+         });
+         logger.debug("Rebound the manifest without recompiling the models", {
             packageName: this.packageName,
          });
          return false;
@@ -2798,8 +2936,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.noteSurfaceChangeFrom(previousSurface);
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;
-      this.packageMetadata.manifestLocation =
+      this.manifestLocationOnDisk =
          outcome.packageMetadata.manifestLocation ?? null;
+      this.packageMetadata.manifestLocation = this.manifestLocationOnDisk;
       this.applyDiscoveryPolicyToModels();
       this.applySiblingModelResolverToModels();
       // Applies the query boundary too, against the refreshed explore set.
@@ -2815,7 +2954,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          colocatedAsGiven: true,
          models: "installed",
       });
-      this.reloadedFor = this.reloadKey(requested);
+      this.reloadedFor = this.reloadKey(compiledFor, requested, {
+         from: requested,
+         quoted: entries,
+      });
       // Read against the reports installed above.
       this.renderTagWarnings =
          this.surfacedRenderTagWarnings(renderTagWarnings);
@@ -2832,10 +2974,40 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return true;
    }
 
-   /** What a reload against `entries` (as requested, unquoted) compiles over now. */
-   private reloadKey(entries: string): NonNullable<Package["reloadedFor"]> {
+   /**
+    * The part of colocated entries a compile reads: each table's name and
+    * the connection it is quoted for (the models' build manifest is
+    * `toTableNameManifest` of the quoted entries). Freshness, schemas and key
+    * checks are read per query and by the bind, never by a compile.
+    */
+   private static compileKeyOf(entries: FreshnessManifest): string {
+      return JSON.stringify(
+         Object.keys(entries)
+            .sort()
+            .map((id) => [
+               id,
+               entries[id].tableName,
+               entries[id].connectionName ?? null,
+            ]),
+      );
+   }
+
+   /**
+    * What the models compile over now, against entries whose compile key is
+    * `compiledFor`, last bound as `bound` (requested entries as JSON,
+    * unquoted; undefined when none were), with `quoting.quoted` the entries
+    * requested as `quoting.from`, quoted.
+    */
+   private reloadKey(
+      compiledFor: string,
+      bound: string | undefined,
+      quoting: { from: string; quoted: FreshnessManifest },
+   ): NonNullable<Package["reloadedFor"]> {
       return {
-         entries,
+         compiledFor,
+         bound,
+         quotedFrom: quoting.from,
+         quoted: quoting.quoted,
          models: this.models,
          colocated: this.materialization.boundColocatedEntries(),
          buildPlan: this.materialization.buildPlan,
@@ -2843,8 +3015,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       };
    }
 
-   /** Whether the models were last reloaded against `entries`, and nothing has moved since. */
-   private isReloadedFor(entries: string): boolean {
+   /**
+    * Whether the models were last compiled against entries with compile key
+    * `compiledFor`, and nothing has moved since.
+    */
+   private isCompiledFor(compiledFor: string): boolean {
       const last = this.reloadedFor;
       if (!last) return false;
       // A plan a connection edit made stale may not hold the tables its
@@ -2854,13 +3029,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       for (const model of this.models.values()) {
          if (model.getCompilationError()) return false;
       }
-      const now = this.reloadKey(entries);
       return (
-         last.entries === now.entries &&
-         last.models === now.models &&
-         last.colocated === now.colocated &&
-         last.buildPlan === now.buildPlan &&
-         last.connectionEdits === now.connectionEdits
+         last.compiledFor === compiledFor &&
+         last.models === this.models &&
+         last.colocated === this.materialization.boundColocatedEntries() &&
+         last.buildPlan === this.materialization.buildPlan &&
+         last.connectionEdits === this.connectionEdits
       );
    }
 
@@ -2911,13 +3085,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             )
             .map(async (modelPath) => {
                let error: string | undefined;
-               try {
-                  await this.models.get(modelPath)?.getModel();
-               } catch (modelError) {
-                  error =
-                     modelError instanceof Error
-                        ? modelError.message
-                        : undefined;
+               const model = this.models.get(modelPath);
+               if (model?.getType() === "model") {
+                  // What getModel() throws, without building (and
+                  // serializing) the compiled model it would return.
+                  error = model.getCompilationError()?.message;
+               } else {
+                  try {
+                     await model?.getModel();
+                  } catch (modelError) {
+                     error =
+                        modelError instanceof Error
+                           ? modelError.message
+                           : undefined;
+                  }
                }
                return {
                   environmentName: this.environmentName,
@@ -3720,12 +3901,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          lookupConnection: async (name?: string) => {
             if (!name || name === "duckdb") {
                const connection = await base.lookupConnection(name);
+               // The package's own sandbox: releasing the package frees it.
+               ownDuckDBConnection(malloyConfig, connection);
                // Pin the sandbox against implicit auto-install too, or
                // EXTENSION_FETCH_POLICY local-only would have a network hole.
                if (connection instanceof DuckDBConnection) {
                   await applyExtensionSessionSettings(connection);
                }
-               return connection;
+               // The sandbox is a DuckDB connection the package owns, which a
+               // `storage=` build cannot read (materialization eligibility).
+               return recordConnectionType(connection, "duckdb");
             }
             // The *current* environment config, so a connection swap needs no reload.
             return getEnvironmentMalloyConfig().connections.lookupConnection(
@@ -3951,6 +4136,19 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const stored: Record<string, unknown> = { ...packageMetadata };
       for (const key of COMPUTED_PACKAGE_FIELDS) delete stored[key];
       return stored as ApiPackage;
+   }
+
+   /**
+    * `setPackageMetadata({ ...getPackageMetadata(), ...fields })` without
+    * building the metadata's computed fields (its warnings pass among them),
+    * which `setPackageMetadata` drops anyway.
+    */
+   public updateStoredMetadata(fields: ApiPackage): void {
+      this.setPackageMetadata({
+         ...this.packageMetadata,
+         name: this.packageName,
+         ...fields,
+      });
    }
 
    public setPackageMetadata(packageMetadata: ApiPackage) {

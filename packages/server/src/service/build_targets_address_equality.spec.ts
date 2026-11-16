@@ -136,9 +136,7 @@ describe("address equality: getBuildTargets vs computeSourceEntityId", () => {
       for (const build of builds) {
          for (const target of build.targets) {
             for (const source of target.sources) {
-               expect(compilerBuildId(source, connectionDigests)).toBe(
-                  target.buildId,
-               );
+               expect(compilerBuildId(source)).toBe(target.buildId);
                expect(target.buildId).toBe(
                   makeDigest(
                      connectionDigests[source.connectionName],

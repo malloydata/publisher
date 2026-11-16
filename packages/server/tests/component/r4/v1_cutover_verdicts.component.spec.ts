@@ -10,7 +10,7 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { DATA_FILES } from "./conformance/data";
+import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
    freshLoadPool,
    loadFixture,
@@ -65,15 +65,40 @@ describe("v1 cutover: the dry run's serve path", () => {
    }, 120_000);
 
    it("says live, with the reason, for a source it leaves as written", async () => {
-      // A gated source is refused for storage= by design.
-      const paths = await preview(
-         "givens and access filters",
-         "storage",
-         "cutover",
-      );
-      expect(paths.gated?.[0]).toBe("live");
-      expect(paths.gated?.[1]).toBeDefined();
-      expect(paths.gated?.[1]).not.toBe("not_rerooted");
+      // A row filter the source inherits is refused on every tier (G3
+      // admits a source's own gate only), so it is left as written.
+      const restore = withSwitch("cutover");
+      await freshLoadPool();
+      const loader = await loadFixture({
+         ...DATA_FILES,
+         "raw.malloy": RAW_MODEL,
+         "m.malloy": `##! experimental { givens persistence }
+import "raw.malloy"
+
+given: REGIONS :: string[]
+
+#(access_filter) region in $REGIONS
+source: rows_base is orders_raw extend {}
+
+#@ persist storage="lake"
+source: inherited is rows_base -> { select: id, region, amount }
+`,
+      });
+      try {
+         const pkg = (await loader.bind()).pkg;
+         const paths = Object.fromEntries(
+            (await pkg.previewServeVerdicts()).map((v) => [
+               v.sourceName,
+               [v.cutoverPath, v.cutoverReason],
+            ]),
+         );
+         expect(paths.inherited?.[0]).toBe("live");
+         expect(paths.inherited?.[1]).toBeDefined();
+         expect(paths.inherited?.[1]).not.toBe("not_rerooted");
+      } finally {
+         restore();
+         await loader.dispose();
+      }
    }, 120_000);
 
    it("names the rollup leg for a v1 rollup", async () => {

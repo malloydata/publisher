@@ -8,15 +8,16 @@ import * as path from "path";
 let verbatim: boolean | undefined;
 
 /**
- * Whether a symlink keeps the text it was made with, `..` and all, as on
- * POSIX. On Windows, Node normalizes a link's target when it makes the link
- * (and Windows resolves a reparse point's `..` by name), so `q/../t` is
- * stored as `t`: a link that spells a path out of the package and back
- * never leaves it there, and leads inside whether or not what it spelled
- * through exists. Tests of a path that goes out and comes back expect the
- * refusal where the text is kept and the in-package answer where it is not;
- * the two answers must match either way. Probed once, not keyed on the
- * platform.
+ * Whether a symlink keeps the text it was made with, exactly, as on POSIX.
+ * On Windows it does not, in two different ways (seen on CI): a relative
+ * target keeps its `..` but takes backslashes (`q/../t` is stored as
+ * `q\..\t`), while an absolute target is resolved when the link is made, so
+ * an absolute link that spells a path out of the package and back is stored
+ * as the in-package path and never leaves. Tests of a path that goes out and
+ * comes back expect the refusal for a kept text or a relative one, and the
+ * in-package answer for an absolute one where the text is not kept; the
+ * present and absent answers must match either way. Probed once, not keyed on
+ * the platform.
  */
 export function linkTextKeptVerbatim(): boolean {
    if (verbatim !== undefined) return verbatim;

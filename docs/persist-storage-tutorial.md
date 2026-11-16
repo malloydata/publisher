@@ -738,21 +738,25 @@ declare still builds; its source is answered live.
 
 These are the checks derivable from the compiled source and the built schema
 alone. One more belongs here and **is enforced**: a source protected by
-`#(access_filter)` — directly, or transitively through a join or derivation — is
-refused, because the serve path rebinds it to a virtual source whose shape
-carries no `#(access_filter)` annotation, so the gate can't be evaluated on the
-served table. The check walks the compiled source for the gate and fails
-closed: a source it cannot prove gate-free is refused.
+`#(access_filter)` or `#(authorize)` — directly, or transitively through a join or
+derivation — is refused unless the compiler can _prove_ the gate is the entry point's
+own row filter or lock and nothing else is reachable beneath it. The check walks the
+compiled source for the gate and fails closed: a source it cannot prove is refused
+(an unattributed or join-only gate, a row filter inherited from a source it derives
+from, an unclassifiable one, or one that doesn't reduce to a row filter or lock).
 
-A colocated `#@ persist` is a different case, and the difference is worth stating because it is easy
-to over-claim. A colocated build has no virtual source: the substitution replaces only the source's
-relation SQL, while the gate is applied as the reading query's own `WHERE`, so the two compose and
-rows do come back filtered. The gate is not absent — which is why a colocated source is admitted when
-the compiler can _prove_ the gate is the entry point's own row-level filter and nothing else is
-reachable beneath it, and refused otherwise (an unattributed or join-only gate, an unclassifiable one,
-or one that doesn't reduce to a row filter at all). When admitted, what is frozen is the data the gate
-DECIDES AGAINST — the gating column's values are whatever they were at build time, so a row that
-changes hands keeps being served to its former owner until the next rebuild. See
+A proven gate is admitted on both tiers, the same way. The table is read through the
+served copy, which keeps the source's own text, gates included, so the gate is grafted
+onto every served query and proven there exactly as on live: rows come back filtered,
+or the caller is denied, as live. The gate is not absent at read; it is absent **at
+rest**. The table holds every caller's rows, ungated, and a `storage=` destination may
+be a separate, shared store, readable by anyone with direct access to it. Admitting a
+gated `storage=` source is a maintainer-approved exception made ahead of the managed
+tier's security review, for consistency with colocated. A colocated build has no
+separate store: the table stays in your own warehouse. When admitted, what is frozen is
+the data the gate DECIDES AGAINST — the gating column's values are whatever they were at
+build time, so a row that changes hands keeps being served to its former owner until
+the next rebuild. See
 [materialization.md](materialization.md) for the author-facing refusal and the freshness contract that
 follows from it.
 

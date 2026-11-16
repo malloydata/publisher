@@ -415,6 +415,8 @@ describe("every dialect-dependent statement", () => {
       if (process.env.UPDATE_GOLDENS === "1") {
          fs.writeFileSync(GOLDEN, text);
       }
-      expect(text).toBe(fs.readFileSync(GOLDEN, "utf8"));
+      // A Windows checkout may write the golden with CRLF; the statements
+      // are JSON.stringify output, which never carries a raw CR.
+      expect(text).toBe(fs.readFileSync(GOLDEN, "utf8").replace(/\r\n/g, "\n"));
    });
 });

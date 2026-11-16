@@ -28,6 +28,7 @@ import {
    deriveAnnotationFields,
 } from "./persist_source_fields";
 import type { SourceBuild } from "../domain/compiled_build_plan";
+import { notesDeclarePersist } from "./declaration";
 
 /** Project Malloy's targets for one connection into a {@link SourceBuild}. */
 function sourceBuildOf(
@@ -308,14 +309,12 @@ export function computeSourceEntityId(
  * under both (see `manifestForCompiler`). Sources folded apart share one
  * compiler key, whose entry is then either of their tables: the same rows.
  *
- * `connectionDigests` is unused: the target's key was computed under the
- * runtime's own digests, for the same connections Publisher resolves
- * (`build_targets_address_equality` pins the two forms equal). Kept so the
- * signature, and its callers, are unchanged.
+ * The target's key was computed under the runtime's own digests, for the
+ * same connections Publisher resolves (`build_targets_address_equality` pins
+ * the two forms equal).
  */
 export function compilerBuildId(
    source: PersistSource,
-   _connectionDigests: Record<string, string>,
    target?: BuildTarget,
 ): string {
    const resolved = buildTargetOf(source, target);
@@ -388,17 +387,18 @@ function declarationOf(source: PersistSource): string {
 }
 
 /**
- * Whether `source` writes its own `#@` persist declaration, rather than
+ * Whether `source` writes its own `#@ persist` declaration, rather than
  * inheriting its base's (an extension). A source whose annotation cannot be
  * read counts as declaring.
  */
-function declaresOwnPersist(source: PersistSource): boolean {
+export function declaresOwnPersist(source: PersistSource): boolean {
    try {
       const own = source.annotation;
       if (!own) return true;
-      return [...(own.blockNotes ?? []), ...(own.notes ?? [])].some((n) =>
-         n.text.trimStart().startsWith("#@"),
-      );
+      return notesDeclarePersist([
+         ...(own.blockNotes ?? []),
+         ...(own.notes ?? []),
+      ]);
    } catch {
       return true;
    }
@@ -432,13 +432,68 @@ function storedProjection(
 export type TableFolds = Readonly<Record<string, string>>;
 
 /**
+ * Each planned source's content address, its table fold applied, by
+ * sourceID, or why it cannot be addressed (it is refused on its own path).
+ * Computed once, over the whole plan, once its folds are decided
+ * (`CompiledBuildPlan.addresses`).
+ */
+export type PlanAddresses = Readonly<
+   Record<string, string | { unaddressable: string }>
+>;
+
+/** {@link PlanAddresses} for `plan`. */
+export function planAddresses(plan: {
+   tables: Readonly<
+      Record<string, { source: PersistSource; target?: BuildTarget }>
+   >;
+   connectionDigests: Record<string, string>;
+   tableFolds?: TableFolds;
+}): PlanAddresses {
+   const addresses: Record<string, string | { unaddressable: string }> = {};
+   for (const [sourceID, { source, target }] of Object.entries(plan.tables)) {
+      try {
+         addresses[sourceID] = computeSourceEntityId(
+            source,
+            plan.connectionDigests,
+            target,
+            plan.tableFolds,
+         );
+      } catch (err) {
+         addresses[sourceID] = {
+            unaddressable: err instanceof Error ? err.message : String(err),
+         };
+      }
+   }
+   return addresses;
+}
+
+/**
+ * The content address of the plan's source `sourceID`, read from its
+ * {@link PlanAddresses}. A source that cannot be addressed throws why.
+ */
+export function planAddressOf(
+   plan: { addresses: PlanAddresses },
+   sourceID: string,
+): string {
+   const address = plan.addresses[sourceID];
+   if (typeof address === "string") return address;
+   throw new Error(
+      address?.unaddressable ?? `'${sourceID}' has no planned address`,
+   );
+}
+
+/**
  * Give each author `name=` its own table: two sources that compile to one
  * build (one address, say gated differently at read) but name different
  * tables are each addressed with their name folded in, so every plan, build,
  * manifest and bind path keys two tables. A source with no `name=` of its
- * own (a defaulted readable name, a rollup) keeps the plain address, as does
- * every source of an address whose sources all name one table: the same
- * source reached from two models, or identical SQL with no `name=`.
+ * own (a defaulted readable name, a rollup) names no table: it never moves,
+ * keeping the plain address and its own readable table, and beside a source
+ * that does name one it is still told apart, so the named source moves to an
+ * address of its own (a defaulted name is Publisher's table, a `name=` the
+ * author's; see hasAuthorTableName). Only an address whose sources all name
+ * one table, or all name none, keeps every source on the plain address: the
+ * same source reached from two models, or identical SQL with no `name=`.
  *
  * Likewise two `storage=` declarations of one build that store different
  * columns (one keeps a column `private:`, the other drops it with `except:`):

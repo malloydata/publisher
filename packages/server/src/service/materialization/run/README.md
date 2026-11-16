@@ -34,6 +34,7 @@ warehouse SQL, run store, clock, metrics and logs live.
 | `manifest_loader.ts`                | A fetched build manifest, split by tier                                                                                                                                                 | `environment.ts`, the committer                                                                       |
 | `materialization_run_support.ts`    | What a build needs from the plan about stored tables, and the environment surface it reads                                                                                              | most of `run/`, the controller                                                                        |
 | `table_claims.ts`                   | Which tables an active run writes, so two runs never write one at once                                                                                                                  | the service                                                                                           |
+| `keyed_lock.ts`                     | One mutex per key                                                                                                                                                                       | table claims, table ownership                                                                         |
 | `table_ownership.ts`                | Who owns a table an auto-run writes at an author's name                                                                                                                                 | the instructed build, the service, the reclaimer                                                      |
 | `table_site.ts`                     | Where a table's marks are read: its connection, or a session on its destination                                                                                                         | table ownership, the instructed build, the service, the reclaimer, leftover views                     |
 | `table_mark_sql.ts`                 | The marks on a table and on a leftover `name=` view, and reading them back                                                                                                              | table ownership, leftover views, table sites, the instructed build, the service, the reclaimer        |
@@ -45,6 +46,25 @@ warehouse SQL, run store, clock, metrics and logs live.
 | `error_code.ts`                     | An error reduced to a code a log may carry                                                                                                                                              | the strategies, the build session, telemetry                                                          |
 | `cron_evaluator.ts`                 | Evaluating a 5-field cron expression in UTC                                                                                                                                             | the scheduler, the facade, package skills                                                             |
 | `tier.ts`                           | The tier port (`TierAdapter`): building, dropping and key-checking a table where it lives; the colocated build's request; each tier's site                                              | the source build, the instructed build, the reclaimer, the two tier adapters                          |
+
+## Lock order
+
+A run's locks are taken in one order, so no two callers wait on each other:
+
+1. The package lock (`withPackageLock`): compiling an unversioned package,
+   loading or rebinding it, and a package's first versioned publish, which
+   takes its version's lock under it.
+2. The version lock (`VersionService.withVersionLock`).
+3. The table lock (`TableClaims.withTableLock`), per package.
+4. The owned-name lock (`withOwnedNameLock`, table_ownership.ts), keyed by
+   `tableIdentity`: held only to check a `name=` table's ownership, build it
+   and mark it, and nothing else is taken while it is held. A table the
+   package cannot prove its own is retired (`tableNotOwned`, which takes the
+   locks above) once the lock is let go.
+
+`TableClaims.withTableLock` refuses, under test, to be taken while an
+owned-name lock is held (logged otherwise); the package and version locks
+live outside `run/` and are not checked.
 
 ## Dependency rule
 

@@ -215,6 +215,7 @@ export type EligibilityRefusalReason =
    | "not_duckdb_portable"
    | "public_surface_unknown"
    | "read_only_dialect"
+   | "storage_source_unsupported"
    | "env_reference"
    | "rollup_name_collision"
    | "empty_storage"
@@ -411,7 +412,8 @@ const eligibilityRefusedCounter = lazyCounter(
       "'dynamic_join'|'dynamic_joined_where'|'inherited_where_with_given'|" +
       "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
       "'authorize'|'not_duckdb_portable'|" +
-      "'public_surface_unknown'|'read_only_dialect'|'table_name_collision'|" +
+      "'public_surface_unknown'|'read_only_dialect'|" +
+      "'storage_source_unsupported'|'table_name_collision'|" +
       "'current_time'). 'given' is retained on the enum for records " +
       "that carry it and is no longer produced: where a given sits decides the " +
       "outcome, so one reason covering every placement cannot be raised. The " +
@@ -737,8 +739,11 @@ export function recordAttributionSkipped(
 }
 
 /**
- * Record a materialization-eligibility refusal (a source that can't be safely
- * materialized into a storage destination). The `given` reason is a security
+ * Record a materialization-eligibility refusal. A build plan records each
+ * source in its `refusedSources` once per derivation, under the reason there,
+ * and never a source it does not refuse (a colocated source only unservable
+ * from storage); a run records the refusals only it can find. The `given`
+ * reason is a security
  * refusal (a frozen given-filtered table would leak rows across tenants); worth
  * tracking how often authors attempt it.
  */

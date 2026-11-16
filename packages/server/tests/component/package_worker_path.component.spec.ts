@@ -1313,10 +1313,18 @@ source: orders is duckdb.sql("""
             ).toEqual([
                "persist:by_category",
                "persist:gated",
-               "persist:stored",
                // The rollup leg's name for the v1 rollup (the v1 cutover, G4).
                "preaggregate:orders__rollup__category__81e09214",
             ]);
+            // `stored` is a `storage=` source on the package's DuckDB
+            // sandbox, which a storage build cannot read: the worker, which
+            // knows the sandbox only from the main thread's connection
+            // metadata, refuses it as the main thread does.
+            expect(
+               Object.values(mainThread.plan?.refusedSources ?? {})
+                  .filter((source) => source.name === "stored")
+                  .map((source) => source.reason),
+            ).toEqual(["storage_source_unsupported"]);
 
             // A plan the worker left at its soft deadline is derived here, and
             // it is the same plan.

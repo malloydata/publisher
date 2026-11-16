@@ -11,7 +11,6 @@
  * its store.
  */
 
-import { Mutex } from "async-mutex";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
 import { ResourceRepository } from "../../../storage/DatabaseInterface";
@@ -26,6 +25,9 @@ import {
    type WriteTarget,
 } from "../../versions/materialization_scope";
 import { BuildInstruction } from "../domain/types";
+import { isActiveRun } from "./materialization_run_support";
+import { KeyedLock } from "./keyed_lock";
+import { assertNoOwnedNameHeld } from "./table_ownership";
 
 /**
  * Which tables an active run of a package writes, so two runs never write one
@@ -34,31 +36,30 @@ import { BuildInstruction } from "../domain/types";
  * package, in-process: one publisher owns its store.
  */
 export class TableClaims {
-   private readonly tableLocks = new Map<string, Mutex>();
+   private readonly tableLock = new KeyedLock();
 
    constructor(private readonly repository: () => ResourceRepository) {}
 
    /**
-    * The lock under which a published version's run checks and records the
-    * tables it writes, per package. Runs of different versions hold
-    * different active slots, so this is what keeps two of them from writing
-    * one table at once. In-process: one publisher owns its store.
+    * Run `fn` under the lock in which a published version's run checks and
+    * records the tables it writes, per package. Runs of different versions
+    * hold different active slots, so this is what keeps two of them from
+    * writing one table at once. In-process: one publisher owns its store.
     */
-   lockFor(environmentId: string, packageName: string): Mutex {
-      const key = `${environmentId}|${packageName}`;
-      let lock = this.tableLocks.get(key);
-      if (!lock) {
-         lock = new Mutex();
-         this.tableLocks.set(key, lock);
-      }
-      return lock;
+   withTableLock<T>(
+      environmentId: string,
+      packageName: string,
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      assertNoOwnedNameHeld("table");
+      return this.tableLock.withLock(`${environmentId}|${packageName}`, fn);
    }
 
    /**
     * Refuse tables another active run of the package writes, and, for a run
     * with instructions, the tables the package's versions share (the
     * newest auto-run's): those are rebuilt only by an auto-run of `latest`,
-    * which marks what it makes stale. Called under lockFor.
+    * which marks what it makes stale. Called under withTableLock.
     */
    async assertTablesFree(
       environmentId: string,
@@ -70,15 +71,15 @@ export class TableClaims {
       // Compared by what a name names (see tableIdentity), not its spelling.
       const wanted = new Set(tables.map(tableIdentity));
       if (wanted.size === 0) return;
+      // Read under the table lock, never from a run's snapshot: what other
+      // runs claim is what changes between a run's start and its claim.
       const runs = await this.repository().listMaterializations(
          environmentId,
          packageName,
       );
       for (const m of runs) {
          if (m.id === excludeId) continue;
-         if (m.status !== "PENDING" && m.status !== "MANIFEST_ROWS_READY") {
-            continue;
-         }
+         if (!isActiveRun(m.status)) continue;
          const clash = tableNamesIn(m.metadata, WRITES_TABLES_KEY).find((t) =>
             wanted.has(tableIdentity(t)),
          );
@@ -134,7 +135,7 @@ export class TableClaims {
       }: { supersede: boolean; targets?: WriteTarget[] } = { supersede: true },
    ): Promise<void> {
       const tables = [...new Set(instructions.map((i) => i.physicalTableName))];
-      await this.lockFor(environmentId, packageName).runExclusive(async () => {
+      await this.withTableLock(environmentId, packageName, async () => {
          await this.assertTablesFree(
             environmentId,
             packageName,
@@ -166,7 +167,7 @@ export class TableClaims {
     * built from another definition (another content address) no longer says
     * what the table holds, whatever happens to this run. An entry from the
     * same definition still does, and is left alone; so is a run already
-    * marked. Called under lockFor.
+    * marked. Called under withTableLock.
     */
    async markSuperseded(
       environmentId: string,
@@ -252,7 +253,7 @@ export class TableClaims {
       }[],
    ): Promise<void> {
       if (tables.length === 0) return;
-      await this.lockFor(environmentId, packageName).runExclusive(async () => {
+      await this.withTableLock(environmentId, packageName, async () => {
          for (const m of await this.repository().listMaterializations(
             environmentId,
             packageName,

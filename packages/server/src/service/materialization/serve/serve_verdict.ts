@@ -154,6 +154,14 @@ export interface ServeVerdictFacts {
     */
    servedCopyKeepsGates?: boolean;
    /**
+    * Storage: plan admitted this source's table past a stored source's own
+    * row-level gate under G3 (`SourceEligibility.gateKept`, by the table's
+    * content address, as the bind marks it), so the served copy answers its
+    * gated entry point from it as from a colocated table, and {@link gated}
+    * no longer means live.
+    */
+   storageKeepsOwnGate?(sourceID: string): boolean;
+   /**
     * A `#(preaggregate)` rollup over a gated base whose gates the router
     * grafts on its variant at read (R3 for rollups, row 1): a gated entry
     * point is answered from it, so it is not `row_level_gate`.
@@ -309,12 +317,15 @@ function verdictFor(
    // Colocated persist is substituted inside Malloy, gates and all, and a
    // colocated `#(materialize)` table is read by the served copy past the
    // gate under G3 (the plan builds a gated one only when it keeps the
-   // gate); storage and rollups go through the router, which skips a gated
-   // entry point, unless the served copy keeps the gates (R3), or a
+   // gate), as is a `storage=` table plan admitted past its own gate;
+   // other storage tables and rollups go through the router, which skips a
+   // gated entry point, unless the served copy keeps the gates (R3), or a
    // `#(preaggregate)` rollup's variant keeps them (row 1).
    if (
       ((origin === "preaggregate" && !facts.rollupKeepsGates?.(sourceID)) ||
-         (tier === "storage" && !facts.servedCopyKeepsGates)) &&
+         (tier === "storage" &&
+            !facts.servedCopyKeepsGates &&
+            !facts.storageKeepsOwnGate?.(sourceID))) &&
       facts.gated(readID, readName, source.modelPath)
    ) {
       return live(

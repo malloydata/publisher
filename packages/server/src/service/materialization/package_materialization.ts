@@ -36,7 +36,6 @@ import {
 import {
    findingSeverity,
    MATERIALIZATION_STORAGE_MODE_CODE,
-   PERSIST_NOT_BUILT_CODE,
    PERSIST_SOURCE_REFUSED_ALIAS_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
@@ -81,6 +80,7 @@ import {
    planCollisions,
    PREAGG_WARN_ONLY,
    preaggregateGateLines,
+   refusalCodeOf,
    relaxedCollision,
 } from "./plan/load_gate_text";
 import type { MaterializePlan } from "./domain/table_plans";
@@ -113,6 +113,7 @@ import {
 import {
    bindColocatedEntries,
    bindStorageEntries,
+   keptTableAddresses,
    deriveColocatedServeBindings,
    kindFromPlan,
    v1StoredColumnsOf,
@@ -448,21 +449,18 @@ export class PackageMaterialization {
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
          this.buildPlan = plan;
-         this.materializePlans = materializePlans ?? {};
-         this.rollupsKeepingGates = new Set(rollupsKeepingGates ?? []);
-         // `?? {}`: an outcome a worker built before this field existed.
-         this.refusedRollups = refusedRollups ?? {};
-         this.compilerKeys = compilerKeys ?? {};
+         this.materializePlans = materializePlans;
+         this.rollupsKeepingGates = new Set(rollupsKeepingGates);
+         this.refusedRollups = refusedRollups;
+         this.compilerKeys = compilerKeys;
          this.buildPlanFailed = false;
          this.servingPlanWhileUnavailable = null;
-         // `?? []`: an outcome a worker built before this field existed.
-         this.annotationFindings = (annotationFindings ?? []).map((f) =>
+         this.annotationFindings = annotationFindings.map((f) =>
             relaxedCollision(f, getPersistCollisionEnforce()),
          );
          this.sourceEligibility = sourceEligibility;
          this.colocatedSourceEligibility = colocatedSourceEligibility;
-         // `?? []`: an outcome a worker built before this field existed.
-         this.buildConnectionNames = new Set(buildConnectionNames ?? []);
+         this.buildConnectionNames = new Set(buildConnectionNames);
          // A persisted view's plan entry is its generated build source; its
          // findings name the author's view and the source it is declared on.
          const persistedViews = new Map<
@@ -1223,21 +1221,11 @@ export class PackageMaterialization {
                     {
                        plan: workerPlan.outcome.plan,
                        annotationFindings:
-                          workerPlan.outcome.annotationFindings ?? [],
+                          workerPlan.outcome.annotationFindings,
                        incrementalDeclarations:
-                          workerPlan.outcome.incrementalDeclarations ?? {},
-                       ...(workerPlan.outcome.materializePlans
-                          ? {
-                               materializePlans:
-                                  workerPlan.outcome.materializePlans,
-                            }
-                          : {}),
-                       ...(workerPlan.outcome.modelGateLines
-                          ? {
-                               modelGateLines:
-                                  workerPlan.outcome.modelGateLines,
-                            }
-                          : {}),
+                          workerPlan.outcome.incrementalDeclarations,
+                       materializePlans: workerPlan.outcome.materializePlans,
+                       modelGateLines: workerPlan.outcome.modelGateLines,
                     },
                     {
                        enforceCollisions: getPersistCollisionEnforce(),
@@ -1420,7 +1408,9 @@ export class PackageMaterialization {
     * Warnings for the sources the compile-time gates refused. Not an
     * annotation finding: the annotation is well formed; the source it sits on
     * cannot be materialized. A `#@ persist` source's is coded
-    * {@link PERSIST_NOT_BUILT_CODE} and carries the gate's message verbatim,
+    * {@link PERSIST_NOT_BUILT_CODE} (a `#(materialize)` source's
+    * `materialize-not-built`, a persisted view's or query's its own) and
+    * carries the gate's message verbatim,
     * so there is one wording to maintain, and is repeated under its former
     * code, {@link PERSIST_SOURCE_REFUSED_ALIAS_CODE}, for one release. A rollup's is coded
     * {@link PREAGGREGATE_NOT_BUILT_CODE}, its message naming its base and
@@ -1457,7 +1447,11 @@ export class PackageMaterialization {
                  }
                : {
                     message: source.message,
-                    code: PERSIST_NOT_BUILT_CODE,
+                    // The route's own code: a `#(materialize)` source's, a
+                    // persisted view's or query's, else a source's.
+                    code: this.materializePlans[sourceID]
+                       ? "materialize-not-built"
+                       : refusalCodeOf(sourceID, source.name),
                     severity: "warn",
                  };
          if (source.modelPath) warning.model = source.modelPath;
@@ -1465,8 +1459,11 @@ export class PackageMaterialization {
          // `persist-not-built` was `persist-source-refused` until this
          // release, for exactly these gate refusals: each is repeated under
          // its former code, with the same message, for one release, then the
-         // alias is removed. Display surfaces show it once.
-         return warning.code === PERSIST_NOT_BUILT_CODE
+         // alias is removed. Display surfaces show it once. A refusal no
+         // earlier release raised (`storage_source_unsupported`) never
+         // carried the former code, so it is not repeated.
+         return source.tier !== "preaggregate" &&
+            source.reason !== "storage_source_unsupported"
             ? [warning, { ...warning, code: PERSIST_SOURCE_REFUSED_ALIAS_CODE }]
             : [warning];
       });
@@ -1687,6 +1684,12 @@ export class PackageMaterialization {
       }
       const servedCopy = this.servedCopyState(models);
       const materializeIDs = new Set(Object.keys(this.materializePlans));
+      // A table not bound yet is judged by the bind's own rule, so the
+      // verdict says what it will say once the table is bound.
+      const keptTables = keptTableAddresses(
+         this.sourceEligibility?.gateKept,
+         (id) => this.buildPlan?.sources?.[id]?.sourceEntityId,
+      );
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(this.snapshot(), new Date());
       const freshStorageNames = new Set(
@@ -1720,6 +1723,18 @@ export class PackageMaterialization {
          servedCopyKeepsGates: legMayPassGate("served", gateSwitches(), {
             colocatedReadsKeepGates: false,
          }),
+         // Read off the bound bindings, which the router reads too.
+         storageKeepsOwnGate: (sourceID) => {
+            const bound = this.storageBindings.filter((b) =>
+               b.sourceIDs?.includes(sourceID),
+            );
+            if (bound.length > 0) {
+               return bound.some((b) => b.ownGateKept === true);
+            }
+            return keptTables.has(
+               this.buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            );
+         },
          rollupKeepsGates: (sourceID) => this.rollupsKeepingGates.has(sourceID),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),

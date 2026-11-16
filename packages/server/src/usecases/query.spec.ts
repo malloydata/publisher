@@ -18,11 +18,16 @@ import {
    spyOn,
 } from "bun:test";
 import sinon from "sinon";
-import { BadRequestError, ModelNotFoundError } from "../errors";
+import {
+   BadRequestError,
+   ModelCompilationError,
+   ModelNotFoundError,
+} from "../errors";
 import { logger } from "../logger";
 import { QuerySlots } from "../query_concurrency";
 import type { AccessRecord } from "../service/access_record";
-import type { Model } from "../service/model";
+import { Model } from "../service/model";
+import { PackageModelPolicy } from "../service/model_policy";
 import { withSettings } from "../test_helpers/settings_env";
 import {
    loadTempPackage,
@@ -33,6 +38,7 @@ import {
    type QueryTransportOptions,
    QueryUseCase,
    REST_QUERY_OPTIONS,
+   resolveQueryTarget,
 } from "./query";
 import { fakeOf } from "../test_helpers/store_fakes";
 import type { PackageLookup } from "../service/environment_ports";
@@ -172,7 +178,7 @@ describe("QueryUseCase", () => {
 
    it("eagerCompile reports a compile failure to onSetupError and rethrows it", async () => {
       const broken = new Error("does not compile");
-      sinon.stub(model, "getModel").rejects(broken);
+      sinon.stub(model, "getCompilationError").returns(broken);
       const onSetupError = sinon.spy();
       const err = await useCaseOver("2.0.0")
          .run(COMMAND, { ...REST, eagerCompile: true, onSetupError }, (o) => o)
@@ -180,6 +186,48 @@ describe("QueryUseCase", () => {
       expect(err).toBe(broken);
       expect(onSetupError.calledOnceWith(broken)).toBe(true);
       expect(records()[0].version).toBeUndefined();
+   });
+
+   it("eagerCompile surfaces a placeholder's compile error exactly as getModel() throws it", async () => {
+      const failure = new ModelCompilationError({
+         message: "Error(s) compiling model:\nline 1: 'nope' is not defined",
+      });
+      const placeholder = Model.fromCompilationError(
+         "pkg",
+         "m.malloy",
+         "model",
+         failure,
+         { policy: new PackageModelPolicy().forModel("m.malloy") },
+      );
+      const thrownByGetModel = await placeholder
+         .getModel()
+         .catch((e: unknown) => e);
+      const resolved = await resolveQueryTarget(
+         fakeOf<PackageLookup>({
+            getEnvironment: async () =>
+               ({
+                  assertCanAdmitQuery: () => {},
+                  getPackage: async () => ({
+                     getModel: () => placeholder,
+                  }),
+               }) as never,
+         }),
+         COMMAND,
+         { ...REST, eagerCompile: true },
+      ).catch((e: unknown) => e);
+      // The same object, so the same class, status and message reach the
+      // transport.
+      expect(resolved).toBe(thrownByGetModel);
+      expect(resolved).toBeInstanceOf(ModelCompilationError);
+      expect((resolved as Error).message).toBe(failure.message);
+   });
+
+   it("eagerCompile does not build the compiled model of a model that compiled", async () => {
+      const getModel = sinon.spy(model, "getModel");
+      await useCaseOver()
+         .run(COMMAND, { ...REST, eagerCompile: true }, (o) => o)
+         .catch(() => undefined);
+      expect(getModel.called).toBe(false);
    });
 
    it("throws the precondition inside the record, before resolving", async () => {

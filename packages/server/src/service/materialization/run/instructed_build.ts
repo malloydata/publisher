@@ -15,6 +15,7 @@
  * manifest; the committer does.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { keyCheckCompilerKey } from "../domain/key_check";
 import {
    assertInlinedJoinsUnique,
@@ -69,10 +70,7 @@ import {
    RefusedSource,
    SourceFailure,
 } from "../domain/types";
-import {
-   sourceIncrementalRefresh,
-   type IncrementalRunContext,
-} from "./incremental_build";
+import { sourceIncrementalRefresh } from "./incremental_build";
 import {
    assertInstructedDestinationWritable,
    assertNoTableCollisions,
@@ -80,7 +78,7 @@ import {
    recordInstructedBuildFailure,
    resolveInstruction,
    type ColocatedRefusal,
-   type EligibilityTier,
+   type InstructedBuildOptions,
    type InstructedRun,
    type PendingRefusal,
    type ResolvedInstruction,
@@ -88,7 +86,6 @@ import {
 import {
    allSourcesRefusedError,
    BuildEnvironment,
-   BuildQueryMetadata,
    chainedPlanFacts,
    isReclaimableStorageTable,
    manifestExcludingStorage,
@@ -96,9 +93,7 @@ import {
    refusalRecord,
    reportRetainedStorageTables,
    selfAssignTableName,
-   type WarehouseReach,
 } from "./materialization_run_support";
-import type { Materialization } from "../../../storage/DatabaseInterface";
 import {
    dropOwnNameView,
    provenOwnView,
@@ -107,7 +102,8 @@ import {
 import { packageOwner } from "./table_mark_sql";
 import { atTableSite, type TableSiteContext } from "./table_site";
 import {
-   acquireOwnedNameLock,
+   LockOrderError,
+   withOwnedNameLock,
    assertTableOwnable,
    hasAuthorTableName,
    markOwnedTable,
@@ -116,7 +112,8 @@ import {
    TableOwnershipError,
    type OwnedTableTarget,
 } from "./table_ownership";
-import type { SourceBuilder } from "./source_build";
+import type { SourceBuildOptions } from "./source_build";
+import type { KeyCheckRecord } from "./tier";
 import {
    buildKindOf,
    buildTierOf,
@@ -178,13 +175,33 @@ async function checkBuiltKeys(
    // A source stored in a destination, read there beside a joined
    // source's rollup through a join keyed on its primary key:
    // check that key over the rows its table holds.
-   if (!orchestrated && run.uniqueness && entry.storageDestinationName) {
-      await checkStoredKey(
-         run,
+   const stored =
+      !orchestrated && run.uniqueness && entry.storageDestinationName
+         ? storedKeyCheckOf(run, persistSource.sourceID, entry)
+         : undefined;
+   if (stored && run.uniqueness) {
+      await checkAndRecordKey(
          run.uniqueness,
-         persistSource,
-         entry,
          sourceEntityId,
+         () =>
+            STORAGE.checkKey(
+               {
+                  destinationName: stored.destinationName,
+                  destinationConnection: stored.destinationConnection,
+                  environmentPath: run.environment.getEnvironmentPath(),
+               },
+               stored,
+               stored.table,
+            ),
+         {
+            notRun:
+               "A stored source's primary key check did not run; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+            notUnique:
+               "A stored source holds its primary key more than once or NULL; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+         },
+         { source: persistSource.name, keyColumn: stored.keyColumn },
+         // Recorded under its own sourceID.
+         persistSource.sourceID,
       );
    }
 }
@@ -212,6 +229,71 @@ function upstreamsBySourceID(
    return out;
 }
 
+/** Mark a table built at its author's `name=` as this package's; best-effort. */
+async function markBuiltOwnedTable(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   ownedTarget: OwnedTableTarget,
+   connection: MalloyConnection,
+): Promise<void> {
+   await atTableSite(ownedTarget, tableSiteContext(run, connection), (site) =>
+      markOwnedTable(site, ownedTarget.physicalTableName, packageOwnerOf(run)),
+   ).catch((err) =>
+      logger.warn("Could not reach a built table to mark it", {
+         sourceName: persistSource.name,
+         error: errMessage(err),
+      }),
+   );
+}
+
+/**
+ * Record a gated source's failure: unless it is refused for its connection, as
+ * the source's failure, and, for a build that ran or an ownership refusal, as
+ * its table's, so no source sharing the table writes it, and each takes the
+ * same reason. Any other check before the build (uniqueness, ...) is cheap to
+ * run again for the next source.
+ */
+function recordGatedSourceFailure(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   { instruction, sourceEntityId, target }: GatedSource,
+   buildErr: unknown,
+   buildStartedAt: number | undefined,
+): void {
+   const refused = { run, persistSource, instruction, sourceEntityId };
+   if (refusedForItsConnection(refused, buildErr)) return;
+   if (
+      buildStartedAt !== undefined ||
+      buildErr instanceof TableOwnershipError
+   ) {
+      run.failedTargets?.set(target, { sourceEntityId, err: buildErr });
+   }
+   recordInstructedBuildFailure(
+      run,
+      persistSource,
+      instruction,
+      sourceEntityId,
+      buildErr,
+      {
+         kind: buildKindOf(run.compiled, persistSource.sourceID),
+         tier: buildTierOf(instruction),
+         // The method the build would have taken: a delta for a source whose
+         // incremental refresh this run can act on.
+         method:
+            sourceIncrementalRefresh(run.incremental, persistSource, {
+               physicalTableName: instruction.physicalTableName,
+               storageDestinationName: instruction.destination,
+               sourceEntityId,
+            }) !== undefined
+               ? "delta"
+               : "full",
+         ...(buildStartedAt !== undefined
+            ? { durationMs: Math.round(performance.now() - buildStartedAt) }
+            : {}),
+      },
+   );
+}
+
 /**
  * The instructed tier: a run's build loop, shared by auto-run and orchestrated
  * builds. It walks the instructions in dependency order, gates each source,
@@ -225,21 +307,14 @@ export class InstructedBuild {
           * One source's build. The service passes this, and the failed-run
           * reclaim, from its run collaborators, so a spec can hand it either.
           */
-         buildOneSource: SourceBuilder["build"];
+         buildOneSource: (
+            options: SourceBuildOptions,
+         ) => Promise<ManifestEntry>;
          reclaimStorageTablesFromFailedRun: (
             builtThisRun: ManifestEntry[],
             environment: BuildEnvironment,
             owner: { environmentId: string; packageName: string },
          ) => Promise<void>;
-         /**
-          * The package's runs, from its own records: what tells a table at a
-          * `name=` this package wrote from anyone else's (table_ownership.ts).
-          * Absent: no such table is ever recognized, and every one refuses.
-          */
-         packageRuns?: (
-            environmentName: string,
-            packageName: string,
-         ) => Promise<Materialization[]>;
          /**
           * An auto-run refused a table at the author's `name=` because it is
           * not provably this package's (table_ownership.ts): the package's
@@ -295,35 +370,7 @@ export class InstructedBuild {
     * order. Returns the full entry map (carried + freshly built). The package
     * was compiled by the caller; this runs outside the package lock.
     */
-   async run(
-      compiled: CompiledBuildPlan,
-      environment: BuildEnvironment,
-      instructions: BuildInstruction[],
-      seedEntries: Record<string, ManifestEntry>,
-      signal: AbortSignal,
-      strict = false,
-      // Used only to reclaim this run's storage tables on failure.
-      owner?: { environmentId: string; packageName: string },
-      buildMetadata?: BuildQueryMetadata,
-      // Undefined leaves every source on the full-rebuild path.
-      incremental?: IncrementalRunContext,
-      // Auto-run refusals, named in the error of a run whose every instructed
-      // source failed so it accounts for every unbuilt source.
-      priorRefusals: RefusedSource[] = [],
-      // Tiers auto-run already cleared (see deriveSelfInstructions); a listed
-      // source is not asserted again.
-      clearedTiers?: ReadonlyMap<string, EligibilityTier>,
-      // The host instructed this run (orchestrated): a host-supplied upstream
-      // entry at the wrong tier is refused, not recomputed (see
-      // ChainedPlanFacts.hostInstructed).
-      hostInstructed = false,
-      // What a strict build does with the warehouse recompute.
-      warehouseReach: WarehouseReach = "recompute",
-      // Auto-run only: the inline uniqueness checks' passes, read from the
-      // run before and recorded for the run after (inline_uniqueness.ts).
-      // Undefined runs every check as compiled.
-      uniqueness?: UniquenessLedger,
-   ): Promise<{
+   async run(options: InstructedBuildOptions): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
       /**
@@ -342,6 +389,23 @@ export class InstructedBuild {
       /** The run metadata value for the uniqueness checks, when any ran. */
       uniquenessChecks?: ReturnType<UniquenessLedger["toMetadata"]>;
    }> {
+      const {
+         compiled,
+         environment,
+         instructions,
+         seedEntries,
+         signal,
+         strict = false,
+         owner,
+         buildMetadata,
+         incremental,
+         priorRefusals = [],
+         clearedTiers,
+         hostInstructed = false,
+         warehouseReach = "recompute",
+         uniqueness,
+         packageRuns,
+      } = options;
       const { builds, tables, connectionDigests, connections } = compiled;
       const index = indexInstructions(instructions);
       const run: InstructedRun = {
@@ -383,6 +447,7 @@ export class InstructedBuild {
          writtenTargets: new Map(),
          failedTargets: new Map(),
          ...(uniqueness ? { uniqueness } : {}),
+         ...(packageRuns ? { packageRuns } : {}),
          signal,
       };
       assertNoTableCollisions(
@@ -406,7 +471,7 @@ export class InstructedBuild {
                );
             }
             for (const persistSource of sourcesInBuildOrder(build, tables)) {
-               if (signal.aborted) throw new Error("Build cancelled");
+               if (signal.aborted) throw new BuildCancelledError();
                await withSpan(
                   "publisher.materialization.build_source",
                   // Nested under the run's span, which names the package.
@@ -486,6 +551,31 @@ export class InstructedBuild {
    }
 
    /**
+    * Retire this package's entries for a table at its author's `name=` that
+    * it cannot prove its own (`tableNotOwned`); best-effort.
+    */
+   private async retireNotOwned(
+      run: InstructedRun,
+      persistSource: PersistSource,
+      ownedTarget: OwnedTableTarget,
+   ): Promise<void> {
+      const pkg = runPackageOf(run);
+      if (!pkg) return;
+      await this.seams
+         .tableNotOwned?.(pkg.environmentName, pkg.packageName, ownedTarget)
+         .catch((retireErr) => {
+            if (retireErr instanceof LockOrderError) throw retireErr;
+            logger.warn(
+               "Could not retire a package's entries for a table it does not own",
+               {
+                  sourceName: persistSource.name,
+                  error: errMessage(retireErr),
+               },
+            );
+         });
+   }
+
+   /**
     * Refuse an auto-run's build at the author's `name=` unless the name is
     * free or this package's (assertTableOwnable). This package's records are
     * read only for a table with no mark. A `name=` view an earlier release
@@ -500,7 +590,7 @@ export class InstructedBuild {
       target: OwnedTableTarget,
       connection: MalloyConnection,
    ): Promise<string[] | undefined> {
-      const packageRuns = this.seams.packageRuns;
+      const packageRuns = run.packageRuns;
       const pkg = runPackageOf(run);
       const owner = packageOwnerOf(run);
       let reached = false;
@@ -517,10 +607,7 @@ export class InstructedBuild {
                async () =>
                   !!packageRuns &&
                   !!pkg &&
-                  packageRecordsName(
-                     await packageRuns(pkg.environmentName, pkg.packageName),
-                     target,
-                  ),
+                  packageRecordsName(await packageRuns(), target),
             );
             if (!ownView) return undefined;
             // This package's own view from an earlier release: replaced by
@@ -756,6 +843,7 @@ export class InstructedBuild {
          assertMaterializationEligible(
             persistSource,
             deriveAnnotationFields(persistSource),
+            { connectionTypes: run.compiled.connectionTypes },
          );
       }
 
@@ -822,60 +910,24 @@ export class InstructedBuild {
          instruction,
          orchestrated,
       );
-      let entry;
+      let entry: ManifestEntry | undefined;
       // Set once the build itself starts: a source that fails before it
       // (ownership, uniqueness) ran no build to time.
       let buildStartedAt: number | undefined;
-      // Held from the ownership check until the mark is written, so another
-      // package building the same `name=` at once waits, then sees the mark.
-      let releaseOwnedName: (() => void) | undefined;
-      // This package's own leftover view at the name, which the build's own
-      // transaction drops before its table takes the name (DuckDB, Postgres).
-      let replacesView: string[] | undefined;
-      try {
-         // An instructed destination that cannot be honored REFUSES, never
-         // falls through to a colocated build: that would write the caller's
-         // name into the source's own warehouse and answer success.
-         assertInstructedDestinationWritable(
-            persistSource,
-            instruction,
-            compiled,
-         );
-
+      const checkBuildAndMark = async (): Promise<ManifestEntry> => {
          // A `name=` another package holds fails the source before anything
-         // is written, the uniqueness check included.
-         if (ownedTarget) {
-            releaseOwnedName = await acquireOwnedNameLock(
-               ownedTarget.physicalTableName,
-            );
-            replacesView = await this.assertOwnable(
-               run,
-               authorNamedInstructions(run).get(instruction) ??
-                  persistSource.name,
-               ownedTarget,
-               connection,
-            ).catch(async (err) => {
-               const pkg = runPackageOf(run);
-               if (err instanceof TableOwnershipError && pkg) {
-                  await this.seams
-                     .tableNotOwned?.(
-                        pkg.environmentName,
-                        pkg.packageName,
-                        ownedTarget,
-                     )
-                     .catch((retireErr) =>
-                        logger.warn(
-                           "Could not retire a package's entries for a table it does not own",
-                           {
-                              sourceName: persistSource.name,
-                              error: errMessage(retireErr),
-                           },
-                        ),
-                     );
-               }
-               throw err;
-            });
-         }
+         // is written, the uniqueness check included. This package's own
+         // leftover view at the name is dropped by the build's own
+         // transaction before its table takes the name (DuckDB, Postgres).
+         const replacesView = ownedTarget
+            ? await this.assertOwnable(
+                 run,
+                 authorNamedInstructions(run).get(instruction) ??
+                    persistSource.name,
+                 ownedTarget,
+                 connection,
+              )
+            : undefined;
 
          // An inlined join_one must match at most one row (P8): checked on
          // the source's own connection before anything is written.
@@ -904,89 +956,71 @@ export class InstructedBuild {
          );
 
          buildStartedAt = performance.now();
-         entry = await this.seams.buildOneSource(
+         let built = await this.seams.buildOneSource({
             persistSource,
             instruction,
             connection,
-            run.manifest,
-            run.environment,
-            run.entries,
-            run.buildMetadata,
-            run.incremental,
+            manifest: run.manifest,
+            environment: run.environment,
+            builtEntries: run.entries,
+            buildMetadata: run.buildMetadata,
+            incremental: run.incremental,
             // The CONTENT address, distinct from the instruction's
             // caller-assigned identity: the ledger is keyed by it so a
             // boundary can never be read against different SQL.
-            sourceEntityId,
-            run.planFacts,
-            // Passed only when set, so a seam's recorded call is unchanged.
-            ...(replacesView ? ([replacesView] as const) : []),
-         );
+            contentSourceEntityId: sourceEntityId,
+            planFacts: run.planFacts,
+            ...(replacesView ? { replacesView } : {}),
+         });
          // A manifest travels without its build plan, so this is the only
-         // signal that a table belongs to a rollup in no model file; served as
-         // an ordinary binding it would be silently dropped (see
+         // signal that a table belongs to a rollup in no model file; served
+         // as an ordinary binding it would be silently dropped (see
          // preaggregation_serve_bindings).
          if (compiled.tables[persistSource.sourceID]?.rollup) {
-            entry = { ...entry, origin: "preaggregate" as const };
+            built = { ...built, origin: "preaggregate" as const };
          }
          if (ownedTarget) {
-            await atTableSite(
+            await markBuiltOwnedTable(
+               run,
+               persistSource,
                ownedTarget,
-               tableSiteContext(run, connection),
-               (site) =>
-                  markOwnedTable(
-                     site,
-                     ownedTarget.physicalTableName,
-                     packageOwnerOf(run),
-                  ),
-            ).catch((err) =>
-               logger.warn("Could not reach a built table to mark it", {
-                  sourceName: persistSource.name,
-                  error: errMessage(err),
-               }),
+               connection,
             );
          }
-      } catch (buildErr) {
-         // A build that ran, or an ownership refusal: that refusal is the
-         // table's, so no source sharing it may write it, and each takes the
-         // same reason. Any other check before the build (uniqueness, ...)
-         // is cheap to run again for the next source.
-         if (
-            buildStartedAt !== undefined ||
-            buildErr instanceof TableOwnershipError
-         ) {
-            run.failedTargets?.set(target, { sourceEntityId, err: buildErr });
-         }
-         recordInstructedBuildFailure(
-            run,
+         return built;
+      };
+      try {
+         // An instructed destination that cannot be honored REFUSES, never
+         // falls through to a colocated build: that would write the caller's
+         // name into the source's own warehouse and answer success.
+         assertInstructedDestinationWritable(
             persistSource,
             instruction,
-            sourceEntityId,
+            compiled,
+         );
+         // At an author's `name=`, held from the ownership check until the
+         // mark is written, so another package building the same name at
+         // once waits, then sees the mark.
+         entry = ownedTarget
+            ? await withOwnedNameLock(
+                 ownedTarget.physicalTableName,
+                 checkBuildAndMark,
+              )
+            : await checkBuildAndMark();
+      } catch (buildErr) {
+         // Retired once the name's lock is let go: the retire takes the
+         // table, package and version locks (run/README.md).
+         if (ownedTarget && buildErr instanceof TableOwnershipError) {
+            await this.retireNotOwned(run, persistSource, ownedTarget);
+         }
+         recordGatedSourceFailure(
+            run,
+            persistSource,
+            { instruction, orchestrated, sourceEntityId, target },
             buildErr,
-            {
-               kind: buildKindOf(compiled, persistSource.sourceID),
-               tier: buildTierOf(instruction),
-               // The method the build would have taken: a delta for a source
-               // whose incremental refresh this run can act on.
-               method:
-                  sourceIncrementalRefresh(run.incremental, persistSource, {
-                     physicalTableName: instruction.physicalTableName,
-                     storageDestinationName: instruction.destination,
-                     sourceEntityId,
-                  }) !== undefined
-                     ? "delta"
-                     : "full",
-               ...(buildStartedAt !== undefined
-                  ? {
-                       durationMs: Math.round(
-                          performance.now() - buildStartedAt,
-                       ),
-                    }
-                  : {}),
-            },
+            buildStartedAt,
          );
          return undefined;
-      } finally {
-         releaseOwnedName?.();
       }
       return entry;
    }
@@ -1218,6 +1252,38 @@ function settleRefusals(run: InstructedRun): {
    }
    run.pendingRefusals = [];
    return { refusalsInFailures, refusedBesideBuilt };
+}
+
+/**
+ * Record a `storage=` source whose connection the build cannot read as
+ * refused, as the plan's gate would have (storage_build_strategy.ts), so the
+ * run goes on. Returns whether `err` was that refusal.
+ */
+function refusedForItsConnection(
+   source: {
+      run: InstructedRun;
+      persistSource: PersistSource;
+      instruction: BuildInstruction;
+      sourceEntityId: string;
+   },
+   err: unknown,
+): boolean {
+   if (
+      !(err instanceof MaterializationEligibilityError) ||
+      err.reason !== "storage_source_unsupported"
+   ) {
+      return false;
+   }
+   const { run, persistSource, instruction, sourceEntityId } = source;
+   recordPendingRefusal(
+      run,
+      persistSource,
+      instruction,
+      sourceEntityId,
+      err,
+      true,
+   );
+   return true;
 }
 
 /**
@@ -1499,14 +1565,20 @@ async function checkRollupKeys(
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
    }
-   await checkRollupKey(
-      ledger,
-      groupsBaseRows ? own : undefined,
-      connection,
-      persistSource.name,
-      address,
-      table,
-   );
+   if (own && groupsBaseRows) {
+      await checkAndRecordKey(
+         ledger,
+         address,
+         () => COLOCATED.checkKey({ connection }, own, table),
+         {
+            notRun:
+               "A #(preaggregate) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
+            notUnique:
+               "A #(preaggregate) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
+         },
+         { rollup: persistSource.name, keyColumn: own.keyColumn },
+      );
+   }
    await checkParentKeys(
       ledger,
       rollupParentKeyChecksOf(compiled, sourceID).filter(
@@ -1563,25 +1635,23 @@ async function checkParentKeys(
 ): Promise<void> {
    for (const check of checks) {
       if (check.connectionName !== connectionName) continue;
-      const record = await COLOCATED.checkKey({ connection }, check, table);
-      if (!record) {
-         logger.warn(
-            "A query source's primary key check did not run; its queries through a #(preaggregate) rollup read as a join_many are answered live",
-            { rollup: rollupName, source: check.sourceID },
-         );
-         continue;
-      }
-      if (!record.unique) {
-         logger.warn(
-            "A query source holds its primary key more than once or NULL; its queries through a #(preaggregate) rollup read as a join_many are answered live",
-            {
-               rollup: rollupName,
-               source: check.sourceID,
-               keyColumn: check.keyColumn,
-            },
-         );
-      }
-      ledger.recordRollupKey(address, { ...record, sourceID: check.sourceID });
+      await checkAndRecordKey(
+         ledger,
+         address,
+         () => COLOCATED.checkKey({ connection }, check, table),
+         {
+            notRun:
+               "A query source's primary key check did not run; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+            notUnique:
+               "A query source holds its primary key more than once or NULL; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+         },
+         {
+            rollup: rollupName,
+            source: check.sourceID,
+            keyColumn: check.keyColumn,
+         },
+         check.sourceID,
+      );
    }
 }
 
@@ -1601,21 +1671,19 @@ async function checkPairLeafKeys(
    table: string,
 ): Promise<void> {
    for (const check of checks) {
-      const record = await COLOCATED.checkKey({ connection }, check, table);
-      if (!record) {
-         logger.warn(
-            "A pair table's leaf key check did not run; counts through its inlined join_many are answered live",
-            { source: sourceName, keyColumn: check.keyColumn },
-         );
-         continue;
-      }
-      if (!record.unique) {
-         logger.warn(
-            "An inlined join_many's joined source holds its primary key more than once or NULL; counts through it are answered live",
-            { source: sourceName, keyColumn: check.keyColumn },
-         );
-      }
-      ledger.recordRollupKey(address, { ...record, sourceID: check.sourceID });
+      await checkAndRecordKey(
+         ledger,
+         address,
+         () => COLOCATED.checkKey({ connection }, check, table),
+         {
+            notRun:
+               "A pair table's leaf key check did not run; counts through its inlined join_many are answered live",
+            notUnique:
+               "An inlined join_many's joined source holds its primary key more than once or NULL; counts through it are answered live",
+         },
+         { source: sourceName, keyColumn: check.keyColumn },
+         check.sourceID,
+      );
    }
 }
 
@@ -1674,75 +1742,36 @@ function storedKeyCheckOf(
 }
 
 /**
- * Run a stored source's primary key check over its table in the destination
- * and record what it found, under its own address and sourceID. A check that
- * does not run records nothing: the leg reads the key as unknown.
+ * Run one key check, warn when it did not run or found the key repeated, and
+ * record what it found under `address` (and `sourceID`, for a check of a
+ * source other than the table's own). A check that does not run, or throws,
+ * on either tier, reads as unknown: it warns, records nothing, and never
+ * fails the build.
  */
-async function checkStoredKey(
-   run: InstructedRun,
+export async function checkAndRecordKey(
    ledger: UniquenessLedger,
-   persistSource: PersistSource,
-   entry: ManifestEntry,
    address: string,
+   runCheck: () => Promise<KeyCheckRecord | undefined>,
+   messages: { notRun: string; notUnique: string },
+   logContext: Record<string, unknown>,
+   sourceID?: string,
 ): Promise<void> {
-   const check = storedKeyCheckOf(run, persistSource.sourceID, entry);
-   if (!check) return;
-   const record = await STORAGE.checkKey(
-      {
-         destinationName: check.destinationName,
-         destinationConnection: check.destinationConnection,
-         environmentPath: run.environment.getEnvironmentPath(),
-      },
-      check,
-      check.table,
+   let record: KeyCheckRecord | undefined;
+   try {
+      record = await runCheck();
+   } catch (err) {
+      logger.warn(messages.notRun, { ...logContext, error: errMessage(err) });
+      return;
+   }
+   if (!record) {
+      logger.warn(messages.notRun, logContext);
+      return;
+   }
+   if (!record.unique) logger.warn(messages.notUnique, logContext);
+   ledger.recordRollupKey(
+      address,
+      sourceID !== undefined ? { ...record, sourceID } : record,
    );
-   if (!record) {
-      logger.warn(
-         "A stored source's primary key check did not run; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
-         { source: persistSource.name, keyColumn: check.keyColumn },
-      );
-      return;
-   }
-   if (!record.unique) {
-      logger.warn(
-         "A stored source holds its primary key more than once or NULL; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
-         { source: persistSource.name, keyColumn: check.keyColumn },
-      );
-   }
-   ledger.recordRollupKey(address, {
-      ...record,
-      sourceID: persistSource.sourceID,
-   });
-}
-
-/**
- * Run a built rollup's key check and record what it found. A check that does
- * not run records nothing, so the rollup's join_one stays unknown.
- */
-async function checkRollupKey(
-   ledger: UniquenessLedger,
-   check: RollupKeyCheck | undefined,
-   connection: MalloyConnection,
-   sourceName: string,
-   address: string,
-   table: string,
-): Promise<void> {
-   if (!check) return;
-   const record = await COLOCATED.checkKey({ connection }, check, table);
-   if (!record) {
-      logger.warn(
-         "A #(preaggregate) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
-         { rollup: sourceName, keyColumn: check.keyColumn },
-      );
-      return;
-   }
-   if (!record.unique) {
-      logger.warn(
-         "A #(preaggregate) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
-         { rollup: sourceName, keyColumn: check.keyColumn },
-      );
-   }
-   ledger.recordRollupKey(address, record);
 }
 
 /**

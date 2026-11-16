@@ -82,10 +82,13 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
       it(`a host's colocated instruction builds the sibling, not the refused source, when ${label}`, async () => {
          const built: string[] = [];
          const buildOneSource = sinon.fake(
-            async (
-               source: { name: string },
-               instruction: BuildInstruction,
-            ): Promise<ManifestEntry> => {
+            async ({
+               persistSource: source,
+               instruction,
+            }: {
+               persistSource: { name: string };
+               instruction: BuildInstruction;
+            }): Promise<ManifestEntry> => {
                built.push(source.name);
                return {
                   sourceEntityId: ADDRESS,
@@ -107,10 +110,10 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
             },
             getEnvironmentPath: () => "/tmp/env",
          } as unknown as BuildEnvironment;
-         const result = await build.run(
-            compiled(order.map((o) => [...o])),
+         const result = await build.run({
+            compiled: compiled(order.map((o) => [...o])),
             environment,
-            [
+            instructions: [
                {
                   sourceEntityId: ADDRESS,
                   materializedTableId: "mt-shared",
@@ -118,9 +121,9 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
                   realization: "COPY",
                },
             ],
-            {},
-            new AbortController().signal,
-         );
+            seedEntries: {},
+            signal: new AbortController().signal,
+         });
          expect(built).toEqual(["b"]);
          expect(result.entries[ADDRESS]).toMatchObject({
             sourceName: "b",

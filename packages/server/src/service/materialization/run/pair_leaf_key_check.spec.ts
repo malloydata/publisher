@@ -41,7 +41,7 @@ import {
 } from "./inline_uniqueness";
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 import { deriveColocatedServeBindings } from "../serve/bind";
 
 const packages = tempBuildPlanPackages();
@@ -97,11 +97,11 @@ async function scenario() {
       },
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
-   const builder = new SourceBuilder(async () => {
+   const storage: Parameters<typeof buildSource>[1] = async () => {
       throw new Error("no storage in this spec");
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -124,24 +124,20 @@ async function scenario() {
             ? rollupKeyRecordsIn({ [INLINE_UNIQUENESS_KEY]: previous.metadata })
             : undefined,
       );
-      const result = await build.run(
+      const result = await build.run({
          compiled,
          environment,
-         rebuild
+         instructions: rebuild
             ? [orchestrated ? { ...instruction, sourceID } : instruction]
             : [],
-         rebuild ? {} : previous.entries,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         orchestrated,
-         "recompute",
-         ledger,
-      );
+         seedEntries: rebuild ? {} : previous.entries,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: orchestrated,
+         warehouseReach: "recompute",
+         uniqueness: ledger,
+      });
       expect(result.failures).toEqual({});
       previous = { entries: result.entries, metadata: result.uniquenessChecks };
       return result;

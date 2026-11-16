@@ -65,6 +65,7 @@ import type {
    WorkerToMainMessage,
 } from "./protocol";
 import { checkLoadPackageResult } from "./protocol_decode";
+import { connectionTypeOf } from "../service/connection_type";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
@@ -757,6 +758,7 @@ export class PackageLoadPool {
             metadata: {
                name: msg.connectionName,
                dialectName: conn.dialectName,
+               connectionType: connectionTypeOf(conn),
                digest:
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()

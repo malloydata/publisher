@@ -542,19 +542,16 @@ ${pairMeasures}
             return out;
          };
          // Hold the refresh at its load, once its table is written.
-         const service = f.service as unknown as Record<
-            string,
-            (...args: unknown[]) => Promise<unknown>
-         >;
+         const service = f.service.collaborators;
          const autoLoad = service.autoLoadManifest;
          let loading!: () => void;
          const atLoad = new Promise<void>((resolve) => (loading = resolve));
          let loadGo!: () => void;
          const mayLoad = new Promise<void>((resolve) => (loadGo = resolve));
-         service.autoLoadManifest = async (...args: unknown[]) => {
+         service.autoLoadManifest = async (...args) => {
             loading();
             await mayLoad;
-            return autoLoad.apply(service, args);
+            return autoLoad(...args);
          };
          try {
             const rebinding = f.committer().rebindLoadedVersions(ENV, PKG);

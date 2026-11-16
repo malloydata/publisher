@@ -20,6 +20,11 @@ import {
    withThreadCap,
 } from "./duckdb_instance_sharing";
 import { attachmentDigest } from "./connection";
+import {
+   hardCloseOutcome,
+   hardCloseWhenIdle,
+   installDuckDBHardClose,
+} from "./duckdb_hard_close";
 import { Environment } from "./environment";
 import { availableCpus, cgroupCpuLimit } from "../settings/registry/storage";
 import { installSettings } from "../test_helpers/settings_env";
@@ -89,8 +94,12 @@ function holdConnects(connection: DuckDBConnection) {
    };
 }
 
-async function waitFor(condition: () => boolean): Promise<void> {
-   for (let i = 0; i < 100 && !condition(); i++) {
+async function waitFor(
+   condition: () => boolean,
+   timeoutMs = 5_000,
+): Promise<void> {
+   const deadline = Date.now() + timeoutMs;
+   while (!condition() && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
    }
    expect(condition()).toBe(true);
@@ -362,6 +371,28 @@ describe("one shared in-memory DuckDB instance", () => {
          await b.connecting;
          await waitFor(() => held.closed());
          expect(DuckDBConnection.activeDBs[shareKeyOf(b)]).toBeUndefined();
+      } finally {
+         setDuckDBCloseWaitMsForTesting(undefined);
+      }
+   });
+
+   it("hard-closes a connection whose open settles after its close timed out", async () => {
+      installDuckDBHardClose();
+      setDuckDBCloseWaitMsForTesting(50);
+      try {
+         const a = open({ databasePath: ":memory:", workingDirectory: dir });
+         await a.runSQL("SELECT 1");
+         const held = holdConnects(a);
+         const b = open({ databasePath: ":memory:", workingDirectory: dir });
+         await b.close();
+         // Its open has not settled, so there is no handle to free yet.
+         hardCloseWhenIdle(b);
+         expect(hardCloseOutcome(b)).toBe("skipped");
+         held.release();
+         await b.connecting;
+         // The deferred close detaches the handle, and the hard close lands.
+         await waitFor(() => hardCloseOutcome(b) === "disconnected", 10_000);
+         await a.close();
       } finally {
          setDuckDBCloseWaitMsForTesting(undefined);
       }

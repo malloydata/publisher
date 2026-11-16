@@ -9,7 +9,15 @@
  * that counts the findings of a package that loads.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -34,6 +42,16 @@ import {
 import type { PackageAnnotationFinding } from "./annotation_reader";
 import { installSettings } from "../test_helpers/settings_env";
 import { BadRequestError } from "../errors";
+import { recordConnectionsAsForTests } from "./connection_type";
+
+// The package sandbox stands in for a warehouse in these fixtures: a
+// `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
+// source on it (storage_source_unsupported).
+let restoreConnectionTypes: () => void;
+beforeAll(() => {
+   restoreConnectionTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+});
+afterAll(() => restoreConnectionTypes());
 
 let rootDir: string;
 let envPath: string;

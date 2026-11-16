@@ -288,6 +288,9 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+          # No Actions cache in a publishing job: any run on main can write main's cache
+          # entries, and this job would run whatever one it restored held.
+          no-cache: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
