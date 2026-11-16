@@ -44,7 +44,6 @@ import {
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
    settledChains,
-   splitSourceID,
    withoutParent,
 } from "./build_file_generator";
 import {
@@ -56,7 +55,7 @@ import {
    planModelMaterialize,
    type MaterializeRefusal,
 } from "./materialize_plan";
-import { type MaterializePlan } from "../domain/table_plans";
+import { splitSourceID, type MaterializePlan } from "../domain/table_plans";
 import type { TermUse } from "../domain/read_time_terms";
 import {
    compileInMemory,
@@ -726,10 +725,7 @@ async function copyDeclaredBuilds(
          name,
       ]),
    );
-   const urlOf = (id: string) => {
-      const at = id.indexOf("@");
-      return at < 0 ? undefined : id.slice(at + 1);
-   };
+   const urlOf = (id: string) => splitSourceID(id)?.url;
    const targets = await generated.runtime.getBuildTargets(generated.model);
    const groups = [
       ...targets.connections.flatMap((c) =>
@@ -751,7 +747,7 @@ async function copyDeclaredBuilds(
          const url = urlOf(id);
          const owner = url === undefined ? undefined : ownerByURL.get(url);
          if (owner === undefined) continue;
-         const name = id.slice(0, id.indexOf("@"));
+         const name = splitSourceID(id)!.name;
          const names = out.get(owner) ?? [];
          if (!names.includes(name)) names.push(name);
          out.set(owner, names.sort());

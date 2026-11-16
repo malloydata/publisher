@@ -19,7 +19,6 @@ import { createHash } from "crypto";
 import {
    CARRIED_KEYS,
    MATERIALIZE_ROUTE,
-   splitSourceID,
    PAIR_PARENT_ROW,
    PAIR_WATERMARK,
    pairLevelRowColumn,
@@ -34,6 +33,7 @@ import {
 import {
    readNotes,
    declares,
+   notesDeclarePersist,
    placementOf,
    EMPTY_STORAGE_REASON,
    type RouteTag,
@@ -59,14 +59,15 @@ import {
    type FieldJoinReads,
    type SourceJoin,
 } from "../text/source_map";
-import type {
-   MaterializeColumn,
-   LeftOutDimension,
-   CallerInput,
-   MaterializePair,
-   MaterializePairBlocks,
-   MaterializePlan,
-   InlineUniquenessCheck,
+import {
+   splitSourceID,
+   type MaterializeColumn,
+   type LeftOutDimension,
+   type CallerInput,
+   type MaterializePair,
+   type MaterializePairBlocks,
+   type MaterializePlan,
+   type InlineUniquenessCheck,
 } from "../domain/table_plans";
 import {
    currentTimeFields,
@@ -222,17 +223,7 @@ function declaresOwnPersist(
    def: SourceDefLike,
    contents: Readonly<Record<string, unknown>>,
 ): boolean {
-   const notes = declaredNotes(def, contents).filter(
-      (note) => routeOfNote(note.text) === "@",
-   );
-   if (notes.length === 0) return false;
-   return declares(
-      new Annotations({ notes } as ConstructorParameters<
-         typeof Annotations
-      >[0]),
-      "@",
-      "persist",
-   );
+   return notesDeclarePersist(declaredNotes(def, contents));
 }
 
 /**

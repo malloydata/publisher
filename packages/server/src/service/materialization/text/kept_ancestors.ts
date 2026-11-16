@@ -26,7 +26,12 @@
 import { declarationSpans, declaredBaseName } from "./declaration_text";
 import { offsetOf } from "./malloy_lexer";
 import type { SourceMap } from "./source_map";
-import type { KeptAlias, KeptAncestor, KeptRange } from "../domain/table_plans";
+import {
+   splitSourceID,
+   type KeptAlias,
+   type KeptAncestor,
+   type KeptRange,
+} from "../domain/table_plans";
 
 /** A {@link KeptAncestor} the file's text confirms, with its kept run. */
 interface ConfirmedAncestor extends KeptAncestor {
@@ -140,8 +145,7 @@ export function confirmedAncestors(
 
 /** The name a sourceID was declared with (`name@url`). */
 function declaredName(sourceID: string): string | undefined {
-   const at = sourceID.indexOf("@");
-   return at < 0 ? undefined : sourceID.slice(0, at);
+   return splitSourceID(sourceID)?.name;
 }
 
 /**

@@ -9,7 +9,6 @@
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { tableNameParts, tableNamesMeet } from "../domain/table_name";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import type { PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -29,7 +28,10 @@ import {
 } from "../../annotation_reader";
 import type { SourceBuild } from "../domain/compiled_build_plan";
 import { materializeRefusalFinding } from "./materialize_plan";
-import type { TablePlan } from "../domain/table_plans";
+import {
+   isPersistedResultSourceID,
+   type TablePlan,
+} from "../domain/table_plans";
 import { deriveAnnotationFields } from "./persist_source_fields";
 
 /**
@@ -303,8 +305,7 @@ function sharedTableGroups(
  * `<query>__query`) as that view or query, every other source by its name.
  */
 export function authorNameOf(sourceID: string, name: string): string {
-   const url = sourceID.slice(sourceID.indexOf("@") + 1);
-   if (url.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) {
+   if (isPersistedResultSourceID(sourceID)) {
       const view = /^(.+)__(.+)__view$/.exec(name);
       if (view) return `view ${view[2]} of ${view[1]}`;
       const query = /^(.+)__query$/.exec(name);

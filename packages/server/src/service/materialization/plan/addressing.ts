@@ -28,6 +28,7 @@ import {
    deriveAnnotationFields,
 } from "./persist_source_fields";
 import type { SourceBuild } from "../domain/compiled_build_plan";
+import { notesDeclarePersist } from "./declaration";
 
 /** Project Malloy's targets for one connection into a {@link SourceBuild}. */
 function sourceBuildOf(
@@ -388,17 +389,18 @@ function declarationOf(source: PersistSource): string {
 }
 
 /**
- * Whether `source` writes its own `#@` persist declaration, rather than
+ * Whether `source` writes its own `#@ persist` declaration, rather than
  * inheriting its base's (an extension). A source whose annotation cannot be
  * read counts as declaring.
  */
-function declaresOwnPersist(source: PersistSource): boolean {
+export function declaresOwnPersist(source: PersistSource): boolean {
    try {
       const own = source.annotation;
       if (!own) return true;
-      return [...(own.blockNotes ?? []), ...(own.notes ?? [])].some((n) =>
-         n.text.trimStart().startsWith("#@"),
-      );
+      return notesDeclarePersist([
+         ...(own.blockNotes ?? []),
+         ...(own.notes ?? []),
+      ]);
    } catch {
       return true;
    }

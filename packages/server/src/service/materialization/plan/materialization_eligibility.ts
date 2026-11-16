@@ -37,9 +37,10 @@ import {
    deriveAnnotationFields,
    deriveColumns,
 } from "./persist_source_fields";
-import type {
-   PersistSourceGateOutcome,
-   TablePlan,
+import {
+   isPersistedResultSourceID,
+   type PersistSourceGateOutcome,
+   type TablePlan,
 } from "../domain/table_plans";
 import {
    buildReadsCurrentTime,
@@ -55,7 +56,6 @@ import {
    storageBuildReadsConnectionType,
    unreadableSourceConnectionMessage,
 } from "../domain/source_connection_type";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 
 /**
  * What an eligible source carries into the build. Returned by the gate rather
@@ -762,7 +762,7 @@ export function gateEnforcedAtRead(
    if (!materialized) {
       // A v1 `#@ persist` source, asked only as `storage=`. A persisted
       // view's or query's build (its companion file) is not one.
-      if (!storage || isPersistedResultBuild(sourceID)) return false;
+      if (!storage || isPersistedResultSourceID(sourceID)) return false;
       return tableKeepsGates(
          { kind: "persist", tier: "storage", v1: true, gate },
          gateSwitches(),
@@ -782,13 +782,6 @@ export function gateEnforcedAtRead(
       },
       gateSwitches(),
    );
-}
-
-/** Whether `sourceID` is a persisted view's or query's generated build source. */
-function isPersistedResultBuild(sourceID: string): boolean {
-   return sourceID
-      .slice(sourceID.indexOf("@") + 1)
-      .endsWith(PERSISTED_VIEW_COMPANION_SUFFIX);
 }
 
 /**
@@ -1007,7 +1000,7 @@ export function assertTierEligible(
    // never). Off, the table would be built and never read past the gate, so
    // it is refused, on this tier as on `storage=`; on, it is built as before.
    if (
-      isPersistedResultBuild(source.sourceID) &&
+      isPersistedResultSourceID(source.sourceID) &&
       !gateSwitches().gatedSources &&
       referencesAuthorize(source)
    ) {

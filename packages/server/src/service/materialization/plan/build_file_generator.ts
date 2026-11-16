@@ -222,12 +222,13 @@
  * Every name and value in the generated text goes through `malloy_text`.
  */
 
-import type {
-   MaterializePlan,
-   MaterializeColumn,
-   MaterializePair,
-   MaterializePairBlocks,
-   InlineUniquenessCheck,
+import {
+   splitSourceID,
+   type MaterializePlan,
+   type MaterializeColumn,
+   type MaterializePair,
+   type MaterializePairBlocks,
+   type InlineUniquenessCheck,
 } from "../domain/table_plans";
 import type { GivenReadTerm } from "../domain/read_time_terms";
 import type { ownLevelNotes } from "../../annotations";
@@ -328,14 +329,6 @@ export interface FieldLike {
    expressionType?: unknown;
    accessModifier?: unknown;
    join?: unknown;
-}
-
-/** A Malloy `sourceID`'s declared name and declaring file, or undefined. */
-export function splitSourceID(
-   sourceID: string,
-): { name: string; url: string } | undefined {
-   const match = /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID);
-   return match ? { name: match[1], url: match[2] } : undefined;
 }
 
 /**

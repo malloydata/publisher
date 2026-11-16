@@ -47,7 +47,6 @@ import {
    annotationNearMisses,
    authoredNotes,
 } from "../../annotation_near_miss";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 import {
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
@@ -89,7 +88,9 @@ import {
 } from "../text/generated_files";
 import type { RollupPlan } from "../domain/rollup_measures";
 import {
+   isPersistedResultSourceID,
    materializeKindOf,
+   splitSourceID,
    type MaterializePlan,
    type PersistSourceGateClassification,
    type PersistSourceGateOutcome,
@@ -749,7 +750,7 @@ async function collectGeneratedMaterialize(
    // over it, P10) is on that build source's table: not a build of its own.
    const unplannedGenerated = (id: string) =>
       !rename.has(id) &&
-      generated.generatedURLs.has(id.slice(id.indexOf("@") + 1));
+      generated.generatedURLs.has(splitSourceID(id)?.url ?? "");
    parts.builds.push(
       ...sourceBuildsOf(targets).map((b) =>
          renameBuildSourceIDs(withoutSourceIDs(b, unplannedGenerated), rename),
@@ -2054,13 +2055,7 @@ function refuseIncrementalUnbuildable<
 function persistedViewOf(
    source: PersistSource,
 ): { sourceName: string; viewName: string } | undefined {
-   if (
-      !sourceIDFileURL(source.sourceID)?.endsWith(
-         PERSISTED_VIEW_COMPANION_SUFFIX,
-      )
-   ) {
-      return undefined;
-   }
+   if (!isPersistedResultSourceID(source.sourceID)) return undefined;
    const match = /^(.+)__(.+)__view$/.exec(source.name);
    return match ? { sourceName: match[1], viewName: match[2] } : undefined;
 }
