@@ -160,7 +160,10 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
-import { bigIntegerReadOf, storedTypeServesAs } from "../stored_column_types";
+import {
+   storedColumnReadPlan,
+   storedTypeServesAs,
+} from "../stored_column_types";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import { type Binding, type Pinned } from "../domain/binding";
@@ -2091,7 +2094,7 @@ interface StoredRollupReads {
  *   type's `timestamp`);
  * - a big integer (a grain dimension, or the partial of a measure live types
  *   as a `bigint` number) is read through its native type
- *   ({@link bigIntegerReadOf}): a `type:` declares it only as a `number`,
+ *   ({@link storedColumnReadPlan}): a `type:` declares it only as a `number`,
  *   which Malloy reads through a JavaScript number and rounds above 2^53.
  *   One stored where no cast reads it exactly (a float, its digits already
  *   lost) is the refusal.
@@ -2120,13 +2123,16 @@ function storedRollupReads(
       const storedColumn = stored.get(column.name);
       const field = fields.get(fieldName);
       if (storedColumn) {
-         const big = bigIntegerReadOf(field, storedColumn, {
-            dialect: base?.dialect,
-         });
-         if (big && !big.castTo) {
+         const plan = storedColumnReadPlan(
+            [storedColumn],
+            [{ name: column.name, type: "", field }],
+            { dialect: base?.dialect },
+         );
+         if (plan.refusals.length > 0) {
             return `the stored \`${fieldName}\` (${storedColumn.type}) cannot hold live's integer exactly`;
          }
-         if (big?.castTo) casts.set(column.name, { nativeCast: big.castTo });
+         const [big] = plan.casts;
+         if (big) casts.set(column.name, { nativeCast: big.castTo });
          if (
             column.kind === "dimension" &&
             field?.type === "timestamptz" &&

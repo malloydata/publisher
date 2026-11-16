@@ -88,11 +88,7 @@ import { TIMEFRAMES } from "./served_copy";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
-import {
-   bigIntegerReadOf,
-   serveTypePlan,
-   storedColumnTypeMismatches,
-} from "../stored_column_types";
+import { storedColumnReadPlan } from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
@@ -826,24 +822,12 @@ async function viewShape(
 
 /**
  * The stored columns of a `storage=` view's table read through a cast, by
- * name, or why the stored table cannot give live's values:
- *
- * - `DATE` or `BOOLEAN`, the served copy's faithful casts
- *   ({@link serveTypePlan}). A build stores each column as its declared type
- *   where it can, but one whose cast it declined (a view or source with a
- *   query time zone) or a build whose casts failed and stored what the
- *   warehouse returned holds a date truncation as a TIMESTAMP, which the
- *   `type:` would declare a timestamp where live types it a date.
- * - `HUGEINT` for a column live types as a `bigint` number (a BIGINT, a max
- *   over one), the served copy's big-integer read ({@link bigIntegerReadOf}):
- *   a `type:` declares it only as a `number`, which Malloy reads through a
- *   JavaScript number and rounds above 2^53.
- *
- * The refusal, so the query answers live, for a column no faithful cast reads
- * as live's type, a big integer stored as a float (its digits already lost),
- * and a column live answers as a warehouse-native value (`sql native`: a
- * TIMESTAMP_NS, whose digits past the millisecond a `timestamp` drops) or
- * JSON, which no `type:` reads back as live does.
+ * name ({@link storedColumnReadPlan}: a faithful `DATE` or `BOOLEAN`, or a big
+ * integer's native read), or why the stored table cannot give live's values:
+ * a column no faithful cast reads as live's type, a big integer stored as a
+ * float (its digits already lost), or a column live answers as a
+ * warehouse-native value (`sql native`) or JSON, which no `type:` reads back
+ * as live does.
  */
 export function storedColumnCasts(
    schema: readonly { name: string; type: string }[],
@@ -859,36 +843,33 @@ export function storedColumnCasts(
    }
    const declared = shape.columns
       .filter((c) => c.kind !== "nest" && c.type !== "")
-      .map((c) => ({ name: c.name, type: c.type }));
-   const mismatches = storedColumnTypeMismatches(schema, declared);
-   const plan = serveTypePlan(mismatches, {
+      .map((c) => ({ name: c.name, type: c.type, field: c.field }));
+   const plan = storedColumnReadPlan(schema, declared, {
       queryTimezone: shape.queryTimezone,
+      dialect: shape.dialect,
    });
-   const [unservable] = plan.unservable;
+   const [unservable] = plan.leftOut;
    if (unservable) {
       return {
          refusal: `the stored \`${unservable.column}\` (${unservable.storedType}) cannot be read as live's ${unservable.declaredType}`,
       };
    }
-   const casts = new Map<string, ColumnCast>(
-      plan.casts.map((c) => [
-         c.column,
-         { castTo: c.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
-      ]),
-   );
-   for (const c of shape.columns) {
-      const stored = schema.find((s) => s.name === c.name);
-      if (!stored || casts.has(c.name)) continue;
-      const big = bigIntegerReadOf(c.field, stored, { dialect: shape.dialect });
-      if (!big) continue;
-      if (!big.castTo) {
-         return {
-            refusal: `the stored \`${c.name}\` (${stored.type}) cannot hold live's integer exactly`,
-         };
-      }
-      casts.set(c.name, { nativeCast: big.castTo });
+   const [lost] = plan.refusals;
+   if (lost) {
+      return {
+         refusal: `the stored \`${lost.column}\` (${lost.storedType}) cannot hold live's integer exactly`,
+      };
    }
-   return { casts };
+   return {
+      casts: new Map(
+         plan.casts.map((c): [string, ColumnCast] => [
+            c.column,
+            c.native
+               ? { nativeCast: c.castTo }
+               : { castTo: c.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
+         ]),
+      ),
+   };
 }
 
 /**

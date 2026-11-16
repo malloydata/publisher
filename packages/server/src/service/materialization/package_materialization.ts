@@ -76,7 +76,6 @@ import type {
    ManifestEntry,
 } from "./domain/types";
 
-
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 

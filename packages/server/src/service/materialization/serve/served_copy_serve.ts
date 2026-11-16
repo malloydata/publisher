@@ -69,8 +69,7 @@ import {
    nativeTypeLookup,
    declaredColumnsOf,
    liveKeepsBigIntegers,
-   serveTypePlan,
-   storedColumnTypeMismatches,
+   storedColumnReadPlan,
 } from "../stored_column_types";
 import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
 import {
@@ -3045,18 +3044,18 @@ function materializedColumnsOf(
    // A joined big-integer field is read through its native type in the
    // record; one no cast reads exactly leaves the source to its
    // fallback (known limitation 12).
+   const readOptions = bigIntegerOptionsOf(def, binding);
    const joinedReads = joined.map((j) => {
       const fields = joinedFieldsAt(def.fields, [j.join]);
-      const reads = new Map<string, string | undefined>();
-      for (const c of j.columns) {
-         const read = bigIntegerReadOf(
-            fields.find((f) => fieldNameOf(f) === c.name),
-            { name: c.column, type: c.type },
-            bigIntegerOptionsOf(def, binding),
-         );
-         if (read) reads.set(c.name, read.castTo);
-      }
-      return reads;
+      return storedColumnReadPlan(
+         j.columns.map((c) => ({ name: c.column, type: c.type })),
+         j.columns.map((c) => ({
+            name: c.column,
+            type: "",
+            field: fields.find((f) => fieldNameOf(f) === c.name),
+         })),
+         readOptions,
+      );
    });
    // A joined field live types as a warehouse-native type has no
    // stored declaration that reads back as live's either.
@@ -3066,10 +3065,7 @@ function materializedColumnsOf(
          liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
       );
    });
-   if (
-      joinedNative ||
-      joinedReads.some((reads) => [...reads.values()].some((r) => !r))
-   ) {
+   if (joinedNative || joinedReads.some((plan) => plan.refusals.length > 0)) {
       problems.push({
          sourceName,
          sourceID: node.sourceID,
@@ -3080,7 +3076,9 @@ function materializedColumnsOf(
    inlinedJoins = joined.map((j, i) => ({
       ...j,
       columns: j.columns.map((c) => {
-         const nativeCast = joinedReads[i].get(c.name);
+         const nativeCast = joinedReads[i].casts.find(
+            (r) => r.column === c.column,
+         )?.castTo;
          return nativeCast ? { ...c, nativeCast } : c;
       }),
    }));
@@ -3107,39 +3105,28 @@ function v1ColumnsOf(
    // live. A `storage=` table leaves out a column `except:` drops; a kept
    // `include` that hides one the table lacks is refused (`hiddenUnstored`)
    // and the source answers live.
-   const named = storedColumnsWithAccess(binding.schema, def.fields).map(
-      ({ name, type }) => ({ name, type }),
-   );
-   // A stored column no field of the source names is one its own
-   // `extend` block drops (`except:`, `accept:`) or an `include`
-   // re-hides under another name: it stays on the stored table so the
-   // author's text compiles and removes it again. Should
-   // the text not remove it, the access check below finds a public
-   // field the author's source lacks and leaves the source as written.
-   const narrowed = [
-      ...named,
-      ...unnamedStoredColumns(binding.schema, def.fields),
-   ];
-   const mismatches = storedColumnTypeMismatches(
+   // A stored column no field of the source names is one its own `extend`
+   // block drops (`except:`, `accept:`) or an `include` re-hides under
+   // another name: it stays on the stored table so the author's text
+   // compiles and removes it again. Should the text not remove it, the access
+   // check below finds a public field the author's source lacks and leaves
+   // the source as written.
+   const narrowed = v1StoredColumns(binding.schema, def.fields);
+   // A column the served copy cannot read as its declared type: cast on read
+   // when a cast is faithful, else left out so only a query reading it
+   // answers live.
+   const typePlan = storedColumnReadPlan(
       narrowed,
       declaredColumnsOf(def.fields),
+      { queryTimezone: queryTimezoneOf(def) },
    );
-   // A column the served copy cannot read as its declared type: cast
-   // on read when a cast is faithful, else left out so only a query
-   // reading it answers live.
-   const typePlan =
-      mismatches.length > 0
-         ? serveTypePlan(mismatches, {
-              queryTimezone: queryTimezoneOf(def),
-           })
-         : undefined;
    const castTo = new Map(
-      (typePlan?.casts ?? []).map((c) => [
+      typePlan.casts.map((c) => [
          c.column,
          c.castTo === "BOOLEAN" ? ("boolean" as const) : ("date" as const),
       ]),
    );
-   const leftOut = new Set((typePlan?.unservable ?? []).map((m) => m.column));
+   const leftOut = new Set(typePlan.leftOut.map((m) => m.column));
    columnsLeftOut = [...leftOut];
    // A nest of the persisted query a destination did not store (a lake
    // that cannot hold a repeated record): left out like a column no
@@ -4409,6 +4396,24 @@ export function storedColumnsWithAccess(
       out.push({ name, type: c.type, ...(access ? { access } : {}) });
    }
    return out;
+}
+
+/**
+ * A v1 table's stored columns as its source reads them: each one a field
+ * names ({@link storedColumnsWithAccess}), then each one none names. The one
+ * list the served copy re-roots on and the type warning checks.
+ */
+export function v1StoredColumns(
+   schema: readonly { name: string; type: string }[],
+   fields: readonly unknown[] | undefined,
+): { name: string; type: string }[] {
+   return [
+      ...storedColumnsWithAccess(schema, fields).map(({ name, type }) => ({
+         name,
+         type,
+      })),
+      ...unnamedStoredColumns(schema, fields),
+   ];
 }
 
 /**
