@@ -81,7 +81,9 @@ import {
    readRouteTag,
    routeOfNote,
    type PackageAnnotationFinding,
+   type RefusalKey,
 } from "../../annotation_reader";
+import type { RefusedReason } from "../domain/types";
 import {
    declaredFieldNotes,
    type NotedSourceDef,
@@ -122,6 +124,10 @@ export interface PersistedViewRefusal {
     * refusal of a valid one.
     */
    code?: string;
+   /** A valid declaration's refusal reason (`refusedSources`). */
+   refusal?: RefusedReason;
+   /** The destination its `storage=` names, when it names one. */
+   storage?: string;
 }
 
 /** The generated build source's name for `source -> view`. */
@@ -183,23 +189,27 @@ function planSourcePersistedViews(
       // that inherits it.
       const notes = persistNotesOf(node.def, f, scope);
       if (notes.length === 0) continue;
-      const refuse = (reason: string, code?: string) =>
+      const refuse = (
+         reason: string,
+         code: { malformed: string } | { refused: RefusedReason },
+      ) =>
          refused.push({
             sourceID: node.sourceID,
             sourceName: declared.name,
             viewName,
             reason,
-            ...(code !== undefined ? { code } : {}),
+            ...("malformed" in code
+               ? { code: code.malformed }
+               : { refusal: code.refused }),
          });
       // A `#@ persist` line that does not parse is invalid, never dropped.
       const unparseable = writesPersistLine(notes)
          ? unparseableNotes(notes)
          : undefined;
       if (unparseable !== undefined) {
-         refuse(
-            `its \`#@\` line does not parse (${unparseable})`,
-            PERSIST_VIEW_INVALID_CODE,
-         );
+         refuse(`its \`#@\` line does not parse (${unparseable})`, {
+            malformed: PERSIST_VIEW_INVALID_CODE,
+         });
          continue;
       }
       const annotations = new Annotations({ notes } as ConstructorParameters<
@@ -208,7 +218,7 @@ function planSourcePersistedViews(
       // A line reading `@env.`, a `storage=` naming nothing, a bad `name=`.
       const problems = persistDeclarationProblems(annotations);
       if (problems.length > 0) {
-         refuse(problems.join("; "), PERSIST_VIEW_INVALID_CODE);
+         refuse(problems.join("; "), { malformed: PERSIST_VIEW_INVALID_CODE });
          continue;
       }
       // Read as Malloy reads them: `persist`, not `-persist`.
@@ -226,7 +236,7 @@ function planSourcePersistedViews(
             refuse(
                finding.message +
                   (finding.rewrite ? `; ${finding.rewrite}` : ""),
-               finding.code,
+               { malformed: finding.code },
             );
          }
          continue;
@@ -237,13 +247,15 @@ function planSourcePersistedViews(
       if (incremental.length > 0) {
          refuse(
             `a view's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
-            PERSIST_VIEW_INVALID_CODE,
+            { malformed: PERSIST_VIEW_INVALID_CODE },
          );
          continue;
       }
       // Valid, but a copy limit of Publisher's: refused alone.
       if (notes.some((n) => n.text.trim().includes("\n"))) {
-         refuse("its `#@` line spans more than one line");
+         refuse("its `#@` line spans more than one line", {
+            refused: "multi_line_annotation",
+         });
          continue;
       }
       const placed = placementOf(tag, "persist");
@@ -306,6 +318,8 @@ export function planModelPersistedViews(
             sourceName: p.sourceName,
             viewName: p.viewName,
             reason: `its generated build source \`${p.buildSourceName}\` collides with another persisted view's; rename one of them`,
+            refusal: "build_name_collision",
+            ...(p.storage !== undefined ? { storage: p.storage } : {}),
          });
       }
    }
@@ -320,7 +334,13 @@ export function planModelPersistedViews(
 export function persistedViewRefusalFinding(
    refusal: Pick<
       PersistedViewRefusal,
-      "sourceName" | "viewName" | "reason" | "code"
+      | "sourceID"
+      | "sourceName"
+      | "viewName"
+      | "reason"
+      | "code"
+      | "refusal"
+      | "storage"
    >,
    model: string,
 ): PackageAnnotationFinding {
@@ -343,6 +363,34 @@ export function persistedViewRefusalFinding(
       message: `${on} is not built, so the view is served live: ${refusal.reason}.`,
       subject: `${refusal.sourceName} -> ${refusal.viewName}`,
       model,
+      ...(refusal.refusal
+         ? {
+              refused: resultRefusalKey(
+                 persistedViewBuildName(refusal.sourceName, refusal.viewName),
+                 splitSourceID(refusal.sourceID)?.url ?? "",
+                 refusal.refusal,
+                 refusal.storage,
+              ),
+           }
+         : {}),
+   };
+}
+
+/**
+ * The refusal record of a persisted view or query: keyed by the generated
+ * build source it would have had.
+ */
+function resultRefusalKey(
+   buildSourceName: string,
+   declaringURL: string,
+   reason: RefusedReason,
+   storage: string | undefined,
+): RefusalKey {
+   return {
+      sourceID: `${buildSourceName}@${persistedViewCompanionHref(declaringURL)}`,
+      name: buildSourceName,
+      tier: storage !== undefined ? "storage" : "colocated",
+      reason,
    };
 }
 
@@ -350,6 +398,9 @@ export function persistedViewRefusalFinding(
 export interface PersistedQueryRefusal {
    queryName: string;
    reason: string;
+   refusal: RefusedReason;
+   declaringURL: string;
+   storage?: string;
 }
 
 /** The generated build source's name for query `q`. */
@@ -371,25 +422,34 @@ export function planModelPersistedQueries(
    const contents =
       (modelDef as { contents?: Record<string, unknown> })?.contents ?? {};
    for (const query of declaredPersistQueries(modelDef, declaredHere)) {
-      const refuse = (reason: string) =>
-         refused.push({ queryName: query.name, reason });
       // An invalid declaration is reported as one (persistQueryInvalidFindings,
       // which fails the load), never planned.
       if (persistQueryProblems(query).length > 0) continue;
       const notes = query.notes;
       const tag = readNotesIfAny(notes, "@");
       if (!tag?.has("persist")) continue;
-      // Valid, but a copy limit of Publisher's: refused alone.
-      if (notes.some((n) => n.text.trim().includes("\n"))) {
-         refuse("its `#@` line spans more than one line");
-         continue;
-      }
       const placed = placementOf(tag, "persist");
       if ("refused" in placed) continue;
       const storage =
          placed.placement.tier === "storage"
             ? placed.placement.destination
             : undefined;
+      const refuse = (reason: string, refusal: RefusedReason) =>
+         refused.push({
+            queryName: query.name,
+            reason,
+            refusal,
+            declaringURL: query.declaringURL,
+            ...(storage !== undefined ? { storage } : {}),
+         });
+      // Valid, but a copy limit of Publisher's: refused alone.
+      if (notes.some((n) => n.text.trim().includes("\n"))) {
+         refuse(
+            "its `#@` line spans more than one line",
+            "multi_line_annotation",
+         );
+         continue;
+      }
       // The run target: a source declared by name in the query's own file, or
       // one written inline. A name declared in another file needs an overlay
       // of two files to serve, which comes later.
@@ -404,18 +464,20 @@ export function planModelPersistedQueries(
          if (!declared) {
             refuse(
                `its source \`${ref}\` is not in this model's namespace; import the file that declares the query whole`,
+               "run_target_unsupported",
             );
             continue;
          }
          if (declared.url !== query.declaringURL || declared.name !== ref) {
             refuse(
                `its source \`${ref}\` is declared in another file, and a persisted query is built only over a source its own file declares (declare the query beside its source)`,
+               "run_target_unsupported",
             );
             continue;
          }
          runTarget = { sourceID: entry!.sourceID as string, sourceName: ref };
       } else if (!ref || typeof ref !== "object") {
-         refuse("its source cannot be read");
+         refuse("its source cannot be read", "run_target_unsupported");
          continue;
       }
       const importedID =
@@ -433,6 +495,7 @@ export function planModelPersistedQueries(
       if (buildSourceName in contents) {
          refuse(
             `its generated build source \`${buildSourceName}\` collides with a name the model already declares; rename one of them`,
+            "build_name_collision",
          );
          continue;
       }
@@ -456,5 +519,30 @@ export function persistedQueryRefusalFinding(
    refusal: PersistedQueryRefusal,
    model: string,
 ): PackageAnnotationFinding {
-   return persistQueryNotBuiltFinding(refusal.queryName, model, refusal.reason);
+   return persistQueryNotBuiltFinding(
+      refusal.queryName,
+      model,
+      persistedQueryRefusalKey(
+         refusal.queryName,
+         refusal.declaringURL,
+         refusal.refusal,
+         refusal.storage,
+      ),
+      refusal.reason,
+   );
+}
+
+/** {@link resultRefusalKey} for the named query `queryName`. */
+export function persistedQueryRefusalKey(
+   queryName: string,
+   declaringURL: string,
+   reason: RefusedReason,
+   storage: string | undefined,
+): RefusalKey {
+   return resultRefusalKey(
+      persistedQueryBuildName(queryName),
+      declaringURL,
+      reason,
+      storage,
+   );
 }

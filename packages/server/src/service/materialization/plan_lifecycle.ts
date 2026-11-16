@@ -26,11 +26,13 @@ import {
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import { errMessage } from "../../utils";
 import type { Model } from "../model";
-import type {
-   BuildPlanPackage,
-   ColocatedSourceEligibility,
-   RefusedRollup,
-   SourceEligibility,
+import {
+   projectRefusals,
+   type BuildPlanPackage,
+   type ColocatedSourceEligibility,
+   type RefusalNotices,
+   type RefusedRollup,
+   type SourceEligibility,
 } from "./plan/build_plan";
 import { computePackageBuildPlan } from "./plan/build_plan_compile";
 import {
@@ -80,6 +82,7 @@ export class PlanLifecycle {
    rollupsKeepingGates = new Set<string>();
    /** The base and grain of each refused rollup, by its sourceID. */
    refusedRollups: Record<string, RefusedRollup> = {};
+   refusalNotices: RefusalNotices = {};
    /** See BuildPlanOutcome.compilerKeys. */
    compilerKeys: Record<string, string> = {};
    annotationFindings: PackageAnnotationFinding[] = [];
@@ -182,16 +185,24 @@ export class PlanLifecycle {
          const outcome = workerPlan
             ? workerPlan.outcome
             : await computePackageBuildPlan(this.owner.buildPlanPackage);
-         this.buildPlan = outcome.plan;
+         // A collision this deployment refuses alone, rather than failing
+         // the load, is a refusal record like any other.
+         const relaxed = projectRefusals(
+            outcome.plan,
+            outcome.annotationFindings.map((f) =>
+               relaxedCollision(f, getPersistCollisionEnforce()),
+            ),
+            outcome.refusalNotices,
+         );
+         this.buildPlan = relaxed.plan;
          this.materializePlans = outcome.materializePlans;
          this.rollupsKeepingGates = new Set(outcome.rollupsKeepingGates);
          this.refusedRollups = outcome.refusedRollups;
+         this.refusalNotices = relaxed.refusalNotices;
          this.compilerKeys = outcome.compilerKeys;
          this.failed = false;
          this.servingPlanWhileUnavailable = null;
-         this.annotationFindings = outcome.annotationFindings.map((f) =>
-            relaxedCollision(f, getPersistCollisionEnforce()),
-         );
+         this.annotationFindings = relaxed.annotationFindings;
          this.sourceEligibility = outcome.sourceEligibility;
          this.colocatedSourceEligibility = outcome.colocatedSourceEligibility;
          this.buildConnectionNames = new Set(outcome.buildConnectionNames);
@@ -235,6 +246,7 @@ export class PlanLifecycle {
          this.incrementalPolicySources = [];
          this.rollupsKeepingGates = new Set();
          this.refusedRollups = {};
+         this.refusalNotices = {};
          this.compilerKeys = {};
          recordBuildPlanComputeFailed();
          logger.warn(

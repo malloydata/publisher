@@ -2,17 +2,29 @@
   "internal": {
     "annotationFindings": [
       {
-        "code": "preaggregate-access-filter",
+        "code": "preaggregate-not-built",
         "message": "#(preaggregate) on measure \"total\" of source \"by_column\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
         "model": "m.malloy",
+        "refused": {
+          "name": "by_column.total",
+          "reason": "access_filter",
+          "sourceID": "by_column.total@<pkg>/m.malloy.preaggregate.malloy",
+          "tier": "preaggregate"
+        },
         "route": "preaggregate",
         "subject": "by_column.total",
         "tier": "unservable"
       },
       {
-        "code": "preaggregate-access-filter",
+        "code": "preaggregate-not-built",
         "message": "#(preaggregate) on measure \"total\" of source \"by_lock\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
         "model": "m.malloy",
+        "refused": {
+          "name": "by_lock.total",
+          "reason": "access_filter",
+          "sourceID": "by_lock.total@<pkg>/m.malloy.preaggregate.malloy",
+          "tier": "preaggregate"
+        },
         "route": "preaggregate",
         "subject": "by_lock.total",
         "tier": "unservable"
@@ -248,14 +260,14 @@
   },
   "loadWarnings": [
     {
-      "code": "preaggregate-access-filter",
+      "code": "preaggregate-not-built",
       "message": "#(preaggregate) on measure \"total\" of source \"by_column\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "by_column.total"
     },
     {
-      "code": "preaggregate-access-filter",
+      "code": "preaggregate-not-built",
       "message": "#(preaggregate) on measure \"total\" of source \"by_lock\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
       "model": "m.malloy",
       "severity": "warn",
@@ -282,7 +294,24 @@
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {},
+    "refusedSources": {
+      "by_column.total@<pkg>/m.malloy.preaggregate.malloy": {
+        "message": "#(preaggregate) on measure \"total\" of source \"by_column\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
+        "modelPath": "m.malloy",
+        "name": "by_column.total",
+        "reason": "access_filter",
+        "sourceID": "by_column.total@<pkg>/m.malloy.preaggregate.malloy",
+        "tier": "preaggregate"
+      },
+      "by_lock.total@<pkg>/m.malloy.preaggregate.malloy": {
+        "message": "#(preaggregate) on measure \"total\" of source \"by_lock\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
+        "modelPath": "m.malloy",
+        "name": "by_lock.total",
+        "reason": "access_filter",
+        "sourceID": "by_lock.total@<pkg>/m.malloy.preaggregate.malloy",
+        "tier": "preaggregate"
+      }
+    },
     "sources": {
       "gated_mat@<pkg>/m.malloy": {
         "annotationFields": {

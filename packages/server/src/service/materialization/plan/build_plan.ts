@@ -41,8 +41,15 @@ import type {
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { incrementalUnbuildableReason } from "./incremental_policy";
-import { nearMissGateLines, preaggregateGateLines } from "./load_gate_text";
-import { validateModelPreaggregation } from "./preaggregation_validation";
+import {
+   nearMissGateLines,
+   PREAGG_WARN_ONLY,
+   preaggregateGateLines,
+} from "./load_gate_text";
+import {
+   validateModelPreaggregation,
+   type PreaggregateViolation,
+} from "./preaggregation_validation";
 import {
    annotationNearMisses,
    authoredNotes,
@@ -50,6 +57,7 @@ import {
 import {
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
+   PREAGGREGATE_NOT_BUILT_CODE,
    persistAnnotationFindings,
    persistUnparseableFinding,
    type PackageAnnotationFinding,
@@ -97,6 +105,7 @@ import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
 import { tryCompileMaterializeCompanion } from "./materialize_compile";
 import {
    persistedQueryRefusalFinding,
+   persistedQueryRefusalKey,
    persistedViewRefusalFinding,
 } from "./persisted_view";
 import {
@@ -104,18 +113,23 @@ import {
    persistQueryInvalidFindings,
    persistQueryKeyFindings,
    persistQueryNotBuiltFinding,
+   persistQueryStorage,
    type DeclaredPersistQuery,
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { deletingWindowsOf } from "./rolling_window";
 import { tryCompileRollupCompanion } from "./rollup_compile";
 import { compileV1BuildCompanion } from "./v1_build_companion";
-import { rollupGateEnforcedAtRead } from "./rollup_plan";
+import { measureRefusalKey, rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
 import { getMaterializeEnabled } from "../../../config";
 import { resolveConnectionTypes } from "../../connection_type";
 import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
-import { deriveAnnotationFields, deriveColumns } from "./persist_source_fields";
+import {
+   declaredStorage,
+   deriveAnnotationFields,
+   deriveColumns,
+} from "./persist_source_fields";
 import { quoteIdentifier } from "../../quoting";
 import {
    addressSQL,
@@ -898,13 +912,19 @@ async function collectGeneratedRollups(
             rollupRefusalFinding(
                {
                   tier: "unservable",
-                  code: "preaggregate-reads-given",
+                  code: PREAGGREGATE_NOT_BUILT_CODE,
                   message:
                      `#(preaggregate) rollup of source "${plan.baseSourceName}" at ` +
                      `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
                      "are served live: its rows read a given, and a table holds one " +
                      "value's rows.",
                   sourceName: plan.baseSourceName,
+                  refused: {
+                     sourceID: source.sourceID,
+                     name: source.name,
+                     tier: "preaggregate",
+                     reason: "reads_given",
+                  },
                },
                args.modelPath,
             ),
@@ -1001,7 +1021,7 @@ async function collectGeneratedPersistedViews(
             addAnnotationFinding(
                parts,
                persistedViewRefusalFinding(
-                  { ...plan, reason: readsAGiven },
+                  { ...plan, reason: readsAGiven, refusal: "reads_given" },
                   args.modelPath,
                ),
             );
@@ -1011,7 +1031,15 @@ async function collectGeneratedPersistedViews(
             addAnnotationFinding(
                parts,
                persistedQueryRefusalFinding(
-                  { queryName: query.queryName, reason: readsAGiven },
+                  {
+                     queryName: query.queryName,
+                     reason: readsAGiven,
+                     refusal: "reads_given",
+                     declaringURL: query.declaringURL,
+                     ...(query.storage !== undefined
+                        ? { storage: query.storage }
+                        : {}),
+                  },
                   args.modelPath,
                ),
             );
@@ -1119,7 +1147,16 @@ function collectPersistQueryFindings(
       if (args.notBuilt && invalid.length === 0) {
          addAnnotationFinding(
             parts,
-            persistQueryNotBuiltFinding(query.name, args.modelPath),
+            persistQueryNotBuiltFinding(
+               query.name,
+               args.modelPath,
+               persistedQueryRefusalKey(
+                  query.name,
+                  query.declaringURL,
+                  "materialization_off",
+                  persistQueryStorage(query),
+               ),
+            ),
          );
       }
    }
@@ -1208,15 +1245,16 @@ async function collectGeneratedTables(
    // load reads them (Model.preaggregateViolations, annotationNearMisses).
    {
       const authorDef = modelDefOf(malloyModel);
-      parts.modelGateLines.preaggregate.push(
-         ...preaggregateGateLines(
-            modelPath,
-            validateModelPreaggregation(
-               authorDef.contents as Record<string, unknown>,
-               authorDef.modelID,
-            ),
-         ),
+      const violations = validateModelPreaggregation(
+         authorDef.contents as Record<string, unknown>,
+         authorDef.modelID,
       );
+      parts.modelGateLines.preaggregate.push(
+         ...preaggregateGateLines(modelPath, violations),
+      );
+      for (const finding of v1RollupRefusals(violations, modelPath)) {
+         addAnnotationFinding(parts, finding);
+      }
       parts.modelGateLines.nearMiss.push(
          ...nearMissGateLines(
             modelPath,
@@ -1259,6 +1297,38 @@ async function collectGeneratedTables(
       packagePath,
       getRuntime,
       modelDef: modelDefOf(malloyModel),
+   });
+}
+
+/**
+ * The valid `#@ preaggregate` declarations a model file declares that are not
+ * built ({@link PREAGG_WARN_ONLY}), as refusals: one per measure, or one per
+ * source for a refusal of every rollup on it. The violations are the file's
+ * own (validateModelPreaggregation reads its own sources only).
+ */
+function v1RollupRefusals(
+   violations: readonly Readonly<PreaggregateViolation>[],
+   modelPath: string,
+): PackageAnnotationFinding[] {
+   return violations.flatMap((violation) => {
+      const reason = PREAGG_WARN_ONLY.get(violation.code);
+      if (reason === undefined || violation.sourceID === undefined) return [];
+      return [
+         {
+            route: "@",
+            tier: "unservable",
+            code: PREAGGREGATE_NOT_BUILT_CODE,
+            message: violation.message,
+            subject: violation.fieldName ?? violation.sourceName,
+            model: modelPath,
+            refused: measureRefusalKey(
+               violation.sourceID,
+               violation.sourceName,
+               violation.fieldName,
+               reason,
+            ),
+         },
+      ];
    });
 }
 
@@ -1701,12 +1771,75 @@ export interface BuildPlanOutcome {
     * than the generated name (a refusal may also leave `plan.sources`).
     */
    refusedRollups: Record<string, RefusedRollup>;
+   /** See {@link RefusalNotices}. */
+   refusalNotices: RefusalNotices;
    /**
     * The key Malloy files each table under (its target's `buildId`), by
     * content address, where the two differ: an address
     * foldDistinctTableNames gave a source its own `name=` or projection on.
     */
    compilerKeys: Record<string, string>;
+}
+
+/**
+ * The warning code and subject of each refusal a finding made, by its
+ * `refusedSources` key: the record says why, the notice says how the
+ * package warning names it.
+ */
+export type RefusalNotices = Record<string, { code: string; subject?: string }>;
+
+/**
+ * Move each valid declaration a finding refused (an `unservable` finding
+ * with its refusal record) into the plan's `refusedSources`, counted once,
+ * so every declaration that is not built is one record whatever its
+ * mechanism; the findings keep the rest. A package whose every declaration
+ * is refused still has a plan, so its refusals are read.
+ */
+export function projectRefusals(
+   plan: BuildPlan | null,
+   findings: readonly PackageAnnotationFinding[],
+   notices: Readonly<RefusalNotices>,
+): {
+   plan: BuildPlan | null;
+   annotationFindings: PackageAnnotationFinding[];
+   refusalNotices: RefusalNotices;
+} {
+   const kept: PackageAnnotationFinding[] = [];
+   const refusedSources: Record<string, WireRefusedSource> = {
+      ...(plan?.refusedSources ?? {}),
+   };
+   const refusalNotices: RefusalNotices = { ...notices };
+   let moved = false;
+   for (const finding of findings) {
+      const key = finding.refused;
+      if (finding.tier !== "unservable" || key === undefined) {
+         kept.push(finding);
+         continue;
+      }
+      moved = true;
+      if (refusedSources[key.sourceID]) continue;
+      refusedSources[key.sourceID] = {
+         name: key.name,
+         sourceID: key.sourceID,
+         ...(finding.model ? { modelPath: finding.model } : {}),
+         tier: key.tier,
+         reason: key.reason,
+         message: finding.rewrite
+            ? `${finding.message}; ${finding.rewrite}`
+            : finding.message,
+      };
+      refusalNotices[key.sourceID] = {
+         code: finding.code,
+         ...(finding.subject !== undefined ? { subject: finding.subject } : {}),
+      };
+      recordEligibilityRefused(key.reason);
+   }
+   if (!moved) return { plan, annotationFindings: kept, refusalNotices };
+   return {
+      plan: { ...(plan ?? { graphs: [], sources: {} }), refusedSources },
+      annotationFindings: kept,
+      refusalNotices,
+   };
 }
 
 /** What a refused rollup's warning names: its base and its grain. */
@@ -1783,14 +1916,20 @@ export function deriveBuildPlanOutcome(
    }
    // A plan that lost sources is not "no plan": it is kept, so a host reads
    // `omittedSources` rather than an empty plan.
-   const plan =
+   const derived =
       compiled.builds.length === 0 && !compiled.omittedSources.length
          ? null
          : deriveBuildPlan(compiled, materializationConfig, verdicts);
+   const { plan, annotationFindings, refusalNotices } = projectRefusals(
+      derived,
+      compiled.annotationFindings,
+      {},
+   );
    return {
       plan,
       droppedPersistSources: compiled.droppedPersistSources,
-      annotationFindings: compiled.annotationFindings,
+      annotationFindings,
+      refusalNotices,
       modelGateLines: compiled.modelGateLines,
       sourceEligibility: collectSourceEligibility(compiled, verdicts),
       colocatedSourceEligibility: collectColocatedSourceEligibility(
@@ -1867,14 +2006,32 @@ function refuseIncrementalUnbuildable<
       dropped.add(sourceID);
       const model = compiled.tables[sourceID]?.modelPath ?? "";
       const plan = compiled.tables[sourceID]?.materialize;
+      const storage = declaredStorage(source);
+      const tier = storage !== undefined ? "storage" : "colocated";
       findings.push(
          plan
             ? materializeRefusalFinding(
-                 { sourceName: plan.sourceName, sourceID, reason },
+                 {
+                    sourceName: plan.sourceName,
+                    sourceID,
+                    reason,
+                    refused: { reason: "incremental_unsupported", tier },
+                 },
                  model,
               )
             : view
-              ? persistedViewRefusalFinding({ ...view, reason }, model)
+              ? {
+                   ...persistedViewRefusalFinding(
+                      { ...view, sourceID, reason },
+                      model,
+                   ),
+                   refused: {
+                      sourceID,
+                      name: source.name,
+                      tier,
+                      reason: "incremental_unsupported",
+                   },
+                }
               : {
                    route: "@",
                    tier: "unservable",
@@ -1882,6 +2039,12 @@ function refuseIncrementalUnbuildable<
                    message: `#@ persist source "${source.name}" is not built, so it is answered live: ${reason}.`,
                    subject: source.name,
                    model,
+                   refused: {
+                      sourceID,
+                      name: source.name,
+                      tier,
+                      reason: "incremental_unsupported",
+                   },
                 },
       );
    }

@@ -44,6 +44,11 @@ async function plan(
    );
 }
 
+/** A refusal's reason, or the code of one that refuses nothing (an invalid declaration). */
+function why(r: { code: string; refused?: { reason: string } }): string {
+   return r.refused?.reason ?? r.code;
+}
+
 describe("#(preaggregate) declarations (A1)", () => {
    it("groups measures by grain, sorted coarsest first, with a model-scoped name", async () => {
       const { plans, refused } = await plan({
@@ -136,7 +141,7 @@ source: ops is orders include {
 }`,
       });
       expect(plans).toEqual([]);
-      expect(refused.map((r) => [r.measure, r.tier, r.code])).toEqual([
+      expect(refused.map((r) => [r.measure, r.tier, why(r)])).toEqual([
          ["big", "malformed", "preaggregate-not-a-measure"],
          ["a", "malformed", "preaggregate-invalid"],
          ["b", "malformed", "preaggregate-unknown-key"],
@@ -170,8 +175,8 @@ source: orders is ${ROWS} extend {
          [["carrier"], ["fleet"]],
          [["category", "line_kind"], ["total"]],
       ]);
-      expect(refused.map((r) => [r.measure, r.tier, r.code])).toEqual([
-         ["fleet", "unservable", "preaggregate-join-level"],
+      expect(refused.map((r) => [r.measure, r.tier, why(r)])).toEqual([
+         ["fleet", "unservable", "join_level"],
       ]);
    });
 
@@ -219,8 +224,8 @@ source: orders is ${ROWS} extend {
 }`,
       });
       expect(plans).toEqual([]);
-      expect(refused.map((r) => [r.measure, r.code])).toEqual([
-         ["gates", "preaggregate-join-level"],
+      expect(refused.map((r) => [r.measure, why(r)])).toEqual([
+         ["gates", "join_level"],
       ]);
    });
 });
@@ -243,8 +248,8 @@ describe("#(preaggregate) access filters (A4)", () => {
       expect(plans.map((p) => p.grainDimensions)).toEqual([
          ["category", "region"],
       ]);
-      expect(refused.map((r) => [r.tier, r.code])).toEqual([
-         ["unservable", "preaggregate-access-filter"],
+      expect(refused.map((r) => [r.tier, why(r)])).toEqual([
+         ["unservable", "access_filter"],
       ]);
    });
 });
@@ -256,9 +261,9 @@ describe("#(preaggregate) over a gated source with gated sources off (row 21)", 
       );
       const { plans, refused } = await plan(GATED);
       expect(plans).toEqual([]);
-      expect(refused.map((r) => [r.tier, r.code])).toEqual([
-         ["unservable", "preaggregate-access-filter"],
-         ["unservable", "preaggregate-access-filter"],
+      expect(refused.map((r) => [r.tier, why(r)])).toEqual([
+         ["unservable", "access_filter"],
+         ["unservable", "access_filter"],
       ]);
       expect(refused[0]?.message).toContain(
          "PUBLISHER_MATERIALIZE_GATED_SOURCES",
@@ -276,9 +281,7 @@ source: orders is ${ROWS} extend {
 }`,
       });
       expect(plans).toEqual([]);
-      expect(refused.map((r) => r.code)).toEqual([
-         "preaggregate-access-filter",
-      ]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
    });
 
    it("plans none over an extension that inherits the gate, and still plans the ungated", async () => {
@@ -318,8 +321,8 @@ source: orders is ${ROWS} extend {
          true,
       );
       expect(plans).toEqual([]);
-      expect(refused.map((r) => [r.tier, r.code])).toEqual([
-         ["unservable", "preaggregate-access-filter"],
+      expect(refused.map((r) => [r.tier, why(r)])).toEqual([
+         ["unservable", "access_filter"],
       ]);
    });
 });
@@ -365,10 +368,7 @@ source: orders is ${ROWS} extend {
    it("still serves live a join-level max whose join key the grain drops", async () => {
       const { plans, refused } = await plan(MODEL(`["category"]`));
       expect(plans).toEqual([]);
-      expect(refused.map((r) => r.code)).toEqual([
-         "preaggregate-join-level",
-         "preaggregate-join-level",
-      ]);
+      expect(refused.map((r) => why(r))).toEqual(["join_level", "join_level"]);
    });
 });
 
@@ -400,8 +400,8 @@ source: orders is ${ROWS} extend {
 }`,
       });
       expect(plans).toEqual([]);
-      expect(refused.map((r) => [r.tier, r.code])).toEqual([
-         ["unservable", "preaggregate-unreadable-measure"],
+      expect(refused.map((r) => [r.tier, why(r)])).toEqual([
+         ["unservable", "unreadable_measure"],
       ]);
    });
 
@@ -457,10 +457,10 @@ source: orders is ${ROWS} extend {
       expect(plans.map((p) => p.rollupMeasures.map((m) => m.name))).toEqual([
          ["all_total"],
       ]);
-      expect(refused.map((r) => [r.sourceName, r.measure, r.code])).toEqual([
-         ["orders", "total", "preaggregate-current-time"],
-         ["orders", "recent_total", "preaggregate-current-time"],
-         ["recent", "total", "preaggregate-current-time"],
+      expect(refused.map((r) => [r.sourceName, r.measure, why(r)])).toEqual([
+         ["orders", "total", "current_time"],
+         ["orders", "recent_total", "current_time"],
+         ["recent", "total", "current_time"],
       ]);
    });
 });
@@ -537,7 +537,7 @@ source: parent_pond is ${ROWS} extend {
       ]);
       expect(
          refused
-            .filter((r) => r.code === "preaggregate-time-zone")
+            .filter((r) => why(r) === "time_zone")
             .map((r) => [r.sourceName, r.measure])
             .sort(),
       ).toEqual([
@@ -650,9 +650,7 @@ source: orders is ${ROWS} extend {
    it("leaves out a storage= rollup over a gated base until the managed-tier review (question 14)", async () => {
       const { plans, refused } = await plan(placed(' storage="lake"'));
       expect(plans).toEqual([]);
-      expect(refused.map((r) => r.code)).toEqual([
-         "preaggregate-access-filter",
-      ]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
       expect(refused[0]?.message).toContain("storage destination");
       const allow = allowGatedStorageRollupsForTests();
       try {
@@ -691,7 +689,7 @@ source: orders is ${ROWS} extend {
       expect(plans.map((p) => [p.grainDimensions, p.internalGrain])).toEqual([
          [["category", "tenant"], ["tenant"]],
       ]);
-      expect(refused.map((r) => r.code)).toEqual(["preaggregate-hidden-field"]);
+      expect(refused.map((r) => why(r))).toEqual(["hidden_field"]);
       const text = generateRollupBuildFile(plans, "orders.malloy") ?? "";
       expect(text).toContain("include { public: * } -> {");
    });
@@ -711,9 +709,7 @@ source: orders is gated extend {
       expect(plans.map((p) => p.grainDimensions)).toEqual([
          ["category", "region"],
       ]);
-      expect(refused.map((r) => r.code)).toEqual([
-         "preaggregate-access-filter",
-      ]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
    });
 
    it("leaves out a rollup whose gate field reads through a join, even in the grain", async () => {
@@ -730,9 +726,7 @@ source: orders is ${ROWS} extend {
 }`,
       });
       expect(plans).toEqual([]);
-      expect(refused.map((r) => r.code)).toEqual([
-         "preaggregate-access-filter",
-      ]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
    });
 
    it("leaves out a gated base's rollup when a source it joins is gated too", async () => {

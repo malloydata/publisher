@@ -926,6 +926,7 @@ source: orders is orders_raw -> { select: * }
             sourceName: "empty",
             sourceID: "empty@file:///pkg/m.malloy",
             reason: "the source has no dimension to store",
+            refused: { reason: "no_stored_columns", tier: "colocated" },
          },
       ]);
    });

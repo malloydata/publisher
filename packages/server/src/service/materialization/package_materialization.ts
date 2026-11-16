@@ -729,6 +729,26 @@ export class PackageMaterialization {
       return warnings.annotationFindingWarnings(this.plan.annotationFindings);
    }
 
+   /** The refusal warnings a planner's finding made (see annotationFindingWarnings). */
+   findingRefusalWarnings(): ApiPackageWarning[] {
+      const notices = this.plan.refusalNotices;
+      const plan = this.plan.buildPlan;
+      if (!plan?.refusedSources) return [];
+      return warnings.persistRefusalWarnings(
+         {
+            ...plan,
+            refusedSources: Object.fromEntries(
+               Object.entries(plan.refusedSources).filter(
+                  ([id]) => notices[id],
+               ),
+            ),
+         },
+         {},
+         {},
+         notices,
+      );
+   }
+
    repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
       return warnings.repeatedJoinOneKeyWarnings(
          this.plan.buildPlan,
@@ -742,6 +762,7 @@ export class PackageMaterialization {
          this.plan.buildPlan,
          this.plan.refusedRollups,
          this.plan.materializePlans,
+         this.plan.refusalNotices,
       );
    }
 
@@ -776,10 +797,6 @@ export class PackageMaterialization {
    /** Legal-but-probably-unintended incremental declarations, as warnings. */
    incrementalPolicyAdvisories(): ApiPackageWarning[] {
       return incrementalPolicyAdvisories(this.plan.incrementalPolicySources);
-   }
-
-   preaggregateAccessWarnings(): ApiPackageWarning[] {
-      return warnings.preaggregateAccessWarnings(this.owner.models());
    }
 
    /** See `persistencePolicyWarnings` in package_warnings.ts. */

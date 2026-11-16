@@ -28,6 +28,9 @@ import {
 } from "@malloydata/malloy";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 import { parseBounded, parseRouteTag } from "./motly";
+import type { components } from "../api";
+
+type RefusedSource = components["schemas"]["RefusedSource"];
 
 /** Malloy's routing for one note: its route, `""` for a MOTLY tag, `undefined` when the prefix is malformed. */
 export function routeOfNote(text: string): string | undefined {
@@ -420,6 +423,10 @@ export const MATERIALIZATION_STORAGE_MODE_CODE = "materialization-storage-mode";
 export const MATERIALIZATION_NEAR_MISS_CODE = "materialization-near-miss";
 /** A valid `#@ persist` source Publisher refuses alone. */
 export const PERSIST_NOT_BUILT_CODE = "persist-not-built";
+/** A valid `#(materialize)` source Publisher refuses alone. */
+export const MATERIALIZE_NOT_BUILT_CODE = "materialize-not-built";
+/** A valid rollup, or one measure of it, Publisher refuses alone. */
+export const PREAGGREGATE_NOT_BUILT_CODE = "preaggregate-not-built";
 /**
  * {@link PERSIST_NOT_BUILT_CODE}'s former name, still emitted beside it for
  * one release so a client switching on it keeps working; removed after.
@@ -657,8 +664,23 @@ export function editDistance(a: string, b: string): number {
    return previous[b.length] ?? 0;
 }
 
-/** A finding as a package load carries it: which model it is in, when known. */
-export type PackageAnnotationFinding = AnnotationFinding & { model?: string };
+/**
+ * A finding as a package load carries it: which model it is in, when known,
+ * and, for a valid declaration that is not built (`unservable`), the
+ * refusal record the build plan lists it under (`refusedSources`).
+ */
+export type PackageAnnotationFinding = AnnotationFinding & {
+   model?: string;
+   refused?: RefusalKey;
+};
+
+/** Where a refused declaration sits in the build plan's `refusedSources`. */
+export interface RefusalKey {
+   sourceID: string;
+   name: string;
+   tier: RefusedSource["tier"];
+   reason: RefusedSource["reason"];
+}
 
 /**
  * A `#@` tag Malloy's build walk could not parse. Malloy drops the source from

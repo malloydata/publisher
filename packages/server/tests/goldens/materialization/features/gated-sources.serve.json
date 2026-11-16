@@ -13,12 +13,12 @@
     ],
     "warnings": [
       {
-        "code": "preaggregate-access-filter",
+        "code": "preaggregate-not-built",
         "message": "#(preaggregate) on measure \"total\" of source \"by_column\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
         "subject": "by_column.total"
       },
       {
-        "code": "preaggregate-access-filter",
+        "code": "preaggregate-not-built",
         "message": "#(preaggregate) on measure \"total\" of source \"by_lock\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
         "subject": "by_lock.total"
       }

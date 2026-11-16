@@ -561,7 +561,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       );
    }
    // A rollup whose build reads a given is left out, as the package's build
-   // plan leaves it out (`preaggregate-reads-given`).
+   // plan leaves it out (`preaggregate-not-built`, reason `reads_given`).
    const allRollupTargets = rollups?.generated
       ? await rollups.generated.runtime.getBuildTargets(rollups.generated.model)
       : undefined;

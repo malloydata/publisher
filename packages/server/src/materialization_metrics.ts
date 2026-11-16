@@ -196,31 +196,12 @@ type StorageBuildEngine =
    | "in_warehouse"
    | "delta"
    | "delta_storage";
-/** Why a source was refused materialization into a storage destination. */
+/**
+ * Why a valid declaration is not built: its build plan refusal's reason
+ * (`RefusedSource.reason`).
+ */
 export type EligibilityRefusalReason =
-   | "free_parameter"
-   | "given"
-   | "given_in_persisted_query"
-   | "dynamic_projection"
-   | "dynamic_join"
-   | "dynamic_joined_where"
-   | "inherited_where_with_given"
-   // Retired with `partition=`: kept for records that carry them, never raised.
-   | "partition_without_storage"
-   | "partition_column_unknown"
-   | "partition_column_not_public"
-   | "merge_key_scope_unresolved"
-   | "preaggregate_over_dynamic_source"
-   | "authorize"
-   | "not_duckdb_portable"
-   | "public_surface_unknown"
-   | "read_only_dialect"
-   | "storage_source_unsupported"
-   | "env_reference"
-   | "rollup_name_collision"
-   | "empty_storage"
-   | "table_name_collision"
-   | "current_time";
+   components["schemas"]["RefusedSource"]["reason"];
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
@@ -407,18 +388,12 @@ const attributionSkippedCounter = lazyCounter(
 );
 const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
-   "materialization-eligibility refusals, both tiers. Label: reason " +
-      "('free_parameter'|'given_in_persisted_query'|'dynamic_projection'|" +
-      "'dynamic_join'|'dynamic_joined_where'|'inherited_where_with_given'|" +
-      "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
-      "'authorize'|'not_duckdb_portable'|" +
-      "'public_surface_unknown'|'read_only_dialect'|" +
-      "'storage_source_unsupported'|'table_name_collision'|" +
-      "'current_time'). 'given' is retained on the enum for records " +
-      "that carry it and is no longer produced: where a given sits decides the " +
-      "outcome, so one reason covering every placement cannot be raised. The " +
-      "three 'partition_*' reasons are likewise retained and no longer produced: " +
-      "'partition=' is a retired key, refused at publish.",
+   "Valid materialization declarations that are not built (`#@ persist`, " +
+      "`#(materialize)`, a persisted view or query, a rollup), once per " +
+      "declaration per plan derivation, and the refusals only a run finds. " +
+      "Label: reason, the build plan refusal's `RefusedSource.reason` " +
+      "(api-doc.yaml lists the values and which are retained and no " +
+      "longer produced).",
 );
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",

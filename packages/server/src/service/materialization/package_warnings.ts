@@ -10,19 +10,18 @@
 import {
    findingSeverity,
    MATERIALIZATION_STORAGE_MODE_CODE,
+   MATERIALIZE_NOT_BUILT_CODE,
+   PERSIST_NOT_BUILT_CODE,
    PERSIST_SOURCE_REFUSED_ALIAS_CODE,
+   PREAGGREGATE_NOT_BUILT_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { CLASSIFICATION_COVERAGE } from "../classification";
 import type { Model } from "../model";
-import type { RefusedRollup } from "./plan/build_plan";
-import {
-   PREAGG_WARN_ONLY,
-   preaggregateGateLines,
-   refusalCodeOf,
-} from "./plan/load_gate_text";
+import type { RefusalNotices, RefusedRollup } from "./plan/build_plan";
+import { preaggregateGateLines, refusalCodeOf } from "./plan/load_gate_text";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import type { MaterializePlan } from "./domain/table_plans";
@@ -46,14 +45,6 @@ import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type Models = ReadonlyMap<string, Model>;
-
-/**
- * The code on the warning for a valid rollup Publisher refuses alone at
- * compile time (a gate, a base scoped by a given, a read-only dialect, a
- * shared table name, or the `storage=` gate): not built, its measures served
- * live, and the rest of the package loads.
- */
-const PREAGGREGATE_NOT_BUILT_CODE = "preaggregate-not-built";
 
 /** The code on the warning for a rollup whose build found its join_one key repeated. */
 const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
@@ -132,54 +123,66 @@ export function repeatedJoinOneKeyWarnings(
 }
 
 /**
- * Warnings for the sources the compile-time gates refused: the annotation is
- * well formed, the source it sits on cannot be materialized. A `#@ persist`
- * source's is coded `persist-not-built` (a `#(materialize)` source's
- * `materialize-not-built`, a persisted view's or query's its own) with the
- * gate's message verbatim, and is repeated under
- * {@link PERSIST_SOURCE_REFUSED_ALIAS_CODE} for one release. A rollup's is
- * {@link PREAGGREGATE_NOT_BUILT_CODE}, naming its base and grain, with its
- * BASE source as `subject` (its own name is generated).
+ * One `*-not-built` warning per refusal record in the plan's
+ * `refusedSources`, whatever the mechanism. A record a planner's finding
+ * made carries that finding's code and subject ({@link RefusalNotices}). A
+ * compile-time gate's refusal is coded by its mechanism with the gate's
+ * message verbatim: a rollup's {@link PREAGGREGATE_NOT_BUILT_CODE}, naming
+ * its base and grain, with its BASE source as `subject` (its own name is
+ * generated). A `#@ persist` source's gate refusal is repeated under
+ * {@link PERSIST_SOURCE_REFUSED_ALIAS_CODE} for one release.
  */
 export function persistRefusalWarnings(
    plan: BuildPlan | null,
    refusedRollups: Record<string, RefusedRollup>,
    materializePlans: Record<string, MaterializePlan>,
+   notices: RefusalNotices = {},
 ): ApiPackageWarning[] {
    const refused = plan?.refusedSources;
    if (!refused) return [];
    return Object.entries(refused).flatMap(([sourceID, source]) => {
+      const notice = notices[sourceID];
+      if (notice) {
+         return [
+            {
+               ...(source.modelPath ? { model: source.modelPath } : {}),
+               ...(notice.subject !== undefined
+                  ? { subject: notice.subject }
+                  : {}),
+               message: source.message,
+               code: notice.code,
+               severity: "warn" as const,
+            },
+         ];
+      }
       const preaggregate = source.tier === "preaggregate";
       const rollup = preaggregate
          ? (refusedRollups[sourceID] ?? plan?.sources?.[sourceID]?.preaggregate)
          : undefined;
       const subject = preaggregate ? rollup?.baseSourceName : source.name;
-      const warning: ApiPackageWarning = preaggregate
-         ? {
-              message:
-                 // Worded as preaggregate-reads-given's, which a v1 rollup
-                 // carries under the same name.
-                 (rollup
-                    ? `#(preaggregate) rollup of source "${rollup.baseSourceName}" at ` +
-                      `(${rollup.grainDimensions.join(", ")})`
-                    : "A #(preaggregate) rollup") +
-                 ` is not built, so its measures are served live: ` +
-                 source.message,
-              code: PREAGGREGATE_NOT_BUILT_CODE,
-              severity: "warn",
-           }
-         : {
-              message: source.message,
-              code: materializePlans[sourceID]
-                 ? "materialize-not-built"
-                 : refusalCodeOf(sourceID, source.name),
-              severity: "warn",
-           };
+      const code = preaggregate
+         ? PREAGGREGATE_NOT_BUILT_CODE
+         : materializePlans[sourceID]
+           ? MATERIALIZE_NOT_BUILT_CODE
+           : refusalCodeOf(sourceID, source.name);
+      const warning: ApiPackageWarning = {
+         message: preaggregate
+            ? (rollup
+                 ? `#(preaggregate) rollup of source "${rollup.baseSourceName}" at ` +
+                   `(${rollup.grainDimensions.join(", ")})`
+                 : "A #(preaggregate) rollup") +
+              ` is not built, so its measures are served live: ` +
+              source.message
+            : source.message,
+         code,
+         severity: "warn",
+      };
       if (source.modelPath) warning.model = source.modelPath;
       if (subject) warning.subject = subject;
       // A refusal no earlier release raised (`storage_source_unsupported`)
       // never carried the former code, so it is not repeated.
-      return !preaggregate && source.reason !== "storage_source_unsupported"
+      return code === PERSIST_NOT_BUILT_CODE &&
+         source.reason !== "storage_source_unsupported"
          ? [warning, { ...warning, code: PERSIST_SOURCE_REFUSED_ALIAS_CODE }]
          : [warning];
    });
@@ -438,7 +441,7 @@ export function persistencePolicyWarnings(
  * REJECTION lines for invalid `#@ preaggregate` declarations, each with its
  * code, strict at publish AND load: an ignored declaration would show correct
  * numbers and no acceleration, with no one told. A valid declaration Publisher
- * cannot build ({@link PREAGG_WARN_ONLY}) only warns.
+ * cannot build is refused alone (`preaggregate-not-built`).
  */
 export function formatInvalidPreaggregatePolicy(models: Models): string {
    return [...models]
@@ -446,27 +449,6 @@ export function formatInvalidPreaggregatePolicy(models: Models): string {
          preaggregateGateLines(modelPath, model.preaggregateViolations()),
       )
       .join("\n");
-}
-
-/** The violations that only warn, surfaced at load: a valid rollup refused alone. */
-export function preaggregateAccessWarnings(
-   models: Models,
-): ApiPackageWarning[] {
-   const warnings: ApiPackageWarning[] = [];
-   for (const [modelPath, model] of models) {
-      for (const violation of model.preaggregateViolations()) {
-         const code = PREAGG_WARN_ONLY.get(violation.code);
-         if (code === undefined) continue;
-         warnings.push({
-            model: modelPath,
-            subject: violation.fieldName ?? violation.sourceName,
-            message: violation.message,
-            code,
-            severity: "warn",
-         });
-      }
-   }
-   return warnings;
 }
 
 /**

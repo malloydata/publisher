@@ -332,6 +332,11 @@ export function refuseCollidingMaterialize<
             `overwrite the other and one source would read the other's rows; ` +
             `give each source a distinct name=`;
          const model = compiled.tables[member.sourceID]?.modelPath ?? "";
+         const tier =
+            destination ===
+            compiled.tables[member.sourceID]?.source.connectionName
+               ? ("colocated" as const)
+               : ("storage" as const);
          // An author's names collide: invalid, unless the deployment opts
          // out (PERSIST_COLLISION_ENFORCE=false, applied where the package
          // loads), which refuses each source alone. A `#@ persist` partner is
@@ -345,6 +350,7 @@ export function refuseCollidingMaterialize<
                        sourceID: member.sourceID,
                        reason,
                        malformedCode: MATERIALIZATION_TABLE_COLLISION_CODE,
+                       refused: { reason: "table_name_collision", tier },
                     },
                     model,
                  )
@@ -355,6 +361,12 @@ export function refuseCollidingMaterialize<
                     message: `${collisionSubjectOf(member.sourceID, compiled.tables[member.sourceID].source.name)} is invalid: ${reason}.`,
                     subject: compiled.tables[member.sourceID].source.name,
                     model,
+                    refused: {
+                       sourceID: member.sourceID,
+                       name: compiled.tables[member.sourceID].source.name,
+                       reason: "table_name_collision",
+                       tier,
+                    },
                  },
          );
       }

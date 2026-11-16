@@ -3,7 +3,7 @@
 
 /**
  * A `#(preaggregate)` rollup whose build reads a given is left out of the
- * build plan with a `preaggregate-reads-given` warning: its table would hold
+ * build plan with a `preaggregate-not-built` warning (reason `reads_given`): its table would hold
  * one given value's rows, served to every caller. A rollup in the same model
  * that reads no given is still planned. Drives `Package.create` on the worker
  * path with PUBLISHER_MATERIALIZE on, as the package warnings specs do.
@@ -76,12 +76,17 @@ describe("#(preaggregate) rollups whose build reads a given", () => {
 
    it("leaves the rollup out with a warning", () => {
       const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "preaggregate-reads-given",
+         (w) => w.code === "preaggregate-not-built",
       );
       expect(warnings.map((w) => [w.model, w.subject])).toEqual([
          ["m.malloy", "scoped"],
       ]);
       expect(warnings[0].message).toContain("read a given");
+      expect(
+         Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
+            (r) => r.reason,
+         ),
+      ).toEqual(["reads_given"]);
       const planned = Object.values(pkg.getBuildPlan()?.sources ?? {}).map(
          (s) => s.name,
       );

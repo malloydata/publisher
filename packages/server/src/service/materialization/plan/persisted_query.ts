@@ -24,9 +24,15 @@ import {
    persistAnnotationFindings,
    routeOfNote,
    type PackageAnnotationFinding,
+   type RefusalKey,
 } from "../../annotation_reader";
 import { ownLevelNotes, type AnnotationNote } from "../../annotations";
-import { declares, readNotes, readNotesIfAny } from "./declaration";
+import {
+   declares,
+   placementOf,
+   readNotes,
+   readNotesIfAny,
+} from "./declaration";
 import { persistDeclarationProblems } from "./persist_annotation_validation";
 
 /** The package warning for a persisted query that is not built, or not served. */
@@ -203,6 +209,19 @@ export function persistQueryInvalidFindings(
    }));
 }
 
+/** The destination a persisted query's `storage=` names, when it names one. */
+export function persistQueryStorage(
+   query: Pick<DeclaredPersistQuery, "notes">,
+): string | undefined {
+   const tag = readNotesIfAny(query.notes, "@");
+   const placed = tag ? placementOf(tag, "persist") : undefined;
+   return placed &&
+      !("refused" in placed) &&
+      placed.placement.tier === "storage"
+      ? placed.placement.destination
+      : undefined;
+}
+
 /** The workaround a not-built persisted query's warning names. */
 function workaround(name: string): string {
    return (
@@ -214,11 +233,13 @@ function workaround(name: string): string {
 
 /**
  * A persisted query that is not built, as a package finding (unservable: the
- * query is answered live). `reason` says why; absent, the feature is off.
+ * query is answered live) carrying its refusal record. `reason` says why;
+ * absent, the feature is off.
  */
 export function persistQueryNotBuiltFinding(
    name: string,
    model: string,
+   refused: RefusalKey,
    reason?: string,
 ): PackageAnnotationFinding {
    return {
@@ -234,5 +255,6 @@ export function persistQueryNotBuiltFinding(
               `answered live: ${reason}. ${workaround(name)}`,
       subject: name,
       model,
+      refused,
    };
 }

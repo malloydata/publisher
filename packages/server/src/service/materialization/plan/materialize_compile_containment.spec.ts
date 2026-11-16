@@ -120,6 +120,7 @@ describe("an inline= join whose rows read a given", () => {
             {
                sourceName: "wide",
                sourceID: expect.stringMatching(/^wide@/),
+               refused: { reason: "given_in_persisted_query", tier: "storage" },
                reason:
                   "inline= names `r`, through which a given is read, so its " +
                   "stored columns would hold one caller's values; reference " +
@@ -241,6 +242,7 @@ source: three is duckdb.table('rg')
          {
             sourceName: "two",
             sourceID: expect.stringMatching(/^two@/),
+            refused: { reason: "generated_build_failed", tier: "storage" },
             reason: expect.stringMatching(
                /^its generated build did not compile, so it is not built \(a Publisher bug; please report it\): .*no_such_field/,
             ),

@@ -2120,7 +2120,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          // them. Only under PERSIST_COLLISION_ENFORCE=false: otherwise it
          // fails the load (formatInvalidAnnotations).
          ...this.mz.persistenceCollisionRefusals(),
-         ...this.preaggregateAccessWarnings(),
          // Legal but probably unintended, e.g. a typo'd merge_key=.
          ...this.mz.incrementalPolicyAdvisories(),
          ...materializationConfigWarnings({
@@ -2427,9 +2426,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    public annotationFindingWarnings(): ApiPackageWarning[] {
       return [
          ...this.mz.annotationFindingWarnings(),
-         // Not materialization-unreachable: it reports what the surface
-         // curates, not an annotation finding.
-         ...this.preaggregateAccessWarnings(),
+         ...this.mz.findingRefusalWarnings(),
          ...this.annotationNearMissWarnings(),
          // The incremental declaration's own advisory is about the annotation;
          // the shared-address one is about the SQL, so it is not counted.
@@ -2480,11 +2477,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    public async previewServeVerdicts(): Promise<ApiServeVerdict[]> {
       return this.mz.previewServeVerdicts();
-   }
-
-   /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */
-   public preaggregateAccessWarnings(): ApiPackageWarning[] {
-      return this.mz.preaggregateAccessWarnings();
    }
 
    /**

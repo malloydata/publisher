@@ -533,7 +533,7 @@ source: orders is duckdb.sql("""
          expect(pkg.materialization().getPreaggregateEntityIds().size).toBe(0);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).map((w) => w.code),
-         ).toContain("preaggregate-reads-given");
+         ).toContain("preaggregate-not-built");
          const model = pkg.getModel("model.malloy");
          const { compactResult } = await model!.runQuery(unrecordedAudit(), {
             query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
@@ -782,7 +782,7 @@ source: orders is duckdb.sql("""
          expect(planSources(pkg)).toHaveLength(0);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).map((w) => w.code),
-         ).toContain("preaggregate-access-filter");
+         ).toContain("preaggregate-not-built");
       },
       { timeout: 60000 },
    );

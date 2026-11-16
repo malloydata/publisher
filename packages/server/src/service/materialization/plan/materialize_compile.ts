@@ -10,6 +10,7 @@
  * against the author's edits.
  */
 
+import type { RefusedReason } from "../domain/types";
 import {
    hiddenAccess,
    modelDefIfAny,
@@ -359,6 +360,15 @@ async function withoutLeakedBuilds(
       refused.push({
          sourceName: plan.sourceName,
          sourceID: plan.sourceID,
+         refused: {
+            reason:
+               givenReadTerms(plan).length > 0
+                  ? "given_in_persisted_query"
+                  : leftOutWindowTerms(plan.readTimeTerms).length > 0
+                    ? "current_time"
+                    : "no_stored_columns",
+            tier: tierOf(plan),
+         },
          reason:
             givenReadTerms(plan).length > 0 ||
             leftOutWindowTerms(plan.readTimeTerms).length > 0
@@ -858,6 +868,7 @@ async function withBuildCopies(
             sourceName: copied.plan.sourceName,
             sourceID: copied.plan.sourceID,
             reason: copied.reason,
+            refused: { reason: copied.refusal, tier: tierOf(copied.plan) },
          });
          continue;
       }
@@ -916,7 +927,7 @@ async function copiedPlan(
    levels: ReadonlyMap<string, number>,
 ): Promise<
    | { plan: MaterializePlan; level: number }
-   | { plan: MaterializePlan; reason: string }
+   | { plan: MaterializePlan; reason: string; refusal: RefusedReason }
 > {
    const { modelFile, modelFileName, text } = ctx;
    const declaredIn = original.declaration
@@ -943,7 +954,7 @@ async function copiedPlan(
       givens,
       windowsOut,
    });
-   if (reason) return { plan, reason };
+   if (reason) return { plan, ...reason };
    const leftOut = given || windowsOut.length > 0;
    const parent = plan.buildsOver
       ? kept.get(plan.buildsOver.sourceID)
@@ -986,7 +997,9 @@ async function copiedPlan(
       if (!leftOut && !liftAccess) return { plan, level: 0 };
       copy = buildCopyText(text as string, plan, undefined, { liftAccess });
    }
-   if ("reason" in copy) return { plan, reason: copy.reason };
+   if ("reason" in copy) {
+      return { plan, reason: copy.reason, refusal: "generated_build_failed" };
+   }
    const chain = chainOf(plan);
    const located = plan;
    ctx.copies.set(plan.sourceID, {
@@ -1074,6 +1087,11 @@ async function liftedColumnsOf(
  * outside local files, a term the build cannot leave out of another file, or
  * a model file that could not be read.
  */
+/** Where a planned source builds its table. */
+function tierOf(plan: MaterializePlan): "colocated" | "storage" {
+   return plan.persist.storage !== undefined ? "storage" : "colocated";
+}
+
 function copyRefusal(
    plan: MaterializePlan,
    ctx: Pick<CopyContext, "modelFile" | "text" | "unreadable">,
@@ -1083,36 +1101,48 @@ function copyRefusal(
       givens: { file: string | undefined }[];
       windowsOut: ReturnType<typeof leftOutWindowTerms>;
    },
-): string | undefined {
+): { reason: string; refusal: RefusedReason } | undefined {
    const { modelFile, text, unreadable } = ctx;
    const { declaredIn, given, givens, windowsOut } = facts;
    if (plan.columns.length === 0) {
-      return "the source has no dimension the build can store";
+      return {
+         reason: "the source has no dimension the build can store",
+         refusal: "no_stored_columns",
+      };
    }
    const stored = new Set(plan.columns.map((c) => c.column));
    const unstored = (plan.readTimeTerms ?? []).find(
       (t) => !t.columns.every((c) => stored.has(c)),
    );
    if (unstored) {
-      return (
-         `\`where: ${unstored.code}\` reads a field the build cannot ` +
-         "select (one private on a source this one extends, or hidden " +
-         "where the build copy cannot lift it), so it could not be " +
-         "re-applied over the table at read"
-      );
+      return {
+         reason:
+            `\`where: ${unstored.code}\` reads a field the build cannot ` +
+            "select (one private on a source this one extends, or hidden " +
+            "where the build copy cannot lift it), so it could not be " +
+            "re-applied over the table at read",
+         refusal:
+            unstored.kind === "given"
+               ? "given_in_persisted_query"
+               : "current_time",
+      };
    }
    if (given && (declaredIn !== modelFile || givens.some((g) => !g.file))) {
-      return (
-         "a `where:` reading a given can only be left out of the build " +
-         "for a source declared in a local model file, reading givens " +
-         "declared in local files"
-      );
+      return {
+         reason:
+            "a `where:` reading a given can only be left out of the build " +
+            "for a source declared in a local model file, reading givens " +
+            "declared in local files",
+         refusal: "given_in_persisted_query",
+      };
    }
    if (given && text === undefined) {
-      return (
-         "the model file could not be read to leave its given-reading " +
-         `\`where:\` out of the build: ${unreadable}`
-      );
+      return {
+         reason:
+            "the model file could not be read to leave its given-reading " +
+            `\`where:\` out of the build: ${unreadable}`,
+         refusal: "given_in_persisted_query",
+      };
    }
    // An upper-bound current-time term (option A): taken out of the copy
    // wherever this file writes it, the source's own or a base's.
@@ -1120,18 +1150,22 @@ function copyRefusal(
       t.at.some((use) => localPath(use.url) !== modelFile),
    );
    if (elsewhere) {
-      return (
-         `\`where: ${elsewhere.code}\` keeps rows older than a moving ` +
-         "cut-off and is written in another file than this source's " +
-         "model, so the build cannot leave it out. Write it in this " +
-         "file, or materialize the source in the file that writes it"
-      );
+      return {
+         reason:
+            `\`where: ${elsewhere.code}\` keeps rows older than a moving ` +
+            "cut-off and is written in another file than this source's " +
+            "model, so the build cannot leave it out. Write it in this " +
+            "file, or materialize the source in the file that writes it",
+         refusal: "current_time",
+      };
    }
    if (windowsOut.length > 0 && text === undefined) {
-      return (
-         "the model file could not be read to leave its `where:` keeping " +
-         `rows older than a moving cut-off out of the build: ${unreadable}`
-      );
+      return {
+         reason:
+            "the model file could not be read to leave its `where:` keeping " +
+            `rows older than a moving cut-off out of the build: ${unreadable}`,
+         refusal: "current_time",
+      };
    }
    return undefined;
 }
@@ -1415,6 +1449,7 @@ function nextRound(
       ctx.refuse({
          sourceName: plan.sourceName,
          sourceID: plan.sourceID,
+         refused: { reason: "generated_build_failed", tier: tierOf(plan) },
          reason:
             "its generated build did not compile, so it is not built " +
             `(a Publisher bug; please report it): ${firstProblem(error)}`,

@@ -198,8 +198,13 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
          expect(rollups(pkg)).toEqual([]);
          const warning = pkg
             .annotationFindingWarnings()
-            .find((w) => w.code === "preaggregate-join-level");
+            .find((w) => w.code === "preaggregate-not-built");
          expect(warning?.severity).toBe("warn");
+         expect(
+            Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
+               (r) => r.reason,
+            ),
+         ).toEqual(["join_level"]);
          expect(formatPublishRejections(pkg)).toBeUndefined();
       },
       { timeout: 60000 },

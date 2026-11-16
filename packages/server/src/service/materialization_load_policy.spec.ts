@@ -460,7 +460,7 @@ source: orders is ${ROWS} extend {
 }
 `);
             const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-               (w) => w.code === "preaggregate-join-level",
+               (w) => w.code === "preaggregate-not-built",
             );
             expect(warnings.map((w) => [w.subject, w.severity])).toEqual([
                ["orders", "warn"],

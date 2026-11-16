@@ -92,10 +92,13 @@ import {
 } from "../../governance/ir/declared_notes";
 import {
    PREAGGREGATE_INVALID_CODE,
+   PREAGGREGATE_NOT_BUILT_CODE,
    PREAGGREGATE_ROUTE_KEYS,
    routeOfNote,
    type PackageAnnotationFinding,
+   type RefusalKey,
 } from "../../annotation_reader";
+import type { RefusedReason } from "../domain/types";
 import {
    destinationOf,
    placementOf,
@@ -136,7 +139,7 @@ import {
    type RollupMeasure,
    type RollupVariantPlan,
 } from "../domain/table_plans";
-import { rollupBaseAlias } from "../text/read_text";
+import { rollupBaseAlias, rollupCompanionURLOf } from "../text/read_text";
 
 export type { ParentKeyCheck, RollupKeyCheck };
 import type { SourceMap, SourceNode } from "../text/source_map";
@@ -236,6 +239,30 @@ export interface RollupRefusal {
    /** The base source's name in the planning model. */
    sourceName: string;
    measure?: string;
+   /** A valid declaration's refusal record (`refusedSources`). */
+   refused?: RefusalKey;
+}
+
+/**
+ * The refusal record of a rollup declaration refused before its rollup is
+ * planned: keyed by the measure's path on its base (the base alone for a
+ * refusal of every rollup on it) in the base file's rollup companion, where
+ * no author source is declared.
+ */
+export function measureRefusalKey(
+   baseSourceID: string,
+   baseName: string,
+   measure: string | undefined,
+   reason: RefusedReason,
+): RefusalKey {
+   const url = splitSourceID(baseSourceID)?.url ?? "";
+   const name = measure !== undefined ? `${baseName}.${measure}` : baseName;
+   return {
+      sourceID: `${name}@${rollupCompanionURLOf(url)?.href ?? url}`,
+      name,
+      tier: "preaggregate",
+      reason,
+   };
 }
 
 interface FieldLike {
@@ -741,7 +768,11 @@ interface RollupFacts {
    scope: Parameters<typeof decomposeMeasure>[1];
    /** The joins a field path reads, or undefined when unknown. */
    joinsRead(path: readonly string[]): string[] | undefined;
-   unservable(code: string, measure: string, why: string): RollupRefusal;
+   unservable(
+      reason: RefusedReason,
+      measure: string,
+      why: string,
+   ): RollupRefusal;
 }
 
 function rollupFactsOf(
@@ -816,15 +847,16 @@ function rollupFactsOf(
       return [...usage.joins];
    };
    const unservable = (
-      code: string,
+      reason: RefusedReason,
       measure: string,
       why: string,
    ): RollupRefusal => ({
       tier: "unservable",
-      code,
+      code: PREAGGREGATE_NOT_BUILT_CODE,
       message: `#(preaggregate) on measure "${measure}" of source "${sourceName}" is not built, so the measure is served live: ${why}.`,
       sourceName,
       measure,
+      refused: measureRefusalKey(node.sourceID, declaredName, measure, reason),
    });
 
    return {
@@ -862,7 +894,7 @@ function declarationRefusal(
       // v1's validation warns for its own line (preaggregate-hidden-field).
       if (decl.v1) return "skip";
       return unservable(
-         "preaggregate-hidden-field",
+         "hidden_field",
          decl.measure,
          "the measure is not public, and a rollup would publish it",
       );
@@ -902,7 +934,7 @@ function declarationRefusal(
              )[0];
    if (timeRead) {
       return unservable(
-         "preaggregate-current-time",
+         "current_time",
          decl.measure,
          `${timeRead}, which a rollup would fix at build time while a live query reads it again at every read`,
       );
@@ -913,7 +945,7 @@ function declarationRefusal(
             ? "no source in the same zone joins it"
             : `no source in the same zone that joins it is stored in \`${decl.storage}\`, the only place a join reads a rollup there from`;
       return unservable(
-         "preaggregate-time-zone",
+         "time_zone",
          decl.measure,
          `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (${noJoin}), so its table would cost a build no query reads`,
       );
@@ -932,7 +964,7 @@ function declarationRefusal(
    if (hiddenGrain) {
       if (decl.v1) return "skip";
       return unservable(
-         "preaggregate-hidden-field",
+         "hidden_field",
          decl.measure,
          `its grain dimension \`${hiddenGrain}\` is not public, and a rollup would publish it`,
       );
@@ -942,7 +974,7 @@ function declarationRefusal(
    // reads.
    if (gate.declared && !(ctx.readUnderGates ?? rollupsServeGatedBases(decl))) {
       return unservable(
-         "preaggregate-access-filter",
+         "access_filter",
          decl.measure,
          decl.storage !== undefined && gateSwitches().gatedSources
             ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
@@ -953,7 +985,7 @@ function declarationRefusal(
    // rollup is not built (A4, fail closed).
    if (gate.declared && gate.joinGated) {
       return unservable(
-         "preaggregate-access-filter",
+         "access_filter",
          decl.measure,
          "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
       );
@@ -967,7 +999,7 @@ function declarationRefusal(
    ];
    if (ungated.length > 0) {
       return unservable(
-         "preaggregate-access-filter",
+         "access_filter",
          decl.measure,
          // malloy-text: a warning message for a person, not Malloy
          `the source's access filter reads ${ungated.map((g) => `\`${g}\``).join(", ")}, which the grain does not keep, so the rollup's rows could not be filtered per caller`,
@@ -997,7 +1029,7 @@ function rollupMeasureOf(
               measure: decl.measure,
            }
          : unservable(
-              "preaggregate-unreadable-measure",
+              "unreadable_measure",
               decl.measure,
               `its definition is outside what #(preaggregate) reads (${d.detail})`,
            );
@@ -1047,7 +1079,7 @@ function rollupMeasureOf(
       if (joinProblem) break;
    }
    if (joinProblem) {
-      return unservable("preaggregate-join-level", decl.measure, joinProblem);
+      return unservable("join_level", decl.measure, joinProblem);
    }
    const columns =
       d.leaves.length === 1
@@ -1056,7 +1088,7 @@ function rollupMeasureOf(
    const clash = columns.find((c) => byName.has(c));
    if (clash) {
       return unservable(
-         "preaggregate-name-clash",
+         "name_clash",
          decl.measure,
          `the source already has a field named \`${clash}\`, the column its partial is stored as`,
       );
@@ -1284,6 +1316,7 @@ export function rollupRefusalFinding(
          ? `${refusal.sourceName}.${refusal.measure}`
          : refusal.sourceName,
       model,
+      ...(refusal.refused ? { refused: refusal.refused } : {}),
    };
 }
 
