@@ -16,7 +16,7 @@
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
 import { type ModelDef } from "@malloydata/malloy";
 import { compiledTextReader } from "../../../utils";
-import { v1StoredColumns } from "./served_copy_serve";
+import { materializedReadPlan, v1StoredColumns } from "./served_copy_serve";
 import { type Binding, bindingServesModelSource } from "../domain/binding";
 import {
    authorModelLiftContext,
@@ -78,15 +78,21 @@ export function modelStorageTables(
    const stored = bindings.filter(
       (b) => b.kind === "persist" && b.tier === "storage",
    );
-   if (stored.length === 0) {
+   // A `#(materialize)` `storage=` table's types are checked, and warned
+   // about, as a `#@ persist` one's are; it is not one of `kept`.
+   const materialized = bindings.filter(
+      (b) => b.kind === "materialize" && b.tier === "storage",
+   );
+   if (stored.length === 0 && materialized.length === 0) {
       return { kept: [], shadowed: [], mismatches: [], findings: [] };
    }
    const { contents } = authorModelLift(modelDef, packageRoot);
    const { kept, shadowed } = ownBindingsIn(stored, contents);
+   const checked = [...kept, ...ownBindingsIn(materialized, contents).kept];
    const mismatches: SourceTypeMismatches[] = [];
    const findings: BindingTypeFinding[] = [];
    try {
-      for (const binding of kept) {
+      for (const binding of checked) {
          const plan = typePlanFor(binding, contents);
          if (plan.mismatches.length === 0) continue;
          findings.push({ binding, ...plan });
@@ -167,7 +173,8 @@ function authorModelLift(
 
 /**
  * A binding's stored columns against the source's declared types, hidden
- * ones included, as the served copy binds them: which columns read through a
+ * ones included, as the served copy binds them (a `#(materialize)` table's
+ * through {@link materializedReadPlan}): which columns read through a
  * cast, and which no cast makes faithful.
  */
 function typePlanFor(
@@ -175,11 +182,15 @@ function typePlanFor(
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>,
 ): Omit<BindingTypeFinding, "binding"> {
    const def = contents?.[binding.sourceName];
-   const plan = storedColumnReadPlan(
-      v1StoredColumns(binding.schema, def?.fields),
-      declaredColumnsOf(def?.fields),
-      { queryTimezone: queryTimezoneOf(def) },
-   );
+   // The read the served copy's `#(materialize)` re-root applies.
+   const plan =
+      binding.kind === "materialize"
+         ? materializedReadPlan(binding.schema, def)
+         : storedColumnReadPlan(
+              v1StoredColumns(binding.schema, def?.fields),
+              declaredColumnsOf(def?.fields),
+              { queryTimezone: queryTimezoneOf(def) },
+           );
    return {
       casts: plan.casts,
       unservable: plan.leftOut,

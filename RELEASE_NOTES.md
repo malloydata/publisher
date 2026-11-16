@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a `#(materialize)` `storage=` table whose column type drifted is cast or left out, never read with its stored type
+
+A `#(materialize)` table in a `storage=` destination was read with each column's stored type, whatever type live gives its field. When a stored column's type differed from live's, because the upstream column's type changed while the table's content address did not or because the table was altered out of band, the served copy answered from it with the wrong values and reported the answer as served from storage. A number stored as `VARCHAR` was compared as text, so `amt.max()` answered `"9.0"` where live answers `10`. Now each such column is handled as a `#@ persist` `storage=` table's and a persisted result's already are:
+
+- **Read through a faithful cast** where one gives exactly live's values: an integer flag stored for a `boolean`, a timestamp stored for a `date`.
+- **Otherwise left out**, so a query that reads the column, directly or through a measure, answers live and every other query is still served from the table. A source whose own measure or view reads a left-out column is not served from its table at all, and answers live.
+- **A drifted column of an inlined `join_one` or a pair table** has no cast inside its record, so its source answers live.
+
+**Who was affected:** packages with `PUBLISHER_MATERIALIZE` on and a `#(materialize) storage=` table whose stored column types no longer match the model's. A table built from the current model and left untouched holds live's types and was never affected. **How to tell:** the package now raises a `storage-column-type-mismatch` warning naming each such column and whether it is cast or answered live, and `publisher_storage_column_type_mismatch_total{stage="serve"}` counts it, as for a `#@ persist` table. Rebuilding the table stores live's types and clears the warning. A colocated `#(materialize)` table is bound with the columns its plan declares rather than the types its table holds, so a drift there is not detected by this change.
+
 ## [Unreleased] — every answer from a materialized table reports its tier: `servedFrom: "database"` and `path.servedBy.tier`
 
 A query answered from a table in the source's own database (the colocated tier) now reports `servedFrom: "database"`, where it reported `null` before. This covers a colocated `#@ persist` table Malloy substituted, a colocated `#(materialize)` table the served copy read, and a colocated rollup or persisted view. `storage` and `live_fallback` are unchanged, and `null` now means only that no materialized table answered. The path report's `servedBy` gains `tier` (`database` or `storage`) whenever a table answered, the same tier `servedFrom` names. The access record's `servedFrom`, the workload log's `served_from` and the `malloy.model.query.served_from` attribute on `malloy_model_query_duration` carry the new value too.

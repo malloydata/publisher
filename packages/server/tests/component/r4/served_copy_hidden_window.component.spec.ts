@@ -184,8 +184,9 @@ describe("R4: a rolling window over a hidden dimension, served at a pinned clock
          materialize: true,
          clock: B,
       });
-      // A stand-in for a re-root bug: `broken`'s stored `amount` read back
-      // as a string, which its own `amount.sum()` cannot compile over.
+      // `broken`'s stored `amount` retyped to text: no cast reads it as
+      // live's number, so it is left out, and its own `amount.sum()` then
+      // cannot compile, which leaves the source to its fallback.
       // (`amount` is a 32-bit INTEGER in the seed: a BIGINT one would be a
       // big integer, which a text column is left out for per query instead,
       // known limitation 12.)
@@ -209,12 +210,12 @@ describe("R4: a rolling window over a hidden dimension, served at a pinned clock
       // `joiner` joins `w_private` from the origin connection, which a
       // stored `w_private` takes across connections: left out, as always.
       expect(problems.map((p) => [p.sourceName, p.reason])).toEqual([
-         ["broken", "reroot_not_compiled"],
+         ["broken", "column_types"],
          ["joiner", "cross_connection_join"],
       ]);
    });
 
-   it("answers the source whose re-root does not compile live, equal to live", async () => {
+   it("answers the source whose re-root is left out live, equal to live", async () => {
       const run = await fixture.run({
          name: "broken",
          malloy: "run: broken -> { group_by: org; aggregate: n, total }",

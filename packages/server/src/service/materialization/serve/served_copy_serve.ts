@@ -73,6 +73,7 @@ import {
    declaredColumnsOf,
    liveKeepsBigIntegers,
    storedColumnReadPlan,
+   storedTypeServesAs,
 } from "../stored_column_types";
 import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
 import {
@@ -2896,10 +2897,37 @@ function materializedColumnsOf(
    );
    const columns: ServedColumn[] = [];
    const columnsLeftOut: string[] = [];
+   // A stored column whose type is not live's (the upstream column's type
+   // changed under the same content address, or the table was altered): read
+   // through a faithful cast, else left out so only a query reading it
+   // answers live, as a v1 table's is (v1ColumnsOf). Never declared as the
+   // stored type, which would answer a number as text.
+   const typePlan = materializedReadPlan(
+      plan.columns.flatMap((c) => {
+         const type = stored.get(c.column);
+         return c.join === undefined &&
+            c.column === c.dimension &&
+            type !== undefined
+            ? [{ name: c.column, type }]
+            : [];
+      }),
+      def,
+   );
+   const castTo = new Map(
+      typePlan.casts.map((c) => [
+         c.column,
+         c.castTo === "BOOLEAN" ? ("boolean" as const) : ("date" as const),
+      ]),
+   );
+   const leftOut = new Set(typePlan.leftOut.map((m) => m.column));
    for (const c of plan.columns) {
       // An inlined join's columns are read under the join's name
       // (inlinedJoinsOf, below), not as fields of the source.
       if (c.join !== undefined) continue;
+      if (leftOut.has(c.column)) {
+         columnsLeftOut.push(c.column);
+         continue;
+      }
       const type = stored.get(c.column);
       // A column live types as warehouse-native (a UUID) has no stored
       // spelling, so a colocated table's captured columns leave it out: it is
@@ -2927,12 +2955,14 @@ function materializedColumnsOf(
          fieldsByName.get(c.dimension),
          lineage.get(c.dimension),
       );
+      const cast = castTo.get(c.column);
       columns.push({
          name: c.column,
          type,
          ...(notes.length > 0 ? { notes } : {}),
          ...timeframeOf(c.dimension),
          ...(c.access ? { access: c.access } : {}),
+         ...(cast ? { castTo: cast } : {}),
          // A zoned timestamp whose field live types `timestamptz` is
          // declared as one, as a v1 table's is.
          ...((fieldsByName.get(c.dimension) as { type?: unknown })?.type ===
@@ -2998,6 +3028,52 @@ function materializedColumnsOf(
       }),
    }));
    return { columns, columnsLeftOut, inlinedJoins };
+}
+
+/**
+ * How a `#(materialize)` table's own stored columns read as the types live
+ * gives their fields ({@link storedColumnReadPlan}): each stored column named
+ * for a scalar field of the author's source, against that field's type. The
+ * served copy's re-root ({@link materializedColumnsOf}) and the model's
+ * `storage-column-type-mismatch` warning both read it, so they agree.
+ */
+export function materializedReadPlan(
+   schema: readonly { name: string; type: string }[],
+   def: { fields?: unknown[] } | undefined,
+): ReturnType<typeof storedColumnReadPlan> {
+   const live = new Map<string, string>();
+   for (const f of (def?.fields ?? []) as {
+      name?: unknown;
+      as?: unknown;
+      type?: unknown;
+      join?: unknown;
+      expressionType?: unknown;
+   }[]) {
+      const name = f.as ?? f.name;
+      if (
+         typeof name !== "string" ||
+         typeof f.type !== "string" ||
+         f.join !== undefined ||
+         (f.expressionType !== undefined && f.expressionType !== "scalar")
+      ) {
+         continue;
+      }
+      live.set(name, f.type);
+   }
+   const own = schema.filter((c) => live.has(c.name));
+   return storedColumnReadPlan(
+      own,
+      own.map((c) => ({ name: c.name, type: live.get(c.name) as string })),
+      { queryTimezone: queryTimezoneOf(def) },
+   );
+}
+
+/** Whether a stored column of `storedType` does not serve as `field`'s live type. */
+function driftsFromLive(storedType: string, field: unknown): boolean {
+   const type = (field as { type?: unknown } | undefined)?.type;
+   return (
+      typeof type === "string" && storedTypeServesAs(storedType, type) === false
+   );
 }
 
 /**
@@ -3891,7 +3967,12 @@ function pairRecordsOf(
          const big = bigRead(field, { name: c.column, type });
          // So does one live types as a warehouse-native type, which no
          // stored declaration reads back as.
-         if ((big && !big.castTo) || liveTypesAsNative(field)) {
+         // So does one stored as another type than live's.
+         if (
+            (big && !big.castTo) ||
+            liveTypesAsNative(field) ||
+            driftsFromLive(type, field)
+         ) {
             missing = true;
             continue;
          }
@@ -4280,6 +4361,9 @@ function inlinedJoinsOf(
          const type = stored.get(c.column);
          if (type === undefined) return undefined;
          const field = joinedFields.get(c.dimension);
+         // A record field has no cast to read it as live's type, so a
+         // drifted one leaves the source to its fallback.
+         if (driftsFromLive(type, field)) return undefined;
          const timeframe = field?.timeframe;
          const { notes, annotated } = joinedColumnNotes(
             field,
