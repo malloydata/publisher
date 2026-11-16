@@ -434,11 +434,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
    /**
-    * `manifestLocation` as the last load or reload read it from
-    * publisher.json, which a reload writes over the stored one.
-    */
-   private manifestLocationOnDisk: string | null = null;
-   /**
     * What the models were last compiled against (by {@link reloadAllModels},
     * or by a load given its manifest), so a rebind can skip the compile.
     * `compiledFor` is the part of the entries a compile reads
@@ -1561,8 +1556,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          pkg.renderTagWarnings =
             pkg.surfacedRenderTagWarnings(renderTagWarnings);
          pkg.adoptOutcomeMetadata(outcome);
-         pkg.manifestLocationOnDisk =
-            outcome.packageMetadata.manifestLocation ?? null;
          // Before the gates judge it: a version names its tables per version.
          if (versionId !== undefined) {
             pkg.updateStoredMetadata({ versionId });
@@ -2868,10 +2861,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             // reload it stands in for would have.
             ...(last.bound === undefined ? { models: "installed" } : {}),
          });
-         // The reload this stands in for re-read `manifestLocation` from
-         // publisher.json, replacing a registry row's path; so does this, to
-         // serve what a reload served (`boundManifestOf`, the local store).
-         this.packageMetadata.manifestLocation = this.manifestLocationOnDisk;
          this.reloadedFor = this.reloadKey(compiledFor, requested, {
             from: requested,
             quoted,
@@ -2936,9 +2925,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.noteSurfaceChangeFrom(previousSurface);
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;
-      this.manifestLocationOnDisk =
-         outcome.packageMetadata.manifestLocation ?? null;
-      this.packageMetadata.manifestLocation = this.manifestLocationOnDisk;
+      // A version's binding is serving state on its registry row, which a
+      // reload keeps; its publisher.json is immutable content. Only a package
+      // with no versions keeps its `manifestLocation` in publisher.json.
+      if (this.getVersionId() === undefined) {
+         this.packageMetadata.manifestLocation =
+            outcome.packageMetadata.manifestLocation ?? null;
+      }
       this.applyDiscoveryPolicyToModels();
       this.applySiblingModelResolverToModels();
       // Applies the query boundary too, against the refreshed explore set.
