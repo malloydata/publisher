@@ -27,6 +27,7 @@ import {
 import { BuildInstruction } from "../domain/types";
 import { isActiveRun } from "./materialization_run_support";
 import { KeyedLock } from "./keyed_lock";
+import { assertNoOwnedNameHeld } from "./table_ownership";
 
 /**
  * Which tables an active run of a package writes, so two runs never write one
@@ -50,6 +51,7 @@ export class TableClaims {
       packageName: string,
       fn: () => Promise<T>,
    ): Promise<T> {
+      assertNoOwnedNameHeld("table");
       return this.tableLock.withLock(`${environmentId}|${packageName}`, fn);
    }
 
