@@ -90,6 +90,7 @@ import type { RunManifestLoad } from "./materialization/domain/types";
 import { ApiConnection } from "./model";
 import { destinationOverlaps } from "./destination_overlap";
 import { Package } from "./package";
+import { canonicalJson } from "./package_revision";
 import { applyLoadGates } from "./package_load_gates";
 import { resolvePatchedSettings } from "./package_patch";
 import { environmentResource, packageResource } from "../api_resource";
@@ -346,6 +347,21 @@ export type PackageListingOptions = {
    includeLoading?: boolean;
    operational?: boolean;
 };
+
+/**
+ * What a version binds from a set of entries, in one form whoever bound it:
+ * the colocated entries its models compile and bind over, and the `storage=`
+ * entries as {@link splitManifestEntries} gives them, keys sorted at every
+ * depth. A read of the store and a run's own load compare equal exactly when
+ * they bind the same, whatever key order the store (a jsonb column, say)
+ * gives back.
+ */
+function storeBindingSignature(
+   colocated: FreshnessManifest,
+   storage: Record<string, ManifestEntry>,
+): string {
+   return canonicalJson({ colocated, storage });
+}
 
 /**
  * At most this many build plans re-derive at once after a connection edit:
@@ -2214,15 +2230,18 @@ export class Environment {
             packageName,
             servingReaderOf(pkg),
          );
-         if (pkg.getVersionId() !== undefined) {
-            this.storeBindingReads.set(pkg, JSON.stringify(rawEntries));
-         }
-         if (Object.keys(rawEntries).length === 0) return;
          const { tableNameManifest, storageEntries } = splitManifestEntries(
             rawEntries,
             `local store (package ${packageName})`,
             "store",
          );
+         if (pkg.getVersionId() !== undefined) {
+            this.storeBindingReads.set(
+               pkg,
+               storeBindingSignature(tableNameManifest, storageEntries),
+            );
+         }
+         if (Object.keys(rawEntries).length === 0) return;
          if (Object.keys(tableNameManifest).length > 0) {
             pkg.bindColocatedServeManifest(tableNameManifest);
          }
@@ -3045,13 +3064,6 @@ export class Environment {
                      }
                      try {
                         const entries = await read(servingReaderOf(pkg));
-                        const signature = JSON.stringify(entries);
-                        if (
-                           options.onlyIfMoved &&
-                           this.storeBindingReads.get(pkg) === signature
-                        ) {
-                           return "done";
-                        }
                         const { tableNameManifest, storageEntries } =
                            splitManifestEntries(
                               entries,
@@ -3060,6 +3072,16 @@ export class Environment {
                               // newest run stands behind (withRollupKeyRecords).
                               "store",
                            );
+                        const signature = storeBindingSignature(
+                           tableNameManifest,
+                           storageEntries,
+                        );
+                        if (
+                           options.onlyIfMoved &&
+                           this.storeBindingReads.get(pkg) === signature
+                        ) {
+                           return "done";
+                        }
                         if (
                            Object.keys(tableNameManifest).length > 0 ||
                            pkg.hasBoundTableNameManifest()
@@ -4013,6 +4035,24 @@ export class Environment {
             }
          } catch (err) {
             return { loaded: false, step: "bind", error: errMessage(err) };
+         }
+         if (versionId !== undefined && !pkg.getManifestLocation()) {
+            // What the version now binds is the run's, which the store reads
+            // back once `commit` makes it MANIFEST_FILE_READY: so the run's
+            // rebind of its own version (rebindOwnVersionIfMoved) finds it
+            // unmoved and binds nothing again, while a store another process
+            // moved since still differs.
+            this.storeBindingReads.set(
+               pkg,
+               storeBindingSignature(
+                  params.colocated,
+                  splitManifestEntries(
+                     params.storage,
+                     `run (package ${packageName} version ${versionId})`,
+                     "store",
+                  ).storageEntries,
+               ),
+            );
          }
          return { loaded: true };
       };
