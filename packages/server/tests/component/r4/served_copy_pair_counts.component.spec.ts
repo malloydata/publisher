@@ -38,6 +38,7 @@ import {
    rowDifference,
    type R4Fixture,
    type R4Scenario,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
@@ -394,9 +395,7 @@ for (const tier of tiers) {
          return (path?.considered ?? []).map((c) => c.reason);
       };
 
-      it("compiles the served copy with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       it("counts a childless parent as none, as live does", async () => {
          const run = await equalToLive(

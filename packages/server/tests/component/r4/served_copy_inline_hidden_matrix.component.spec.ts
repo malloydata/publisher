@@ -32,6 +32,7 @@ import {
    rowDifference,
    type R4Fixture,
    type Row,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const seedSql = [
@@ -225,9 +226,7 @@ source: wide is duckdb.table('flights') include { private: secret; internal: ts;
       expect(rowDifference(live ?? [], served?.rows ?? [])).toBeUndefined();
    }
 
-   it("re-roots the pair source, with no problem", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const refused: [string, string][] = [
       ["select", "run: wide -> { select: secret }"],

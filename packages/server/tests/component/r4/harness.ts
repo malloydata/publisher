@@ -18,7 +18,7 @@
  */
 
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
-import { expect } from "bun:test";
+import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import {
@@ -1444,4 +1444,17 @@ export function expectPairServedVia(
    expect(run.servedVia).toBe(
       servedHere && !countsThroughPath ? "served_copy" : undefined,
    );
+}
+
+/**
+ * One test: the served copy over `fixture()` compiled and re-rooted every
+ * source, so it reports no problem. A thunk, since the fixture is built in a
+ * `beforeAll` after the test is declared.
+ */
+export function itLeavesNoServedCopyProblem(
+   fixture: () => Pick<R4Fixture, "servedCopyProblems">,
+): void {
+   it("leaves no problem on the served copy", async () => {
+      expect(await fixture().servedCopyProblems()).toEqual([]);
+   });
 }

@@ -45,6 +45,7 @@ import {
    type R4Fixture,
    type Row,
    expectPairServedVia,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 /** Measures that count through the inlined path (see {@link expectPairServedVia}). */
@@ -177,9 +178,7 @@ describe("R4: a path of join_manys and more than one join_many, served flat from
       await disposeScenarios();
    });
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    it("stores one row per row of live's three-way LEFT JOIN, with one flag per level above the leaf", async () => {
       const rows = await fixture.storedSQL(
@@ -1100,9 +1099,7 @@ describe("R4: row-level gates on multi-join and multi-hop pair sources", () => {
       await disposeScenarios();
    });
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const cases = [
       [
@@ -1413,9 +1410,7 @@ describe("R4: a join_many reached through a join_one, beside a pair table", () =
       await disposeScenarios();
    });
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const cases = [
       [

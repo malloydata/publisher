@@ -17,6 +17,7 @@ import {
    disposeScenarios,
    rowDifference,
    type R4Fixture,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const seedSql = [
@@ -251,9 +252,7 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
       ).rejects.toThrow();
    });
 
-   it("leaves no served-copy problem", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    it("restores the timeframe of a #@ persist query's output column", async () => {
       const run = await persisted.run({

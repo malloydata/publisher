@@ -31,6 +31,7 @@ import {
    type R4Scenario,
    type Row,
    expectPairServedVia,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 /** Measures that count through the inlined path (see {@link expectPairServedVia}). */
@@ -288,9 +289,7 @@ for (const tier of tiers) {
          );
       });
 
-      it("compiles the served copy with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       for (const query of QUERIES) {
          it(query.name, async () => {

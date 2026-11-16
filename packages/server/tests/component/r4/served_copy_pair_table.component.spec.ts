@@ -40,6 +40,7 @@ import {
    type R4Fixture,
    type Row,
    expectPairServedVia,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 /**
@@ -400,9 +401,7 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
       });
    }
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    it("answers a refused inline= (no primary key) live", async () => {
       expect(fixture.bindings.map((b) => b.sourceName).sort()).toEqual([
@@ -706,9 +705,7 @@ describe("R4: an inherited, render-tagged or inferred-class joined field", () =>
       await disposeScenarios();
    });
 
-   it("loads the served copy with no problems", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const live = [
       [
@@ -926,9 +923,7 @@ describe("R4: a row-level gate on a pair source", () => {
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    // A gate through a join_many the pair table does not inline joins every
    // pair row to each of its parent's matching rows: child aggregates over
@@ -1087,9 +1082,7 @@ describe("R4: a one-hop pair table beside a join_one whose source joins many", (
       await disposeScenarios();
    });
 
-   it("leaves no problem on the served copy", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const cases = [
       [

@@ -44,6 +44,7 @@ import {
    rowDifference,
    type R4Fixture,
    type Row,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const seedSql = [
@@ -483,9 +484,7 @@ const scenarios: HiddenScenario[] = [
       refused: p3Refused,
       answered: p3Answered,
       before: (get) => {
-         it("re-roots both sources, with no problem", async () => {
-            expect(await get().servedCopyProblems()).toEqual([]);
-         });
+         itLeavesNoServedCopyProblem(get);
 
          it("keeps hidden measures and views hidden on the served source", async () => {
             const def = (await get().servedCopy().compiledModelDef()) as {

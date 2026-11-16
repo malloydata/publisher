@@ -29,6 +29,7 @@ import {
    disposeScenarios,
    rowDifference,
    type R4Fixture,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const seedSql = [
@@ -232,9 +233,7 @@ describe("R4: extension tables answer equal to live", () => {
       ["storage=", () => storage],
    ] as const) {
       describe(label, () => {
-         it("leaves no served-copy problem", async () => {
-            expect(await fixture().servedCopyProblems()).toEqual([]);
-         });
+         itLeavesNoServedCopyProblem(fixture);
 
          for (const [name, malloy] of QUERIES) {
             it(name, async () => {

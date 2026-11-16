@@ -24,6 +24,7 @@ import {
    disposeScenarios,
    rowDifference,
    type R4Fixture,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 interface ExoticType {
@@ -213,9 +214,7 @@ for (const t of TYPES) {
          await disposeScenarios();
       });
 
-      it("compiles the served copy with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       it("serves a query that does not read the column", async () => {
          const run = await fixture.run({
@@ -404,9 +403,7 @@ source: s is duckdb.table('ex') extend { primary_key: id }
       await disposeScenarios();
    });
 
-   it("compiles the served copy with no problem", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    it.each([
       "run: s -> { select: id, x; order_by: id }",

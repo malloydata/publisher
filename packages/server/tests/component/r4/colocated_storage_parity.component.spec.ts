@@ -41,6 +41,7 @@ import {
    rowDifference,
    type R4Fixture,
    type R4Run,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
@@ -124,9 +125,7 @@ source: s is duckdb.table('ex') extend { primary_key: id }
          await disposeScenarios();
       });
 
-      it("binds the source with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       it.each([
          "run: s -> { group_by: g; aggregate: n is count(), total is amount.sum(); order_by: g }",

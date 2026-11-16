@@ -36,6 +36,7 @@ import {
    type R4Fixture,
    type R4Scenario,
    type Row,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
@@ -305,9 +306,7 @@ for (const tier of tiers) {
          await cleanup?.();
       });
 
-      it("compiles the served copy with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       for (const c of tier.cases) {
          it(c.name, async () => {
