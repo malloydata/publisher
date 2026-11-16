@@ -63,7 +63,7 @@ import {
 import { queryTimezoneOf } from "../../service/governance/ir/compiled_model";
 import { planModelPersistedViews } from "../../service/materialization/plan/persisted_view";
 import { SourceMap } from "../../service/materialization/text/source_map";
-import { recordConnectionsAsForTests } from "../../service/connection_type";
+import { recordConnectionsAsForConformanceHarness } from "../../service/connection_type";
 /** A result row, as `compactResult` carries it. */
 export type Row = Record<string, unknown>;
 
@@ -270,7 +270,9 @@ export async function loadFixture(
       // `buildAll` builds a `storage=` table from the sandbox by hand, through
       // Parquet, which no real build can, so while the fixture lives its
       // sandbox stands in for a warehouse the plan's `storage=` gate admits.
-      releaseSandbox = recordConnectionsAsForTests({ duckdb: "postgres" });
+      releaseSandbox = recordConnectionsAsForConformanceHarness({
+         duckdb: "postgres",
+      });
       env = await Environment.create("conform", envPath, []);
       await env.addPackage("pkg");
       pkg = await env.getPackage(parsePackageName("pkg"), false);
