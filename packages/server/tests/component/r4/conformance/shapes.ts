@@ -1221,31 +1221,34 @@ source: gated is orders_raw -> {
             givens: { REGION: "east" },
          },
          {
-            // A gate is refused for storage= by design (docs/materialization.md).
+            // The extension's own gate over the `scoped` table. A v1
+            // extension inherits `#@ persist` and stores into that table under
+            // its own gate, so plan admits the table past it on either tier
+            // (G3). A `#(materialize)` extension inherits nothing, and an
+            // ungated source's `storage=` table is not a G3 table: live.
             name: "an access-filtered extension",
             malloy: "run: gated_ext -> { group_by: status; aggregate: total }",
             givens: { REGION: "south", REGIONS: ["south", "west"] },
-            expect: { storage: "live", materialize: "live" },
+            expect: { materialize: "live" },
          },
          {
+            // Its own gate: read past it from the table on every tier (G3).
             name: "an access-filtered persisted source",
             malloy: "run: gated -> { group_by: region; aggregate: total }",
             givens: { REGIONS: ["north", "east"] },
-            expect: { storage: "live", materialize: "live" },
          },
          {
-            // The same table, another caller: after the cutover a colocated
-            // table is read past the gate (G3), each caller's rows only.
+            // The same table, another caller: a table is read past its own
+            // gate (G3), colocated or `storage=`, each caller's rows only.
             name: "an access-filtered persisted source, another caller",
             malloy: "run: gated -> { group_by: region; aggregate: total }",
             givens: { REGIONS: ["west"] },
-            expect: { storage: "live", materialize: "live" },
          },
          {
             name: "an access-filtered extension, another caller",
             malloy: "run: gated_ext -> { group_by: status; aggregate: total }",
             givens: { REGION: "west", REGIONS: ["west"] },
-            expect: { storage: "live", materialize: "live" },
+            expect: { materialize: "live" },
          },
       ],
    },

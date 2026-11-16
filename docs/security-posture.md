@@ -249,6 +249,19 @@ a source that should not answer schema questions to outsiders wants a lock as we
   applied to `/compile` rather than a separate hole: it discloses schema, not rows. It is called out
   because the row-level change is what made it reachable — a whole-source gate denied on the source
   name before compiling anything.
+- **A stored table holds every caller's rows, with no gate.** A materialized source under its own
+  row-level gate (an `#(access_filter)`, an `#(authorize)` lock, or both) is built, colocated or in
+  a `storage=` destination, with every row, and the gate is re-applied each time Publisher reads
+  the table. Only reads through Publisher are gated. Anyone who reads the table directly reads
+  every row: in the author's own warehouse for a colocated table, in the destination for a
+  `storage=` one ([materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
+  Tables are named predictably, by package and source. So **never configure a storage
+  destination's catalog, schema, data path or DuckDB file as an environment connection that models
+  can name**: through it, any package could read another package's gated rows by table name.
+  Publisher warns at environment load when a DuckLake connection names the same catalog and
+  metadata schema as a destination, or a data path that overlaps the destination's. That check is
+  not exhaustive (a DuckDB connection attaching the destination in its `setupSQL` is not caught),
+  so treat it as a backstop, not the control. The destination's own credentials are the control.
 
 ## Where author code executes today
 

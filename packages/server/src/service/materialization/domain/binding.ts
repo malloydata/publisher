@@ -69,6 +69,14 @@ export interface Binding {
     */
    rollupKey?: { keyColumn: string; unique: boolean };
    /**
+    * A `storage=` table plan admitted past a stored source's own row-level
+    * gate under G3 (`SourceEligibility.gateKept`), marked under every name
+    * it is bound by: the router lets a served answer reading it past an
+    * entry-point gate, as it does a colocated table's. Set by the bind;
+    * absent reads as not kept (fail closed).
+    */
+   ownGateKept?: boolean;
+   /**
     * The storage destination the table lives in; for a colocated table, the
     * source's own connection.
     */

@@ -113,6 +113,7 @@ import {
 import {
    bindColocatedEntries,
    bindStorageEntries,
+   keptTableAddresses,
    deriveColocatedServeBindings,
    kindFromPlan,
    v1StoredColumnsOf,
@@ -1696,6 +1697,12 @@ export class PackageMaterialization {
       }
       const servedCopy = this.servedCopyState(models);
       const materializeIDs = new Set(Object.keys(this.materializePlans));
+      // A table not bound yet is judged by the bind's own rule, so the
+      // verdict says what it will say once the table is bound.
+      const keptTables = keptTableAddresses(
+         this.sourceEligibility?.gateKept,
+         (id) => this.buildPlan?.sources?.[id]?.sourceEntityId,
+      );
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(this.snapshot(), new Date());
       const freshStorageNames = new Set(
@@ -1729,6 +1736,18 @@ export class PackageMaterialization {
          servedCopyKeepsGates: legMayPassGate("served", gateSwitches(), {
             colocatedReadsKeepGates: false,
          }),
+         // Read off the bound bindings, which the router reads too.
+         storageKeepsOwnGate: (sourceID) => {
+            const bound = this.storageBindings.filter((b) =>
+               b.sourceIDs?.includes(sourceID),
+            );
+            if (bound.length > 0) {
+               return bound.some((b) => b.ownGateKept === true);
+            }
+            return keptTables.has(
+               this.buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            );
+         },
          rollupKeepsGates: (sourceID) => this.rollupsKeepingGates.has(sourceID),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),

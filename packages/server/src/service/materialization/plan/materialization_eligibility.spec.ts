@@ -682,21 +682,29 @@ source: by_category is orders -> {
          },
       });
 
-      it("admits a #(materialize) source's own row-level gate to the storage tier only with the switch on", async () => {
+      it("admits a #(materialize) source's own row-level gate to the storage tier with the gated-sources switch on or off (G3), and only with v2's switch", async () => {
          const source = (await persistSources(gatedModel)).by_category;
-         withEnv(R3_ON, () =>
-            assertTierEligible(source, true, inputs(source.sourceID)),
-         );
-         const envs: Record<string, string>[] = [
+         for (const env of [
+            R3_ON,
             {
                PUBLISHER_MATERIALIZE: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
-            // With the v1 cutover off, the gated switch needs the materialize
-            // switch (under the cutover it applies alone).
+         ]) {
+            withEnv(env, () =>
+               assertTierEligible(source, true, inputs(source.sourceID)),
+            );
+         }
+         const envs: Record<string, string>[] = [
+            // A `#(materialize)` plan is v2's: without v2's switch it keeps
+            // no gate, whatever the gated switch says.
             {
                PUBLISHER_MATERIALIZE: "false",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+            },
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
          ];
          for (const env of envs) {
@@ -709,12 +717,10 @@ source: by_category is orders -> {
          }
       });
 
-      it("keeps refusing what the served copy cannot enforce: a #@ persist source, an unproven or joined gate", async () => {
+      it("keeps refusing what the served copy cannot enforce: an unproven or joined gate", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          for (const plan of [
-            // `#@ persist storage=`: the v1 serve shape may read its table.
-            inputs(id, undefined, false),
             inputs(id, { classification: "rejected", attributed: true }),
             // A gate reached only through a join is not the entry point's.
             inputs(id, { classification: "row_level", attributed: false }),
@@ -748,10 +754,11 @@ source: by_category is orders -> {
             withEnv(G3_ONLY, () => gateEnforcedAtRead(id, inputs(id))),
          ).toBe(true);
          withEnv(G3_ONLY, () => assertTierEligible(source, false, inputs(id)));
-         // Asked as storage, by the caller or by the plan, it is refused.
+         // Asked as storage, by the caller or by the plan, it is admitted on
+         // the same conditions: G3 keeps the gate on both tiers.
          expect(
             withEnv(G3_ONLY, () => gateEnforcedAtRead(id, inputs(id), true)),
-         ).toBe(false);
+         ).toBe(true);
          expect(
             withEnv(G3_ONLY, () =>
                gateEnforcedAtRead(id, {
@@ -765,9 +772,10 @@ source: by_category is orders -> {
                   },
                }),
             ),
-         ).toBe(false);
+         ).toBe(true);
          // G3's other conditions hold as for v1: an inherited, unproven or
-         // joined gate, a #@ persist source, and v2's switch off.
+         // joined gate, a #@ persist source asked as colocated (the colocated
+         // tier check's), and v2's switch off.
          for (const plan of [
             inputs(id, {
                classification: "row_level",
@@ -789,9 +797,78 @@ source: by_category is orders -> {
          ).toBe(false);
       });
 
-      it("collectSourceEligibility asks as storage: a colocated-planned gated #(materialize) table is refused for a storage= bind under G3", async () => {
+      it("admits a v1 #@ persist storage= source's own row-level gate under G3, whatever the switches, and nothing more", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const v1 = (outcome?: PersistSourceGateOutcome) =>
+            inputs(id, outcome, false);
+         for (const env of [
+            R3_ON,
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+         ]) {
+            expect(withEnv(env, () => gateEnforcedAtRead(id, v1(), true))).toBe(
+               true,
+            );
+            withEnv(env, () => assertTierEligible(source, true, v1()));
+            // Asked as colocated, it is the colocated tier check's to decide.
+            expect(withEnv(env, () => gateEnforcedAtRead(id, v1()))).toBe(
+               false,
+            );
+            for (const plan of [
+               v1({ classification: "rejected", attributed: true }),
+               v1({ classification: "row_level", attributed: false }),
+               { tables: {} },
+            ]) {
+               expect(
+                  withEnv(env, () => gateEnforcedAtRead(id, plan, true)),
+               ).toBe(false);
+               const refused = withEnv(env, () =>
+                  refusal(() => assertTierEligible(source, true, plan)),
+               );
+               expect(refused.reason).toBe("authorize");
+            }
+            const inherited = withEnv(env, () =>
+               refusal(() =>
+                  assertTierEligible(
+                     source,
+                     true,
+                     v1({
+                        classification: "row_level",
+                        attributed: true,
+                        inheritedRowFilter: true,
+                     }),
+                  ),
+               ),
+            );
+            expect(inherited.message).toContain(
+               "reads an #(access_filter) row-level gate from a source it derives from",
+            );
+            // A persisted view's or query's build is not a v1 source: its
+            // leg passes a gate only with the gated-sources switch.
+            const view =
+               "v__by_x__view@file:///elig/m.malloy.persist-view.malloy";
+            expect(
+               withEnv(env, () =>
+                  gateEnforcedAtRead(
+                     view,
+                     inputs(view, undefined, false),
+                     true,
+                  ),
+               ),
+            ).toBe(false);
+         }
+      });
+
+      it("collectSourceEligibility asks as storage: a colocated-planned gated #(materialize) table is admitted for a storage= bind under G3, and marked kept past its own gate", async () => {
          // The storage bind (admitStorage / refusedAtBind) reads this record,
-         // so a table G3 admits only colocated must not land in `eligible`.
+         // and marks a binding kept past its own gate from `gateKept`.
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          const G3_ONLY = {
@@ -801,17 +878,77 @@ source: by_category is orders -> {
          const plan = {
             connectionDigests: {},
             tables: { [id]: { ...inputs(id).tables[id], source } },
-         };
+         } as unknown as Parameters<typeof collectSourceEligibility>[0];
          // Colocated, the plan admits it (the precondition for the guard).
          expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
             true,
          );
-         const { eligible, refused } = withEnv(G3_ONLY, () =>
+         const { eligible, refused, gateKept } = withEnv(G3_ONLY, () =>
             collectSourceEligibility(plan),
          );
-         expect(eligible).toEqual([]);
-         expect(Object.keys(refused)).toEqual([id]);
-         expect(refused[id]).toMatch(/authorize|access_filter/i);
+         expect(eligible).toEqual([id]);
+         expect(gateKept).toEqual([id]);
+         expect(refused).toEqual({});
+         // Not admitted past its gate (here, a gate not its own): refused,
+         // and never marked kept.
+         const joined = withEnv(G3_ONLY, () =>
+            collectSourceEligibility({
+               ...plan,
+               tables: {
+                  [id]: {
+                     ...inputs(id, {
+                        classification: "row_level",
+                        attributed: false,
+                     }).tables[id],
+                     source,
+                  },
+               },
+            } as unknown as Parameters<typeof collectSourceEligibility>[0]),
+         );
+         expect(joined.eligible).toEqual([]);
+         expect(joined.gateKept).toEqual([]);
+         expect(joined.refused[id]).toMatch(/authorize|access_filter/i);
+      });
+
+      it("collectSourceEligibility never marks an ungated source kept past a gate, so its table keeps a gated answer off G3", async () => {
+         const source = (
+            await persistSources(`##! experimental { persistence }
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category")
+
+#@ persist storage="lake"
+source: by_category is orders -> {
+  group_by: category
+  aggregate: total is amount.sum()
+}`)
+         ).by_category;
+         const id = source.sourceID;
+         for (const env of [
+            R3_ON,
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+         ]) {
+            // An ungated source classifies as row-level and attributed (no
+            // gate to reject): only the gate walk tells it from a gated one.
+            for (const materialized of [true, false]) {
+               const { eligible, gateKept } = withEnv(env, () =>
+                  collectSourceEligibility({
+                     connectionDigests: {},
+                     tables: {
+                        [id]: {
+                           ...inputs(id, undefined, materialized).tables[id],
+                           source,
+                        },
+                     },
+                  } as unknown as Parameters<
+                     typeof collectSourceEligibility
+                  >[0]),
+               );
+               expect(eligible).toEqual([id]);
+               expect(gateKept).toEqual([]);
+            }
+         }
       });
 
       it("never admits a row filter the source inherits: the served copy cannot graft it", async () => {
@@ -830,6 +967,42 @@ source: by_category is orders -> {
          expect(refused.reason).toBe("authorize");
          expect(refused.message).toContain(
             "reads an #(access_filter) row-level gate from a source it derives from",
+         );
+      });
+
+      it("refuses a colocated persisted view's build over a gated source with the gated-sources switch off, as storage= does, and builds it with the switch on", async () => {
+         const author = (await persistSources(gatedModel)).by_category;
+         // The same compiled source, as a persisted view's companion build.
+         const viewID =
+            "by_category__v__view@file:///elig/m.malloy.persist-view.malloy";
+         const view = new Proxy(author, {
+            get: (target, key) =>
+               key === "sourceID" ? viewID : Reflect.get(target, key, target),
+         });
+         const plan = inputs(view.sourceID, undefined, false);
+         const off = withEnv(
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            () => refusal(() => assertTierEligible(view, false, plan)),
+         );
+         expect(off.reason).toBe("authorize");
+         expect(off.message).toContain("PUBLISHER_MATERIALIZE_GATED_SOURCES");
+         withEnv(R3_ON, () => assertTierEligible(view, false, plan));
+         // A v1 source of the same shape is the colocated tier check's, as
+         // before: admitted with the switch off.
+         withEnv(
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            () =>
+               assertTierEligible(
+                  author,
+                  false,
+                  inputs(author.sourceID, undefined, false),
+               ),
          );
       });
 

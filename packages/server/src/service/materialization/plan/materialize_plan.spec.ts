@@ -1144,37 +1144,38 @@ source: orders is orders_raw
    );
 
    it(
-      "is built and served from storage only with materialize.gatedSources on",
+      "is built and served from storage with materialize.gatedSources on or off (G3, its own gate)",
       async () => {
-         const on = await outcome(true);
-         expect(on.outcome.plan?.refusedSources ?? {}).toEqual({});
-         expect(on.outcome.sourceEligibility.eligible).toEqual([on.sourceID]);
-         // Off, the managed tier never holds the gated source's columns.
-         const off = await outcome(false);
-         expect(off.outcome.plan?.refusedSources?.[off.sourceID]?.reason).toBe(
-            "authorize",
-         );
-         expect(off.outcome.sourceEligibility.eligible).toEqual([]);
+         for (const gatedSources of [true, false]) {
+            const o = await outcome(gatedSources);
+            expect(o.outcome.plan?.refusedSources ?? {}).toEqual({});
+            expect(o.outcome.sourceEligibility.eligible).toEqual([o.sourceID]);
+            expect(o.outcome.sourceEligibility.gateKept).toEqual([o.sourceID]);
+         }
       },
       { timeout: 30000 },
    );
 
    it(
-      "keeps refusing a gated #@ persist storage= source with the switch on",
+      "builds a gated #@ persist storage= source under its own gate, switch on or off (G3), as a colocated one",
       async () => {
-         const { outcome: o } = await outcome(
-            true,
-            `##! experimental { persistence givens }
+         for (const gatedSources of [true, false]) {
+            const { outcome: o } = await outcome(
+               gatedSources,
+               `##! experimental { persistence givens }
 given: GROUPS :: string[]
 ${BASE}
 #(access_filter) region in $GROUPS
 #@ persist storage="lake" name="o_all"
 source: orders is orders_raw -> { select: * }
 `,
-         );
-         expect(
-            Object.values(o.plan?.refusedSources ?? {}).map((r) => r.reason),
-         ).toEqual(["authorize"]);
+            );
+            expect(o.plan?.refusedSources ?? {}).toEqual({});
+            expect(o.sourceEligibility.eligible).toHaveLength(1);
+            expect(o.sourceEligibility.gateKept).toEqual(
+               o.sourceEligibility.eligible,
+            );
+         }
       },
       { timeout: 30000 },
    );

@@ -477,15 +477,16 @@ the [known limitations](#known-limitations-you-may-hit) below.
 
 ### A source with a row-level gate
 
-**Colocated, as v1; `storage=` behind its own switch, off by default.** A colocated
-`#(materialize)` source (no `storage=`) whose own `#(authorize)` or `#(access_filter)` compiles to a
-row filter or a lock is built and served from the served copy with the gate grafted on and proven,
-exactly as a v1 colocated `#@ persist` is, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on or off,
-when every table the answer reads is colocated: its table never leaves the author's warehouse. A
-`storage=` one needs that switch on as well; off, it is refused and serves live, as a gated
-`#@ persist storage=` source is. A gate the source inherits, reaches through a join, or whose build
-would substitute a given is refused either way. The switch stays off until a security review of
-storing gated sources' columns in the managed tier. A gate holds only behind the gateway that sets
+**As v1, on both tiers.** A `#(materialize)` source, colocated or `storage=`, whose own
+`#(authorize)` or `#(access_filter)` compiles to a row filter or a lock is built and served from the
+served copy with the gate grafted on and proven, exactly as a v1 `#@ persist` on the same tier is,
+with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on or off. With it off, an answer is read past the gate
+only when every table it reads is colocated or a `storage=` table admitted past its own source's
+gate. A `storage=` table holds every caller's rows, ungated, in the destination, readable by anyone
+with direct access to it: a maintainer-approved exception made ahead of the managed tier's security
+review, for consistency with colocated. A row filter the source inherits, a gate it reaches through
+a join, and a gate over a source whose build would substitute a given are refused on both tiers,
+either way. The switch stays off until that review. A gate holds only behind the gateway that sets
 the givens from a verified identity
 ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 
@@ -587,8 +588,6 @@ has the full list.
 - **`#@ persist` on a view** and **`#@ -persist`**: these are the v2 spellings already.
 - **`realization=`** has no v2 form; on `#(materialize)` it is `materialize-unknown-key`.
 - **`partition=`** is retired on both forms, and fails the publish and the load; remove it.
-- **A gated source** with `storage=`: refused unless `PUBLISHER_MATERIALIZE_GATED_SOURCES` is on,
-  as v1 refuses it.
 - **An incremental source on a DuckDB origin**: refused alone and answered live
   (`materialize-not-built`), as v1 refuses it (`persist-not-built`). Say `refresh="full"`.
 
