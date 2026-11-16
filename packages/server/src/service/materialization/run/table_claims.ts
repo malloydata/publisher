@@ -69,6 +69,8 @@ export class TableClaims {
       // Compared by what a name names (see tableIdentity), not its spelling.
       const wanted = new Set(tables.map(tableIdentity));
       if (wanted.size === 0) return;
+      // Read under the table lock, never from a run's snapshot: what other
+      // runs claim is what changes between a run's start and its claim.
       const runs = await this.repository().listMaterializations(
          environmentId,
          packageName,

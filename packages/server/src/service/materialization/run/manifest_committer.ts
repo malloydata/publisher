@@ -404,6 +404,8 @@ export class ManifestCommitter {
       packageName: string,
       reader: ServingReader = {},
    ): Promise<Record<string, ManifestEntry>> {
+      // Read fresh each time, under the slot's lock the caller holds: what a
+      // rebind binds is the store as of the bind, not as of the run's start.
       return storageBindingResolverFor(
          this.repository,
          environmentId,

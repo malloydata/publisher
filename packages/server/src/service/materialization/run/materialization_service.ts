@@ -1650,6 +1650,8 @@ export class MaterializationService {
       packageName: string,
       deletedId: string,
    ): Promise<void> {
+      // Read fresh, after the drop: each run's metadata is written back
+      // whole, so an older copy would undo what another run wrote since.
       const runs =
          (await this.repository.listMaterializations(
             environmentId,
