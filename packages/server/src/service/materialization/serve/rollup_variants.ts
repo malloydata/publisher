@@ -82,6 +82,7 @@
 import { requireUnique, verdictOf, type KeyVerdict } from "../domain/key_check";
 import {
    primaryKeyOf,
+   queryTimezoneOf,
    recordedTimezoneOf,
    timezoneOf,
 } from "../../governance/ir/compiled_model";
@@ -2102,6 +2103,9 @@ interface StoredRollupReads {
  * - a grain column whose dimension live types `timestamptz`, stored with its
  *   zone, is declared `timestamptz` (a `type:` would declare the stored
  *   type's `timestamp`);
+ * - a column stored as another type than live gives it (a grain dimension,
+ *   or a `min` or `max` partial over a field) is read through a faithful
+ *   cast ({@link storedColumnReadPlan}), or is the refusal;
  * - a big integer (a grain dimension, or the partial of a measure live types
  *   as a `bigint` number) is read through its native type
  *   ({@link storedColumnReadPlan}): a `type:` declares it only as a `number`,
@@ -2129,20 +2133,35 @@ function storedRollupReads(
    const read = (
       column: StoredRollupReads["columns"][number],
       fieldName: string,
+      /** The type live gives the column, when it is checked; "" when not. */
+      liveType: string,
    ): string | undefined => {
       const storedColumn = stored.get(column.name);
       const field = fields.get(fieldName);
       if (storedColumn) {
          const plan = storedColumnReadPlan(
             [storedColumn],
-            [{ name: column.name, type: "", field }],
-            { dialect: base?.dialect },
+            [{ name: column.name, type: liveType, field }],
+            { dialect: base?.dialect, queryTimezone: queryTimezoneOf(base) },
          );
+         // A column whose stored type drifted from live's, with no faithful
+         // cast to read it back: never read as its stored type.
+         const [drifted] = plan.leftOut;
+         if (drifted) {
+            return `the stored \`${fieldName}\` (${drifted.storedType}) cannot be read as live's ${drifted.declaredType}`;
+         }
          if (plan.refusals.length > 0) {
             return `the stored \`${fieldName}\` (${storedColumn.type}) cannot hold live's integer exactly`;
          }
-         const [big] = plan.casts;
-         if (big) casts.set(column.name, { nativeCast: big.castTo });
+         const [read] = plan.casts;
+         if (read) {
+            casts.set(
+               column.name,
+               read.native
+                  ? { nativeCast: read.castTo }
+                  : { castTo: read.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
+            );
+         }
          if (
             column.kind === "dimension" &&
             field?.type === "timestamptz" &&
@@ -2157,14 +2176,22 @@ function storedRollupReads(
       return undefined;
    };
    for (const g of grainColumns(plan, modelDef)) {
-      const refusal = read({ ...g, kind: "dimension" }, g.name);
+      const refusal = read(
+         { ...g, kind: "dimension" },
+         g.name,
+         typeAt(base?.fields, g.name.split(".")) ?? "",
+      );
       if (refusal) return { refusal };
    }
    for (const m of plan.rollupMeasures) {
       for (const p of m.partials) {
          const refusal =
             partialTypeRefusal(p, stored.get(p.column), m.name) ??
-            read({ name: p.column, notes: [], kind: "measure" }, m.name);
+            read(
+               { name: p.column, notes: [], kind: "measure" },
+               m.name,
+               minMaxLiveType(p, base?.fields) ?? "",
+            );
          if (refusal) return { refusal };
       }
    }
@@ -2172,9 +2199,55 @@ function storedRollupReads(
 }
 
 /**
+ * The type live gives the field at `path` of `fields`, through each join's
+ * own fields; undefined when it is not a field there.
+ */
+function typeAt(
+   fields: readonly unknown[] | undefined,
+   path: readonly string[],
+): string | undefined {
+   const [head, ...rest] = path;
+   const f = (fields ?? []).find(
+      (x) =>
+         String(
+            (x as { as?: unknown; name?: unknown }).as ??
+               (x as { name?: unknown }).name,
+         ) === head,
+   ) as { type?: unknown; fields?: unknown[] } | undefined;
+   if (!f) return undefined;
+   if (rest.length > 0) return typeAt(f.fields, rest);
+   return typeof f.type === "string" ? f.type : undefined;
+}
+
+/**
+ * The type live gives a `min` or `max` partial: its argument's, when the
+ * argument is a field (`amount.max()`, `max(carriers.fee)`), else undefined
+ * (an expression, which the merge's compile checks).
+ */
+function minMaxLiveType(
+   partial: RollupVariantPlan["rollupMeasures"][number]["partials"][number],
+   fields: readonly unknown[] | undefined,
+): string | undefined {
+   if (partial.leaf.aggregate !== "min" && partial.leaf.aggregate !== "max") {
+      return undefined;
+   }
+   let expr = partial.leaf.expr;
+   while (expr.kind === "filtered" || expr.kind === "paren") expr = expr.expr;
+   const path =
+      expr.kind === "method" && expr.args.length === 0
+         ? expr.path
+         : expr.kind === "call" &&
+             expr.args.length === 1 &&
+             expr.args[0].kind === "path"
+           ? expr.args[0].path
+           : undefined;
+   return path ? typeAt(fields, path) : undefined;
+}
+
+/**
  * Why a `sum` or `count` partial stored as a non-numeric type cannot merge,
- * or undefined. A `min` or `max` partial takes its argument's type, which the
- * merge's compile checks.
+ * or undefined. A `min` or `max` partial takes its argument's type, which
+ * {@link storedRollupReads} checks against live's ({@link minMaxLiveType}).
  */
 function partialTypeRefusal(
    partial: RollupVariantPlan["rollupMeasures"][number]["partials"][number],
