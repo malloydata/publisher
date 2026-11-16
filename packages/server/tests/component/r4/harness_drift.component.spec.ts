@@ -377,9 +377,12 @@ describe("R4 harness drift: colocated tables agree with a real run", () => {
       );
       const served = await ask(f!, query);
       expect(served.map((r) => r.cat)).toContain("zz");
-      expect((await servedBy(f!, query)).via).toBe("served_copy");
+      const path = await servedBy(f!, query);
+      expect(path).toEqual({ kind: "materialized", via: "served_copy" });
       const harness = await r4v1.run({ name: "persist", malloy: query });
       expect(harness.servedVia).toBe("served_copy");
+      // A `#@ persist` table, not live: the path's kind for a stored table.
+      expect(harness.servedBy?.kind).toBe(path.kind);
       expect(harness.live.map((r) => r.cat)).not.toContain("zz");
       expect(rowDifference(harness.served, served)).toBeUndefined();
    });

@@ -76,6 +76,7 @@ import {
    buildSQLOf,
    plannedSources,
 } from "../../../src/service/materialization/plan/build_plan";
+import { computePackageBuildPlan } from "../../../src/service/materialization/plan/build_plan_compile";
 import {
    compilerBuildId,
    presentAs,
@@ -772,6 +773,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       string,
       {
          tableName: string;
+         connectionName: string;
          schema?: { name: string; type: string }[];
          nativeSchema?: { name: string; type: string }[];
          keyUniqueness?: KeyUniqueness;
@@ -856,6 +858,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const leafKeys = await pairLeafKeys(source);
          colocatedServeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            connectionName: source.connectionName,
             ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
             ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
@@ -885,6 +888,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          });
          colocatedServeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            // The connection the build wrote it on, as a build's entry
+            // records it, so the bind's connection check runs.
+            connectionName: source.connectionName,
             ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
          };
@@ -1097,6 +1103,15 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       materializeSourceIDs: new Set(Object.keys(materializePlans)),
       viewBuildSourceIDs,
    };
+   // The colocated tier's eligibility, decided by the package's own build
+   // plan compile over the scenario's files (collectColocatedSourceEligibility:
+   // the authorize gate, `@env.`, a table shared across gates), so a
+   // colocated table binds only where a package would bind it. Compiled only
+   // when a colocated table was built.
+   const colocatedEligible = await colocatedEligibilityOf(
+      Object.keys(colocatedServeEntries).length > 0,
+      { dir, files: Object.keys(scenario.files), connections },
+   );
    const bindings = [
       ...deriveServeBindings(
          entries,
@@ -1121,7 +1136,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ]),
          ),
          materializePlans,
-         eligible: () => true,
+         eligible: colocatedEligible,
+         // A fallback only: each table's build captured its schema above.
          v1Schema: (sourceID) =>
             v1StoredColumnsOf(authorMap.node(sourceID)?.def),
          notV1: (sourceID) => viewBuildSourceIDs.has(sourceID),
@@ -1365,6 +1381,42 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          };
       },
    };
+}
+
+/**
+ * Which planned sources the colocated tier admits, by sourceID, from the
+ * package's own build plan over the scenario's model files: a source is
+ * eligible when the plan's colocated eligibility lists its content address.
+ * A plan that does not compile throws, so a scenario never binds on a
+ * guess.
+ */
+async function colocatedEligibilityOf(
+   needed: boolean,
+   scenario: {
+      dir: string;
+      files: string[];
+      connections: Map<string, Connection>;
+   },
+): Promise<(sourceID: string) => boolean> {
+   if (!needed) return () => false;
+   const config = new MalloyConfig({ connections: {} });
+   const [first] = scenario.connections.keys();
+   config.wrapConnections(
+      () => new FixedConnectionMap(scenario.connections, first),
+   );
+   const outcome = await computePackageBuildPlan({
+      getModelPaths: () => scenario.files.filter((f) => f.endsWith(".malloy")),
+      getPackagePath: () => scenario.dir,
+      getMalloyConfig: () => config,
+      getMalloyConnection: async (name) => {
+         const c = scenario.connections.get(name);
+         if (!c) throw new Error(`no connection ${name}`);
+         return c;
+      },
+   });
+   const eligible = outcome.colocatedSourceEligibility.eligibleEntityIds;
+   const sources = outcome.plan?.sources ?? {};
+   return (sourceID) => eligible.has(sources[sourceID]?.sourceEntityId ?? "");
 }
 
 /**
