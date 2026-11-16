@@ -220,10 +220,12 @@ container. It is read for one more release, places the table exactly where
 
 **BigQuery requires it.** An unqualified `CREATE` is rejected outright there
 (`must be qualified with a dataset`), so a rollup with no container, its own or its
-base's, cannot be built on BigQuery at all. Name a dataset the connection can write —
-typically a scratch dataset, the same one you would give an authored `#@ persist name=`.
-Other engines accept an unqualified name and create the table in the connection's
-default schema, so the container is optional there.
+base's, is not built on BigQuery: it is refused at plan, before any warehouse work
+(`preaggregate-not-built`, reason `needs_qualified_name`), and its measures are answered
+live. Name a dataset the connection can write — typically a scratch dataset, the same one
+you would give an authored `#@ persist name=`. Other engines accept an unqualified name
+and create the table in the connection's default schema, so the container is optional
+there.
 
 **The namespace has to exist already.** Nothing in the tier creates a dataset or a
 schema, so a name that is merely plausible fails the build. Create it once, and let the

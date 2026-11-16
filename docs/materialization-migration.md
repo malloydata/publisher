@@ -607,7 +607,7 @@ source again (#1763). One case below can still differ from live when the data br
 | What you wrote | What happens | Plan |
 | --- | --- | --- |
 | `#(materialize)` over a base that declares a measure, view or join | Built, never read: `served-copy-not-served`, answered live. See [above](#a-base-with-measures-views-or-joins). | The served copy's call 2 |
-| A colocated `#(materialize)` on BigQuery with no dataset-qualified `name=` | Not built: `materialize-not-built` | — |
+| A colocated `#(materialize)` on BigQuery with no dataset-qualified `name=` | Not built: `materialize-not-built` (reason `needs_qualified_name`) | Not built either: `persist-not-built`, or `preaggregate-not-built` for a rollup, refused at plan with the same reason |
 | An extension table whose parent is in another file | Served, but built from the warehouse rather than over the parent's table, so its build scans the warehouse | P10 (same-file only) |
 | `inline=` on a path through a join_one | Not built: `materialize-not-built` | Row 9 |
 | A pair-table query that reads two blocks, or aggregates a middle level beside the leaf; an incremental refresh of a path or a multi-block table | Answered live; the table rebuilds in full (`materialize-pair-full-refresh`) | Row 9 |
