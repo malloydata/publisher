@@ -22,14 +22,11 @@ const overrides: Map<string, string>[] = [];
 
 /**
  * Test seam: record each connection named in `types` as the type it maps to,
- * until the returned restore is called. For fixtures whose DuckDB connection
- * stands in for a warehouse a `storage=` build reads: the conformance harness
- * (test_helpers/conformance) builds such a table from the package sandbox by
- * hand, and some component specs fake a Postgres passthrough over a DuckDB
- * one. Recorded on the main thread, which also answers the package-load
- * worker's connection metadata, so both plan paths see it. Layers stack;
- * the latest wins. Throws outside a test process (`NODE_ENV=test`, which
- * `bun test` sets).
+ * until the returned restore is called. For component specs that fake a
+ * Postgres passthrough over a DuckDB one. Recorded on the main thread, which
+ * also answers the package-load worker's connection metadata, so both plan
+ * paths see it. Layers stack; the latest wins. Throws outside a test process
+ * (`NODE_ENV=test`, which `bun test` sets).
  */
 export function recordConnectionsAsForTests(
    types: Record<string, string>,
@@ -41,6 +38,27 @@ export function recordConnectionsAsForTests(
          "recordConnectionsAsForTests is a test seam: it runs only under NODE_ENV=test",
       );
    }
+   return pushOverrides(types);
+}
+
+/**
+ * The conformance harness's door to the same seam
+ * (test_helpers/conformance/package_runner.ts), which builds a `storage=`
+ * table from the package sandbox by hand and so needs the sandbox recorded as
+ * a warehouse type. Not guarded by `NODE_ENV`: the harness also runs as a
+ * standalone CLI (scripts/v1-cutover-conformance.ts), and marking that
+ * process a test would change what it answers (package_lifecycle.ts throws on
+ * an illegal move under `NODE_ENV=test` where production logs it). Only
+ * test_helpers/conformance may import it; connection_type_seam.spec.ts fails
+ * the build when anything else does.
+ */
+export function recordConnectionsAsForConformanceHarness(
+   types: Record<string, string>,
+): () => void {
+   return pushOverrides(types);
+}
+
+function pushOverrides(types: Record<string, string>): () => void {
    const layer = new Map(Object.entries(types));
    overrides.push(layer);
    return () => {

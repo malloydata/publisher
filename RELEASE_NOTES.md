@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — the v1 cutover conformance script runs again without NODE_ENV=test
+
+`bun scripts/v1-cutover-conformance.ts` (plan question 15) runs again as the standalone CLI it is documented as. In 0.14.0 it exited 3 on every package unless `NODE_ENV=test` was set, because the harness took a connection-type test seam that is guarded to test processes. The harness now takes that seam through its own entry point, which no production module may import, so the script answers without `NODE_ENV=test`, and with the server's production behaviour. A CI job that set `NODE_ENV=test` to work around it can drop the variable.
+
 ## [0.14.0] — a `storage=` table under its source's own row-level gate is built and served with the gate re-applied, as a colocated one is
 
 A `storage=` source whose own gate is proven to be its entry point's own row filter or lock (an `#(access_filter)`, an `#(authorize)` lock, or both, including a lock it inherits from a source it derives from or extends) is now built into its destination and served from that table with the gate re-applied on every read, exactly as a colocated table under the same gate is. This holds for a v1 `#@ persist storage=` and a `#(materialize) storage=` alike, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off, the default (and on). The served copy grafts the gate onto every served query and proves it there exactly as on live, so each caller gets live's rows, or live's denial. Before, such a source was refused (`persist-not-built`, reason `authorize`; a `#(materialize) storage=` one was served only with the switch on) and answered live.
