@@ -129,7 +129,7 @@ async function expectAsLive(l: Loaded, p: Probe): Promise<void> {
          return;
       case "colocated":
          expect(served.answer.servedBy).toBe("materialized");
-         expect(served.answer.servedFrom).toBeNull();
+         expect(served.answer.servedFrom).toBe("colocated");
          return;
       case "storage":
          expect(served.answer.servedBy).toBe("materialized");

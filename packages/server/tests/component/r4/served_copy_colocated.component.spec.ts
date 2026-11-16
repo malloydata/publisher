@@ -313,8 +313,8 @@ for (const tier of tiers) {
             expectPairServedVia(run, PATH_COUNTS);
             // A count through the pair table's join is answered live.
             if (run.servedVia === undefined) return;
-            // The source's own warehouse: not a storage hit.
-            expect(run.servedFrom).toBeNull();
+            // The source's own warehouse: a colocated hit, not a storage one.
+            expect(run.servedFrom).toBe("colocated");
             expect(run.servedBy?.kind).toBe("materialized");
          });
       }
