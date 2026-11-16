@@ -227,12 +227,17 @@ describe("CLI integration (real server)", () => {
   });
 
   it("refuses to set a schedule on a published version, naming publisher.json (exit 1)", async () => {
-    // The server answers this PATCH 409 PACKAGE_IS_VERSIONED; the CLI refuses
-    // first and names where a version's schedule is declared.
+    // The server answers this PATCH 409 PACKAGE_IS_VERSIONED; the CLI adds
+    // where a version's schedule is declared.
     const r = await runCli(["schedule", "set", "0 6 * * *", ...SCOPE], baseUrl);
     expect(r.code).toBe(1);
-    expect(r.output).toContain("published version 1.0.0");
+    expect(r.output).toContain("409");
+    expect(r.output).toContain("published versions");
     expect(r.output).toContain("publisher.json");
+    // The error is logged as JSON, so its quotes arrive escaped.
+    expect(r.output).toMatch(
+      /materialization\\*": \{ \\*"scope\\*": \\*"version/,
+    );
 
     const view = await runCli(["schedule", "view", ...SCOPE], baseUrl);
     expect(view.code).toBe(0);
@@ -252,8 +257,7 @@ describe("CLI integration (real server)", () => {
         JSON.stringify({
           name: pkgName,
           version: "1.0.0",
-          scope: "version",
-          materialization: { schedule: "0 6 * * *" },
+          materialization: { scope: "version", schedule: "0 6 * * *" },
         }),
       );
       const create = await runCli(
@@ -271,6 +275,7 @@ describe("CLI integration (real server)", () => {
       // Clearing it is a content change too: a new version, not a PATCH.
       const clear = await runCli(["schedule", "clear", ...scoped], baseUrl);
       expect(clear.code).toBe(1);
+      expect(clear.output).toContain("409");
       expect(clear.output).toContain("publisher.json");
     } finally {
       await runCli(["delete", "package", ...scoped], baseUrl);

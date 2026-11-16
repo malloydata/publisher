@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PublisherClient } from "../api/client.js";
+import { PublisherApiError, PublisherClient } from "../api/client.js";
 import { type Package, PackageScopeEnum } from "../api/generated";
 import { logInfo, logOutput, logSuccess } from "../utils/logger.js";
 
@@ -37,24 +37,32 @@ export async function viewSchedule(
 }
 
 /**
- * Refuse, before any PATCH, to change the schedule of a published version.
- * A version is immutable, so the server answers a schedule PATCH on one with
- * 409 PACKAGE_IS_VERSIONED; its schedule is part of its content, declared in
- * its publisher.json. This names that path instead of the server's generic
- * refusal. A response carries `versionId` only for a published version.
+ * Send a schedule PATCH, adding to a 409 PACKAGE_IS_VERSIONED where a published
+ * version's schedule is declared. The server judges: a version is immutable,
+ * and its schedule is part of its content, so it refuses the PATCH.
  */
-function refuseOnPublishedVersion(
-  pkg: Package | undefined,
+async function patchSchedule(
+  client: PublisherClient,
+  environmentName: string,
   packageName: string,
-): void {
-  if (!pkg?.versionId) {
-    return;
+  body: Package,
+): Promise<void> {
+  try {
+    await client.updatePackage(environmentName, packageName, body);
+  } catch (error) {
+    if (
+      error instanceof PublisherApiError &&
+      error.status === 409 &&
+      error.reason === "PACKAGE_IS_VERSIONED"
+    ) {
+      throw new Error(
+        `${error.message} A version's schedule is declared in its publisher.json as ` +
+          `\`"materialization": { "scope": "version", "schedule": "<cron>" }\`: ` +
+          `set it there, bump \`version\`, and publish the new version.`,
+      );
+    }
+    throw error;
   }
-  throw new Error(
-    `Package ${packageName} is published version ${pkg.versionId}, which is immutable, so its schedule cannot be changed in place. ` +
-      `A version's schedule is \`materialization.schedule\` in its publisher.json, with \`"scope": "version"\` at the root: ` +
-      `set it there, bump \`version\`, and publish the new version.`,
-  );
 }
 
 /**
@@ -72,8 +80,8 @@ function refuseOnPublishedVersion(
  * changing is resent verbatim. An empty cron is rejected up front: every server
  * rule is truthiness-guarded, so `""` would otherwise skip them all and persist.
  *
- * Only a package with no published versions takes a schedule this way (see
- * refuseOnPublishedVersion).
+ * Only a package with no published versions takes a schedule this way; the
+ * server refuses a published version (see patchSchedule).
  */
 export async function setSchedule(
   client: PublisherClient,
@@ -87,13 +95,12 @@ export async function setSchedule(
     );
   }
   const current = await client.getPackage(environmentName, packageName);
-  refuseOnPublishedVersion(current, packageName);
   if (current?.materialization?.freshness) {
     logInfo(
       `Replacing the existing freshness policy on ${packageName} with a schedule (a package cannot have both).`,
     );
   }
-  await client.updatePackage(environmentName, packageName, {
+  await patchSchedule(client, environmentName, packageName, {
     name: packageName,
     description: current?.description,
     scope: PackageScopeEnum.Version,
@@ -135,8 +142,7 @@ export async function clearSchedule(
     logInfo(`No schedule set on ${packageName}; nothing to clear.`);
     return;
   }
-  refuseOnPublishedVersion(current, packageName);
-  await client.updatePackage(environmentName, packageName, {
+  await patchSchedule(client, environmentName, packageName, {
     name: packageName,
     description: current?.description,
     // Carried for the same reason as in setSchedule: clearing a schedule must

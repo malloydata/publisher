@@ -115,6 +115,9 @@ export async function startTestServer(): Promise<TestServer> {
       PUBLISHER_PORT: String(port),
       MCP_PORT: String(mcpPort),
       PUBLISHER_WATCH: TEST_WATCH_ENV,
+      // The default today; pinned so it-env's package stays a published
+      // version whatever the default becomes or the caller's env says.
+      PUBLISHER_PACKAGE_VERSIONING: "on",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
