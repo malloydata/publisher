@@ -157,4 +157,47 @@ describe("Schedule Commands", () => {
       scheduleCommands.setSchedule(mockClient, "env", "orders", "bogus"),
     ).rejects.toThrow(/cron/);
   });
+  test("setSchedule refuses a published version without PATCHing, naming publisher.json", async () => {
+    // A published version is immutable: the server would answer 409
+    // PACKAGE_IS_VERSIONED. Its schedule lives in its publisher.json.
+    const mockClient = {
+      getPackage: mock(() =>
+        Promise.resolve({ versionId: "1.0.0", latestVersion: "1.0.0" }),
+      ),
+      updatePackage: mock(() => Promise.resolve({})),
+    } as unknown as PublisherClient;
+
+    await expect(
+      scheduleCommands.setSchedule(mockClient, "env", "orders", "0 6 * * *"),
+    ).rejects.toThrow(/published version 1\.0\.0.*publisher\.json/s);
+    expect(mockClient.updatePackage).not.toHaveBeenCalled();
+  });
+
+  test("clearSchedule refuses a published version that has a schedule, without PATCHing", async () => {
+    const mockClient = {
+      getPackage: mock(() =>
+        Promise.resolve({
+          versionId: "1.0.0",
+          materialization: { schedule: "0 6 * * *" },
+        }),
+      ),
+      updatePackage: mock(() => Promise.resolve({})),
+    } as unknown as PublisherClient;
+
+    await expect(
+      scheduleCommands.clearSchedule(mockClient, "env", "orders"),
+    ).rejects.toThrow(/publisher\.json/);
+    expect(mockClient.updatePackage).not.toHaveBeenCalled();
+  });
+
+  test("clearSchedule still no-ops on a published version with no schedule", async () => {
+    const mockClient = {
+      getPackage: mock(() => Promise.resolve({ versionId: "1.0.0" })),
+      updatePackage: mock(() => Promise.resolve({})),
+    } as unknown as PublisherClient;
+
+    await scheduleCommands.clearSchedule(mockClient, "env", "orders");
+
+    expect(mockClient.updatePackage).not.toHaveBeenCalled();
+  });
 });

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PublisherClient } from "../api/client.js";
-import { PackageScopeEnum } from "../api/generated";
+import { type Package, PackageScopeEnum } from "../api/generated";
 import { logInfo, logOutput, logSuccess } from "../utils/logger.js";
 
 /**
@@ -23,6 +23,9 @@ export async function viewSchedule(
   const orchestrated = Boolean(pkg?.manifestLocation);
 
   logOutput(`Package:   ${packageName}`);
+  if (pkg?.versionId) {
+    logOutput(`Version:   ${pkg.versionId}`);
+  }
   logOutput(`Scope:     ${scope}`);
   logOutput(`Schedule:  ${schedule ?? "(none: publish / on-demand only)"}`);
   logOutput(`Freshness: ${hasFreshness ? "set" : "(none)"}`);
@@ -31,6 +34,27 @@ export async function viewSchedule(
       "Control-plane managed (manifestLocation set): the standalone scheduler does not fire this package.",
     );
   }
+}
+
+/**
+ * Refuse, before any PATCH, to change the schedule of a published version.
+ * A version is immutable, so the server answers a schedule PATCH on one with
+ * 409 PACKAGE_IS_VERSIONED; its schedule is part of its content, declared in
+ * its publisher.json. This names that path instead of the server's generic
+ * refusal. A response carries `versionId` only for a published version.
+ */
+function refuseOnPublishedVersion(
+  pkg: Package | undefined,
+  packageName: string,
+): void {
+  if (!pkg?.versionId) {
+    return;
+  }
+  throw new Error(
+    `Package ${packageName} is published version ${pkg.versionId}, which is immutable, so its schedule cannot be changed in place. ` +
+      `A version's schedule is \`materialization.schedule\` in its publisher.json, with \`"scope": "version"\` at the root: ` +
+      `set it there, bump \`version\`, and publish the new version.`,
+  );
 }
 
 /**
@@ -47,6 +71,9 @@ export async function viewSchedule(
  * so it is never silent. Everything else in the block that the caller is not
  * changing is resent verbatim. An empty cron is rejected up front: every server
  * rule is truthiness-guarded, so `""` would otherwise skip them all and persist.
+ *
+ * Only a package with no published versions takes a schedule this way (see
+ * refuseOnPublishedVersion).
  */
 export async function setSchedule(
   client: PublisherClient,
@@ -60,6 +87,7 @@ export async function setSchedule(
     );
   }
   const current = await client.getPackage(environmentName, packageName);
+  refuseOnPublishedVersion(current, packageName);
   if (current?.materialization?.freshness) {
     logInfo(
       `Replacing the existing freshness policy on ${packageName} with a schedule (a package cannot have both).`,
@@ -107,6 +135,7 @@ export async function clearSchedule(
     logInfo(`No schedule set on ${packageName}; nothing to clear.`);
     return;
   }
+  refuseOnPublishedVersion(current, packageName);
   await client.updatePackage(environmentName, packageName, {
     name: packageName,
     description: current?.description,
