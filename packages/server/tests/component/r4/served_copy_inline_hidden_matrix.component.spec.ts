@@ -22,7 +22,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -171,12 +174,9 @@ async function failure(run: () => Promise<unknown>): Promise<unknown> {
  * rows.
  */
 describe("R4: a pair table beside a hidden column refuses exactly where live refuses", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental { access_modifiers }
@@ -193,9 +193,6 @@ source: wide is duckdb.table('flights') include { private: secret; internal: ts;
          seedSql,
          materialize: true,
       });
-   });
-   afterAll(async () => {
-      restore();
    });
 
    async function parity(malloy: string, answers: boolean): Promise<void> {

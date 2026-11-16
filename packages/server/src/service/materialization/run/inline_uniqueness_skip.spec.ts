@@ -12,7 +12,7 @@
  */
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
@@ -22,7 +22,7 @@ import {
    sourcesIn,
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
-import { installSettings } from "../../../test_helpers/settings_env";
+import { useMaterializationOn } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
@@ -37,14 +37,8 @@ import type { BuildEnvironment } from "./materialization_run_support";
 import { buildSource } from "./source_build";
 
 const packages = tempBuildPlanPackages();
-let restore: () => void;
-beforeEach(() => {
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
-   }).restore;
-});
+useMaterializationOn({ each: true });
 afterEach(async () => {
-   restore();
    await packages.cleanup();
 });
 

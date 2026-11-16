@@ -40,7 +40,10 @@ import {
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    computeSourceEntityId,
    plannedSources,
@@ -313,15 +316,11 @@ source: orders is orders_raw extend {
 );
 
 describe("names an author put on one table, by default", () => {
-   let restore: () => void = () => {};
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       await freshLoadPool();
    });
    afterAll(async () => {
-      restore();
       await freshLoadPool();
    });
 
@@ -472,15 +471,11 @@ source: orders is orders_raw extend {
   ${body}
 }
 `;
-   let restore: () => void = () => {};
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       await freshLoadPool();
    });
    afterAll(async () => {
-      restore();
       await freshLoadPool();
    });
 

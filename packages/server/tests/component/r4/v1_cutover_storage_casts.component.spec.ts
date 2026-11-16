@@ -6,7 +6,7 @@
 // types, and a query reading a left-out column must answer live.
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
 import {
    buildScenario,
@@ -16,17 +16,8 @@ import {
    type R4Query,
 } from "./harness";
 
-let restoreSettings: () => void;
-beforeAll(() => {
-   restoreSettings = installSettings({
-      env: {
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: "true",
-      },
-   }).restore;
-});
+useMaterializationOn();
 afterAll(async () => {
-   restoreSettings();
    await disposeScenarios();
 });
 

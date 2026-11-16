@@ -22,7 +22,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    colocatedFiles,
@@ -167,13 +167,10 @@ function considered(
 }
 
 describe("R4: extension tables answer equal to live", () => {
-   let restore: () => void;
    let colocated: R4Fixture;
    let storage: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       colocated = await buildScenario({
          files: colocatedFiles({
             "m.malloy": chainModel(""),
@@ -192,7 +189,6 @@ describe("R4: extension tables answer equal to live", () => {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -350,12 +346,9 @@ source: ev_week is ev_recent extend {
   dimension: day_of is ts.day
 }
 `;
-   let restore: () => void;
    const fixtures: Record<string, R4Fixture> = {};
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       for (const [label, storage] of [
          ["colocated", ""],
          ["storage=", 'storage="lake" '],
@@ -375,7 +368,6 @@ source: ev_week is ev_recent extend {
       }
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

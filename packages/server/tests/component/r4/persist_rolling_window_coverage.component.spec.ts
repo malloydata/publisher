@@ -18,7 +18,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -52,12 +52,9 @@ source: read_time is duckdb.table('ev') -> {
 `;
 
 describe("R4: a rolling window under v1 #@ persist storage=, at a pinned clock", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": MODEL },
          seedSql,
@@ -65,7 +62,6 @@ describe("R4: a rolling window under v1 #@ persist storage=, at a pinned clock",
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

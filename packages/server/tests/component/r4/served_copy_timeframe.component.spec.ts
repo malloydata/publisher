@@ -11,7 +11,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -90,13 +90,10 @@ function timeframes(fields: { name: string; type: unknown }[]) {
 }
 
 describe("R4: a stored timeframe truncation keeps its timeframe in the served copy", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    let persisted: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model, "base.malloy": baseModel },
          seedSql,
@@ -108,7 +105,6 @@ describe("R4: a stored timeframe truncation keeps its timeframe in the served co
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

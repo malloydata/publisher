@@ -26,7 +26,10 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../../src/errors";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -187,12 +190,9 @@ async function asEachCaller(
 const ORGS = ["acme", "globex", "initech"];
 
 describe("R4: a base's given-reading where: and dimensions, re-applied at read through the served copy", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -200,7 +200,6 @@ describe("R4: a base's given-reading where: and dimensions, re-applied at read t
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

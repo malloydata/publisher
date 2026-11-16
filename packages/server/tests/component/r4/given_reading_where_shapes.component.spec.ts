@@ -27,7 +27,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
    loadFixture,
@@ -447,15 +447,12 @@ function answered(outcome: Outcome) {
 }
 
 describe("given-reading where: by where it is written, through a real package", () => {
-   let restore: () => void;
    let fixture: LoadedFixture;
    const live: Record<string, Outcome> = {};
    const zoneLive: Record<string, Record<string, unknown>[]> = {};
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       await freshLoadPool();
       const loaded = await loadFixture(files);
       for (const c of CASES) {
@@ -480,7 +477,6 @@ describe("given-reading where: by where it is written, through a real package", 
 
    afterAll(async () => {
       await fixture?.dispose();
-      restore();
       await freshLoadPool();
    });
 
@@ -738,16 +734,13 @@ const REVIEW: {
 ];
 
 describe("given-reading where: and caller-dependent dimensions: shapes a security review probed", () => {
-   let restore: () => void;
    let fixture: LoadedFixture;
    const live: Record<string, Outcome> = {};
    const callersOf = (perCaller: boolean) =>
       perCaller ? CALLERS.map((ORG) => ({ ORG })) : [undefined];
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       await freshLoadPool();
       const loaded = await loadFixture(reviewFiles);
       for (const c of REVIEW) {
@@ -764,7 +757,6 @@ describe("given-reading where: and caller-dependent dimensions: shapes a securit
 
    afterAll(async () => {
       await fixture?.dispose();
-      restore();
       await freshLoadPool();
    });
 

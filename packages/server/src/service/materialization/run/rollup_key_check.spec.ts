@@ -13,7 +13,7 @@
  */
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import {
    makeMaterialization,
@@ -21,7 +21,7 @@ import {
    sourcesIn,
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
-import { installSettings } from "../../../test_helpers/settings_env";
+import { useMaterializationOn } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { RollupVariantPlan } from "../domain/table_plans";
@@ -58,14 +58,8 @@ import * as path from "node:path";
 import { storageDestinationRoot } from "../../connection_config";
 
 const packages = tempBuildPlanPackages();
-let restore: () => void;
-beforeEach(() => {
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
-   }).restore;
-});
+useMaterializationOn({ each: true });
 afterEach(async () => {
-   restore();
    await packages.cleanup();
 });
 

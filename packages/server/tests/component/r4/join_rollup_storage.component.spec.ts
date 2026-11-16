@@ -19,7 +19,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -250,12 +253,9 @@ for (const [kind, model, materialize] of [
    ["#@ persist storage=", persistModel, false],
 ] as const) {
    describe(`R4: join-to-rollup in a storage destination, query source stored by ${kind}`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": model },
             seedSql,
@@ -264,7 +264,6 @@ for (const [kind, model, materialize] of [
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -382,12 +381,9 @@ for (const [kind, model, materialize] of [
 }
 
 describe("R4: join-to-rollup in a storage destination, the joined source stored there too", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `#(materialize)${S}
@@ -415,7 +411,6 @@ source: flights is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -439,13 +434,10 @@ source: flights is duckdb.table('flights_raw') extend {
 });
 
 describe("R4: join-to-rollup in a storage destination re-applies the query source's read terms", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    const B = "2026-11-10 00:00:00";
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
@@ -475,7 +467,6 @@ source: last30 is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -594,12 +585,9 @@ source: open_flights is duckdb.table('flights_raw') extend {
 });
 
 describe("R4: join-to-rollup in a storage destination keeps the served copy's own rules", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.persistence
@@ -644,7 +632,6 @@ source: flights_pairs is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -704,12 +691,9 @@ source: flights_la is duckdb.table('flights_raw') extend {
   join_many: segs_la on segs_la.flight_id = id
 }
 `;
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": zonedModel },
          seedSql,
@@ -718,7 +702,6 @@ source: flights_la is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -741,7 +724,6 @@ source: flights_la is duckdb.table('flights_raw') extend {
  * the rollup (`COUNT_SEMANTICS`).
  */
 describe("R4: join-to-rollup in a storage destination, over a stored query source whose key the data breaks", () => {
-   let restore: () => void;
    let repeated: R4Fixture;
    let nulled: R4Fixture;
    let persisted: R4Fixture;
@@ -759,10 +741,8 @@ describe("R4: join-to-rollup in a storage destination, over a stored query sourc
       (NULL, 'BB', 350, TIMESTAMP '2026-11-02 10:00:00'),
       (3, 'BB', 300, TIMESTAMP '2026-11-01 10:00:00')`);
    const seedWith = (flights: string) => [flights, ...seedSql.slice(1)];
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       repeated = await buildScenario({
          files: { "m.malloy": materializeModel },
          seedSql: seedWith(REPEATED),
@@ -791,7 +771,6 @@ describe("R4: join-to-rollup in a storage destination, over a stored query sourc
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -853,12 +832,9 @@ describe("R4: join-to-rollup in a storage destination, over a stored query sourc
  * connection, and a count or sum through the join is answered live.
  */
 describe("R4: join-to-rollup (A7) in a storage destination, the joined source's primary key NULL", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.access_modifiers
@@ -890,7 +866,6 @@ source: flights is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

@@ -22,7 +22,10 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { MaterializePlan } from "../../../src/service/materialization/domain/table_plans";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -243,12 +246,9 @@ async function servedAccess(fixture: R4Fixture): Promise<Access> {
 }
 
 describe("R4: an inlined hidden join_many (known limitation 24)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -256,7 +256,6 @@ describe("R4: an inlined hidden join_many (known limitation 24)", () => {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

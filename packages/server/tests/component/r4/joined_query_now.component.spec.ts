@@ -15,7 +15,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -47,12 +47,9 @@ function sumN(rows: Record<string, unknown>[], key: string): number {
 }
 
 describe("#(materialize): a join to a query-shaped source that reads now", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `${BASE}
@@ -77,7 +74,6 @@ source: mi is ev extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -114,12 +110,9 @@ source: mi is ev extend {
 });
 
 describe("#(preaggregate): a measure read through a join to a query-shaped source that reads now", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `${BASE}
@@ -140,7 +133,6 @@ source: p is ev extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

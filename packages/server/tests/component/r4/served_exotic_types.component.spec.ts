@@ -18,7 +18,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -201,19 +201,15 @@ source: s is base -> { select: * }
 
 for (const t of TYPES) {
    describe(`R4: a storage= table with a ${t.label} column builds and serves equal to live`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": MODEL },
             seedSql: seed(t),
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -289,13 +285,10 @@ for (const t of TYPES) {
  * destination would report.
  */
 describe("R4: a stored list or struct whose field live types as sql native is left out per query", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    const blob = TYPES.find((t) => t.label === "BLOB") as ExoticType;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": MODEL },
          seedSql: seed(blob),
@@ -307,7 +300,6 @@ describe("R4: a stored list or struct whose field live types as sql native is le
       }
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -339,12 +331,9 @@ describe("R4: a stored list or struct whose field live types as sql native is le
  * would report) is left out, though the struct itself is a record live.
  */
 describe("R4: a stored struct holding a field live types as sql native is left out per query", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": MODEL },
          seedSql: seed({
@@ -360,7 +349,6 @@ describe("R4: a stored struct holding a field live types as sql native is left o
       }
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -393,12 +381,9 @@ describe("R4: a stored struct holding a field live types as sql native is left o
  * it.
  */
 describe("R4: a #(materialize) storage= table with a UUID and a zoned timestamp", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `#(materialize) storage="lake"
@@ -416,7 +401,6 @@ source: s is duckdb.table('ex') extend { primary_key: id }
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -484,12 +468,9 @@ source: s is duckdb.table('ex') extend {
 ])(
    "R4: a UUID reached through $label of a #(materialize) storage= table",
    ({ model }) => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": model },
             seedSql: [
@@ -503,7 +484,6 @@ source: s is duckdb.table('ex') extend {
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -527,12 +507,9 @@ source: s is duckdb.table('ex') extend {
 );
 
 describe("R4: a storage= table whose every column is left out builds, and its source answers live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental { persistence }
@@ -548,7 +525,6 @@ source: s is base -> { select: x }
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

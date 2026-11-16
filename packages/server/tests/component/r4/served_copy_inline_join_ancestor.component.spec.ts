@@ -11,7 +11,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    colocatedFiles,
@@ -122,12 +122,9 @@ for (const [label, storage, parentInline, problems, chained] of [
    // Without the parent's `inline=`, the parent's own copy keeps its join as
    // written, which crosses connections; the extension's copy does not.
    describe(`R4: an inlined join declared in a kept ancestor's block (${label})`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          const files = { "m.malloy": model(storage, parentInline) };
          fixture = await buildScenario({
             files: storage ? files : colocatedFiles(files),
@@ -136,7 +133,6 @@ for (const [label, storage, parentInline, problems, chained] of [
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -210,12 +206,9 @@ for (const [label, storage, parentInline, problems, chained] of [
  * storage.
  */
 describe("R4: an internal inlined join declared in a kept ancestor's block", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": model(
@@ -229,7 +222,6 @@ describe("R4: an internal inlined join declared in a kept ancestor's block", () 
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { unrecordedAudit } from "../../../src/service/access_record";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -119,12 +119,9 @@ describe.each([
 ] as const)(
    "R4: a #(preaggregate) rollup %s answers with live's annotations",
    (_label, placement) => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": model(placement) },
             seedSql,
@@ -132,7 +129,6 @@ describe.each([
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 

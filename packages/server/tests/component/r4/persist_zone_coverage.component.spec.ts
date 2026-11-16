@@ -20,7 +20,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -163,19 +163,15 @@ const CASES: [string, string, Outcome][] = [
 
 for (const tier of ["storage"] as const) {
    describe(`R4: a v1 #@ persist table's zone, read through a join or inherited [${tier}]`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": modelFor(tier) },
             seedSql,
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
       it("leaves the source over a base with zoned dimensions out of the copy (fields_not_carried)", async () => {

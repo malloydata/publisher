@@ -37,7 +37,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -731,12 +731,9 @@ const scenarios: HiddenScenario[] = [
 
 for (const scenario of scenarios) {
    describe(scenario.title, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: scenario.files,
             seedSql: scenario.seedSql ?? seedSql,
@@ -744,7 +741,6 @@ for (const scenario of scenarios) {
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -818,12 +814,9 @@ source: private_join is duckdb.table('orders') extend {
 `;
    /** The joined values a refusal must never carry. */
    const JOINED = /acme-east|globex-west|East|West/;
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": inlineModel },
          seedSql: regionsSeed,
@@ -831,7 +824,6 @@ source: private_join is duckdb.table('orders') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

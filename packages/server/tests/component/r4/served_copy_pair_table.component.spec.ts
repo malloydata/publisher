@@ -23,7 +23,10 @@ import { tmpdir } from "os";
 import path from "path";
 import { SingleConnectionRuntime } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    rerootDeclaration,
    typeDeclaration,
@@ -150,12 +153,9 @@ source: carriers is duckdb.table('notes') extend {
 `;
 
 describe("R4: an inlined join_many, served flat from its pair table, answers equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -163,7 +163,6 @@ describe("R4: an inlined join_many, served flat from its pair table, answers equ
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -574,14 +573,8 @@ source: flights_one is duckdb.table('flights') include {
 `;
 
 describe("R4: a pair table keeps the joined source's classifications", () => {
-   let restore: () => void;
-   beforeAll(() => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
-   });
+   useMaterializationOn();
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -700,12 +693,9 @@ source: flights_one is duckdb.table('flights') include {
 `;
 
 describe("R4: an inherited, render-tagged or inferred-class joined field", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": inherited },
          seedSql,
@@ -713,7 +703,6 @@ describe("R4: an inherited, render-tagged or inferred-class joined field", () =>
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1007,12 +996,9 @@ source: plain is duckdb.table('flights') extend {
 `;
 
 describe("R4: a pair table the served copy cannot read flat", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": unreadable },
          seedSql,
@@ -1020,7 +1006,6 @@ describe("R4: a pair table the served copy cannot read flat", () => {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1089,12 +1074,9 @@ source: by_hub is duckdb.table('flights') extend {
 `;
 
 describe("R4: a one-hop pair table beside a join_one whose source joins many", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": hubModel },
          seedSql: hubSeed,
@@ -1102,7 +1084,6 @@ describe("R4: a one-hop pair table beside a join_one whose source joins many", (
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1180,12 +1161,9 @@ const parentKeySeeds = {
 
 for (const [label, flights] of Object.entries(parentKeySeeds)) {
    describe(`R4: a one-hop pair table over ${label} is not built, and answers live`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": keyedModel },
             seedSql: [
@@ -1197,7 +1175,6 @@ for (const [label, flights] of Object.entries(parentKeySeeds)) {
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -1234,12 +1211,9 @@ for (const [label, flights] of Object.entries(parentKeySeeds)) {
 // the window drops, and the parent goes missing from parent measures. The
 // row past the cut-off comes first, so DuckDB's unordered row_number flags it.
 describe("R4: a one-hop pair table whose key repeats only past an upper-bound window is not built", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: segs is duckdb.table('segs') extend { primary_key: seg_id }
@@ -1269,7 +1243,6 @@ source: flights is duckdb.table('flights') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

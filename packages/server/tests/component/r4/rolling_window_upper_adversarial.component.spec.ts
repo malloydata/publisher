@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -180,13 +180,10 @@ const SOURCES: Record<string, boolean> = {
 };
 
 describe("R4: upper-bound windows in adversarial shapes answer equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    let edited: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model(30) },
          seedSql,
@@ -202,7 +199,6 @@ describe("R4: upper-bound windows in adversarial shapes answer equal to live", (
       });
    }, 120_000);
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
