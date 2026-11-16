@@ -33,22 +33,16 @@ import {
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import type { Model } from "../model";
 import type { PackageModelPolicy } from "../model_policy";
-import type {
-   BuildPlanPackage,
-   ColocatedSourceEligibility,
-   SourceEligibility,
-} from "./plan/build_plan";
+import type { BuildPlanPackage } from "./plan/build_plan";
 import {
    collisionGateLines,
    incrementalGateLines,
    invalidFindingLines,
    planCollisions,
 } from "./plan/load_gate_text";
-import type { MaterializePlan } from "./domain/table_plans";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
-   type IncrementalPolicySource,
 } from "./plan/incremental_policy";
 import {
    type Binding,
@@ -116,9 +110,16 @@ export interface PackageMaterializationOwner {
       | undefined;
 }
 
+/** The facade as `Package.materialization()` hands it out: without the plan's state. */
+export type PackageMaterializationView = Omit<PackageMaterialization, "plan">;
+
 export class PackageMaterialization {
-   /** The plan, and everything compiled beside it. */
-   private readonly plan: PlanLifecycle;
+   /**
+    * The plan, and everything compiled beside it. Read by the facade's
+    * collaborators; `Package`'s test hooks set its eligibility through it,
+    * and `Package.materialization()` leaves it out.
+    */
+   readonly plan: PlanLifecycle;
    /** The serve verdicts over the plan and the bindings here. */
    readonly verdicts: ServeVerdicts;
    /** The environment's storage destinations for a serve-shape compile. */
@@ -176,37 +177,6 @@ export class PackageMaterialization {
    }
 
    // ---- The plan (PlanLifecycle) ------------------------------------------
-
-   /** The persist build plan; null when the package declares no persist source. */
-   get buildPlan(): BuildPlan | null {
-      return this.plan.buildPlan;
-   }
-   set buildPlan(plan: BuildPlan | null) {
-      this.plan.buildPlan = plan;
-   }
-   get materializePlans(): Record<string, MaterializePlan> {
-      return this.plan.materializePlans;
-   }
-   set materializePlans(plans: Record<string, MaterializePlan>) {
-      this.plan.materializePlans = plans;
-   }
-   get sourceEligibility(): SourceEligibility | undefined {
-      return this.plan.sourceEligibility;
-   }
-   set sourceEligibility(eligibility: SourceEligibility | undefined) {
-      this.plan.sourceEligibility = eligibility;
-   }
-   get colocatedSourceEligibility(): ColocatedSourceEligibility | undefined {
-      return this.plan.colocatedSourceEligibility;
-   }
-   set colocatedSourceEligibility(
-      eligibility: ColocatedSourceEligibility | undefined,
-   ) {
-      this.plan.colocatedSourceEligibility = eligibility;
-   }
-   get incrementalPolicySources(): IncrementalPolicySource[] {
-      return this.plan.incrementalPolicySources;
-   }
 
    getBuildPlan(): BuildPlan | null {
       return this.plan.buildPlan;

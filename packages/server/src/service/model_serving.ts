@@ -1742,8 +1742,9 @@ function governRequestOf(r: {
 }): GovernRequest {
    return {
       givens: r.givens,
-      ...(r.graft ?? { bypassAuthorize: false }),
       ...r.query,
+      // Last, so nothing a query passes can lift the fail-closed default.
+      ...(r.graft ?? { bypassAuthorize: false }),
       ceiling: r.ceiling,
    };
 }

@@ -73,14 +73,13 @@
  * variant's own scope; a denial there is a defect, not a routing outcome. A
  * join branch (A7) carries no gate, so it declines past one.
  *
- * Rollups are offered cheapest read first ({@link byReadCost}: coarsest,
+ * Rollups are offered in the plan's order, cheapest read first (coarsest,
  * then colocated before `storage=`); the first that answers is used. A
  * `#(preaggregate)` rollup is read only with `materialize.enabled` on; a v1
  * `#@ preaggregate` one is read either way.
  */
 
 import { requireUnique, verdictOf, type KeyVerdict } from "../domain/key_check";
-import { byReadCost } from "../domain/read_cost";
 import {
    primaryKeyOf,
    recordedTimezoneOf,
@@ -500,8 +499,7 @@ export class RollupVariantServe {
       let closest: LegDecline | undefined;
       // An extension that adds more than fields declines its base's rollups
       // (row 22); its own joins' rollups (A7) are still tried.
-      // Cheapest read first: a coarser rollup, then a colocated one.
-      let ownPlans = [...plans].sort(byReadCost);
+      let ownPlans = plans;
       if (extension) {
          try {
             extension.delta = checkExtension(struct, extension.baseDef);

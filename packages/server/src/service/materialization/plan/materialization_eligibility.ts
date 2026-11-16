@@ -436,7 +436,8 @@ export function assertColocatedPersistNotAuthorizeGated(
             gate: {
                rowLevel: gateOutcome?.classification === "row_level",
                attributed: gateOutcome?.attributed === true,
-               inheritedRowFilter: gateOutcome?.inheritedRowFilter === true,
+               // Refused above, with its own message.
+               inheritedRowFilter: false,
             },
          },
          gateSwitches(),

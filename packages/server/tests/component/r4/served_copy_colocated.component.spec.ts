@@ -314,7 +314,7 @@ for (const tier of tiers) {
             // A count through the pair table's join is answered live.
             if (run.servedVia === undefined) return;
             // The source's own warehouse: a colocated hit, not a storage one.
-            expect(run.servedFrom).toBe("colocated");
+            expect(run.servedFrom).toBe("database");
             expect(run.servedBy?.kind).toBe("materialized");
          });
       }
@@ -441,20 +441,20 @@ source: gated is orders_raw extend {
          // nothing, even through a bind that records the manifest unfiltered
          // (a reload): the served copy's bind applies it itself.
          const materialization = fixture.pkg.materialization() as unknown as {
-            colocatedSourceEligibility: unknown;
+            plan: { colocatedSourceEligibility: unknown };
             bind(update: {
                colocated: Record<string, unknown>;
                colocatedAsGiven: true;
             }): void;
          };
-         const known = materialization.colocatedSourceEligibility;
-         materialization.colocatedSourceEligibility = undefined;
+         const known = materialization.plan.colocatedSourceEligibility;
+         materialization.plan.colocatedSourceEligibility = undefined;
          materialization.bind({ colocated: entries, colocatedAsGiven: true });
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };
          };
          expect(model.servedCopy.hasBindings()).toBe(false);
-         materialization.colocatedSourceEligibility = known;
+         materialization.plan.colocatedSourceEligibility = known;
          fixture.pkg.materialization().bind({ colocated: entries });
          expect(model.servedCopy.hasBindings()).toBe(true);
          for (const [i, REGIONS] of CALLERS.entries()) {

@@ -275,7 +275,7 @@ describe("a pair table's leaf key check, on a build", () => {
          packagePath: () => "/nowhere",
          malloyConfig: () => undefined,
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "flights@m": {
                name: "flights",
@@ -284,13 +284,13 @@ describe("a pair table's leaf key check, on a build", () => {
             },
          },
       } as never;
-      materialization.materializePlans = {
+      materialization.plan.materializePlans = {
          "flights@m": {
             persist: {},
             storedColumns: [{ name: "id", type: "number" }],
          } as unknown as MaterializePlan,
       };
-      materialization.colocatedSourceEligibility = {
+      materialization.plan.colocatedSourceEligibility = {
          eligibleEntityIds: new Set(["a"]),
       } as never;
       const bound = (): Binding | undefined =>

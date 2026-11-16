@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { PackageMaterialization } from "./materialization/package_materialization";
 import {
    sourcesIn,
    targetsIn,
@@ -450,7 +451,8 @@ describe("a failed re-derivation", () => {
       eligibleEntityIds: Set<string>;
       refused: Record<string, string>;
    } {
-      return pkg.materialization().colocatedSourceEligibility as {
+      return (pkg.materialization() as PackageMaterialization).plan
+         .colocatedSourceEligibility as {
          eligibleEntityIds: Set<string>;
          refused: Record<string, string>;
       };

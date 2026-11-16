@@ -1156,7 +1156,7 @@ describe("the rollup key record, bound for serving", () => {
          models: () => new Map(),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "ra@m": {
                name: "crew_a__rollup",
@@ -1374,7 +1374,7 @@ describe("the rollup key record, bound for serving", () => {
             measures: ["crew_size"],
          },
       });
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "r1@m": rollup("a", "crew"),
             "r2@m": rollup("b", "crew_ok"),
@@ -1409,7 +1409,7 @@ describe("the rollup key record, bound for serving", () => {
          models: () => new Map(),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "r1@m": {
                name: "segments__rollup",

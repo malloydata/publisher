@@ -89,16 +89,7 @@ describe("a storage= entry built from another definition of a same-named source"
 
       // Same name, another address.
       const plan = Object.values(
-         (
-            after.pkg.materialization() as unknown as {
-               buildPlan?: {
-                  sources: Record<
-                     string,
-                     { name?: string; sourceEntityId?: string }
-                  >;
-               };
-            }
-         ).buildPlan?.sources ?? {},
+         after.pkg.materialization().getBuildPlan()?.sources ?? {},
       ).find((s) => s.name === "orders");
       expect(plan?.sourceEntityId).toBeDefined();
       expect(plan?.sourceEntityId).not.toBe(entries[0].sourceEntityId);

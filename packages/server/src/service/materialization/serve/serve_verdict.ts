@@ -152,9 +152,9 @@ export interface ServeVerdictFacts {
     * for the router: the served copy over a table it keeps the gate on (a
     * colocated one, a `storage=` one admitted past its own gate, any under
     * `materialize.gatedSources`), or a rollup whose variant keeps its base's
-    * gates. Absent: none may, so {@link gated} means live.
+    * gates.
     */
-   keepsGate?(sourceID: string, tier: "colocated" | "storage"): boolean;
+   keepsGate(sourceID: string, tier: "colocated" | "storage"): boolean;
    /**
     * Why the bind refuses this source although the plan holds it (the
     * eligibility gate the bind applies, such as a rollup name two models
@@ -305,7 +305,7 @@ function verdictFor(
    // A gated entry point is answered from the table only when the gate
    // policy keeps the gate on it, as the router asks it.
    if (
-      !facts.keepsGate?.(sourceID, tier) &&
+      !facts.keepsGate(sourceID, tier) &&
       facts.gated(readID, readName, source.modelPath)
    ) {
       return live(

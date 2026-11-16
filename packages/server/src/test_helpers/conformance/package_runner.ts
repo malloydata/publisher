@@ -549,12 +549,11 @@ async function buildAll(
    // A pair table's leaf key check, run on the source's connection once its
    // table is written and bound beside it, as an auto-run records it (known
    // limitation 40). The package's own plans hold the check's compiled SQL.
-   const materializePlans =
-      (
-         pkg.materialization() as unknown as {
-            materializePlans?: Record<string, unknown>;
-         }
-      ).materializePlans ?? {};
+   const materializePlans = (
+      pkg.materialization() as unknown as {
+         plan: { materializePlans: Record<string, unknown> };
+      }
+   ).plan.materializePlans;
    const leafKeys = async (
       sourceID: string,
       warehouse: DuckDBConnection,

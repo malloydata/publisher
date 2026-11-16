@@ -198,6 +198,29 @@ source: secure_orders is orders -> { select: * }
          });
       });
 
+      it("sends it live when the only entry point is a named query over a gated source written inline", async () => {
+         restoreSettings = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+         // The query's run target extends the gated source in place, so it
+         // has no name of its own: its gate is the one it inherits, as the
+         // router's walk finds it.
+         loaded = await loadTempPackage({
+            "orders.malloy": GATED,
+            "index.malloy": `import "orders.malloy"
+query: by_one is secure_orders extend { dimension: one is 1 } -> { group_by: one }
+export { by_one }
+`,
+         });
+         expect(
+            byName(loaded.pkg.materialization().serveVerdicts()).orders,
+         ).toMatchObject({
+            tier: "storage",
+            verdict: "live",
+            reason: "row_level_gate",
+         });
+      });
+
       it("serves it when an ungated entry point reaches it too", async () => {
          restoreSettings = installSettings({
             env: { PERSIST_STORAGE_MODE: "on" },
@@ -307,10 +330,7 @@ describe("a serve verdict that cannot be computed", () => {
          models: () => new Map([["m.malloy", broken]]),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      (materialization as unknown as { buildPlan: unknown }).buildPlan = {
-         graphs: [],
-         sources: {},
-      };
+      materialization.plan.buildPlan = { graphs: [], sources: {} };
       const warn = spyOn(logger, "warn");
       try {
          expect(materialization.serveVerdicts()).toEqual([]);

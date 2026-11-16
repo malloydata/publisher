@@ -39,6 +39,7 @@ function facts(
       storageMode: "on",
       reachable: () => true,
       gated: () => false,
+      keepsGate: () => false,
       boundEntityIds: new Set(),
       boundStorageNames: new Set(),
       servedStorageNames: new Set(),

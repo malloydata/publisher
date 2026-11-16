@@ -572,8 +572,6 @@ export interface ServedCopyJoinBasis {
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
 
-/** The flag a model's `#@ persist` sources are planned under. */
-
 /**
  * Served copies whose compile failed on a re-root's own text, by the package
  * connections they compiled with, then by model, bindings and copy text: a

@@ -118,6 +118,7 @@ import type {
 } from "./materialization/plan/build_plan";
 import {
    PackageMaterialization,
+   type PackageMaterializationView,
    toTableNameManifest,
 } from "./materialization/package_materialization";
 import {
@@ -415,25 +416,25 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * The package's materialization: its plan, bindings, verdicts and
     * warnings. Callers reach the facade through this one accessor.
     */
-   public materialization(): PackageMaterialization {
+   public materialization(): PackageMaterializationView {
       return this.mz;
    }
    // The load path is the only writer of these; the accessors let a spec that
    // isolates a filter set them on the package, where they used to live
    // (protected, not private: nothing in this class reads the setters).
    private get buildPlan(): BuildPlan | null {
-      return this.mz.buildPlan;
+      return this.mz.plan.buildPlan;
    }
    private set buildPlan(plan: BuildPlan | null) {
-      this.mz.buildPlan = plan;
+      this.mz.plan.buildPlan = plan;
    }
    protected set sourceEligibility(eligibility: SourceEligibility | undefined) {
-      this.mz.sourceEligibility = eligibility;
+      this.mz.plan.sourceEligibility = eligibility;
    }
    protected set colocatedSourceEligibility(
       eligibility: ColocatedSourceEligibility | undefined,
    ) {
-      this.mz.colocatedSourceEligibility = eligibility;
+      this.mz.plan.colocatedSourceEligibility = eligibility;
    }
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
@@ -2894,7 +2895,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          quoted: quoting.quoted,
          models: this.models,
          colocated: this.mz.boundColocatedEntries(),
-         buildPlan: this.mz.buildPlan,
+         buildPlan: this.mz.getBuildPlan(),
          connectionEdits: this.connectionEdits,
       };
    }
@@ -2917,7 +2918,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          last.compiledFor === compiledFor &&
          last.models === this.models &&
          last.colocated === this.mz.boundColocatedEntries() &&
-         last.buildPlan === this.mz.buildPlan &&
+         last.buildPlan === this.mz.getBuildPlan() &&
          last.connectionEdits === this.connectionEdits
       );
    }
