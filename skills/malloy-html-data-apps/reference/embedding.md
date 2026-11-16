@@ -34,10 +34,15 @@ Do not rely on `body { min-height: 100vh }` to drive the frame height. The runti
 
 Inside the in-app viewer's frame (`/environments/<env>/packages/<pkg>/...`), the runtime can also tell the host what each `Publisher.query` or `queryFull` asked and got back: the model, the query text or named view, the `filterParams` and `givens` the page passed, and the row count with the first rows, or the error. A host such as a chat beside the app uses it to know what the reader is looking at.
 
-The host opts in. It posts `{ type: "publisher:subscribe" }` to the frame, with the frame's origin as the target:
+The host opts in. It posts `{ type: "publisher:subscribe" }` to the frame, with the frame's origin as the target, on every `load` of the iframe: a subscribe sent before the runtime has loaded is lost, and a page that reloads (live reload on a save, or a link within the app) starts with no subscriber.
 
 ```js
-iframe.contentWindow.postMessage({ type: "publisher:subscribe" }, frameOrigin);
+iframe.addEventListener("load", () => {
+  iframe.contentWindow.postMessage(
+    { type: "publisher:subscribe" },
+    frameOrigin,
+  );
+});
 ```
 
 The runtime accepts that only from its parent window, then posts a `publisher:query` message after each query to the origin the subscribe came from, never to `"*"`. The latest reports from before the subscribe, at most 10, are sent in order when it arrives; a frame nobody subscribes to sends nothing. Reports arrive in the order queries finish, and each carries a `seq` numbering the order they started in, so a host that keeps one report per view keeps the one with the highest `seq`. Reports are never posted on a hosted embed surface (`/apps/...`) or by a page opened in its own tab.

@@ -38,11 +38,12 @@ export function isPublisherResizeMessage(
 /**
  * postMessage `type` a host posts to an embedded data app's frame to ask for
  * its {@link PublisherQueryMessage} reports: `iframe.contentWindow.postMessage(
- * { type: "publisher:subscribe" }, frameOrigin)`. The runtime accepts it only
- * from its parent window, and from then on posts its reports to the origin the
- * subscribe came from, never `"*"`. The latest reports from before the
- * subscribe (at most 10) are sent, in order, when it arrives. Payload shape is
- * {@link PublisherSubscribeMessage}.
+ * { type: "publisher:subscribe" }, frameOrigin)`, on every `load` of the
+ * iframe: one sent before the runtime loads is lost, and a reloaded page starts
+ * with no subscriber. The runtime accepts it only from its parent window, and
+ * from then on posts its reports to the origin the subscribe came from, never
+ * `"*"`. The latest reports from before the subscribe (at most 10) are sent, in
+ * order, when it arrives. Payload shape is {@link PublisherSubscribeMessage}.
  */
 export const PUBLISHER_SUBSCRIBE_MESSAGE_TYPE = "publisher:subscribe";
 
