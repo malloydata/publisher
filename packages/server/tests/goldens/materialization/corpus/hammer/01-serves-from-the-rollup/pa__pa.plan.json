@@ -1,7 +1,16 @@
 {
   "droppedPersistSources": [],
   "internal": {
-    "annotationFindings": [],
+    "annotationFindings": [
+      {
+        "code": "deprecated-preaggregate-namespace",
+        "message": "Measure \"regional\" of source \"orders\" places its rollup with namespace=\"rollups\": namespace= is deprecated: write name=\"rollups.<table>\" instead (its schema or dataset places the table; Publisher names the table itself).",
+        "model": "pa.malloy",
+        "route": "preaggregate",
+        "subject": "orders.regional",
+        "tier": "deprecated"
+      }
+    ],
     "builds": [
       {
         "connectionName": "orders_pg",
