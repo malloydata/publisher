@@ -9,10 +9,10 @@
  * worker compiles from its own file map.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import type { KeyCheckCompiler } from "../domain/key_check";
 import { modelDefOf, primaryKeyOf } from "../../governance/ir/compiled_model";
 import { MODEL_FILE_SUFFIX } from "../../../constants";
-import { BuildCancelledError } from "../../../errors";
 import { logger } from "../../../logger";
 import { recordConnectionDigestSkipped } from "../../../materialization_metrics";
 import {

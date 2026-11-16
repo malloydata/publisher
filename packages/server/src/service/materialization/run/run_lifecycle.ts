@@ -13,8 +13,8 @@
  * process cannot be cancelled from here.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import {
-   BuildCancelledError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationNotFoundError,
