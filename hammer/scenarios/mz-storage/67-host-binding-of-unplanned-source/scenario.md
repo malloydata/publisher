@@ -14,24 +14,25 @@ The sibling of `host-binding-honors-row-level-access`. That one covers a source 
 build plan **knows about and refuses**: it is planned, so a refusal is recorded, and
 the bind path consults it. This one covers the source the plan never contains at all.
 
-Malloy only treats **query-shaped** sources as build roots. A filtered pass-through —
-`X is <table> extend { where … }` — stays type `table`, so a `#@ persist` annotation on
-it never produces a plan entry. The publisher notices and says so (the operator warning
-asserted below), but nothing refuses it, because there is nothing to refuse.
+A source with no `#@ persist` annotation is never handed to the plan, so it produces
+no plan entry: not a refusal, an absence. Nothing refuses it, because there is nothing
+to refuse. (A `#@ persist` on a shape Malloy does not plan fails the load instead —
+`persist-shape-not-materializable` — so an unannotated source is how a loaded package
+holds one.)
 
 **The rule: eligibility must be established positively.** A source that is absent from
 the plan has not been found eligible; it has not been examined. Reading a missing
-refusal as consent means the one shape Malloy silently drops is admitted — and that
-shape is the row-level-access shape, so the source whose refusal matters most is the
-one that arrives unexamined.
+refusal as consent means every source the plan never examined is admitted — and a
+given-filtered source is the row-level-access shape, so the source whose refusal
+matters most would be the one that arrives unexamined.
 
 A host can name it without anyone being careless: it built the table under an older
 compiler, or it names the source directly from its own records rather than from a plan
 the publisher computed.
 
 This scenario builds a legitimate given-FREE source into a real table holding every
-region, then binds the given-FILTERED pass-through to that same table and queries it
-with `REGION=US`. A live serve returns US only.
+region, then binds the given-FILTERED, unannotated source to that same table and
+queries it with `REGION=US`. A live serve returns US only.
 
 ## Publisher
 
@@ -63,10 +64,9 @@ source: all_rows is base -> {
   select: order_id, region, amount
 }
 
-// UNPLANNED. A filtered pass-through stays type `table`, so it is never a build
-// root and this annotation produces no plan entry at all — not a refusal, an
-// absence. Row-level filtered by a given, which is what makes the absence matter.
-#@ persist name="hbd_scoped" storage=lake
+// UNPLANNED. No `#@ persist`, so the plan has no entry for it at all — not a
+// refusal, an absence. Row-level filtered by a given, which is what makes the
+// absence matter.
 source: scoped is base extend {
   where: region ~ $REGION
 }
@@ -76,18 +76,11 @@ source: scoped is base extend {
 
 expect binding: all_rows -> lake
 
-## Warns hbd
-
-The publisher DOES notice the dropped annotation and surfaces it to an operator. It
-is the bind path that never consults it.
-
-cites: not recognized as a
-
 ## Build refusals
 
 Nothing was refused — the premise, stated positively. `scoped` is not merely absent
-from `sources`; it is absent from BOTH collections, because Malloy never handed it to
-the plan as a persist source, so nothing ever examined it. That is the whole
+from `sources`; it is absent from BOTH collections, because it carries no persist
+annotation, so nothing ever examined it. That is the whole
 difference from `host-binding-honors-row-level-access`, where the same forged binding
 names a source the plan compiled and refused.
 
