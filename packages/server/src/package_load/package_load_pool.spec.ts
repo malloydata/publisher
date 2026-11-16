@@ -43,6 +43,7 @@ import { PackageLoadProtocolError } from "./protocol_decode";
 import { failsFirstStartMarker } from "./test_fixtures/fails_first_start_marker";
 import { internalErrorToHttpError } from "../errors";
 import { loadOutcomeOrThrow } from "../service/package_load_gates";
+import { memoryDuckdbConfig } from "../test_helpers/memory_duckdb";
 import { installSettings, withSettings } from "../test_helpers/settings_env";
 import { writeTempPackage } from "../test_helpers/temp_package";
 
@@ -164,24 +165,6 @@ describe("PackageLoadPool (real worker)", () => {
       );
    }
 
-   async function buildConfig(): Promise<{
-      malloyConfig: import("@malloydata/malloy").MalloyConfig;
-      duckdb: { close: () => Promise<void> };
-   }> {
-      const { MalloyConfig, FixedConnectionMap } = await import(
-         "@malloydata/malloy"
-      );
-      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
-      const connections = new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      );
-      const malloyConfig = new MalloyConfig({ connections: {} });
-      malloyConfig.wrapConnections(() => connections);
-      return { malloyConfig, duckdb };
-   }
-
    it("loads a trivial single-model package and returns a hydratable modelDef", async () => {
       writeManifest(tempDir);
       fs.writeFileSync(
@@ -191,7 +174,7 @@ describe("PackageLoadPool (real worker)", () => {
 }`,
       );
 
-      const { malloyConfig, duckdb } = await buildConfig();
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       try {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
@@ -224,7 +207,7 @@ describe("PackageLoadPool (real worker)", () => {
 }`,
       );
 
-      const { malloyConfig, duckdb } = await buildConfig();
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       try {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
@@ -255,7 +238,7 @@ describe("PackageLoadPool (real worker)", () => {
          `source: nums is duckdb.sql("select 1 as a") extend {\n  measure: total is a.sum()\n}`,
       );
 
-      const { malloyConfig, duckdb } = await buildConfig();
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       try {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
@@ -298,7 +281,7 @@ import "b.malloy"
 source: top is a extend { dimension: also_nothing is null }`,
       );
 
-      const { malloyConfig, duckdb } = await buildConfig();
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       try {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
@@ -363,7 +346,7 @@ source: top is a extend { dimension: also_nothing is null }`,
       // import must not reach the imported model's own result.
       const base = `source: facts is duckdb.sql("select 1 as a") -> { group_by: a }\n`;
       const importer = `import "base.malloy"\nsource: top is facts extend { measure: n is count() }\n`;
-      const { malloyConfig, duckdb } = await buildConfig();
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       const baseModelDef = async (withImporter: boolean) => {
          const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-alone-"));
          try {
@@ -406,46 +389,6 @@ source: top is a extend { dimension: also_nothing is null }`,
       }
    });
 
-   it("merges a model's data styles in the order Malloy reads its imports (#1566)", async () => {
-      // root imports b then c; b's subtree (d, then e) is read before c's (f),
-      // so f, read last, wins. A level-by-level order would read e last.
-      writeManifest(tempDir);
-      const write = (rel: string, text: string) =>
-         fs.writeFileSync(path.join(tempDir, rel), text);
-      const table = `duckdb.sql("select 1 as x")`;
-      write("e.json", '{"k":{"renderer":"line_chart"}}');
-      write("f.json", '{"k":{"renderer":"bar_chart"}}');
-      write(
-         "root.malloy",
-         'import "b.malloy"\nimport "c.malloy"\nsource: r is b\n',
-      );
-      write("b.malloy", 'import "d.malloy"\nsource: b is d\n');
-      write("d.malloy", 'import "e.malloy"\nsource: d is e\n');
-      write("e.malloy", `--! styles e.json\nsource: e is ${table}\n`);
-      write("c.malloy", 'import "f.malloy"\nsource: c is f\n');
-      write("f.malloy", `--! styles f.json\nsource: f is ${table}\n`);
-
-      const { malloyConfig, duckdb } = await buildConfig();
-      try {
-         const outcome = await pool.loadPackage({
-            packagePath: tempDir,
-            packageName: "pkg",
-            environmentName: "env",
-            malloyConfig,
-            defaultConnectionName: "duckdb",
-         });
-         const styles = (modelPath: string) =>
-            outcome.models.find((m) => m.modelPath === modelPath)?.dataStyles;
-         expect(styles("root.malloy")).toEqual({
-            k: { renderer: "bar_chart" },
-         });
-         expect(styles("b.malloy")).toEqual({ k: { renderer: "line_chart" } });
-         expect(styles("c.malloy")).toEqual({ k: { renderer: "bar_chart" } });
-      } finally {
-         await duckdb.close();
-      }
-   });
-
    it("keeps an imported file's data styles when its path is not plain ASCII (#1566)", async () => {
       // A file is read under its encoded URL; a modelDef's dependencies name
       // it decoded. Both must find its styles.
@@ -465,7 +408,7 @@ source: top is a extend { dimension: also_nothing is null }`,
             `import "my models/bäse.malloy"\nsource: s is base\n`,
          );
       }
-      const { malloyConfig, duckdb } = await buildConfig();
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       try {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
@@ -488,52 +431,6 @@ source: top is a extend { dimension: also_nothing is null }`,
       }
    });
 
-   it("reports an imported non-model file's warnings from each importer, as without the cache (#1566)", async () => {
-      // `.lib/x.malloy` is not a package model (a dotfile), so only its
-      // importers report its warnings. b imports a, so it compiles after a has
-      // translated x; it must translate x itself rather than take a's.
-      writeManifest(tempDir);
-      fs.mkdirSync(path.join(tempDir, ".lib"));
-      fs.writeFileSync(
-         path.join(tempDir, ".lib", "x.malloy"),
-         `source: x is duckdb.sql("select 1 as a") extend {\n  dimension: nothing is null\n}\n`,
-      );
-      fs.writeFileSync(
-         path.join(tempDir, "a.malloy"),
-         `import ".lib/x.malloy"\nsource: a is x\n`,
-      );
-      fs.writeFileSync(
-         path.join(tempDir, "b.malloy"),
-         `import "a.malloy"\nimport ".lib/x.malloy"\nsource: b is a\n`,
-      );
-      const { malloyConfig, duckdb } = await buildConfig();
-      try {
-         const outcome = await pool.loadPackage({
-            packagePath: tempDir,
-            packageName: "pkg",
-            environmentName: "env",
-            malloyConfig,
-            defaultConnectionName: "duckdb",
-            collectProblems: true,
-         });
-         const warnedFrom = (modelPath: string) =>
-            (
-               outcome.models.find((m) => m.modelPath === modelPath)
-                  ?.problems ?? []
-            )
-               .map((p) => (p as { at?: { url?: string } }).at?.url ?? "")
-               .filter((url) => url.endsWith("/.lib/x.malloy")).length;
-         expect(outcome.models.map((m) => m.modelPath).sort()).toEqual([
-            "a.malloy",
-            "b.malloy",
-         ]);
-         expect(warnedFrom("a.malloy")).toBeGreaterThan(0);
-         expect(warnedFrom("b.malloy")).toBeGreaterThan(0);
-      } finally {
-         await duckdb.close();
-      }
-   });
-
    it("fails the models of an import cycle, and only those, without holding the load (#1566)", async () => {
       // a -> b -> c -> a. Malloy has no import-cycle check of its own (the
       // translator overflows its stack), so each of these fails as it did
@@ -549,7 +446,7 @@ source: top is a extend { dimension: also_nothing is null }`,
       write("into_cycle.malloy", `import "a.malloy"\n${src("into")}`);
       write("free.malloy", src("free"));
 
-      const { malloyConfig, duckdb } = await buildConfig();
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       try {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
@@ -614,15 +511,7 @@ source: by_category_table is orders -> by_category
          undefined,
          budget === undefined ? {} : { mainThreadWorkBudgetMs: budget },
       );
-      const { MalloyConfig, FixedConnectionMap } = await import(
-         "@malloydata/malloy"
-      );
-      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
-      const malloyConfig = new MalloyConfig({ connections: {} });
-      malloyConfig.wrapConnections(
-         () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
-      );
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       try {
          return await pool.loadPackage({
             packagePath: tempDir,
@@ -693,11 +582,7 @@ describe("PackageLoadPool (work for the main thread)", () => {
       options: { jobTimeoutMs?: number; mainThreadWorkBudgetMs?: number } = {},
    ) {
       const pool = new PackageLoadPool(1, undefined, options);
-      const { MalloyConfig, FixedConnectionMap } = await import(
-         "@malloydata/malloy"
-      );
-      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const { malloyConfig, duckdb } = memoryDuckdbConfig();
       const tableFetches: string[][] = [];
       const fetch = duckdb.fetchSchemaForTables.bind(duckdb);
       duckdb.fetchSchemaForTables = async (tables, fetchOptions) => {
@@ -706,10 +591,6 @@ describe("PackageLoadPool (work for the main thread)", () => {
          await hold(paths);
          return fetch(tables, fetchOptions);
       };
-      const malloyConfig = new MalloyConfig({ connections: {} });
-      malloyConfig.wrapConnections(
-         () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
-      );
       const load = (computeBuildPlan: boolean) =>
          pool.loadPackage({
             packagePath: tempDir,

@@ -1,0 +1,9 @@
+#(doc) Six rows: ids 1-6, cat a/b/c, v = 10, 20, ..., 60. Every check in this package is computed from it or from nested/core/orders.malloy.
+source: items is duckdb.sql("""
+  select * from (values (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40), (5, 'c', 50), (6, 'c', 60)) as t(id, cat, v)
+""") extend {
+  primary_key: id
+  measure:
+    row_count is count()
+    v_total is v.sum()
+}

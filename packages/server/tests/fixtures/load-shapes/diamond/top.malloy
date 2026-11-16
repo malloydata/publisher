@@ -1,0 +1,14 @@
+import "left.malloy"
+import "right.malloy"
+
+source: top_items is left_items extend {
+  join_one: r is right_items on id = r.id
+}
+
+#(doc) Expect row_count 6, left_total 420, right_total 1050.
+query: check_diamond is top_items -> {
+  aggregate:
+    row_count
+    left_total is side_total
+    right_total is r.side_total
+}
