@@ -1651,6 +1651,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.packageName;
    }
 
+   /**
+    * The host port's `forgetKeyUniqueness`: a run about to write these
+    * tables drops their bound key checks first (see
+    * PackageMaterialization.forgetKeyUniqueness).
+    */
+   public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      this.mz.forgetKeyUniqueness(sourceEntityIds);
+   }
+
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
    public chainBuildText(request: ChainBuildRequest): ChainBuildText {
       return this.mz.chainBuildText(request);
