@@ -21,7 +21,6 @@ import {
    logInternalFailure,
 } from "../../../errors";
 import {
-   applySessionResourceLimits,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -32,7 +31,7 @@ import {
    type PartitionKey,
 } from "../../connection";
 import {
-   createIsolatedBuildSession,
+   withIsolatedSession,
    writePartitionedTable,
 } from "./materialization_build_session";
 import { quoteIdentifier } from "../../quoting";
@@ -179,28 +178,20 @@ export async function loadStorageTable(params: {
    }
    // A configured data path is checked before anything attaches; with none,
    // the catalog's recorded path is checked once it is attached.
-   const configuredPath =
-      destinationConnection.ducklakeConnection.storage?.bucketUrl;
+   const ducklake = destinationConnection.ducklakeConnection;
+   const configuredPath = ducklake.storage?.bucketUrl;
    if (configuredPath) {
       assertUnderDataPath(params.uri, configuredPath);
    }
    const reader = readerSql(params.uri, params.format, params.options);
 
-   const { session, dispose, workDir } = createIsolatedBuildSession(
-      `load_${destinationName}`,
-   );
-   try {
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
-      await attachDuckLakeReadWrite(
-         session,
-         destinationName,
-         destinationConnection.ducklakeConnection,
-      );
+   return withIsolatedSession(`load_${destinationName}`, async (session) => {
+      await attachDuckLakeReadWrite(session, destinationName, ducklake);
       if (!configuredPath) {
          const recorded = await recordedCatalogSettings(
             session,
             destinationName,
-            destinationConnection.ducklakeConnection.catalog?.metadataSchema,
+            ducklake.catalog?.metadataSchema,
          );
          assertUnderDataPath(params.uri, recorded.data_path ?? "");
       }
@@ -210,9 +201,7 @@ export async function loadStorageTable(params: {
       return await writeTableAs(session, params, reader, (error) =>
          readerRefusal(error, params.uri),
       );
-   } finally {
-      await dispose();
-   }
+   });
 }
 
 /**
@@ -318,11 +307,7 @@ export async function copyStorageTable(params: {
         ? `${COPY_SOURCE_ALIAS}_2`
         : COPY_SOURCE_ALIAS;
 
-   const { session, dispose, workDir } = createIsolatedBuildSession(
-      `copy_${destinationName}`,
-   );
-   try {
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
+   return withIsolatedSession(`copy_${destinationName}`, async (session) => {
       await attachDuckLakeReadWrite(
          session,
          destinationName,
@@ -372,9 +357,7 @@ export async function copyStorageTable(params: {
          )),
          partitionedBy,
       };
-   } finally {
-      await dispose();
-   }
+   });
 }
 
 /**

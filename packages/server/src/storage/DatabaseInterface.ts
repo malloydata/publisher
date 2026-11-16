@@ -203,6 +203,16 @@ export interface ResourceRepository {
       id: string,
       updates: MaterializationUpdate,
    ): Promise<Materialization>;
+   /**
+    * Update a run only while its status is one of `fromStatuses`, in one
+    * statement: null when it is not (or the run is gone), and nothing is
+    * written.
+    */
+   updateMaterializationFrom(
+      id: string,
+      updates: MaterializationUpdate,
+      fromStatuses: readonly MaterializationStatus[],
+   ): Promise<Materialization | null>;
    deleteMaterialization(id: string): Promise<void>;
 
    // Incremental ledger

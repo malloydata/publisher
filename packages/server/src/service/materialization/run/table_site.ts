@@ -17,7 +17,7 @@ import {
    destinationSchemaOf,
    storageTablePath,
 } from "../domain/storage_table_path";
-import { withStorageDestinationSession } from "./materialization_build_session";
+import { withDestinationSession } from "./materialization_build_session";
 import { pathSegments } from "./table_mark_sql";
 import { STORAGE_DIALECT } from "../domain/dialect";
 
@@ -92,12 +92,13 @@ export async function atTableSite<T>(
    if (destinationName) {
       const destinationConnection = context.destinationFor(destinationName);
       if (!destinationConnection) return undefined;
-      return withStorageDestinationSession(
+      return withDestinationSession(
          {
             destinationName,
             destinationConnection,
             environmentPath: context.environmentPath,
          },
+         { purpose: "view" },
          (session) =>
             fn(
                storageTableSite(

@@ -26,7 +26,6 @@ import { getPersistCollisionEnforce } from "../../../config";
 import { MaterializationMode } from "../../../materialization_metrics";
 import {
    Materialization,
-   MaterializationUpdate,
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
@@ -57,7 +56,6 @@ import {
    LedgerEntry,
    ManifestEntry,
    ManifestReference,
-   MaterializationStatus,
    RefusedSource,
 } from "../domain/types";
 import {
@@ -80,6 +78,7 @@ import {
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
 import {
+   isActiveRun,
    outcomeFor,
    packageRelativeRun,
    tallySources,
@@ -106,7 +105,7 @@ import {
    writeTargetsFor,
 } from "./run_instructions";
 import { packageRelativeText } from "../../../package_relative_text";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryUnownedTables } from "./table_ownership";
@@ -151,24 +150,20 @@ export interface RunCollaborators {
    ): IncrementalRunContext | undefined;
    /** The instructed build loop ({@link InstructedBuild.run}). */
    executeInstructedBuild: InstructedBuild["run"];
-   /** One source's build ({@link SourceBuilder.build}). */
-   buildOneSource: SourceBuilder["build"];
-   /** The storage tier's build ({@link StorageBuildStrategy.build}). */
-   buildOneSourceIntoStorage: StorageBuildStrategy["build"];
+   /** One source's build ({@link buildSource}). */
+   buildOneSource: (
+      options: Parameters<typeof buildSource>[0],
+   ) => ReturnType<typeof buildSource>;
    /** A chained storage build on its stored parents. */
    buildDownstreamViaParents: StorageBuildStrategy["buildDownstreamViaParents"];
    /** See {@link Reclaimer.reclaimStorageTablesFromFailedRun}. */
    reclaimStorageTablesFromFailedRun: Reclaimer["reclaimStorageTablesFromFailedRun"];
-   /** See {@link Reclaimer.dropMaterializedTables}. */
-   dropMaterializedTables: Reclaimer["dropMaterializedTables"];
    /** How a reclaim drops one run's entries ({@link Reclaimer.dropManifestEntries}). */
    dropManifestEntries: Reclaimer["dropManifestEntries"];
    /** See {@link ManifestCommitter.commit}. */
    commitManifest: ManifestCommitter["commit"];
    /** See {@link ManifestCommitter.autoLoad}. */
    autoLoadManifest: ManifestCommitter["autoLoad"];
-   /** See {@link ManifestCommitter.mostRecentEntries}. */
-   getMostRecentManifestEntries: ManifestCommitter["mostRecentEntries"];
 }
 
 /**
@@ -326,8 +321,8 @@ export class MaterializationService {
          repository,
          host,
          lifecycle: this.lifecycle,
-         tableLock: (environmentId, packageName) =>
-            this.claims.lockFor(environmentId, packageName),
+         withTableLock: (environmentId, packageName, fn) =>
+            this.claims.withTableLock(environmentId, packageName, fn),
       });
       this.reclaimer = new Reclaimer({
          repository,
@@ -364,11 +359,6 @@ export class MaterializationService {
                   this.collaborators.buildOneSource(...a),
                reclaimStorageTablesFromFailedRun: (...a) =>
                   this.collaborators.reclaimStorageTablesFromFailedRun(...a),
-               packageRuns: async (environmentName, packageName) =>
-                  (await this.repository.listMaterializations(
-                     await this.resolveEnvironmentId(environmentName),
-                     packageName,
-                  )) ?? [],
                tableNotOwned: async (environmentName, packageName, target) => {
                   await this.claims.markHeldElsewhere(
                      await this.resolveEnvironmentId(environmentName),
@@ -382,23 +372,16 @@ export class MaterializationService {
                   );
                },
             }).run(...args),
-         buildOneSource: (...args) =>
-            new SourceBuilder((request) =>
-               this.collaborators.buildOneSourceIntoStorage(request),
-            ).build(...args),
-         buildOneSourceIntoStorage: (request) => storage.build(request),
+         buildOneSource: (options) =>
+            buildSource(options, (request) => storage.build(request)),
          buildDownstreamViaParents: (...args) =>
             storage.buildDownstreamViaParents(...args),
          reclaimStorageTablesFromFailedRun: (...args) =>
             this.reclaimer.reclaimStorageTablesFromFailedRun(...args),
-         dropMaterializedTables: (...args) =>
-            this.reclaimer.dropMaterializedTables(...args),
          dropManifestEntries: (...args) =>
             this.reclaimer.dropManifestEntries(...args),
          commitManifest: (...args) => this.committer.commit(...args),
          autoLoadManifest: (...args) => this.committer.autoLoad(...args),
-         getMostRecentManifestEntries: (...args) =>
-            this.committer.mostRecentEntries(...args),
       };
    }
 
@@ -408,17 +391,12 @@ export class MaterializationService {
 
    // ==================== STATE MACHINE ====================
 
-   /** In-flight runs, so they can be cancelled. In-process only. */
-   private get runningAbortControllers(): Map<string, AbortController> {
+   /**
+    * In-flight runs (the lifecycle's). Unread here: specs read it to wait for
+    * or abort a background run.
+    */
+   protected get runningAbortControllers(): Map<string, AbortController> {
       return this.lifecycle.runningAbortControllers;
-   }
-
-   private transition(
-      id: string,
-      next: MaterializationStatus,
-      extra?: Omit<MaterializationUpdate, "status">,
-   ): Promise<Materialization> {
-      return this.lifecycle.transition(id, next, extra);
    }
 
    private runInBackground(
@@ -667,9 +645,7 @@ export class MaterializationService {
       // recorded as one step (see claimTables).
       return versions.withVersionLock(packageName, version, async () => {
          await versions.resolve(packageName, version);
-         return this.claims
-            .lockFor(environmentId, packageName)
-            .runExclusive(start);
+         return this.claims.withTableLock(environmentId, packageName, start);
       });
    }
 
@@ -1036,7 +1012,7 @@ export class MaterializationService {
          const committed = await this.commitRun(run, target, derived, built);
          await this.finishCommittedRun(run, target, derived, committed, state);
       } catch (err) {
-         const outcome = outcomeFor(err, signal);
+         const outcome = outcomeFor(signal);
          this.lifecycle.recordRun(mode, outcome, startedAt);
          telemetry.finished(outcome, Date.now() - startedAt, err);
          markRunFailureReported(err);
@@ -1187,13 +1163,12 @@ export class MaterializationService {
          // `forceRefresh` too, where nothing is carried: the entries still
          // decide each table's name (an incremental source keeps the name
          // its ledger is keyed by, a readable name stays put).
-         const priorEntries =
-            await this.collaborators.getMostRecentManifestEntries(
-               environmentId,
-               packageName,
-               id,
-               reader,
-            );
+         const priorEntries = await this.committer.mostRecentEntries(
+            environmentId,
+            packageName,
+            id,
+            reader,
+         );
          let recheck: Record<string, BuildInstruction>;
          ({
             instructions,
@@ -1265,16 +1240,14 @@ export class MaterializationService {
          (orchestrated || owned === undefined)
       ) {
          if (orchestrated) {
-            await this.claims
-               .lockFor(environmentId, packageName)
-               .runExclusive(() =>
-                  this.claims.markSuperseded(
-                     environmentId,
-                     packageName,
-                     id,
-                     instructions,
-                  ),
-               );
+            await this.claims.withTableLock(environmentId, packageName, () =>
+               this.claims.markSuperseded(
+                  environmentId,
+                  packageName,
+                  id,
+                  instructions,
+               ),
+            );
          } else {
             await this.claims.claimTables(
                environmentId,
@@ -1327,9 +1300,9 @@ export class MaterializationService {
          refused: derivedRefused,
          cleared: clearedTiers,
       } = derived;
-      return await this.collaborators.executeInstructedBuild(
+      return await this.collaborators.executeInstructedBuild({
          compiled,
-         withChainBuildText(
+         environment: withChainBuildText(
             environment,
             pkg,
             // A version's files never change; only the unversioned package
@@ -1340,12 +1313,12 @@ export class MaterializationService {
                   false),
          ),
          instructions,
-         carried,
+         seedEntries: carried,
          signal,
-         opts.strictUpstreams ?? false,
+         strict: opts.strictUpstreams ?? false,
          // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
-         orchestrated ? { environmentId, packageName } : undefined,
-         {
+         owner: orchestrated ? { environmentId, packageName } : undefined,
+         buildMetadata: {
             // Optional: a lighter package surface resolves without a
             // package-level layer.
             packageMaterialization: pkg.getMaterializationConfig?.() ?? null,
@@ -1360,14 +1333,14 @@ export class MaterializationService {
             },
          },
          incremental,
-         Object.values(derivedRefused),
+         priorRefusals: Object.values(derivedRefused),
          clearedTiers,
-         orchestrated,
-         opts.warehouseReach,
+         hostInstructed: orchestrated,
+         warehouseReach: opts.warehouseReach,
          // Auto-run only: Publisher owns every write to its tables, so it
          // can tell a joined table that has not changed since a check
          // passed. A host's tables are its own.
-         orchestrated
+         uniqueness: orchestrated
             ? undefined
             : await (async () => {
                  const prior = opts.forceRefresh
@@ -1383,7 +1356,14 @@ export class MaterializationService {
                     prior ? rollupKeyRecordsIn(prior) : undefined,
                  );
               })(),
-      );
+         // Fresh on each ask: a run committed since the run began may name
+         // the table.
+         packageRuns: async () =>
+            (await this.repository.listMaterializations(
+               environmentId,
+               packageName,
+            )) ?? [],
+      });
    }
 
    /**
@@ -1635,6 +1615,9 @@ export class MaterializationService {
       packageName: string,
       excludeId: string,
    ): Promise<Record<string, unknown> | undefined> {
+      // Read right before the build, never from the run's start: a run
+      // created during the claim and rebind must make this one rely on
+      // nothing.
       let runs: Materialization[];
       try {
          runs = (
@@ -1663,6 +1646,8 @@ export class MaterializationService {
       packageName: string,
       deletedId: string,
    ): Promise<void> {
+      // Read fresh, after the drop: each run's metadata is written back
+      // whole, so an older copy would undo what another run wrote since.
       const runs =
          (await this.repository.listMaterializations(
             environmentId,
@@ -1693,25 +1678,14 @@ export class MaterializationService {
          versionId,
       );
 
-      const cancellable: MaterializationStatus[] = [
-         "PENDING",
-         "MANIFEST_ROWS_READY",
-      ];
-      if (!cancellable.includes(m.status)) {
+      if (!isActiveRun(m.status)) {
          throw new InvalidStateTransitionError(
             `Materialization ${id} is ${m.status}, cannot stop`,
          );
       }
-
-      const abortController = this.runningAbortControllers.get(id);
-      if (abortController) {
-         abortController.abort();
-         return m;
-      }
-      return this.transition(id, "CANCELLED", {
-         completedAt: new Date(),
-         error: "Cancelled",
-      });
+      // Undefined when the run was aborted in this process: it records
+      // CANCELLED itself as it unwinds.
+      return (await this.lifecycle.cancel(id)) ?? m;
    }
 
    /**
@@ -1732,19 +1706,14 @@ export class MaterializationService {
          options.versionId,
       );
 
-      const terminal: MaterializationStatus[] = [
-         "MANIFEST_FILE_READY",
-         "FAILED",
-         "CANCELLED",
-      ];
-      if (!terminal.includes(m.status)) {
+      if (isActiveRun(m.status)) {
          throw new InvalidStateTransitionError(
             `Cannot delete materialization ${id} while it is ${m.status}`,
          );
       }
 
       if (options.dropTables) {
-         await this.collaborators.dropMaterializedTables(
+         await this.reclaimer.dropMaterializedTables(
             environmentName,
             packageName,
             m,

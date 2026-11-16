@@ -72,30 +72,26 @@ describe("executeInstructedBuild", () => {
       };
       return (
          ctx.service.collaborators as unknown as {
-            executeInstructedBuild: (
-               c: unknown,
-               env: unknown,
-               i: BuildInstruction[],
-               s: Record<string, unknown>,
-               sig: AbortSignal,
-               strict: boolean,
-               ...rest: unknown[]
-            ) => Promise<ExecuteResult>;
+            executeInstructedBuild: (options: {
+               compiled: unknown;
+               environment: unknown;
+               instructions: BuildInstruction[];
+               seedEntries: Record<string, unknown>;
+               signal: AbortSignal;
+               strict: boolean;
+               [option: string]: unknown;
+            }) => Promise<ExecuteResult>;
          }
-      ).executeInstructedBuild(
+      ).executeInstructedBuild({
          compiled,
          environment,
          instructions,
-         seed,
-         new AbortController().signal,
+         seedEntries: seed,
+         signal: new AbortController().signal,
          strict,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
+         priorRefusals: [],
          hostInstructed,
-      );
+      });
    }
 
    it("builds instructed sources in dependency order and seeds carried entries", async () => {
@@ -2108,10 +2104,10 @@ describe("executeInstructedBuild", () => {
                ...args: unknown[]
             ) => Promise<ExecuteResult & { refusalsInFailures: number }>;
          };
-         const result = await service.executeInstructedBuild(
+         const result = await service.executeInstructedBuild({
             compiled,
             environment,
-            [
+            instructions: [
                {
                   sourceEntityId: "b0k0k0k0k0k0k0k0",
                   materializedTableId: "mt-ok",
@@ -2125,13 +2121,10 @@ describe("executeInstructedBuild", () => {
                   realization: "COPY",
                },
             ],
-            {},
-            new AbortController().signal,
-            false,
-            undefined,
-            undefined,
-            undefined,
-            [
+            seedEntries: {},
+            signal: new AbortController().signal,
+            strict: false,
+            priorRefusals: [
                {
                   name: "ext",
                   sourceID: "ext",
@@ -2140,11 +2133,11 @@ describe("executeInstructedBuild", () => {
                   message: "Source 'ext' cannot be materialized",
                },
             ],
-            new Map([
+            clearedTiers: new Map([
                ["ok", "colocated"],
                ["base", "colocated"],
             ]),
-         );
+         });
          expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
             "ok_v1",
          );
