@@ -614,6 +614,18 @@ describe("regressions", () => {
    });
 });
 
+describe("a filter value that is not a string", () => {
+   it("is refused on the query path with a bad request naming the filter, as a cell refuses it", async () => {
+      const model = await makeModel("products.malloy");
+      await expectFilterRejected(
+         model,
+         "run: products -> { group_by: org_id; aggregate: n is count() }",
+         { Organization: 7 } as unknown as FilterParams,
+         'Filter "Organization" takes a string or an array of strings, not a number',
+      );
+   });
+});
+
 // Malloy keywords are case-insensitive, so `RUN:` compiles like `run:`.
 describe("a keyword spelled in another case does not skip enforcement", () => {
    for (const runKw of ["RUN:", "Run:"]) {

@@ -335,11 +335,7 @@ describe("RollupVariantServe (storage=)", () => {
       ).toMatchObject({ code: "rollup_not_built" });
    });
 
-   // Known gap: a stored partial the measure cannot merge is declined as a
-   // missing field that fails to compile, with a warning each time, where the
-   // view leg refuses the same case as a type mismatch. When it is refused as
-   // one, this expectation flips.
-   it("known gap: declines, as a compile failure rather than a type mismatch, a stored partial whose type the measure cannot merge", async () => {
+   it("refuses, as a stored column live's type cannot read, a stored partial whose type the measure cannot merge, without a warning", async () => {
       const warn = sinon.stub(logger, "warn");
       try {
          const binding = bindingFor(f, {
@@ -360,11 +356,47 @@ describe("RollupVariantServe (storage=)", () => {
             ),
          ).toMatchObject({
             code: "rollup_missing_field",
-            detail: "the query does not compile against the rollup",
+            detail:
+               "the stored rollup cannot answer with live's columns: the stored `total` (VARCHAR) cannot be read as live's number",
          });
-         expect((warn.firstCall.args as unknown as [string])[0]).toBe(
-            "A #(preaggregate) rollup variant did not compile",
-         );
+         expect(warn.called).toBe(false);
+      } finally {
+         warn.restore();
+      }
+   });
+
+   it("warns once for a variant that does not compile, however many queries it declines", async () => {
+      const warn = sinon.stub(logger, "warn");
+      try {
+         const binding = bindingFor(f, {
+            virtualHandle: "vh_missing_partial",
+            schema: [{ name: "category", type: "VARCHAR" }],
+         });
+         // One snapshot of the bindings, as every query until they change reads.
+         const pinned = pinnedOf([binding]);
+         for (let i = 0; i < 3; i++) {
+            expect(
+               await outcomeOf(
+                  f.rollups.attempt({
+                     queryString: query,
+                     givens: undefined,
+                     authorRunnable: f.materializer.loadQuery(query),
+                     pinned,
+                  }),
+               ),
+            ).toMatchObject({
+               code: "rollup_missing_field",
+               detail: "the query does not compile against the rollup",
+            });
+         }
+         const compileWarnings = warn
+            .getCalls()
+            .filter(
+               (call) =>
+                  (call.args as unknown as [string])[0] ===
+                  "A #(preaggregate) rollup variant did not compile",
+            );
+         expect(compileWarnings.length).toBe(1);
       } finally {
          warn.restore();
       }
