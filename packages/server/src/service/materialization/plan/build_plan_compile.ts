@@ -45,6 +45,7 @@ import {
 import { SourceMap } from "../text/source_map";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { packageFiles } from "../text/package_files";
+import { resolveConnectionTypes } from "../../connection_type";
 
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
@@ -203,6 +204,7 @@ export async function compilePackageBuildPlan(
       builds: parts.builds,
       tables: parts.tables,
       connectionDigests,
+      connectionTypes: resolveConnectionTypes(connections),
       connections,
       tableFolds,
       droppedPersistSources: parts.droppedPersistSources,

@@ -61,6 +61,14 @@ export interface CompiledBuildPlan<Finding = unknown> {
     */
    tables: Record<string, TablePlan>;
    connectionDigests: Record<string, string>;
+   /**
+    * Each connection's configured type, by name (`postgres`, `duckdb`,
+    * `ducklake`, ...), resolved through the package, so the package's DuckDB
+    * sandbox reads `duckdb`. Data, like the digests, so the plan derives the
+    * same in the package-load worker. The `storage=` gate reads it
+    * (materialization_eligibility.ts). Absent: none recorded.
+    */
+   connectionTypes?: Record<string, string>;
    connections: Map<string, MalloyConnection>;
    /**
     * What each moved source's address folds in (`foldDistinctTableNames` in

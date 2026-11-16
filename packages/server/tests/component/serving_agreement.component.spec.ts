@@ -19,6 +19,7 @@ import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 
 let rootDir: string;
 let envPath: string;
@@ -381,6 +382,14 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
 }
 
 describe("the verdicts, path report, preview and warnings agree on one package", () => {
+   // `buildAll` builds the `storage=` tables from the sandbox by hand, which
+   // no real build can, so the sandbox stands in for a warehouse here.
+   let restoreTypes: () => void;
+   beforeEach(() => {
+      restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+   });
+   afterEach(() => restoreTypes());
+
    it("says the same thing about every materialized source on every surface", async () => {
       const { pkg } = await loadPackage({
          "model.malloy": AGREEMENT_MODEL,

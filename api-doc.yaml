@@ -10705,6 +10705,7 @@ components:
               not_duckdb_portable,
               public_surface_unknown,
               read_only_dialect,
+              storage_source_unsupported,
               env_reference,
               rollup_name_collision,
               empty_storage,
@@ -10729,7 +10730,10 @@ components:
             a given, which has no read-time re-application to put the term back),
             `read_only_dialect` (a colocated `#@ persist` on a source whose
             dialect cannot create tables; SQL Server today, whose connection
-            reports `canPersist: false`), `rollup_name_collision` (a
+            reports `canPersist: false`), `storage_source_unsupported`
+            (`storage=` on a source whose connection the build cannot pass
+            through to a destination, e.g. the package's DuckDB sandbox; it
+            is not built and is answered live), `rollup_name_collision` (a
             pre-aggregation rollup whose generated name, and so its table, is
             also another model's rollup with different content; neither builds
             or serves, and each model answers from its base), and

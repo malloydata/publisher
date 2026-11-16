@@ -96,6 +96,7 @@ import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
+import { recordConnectionType } from "./connection_type";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
 
@@ -3578,6 +3579,9 @@ export function buildEnvironmentMalloyConfig(
                if (isDuckDBConnection(connection)) {
                   await applyExtensionSessionSettings(connection);
                }
+               // Its configured type, which a `storage=` build's eligibility
+               // reads (a dialect does not tell DuckDB from DuckLake).
+               recordConnectionType(connection, metadata?.apiConnection.type);
                return applyConnectionFingerprint(connection, metadata);
             },
          };

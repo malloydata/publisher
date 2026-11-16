@@ -180,11 +180,14 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
 
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
-everyone. A source a compile-time gate refuses is also a package warning, code
-`persist-not-built` (severity `warn`), carrying the gate's message, with `subject` the source. The
-code was `persist-source-refused`; for one release every `persist-not-built` warning is repeated
-with that old code and the same message, so a reader that matches the old code keeps working, and
-then the repeat is removed. A rollup a gate
+everyone. A source a compile-time gate refuses is also a package warning (severity `warn`),
+carrying the gate's message, with `subject` the source, under its route's not-built code:
+`persist-not-built` for a `#@ persist` source, `materialize-not-built` for a `#(materialize)`
+source, `persist-view-not-built` for a persisted view and `persist-query-not-built` for a persisted
+query (each of the last two with `subject` its generated source). The code was
+`persist-source-refused`; for one release each such warning is repeated with that old code and the
+same message, so a reader that matches the old code keeps working, and then the repeat is removed.
+A refusal no earlier release raised, `storage_source_unsupported`, is not repeated. A rollup a gate
 refuses is `preaggregate-not-built` instead, with `subject` its base and a message naming its base,
 its grain and the gate's reason.
 
@@ -491,8 +494,18 @@ A colocated build creates a table in the source warehouse, so it needs a connect
 connection whose static attributes report `canPersist: false` (SQL Server today: the connector is
 read-only) has a plain `#@ persist` refused at load with reason `read_only_dialect`; the source
 serves live and the package's warnings carry the refusal. A `storage=` destination is a different
-question — it reads from the source and writes elsewhere — and the storage build names the source
-types it can read.
+question — it reads from the source and writes elsewhere — and the storage build can read only a
+source whose connection it can pass a query through to: Postgres, BigQuery or Snowflake, or a
+DuckLake catalog building into that same catalog. A `storage=` source on any other connection, the
+package's own DuckDB sandbox (`duckdb.sql(...)`, `duckdb.table(...)`) and an environment DuckDB
+connection included, is refused at load with reason `storage_source_unsupported`, on every route
+(`#@ persist`, `#(materialize)`, a persisted view or query, and a `storage=` rollup over such a
+base): it is not built, its queries are answered live, the route's `*-not-built` warning names the
+connection, and a run builds the rest of the package. Drop `storage=` to build it in its own
+connection, or put the source on a warehouse connection. The decision is the connection's
+configured type, never its name. A DuckLake source on a catalog other than its destination's is
+admitted by the plan, which does not know the destination's catalog, and refused by the run with the
+same reason; that source alone is not built, and the run builds the rest.
 
 ### Stored column types follow the model, not the warehouse
 
@@ -602,7 +615,7 @@ Fix the annotation each line names, then publish or reload. What fails the load:
 - Two different sources on one table in one destination, by their `name=` ([`materialization-table-collision`](#whose-table-it-is)).
 - A misspelled route or directive: `#(materialise)`, `#(Materialize)`, `#@persist`, `#@ persits`, `# persist`, `#(persist)` (`materialization-near-miss`). `#(materialize)` and `#(preaggregate)` spelled exactly while `PUBLISHER_MATERIALIZE=false` are ignored, not a failure.
 
-**A valid annotation Publisher cannot build is refused alone.** An annotation that is right, but asks for what this environment, dialect, capacity or governance cannot give (an unconfigured `storage=` destination, a gate, a free parameter or given, a read-only dialect, an incremental source on a dialect without a bounded range, a hidden field in a rollup), refuses that item only: it is not built, its queries are answered live with live's rows, the rest of the package loads and serves, and the package carries a warning with severity `warn` saying why.
+**A valid annotation Publisher cannot build is refused alone.** An annotation that is right, but asks for what this environment, dialect, capacity or governance cannot give (an unconfigured `storage=` destination, a gate, a free parameter or given, a read-only dialect, a `storage=` source on a connection the build cannot pass through, an incremental source on a dialect without a bounded range, a hidden field in a rollup), refuses that item only: it is not built, its queries are answered live with live's rows, the rest of the package loads and serves, and the package carries a warning with severity `warn` saying why.
 
 The code says which outcome it is:
 
@@ -615,7 +628,7 @@ Warnings about the deployment rather than one item carry codes of their own, suc
 
 Renamed and retired codes:
 
-- `persist-source-refused` is now `persist-not-built`. For one release each gate refusal that used to carry `persist-source-refused` is repeated under it, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed. The refusals new in this release carry `persist-not-built` only.
+- `persist-source-refused` is now the route's not-built code: `persist-not-built`, `materialize-not-built`, `persist-view-not-built` or `persist-query-not-built`. For one release each gate refusal that used to carry `persist-source-refused` is repeated under it, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed. A refusal no earlier release raised, `storage_source_unsupported`, carries only its route's code, without the repeat.
 - `preaggregate-malformed` is no longer produced: the same mistake is `preaggregate-invalid` or `preaggregate-unparseable`, and fails the load.
 - The API keeps three reasons it no longer produces: `RefusedSource.reason` `empty_storage` and `env_reference`, and `OmittedSource.reason` `persist_annotation_unparseable`.
 

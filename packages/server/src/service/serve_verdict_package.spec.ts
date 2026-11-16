@@ -7,7 +7,15 @@
  * and not another, the storage mode, a bind, and the publish warning that
  * names a materialized source nothing can query.
  */
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   spyOn,
+} from "bun:test";
 import { logger } from "../logger";
 import { installSettings } from "../test_helpers/settings_env";
 import {
@@ -20,6 +28,16 @@ import {
    type PackageMaterializationOwner,
 } from "./materialization/package_materialization";
 import { MATERIALIZATION_UNREACHABLE_CODE } from "./materialization/serve/serve_verdict";
+import { recordConnectionsAsForTests } from "./connection_type";
+
+// The package sandbox stands in for a warehouse in these fixtures: a
+// `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
+// source on it (storage_source_unsupported).
+let restoreConnectionTypes: () => void;
+beforeAll(() => {
+   restoreConnectionTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+});
+afterAll(() => restoreConnectionTypes());
 
 const ROWS = `duckdb.sql("select * from (values (1, 'east', 10), (2, 'west', 20)) as t(id, region, amount)")`;
 

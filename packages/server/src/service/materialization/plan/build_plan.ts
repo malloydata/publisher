@@ -1473,6 +1473,7 @@ export function deriveBuildPlan(
       | "builds"
       | "tables"
       | "connectionDigests"
+      | "connectionTypes"
       | "omittedSources"
       | "tableFolds"
    >,
@@ -1498,7 +1499,10 @@ export function deriveBuildPlan(
    const wireSources: Record<string, WirePersistSourcePlan> = {};
    const refusedSources: Record<string, WireRefusedSource> = {};
    const omitted: Omission[] = [...(compiled.omittedSources ?? [])];
-   const gateInputs: TierGateInputs = { tables };
+   const gateInputs: TierGateInputs = {
+      tables,
+      connectionTypes: compiled.connectionTypes,
+   };
    for (const [sourceID, table] of Object.entries(tables)) {
       const { source } = table;
       if (include && !include.has(source.name)) continue;
@@ -1696,6 +1700,7 @@ function eligibilityOf(
    const storage = refusalOf(() =>
       assertMaterializationEligible(source, deriveAnnotationFields(source), {
          gateEnforcedAtRead: keepsGate,
+         connectionTypes: ctx.gateInputs.connectionTypes,
       }),
    );
    return storage

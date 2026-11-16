@@ -55,6 +55,7 @@ import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -332,6 +333,11 @@ describe.skipIf(process.platform === "win32")(
                } as never,
             ],
          );
+         // The plan reads the warehouse's recorded type, so it is reported as
+         // Postgres there too, or its `storage=` sources would be refused.
+         spies.push({
+            mockRestore: recordConnectionsAsForTests({ warehouse: "postgres" }),
+         });
          const apiConnection = env.getApiConnection.bind(env);
          spies.push(
             spyOn(env, "getApiConnection").mockImplementation((name) =>

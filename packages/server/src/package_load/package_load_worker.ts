@@ -103,6 +103,10 @@ import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
 import {
+   recordConnectionType,
+   resolveConnectionTypes,
+} from "../service/connection_type";
+import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
@@ -586,10 +590,13 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                         port.postMessage(req);
                      },
                   );
-                  const proxy = new ProxyConnection(
-                     response.metadata,
-                     job.requestId,
-                     job.environmentName,
+                  const proxy = recordConnectionType(
+                     new ProxyConnection(
+                        response.metadata,
+                        job.requestId,
+                        job.environmentName,
+                     ),
+                     response.metadata.connectionType,
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
@@ -1564,6 +1571,7 @@ async function finishWorkerBuildPlan(
          refuseAloneInPlan({
             ...parts,
             connectionDigests,
+            connectionTypes: resolveConnectionTypes(connections),
             ...(scope === "version" ? { versionScoped: true } : {}),
          }),
          materializationConfig,

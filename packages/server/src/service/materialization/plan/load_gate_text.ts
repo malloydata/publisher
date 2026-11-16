@@ -124,7 +124,7 @@ export function invalidFindingLines(
 }
 
 /** The not-built code of a planned source: a persisted view's, a query's, or a source's. */
-function refusalCodeOf(sourceID: string, name: string): string {
+export function refusalCodeOf(sourceID: string, name: string): string {
    const url = sourceID.slice(sourceID.indexOf("@") + 1);
    if (url.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) {
       if (name.endsWith("__view")) return "persist-view-not-built";

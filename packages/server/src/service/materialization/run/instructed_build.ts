@@ -756,6 +756,7 @@ export class InstructedBuild {
          assertMaterializationEligible(
             persistSource,
             deriveAnnotationFields(persistSource),
+            { connectionTypes: run.compiled.connectionTypes },
          );
       }
 
@@ -946,6 +947,8 @@ export class InstructedBuild {
             );
          }
       } catch (buildErr) {
+         const refused = { run, persistSource, instruction, sourceEntityId };
+         if (refusedForItsConnection(refused, buildErr)) return undefined;
          // A build that ran, or an ownership refusal: that refusal is the
          // table's, so no source sharing it may write it, and each takes the
          // same reason. Any other check before the build (uniqueness, ...)
@@ -1218,6 +1221,38 @@ function settleRefusals(run: InstructedRun): {
    }
    run.pendingRefusals = [];
    return { refusalsInFailures, refusedBesideBuilt };
+}
+
+/**
+ * Record a `storage=` source whose connection the build cannot read as
+ * refused, as the plan's gate would have (storage_build_strategy.ts), so the
+ * run goes on. Returns whether `err` was that refusal.
+ */
+function refusedForItsConnection(
+   source: {
+      run: InstructedRun;
+      persistSource: PersistSource;
+      instruction: BuildInstruction;
+      sourceEntityId: string;
+   },
+   err: unknown,
+): boolean {
+   if (
+      !(err instanceof MaterializationEligibilityError) ||
+      err.reason !== "storage_source_unsupported"
+   ) {
+      return false;
+   }
+   const { run, persistSource, instruction, sourceEntityId } = source;
+   recordPendingRefusal(
+      run,
+      persistSource,
+      instruction,
+      sourceEntityId,
+      err,
+      true,
+   );
+   return true;
 }
 
 /**

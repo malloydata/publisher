@@ -51,6 +51,10 @@ import {
 import { routeReadsEnv } from "../../motly";
 import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
+import {
+   storageBuildReadsConnectionType,
+   unreadableSourceConnectionMessage,
+} from "../domain/source_connection_type";
 import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../text/read_text";
 
 /**
@@ -105,9 +109,13 @@ export function assertMaterializationEligible(
    options: {
       /** From {@link gateEnforcedAtRead}: skip only the gate refusal (3). */
       gateEnforcedAtRead?: boolean;
+      /** The plan's connection types (`TierGateInputs.connectionTypes`). */
+      connectionTypes?: TierGateInputs["connectionTypes"];
    } = {},
 ): void {
    const sourceName = persistSource.name;
+
+   assertStorageBuildReadsConnection(persistSource, options.connectionTypes);
 
    // Fail closed: an unreadable parameter surface is a refusal.
    let unbound: string[];
@@ -172,6 +180,33 @@ export function assertMaterializationEligible(
             `'storage=').`,
       });
    }
+}
+
+/**
+ * Refuse a `storage=` source whose connection the build cannot read. The build
+ * passes a query through to the source's warehouse and copies the result into
+ * the destination, which it can do for a passthrough warehouse and a DuckLake
+ * catalog only (`storageBuildReadsConnectionType`). The package's DuckDB
+ * sandbox, or an environment DuckDB connection, holds data the build's own
+ * session cannot reach, so the source is not built and is answered live.
+ *
+ * Decided from the connection's configured type, resolved through the package
+ * (the sandbox is the package's, every other connection the environment's),
+ * never from its name. A connection with no recorded type, or not resolved, is
+ * left to the build, which refuses that source alone
+ * (storage_build_strategy.ts).
+ */
+function assertStorageBuildReadsConnection(
+   persistSource: PersistSource,
+   connectionTypes: TierGateInputs["connectionTypes"],
+): void {
+   const type = connectionTypes?.[persistSource.connectionName];
+   if (type === undefined || storageBuildReadsConnectionType(type)) return;
+   recordEligibilityRefused("storage_source_unsupported");
+   throw new MaterializationEligibilityError({
+      reason: "storage_source_unsupported",
+      message: unreadableSourceConnectionMessage(persistSource, type),
+   });
 }
 
 /**
@@ -807,6 +842,12 @@ export interface TierGateInputs {
     * with the message to report (`collidingRollups` in build_plan.ts).
     */
    collidingRollups?: ReadonlyMap<string, string>;
+   /**
+    * Each connection's configured type, by name, resolved through the
+    * package (`CompiledBuildPlan.connectionTypes`): whether a `storage=`
+    * build can read a source.
+    */
+   connectionTypes?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -920,6 +961,7 @@ export function assertTierEligible(
       }
       assertMaterializationEligible(source, annotationFields, {
          gateEnforcedAtRead: gateEnforcedAtRead(source.sourceID, plan, true),
+         connectionTypes: plan?.connectionTypes,
       });
       assertBuildReadsNoCurrentTime(source, plan);
       return;

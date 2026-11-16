@@ -1697,3 +1697,84 @@ describe("gateEnforcedAtRead's tier", () => {
       }
    });
 });
+
+describe("a storage= source on a connection the build cannot read", () => {
+   // The build passes a query through to Postgres, BigQuery or Snowflake, or
+   // builds a DuckLake source into its own catalog; the package's DuckDB
+   // sandbox it cannot read at all. Decided from the connection's recorded
+   // type, never its name.
+   const model = `##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#@ persist storage="lake"
+source: stored is base -> { group_by: region; aggregate: c is count() }`;
+   const refusalOf = (run: () => void): MaterializationEligibilityError => {
+      try {
+         run();
+      } catch (err) {
+         return err as MaterializationEligibilityError;
+      }
+      throw new Error("expected a refusal");
+   };
+
+   it("refuses a sandbox source, naming the connection and the remedy", async () => {
+      const source = (await persistSources(model)).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, true, {
+            connectionTypes: { duckdb: "duckdb" },
+         }),
+      );
+      expect(err).toBeInstanceOf(MaterializationEligibilityError);
+      expect(err.reason).toBe("storage_source_unsupported");
+      expect(err.message).toContain("connection 'duckdb'");
+      expect(err.message).toContain("cannot be passed through");
+      expect(err.message).toContain("Drop 'storage='");
+      expect(err.message).toContain("warehouse connection");
+   });
+
+   it("decides by the recorded type, not the connection's name", async () => {
+      const source = (await persistSources(model)).stored;
+      for (const type of ["postgres", "bigquery", "snowflake", "ducklake"]) {
+         expect(() =>
+            assertTierEligible(source, true, {
+               connectionTypes: { duckdb: type },
+            }),
+         ).not.toThrow();
+      }
+      for (const type of ["motherduck", "mysql", "trino", "sqlserver"]) {
+         expect(
+            refusalOf(() =>
+               assertTierEligible(source, true, {
+                  connectionTypes: { duckdb: type },
+               }),
+            ).reason,
+         ).toBe("storage_source_unsupported");
+      }
+   });
+
+   it("leaves a connection with no recorded type to the build", async () => {
+      const source = (await persistSources(model)).stored;
+      expect(() => assertTierEligible(source, true, {})).not.toThrow();
+   });
+
+   it("does not refuse the same source built colocated", async () => {
+      const source = (await persistSources(model)).stored;
+      expect(() =>
+         assertTierEligible(source, false, {
+            connectionTypes: { duckdb: "duckdb" },
+         }),
+      ).not.toThrow();
+   });
+
+   it("is refused by the serve side's storage eligibility too", async () => {
+      const source = (await persistSources(model)).stored;
+      const out = collectSourceEligibility({
+         tables: { [source.sourceID]: { source, kind: "persist" } as never },
+         connectionDigests: {},
+         connectionTypes: { duckdb: "duckdb" },
+      });
+      expect(out.eligible).toEqual([]);
+      expect(out.refused[source.sourceID]).toContain(
+         "cannot be passed through",
+      );
+   });
+});

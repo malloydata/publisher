@@ -26,6 +26,7 @@ import type {
 import {
    ChainedShapeNotCarriedError,
    ChainedUpstreamMissingError,
+   ConnectionNotFoundError,
    MaterializationEligibilityError,
    WarehouseRecomputeRefusedError,
 } from "../../../errors";
@@ -35,6 +36,7 @@ import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
    recordStoredTypeFallback,
+   recordEligibilityRefused,
 } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import type { ApiConnection } from "../../model";
@@ -114,6 +116,50 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
+import {
+   storageBuildReadsConnectionType,
+   unreadableSourceConnectionMessage,
+} from "../domain/source_connection_type";
+
+/**
+ * The source's connection, for a `storage=` build that can read it. The plan's
+ * gate refuses a source the build cannot read, but one that reaches here
+ * anyway (a host's instruction, a plan with no recorded connection types) is
+ * refused alone rather than failing the run: a connection the environment
+ * does not hold (the package's DuckDB sandbox), or one of a type the build
+ * does not pass through. Thrown as a refusal, which the run records against
+ * this source and goes on (instructed_build.ts).
+ */
+function storageSourceConnection(
+   environment: { getApiConnection(name: string): ApiConnection },
+   persistSource: PersistSource,
+   destinationConnection: ApiConnection,
+): ApiConnection {
+   let connection: ApiConnection | undefined;
+   try {
+      connection = environment.getApiConnection(persistSource.connectionName);
+   } catch (err) {
+      if (!(err instanceof ConnectionNotFoundError)) throw err;
+   }
+   const type = connection?.type;
+   if (
+      connection &&
+      type &&
+      storageBuildReadsConnectionType(type) &&
+      // A DuckLake source builds only into its own catalog.
+      (type !== "ducklake" || isSameCatalog(connection, destinationConnection))
+   ) {
+      return connection;
+   }
+   recordEligibilityRefused("storage_source_unsupported");
+   throw new MaterializationEligibilityError({
+      reason: "storage_source_unsupported",
+      message: unreadableSourceConnectionMessage(
+         persistSource,
+         connection ? (type ?? "unknown") : undefined,
+      ),
+   });
+}
 
 /** What a `storage=` build of one source starts from. */
 export interface StorageBuildRequest {
@@ -411,14 +457,16 @@ export class StorageBuildStrategy
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
       const destinationName = instruction.destination!;
-      const sourceConnection = environment.getApiConnection(
-         persistSource.connectionName,
-      );
       // From the destination list, never the connection list: an unconfigured
       // destination must fail (422) rather than resolve a same-named connection
       // and write a tenant's own warehouse.
       const destinationConnection =
          environment.getStorageDestination(destinationName);
+      const sourceConnection = storageSourceConnection(
+         environment,
+         persistSource,
+         destinationConnection,
+      );
 
       const { incrementalRefresh, refresh } = await this.refreshOf(
          params,
