@@ -51,6 +51,7 @@ import type { ServedCopyServe } from "../../../src/service/materialization/serve
 import {
    deriveColocatedServeBindings,
    kindFromPlan,
+   v1StoredColumnsOf,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
 import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
@@ -207,10 +208,11 @@ export interface R4Scenario {
    /**
     * Planned sources, by name, built colocated: each table is built in the
     * scenario's database and put in the build manifest, not a storage
-    * binding. Known gap: a colocated `#@ persist` source's table is bound but
-    * never read, so its served run answers live where a real run reads the
-    * table (harness_drift.component.spec.ts pins it). A persisted view's
-    * companion source is read through the view path.
+    * binding. A `#@ persist` source's table is bound on the served copy with
+    * the columns its build captured, as the package binds it, so its served
+    * run reads the table as a real run does (harness_drift.component.spec.ts
+    * holds the two together). A persisted view's companion source is read
+    * through the view path.
     */
    colocated?: string[];
    /**
@@ -764,7 +766,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // its parent's stored table.
    const entryBySourceID = new Map<string, ManifestEntry>();
    const storedBuildSQL: Record<string, string> = {};
-   const colocatedMaterializeEntries: Record<
+   // The colocated tables the served copy binds: each `#(materialize)` one
+   // and each `#@ persist` one, as the package binds them.
+   const colocatedServeEntries: Record<
       string,
       {
          tableName: string;
@@ -850,7 +854,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             sourceName: source.name,
          });
          const leafKeys = await pairLeafKeys(source);
-         colocatedMaterializeEntries[entityIdOf(source, i)] = {
+         colocatedServeEntries[entityIdOf(source, i)] = {
             tableName: table,
             ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
@@ -864,6 +868,26 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             `CREATE TABLE ${table} AS ${buildSQLOf(source, { entries: {} })}`,
          );
          colocatedEntries[entityIdOf(source, i)] = { tableName: table };
+         // Its columns and their warehouse types, captured as a colocated
+         // build captures them (colocated_build_strategy.ts), which the
+         // served copy's binding of a `#@ persist` table declares.
+         const schema = await capturedColocatedSchema({
+            connection: duckdb,
+            physicalTableName: table,
+            dialect: duckdb.dialectName,
+            sourceName: source.name,
+         });
+         const nativeSchema = await capturedNativeSchema({
+            run: (sql) => duckdb.runSQL(sql, { rowLimit: 100_000 }),
+            physicalTableName: table,
+            dialect: duckdb.dialectName,
+            sourceName: source.name,
+         });
+         colocatedServeEntries[entityIdOf(source, i)] = {
+            tableName: table,
+            ...(schema ? { schema } : {}),
+            ...(nativeSchema ? { nativeSchema } : {}),
+         };
          continue;
       }
       const table = `r4_${source.name}_${i}`;
@@ -1080,10 +1104,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          undefined,
          planSourceIds(plan),
       ).map((b) => ({ ...b, kind: kindFromPlan(b, kinds) })),
-      // The colocated `#(materialize)` tables, through the package's own
-      // derivation.
+      // The colocated `#(materialize)` and `#@ persist` tables, through the
+      // package's own derivation: a `#@ persist` one is read by the served
+      // copy re-rooted on it, as a real run reads it.
       ...deriveColocatedServeBindings({
-         entries: colocatedMaterializeEntries,
+         entries: colocatedServeEntries,
          planSources: Object.fromEntries(
             sources.map((source) => [
                source.sourceID,
@@ -1097,6 +1122,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          ),
          materializePlans,
          eligible: () => true,
+         v1Schema: (sourceID) =>
+            v1StoredColumnsOf(authorMap.node(sourceID)?.def),
+         notV1: (sourceID) => viewBuildSourceIDs.has(sourceID),
       }),
    ];
 
