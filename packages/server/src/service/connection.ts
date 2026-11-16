@@ -97,11 +97,19 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { recordConnectionType } from "./connection_type";
+import {
+   hardCloseOwnedDuckDBConnections,
+   installDuckDBHardClose,
+   ownDuckDBConnection,
+} from "./duckdb_hard_close";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
 
 // One DuckDB instance per database file (duckdb_instance_sharing.ts).
 installDuckDBInstanceSharing();
+// Retired DuckDB connections free their native database at once
+// (duckdb_hard_close.ts).
+installDuckDBHardClose();
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -3390,9 +3398,9 @@ export function buildEnvironmentMalloyConfig(
                let connectionPromise = duckLakeCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
-                  connectionPromise = Promise.resolve(
-                     buildDuckLakeConnection(metadata, entry),
-                  );
+                  const built = buildDuckLakeConnection(metadata, entry);
+                  ownDuckDBConnection(malloyConfig, built);
+                  connectionPromise = Promise.resolve(built);
                   duckLakeCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
@@ -3511,9 +3519,9 @@ export function buildEnvironmentMalloyConfig(
                let connectionPromise = azureDuckDBCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
-                  connectionPromise = Promise.resolve(
-                     buildAzureDuckDBConnection(metadata, entry),
-                  );
+                  const built = buildAzureDuckDBConnection(metadata, entry);
+                  ownDuckDBConnection(malloyConfig, built);
+                  connectionPromise = Promise.resolve(built);
                   azureDuckDBCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
@@ -3545,6 +3553,9 @@ export function buildEnvironmentMalloyConfig(
             }
 
             const connection = await base.lookupConnection(name);
+            // This generation's lookup created it, so releasing the generation
+            // hard-closes it.
+            ownDuckDBConnection(malloyConfig, connection);
             if (metadata) {
                await attachOnce(connection, metadata);
             }
@@ -3607,6 +3618,9 @@ export function buildEnvironmentMalloyConfig(
             }),
             ...evictions,
          ]);
+         // Every DuckDB connection this generation created is closed now, so
+         // free each native database as soon as its last query settles.
+         hardCloseOwnedDuckDBConnections(malloyConfig);
          // Tunnels close only after the builds above settle: an in-flight
          // openProxy registers its endpoint inside that promise, and the tunnel
          // must stay up while the DB connections drain.

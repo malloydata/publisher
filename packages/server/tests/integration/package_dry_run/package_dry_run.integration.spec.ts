@@ -221,23 +221,18 @@ source: orders_public is orders extend { measure: n is count() }
    }, 30_000);
 
    /**
-    * Counts `shutdown("close")` on every package's connections while `run`
-    * runs: a dry run's package is never served, so it must close its own.
+    * Counts `releaseConnections()` on every package while `run` runs: a dry
+    * run's package is never served, so it must close its own connections.
     */
    const closesDuring = async (run: () => Promise<unknown>) => {
       let closed = 0;
-      const original = Package.prototype.getMalloyConfig;
+      const original = Package.prototype.releaseConnections;
       const spy = spyOn(
          Package.prototype,
-         "getMalloyConfig",
+         "releaseConnections",
       ).mockImplementation(function (this: Package) {
-         const config = original.call(this);
-         const shutdown = config.shutdown.bind(config);
-         config.shutdown = async (...args: Parameters<typeof shutdown>) => {
-            if (args[0] === "close") closed++;
-            return shutdown(...args);
-         };
-         return config;
+         closed++;
+         return original.call(this);
       });
       try {
          await run();
