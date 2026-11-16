@@ -21,7 +21,6 @@ import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
 import { changedConnectionNames, Environment } from "./environment";
 import { Package } from "./package";
-import type { EnvironmentStore } from "./environment_store";
 import { MaterializationService } from "./materialization/run/materialization_service";
 import {
    BadRequestError,
@@ -36,6 +35,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../test_helpers/materialization_service_harness";
 
 // Build plans of real packages loaded through a real Environment, around an
 // edit of the connection their persisted source reads.
@@ -187,11 +187,10 @@ async function editConnection(
 
 /** A MaterializationService over `environment`, as main_server.ts wires it. */
 function serviceOver(environment: Environment): MaterializationService {
-   return new MaterializationService({
-      storageManager: { getRepository: () => repo },
-      getEnvironment: async () => environment,
-      getLoadedEnvironments: () => [environment],
-   } as unknown as EnvironmentStore);
+   return serviceOverEnvironment(
+      () => repo,
+      () => environment,
+   );
 }
 
 /** One instructed table for the package's persisted source at `address`. */

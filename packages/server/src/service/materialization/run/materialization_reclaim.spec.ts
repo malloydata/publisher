@@ -41,6 +41,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -233,12 +234,11 @@ describe("reclaiming an archived version's tables", () => {
       environment: Environment,
       collaborators: RunCollaboratorOverrides = {},
    ): MaterializationService {
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => environment,
-         getLoadedEnvironments: () => [environment],
-      } as unknown as EnvironmentStore;
-      const created = new MaterializationService(store, collaborators);
+      const created = serviceOverEnvironment(
+         () => repo,
+         () => environment,
+         collaborators,
+      );
       environment.setVersionArchivedHook((packageName, versionId) => {
          reclaims.push(
             created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),

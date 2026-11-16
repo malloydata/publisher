@@ -5,6 +5,7 @@ import { afterEach, beforeEach } from "bun:test";
 import * as sinon from "sinon";
 import { ConnectionNotFoundError, DestinationNotFoundError } from "../errors";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
+import type { Environment } from "../service/environment";
 import type { EnvironmentStore } from "../service/environment_store";
 import {
    MaterializationService,
@@ -111,6 +112,36 @@ export function createMocks(
    const service = new MaterializationService(environmentStore, collaborators);
 
    return { sandbox, repository, environmentStore, service };
+}
+
+/**
+ * Another service over `mocks`' faked store, with `collaborators` replacing
+ * the steps a run takes.
+ */
+export function serviceWith(
+   mocks: Pick<ServiceMocks, "environmentStore">,
+   collaborators: RunCollaboratorOverrides,
+): MaterializationService {
+   return new MaterializationService(mocks.environmentStore, collaborators);
+}
+
+/**
+ * A MaterializationService over a real repository and environment, the way the
+ * server wires one, with the store answering every environment name with that
+ * environment. Both are read through thunks, so a spec that reopens either
+ * keeps the one service.
+ */
+export function serviceOverEnvironment(
+   repository: () => ResourceRepository,
+   environment: () => Environment,
+   collaborators: RunCollaboratorOverrides = {},
+): MaterializationService {
+   const store = {
+      storageManager: { getRepository: () => repository() },
+      getEnvironment: async () => environment(),
+      getLoadedEnvironments: () => [environment()],
+   } as unknown as EnvironmentStore;
+   return new MaterializationService(store, collaborators);
 }
 
 /**

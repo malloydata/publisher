@@ -23,7 +23,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";
@@ -39,6 +38,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -116,11 +116,10 @@ describe("a colocated rollup over a colocated #@ persist base", () => {
       );
       env = await Environment.create(ENV, envPath, []);
       await env.addPackage(PKG);
-      service = new MaterializationService({
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    }
 
    beforeEach(async () => {

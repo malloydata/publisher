@@ -14,7 +14,6 @@ import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { VersionRef } from "../../identity";
 import { storageBindingResolverFor } from "../../versions/materialization_scope";
 import { autoRunTableName } from "../../../test_helpers/readable_table_name";
@@ -41,6 +40,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * The `name=` views earlier releases left (leftover_name_views.ts). Publisher
@@ -170,12 +170,10 @@ describe("leftover name= views through real builds", () => {
    }
 
    function newService(environment: Environment): MaterializationService {
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => environment,
-         getLoadedEnvironments: () => [environment],
-      } as unknown as EnvironmentStore;
-      const created = new MaterializationService(store);
+      const created = serviceOverEnvironment(
+         () => repo,
+         () => environment,
+      );
       environment.setVersionArchivedHook((packageName, versionId) => {
          reclaims.push(
             created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),

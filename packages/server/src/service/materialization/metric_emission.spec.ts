@@ -18,7 +18,10 @@ import { logger } from "../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../materialization_metrics";
 import type { MaterializationUpdate } from "../../storage/DatabaseInterface";
 import { tempBuildPlanPackages } from "../../test_helpers/incremental_test_harness";
-import { createMocks } from "../../test_helpers/materialization_service_harness";
+import {
+   createMocks,
+   serviceWith,
+} from "../../test_helpers/materialization_service_harness";
 import {
    fakeSource,
    makeMaterialization,
@@ -165,7 +168,7 @@ describe("publisher_materialization_eligibility_refused_total", () => {
 describe("a run's instruments", () => {
    /** A service whose build loop and commit are stubbed, as a run sees them. */
    function stubbedRun(ctx: ReturnType<typeof createMocks>) {
-      const service = new MaterializationService(ctx.environmentStore, {
+      const service = serviceWith(ctx, {
          executeInstructedBuild: sinon.stub().resolves({
             entries: {},
             failures: {},

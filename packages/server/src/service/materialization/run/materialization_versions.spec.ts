@@ -39,6 +39,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 // Materializations of published versions, end to end: real versions compiled
 // from real folders, real builds into a DuckDB file every version reaches (the
@@ -151,12 +152,11 @@ function newService(
    environment: Environment,
    collaborators: RunCollaboratorOverrides = {},
 ): MaterializationService {
-   const store = {
-      storageManager: { getRepository: () => repo },
-      getEnvironment: async () => environment,
-      getLoadedEnvironments: () => [environment],
-   } as unknown as EnvironmentStore;
-   const created = new MaterializationService(store, collaborators);
+   const created = serviceOverEnvironment(
+      () => repo,
+      () => environment,
+      collaborators,
+   );
    environment.setVersionArchivedHook((packageName, versionId) => {
       reclaims.push(
          created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),

@@ -13,7 +13,6 @@ import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName } from "../../identity";
 import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { MaterializationService } from "./materialization_service";
@@ -22,6 +21,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * Two packages of one environment, on one shared warehouse connection, each
@@ -91,12 +91,10 @@ describe("two packages on one warehouse connection", () => {
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage("pa");
       await env.addPackage("pb");
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore;
-      service = new MaterializationService(store);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {

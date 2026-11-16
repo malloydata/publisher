@@ -7,8 +7,10 @@ import * as sinon from "sinon";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
-import { createMocks } from "../../../test_helpers/materialization_service_harness";
-import { MaterializationService } from "./materialization_service";
+import {
+   createMocks,
+   serviceWith,
+} from "../../../test_helpers/materialization_service_harness";
 import {
    compiledWith,
    fakeSource,
@@ -219,7 +221,7 @@ describe("run telemetry through the build loop", () => {
          [["s1"], ["s2"]],
          new Map([["duckdb", connection]]),
       );
-      const service = new MaterializationService(ctx.environmentStore, {
+      const service = serviceWith(ctx, {
          buildOneSource: buildOneSource as never,
       });
       const telemetry = new RunTelemetry(
@@ -688,7 +690,7 @@ describe("run telemetry review findings", () => {
                };
             },
          );
-      const service = new MaterializationService(ctx.environmentStore, {
+      const service = serviceWith(ctx, {
          buildOneSource: build as never,
       });
       const telemetry = new RunTelemetry("run-1", "auto", "pkg");

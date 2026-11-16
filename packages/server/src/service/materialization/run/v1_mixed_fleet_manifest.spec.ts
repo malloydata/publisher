@@ -31,13 +31,13 @@ import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName } from "../../identity";
 import { MaterializationService } from "./materialization_service";
 import {
    openTempStorage,
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -93,12 +93,10 @@ describe("a host manifest from an older worker of the v1 cutover (mixed fleet)",
       );
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage("pa");
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore;
-      service = new MaterializationService(store);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {

@@ -7,7 +7,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { BuildPlanUnavailableError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { PACKAGE_STALE_MARKER } from "../../src/service/materialization/run/materialization_run_support";
 import type {
@@ -18,6 +17,7 @@ import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { openTempStorage } from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 /**
  * A chained `storage=` build's text is the package's files rewritten at the
@@ -123,11 +123,10 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
          ],
       );
       await env.addPackage(PKG);
-      service = new MaterializationService({
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {

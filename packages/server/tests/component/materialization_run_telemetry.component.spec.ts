@@ -7,7 +7,6 @@ import * as sinon from "sinon";
 import { logger } from "../../src/logger";
 import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import type {
    Materialization,
@@ -24,6 +23,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 /**
  * The run and build telemetry of a real materialization run (plan section 5,
@@ -94,11 +94,10 @@ describe("materialization run telemetry, through a real build", () => {
       );
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage(PKG);
-      service = new MaterializationService({
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
 
       harness = await startMetricsHarness();
       resetMaterializationTelemetryForTesting();

@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { __setPackageLoadPoolForTests } from "../../src/package_load/package_load_pool";
@@ -29,6 +28,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -179,11 +179,10 @@ describe.skipIf(!POSTGRES_URL)(
            ('west', 5.5, TIMESTAMP '2026-02-01 00:00:00')
          ) AS t(region, amt, d)`);
          await env.addPackage(PKG);
-         service = new MaterializationService({
-            storageManager: { getRepository: () => repo },
-            getEnvironment: async () => env,
-            getLoadedEnvironments: () => [env],
-         } as unknown as EnvironmentStore);
+         service = serviceOverEnvironment(
+            () => repo,
+            () => env,
+         );
       });
 
       afterEach(async () => {

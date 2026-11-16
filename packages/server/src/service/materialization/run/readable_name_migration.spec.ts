@@ -13,7 +13,6 @@ import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName } from "../../identity";
 import { packageTableSuffix } from "../../versions/materialization_scope";
 import { MaterializationService } from "./materialization_service";
@@ -22,6 +21,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * The move to readable table names, end to end on a DuckDB warehouse: a
@@ -77,12 +77,10 @@ describe("a table named before readable names", () => {
       );
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage(PKG);
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore;
-      service = new MaterializationService(store);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {

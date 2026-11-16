@@ -18,7 +18,6 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { unrecordedAudit } from "../../access_record";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName, VersionRef } from "../../identity";
 import { storageBindingResolverFor } from "../../versions/materialization_scope";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
@@ -30,6 +29,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * Two persisted sources that compile to one build: `named`, at its author's
@@ -103,11 +103,10 @@ afterEach(async () => {
 });
 
 function newService(): MaterializationService {
-   return new MaterializationService({
-      storageManager: { getRepository: () => repo },
-      getEnvironment: async () => env,
-      getLoadedEnvironments: () => [env],
-   } as unknown as EnvironmentStore);
+   return serviceOverEnvironment(
+      () => repo,
+      () => env,
+   );
 }
 
 async function build(

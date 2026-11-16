@@ -14,7 +14,6 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { unrecordedAudit } from "../../access_record";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName, VersionRef } from "../../identity";
 import { QueryPrivileges } from "../../model_query_request";
 import type { Package } from "../../package";
@@ -24,6 +23,7 @@ import {
    openTempStorage,
    disposeTempStorage,
 } from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * The v1 cutover on a real Postgres (the R4 subset the
@@ -268,11 +268,10 @@ for (const flag of [true, false])
             env.setStorageBindingResolver(
                storageBindingResolverFor(repo, ENV_ID),
             );
-            service = new MaterializationService({
-               storageManager: { getRepository: () => repo },
-               getEnvironment: async () => env,
-               getLoadedEnvironments: () => [env],
-            } as unknown as EnvironmentStore);
+            service = serviceOverEnvironment(
+               () => repo,
+               () => env,
+            );
             await sql(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
             await sql(`CREATE SCHEMA ${SCHEMA}`);
             await sql(`CREATE TABLE ${q("ev")} AS SELECT * FROM (VALUES
