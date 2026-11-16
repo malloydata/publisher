@@ -1378,6 +1378,9 @@ export class ServedCopyServe {
          current.generation === generation &&
          sameBindings(current.over, bindings)
       ) {
+         // Kept again under this turn: an older request still compiling
+         // must not replace the copy this one answered from.
+         keep(current);
          return current;
       }
       const key = compileKeyOf(bindings);

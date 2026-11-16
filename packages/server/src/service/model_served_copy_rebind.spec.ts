@@ -31,8 +31,13 @@ import { installSettings } from "../test_helpers/settings_env";
 import { materializationFixture } from "../test_helpers/materialization_fixture";
 import type { Binding } from "./materialization/domain/binding";
 import { GeneratedFiles } from "./materialization/text/generated_files";
-import { PackageLoadPool } from "../package_load/package_load_pool";
+import {
+   __setPackageLoadPoolForTests,
+   currentPackageLoadPool,
+   PackageLoadPool,
+} from "../package_load/package_load_pool";
 import { SourceMap } from "./materialization/text/source_map";
+import { answerKeepsGates } from "./materialization/domain/gate_policy";
 import {
    compileInputOf,
    type ServedCopyServe,
@@ -250,6 +255,41 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       expect(await total(model)).toBe(60);
    });
 
+   it("reports the gate mark pinned now on a reused copy", async () => {
+      const { model } = await buildModel(PLAIN, STORED);
+      const copy = (model as unknown as { servedCopy: ServedCopyServe })
+         .servedCopy;
+      const query = "run: X -> { aggregate: t is total.sum() }";
+      const switches = {
+         materialize: true,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      const g3 = { colocatedReadsKeepGates: true };
+      const kept: Binding = { ...BINDING, ownGateKept: true };
+      model.setServeBindings([kept]);
+      await model.prepareServedCopy();
+      const first = await copy.loadQuery(query);
+      expect(first.gateTablesRead[0]).toBe(kept);
+      expect(
+         answerKeepsGates("served", first.gateTablesRead, switches, g3),
+      ).toBe(true);
+      const seen = compileCount();
+
+      // The bind no longer admits the table past its own gate: the same
+      // compile, and the answer no longer keeps the gates.
+      const notKept: Binding = { ...BINDING, ownGateKept: false };
+      model.setServeBindings([notKept]);
+      await model.prepareServedCopy();
+      const second = await copy.loadQuery(query);
+      expect(compileCount()).toBe(seen);
+      expect(second.gateTablesRead[0]).toBe(notKept);
+      expect(second.tablesRead[0]).toBe(notKept);
+      expect(
+         answerKeepsGates("served", second.gateTablesRead, switches, g3),
+      ).toBe(false);
+   });
+
    it("recompiles for every binding field the compile reads", async () => {
       const { model, connMap } = await buildModel(PLAIN, STORED);
       await connMap
@@ -440,4 +480,72 @@ describe("a served copy compiles once per thing it is compiled from", () => {
          expect.objectContaining({ reason: "reroot_not_compiled" }),
       ]);
    });
+});
+
+/**
+ * A served-copy pass a load worker takes and then fails as a job (the worker
+ * exits mid-job, or the job outlives its limit) compiles inline instead, and
+ * the copy answers exactly as an inline compile does.
+ */
+describe("a served copy whose pass on the load worker fails as a job", () => {
+   let restore: (() => void) | undefined;
+   let previous: PackageLoadPool | null;
+   beforeEach(() => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      }).restore;
+      previous = currentPackageLoadPool();
+   });
+   afterEach(async () => {
+      restore?.();
+      restore = undefined;
+      delete process.env.SERVED_COPY_TEST_WORKER_MODE;
+      await __setPackageLoadPoolForTests(previous);
+   });
+
+   for (const mode of ["exit", "hang"] as const) {
+      it(`compiles inline when the worker ${mode === "exit" ? "exits mid-job" : "never answers"}`, async () => {
+         process.env.SERVED_COPY_TEST_WORKER_MODE = mode;
+         const pool = new PackageLoadPool(
+            1,
+            new URL(
+               "../package_load/test_fixtures/failing_served_copy_worker.ts",
+               import.meta.url,
+            ),
+            { jobTimeoutMs: 300 },
+         );
+         await __setPackageLoadPoolForTests(
+            pool,
+            new Set(previous ? [previous] : []),
+         );
+         const { model } = await buildModel(PLAIN, STORED);
+         // Bring the worker up, ready and idle.
+         await pool.loadPackage({
+            packagePath: "/nowhere",
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig: new MalloyConfig({ connections: {} }),
+            defaultConnectionName: "duckdb",
+         });
+         const offered = spyOn(PackageLoadPool.prototype, "compileServedCopy");
+         const inline = spyOn(GeneratedFiles.prototype, "loadModel");
+         try {
+            model.setServeBindings([BINDING]);
+            await model.prepareServedCopy();
+            // The worker took the pass, the job failed, and it compiled here.
+            expect(
+               offered.mock.results.filter(
+                  (r: { value: unknown }) => r.value !== undefined,
+               ).length,
+            ).toBeGreaterThan(0);
+            expect(inline.mock.calls.length).toBeGreaterThan(0);
+            expect(model.servedCopyProblems()).toEqual([]);
+            expect(await total(model)).toBe(60);
+         } finally {
+            offered.mockRestore();
+            inline.mockRestore();
+            await pool.shutdown();
+         }
+      }, 30_000);
+   }
 });
