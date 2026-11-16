@@ -12,7 +12,11 @@ import { tableNameParts, tableNamesMeet } from "../domain/table_name";
 import type { PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
-import { computeSourceEntityId, type TableFolds } from "./addressing";
+import {
+   planAddressOf,
+   type PlanAddresses,
+   type TableFolds,
+} from "./addressing";
 import {
    assertBuildReadsNoCurrentTime,
    assertMaterializationEligible,
@@ -42,6 +46,8 @@ interface EligibilityPlan {
    connectionDigests: Record<string, string>;
    /** The plan's table folds (CompiledBuildPlan.tableFolds). */
    tableFolds?: TableFolds;
+   /** The plan's addresses (CompiledBuildPlan.addresses). */
+   addresses?: PlanAddresses;
    /** See `CompiledBuildPlan.connectionTypes`. */
    connectionTypes?: Record<string, string>;
    /** See `CompiledBuildPlan.versionScoped` ({@link persistTableTarget}). */
@@ -186,12 +192,7 @@ function sharedTableGroups(
       let address: string;
       let target: ReturnType<typeof physicalTarget>;
       try {
-         address = computeSourceEntityId(
-            source,
-            compiled.connectionDigests,
-            table.target,
-            compiled.tableFolds,
-         );
+         address = planAddressOf(compiled, sourceID);
          target = physicalTarget(
             source,
             table.materialize,
@@ -257,12 +258,6 @@ export function describeMembers(
       .join(", ");
 }
 
-/** Memo for {@link sharedTables}, per compiled `tables` record. */
-const sharedTablesByTables = new WeakMap<
-   Record<string, TablePlan>,
-   ReadonlyMap<string, string>
->();
-
 /**
  * Sources that write one table with a DIFFERENT source (see
  * {@link sharedTableGroups}), by sourceID, each with the refusal to report.
@@ -276,8 +271,6 @@ const sharedTablesByTables = new WeakMap<
 export function sharedTables(
    compiled: EligibilityPlan,
 ): ReadonlyMap<string, string> {
-   const memo = sharedTablesByTables.get(compiled.tables);
-   if (memo) return memo;
    const shared = new Map<string, string>();
    for (const { table, destination, members } of sharedTableGroups(compiled)) {
       for (const member of members) {
@@ -290,7 +283,6 @@ export function sharedTables(
          );
       }
    }
-   sharedTablesByTables.set(compiled.tables, shared);
    return shared;
 }
 
@@ -497,9 +489,7 @@ export function collectColocatedSourceEligibility(
    const eligibleEntityIds = new Set<string>();
    const refused: Record<string, string> = {};
    const shared = sharedTables(compiled);
-   for (const [sourceID, { source, target }] of Object.entries(
-      compiled.tables,
-   )) {
+   for (const [sourceID, { source }] of Object.entries(compiled.tables)) {
       try {
          assertTierEligible(source, false, tierGateInputs(compiled));
          const sharing = shared.get(sourceID);
@@ -509,12 +499,7 @@ export function collectColocatedSourceEligibility(
          // source, so it refuses cleanly even when addressing would throw.
          let sourceEntityId: string;
          try {
-            sourceEntityId = computeSourceEntityId(
-               source,
-               compiled.connectionDigests,
-               target,
-               compiled.tableFolds,
-            );
+            sourceEntityId = planAddressOf(compiled, sourceID);
          } catch (idErr) {
             // No id to key the refusal under; the log is the only record that
             // it was examined and refused.
@@ -538,12 +523,7 @@ export function collectColocatedSourceEligibility(
       // to this source's binding.
       let sourceEntityId: string;
       try {
-         sourceEntityId = computeSourceEntityId(
-            source,
-            compiled.connectionDigests,
-            target,
-            compiled.tableFolds,
-         );
+         sourceEntityId = planAddressOf(compiled, sourceID);
       } catch (err) {
          logger.warn(
             "Dropping an eligible colocated source: its content address could not be computed",

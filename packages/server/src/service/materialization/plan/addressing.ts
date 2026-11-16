@@ -432,6 +432,59 @@ function storedProjection(
 export type TableFolds = Readonly<Record<string, string>>;
 
 /**
+ * Each planned source's content address, its table fold applied, by
+ * sourceID; null where it cannot be addressed (refused on its own path).
+ * Computed once, over the whole plan, once its folds are decided
+ * (`CompiledBuildPlan.addresses`).
+ */
+export type PlanAddresses = Readonly<Record<string, string | null>>;
+
+/** The slice of a plan its addresses are computed from. */
+interface AddressedPlan {
+   tables: Readonly<
+      Record<string, { source: PersistSource; target?: BuildTarget }>
+   >;
+   connectionDigests: Record<string, string>;
+   tableFolds?: TableFolds;
+   addresses?: PlanAddresses;
+}
+
+/** {@link PlanAddresses} for `plan`. */
+export function planAddresses(plan: AddressedPlan): PlanAddresses {
+   const addresses: Record<string, string | null> = {};
+   for (const [sourceID, { source, target }] of Object.entries(plan.tables)) {
+      try {
+         addresses[sourceID] = computeSourceEntityId(
+            source,
+            plan.connectionDigests,
+            target,
+            plan.tableFolds,
+         );
+      } catch {
+         addresses[sourceID] = null;
+      }
+   }
+   return addresses;
+}
+
+/**
+ * The content address of the plan's source `sourceID`: read from the plan's
+ * {@link PlanAddresses}, computed for a plan that carries none (one made by
+ * hand). A source that cannot be addressed throws why.
+ */
+export function planAddressOf(plan: AddressedPlan, sourceID: string): string {
+   const known = plan.addresses?.[sourceID];
+   if (typeof known === "string") return known;
+   const { source, target } = plan.tables[sourceID];
+   return computeSourceEntityId(
+      source,
+      plan.connectionDigests,
+      target,
+      plan.tableFolds,
+   );
+}
+
+/**
  * Give each author `name=` its own table: two sources that compile to one
  * build (one address, say gated differently at read) but name different
  * tables are each addressed with their name folded in, so every plan, build,

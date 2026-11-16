@@ -127,9 +127,10 @@ import { quoteIdentifier } from "../../quoting";
 import {
    addressSQL,
    compilerBuildId,
-   computeSourceEntityId,
    foldDistinctTableNames,
    isUnkeyable,
+   planAddresses,
+   planAddressOf,
    plannedSources,
    plannedTargetOf,
    presentAs,
@@ -1471,10 +1472,11 @@ export function deriveBuildPlan(
       | "connectionTypes"
       | "omittedSources"
       | "tableFolds"
+      | "addresses"
    >,
    packageMaterialization?: WirePackageMaterialization | null,
 ): BuildPlan {
-   const { builds, tables, connectionDigests } = compiled;
+   const { builds, tables } = compiled;
 
    // One level holding every source with every table it reads. A host walks
    // these edges for a rerun's upstream closure, freshness inheritance and
@@ -1511,9 +1513,8 @@ export function deriveBuildPlan(
          wireSources[sourceID] = wireSourceOf(
             table,
             annotationFields,
-            connectionDigests,
+            planAddressOf(compiled, sourceID),
             packageMaterialization,
-            compiled.tableFolds,
          );
       } catch (err) {
          // Reported, so a host does not read the source's absence as its
@@ -1536,9 +1537,7 @@ export function deriveBuildPlan(
    }
 
    refuseColocatedTablesSharedWithARefusal(
-      tables,
-      connectionDigests,
-      compiled.tableFolds,
+      compiled,
       wireSources,
       refusedSources,
    );
@@ -1689,9 +1688,8 @@ function eligibilityOf(
 function wireSourceOf(
    table: TablePlan,
    annotationFields: Record<string, string>,
-   connectionDigests: Record<string, string>,
+   sourceEntityId: string,
    packageMaterialization: WirePackageMaterialization | null | undefined,
-   tableFolds?: TableFolds,
 ): WirePersistSourcePlan {
    const { source, rollup, modelPath } = table;
    return {
@@ -1707,12 +1705,7 @@ function wireSourceOf(
               measures: rollup.measures.map((m) => m.name),
            }
          : null,
-      sourceEntityId: computeSourceEntityId(
-         source,
-         connectionDigests,
-         undefined,
-         tableFolds,
-      ),
+      sourceEntityId,
       sql: addressSQL(source),
       // Verbatim; the resolved declaration is deliberately not a wire field
       // (see resolveIncrementalDeclaration).
@@ -1738,12 +1731,14 @@ function wireSourceOf(
  * nothing. The plan says so, with the sibling's reason, in sourceID order.
  */
 function refuseColocatedTablesSharedWithARefusal(
-   tables: Record<string, TablePlan>,
-   connectionDigests: Record<string, string>,
-   tableFolds: TableFolds | undefined,
+   compiled: Pick<
+      CompiledBuildPlan,
+      "tables" | "connectionDigests" | "tableFolds" | "addresses"
+   >,
    wireSources: Record<string, WirePersistSourcePlan>,
    refusedSources: Record<string, WireRefusedSource>,
 ): void {
+   const { tables } = compiled;
    // v1 `#@ persist` sources only: a `#(materialize)` source's table is
    // addressed by its generated build (the plan's `targets`), which this
    // projection does not see, and the bind keys it the same way.
@@ -1763,12 +1758,7 @@ function refuseColocatedTablesSharedWithARefusal(
       if (rollup || !v1(id)) continue;
       let address: string;
       try {
-         address = computeSourceEntityId(
-            source,
-            connectionDigests,
-            undefined,
-            tableFolds,
-         );
+         address = planAddressOf(compiled, id);
       } catch {
          continue;
       }
@@ -1891,9 +1881,11 @@ export function finishBuildPlan(
          : {}),
    };
    // Each `storage=` source's stored columns read as its build writes them.
+   const tableFolds = foldDistinctTableNames(plan, storedColumnNames);
    const folded = {
       ...plan,
-      tableFolds: foldDistinctTableNames(plan, storedColumnNames),
+      tableFolds,
+      addresses: planAddresses({ ...plan, tableFolds }),
    };
    return ctx.keepIncrementalUnbuildable
       ? refuseCollidingMaterialize(folded)
@@ -1958,18 +1950,15 @@ export function deriveBuildPlanOutcome(
 function compilerKeysOf(
    compiled: Pick<
       CompiledBuildPlan,
-      "tables" | "connectionDigests" | "tableFolds"
+      "tables" | "connectionDigests" | "tableFolds" | "addresses"
    >,
 ): Record<string, string> {
    const keys: Record<string, string> = {};
-   for (const { source, target } of Object.values(compiled.tables)) {
+   for (const [sourceID, { source, target }] of Object.entries(
+      compiled.tables,
+   )) {
       try {
-         const address = computeSourceEntityId(
-            source,
-            compiled.connectionDigests,
-            target,
-            compiled.tableFolds,
-         );
+         const address = planAddressOf(compiled, sourceID);
          const key = compilerBuildId(source, target);
          if (key !== address) keys[address] = key;
       } catch {

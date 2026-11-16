@@ -83,6 +83,13 @@ export interface CompiledBuildPlan<Finding = unknown> {
     */
    tableFolds?: Readonly<Record<string, string>>;
    /**
+    * Each planned source's content address, its fold applied, by sourceID;
+    * null where it cannot be addressed (`PlanAddresses` in `plan/`).
+    * Computed once the folds are decided; every plan-side reader of an
+    * address reads it.
+    */
+   addresses?: Readonly<Record<string, string | null>>;
+   /**
     * `#@ persist` sources Malloy's build walk did NOT recognize as persistable
     * (`detectDroppedPersistSources` in `plan/`). Callers surface these as a
     * load-time warning and a hard build failure so the annotation is never a
