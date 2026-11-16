@@ -411,10 +411,7 @@ export function chainedPlanFacts(
             undefined,
             tableFolds,
          );
-         compilerKeyBySourceId[sourceID] = compilerBuildId(
-            source,
-            connectionDigests,
-         );
+         compilerKeyBySourceId[sourceID] = compilerBuildId(source);
       } catch {
          // Unrenderable (unbound parameter, given): no address to group by.
          // The eligibility gate refuses it on its own path.

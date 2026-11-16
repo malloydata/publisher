@@ -33,7 +33,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-import type { CompiledBuildPlan } from "../service/materialization/plan/build_plan";
+import type { FinishedBuildPlan } from "../service/materialization/plan/build_plan";
 import { compilePackageBuildPlan } from "../service/materialization/plan/build_plan_compile";
 import type { MaterializePlan } from "../service/materialization/domain/table_plans";
 import { tempBuildPlanPackages } from "./incremental_test_harness";
@@ -179,7 +179,7 @@ export function materializationFixture(): MaterializationFixture {
 }
 
 /** A package's build plan as `compilePackageBuildPlan` returns it. */
-export type CompiledPlan = CompiledBuildPlan;
+export type CompiledPlan = FinishedBuildPlan;
 
 /** The package a plan was compiled from, with the plan. */
 export interface PlannedPackage {
