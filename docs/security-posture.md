@@ -283,6 +283,52 @@ same origin as the REST API. The consequences follow from that and are all inten
   package (`public -> web`) serves. A file in it must resolve inside the real `public/`: a
   symlink escaping the directory returns 403 whether or not its target exists, and a page
   outside it is never opened, not even for its `<title>`.
+- Every HTML page is served with a `publisher-context` JSON block spliced in (its environment,
+  package, version, API base and the hosts that may embed it). The block is ASCII-only, so no
+  name in it can close the element or change meaning with the page's charset, and the splice
+  works on bytes, so the file is never decoded. It is built from the server's own settings,
+  not from the request, unless `trustPageContextHeader` is on (see the gateway requirement
+  below).
+- A page embedded by another page can exchange messages with it over the **host bus**
+  (`postMessage`, see [html-data-apps.md](html-data-apps.md#talking-to-the-host)). It is a
+  channel between a page and the host that framed it, not a new capability for the page, whose
+  JavaScript could already do everything the viewer can; what it adds is a way for the host to
+  drive the page and to see what it queries. The checks:
+  - **Fail-closed allow-list.** The bus is on only when `frameAncestors` yields a usable
+    origin (`'self'`, exact `scheme://host[:port]`, or a leading-label wildcard host). `*`,
+    scheme-only sources and anything with a path are dropped, so a deployment whose only source is
+    `*` has no bus.
+  - **Origin and source on both sides.** The page accepts a message only when `event.source`
+    is `window.parent` and `event.origin` matches the list, binds to the first host that says
+    `hello`, and posts only to that origin (never `*`). The host accepts only messages from the
+    iframe it created, at the page's origin.
+  - **A nonce against navigated frames.** The host puts a random value in the iframe URL
+    fragment; the page echoes it in every message and the host drops any without it. The host
+    never sends it, so a document that navigated into the frame cannot learn it. Without this,
+    origin and source checks alone would accept a different document in the same window at the
+    same origin.
+  - **`query.ran` carries query text** (the first 2000 characters) and the givens a query ran
+    with to the bound host. The host is trusted with the viewer's view of the data by listing
+    it in `frameAncestors`; list no origin you would not.
+  - **Tokens move off the URL, not out of reach.** `getToken` delivers the bearer token as a
+    bus message rather than `?embed_token=` in the iframe URL, which keeps it out of history,
+    `Referer` and server logs. The runtime still holds it in page JavaScript, so any script the
+    page loads can read it. The `token` option is deprecated, not removed.
+  - **`isolate` trade-offs.** It drops `allow-same-origin` from the sandbox, so the page gets an
+    opaque origin: it cannot touch the host's storage or cookies, and it loses its own as well,
+    so cookie authentication, `localStorage` and IndexedDB stop working and a fetch to Publisher
+    becomes cross-origin (CORS applies, no cookies; use `getToken`). The host cannot name an
+    opaque origin, so it posts to `*`; it sends only the empty `hello` until the frame has
+    proved the nonce, but a document that navigated into the frame after that would receive
+    later messages, including a refreshed token. Use it for a page you want contained, with
+    short-lived tokens.
+- **`trustPageContextHeader` needs a gateway that strips the header.** With the setting on
+  (default off), the request header `x-publisher-page-context` overrides a page's environment,
+  package, API base and `hostOrigins`. Publisher validates the values and ignores a bad header
+  whole, and marks responses that read it `Vary: x-publisher-page-context`, but it cannot tell
+  a client's header from the gateway's: a gateway that forwards client headers lets a client
+  choose its own page's embedding hosts and API base. Strip it at the edge, then set it, or
+  leave the setting off.
 
 **Reports carry no author-written JavaScript file.** A report (a tagged `.malloy`, of either
 layout, or a legacy `.malloynb`) is Malloy, markdown and renderer tags. It is declarative, which
@@ -307,8 +353,9 @@ deployment that embeds Publisher elsewhere sets that variable to its origins, or
 restore the previous behaviour deliberately.
 
 **2. There is a token-shaped thing that authenticates nothing.** `Publisher.embed` appends an
-`embed_token` query parameter, and `Publisher.setToken` attaches an `Authorization: Bearer`
-header — and no server code reads either one. The docs describe signed embed tokens as a next
+`embed_token` query parameter (now deprecated in favor of `getToken`, which delivers the token
+over the host bus instead of in the URL), and `Publisher.setToken` attaches an
+`Authorization: Bearer` header — and no server code reads either one. The docs describe signed embed tokens as a next
 step, so this is unfinished rather than broken, but an affordance that looks like authentication
 and is not is worse than its absence: it invites an integrator to believe a page is protected.
 Either verify it or remove it until it can be verified. It also gates widening embedding to more
@@ -321,7 +368,9 @@ image (`![](url)`) as alt text only, so no image loads from a package-chosen ser
 Link `href`s are scheme-checked as well, because packages can come from untrusted git or S3 sources.
 A new markdown surface should go through `Prose` rather than call the library directly.
 
-**4. Resize messages are not origin-checked.** Both the in-page host runtime
+**4. Resize messages are not origin-checked.** (The host bus beside them is: it checks source,
+origin and a nonce on every message. Resize is the legacy, envelope-less message and is
+unchanged.) Both the in-page host runtime
 (`packages/server/src/runtime/publisher.js`) and the Console's data-app viewer
 (`DataAppViewer.tsx`) validate `event.source` against the iframe's `contentWindow` but never
 `event.origin`. Source-matching is the stronger of the two checks and the payload is a single

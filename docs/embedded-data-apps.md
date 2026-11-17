@@ -27,6 +27,27 @@ widgets) that talks to Publisher's REST API and renders results with Malloy Rend
 [`Publisher Console`](../packages/app) is composed entirely from it. Because it's the Console's
 internal toolkit, breaking changes ride along with Console redesigns.
 
+## Hosting an HTML data app from React
+
+A React host that renders an [HTML data app](html-data-apps.md) in its own `<iframe>` (rather than
+through `Publisher.embed`) uses `createDataAppBridge` from the SDK, the host side of the
+[data-app event bus](html-data-apps.md#talking-to-the-host):
+
+```tsx
+const bridge = createDataAppBridge(iframeRef.current, { src, getToken: () => mintToken() });
+// <iframe ref={iframeRef} src={bridge.srcWithNonce(src)} sandbox="allow-scripts allow-same-origin allow-forms" />
+await bridge.send("givens.set", { givens: { region: "EMEA" } });
+const off = bridge.on("query.ran", (ran) => log(ran.model, ran.rowCount));
+```
+
+Options are `src` (or `origin`), `getToken` (the bearer token, sent once the page is ready and
+whenever it asks, in place of an `embed_token` in the URL), `isolate` (set it when the iframe's
+sandbox omits `allow-same-origin`) and an optional `nonce`. Load the iframe from
+`srcWithNonce(src)`: the bridge accepts only messages that carry that nonce, from that iframe's
+window, at that origin. It returns `{ nonce, srcWithNonce, send, on, ready, handles, destroy }` and
+the SDK exports the envelope and payload types (`PublisherEnvelope`, `PublisherPayloads`,
+`PublisherQueryRan`). Call `destroy()` when the iframe unmounts.
+
 ## Advanced reference: `examples/data-app`
 
 [`examples/data-app`](../examples/data-app) is a Vite + React app that reads from the bundled

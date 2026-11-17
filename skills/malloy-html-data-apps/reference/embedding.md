@@ -22,7 +22,9 @@ SPDX-License-Identifier: MIT
 </script>
 ```
 
-`embed(selector, options)` returns `{ iframe, destroy() }`. Options: `src` (required), `token` (a signed token for cross-origin auth, appended as `embed_token`), `height` (omit to auto-size; a number is treated as pixels), and `allow` (the iframe permissions policy).
+`embed(selector, options)` returns `{ iframe, destroy(), send(type, payload), on(type, fn) }`. Options: `src` (required), `getToken` (a function returning the bearer token, or a promise of it, for cross-origin auth), `isolate` (see Guardrails), `token` (deprecated: a signed token appended as `embed_token`), `height` (omit to auto-size; a number is treated as pixels), and `allow` (the iframe permissions policy).
+
+`send(type, payload)` is a request to the page that resolves with its reply; `on(type, fn)` listens for the page's events (`query.ran`, `givens.changed`, `version.unavailable`, ...) and returns an unsubscribe. Both work only once the page has answered the host's handshake; `send` rejects after 5 seconds without a reply. The page must have registered a handler for what you send (`handle.send("givens.set", { givens })` needs the page to call `Publisher.onGivensChange`; see `reference/runtime.md`), or the reply is an `unhandled` error. The server enables the channel only for hosts named in `PUBLISHER_FRAME_ANCESTORS` as an exact origin or a leading-label wildcard (`https://*.example.com`); with `*` there is none, and the embed still sizes itself.
 
 ## Sizing and the resize contract
 
@@ -42,9 +44,12 @@ Test embedded, not just standalone: the Publisher console renders a package's ap
 ## Auth
 
 - Same-origin or same-tenant: pass no token. The browser's cookies authenticate the iframe.
-- Cross-origin: mint a short-lived signed token server-side and pass it as `options.token`. The runtime appends it to the iframe URL as `embed_token`; the embedded page must read it (from `location.search`) and call `Publisher.setToken(token)`. Because it rides in the URL, it can land in browser history, Referer headers, and server logs, so keep it short-lived and scoped to that one embed, and never put a long-lived or admin token in client HTML.
+- Cross-origin: mint a short-lived signed token server-side and return it from `options.getToken`. The runtime sends it to the page over the host channel once the page is ready and again whenever a query gets a 401, and attaches it to the page's queries; the embedded page does nothing. Keep it short-lived and scoped to that one embed, and never put a long-lived or admin token in client HTML.
+- The older `options.token` appends the token to the iframe URL as `embed_token`, and the page must read it (from `location.search`) and call `Publisher.setToken(token)`. It is deprecated: a URL token lands in browser history, Referer headers, and server logs.
 
 ## Guardrails (v1)
 
-- The iframe is sandboxed (`allow-scripts allow-same-origin allow-forms`). Design for that: no top-level navigation, no popups.
+- The iframe is sandboxed (`allow-scripts allow-same-origin allow-forms`). Design for that: no top-level navigation, no popups. `isolate: true` drops `allow-same-origin`, giving the page an opaque origin: no cookies, `localStorage`, IndexedDB or same-origin `fetch`, so it needs `getToken` and cannot rely on the viewer's session. Use it only for a page written for that.
+- Every embed adds a random `#publisher-nonce=` fragment to `src`. The page echoes it and the host rejects any message without it; do not strip or reuse it.
+- The page's `query.ran` event hands the host the text and givens of every query the page runs, so embed a page only in a host you would show those to.
 - Embedded author JavaScript runs with the viewing user's data authority, so treat everything under `public/` as strictly first-party code: do not load untrusted third-party scripts, and do not move query results off to other hosts. Tighter per-embed isolation is planned.

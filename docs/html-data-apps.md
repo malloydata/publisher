@@ -62,7 +62,9 @@ Publisher serves the contents of `public/` at:
 ```
 
 so `public/index.html` is the package's landing page and any other file under
-`public/` loads at its relative path. Only `public/` is reachable over the web. The models, the data
+`public/` loads at its relative path. That is the *latest* form; each published
+version also has its own (see [URLs and versions](#urls-and-versions)). Only
+`public/` is reachable over the web. The models, the data
 files, and `publisher.json` live outside it and are never served; the page
 reaches model data only through the query API, which goes through the same
 governance (filters, `private:` fields, authorize annotations) as any other
@@ -140,9 +142,17 @@ and adds nothing to the page's markup.
 |---|---|---|
 | `Publisher.query` | `(modelPath, malloy?, opts?)` | `Promise<Array>` of row objects |
 | `Publisher.queryFull` | `(modelPath, malloy?, opts?)` | `Promise<MalloyResult>` (full envelope) |
-| `Publisher.embed` | `(selector, options)` | `{ iframe, destroy() }` |
-| `Publisher.context` | property | `{ environment, package }` inferred from the URL |
+| `Publisher.embed` | `(selector, options)` | `{ iframe, destroy(), send(type, payload), on(type, fn) }` |
+| `Publisher.context` | property | `{ environment, package }` from the injected [page context](#page-context), else inferred from the URL |
 | `Publisher.setToken` | `(token \| null)` | `undefined`; the token then applies to all later queries on the page |
+| `Publisher.on` | `(type, fn)` | an unsubscribe function; `fn(payload, meta)` handles a message from the host, and what it returns answers a request |
+| `Publisher.emit` | `(type, payload?)` | `true` if the event was posted, `false` if there is no host to hear it |
+| `Publisher.givens` | property | a copy of the page's givens store |
+| `Publisher.setGivens` | `(givens)` | `undefined`; merges `givens` into the store, notifies `onGivensChange` listeners, emits `givens.changed` |
+| `Publisher.onGivensChange` | `(fn)` | an unsubscribe function; `fn(givens)` runs after every `setGivens` |
+
+`on`, `emit` and the givens members are the page's side of the [host
+bus](#talking-to-the-host); they do nothing visible on a page that nobody embeds.
 
 ### Querying
 
@@ -199,17 +209,26 @@ The third argument, `opts`, is optional:
 | `sourceName` | string | The source a `queryName` view hangs off. Not valid alone: `sourceName` without `queryName` is a 400 |
 | `queryName` | string | Run a saved query or view by name. Pair with `sourceName` for a view on a source; alone it runs a model-level query |
 | `environment`, `package` | string | Override the environment or package the query targets, for pages not served under `/environments/<env>/packages/<pkg>/` or `/apps/<env>/<pkg>/` |
-| `givens` | object | A name→value map bound as Malloy [`given:`](./givens.md) runtime parameters for this query. Safe parameterization, not string interpolation |
-| `versionId` | string | Query this published version of the package instead of its `latest` (with [package versioning](./package-versions.md) on). A page opened with `?versionId=` in its URL already queries that version of its own package, when the package has it |
+| `givens` | object | A name→value map bound as Malloy [`given:`](./givens.md) runtime parameters for this query. Merged over the page's givens store (`Publisher.setGivens`), so a key set here wins |
+| `versionId` | string | Query this published version of the package instead of its `latest` (with [package versioning](./package-versions.md) on). A page served at a version already queries that version of its own package |
 
-**Versions.** With [package versioning](./package-versions.md) on, a page opened
-at `…/index.html?versionId=1.2.0` pins every query it makes to its own package
-to version 1.2.0, once a read of the package confirms it has that version;
-otherwise the page queries `latest`. A query that sets `opts.package` to
-another package gets that package's `latest`, and `opts.versionId` pins a
-single query. Only the URL pins: the page's own
-relative requests (`./app.js`, a stylesheet's `url()`) carry no query string,
-so they are served from `latest` unless the page adds `?versionId=` to them.
+**Versions.** With [package versioning](./package-versions.md) on, a page is
+served at a version's own URL and pins every query it makes to its own package
+to that version (see [URLs and versions](#urls-and-versions)). A query that
+sets `opts.package` to another package gets that package's `latest`, and
+`opts.versionId` pins a single query. A page whose HTML predates the injected
+context (a cached copy, or one served through a proxy that rewrites it away)
+falls back to `?versionId=` in its URL: the runtime reads the package at that
+version once, and pins only if the package has it.
+
+**Givens and the page's store.** A page that holds filter state can keep it in
+the runtime: `Publisher.setGivens({ region: "EMEA" })` merges into a store that
+every later `query` and `queryFull` reads, under whatever `opts.givens` carries.
+It re-runs nothing itself: the page subscribes with
+`Publisher.onGivensChange(fn)` and re-queries there, so a click on the page and
+a command from the host (`givens.set`, below) take one path. The store rides
+along only once it is non-empty, so a page that never calls `setGivens` sends
+exactly the request it always did.
 
 `queryName` (with `sourceName` for a view on a source) is the alternative to
 passing a `run:` string as the second argument; use one path or the other, and
@@ -247,19 +266,112 @@ prefixed `Publisher.query:`. The error carries `error.status` (the HTTP status)
 and `error.response` (the parsed JSON body), so you can branch on a missing
 filter, a compile error, or a permission failure.
 
-### Context
+### URLs and versions
 
-`Publisher.context` is `{ environment, package }`, read from the page's own URL.
-Two URL shapes are recognised: the in-app viewer's
-`/environments/<env>/packages/<pkg>/...`, and `/apps/<env>/<pkg>/...`, which a
-host that embeds the app on a third-party site may serve it from. Under either,
-`query` and `queryFull` use the context automatically, so a page served from
-inside its package does not need to name its environment or package anywhere.
-The live-reload subscription is in-app only: it starts under the
-`/environments/...` shape and not under `/apps/...`, where the page belongs to
-someone else's site (see [Live reload](#live-reload)). If you serve the page from
-somewhere else (for example a host page on another path that calls the API
-directly), pass `environment` and `package` in `opts`.
+A package with [published versions](./package-versions.md) serves each one's
+`public/` at its own URL:
+
+```
+/environments/<env>/packages/<pkg>/versions/<version>/public/<file>
+```
+
+The page and every relative URL in it (`./app.js`, a stylesheet's `url()`, an
+image) resolve under that path, so a page opened at a version loads that
+version's assets too, not `latest`'s. The rules:
+
+- **A page load at the latest URL redirects.** A GET to
+  `/environments/<env>/packages/<pkg>/<file>` that resolves to an `.html` or
+  `.htm` file (or a directory's `index.html`) answers `302` to the versioned URL
+  of the package's current version, with `Cache-Control: no-store`. The query
+  string is kept, minus `versionId`. Assets (`.js`, `.css`, images) at the short
+  URL are served directly as before, and so is every file of a package that has
+  no version records (watch mode, or versioning off).
+- **`?versionId=` on the short URL still pins.** A page opened at
+  `…/index.html?versionId=1.2.0` redirects to version 1.2.0's URL when the
+  package has that version, and to the current version's otherwise.
+- **`latest` in the path** (`…/versions/latest/public/…`) answers `302` to the
+  resolved version, `no-store`.
+- **The path wins.** On a versioned URL `?versionId=` is ignored, because a
+  proxy that resolves a version appends its own to every request and the path is
+  what names it.
+- **Unknown or archived.** A version the package does not have gets the static
+  404 page, which names both URL forms; an archived version answers `410`.
+  `…/versions/<v>/public` without the trailing slash redirects (`308`) to the
+  slash form.
+
+A page can be opened at a versioned URL directly. The Console's data-app listing
+links the short form, and the redirect covers it.
+
+### Page context
+
+Every HTML file Publisher serves from `public/` (`.html` and `.htm`, including a
+directory's index) has a JSON block spliced into it, so the runtime reads where
+it is instead of guessing from the URL:
+
+```html
+<script type="application/json" id="publisher-context">
+{"v":1,"environment":"demo","package":"html-data-app","versionId":"1.2.0","apiBase":"/api/v0","hostOrigins":["'self'"]}
+</script>
+```
+
+| Field | Meaning |
+|---|---|
+| `v` | Context format, `1` |
+| `environment`, `package` | The names the page was served under; `Publisher.context` and every default query target come from here |
+| `versionId` | The version the page was served from, or `null` for a package with no version records. When set, every query to the page's own package is pinned to it, the `?versionId=` probe is skipped, and [live reload](#live-reload) is off: a version never changes |
+| `apiBase` | The path the runtime calls the API under, `/api/v0` by default. Only a path on the page's own origin is honored; anything else is ignored |
+| `hostOrigins` | Who may embed the page and talk to it over the [bus](#talking-to-the-host): the usable sources of `frameAncestors` (below) |
+
+`hostOrigins` is built from the same `frameAncestors` setting that sets the CSP,
+so there is one list. `'self'` (the default) stays as `'self'` and the runtime
+reads it as the page's own origin. An exact origin (`https://app.example.com`)
+and a wildcard host (`https://*.example.com`: that scheme, that port, any host
+ending in `.example.com`) are kept. `*`, a scheme alone (`https:`), a wildcard
+anywhere but the leading label and a source with a path are dropped, because
+none can name a window to post to. If nothing usable is left the bus is off and
+the page keeps only the legacy size message.
+
+The block is ASCII only (`<`, `>`, `&`, U+2028/9 and every non-ASCII character
+are written as `\uXXXX`), so no name can close the element and the page's charset
+does not matter. It goes after the first `<meta charset>` within the first 1024
+bytes, else after `<head>`, else after the doctype, else at the start (past a
+UTF-8 byte-order mark); a tag inside an HTML comment does not count, and a UTF-16
+page or one over 2 MiB is sent unchanged. An HTML response carries a weak `ETag`
+(a hash of the page as sent), `Cache-Control: no-cache` so every load
+revalidates, and answers `If-None-Match` with `304`; a `Range` request gets the
+whole page, since byte offsets into a rewritten body mean nothing. Other files
+are sent as they are.
+
+**Serving Publisher behind a gateway.** A gateway that exposes Publisher under
+other names or another path can set the context itself. With the
+`trustPageContextHeader` setting on (`PUBLISHER_TRUST_PAGE_CONTEXT_HEADER=true`
+or `--trust-page-context-header`; default off), the request header
+`x-publisher-page-context`, a JSON object with any of `environment`, `package`,
+`apiBase` and `hostOrigins`, overrides those fields in the injected block.
+Each value is validated: names are non-empty strings of at most 256 characters
+without control characters, `apiBase` is a path starting with a single `/`
+(no scheme, `//`, backslash or control character), and `hostOrigins` is a short
+list of sources that pass the same rule as `frameAncestors`. One bad field makes
+the whole header invalid: it is ignored and a warning is logged. Every HTML
+response served with the setting on carries `Vary: x-publisher-page-context`,
+so a shared cache keeps the variants apart.
+
+**The gateway must strip `x-publisher-page-context` from client requests**
+before adding its own. With the setting on, whoever can set the header chooses
+the names, API base and embedding hosts of the page they are sent, which is a
+gateway's decision and not a client's. Leave the setting off unless a trusted
+tier sits in front of Publisher; with it off the header is never read.
+
+When a page has no context (a copy cached before the server injected it, or one
+served through something that rewrites it away), `Publisher.context` falls back
+to the URL. Two shapes are recognized: the in-app viewer's
+`/environments/<env>/packages/<pkg>/...` (also at `/versions/<v>/public/`), and
+`/apps/<env>/<pkg>/...`, which a host that embeds the app on a third-party site
+may serve it from. Under either, `query` and `queryFull` use the context
+automatically, so a page served from inside its package does not need to name
+its environment or package anywhere. If you serve the page from somewhere else
+(for example a host page on another path that calls the API directly), pass
+`environment` and `package` in `opts`.
 
 ### Auth
 
@@ -267,10 +379,22 @@ By default the runtime sends the browser's cookies with every request
 (`credentials: "include"`) and adds no `Authorization` header, so a page served
 to a logged-in user authenticates as that user with no extra code.
 
-To authenticate with a bearer token instead, call `Publisher.setToken(token)`
-before querying; pass `null` to clear it and fall back to cookies. This is the
-hook a host application uses to pass a signed token into an embedded page (see
-[Embedding](#embedding)).
+To authenticate with a bearer token instead, a host hands the page one over the
+[bus](#talking-to-the-host): `Publisher.embed(..., { getToken })` sends
+`auth.token` once the page is ready and again whenever the page asks. When a
+query gets a `401` and the host is bound, the runtime emits `auth.token.request`,
+waits up to 10 seconds for an `auth.token`, and retries the query once; several
+queries that fail together share one request, and a retry is never retried. A
+page with no host to ask (cookie auth, nothing embedding it) fails at once.
+`Publisher.setToken(token)` still works for a page that has a token from
+elsewhere; pass `null` to clear it and fall back to cookies.
+
+The older route, the `token` option of `Publisher.embed`, appends the token to
+the iframe URL as `embed_token` for the page to read and hand to `setToken`. It
+is **deprecated**: a token in a URL lands in browser history, `Referer` headers
+and server logs, where one delivered over the bus does not. It keeps working.
+Either way the token is held in the page's JavaScript, so any script the page
+loads can read it (see [Security model](#security-model)).
 
 What the Publisher server enforces on these routes is the package's own model
 governance: filter and runtime-parameter (given) rules, `private:` fields, and
@@ -295,20 +419,27 @@ A page can be embedded in another page as an auto-resizing iframe with
 ```
 
 `embed(selector, options)` mounts an iframe into the element matched by
-`selector` (a CSS string or an element) and returns `{ iframe, destroy() }`. Call
-`destroy()` to remove it and detach its listeners; calling `embed` again lets you
-remount, which is handy when the host swaps dashboards.
+`selector` (a CSS string or an element) and returns
+`{ iframe, destroy(), send(type, payload), on(type, fn) }`. Call `destroy()` to
+remove it and detach its listeners; calling `embed` again lets you remount,
+which is handy when the host swaps dashboards. `send` and `on` are the host's
+half of the [bus](#talking-to-the-host).
 
 Options:
 
 | Option | Type | Effect |
 |---|---|---|
 | `src` | string (required) | URL of the page to embed |
-| `token` | string | Appended to `src` as an `embed_token` query parameter for the embedded page to read |
+| `getToken` | `() => string \| Promise<string>` | The page's bearer token, sent over the bus after the page is ready and again when it asks. Preferred over `token` |
+| `isolate` | boolean | Sandbox the frame without `allow-same-origin`: its origin is opaque (see [Security model](#security-model) for what that breaks) |
+| `token` | string | **Deprecated.** Appended to `src` as an `embed_token` query parameter for the embedded page to read |
 | `height` | number or string | Fixed height (`number` is treated as pixels). Omit it to auto-size. |
 | `allow` | string | Value for the iframe's `allow` attribute (permissions policy) |
 
-The iframe is sandboxed with `allow-scripts allow-same-origin allow-forms`. When
+The iframe is sandboxed with `allow-scripts allow-same-origin allow-forms` (with
+`isolate`, `allow-scripts allow-forms`). Every embed also adds a random
+`#publisher-nonce=<n>` fragment to `src`, which the bus uses to tell the page you
+embedded from anything that navigates into the frame later. When
 you omit `height`, the embedded page measures its own content and posts its
 height to the host, which resizes the iframe to match; the host only accepts
 those messages from the iframe it created. You do not write any of that wiring,
@@ -318,9 +449,12 @@ viewport, so the frame does not grow without bound.
 
 For a same-origin or same-tenant embed, the browser's cookies authenticate the
 iframe and you pass no token. For a cross-origin embed (your customer's app on a
-different domain), mint a short-lived signed token on your server and pass it as `token`; the
-embedded page reads `embed_token` and calls `Publisher.setToken(...)`. Mint the token server-side with
+different domain), mint a short-lived signed token on your server and return it from `getToken`; the
+runtime attaches it to the page's queries. Mint the token server-side with
 the same signing key the server verifies; never put a long-lived or admin token in client HTML.
+A React host that owns its own `<iframe>` uses `createDataAppBridge` from
+`@malloy-publisher/sdk` for the same exchange (see [Talking to the
+host](#talking-to-the-host)).
 
 **A cross-origin embed also needs the server to permit the framing itself**, which
 is separate from authenticating it. Publisher sends `frame-ancestors 'self'` by
@@ -329,6 +463,105 @@ read: the iframe renders blank, and nothing is logged server-side, which makes i
 look like a broken page rather than a policy. Set `PUBLISHER_FRAME_ANCESTORS` to
 the host page's origin on the deployment being embedded. If an embed is blank,
 check the browser console first -- it names `frame-ancestors`.
+
+## Talking to the host
+
+An embedded page and the page that embeds it can exchange messages: the page
+reports what it did (a query ran, a filter changed), and the host drives it (set
+a filter, hand over a token). This is the **host bus**, a `postMessage` protocol
+the runtime speaks for you. A page that nobody embeds never sends anything.
+
+**Envelope.** Every message, in both directions, is
+
+```json
+{ "protocol": "publisher", "v": 1, "type": "givens.set", "id": "h1", "nonce": "…", "payload": { } }
+```
+
+An `id` makes it a request. The answer repeats the `type` and `id` and adds
+`"reply": true` with either a `payload` or `"error": { "code", "message" }`. A
+request nobody handles is answered with error code `unhandled` (a handler that
+throws gives `handler_error`); an event nobody handles is dropped. A message
+with another `protocol`, a `v` other than `1`, or a missing `type` is ignored.
+
+**Handshake.** The host sends `hello` (a request). The page checks that the
+message came from `window.parent` at one of its `hostOrigins`, binds to that
+origin, and replies with `{ handles, runtime }`, the event types it handles and
+the runtime's revision. From then on it posts only to that origin, never to
+`*`, and ignores any other. A page that loads before the host's `hello` also
+offers a `ready` event (same payload) to each *exact* origin in `hostOrigins`;
+a post with the wrong target origin is silently dropped, so this reaches only
+the right one. `Publisher.embed` retries `hello` every 500 ms, five times, and
+`send` waits for the page's reply and rejects after 5 seconds, which is also
+what an older runtime that never replies looks like.
+
+**The nonce.** The host puts a random `#publisher-nonce=<n>` in the iframe's
+URL fragment (a fragment, so it never reaches a log or a `Referer`; `embed` does it
+for you; with `createDataAppBridge` you load the frame from `srcWithNonce(src)`). The page reads it once at load and echoes
+it as `nonce` in every message it sends. The host drops any message without the
+right one, along with any whose `source` is not the iframe's window or whose
+origin is not the page's. **The host never sends the nonce**, so a document that
+navigates into the frame after the page loaded cannot learn it by listening and
+cannot speak for the page.
+
+**Events and requests.**
+
+| Type | Direction | Payload | Notes |
+|---|---|---|---|
+| `hello` | host → page | none | Request; the reply is `{ handles: string[], runtime: string }` |
+| `ready` | page → host | `{ handles, runtime }` | Sent unsolicited, and again whenever the set of handlers changes (once per task however many change) |
+| `auth.token` | host → page | `{ token: string }` | Built in; the page uses it as its bearer token. Reply `{ applied: true }` |
+| `auth.token.request` | page → host | none | A query got `401`; the host should answer with `auth.token`. The runtime waits 10 seconds |
+| `givens.set` | host → page | `{ givens: { name: value } }` | Merges into the givens store and notifies `onGivensChange` listeners. Reply `{ applied: true, givens }` (the whole store) |
+| `givens.changed` | page → host | `{ givens }` | The whole store, after every `setGivens` |
+| `query.ran` | page → host | `{ model, sourceName?, queryName?, query?, givens, versionId, rowCount, ms }` | After every successful query. `query` is the first 2000 characters of the Malloy text; `rowCount` is `null` when the result shape is unknown; `versionId` is `null` when unpinned |
+| `version.unavailable` | page → host | `{ versionId, reason }` | Once, when a query at the page's own version answers `VERSION_NOT_FOUND` or `VERSION_ARCHIVED`. The query still rejects as usual |
+| `context.update` | page → host | any object | Not sent by the runtime; a name for pages that tell the host what they are showing, with `Publisher.emit` |
+| `chat.prefill` | page → host | `{ text }` | Not sent by the runtime; a name for pages that ask the host to prefill a chat box, with `Publisher.emit` |
+
+Any other `type` is open: a page and its host may agree on their own.
+
+**`query.ran` sends the text of the page's queries, and the givens they ran
+with, to the bound host.** That is the point (a host can show or log what the
+viewer is looking at), and it is why the host must be one the deployment
+trusts: `hostOrigins` is the list of who that is.
+
+**Capabilities are the handlers a page registers.** `ready.handles` lists the
+types the page has a handler for, so a host, or an agent acting through it,
+offers only what the page will act on. A page adds one with
+`Publisher.on(type, fn)`: `fn(payload, meta)` may return a value (or a promise),
+which becomes the reply to a request. The built-in `givens.set` handler is
+advertised only once the page has called `Publisher.onGivensChange`, so a host
+is never offered a filter command the page would ignore. This is how a host
+drives a page's filters:
+
+```js
+// in the page: apply filters, whether the viewer clicked or the host asked
+Publisher.onGivensChange((givens) => refresh(givens));
+filterSelect.onchange = () => Publisher.setGivens({ region: filterSelect.value });
+
+// in the host
+const app = Publisher.embed("#dashboard", { src, getToken });
+await app.send("givens.set", { givens: { region: "EMEA" } });
+app.on("query.ran", (ran) => console.log(ran.model, ran.rowCount, ran.ms));
+```
+
+`embed`'s `on(type, fn)` handles the page's events and requests and returns an
+unsubscribe; `send(type, payload)` resolves with the reply's payload and rejects
+with an `Error` (carrying `.code`) for an error reply or a timeout.
+
+**React hosts.** `createDataAppBridge` in `@malloy-publisher/sdk` is the same
+host side for an `<iframe>` you render yourself:
+`createDataAppBridge(iframe, { src, getToken, isolate? })` (`origin` may replace
+`src`) returns `{ nonce, srcWithNonce(src), send, on, ready, handles(),
+destroy() }`; load the iframe from `srcWithNonce(src)`. It also exports the types of the envelope and of each event
+payload above (`PublisherEnvelope`, `PublisherPayloads`, `PublisherQueryRan`).
+It and `Publisher.embed` implement one protocol and are tested against one
+shared fixture of envelopes.
+
+**Resize is separate.** The size message (`{ type: "publisher:resize", height }`)
+predates the bus, is not an envelope, and works with or without it, including
+when `hostOrigins` is empty. Once a host has said `hello`, the page posts it to
+that host's origin rather than to `*`.
 
 ## Live reload
 
@@ -341,6 +574,9 @@ page that loads `publisher.js` from inside its package at the in-app URL
 (`/environments/<env>/packages/<pkg>/...`). A page served at `/apps/<env>/<pkg>/...`
 infers the same context but never subscribes: that URL is for embedding on
 someone else's site, where a reload on publish would discard the visitor's state.
+A page served at a versioned URL (`…/versions/<v>/public/…`, or whose context
+names a `versionId`) never subscribes either: a published version does not
+change, so there is nothing to reload.
 
 The stream is `GET /api/v0/environments/<env>/packages/<pkg>/events`. It emits a
 `hello` event on connection, a `mode` event reporting whether watch mode is on, a
@@ -399,7 +635,8 @@ the page's `<title>` tag, falling back to `path`. An entry also carries
 `fit: "viewport"` when the page opts into filling the viewer with
 `<meta name="publisher:fit" content="viewport">` (see
 [Full-screen apps in the data app viewer](#full-screen-apps-in-the-data-app-viewer)), and
-omits the field otherwise. The listing covers `.html` and `.htm` files up to
+omits the field otherwise. `resource` is the short form; opening it redirects to
+the version's own URL (see [URLs and versions](#urls-and-versions)). The listing covers `.html` and `.htm` files up to
 three directories deep and is empty for a package with no `public/` directory.
 
 ## The package manifest
@@ -433,6 +670,32 @@ the manifest field reference is [packages.md](packages.md).
 - The query API applies the model's governance (filters, `private:` fields,
   authorize annotations). The static, data-apps, and events routes do not add
   their own auth, so do not place anything sensitive under `public/`.
+- **The host bus is fail-closed and bound to one origin.** It is off unless
+  `frameAncestors` names a usable origin. A page accepts messages only from
+  `window.parent` at an allowed origin, binds to the first host that says
+  `hello`, and posts only to that origin, never `*`. The host accepts messages
+  only from the iframe it made, at the page's origin, carrying the page's nonce,
+  which the host itself never sends. The check is on origin, not on who is
+  trusted: anything on an allowed origin that can frame the page can drive its
+  filters and read what its `query.ran` events carry, so list only origins you
+  would give the viewer's data to.
+- **A token on the bus is still visible to the page's scripts.** Moving it out
+  of the URL keeps it from history, `Referer` and logs, but the runtime holds it
+  in JavaScript and every script the page loads can read it. Keep tokens
+  short-lived and scoped to the embed, and load only first-party code.
+- **`isolate` trades compatibility for containment.** Without
+  `allow-same-origin` the frame's origin is opaque: it cannot read the host's
+  cookies or storage (good), and it has none of its own, so cookie
+  authentication, `localStorage`, `sessionStorage` and IndexedDB do not work, and
+  a fetch to Publisher is cross-origin (no cookies; CORS applies), so an isolated
+  page authenticates with `getToken`. Posts from the host go to `*` because an
+  opaque origin cannot be named; what protects them is that the host sends
+  nothing but the empty `hello` until the frame has answered it with the nonce. Prefer it for a
+  page you want contained, not for one written against the same-origin contract.
+- **`x-publisher-page-context` is a trust boundary.** With
+  `trustPageContextHeader` on, the header decides a page's names, API base and
+  embedding hosts. Turn it on only behind a gateway that strips it from client
+  requests.
 
 ## Reference
 
@@ -440,7 +703,8 @@ Endpoints used by an HTML data app:
 
 | Method and path | Purpose |
 |---|---|
-| `GET /environments/<env>/packages/<pkg>/<file>` | Serve a file from `public/` |
+| `GET /environments/<env>/packages/<pkg>/<file>` | Serve a file from `public/`; an HTML page of a versioned package redirects (`302`) to the next row |
+| `GET /environments/<env>/packages/<pkg>/versions/<version>/public/<file>` | Serve a file from one version's `public/` (`latest` redirects to the resolved version) |
 | `GET /sdk/publisher.js` | The page runtime |
 | `POST /api/v0/environments/<env>/packages/<pkg>/models/<model>/query` | Run a query (used by `Publisher.query`) |
 | `GET /api/v0/environments/<env>/packages/<pkg>/data-apps` | List the package's data apps |
