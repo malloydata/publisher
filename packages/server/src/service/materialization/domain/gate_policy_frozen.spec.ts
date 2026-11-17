@@ -806,7 +806,7 @@ const FROZEN_LEG_ROWS: readonly string[] = [
    "keeps served read=ungated_colocated mz=1 gs=1 rr=1 g3=1",
    "keeps served read=ungated_own mz=1 gs=1 rr=1 g3=1",
    "keeps served read=ungated_storage mz=1 gs=1 rr=1 g3=1",
-   // g-mixed (question 14, PR feat/gated-entry-ungated-storage): with the
+   // g-mixed (question 14, PR #1854): with the
    // switch off, a served answer reading a `storage=` table proven to hold
    // only ungated rows keeps the gates, as one reading a database table
    // does, alone or beside a database table or a table admitted past its
