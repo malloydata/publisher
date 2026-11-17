@@ -8816,7 +8816,7 @@ components:
         outcome:
           type: string
           enum: [used, skipped]
-          description: "`used`, the table answered; `skipped`, it could not, and `reason` says why."
+          description: "`used`, the table answered; `skipped`, it could not, and `reason` says why. A rollup the rollup leg tried carries that rollup's own `reason` and `detail`, so two rollups of one source skipped for different reasons report each its own; one the leg never tried carries the leg's."
         reason:
           $ref: "#/components/schemas/SkipReason"
         code:

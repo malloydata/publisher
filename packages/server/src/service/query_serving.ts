@@ -36,7 +36,10 @@ import {
    type Snapshot,
 } from "./materialization/domain/binding";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
-import { isDeclineOf } from "./materialization/domain/leg_decline";
+import {
+   explanationOfDecline,
+   isDeclineOf,
+} from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -143,12 +146,7 @@ export function variantsOf(
          },
          explain: (err): VariantSkipExplanation | undefined =>
             isDeclineOf(err, DECLINING_LEG[leg.kind])
-               ? {
-                    code: err.code,
-                    ...(err.callerDetail
-                       ? { callerDetail: err.callerDetail }
-                       : {}),
-                 }
+               ? explanationOfDecline(err)
                : undefined,
          onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };

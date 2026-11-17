@@ -374,7 +374,9 @@ degraded state as a warning (`materialization-storage-mode`). Under `write-only`
 
 **An uncovered query is answered from the base.** A query no rollup covers, in the store
 or alongside the base, is answered live, with the answer it always had; the path report
-names each rollup it considered and why it was skipped.
+names each rollup it considered and why that rollup was skipped: two rollups of one source
+can be skipped for different reasons (one too coarse, one read through a join whose key is
+not the query source's primary key), and each carries its own.
 
 ## Build and refresh
 
