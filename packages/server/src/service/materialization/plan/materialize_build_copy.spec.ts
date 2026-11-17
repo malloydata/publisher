@@ -813,6 +813,8 @@ describe("storedSourceCopyText: a source re-rooted on its own build source", () 
             "m.malloy.materialize.malloy",
          ),
       ).toBeUndefined();
+   });
+});
 
 describe("a cross-file extension's build copy (P10 across files)", () => {
    const parentText = `source: raw is duckdb.table('t')
