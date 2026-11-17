@@ -114,7 +114,8 @@ class Request(unittest.TestCase):
         self.assertEqual(rr.case_problems(case), [])
         case["scope"] = {"environment": "e", "package": "a"}
         self.assertIn("q1: a case carries `scope` or `scopes`, not both", rr.case_problems(case))
-        self.assertIn("q1: scopes must be a non-empty list", rr.case_problems({**a_case(), "scopes": []})[0])
+        self.assertEqual(rr.case_problems({**a_case(), "scopes": []}), [])  # a call that names no scope
+        self.assertIn("q1: scopes must be a list", rr.case_problems({**a_case(), "scopes": ["p"]})[0])
 
     def test_a_cases_givens_and_filter_params_are_sent_as_written(self):
         case = a_case()
@@ -324,6 +325,14 @@ class Checks(unittest.TestCase):
         self.assertEqual(twice["checks"]["one_card_per_source"], ["order_items on 2 cards"])
         once = rr.score(case, rr.call_event("q1", args, {"sources": [card("a.malloy")]}, None))
         self.assertEqual(once["checks"]["one_card_per_source"], [])
+
+    def test_an_empty_scopes_list_sends_no_scope(self):
+        case = dict(a_case("q1", required=[SALES]), scopes=[])
+        args = rr.request_for(case, {"environment": "e", "package": "p"})
+        self.assertNotIn("scopes", args)
+        self.assertEqual(rr.call_event("q1", args, {"sources": []}, None)["scopes"], [])
+        self.assertEqual(rr.request_for(a_case("q2", required=[SALES]), {"environment": "e", "package": "p"})["scopes"],
+                         [{"environment": "e", "package": "p"}])
 
     def test_a_cut_response_must_carry_a_warning(self):
         case = a_case("q1", required=[SALES])

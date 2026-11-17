@@ -57,7 +57,9 @@ serve both kinds of run.
   model files and pinned sources. `--case-scopes` says every case has one, and
   then no `--environment` or `--package` is needed.
 - A case that searches several packages at once carries `scopes`, a list of
-  scope objects, in place of `scope`.
+  scope objects, in place of `scope`. An empty list, `"scopes": []`, is a call
+  that names no scope: it is sent with no `scopes` field, and the host searches
+  everything the caller can read.
 - A case may carry `givens` and `filter_params`, objects of name to value,
   sent as written. A model that scopes its rows by a given returns no stored
   values without it, so a value search on such a model needs the given on
@@ -125,7 +127,7 @@ targets and a case with one otherwise weigh the same:
 | `best_pick` | targets whose highest-relevance entity is a required answer. Entities tied at the top all count |
 | `not_found` | `absent` targets that returned nothing, or only fields the label lists as `closest` or `acceptable` |
 
-`latency_p50_s` and `latency_p95_s` are the request times as the replay saw
+`latency_p50_s`, `latency_p90_s` and `latency_p95_s` are the request times as the replay saw
 them, one request at a time.
 
 `checks` counts four promises that hold for every response whatever the labels

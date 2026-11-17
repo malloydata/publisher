@@ -107,10 +107,11 @@ def case_problems(case: dict[str, Any]) -> list[str]:
         out.append(f"{qid}: scope must be an object of get_context scope fields, such as "
                    '{"environment": "e", "package": "p", "source": "s"}')
     scopes = case.get("scopes")
-    if scopes is not None and not (isinstance(scopes, list) and scopes and all(
+    # An empty list is allowed: a call that names no scope.
+    if scopes is not None and not (isinstance(scopes, list) and all(
             isinstance(x, dict) and x and all(isinstance(k, str) and isinstance(v, str) and v for k, v in x.items())
             for x in scopes)):
-        out.append(f"{qid}: scopes must be a non-empty list of get_context scope objects")
+        out.append(f"{qid}: scopes must be a list of get_context scope objects (empty for a call with no scope)")
     if scopes is not None and scope is not None:
         out.append(f"{qid}: a case carries `scope` or `scopes`, not both")
     for key in ("givens", "filter_params"):
@@ -190,8 +191,11 @@ def request_for(case: dict[str, Any], scope: dict[str, str]) -> dict[str, Any]:
         sent.append(target)
     # A case's own scope replaces the set's: a set built from real requests
     # spans packages, model files and pinned sources.
-    args: dict[str, Any] = {"search_targets": sent,
-                            "scopes": list(case.get("scopes") or [case.get("scope") or scope])}
+    args: dict[str, Any] = {"search_targets": sent}
+    # `"scopes": []` on a case is a call that names no scope at all: the host
+    # searches everything the caller can read. It is sent with no `scopes` field.
+    if case.get("scopes") != []:
+        args["scopes"] = list(case.get("scopes") or [case.get("scope") or scope])
     if isinstance(case.get("question"), str) and case["question"].strip():
         args["user_prompt"] = case["question"]
     # Values a host needs to read a source's rows: a model that scopes its data
@@ -223,7 +227,7 @@ def call_event(qid: str, args: dict[str, Any], payload: Any, error: str | None) 
     return ledger.event("tool_call", qid=qid, sample=None, phase=PHASE, tool="get_context",
                         targets=search_terms(args), target_shapes=target_shapes(args),
                         search_targets=search_targets(args),
-                        scopes=args["scopes"], retrieval_mode=mode, rankedSummary=ranked,
+                        scopes=args.get("scopes") or [], retrieval_mode=mode, rankedSummary=ranked,
                         error=error, **extra)
 
 
@@ -355,6 +359,7 @@ def pooled(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "empty_responses": sum(1 for r in scored if r["n_returned"] == 0),
         "mean_returned": mean([r["n_returned"] for r in scored]),
         "latency_p50_s": percentile([r.get("latency_s") for r in rows if not r.get("error")], 0.5),
+        "latency_p90_s": percentile([r.get("latency_s") for r in rows if not r.get("error")], 0.9),
         "latency_p95_s": percentile([r.get("latency_s") for r in rows if not r.get("error")], 0.95),
     }
 
@@ -503,7 +508,7 @@ def print_report(rows: list[dict[str, Any]], s: dict[str, Any], mode: str) -> No
                 f"not found {fmt(pt['not_found'])} of {pt['not_found_targets']}")
     pt = s["per_target"]
     print(f"per target ({pt['labelled']} labelled of {pt['targets']}): {target_line(pt)}")
-    print(f"latency p50 {fmt(s['latency_p50_s'])} s   p95 {fmt(s['latency_p95_s'])} s")
+    print(f"latency p50 {fmt(s['latency_p50_s'])} s   p90 {fmt(s.get('latency_p90_s'))} s   p95 {fmt(s['latency_p95_s'])} s")
     for name, c in (s.get("checks") or {}).items():
         if c["checked"]:
             print(f"check {name}: {c['failed']} of {c['checked']} responses broke it"
@@ -598,7 +603,7 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     scope = {k: v for k, v in (("environment", a.environment), ("package", a.package)) if v}
     if a.model_path:
         scope["model_path"] = a.model_path
-    unscoped = [c["qid"] for c in cases if not (c.get("scope") or c.get("scopes"))]
+    unscoped = [c["qid"] for c in cases if not (c.get("scope") or c.get("scopes") or c.get("scopes") == [])]
     if a.case_scopes and unscoped:
         raise SystemExit(f"--case-scopes: {len(unscoped)} case(s) carry no scope, first {unscoped[0]}.")
     started = ledger.now()
