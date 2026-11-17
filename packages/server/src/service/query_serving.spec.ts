@@ -530,32 +530,11 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
             expect(
                await open.keepsContractsFor!((await open.attempt()).extra!),
             ).toBe(true);
-            // Gate columns that cannot be read off the author's compile: a
-            // storage table keeps nothing, a database table keeps its gate.
-            const unread = servedCandidate([stored("DECIMAL(38,0)")], runnable);
-            expect(
-               await unread.keepsContractsFor!((await unread.attempt()).extra!),
-            ).toBe(false);
-            // A database table on a DuckLake catalog that holds the gate's
-            // column as a DOUBLE (a 128-bit integer): live. Another column
-            // held so leaves the gate alone.
-            for (const [asDouble, keeps] of [
-               [["acct"], false],
-               [["total"], true],
-            ] as const) {
-               const lake = servedCandidate([
-                  { ...colocated, storedAsDouble: [...asDouble] },
-               ]);
-               expect(
-                  await lake.keepsContractsFor!((await lake.attempt()).extra!),
-               ).toBe(keeps);
-            }
-            const unreadColocated = servedCandidate([colocated], runnable);
-            expect(
-               await unreadColocated.keepsContractsFor!(
-                  (await unreadColocated.attempt()).extra!,
-               ),
-            ).toBe(true);
+            // An author's compile that cannot be read: the served copy is
+            // never answered from (its composite member cannot be checked).
+            await expect(
+               servedCandidate([stored("DECIMAL(38,0)")], runnable).attempt(),
+            ).rejects.toThrow(/composite source/);
          } finally {
             restore();
          }

@@ -48,8 +48,10 @@ async function resolvedMember(
 
 /**
  * Throw a decline unless `served` resolves its composite to the member
- * `author` (the live compile) resolves it to, or neither runs on one. Fails
- * closed: a compile whose resolution cannot be read is declined.
+ * `author` (the live compile) resolves it to. Read only when live resolves
+ * one: the served copy is the author's text, so a run target that is not a
+ * composite live is not one there. Fails closed: a compile whose resolution
+ * cannot be read is declined.
  */
 export async function assertSameCompositeMember(
    author: QueryMaterializer,
@@ -57,7 +59,9 @@ export async function assertSameCompositeMember(
 ): Promise<void> {
    let same: boolean;
    try {
-      same = (await resolvedMember(author)) === (await resolvedMember(served));
+      const live = await resolvedMember(author);
+      if (live === null) return;
+      same = live === (await resolvedMember(served));
    } catch {
       same = false;
    }
