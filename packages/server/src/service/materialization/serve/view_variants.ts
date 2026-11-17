@@ -82,14 +82,17 @@ import {
 } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import type { Binding, Pinned } from "../domain/binding";
+import { type Binding, type Pinned, storageLookupOf } from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { TIMEFRAMES } from "./served_copy";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
-import { storedColumnReadPlan } from "../stored_column_types";
+import {
+   canonicalStoredSchema,
+   storedColumnReadPlan,
+} from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
@@ -357,11 +360,13 @@ export class PersistedViewServe {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
-      if (plan.storage !== undefined) {
-         const lookup = pinned.tableFor(
-            plan.buildSourceID,
-            isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
-         );
+      const lookup = storageLookupOf(
+         pinned,
+         plan.buildSourceID,
+         isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
+         plan.storage !== undefined,
+      );
+      if (lookup) {
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
          }
@@ -562,7 +567,15 @@ export async function compilePersistedResultVariant(args: {
 }): Promise<CompiledVariant> {
    const { packagePath, packageConfig, plan, table, shape } = args;
    const read = table.binding
-      ? storedColumnCasts(table.binding.schema, shape)
+      ? storedColumnCasts(
+           // Matched by a unique case fold too, as the served copy matches:
+           // a warehouse that folded the build's quoted aliases (P3-06..09).
+           canonicalStoredSchema(
+              table.binding.schema,
+              shape.columns.map((c) => c.name),
+           ),
+           shape,
+        )
       : { casts: new Map<string, ColumnCast>() };
    if ("refusal" in read) return { refusal: read.refusal };
    // The source's own time zone: a `storage=` read truncates each stored
@@ -923,6 +936,8 @@ export function storedColumnCasts(
    const plan = storedColumnReadPlan(schema, declared, {
       queryTimezone: shape.queryTimezone,
       dialect: shape.dialect,
+      // A storage destination is DuckLake.
+      ducklake: true,
    });
    const [unservable] = plan.leftOut;
    if (unservable) {

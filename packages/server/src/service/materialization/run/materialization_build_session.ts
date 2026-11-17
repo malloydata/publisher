@@ -50,7 +50,9 @@ import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { fromSubselect } from "../subselect";
 import {
    type BuildCastOptions,
+   canonicalRenames,
    castToDeclaredTypes,
+   wideIntegerColumns,
    isCastConversionError,
    keepsWarehouseType,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
@@ -67,6 +69,8 @@ import {
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
+   snowflakeSessionCheckSQL,
+   snowflakeSessionParitySQL,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
 import {
@@ -172,6 +176,65 @@ function orderByExpressions(
 }
 
 /**
+ * Give a Snowflake build session the session parameters Malloy's live
+ * connection runs with (`snowflakeSessionParitySQL`), before any read, so the
+ * stored rows are the rows live computes: the same UTC day and the same
+ * Sunday week, and the same column-name case. Each is set the way the query
+ * tag is; then `TIMEZONE` and `WEEK_START` are read back on the same handle
+ * (`snowflakeSessionCheckSQL`), and a session that does not hold them fails
+ * the build: its day and week buckets could differ from live's and be
+ * served as exact. `QUOTED_IDENTIFIERS_IGNORE_CASE` is best-effort, logged
+ * when refused: the build stores each column under its declared name either
+ * way (`canonicalRenames`).
+ */
+async function alignSnowflakeSession(
+   session: DuckDBConnection,
+   handle: string,
+): Promise<void> {
+   for (const sql of snowflakeSessionParitySQL(handle)) {
+      try {
+         await session.runSQL(sql);
+      } catch (error) {
+         logger.warn(
+            "Could not set a Malloy session setting on the Snowflake build session",
+            {
+               statement: sql,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+      }
+   }
+   for (const check of snowflakeSessionCheckSQL(handle)) {
+      let held: string | null = null;
+      try {
+         held = settingValueOf(await session.runSQL(check.sql), check.name);
+      } catch (error) {
+         throw new Error(
+            `The Snowflake build session's ${check.name} could not be read back, so the build cannot be sure its buckets match live's: ${error instanceof Error ? error.message : String(error)}`,
+         );
+      }
+      if (held !== check.value) {
+         throw new Error(
+            `The Snowflake build session holds ${check.name} = ${held ?? "(not reported)"}, not Malloy's ${check.value}, so its day and week buckets could differ from live's; the build is refused. Allow ALTER SESSION SET ${check.name} for the build's role.`,
+         );
+      }
+   }
+}
+
+/** The `value` a `SHOW PARAMETERS` result reports for `name`, or null. */
+function settingValueOf(result: unknown, name: string): string | null {
+   for (const row of resultRows(result)) {
+      const lower = Object.fromEntries(
+         Object.entries(row).map(([k, v]) => [k.toLowerCase(), v]),
+      );
+      if (String(lower.key ?? "").toUpperCase() === name) {
+         return str(lower.value);
+      }
+   }
+   return null;
+}
+
+/**
  * Tag every subsequent read on a Snowflake build session with this build's
  * query metadata.
  *
@@ -189,6 +252,8 @@ async function tagSnowflakeSession(
    queryMetadata: QueryMetadata | undefined,
 ): Promise<void> {
    if (sourceType !== "snowflake") return;
+   // Malloy's session settings first, so the build reads as live does.
+   await alignSnowflakeSession(session, handle);
    const sql = snowflakeSetQueryTagSQL(queryMetadata, handle);
    if (sql === undefined) return;
    try {
@@ -1873,40 +1938,82 @@ export async function createTableWithDeclaredTypes(
       options.sourceType,
       options.described,
    );
-   const cast = castToDeclaredTypes(selectSQL, columns, declared);
-   if (cast === selectSQL) {
-      return createTableAndDescribe(
-         session,
-         quotedTablePath,
-         selectSQL,
-         options,
-      );
+   options = {
+      ...options,
+      declaredNames: declared.columns.map((c) => c.name),
+   };
+   const exactIntegers = await computedWideIntegers(
+      session,
+      selectSQL,
+      options.sourceType,
+      options.described,
+   );
+   // Each class of cast is tried alone after the whole set fails, so one
+   // value past 38 digits does not leave every other column uncast: the
+   // declared-type casts and the exact-integer casts, then the computed
+   // types as they are.
+   const attempts = [
+      castToDeclaredTypes(selectSQL, columns, { ...declared, exactIntegers }),
+      castToDeclaredTypes(selectSQL, columns, { ...declared }),
+      castToDeclaredTypes(selectSQL, [], { exactIntegers }),
+      selectSQL,
+   ].filter((sql, i, all) => all.indexOf(sql) === i);
+   for (const [i, sql] of attempts.entries()) {
+      try {
+         return await createTableAndDescribe(
+            session,
+            quotedTablePath,
+            sql,
+            options,
+         );
+      } catch (err) {
+         if (!isCastConversionError(err) || i === attempts.length - 1) {
+            throw err;
+         }
+         // Once per build, as before: one cast failed.
+         if (i === 0) recordStoredColumnTypeMismatch("build", "cast_failed");
+         logger.warn(
+            "A declared-type cast could not convert a stored value; storing that class of column as the warehouse computed it",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               table: quotedTablePath,
+               // Not the message: it quotes the value the cast refused.
+               errorCode: errorCodeOf(err),
+            },
+         );
+      }
    }
+   throw new Error("unreachable: the last attempt returns or throws");
+}
+
+/**
+ * The output columns a DuckDB-computed build (same-catalog or chained: no
+ * passthrough `sourceType`) produces as a 128-bit integer, which DuckLake
+ * would store as a DOUBLE (P4-01): stored as `DECIMAL(38,0)` instead
+ * ({@link wideIntegerColumns}). Read by describing the SELECT in the
+ * destination's session, which prepares it and runs nothing: the SELECT
+ * reads only the destination's own tables. A passthrough's columns arrive
+ * in the warehouse's types (a BigQuery INT64 as BIGINT, a Snowflake or
+ * Postgres number as DECIMAL), so it is not described, though a description
+ * the caller already holds is read. A describe that fails casts nothing; the
+ * build itself reports the error.
+ */
+async function computedWideIntegers(
+   session: DuckDBConnection,
+   selectSQL: string,
+   sourceType: FederatedSourceType | undefined,
+   described: readonly { name: string; type: string }[] | undefined,
+): Promise<string[]> {
+   if (described) return wideIntegerColumns(described);
+   if (sourceType !== undefined) return [];
    try {
-      return await createTableAndDescribe(
-         session,
-         quotedTablePath,
-         cast,
-         options,
-      );
+      return wideIntegerColumns(await describeTable(session, `(${selectSQL})`));
    } catch (err) {
-      if (!isCastConversionError(err)) throw err;
-      recordStoredColumnTypeMismatch("build", "cast_failed");
       logger.warn(
-         "A declared-type cast could not convert a stored value; storing the warehouse's types instead",
-         {
-            code: STORED_COLUMN_TYPE_MISMATCH_CODE,
-            table: quotedTablePath,
-            // Not the message: it quotes the value the cast refused.
-            errorCode: errorCodeOf(err),
-         },
+         "Could not describe a storage build's computed columns; storing its integers as computed",
+         { errorCode: errorCodeOf(err) },
       );
-      return await createTableAndDescribe(
-         session,
-         quotedTablePath,
-         selectSQL,
-         options,
-      );
+      return [];
    }
 }
 
@@ -1976,6 +2083,12 @@ export async function createTableAndDescribe(
        * (leftover_name_views.ts).
        */
       replacesView?: string[];
+      /**
+       * The column names the build source declares: a stored column that
+       * matches one only by a unique case fold is renamed to it, in the same
+       * transaction ({@link canonicalRenames}).
+       */
+      declaredNames?: readonly string[];
    } = {},
 ): Promise<WireColumn[]> {
    // In the transaction, not create-then-drop-on-failure: a DROP after the
@@ -1988,6 +2101,14 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
       );
+      const described = await describeTable(session, quotedTablePath);
+      const renames = canonicalRenames(described, options.declaredNames ?? []);
+      if (renames.length === 0) return described;
+      for (const { from, to } of renames) {
+         await session.runSQL(
+            `ALTER TABLE ${quotedTablePath} RENAME COLUMN ${quoteIdentifier(from, STORAGE_DIALECT)} TO ${quoteIdentifier(to, STORAGE_DIALECT)}`,
+         );
+      }
       return await describeTable(session, quotedTablePath);
    });
 }

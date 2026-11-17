@@ -37,7 +37,11 @@ import type {
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
-import { BuildRunFailedError, combineRetryable } from "./build_failure_class";
+import {
+   BuildRunFailedError,
+   combineRetryable,
+   withFailedRunManifest,
+} from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -512,19 +516,22 @@ export class InstructedBuild {
          // attached. Thrown inside the try so it takes the same cleanup path as
          // any other total failure.
          if (run.builtSources.length === 0 && run.failedReasons.length > 0) {
-            throw new BuildRunFailedError(
-               [
-                  ...run.failedReasons,
-                  ...run.refusals.map((e) => e.message),
-                  ...priorRefusals.map((r) => r.message),
-               ].join("; "),
-               // Every source's own answer (a refusal is recorded in
-               // `failures` as `false` too), plus auto-run's refusals, which
-               // never reached this loop and are deterministic.
-               combineRetryable([
-                  ...Object.values(run.failures).map((f) => f.retryable),
-                  ...priorRefusals.map(() => false),
-               ]),
+            throw failedRunError(
+               run,
+               new BuildRunFailedError(
+                  [
+                     ...run.failedReasons,
+                     ...run.refusals.map((e) => e.message),
+                     ...priorRefusals.map((r) => r.message),
+                  ].join("; "),
+                  // Every source's own answer (a refusal is recorded in
+                  // `failures` as `false` too), plus auto-run's refusals, which
+                  // never reached this loop and are deterministic.
+                  combineRetryable([
+                     ...Object.values(run.failures).map((f) => f.retryable),
+                     ...priorRefusals.map(() => false),
+                  ]),
+               ),
             );
          }
          // Every instructed source was refused by its own gate: the refusal is
@@ -537,11 +544,11 @@ export class InstructedBuild {
             run.refusals.length > 0 &&
             !run.heldBackBySibling
          ) {
-            throw allSourcesRefusedError(run.refusals);
+            throw failedRunError(run, allSourcesRefusedError(run.refusals));
          }
       } catch (err) {
-         // A run that commits no manifest leaves its written tables unreachable
-         // to manifest-driven GC, so reclaim them before rethrowing.
+         // A failed run's manifest records no entry, so its written tables are
+         // unreachable to manifest-driven GC: reclaim them before rethrowing.
          // Best-effort: the build's own failure is what the caller needs.
          if (owner) {
             reportRetainedStorageTables(run.retainedThisRun, owner.packageName);
@@ -1421,6 +1428,20 @@ function settleRefusals(run: InstructedRun): {
    }
    run.pendingRefusals = [];
    return { refusalsInFailures, refusedBesideBuilt };
+}
+
+/**
+ * A run that built nothing, as the error it throws, carrying the manifest its
+ * FAILED record keeps: every source's own failure, a refusal included
+ * ({@link settleRefusals}). No entries: a seeded entry names a table an
+ * earlier run built, and a failure's deprecated mirror names the previous
+ * generation's, so neither belongs to this run, and deleting its record must
+ * never drop them.
+ */
+function failedRunError<
+   E extends BuildRunFailedError | MaterializationEligibilityError,
+>(run: InstructedRun, err: E): E {
+   return withFailedRunManifest(err, { failures: { ...run.failures } });
 }
 
 /**
