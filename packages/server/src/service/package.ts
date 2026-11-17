@@ -62,6 +62,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
+import { sandboxedDuckDBOptions } from "./duckdb_lockdown";
 import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";
 import {
@@ -3862,9 +3863,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const malloyConfig = new MalloyConfig(
          {
             connections: {
+               // Caller SQL and model text reach the sandbox, so it runs
+               // under Malloy's sandboxed policy: no network, its filesystem
+               // confined to the package directory (duckdb_lockdown.ts).
                duckdb: {
                   is: "duckdb",
                   databasePath: ":memory:",
+                  ...sandboxedDuckDBOptions(packagePath),
                },
             },
          },

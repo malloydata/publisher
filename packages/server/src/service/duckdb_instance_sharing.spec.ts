@@ -13,10 +13,9 @@ import {
    installDuckDBInstanceSharing,
    instanceKeyOf,
    openDuckDBFilesForTesting,
-   recordAttachments,
-   recordedAttachments,
    serializeAttachRun,
    setDuckDBCloseWaitMsForTesting,
+   setDuckDBLockedReopenWaitMsForTesting,
    withThreadCap,
 } from "./duckdb_instance_sharing";
 import { attachmentDigest } from "./connection";
@@ -563,7 +562,7 @@ describe("a connection edit to a file-backed DuckDB connection", () => {
          duckdbConnection: { setupSQL },
       }) as never;
 
-   it("opens the edited connection on the same instance, and the draining one keeps answering", async () => {
+   it("opens a setupSQL edit on the same locked instance, and the draining one keeps answering", async () => {
       const env = await Environment.create("testEnv", envPath, [
          duck("SELECT 1"),
       ]);
@@ -582,9 +581,8 @@ describe("a connection edit to a file-backed DuckDB connection", () => {
          )) as unknown as DuckDBConnection;
 
          expect(after).not.toBe(before);
+         // Each connection runs its own setupSQL, on the locked instance too.
          expect(instanceOf(after)).toBe(instanceOf(before));
-         // Both generations answer: the edited one at once, the retired one
-         // for the rest of its drain.
          const [now, draining] = await Promise.all([
             after.runSQL("SELECT v FROM t"),
             before.runSQL("SELECT v FROM t"),
@@ -596,164 +594,70 @@ describe("a connection edit to a file-backed DuckDB connection", () => {
       }
    });
 
-   it("detaches a database an earlier generation attached and the edit removed", async () => {
-      const env = await Environment.create("testEnv", envPath, [
-         duck("SELECT 1"),
-      ]);
-      try {
-         const before = (await env.getMalloyConnection(
-            "duck",
-         )) as unknown as DuckDBConnection;
-         // Stands in for an attached warehouse: attachments belong to the
-         // instance, so they outlive the generation that made them.
-         await before.runSQL("ATTACH ':memory:' AS warehouse");
-         recordAttachments(before, "duck", {
-            generation: 0,
-            databases: new Map([
-               ["warehouse", { digest: "digest", type: "postgres" }],
-            ]),
-         });
-
-         await env.update({
-            name: "testEnv",
-            connections: [duck("SELECT 2")],
-         } as never);
-         const after = (await env.getMalloyConnection(
-            "duck",
-         )) as unknown as DuckDBConnection;
-
-         expect(instanceOf(after)).toBe(instanceOf(before));
-         const databases = await after.runSQL(
-            "SELECT database_name FROM duckdb_databases()",
-         );
-         expect(
-            databases.rows.map((row) => row["database_name"]),
-         ).not.toContain("warehouse");
-         expect(recordedAttachments(after, "duck")?.databases.size).toBe(0);
-      } finally {
-         await env.closeAllConnections();
-      }
-   });
-
-   it("drops the secret of a storage entry the edit removed", async () => {
-      const env = await Environment.create("testEnv", envPath, [
-         duck("SELECT 1"),
-      ]);
-      try {
-         const before = (await env.getMalloyConnection(
-            "duck",
-         )) as unknown as DuckDBConnection;
-         // A `gcs`, `s3` or `azure` entry creates only a secret, which is
-         // instance-wide: detaching a catalog by its name leaves it in force.
-         await before.runSQL(
-            "CREATE SECRET secret_s3_bucket (TYPE s3, KEY_ID 'k', SECRET 's')",
-         );
-         recordAttachments(before, "duck", {
-            generation: 0,
-            databases: new Map([["bucket", { digest: "digest", type: "s3" }]]),
-         });
-
-         await env.update({
-            name: "testEnv",
-            connections: [duck("SELECT 2")],
-         } as never);
-         const after = (await env.getMalloyConnection(
-            "duck",
-         )) as unknown as DuckDBConnection;
-
-         const secrets = await after.runSQL(
-            "SELECT name FROM duckdb_secrets()",
-         );
-         expect(secrets.rows.map((row) => row["name"])).not.toContain(
-            "secret_s3_bucket",
-         );
-      } finally {
-         await env.closeAllConnections();
-      }
-   });
-
-   it("leaves a newer generation's attachments to it", async () => {
-      const env = await Environment.create("testEnv", envPath, [
-         duck("SELECT 1"),
-      ]);
-      try {
-         const before = (await env.getMalloyConnection(
-            "duck",
-         )) as unknown as DuckDBConnection;
-         await before.runSQL("ATTACH ':memory:' AS warehouse");
-         // Written by a generation newer than any this test builds: a
-         // draining older one must not undo it.
-         recordAttachments(before, "duck", {
-            generation: Number.MAX_SAFE_INTEGER,
-            databases: new Map([
-               ["warehouse", { digest: "digest", type: "postgres" }],
-            ]),
-         });
-
-         await env.update({
-            name: "testEnv",
-            connections: [duck("SELECT 2")],
-         } as never);
-         const after = (await env.getMalloyConnection(
-            "duck",
-         )) as unknown as DuckDBConnection;
-
-         const databases = await after.runSQL(
-            "SELECT database_name FROM duckdb_databases()",
-         );
-         expect(databases.rows.map((row) => row["database_name"])).toContain(
-            "warehouse",
-         );
-         expect(
-            recordedAttachments(after, "duck")?.databases.has("warehouse"),
-         ).toBe(true);
-      } finally {
-         await env.closeAllConnections();
-      }
-   });
-
-   it("keeps the record of a database a failed run did not reach, so a retry replaces it", async () => {
-      const env = await Environment.create("testEnv", envPath, [
-         duck("SELECT 1"),
-      ]);
-      try {
-         const before = (await env.getMalloyConnection(
-            "duck",
-         )) as unknown as DuckDBConnection;
-         await before.runSQL("ATTACH ':memory:' AS first");
-         await before.runSQL("ATTACH ':memory:' AS second");
-         recordAttachments(before, "duck", {
-            generation: 0,
-            databases: new Map([
-               ["first", { digest: "old", type: "postgres" }],
-               ["second", { digest: "old", type: "postgres" }],
-            ]),
-         });
-
-         // Both changed; replacing `first` fails, so the run never reaches
-         // `second`, which still holds its old settings.
-         await env.update({
-            name: "testEnv",
-            connections: [
+   /** A connection whose attached bucket is keyed `key`: an edit changes its setup. */
+   const withBucket = (key: string) =>
+      ({
+         name: "duck",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
                {
-                  name: "duck",
-                  type: "duckdb",
-                  duckdbConnection: {
-                     setupSQL: "SELECT 2",
-                     attachedDatabases: [
-                        { name: "first", type: "unsupported" },
-                        { name: "second", type: "postgres" },
-                     ],
-                  },
+                  name: "bucket",
+                  type: "s3",
+                  s3Connection: { accessKeyId: key, secretAccessKey: "s" },
                },
             ],
-         } as never);
-         await env.getMalloyConnection("duck").catch(() => undefined);
+         },
+      }) as never;
 
-         const record = recordedAttachments(before, "duck");
-         expect(record?.databases.has("first")).toBe(false);
-         expect(record?.databases.get("second")?.digest).toBe("old");
+   it("opens an edit of the attached databases afresh once the draining one releases the file", async () => {
+      setDuckDBLockedReopenWaitMsForTesting(10_000);
+      const env = await Environment.create("testEnv", envPath, [
+         withBucket("k1"),
+      ]);
+      try {
+         const before = (await env.getMalloyConnection(
+            "duck",
+         )) as unknown as DuckDBConnection;
+         await before.runSQL("CREATE TABLE t AS SELECT 7 AS v");
+
+         await env.update({
+            name: "testEnv",
+            connections: [withBucket("k2")],
+         } as never);
+         // A locked instance cannot take another setup (duckdb_lockdown.ts),
+         // so the edited connection waits for the draining generation, which
+         // keeps answering until it lets the file go.
+         const after = env.getMalloyConnection("duck");
+         const draining = await before.runSQL("SELECT v FROM t");
+         expect(draining.rows).toEqual([{ v: 7 }]);
+         await before.close();
+         const edited = (await after) as unknown as DuckDBConnection;
+         expect((await edited.runSQL("SELECT v FROM t")).rows).toEqual([
+            { v: 7 },
+         ]);
       } finally {
+         setDuckDBLockedReopenWaitMsForTesting(undefined);
+         await env.closeAllConnections();
+      }
+   });
+
+   it("refuses an edit of the attached databases when the file is never released", async () => {
+      setDuckDBLockedReopenWaitMsForTesting(200);
+      const env = await Environment.create("testEnv", envPath, [
+         withBucket("k1"),
+      ]);
+      try {
+         await env.getMalloyConnection("duck");
+         await env.update({
+            name: "testEnv",
+            connections: [withBucket("k2")],
+         } as never);
+         await expect(env.getMalloyConnection("duck")).rejects.toThrow(
+            /already open with different open-time settings/,
+         );
+      } finally {
+         setDuckDBLockedReopenWaitMsForTesting(undefined);
          await env.closeAllConnections();
       }
    });

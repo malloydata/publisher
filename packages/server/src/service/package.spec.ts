@@ -113,26 +113,30 @@ describe("service/package", () => {
          async () => {
             // Regression guard for the sandbox bypass: the per-package sandbox
             // has no attached databases, so the environment attach paths never
-            // touch it. Under local-only its session must still be pinned
-            // against DuckDB's implicit auto-install, or a sandbox query
-            // referencing an unbaked extension could silently fetch from the
-            // CDN. Uses a spy (not a stub) so real DuckDB runs the pragma.
+            // touch it. Under local-only it must still never auto-install an
+            // extension, or a sandbox query referencing an unbaked extension
+            // could silently fetch from the CDN. Its sandboxed policy turns
+            // auto-install off as an option (duckdb_lockdown.ts).
             restoreSettings = installSettings({
                env: { EXTENSION_FETCH_POLICY: "local-only" },
             }).restore;
-            const spy = sinon.spy(DuckDBConnection.prototype, "runSQL");
-            await Package.create(
+            const pkg = await Package.create(
                "testProject",
                "testPackage",
                testPackageDirectory,
                new Map(),
             );
-            const issued = spy.getCalls().map((c) => String(c.args[0]));
-            expect(
-               issued.some((s) =>
-                  /autoinstall_known_extensions\s*=\s*false/i.test(s),
-               ),
-            ).toBe(true);
+            try {
+               const sandbox = (await pkg
+                  .getMalloyConfig()
+                  .connections.lookupConnection("duckdb")) as DuckDBConnection;
+               const result = await sandbox.runSQL(
+                  "SELECT current_setting('autoinstall_known_extensions') AS v",
+               );
+               expect(result.rows).toEqual([{ v: false }]);
+            } finally {
+               await pkg.getMalloyConfig().releaseConnections();
+            }
          },
          { timeout: 30000 },
       );
@@ -283,7 +287,7 @@ describe("service/package", () => {
          );
 
          it(
-            "does not treat package-root paths as filesystem isolation",
+            "confines the sandbox to the package root",
             async () => {
                const outsidePath = resolve(
                   testPackageDirectory,
@@ -302,27 +306,19 @@ describe("service/package", () => {
                   ].join("\n"),
                );
 
-               let packageInstance: Package | undefined;
                try {
-                  packageInstance = await Package.create(
-                     "testProject",
-                     "testPackage",
-                     resolve(testPackageDirectory),
-                     new Map(),
-                  );
-                  const outsideModel = packageInstance.getModel(
-                     "models/outside_read.malloy",
-                  );
-                  expect(outsideModel).toBeDefined();
-                  const outsideResults = await outsideModel!.runQuery(
-                     unrecordedAudit(),
-                     { queryName: "row_count" },
-                  );
-                  expect(
-                     (outsideResults.compactResult as { c: number }[])[0]?.c,
-                  ).toBe(1);
+                  // A read outside the package is refused by the sandbox's
+                  // DuckDB lockdown (duckdb_lockdown.ts), so the model fails
+                  // to compile and the package to load.
+                  await expect(
+                     Package.create(
+                        "testProject",
+                        "testPackage",
+                        resolve(testPackageDirectory),
+                        new Map(),
+                     ),
+                  ).rejects.toThrow(/Permission Error/);
                } finally {
-                  await packageInstance?.getMalloyConfig().releaseConnections();
                   await fs.rm(outsidePath, { force: true });
                }
             },

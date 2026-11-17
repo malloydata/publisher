@@ -40,6 +40,14 @@ import * as path from "path";
 import { getDuckDBThreads } from "../config";
 import { logger } from "../logger";
 import { hardCloseIfAwaitingHandle } from "./duckdb_hard_close";
+import {
+   differsOnlyInLockedSetup,
+   isInstanceLocked,
+   markInstanceLocked,
+   OPEN_TIME_LOCKDOWN,
+   preloadExcel,
+   relativeReadEntries,
+} from "./duckdb_lockdown";
 
 /** A connection's settings, as `@malloydata/db-duckdb` normalized them. */
 interface NormalizedDuckDBConfig {
@@ -52,6 +60,7 @@ interface NormalizedDuckDBConfig {
 /** What this module reads and wraps on a `DuckDBConnection`. */
 interface DuckDBConnectionInternals {
    normalized: NormalizedDuckDBConfig;
+   connection: { run(sql: string): Promise<unknown> } | null;
    shareKey: string;
    setupError?: Error;
    connecting?: Promise<void>;
@@ -59,6 +68,10 @@ interface DuckDBConnectionInternals {
    close(): Promise<void>;
    detachInstance(): void;
    buildInstanceOptions(opts?: unknown): Record<string, string>;
+   setupOnce(): Promise<void>;
+   applyFinalBaseline(): Promise<void>;
+   runDuckDBQuery(sql: string): Promise<unknown>;
+   connectionSetupRan?: boolean;
 }
 
 type ActiveDB = (typeof DuckDBConnection.activeDBs)[string];
@@ -93,6 +106,14 @@ let installed = false;
 /** How long a close waits for its connection's open before closing anyway. */
 const CLOSE_WAIT_MS = 10_000;
 let closeWaitMs = CLOSE_WAIT_MS;
+/**
+ * How long an open waits for a locked instance of the same file to close when
+ * the two differ only in their setup (duckdb_lockdown.ts): a connection edit's
+ * new generation waits for the old one, which drains within
+ * RETIRED_CONNECTION_DRAIN_MS (environment.ts, 30 s), with margin.
+ */
+const LOCKED_REOPEN_WAIT_MS = 45_000;
+let lockedReopenWaitMs = LOCKED_REOPEN_WAIT_MS;
 
 /**
  * Raised instead of opening a second instance of a file an open instance holds
@@ -179,6 +200,8 @@ export function installDuckDBInstanceSharing(): void {
    const close = proto.close;
    const detachInstance = proto.detachInstance;
    const buildInstanceOptions = proto.buildInstanceOptions;
+   const setupOnce = proto.setupOnce;
+   const applyFinalBaseline = proto.applyFinalBaseline;
    // This patches `@malloydata/db-duckdb` internals. If a release reshapes
    // them, sharing and the thread cap are skipped (the second-instance
    // limitation and one-per-core pools return) rather than guessed at;
@@ -194,15 +217,121 @@ export function installDuckDBInstanceSharing(): void {
    // instances: cap each pool unless the connection sets its own `threads`
    // (config.ts, getDuckDBThreads). The shareable-mode `:memory:` primary
    // passes through here too.
+   // Every instance also opens under the open-time lockdown
+   // (duckdb_lockdown.ts): persistent secrets and the global S3 configuration
+   // off before anything can use them.
    proto.buildInstanceOptions = function (
       this: DuckDBConnectionInternals,
       opts?: unknown,
    ): Record<string, string> {
-      return withThreadCap(buildInstanceOptions.call(this, opts));
+      return {
+         ...withThreadCap(buildInstanceOptions.call(this, opts)),
+         ...OPEN_TIME_LOCKDOWN,
+      };
+   };
+
+   // An instance Malloy locks (the sandboxed and local tiers) turns external
+   // access off before any Publisher code runs on it, after which no extension
+   // can load; `excel` is not built in, so it is loaded here, on the fresh
+   // connection, or `.xlsx` reads would break.
+   const initThenPreload = function (
+      this: DuckDBConnectionInternals,
+   ): Promise<void> {
+      return init.call(this).then(async () => {
+         const restricted =
+            this.normalized.lockConfiguration === true ||
+            (this.normalized.securityPolicy ?? "none") !== "none";
+         const raw = this.connection;
+         if (restricted && raw && !this.setupError && !isInstanceLocked(this)) {
+            // Per-session settings a later joiner of the locked instance can
+            // no longer set; it inherits these instance defaults instead.
+            await raw.run("SET GLOBAL TimeZone='UTC'").catch(() => {});
+            const workingDirectory = this.normalized.workingDirectory;
+            if (typeof workingDirectory === "string") {
+               await raw
+                  .run(
+                     `SET GLOBAL file_search_path='${workingDirectory.replace(/'/g, "''")}'`,
+                  )
+                  .catch(() => {});
+            }
+            const files =
+               typeof workingDirectory === "string" &&
+               Array.isArray(this.normalized.allowedDirectories)
+                  ? relativeReadEntries(workingDirectory).files
+                  : [];
+            if (files.length > 0) {
+               // Refused on an instance a sharer already restricted, which
+               // already holds the same list.
+               await raw
+                  .run(
+                     `SET allowed_paths=[${files
+                        .map((file) => `'${file.replace(/'/g, "''")}'`)
+                        .join(",")}]`,
+                  )
+                  .catch(() => {});
+            }
+            await preloadExcel((sql) => raw.run(sql));
+         }
+      });
+   };
+
+   // A connection joining an instance that is already locked (same share key,
+   // so the same baseline and post-open setup) skips Malloy's baseline: every
+   // SET in it would be refused, and the instance holds its effects, the
+   // per-session TimeZone and file_search_path included (set globally before
+   // the lock). Its own setupSQL still runs, as on any shared instance: each
+   // connection runs its own (see the header), confined like the first.
+   proto.setupOnce = async function (
+      this: DuckDBConnectionInternals,
+   ): Promise<void> {
+      if (isInstanceLocked(this)) {
+         // Malloy's own split (duckdb_connection.ts, splitSetupSQL).
+         const setupSQL = this.normalized.setupSQL ?? "";
+         for (const statement of setupSQL
+            .split(";\n")
+            .map((part) => part.trim())
+            .filter((part) => part !== "")) {
+            await this.runDuckDBQuery(statement);
+         }
+         this.connectionSetupRan = true;
+         return;
+      }
+      await setupOnce.call(this);
+      if (this.normalized.lockConfiguration === true) markInstanceLocked(this);
+   };
+
+   // A confined connection's allowlist also takes its root's cwd-anchored
+   // entries, so its relative reads pass (duckdb_lockdown.ts,
+   // relativeReadEntries). Malloy sets the allowlist from the normalized
+   // options, which key the instance, so the entries ride along for this
+   // baseline only and the options are left as they were.
+   proto.applyFinalBaseline = async function (
+      this: DuckDBConnectionInternals,
+   ): Promise<void> {
+      const { allowedDirectories, workingDirectory } = this.normalized;
+      if (
+         !Array.isArray(allowedDirectories) ||
+         typeof workingDirectory !== "string"
+      ) {
+         return applyFinalBaseline.call(this);
+      }
+      const extra = relativeReadEntries(workingDirectory).directories;
+      if (extra.length === 0) return applyFinalBaseline.call(this);
+      const normalized = this.normalized;
+      this.normalized = {
+         ...normalized,
+         allowedDirectories: [...allowedDirectories, ...extra],
+      };
+      try {
+         await applyFinalBaseline.call(this);
+      } finally {
+         this.normalized = normalized;
+      }
    };
 
    proto.init = function (this: DuckDBConnectionInternals): Promise<void> {
       const normalized = this.normalized;
+      const init = initThenPreload;
       // Shareable mode opens a private in-memory primary and ATTACHes the file
       // lazily, releasing it on idle; it holds no instance of the file.
       if (normalized.effectiveShareable) return init.call(this);
@@ -235,6 +364,22 @@ export function installDuckDBInstanceSharing(): void {
          open = undefined;
       }
       if (open && open.instanceKey !== instanceKey) {
+         if (differsOnlyInLockedSetup(open.instanceKey, instanceKey)) {
+            // A locked instance cannot take a different setup (its catalog
+            // ATTACH, its secrets), and two instances of one file are not
+            // supported: wait for the generation holding it to drain, then
+            // open the file afresh with this connection's setup.
+            const held = open;
+            return releasedWithin(held, lockedReopenWaitMs).then((released) => {
+               if (!released) {
+                  this.setupError = new DuckDBInstanceSettingsChangedError(
+                     file,
+                  );
+                  return;
+               }
+               return proto.init.call(this);
+            });
+         }
          this.setupError = new DuckDBInstanceSettingsChangedError(file);
          return Promise.resolve();
       }
@@ -387,6 +532,8 @@ export function dbDuckDBInternalsMatch(): boolean {
       typeof proto.close === "function" &&
       typeof proto.detachInstance === "function" &&
       typeof proto.buildInstanceOptions === "function" &&
+      typeof proto.setupOnce === "function" &&
+      typeof proto.applyFinalBaseline === "function" &&
       typeof activeDBs === "object" &&
       activeDBs !== null
    );
@@ -507,6 +654,26 @@ export function openDuckDBFilesForTesting(): string[] {
 /** Test seam: shorten how long a close waits for an open; undefined resets. */
 export function setDuckDBCloseWaitMsForTesting(ms: number | undefined): void {
    closeWaitMs = ms ?? CLOSE_WAIT_MS;
+}
+
+/** Test seam: shorten how long a locked reopen waits; undefined resets. */
+export function setDuckDBLockedReopenWaitMsForTesting(
+   ms: number | undefined,
+): void {
+   lockedReopenWaitMs = ms ?? LOCKED_REOPEN_WAIT_MS;
+}
+
+/** Whether the instance `open` names is released within `ms`. */
+async function releasedWithin(open: OpenFile, ms: number): Promise<boolean> {
+   const deadline = Date.now() + ms;
+   while (isLive(open)) {
+      if (Date.now() >= deadline) return false;
+      await new Promise<void>((resolve) => {
+         const timer = setTimeout(resolve, 100);
+         (timer as { unref?: () => void }).unref?.();
+      });
+   }
+   return true;
 }
 
 /** Whether `promise` settles, either way, within `ms`. */

@@ -21,6 +21,25 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — security: every DuckDB instance is locked down (BREAKING for remote reads through `duckdb`)
+
+**Security fix.** Every DuckDB instance Publisher created ran with DuckDB's defaults. SQL that reached one, a raw `sqlQuery` (on the package `duckdb` sandbox too) or model text (`duckdb.sql(...)`, `duckdb.table(...)`), could read any local file the server process could read, use the host's ambient cloud credentials and its cloud metadata service, and load community extensions or write persistent secrets. Every instance now runs under a lockdown chosen by what it needs:
+
+- **No network**: the package sandbox runs under Malloy's `securityPolicy: "sandboxed"`, confined to its package directory (relative and absolute reads of the package's own files, `.xlsx` included, keep working). An environment `duckdb` connection with only `setupSQL` is confined to its environment directory, then runs its `setupSQL`, then is locked.
+- **Networked readers** (`ducklake` connections, storage destinations, `duckdb` connections with `attachedDatabases`, `motherduck`, build and load sessions): each does its own setup (its catalog, its scoped secret, its extensions), then is confined to exactly the paths that setup reads, with external access off and its configuration locked.
+
+The lockdown is part of each instance's configuration identity, so a locked instance is never shared with a connection that needs a different setup or policy. A consequence: after an edit to a `ducklake` connection or to a `duckdb` connection's `attachedDatabases`, the first query on the new connection waits for the previous generation to drain (up to about 30 seconds) before it opens the database file afresh.
+
+**Who was affected:** any deployment where people who should not have the server's own reach could run SQL or write models: callers of the query endpoints with raw SQL, and package authors. Deployments behind a gateway that admitted only trusted callers and packages were not exposed beyond what those already had.
+
+**BREAKING:**
+
+- A model or query that reads a remote file (`https://`, `s3://`, `gs://`) through a plain `duckdb` connection, the package sandbox included, now fails. Read it through a configured connection instead: a `duckdb` connection whose `attachedDatabases` holds a credential for the bucket, or a `ducklake` connection.
+- `setupSQL` on an environment `duckdb` connection with no `attachedDatabases` runs confined: it cannot reach the network, read or write outside the environment directory, or load an extension.
+- A `duckdb` connection with `attachedDatabases` can read the local files of its environment directory and URLs of its attached storage, nothing else.
+- On Windows, where Malloy has no `sandboxed` policy, the package sandbox runs under `local` (no network, locked), without directory confinement.
+
+**Known residual:** confining a connection to its data path is not org isolation inside one shared bucket. Isolating orgs that share a bucket requires credentials the host scopes per org; see [security-posture.md](docs/security-posture.md#known-gaps), gap 6, which also lists the other limits.
 ## [Unreleased] — a rename that reuses or swaps names reads the right stored column
 
 **Fixed: a persisted source whose trailing `extend` renames a column to a name another column had could be served wrong values, and rows its gate hides.** A `#@ persist` source's table stores each column under its query's output name, and serving renames it again. When the renames swap or chain names (`rename: tmp is total; rename: total is n; rename: n is tmp`), serving read each renamed field from another field's stored column. That covers query-shaped sources and those declared by refinement of a table. Two consequences:

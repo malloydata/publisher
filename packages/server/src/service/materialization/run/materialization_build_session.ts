@@ -96,6 +96,7 @@ import {
 } from "../../connection";
 import type { WatermarkBound } from "./incremental_apply";
 import { storageDestinationRoot } from "../../connection_config";
+import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
@@ -1039,6 +1040,16 @@ export async function buildSourceIntoStorage(params: {
                sourceFederationConfig(sourceConnection),
             );
             federatedClose = federated.close;
+            // Setup done (the destination attached, the source federated):
+            // confine the session to them (duckdb_lockdown.ts). The
+            // configuration is left unlocked because the build itself sets
+            // per-step options (threads around a partitioned write); no caller
+            // or author SQL runs in DuckDB here, as the build's SQL runs in the
+            // source warehouse through the passthrough.
+            await lockDownDuckDBSession(session, {
+               allow: [storageDestinationRoot(params.environmentPath)],
+               lockConfiguration: false,
+            });
             try {
                return await buildOnFederatedSession(
                   params,
@@ -1247,6 +1258,12 @@ async function buildSameCatalogIntoStorage(params: {
       { purpose: "build", attachAs: alias, build: true, signal: params.signal },
       async (session) => {
          await session.runSQL(managedSearchPathSql(alias));
+         // Confined to the catalog before the build's SQL runs, unlocked for the
+         // build's own per-step options (see buildSourceIntoStorage).
+         await lockDownDuckDBSession(session, {
+            allow: [storageDestinationRoot(params.environmentPath)],
+            lockConfiguration: false,
+         });
          const target = quoteManifestTablePath(
             storageTablePath(
                alias,

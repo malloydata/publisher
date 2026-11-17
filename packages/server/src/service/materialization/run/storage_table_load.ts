@@ -12,6 +12,7 @@
  * a caller's reader options as typed literals, never spliced text.
  */
 
+import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../../../api";
@@ -198,6 +199,9 @@ export async function loadStorageTable(params: {
       if (params.format === "xlsx") {
          await installAndLoadExtension(session, "excel");
       }
+      // The reader takes caller options: confine it to the catalog's data path
+      // (recorded by the attach) before it runs (duckdb_lockdown.ts).
+      await lockDownDuckDBSession(session, { lockConfiguration: false });
       return await writeTableAs(session, params, reader, (error) =>
          readerRefusal(error, params.uri),
       );
