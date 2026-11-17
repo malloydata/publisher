@@ -82,6 +82,12 @@ import {
    type BuildReadCost,
 } from "./build_read_cost";
 import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./warehouse_sql";
+import {
+   bigQueryJobLister,
+   markBigQueryRead,
+   trackBigQueryJobs,
+   type BigQueryJobListerFactory,
+} from "./bigquery_job_cancel";
 import { recordAttributionSkipped } from "../../../materialization_metrics";
 import type { QueryMetadata } from "../../query_metadata";
 import {
@@ -408,6 +414,11 @@ export async function issuePassthroughRead(
    buildSQL: string,
    queryMetadata: QueryMetadata | undefined,
 ): Promise<PassthroughRead> {
+   // Marked so a cancelled build can find its job and cancel it
+   // (bigquery_job_cancel.ts); unchanged for any other engine.
+   if (sourceType === "bigquery") {
+      buildSQL = markBigQueryRead(session, buildSQL);
+   }
    const label =
       sourceType === "bigquery"
          ? bigQueryQueryLabelValue(queryMetadata)
@@ -799,8 +810,8 @@ export async function withDestinationSession<T>(
  * refused with {@link BuildCancelledError} before it starts, so an abort that
  * lands while the session is idle (between the federation and the CTAS, say)
  * is not lost. A read DuckDB makes through a warehouse extension
- * (BigQuery's) is not cancelled in the warehouse: its job runs to
- * completion, and DuckDB raises only once its wait returns.
+ * (BigQuery's) is not cancelled in the warehouse by the interrupt: a
+ * BigQuery build cancels its jobs itself (bigquery_job_cancel.ts).
  */
 export function interruptOnAbort(
    session: DuckDBConnection,
@@ -925,6 +936,8 @@ export interface BuildSessionDeps {
    read?: typeof issuePassthroughRead;
    /** The Postgres column-type read a build stores exact numerics by. */
    numericColumns?: typeof postgresNumericColumns;
+   /** The BigQuery jobs API a cancelled build cancels its reads through. */
+   bigQueryJobs?: BigQueryJobListerFactory;
 }
 
 /**
@@ -1041,6 +1054,18 @@ export async function buildSourceIntoStorage(params: {
                sourceFederationConfig(sourceConnection),
             );
             federatedClose = federated.close;
+            // A BigQuery read outlives DuckDB's interrupt, so a cancel also
+            // cancels the build's jobs in BigQuery, under the read's own key.
+            const stopTrackingJobs =
+               sourceType === "bigquery"
+                  ? trackBigQueryJobs(session, params.signal, () =>
+                       (params.deps?.bigQueryJobs ?? bigQueryJobLister)(
+                          federated.handle,
+                          sourceConnection.bigqueryConnection
+                             ?.serviceAccountKeyJson,
+                       ),
+                    )
+                  : async () => {};
             try {
                return await buildOnFederatedSession(
                   params,
@@ -1049,6 +1074,7 @@ export async function buildSourceIntoStorage(params: {
                   federated.handle,
                );
             } finally {
+               await stopTrackingJobs();
                await clearSnowflakeSessionTag(
                   session,
                   sourceType,
