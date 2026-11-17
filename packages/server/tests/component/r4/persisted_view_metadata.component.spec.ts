@@ -301,7 +301,7 @@ type Tier = "storage" | "colocated";
 interface Case {
    name: string;
    malloy: string;
-   /** Tiers whose answer is live by design (a nest is stored only colocated). */
+   /** Tiers whose answer is live by design (a nested view is stored on neither). */
    liveIn?: Tier[];
    /** What answers it when not live (default the view leg). */
    servedBy?: string;
@@ -422,7 +422,6 @@ const CASES: Case[] = [
       name: "a select: nest, whose duplicate rows a regroup would merge",
       malloy: "run: ov -> select_nest",
       liveIn: ["storage", "colocated"],
-      declinedBecause: { colocated: "it nests `lines`" },
    },
    {
       name: "a later stage counting a select: nest's rows",
@@ -434,25 +433,21 @@ const CASES: Case[] = [
       name: "a nest left empty by its where:",
       malloy: "run: ov -> empty_nest",
       liveIn: ["storage", "colocated"],
-      declinedBecause: { colocated: "it nests `north_placed`" },
    },
    {
       name: "a view nested by name and a nest in a nest",
       malloy: "run: ov -> deep",
       liveIn: ["storage", "colocated"],
-      declinedBecause: { colocated: "it nests `by_status`" },
    },
    {
       name: "a nest with its own where:",
       malloy: "run: ov -> filtered_nest",
       liveIn: ["storage", "colocated"],
-      declinedBecause: { colocated: "it nests `returned`" },
    },
    {
       name: "a nest's fields",
       malloy: "run: ov -> nested",
       liveIn: ["storage", "colocated"],
-      declinedBecause: { colocated: "it nests `by_status`" },
    },
 ];
 

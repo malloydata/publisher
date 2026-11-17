@@ -72,6 +72,13 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
       await disposeScenarios();
    });
 
+   it("refuses a nested view colocated at plan: no read could use its table", () => {
+      expect(fixture.viewRefusals.some((r) => r.includes("nests"))).toBe(true);
+      expect(
+         fixture.bindings.some((b) => b.sourceName === "flights__nested__view"),
+      ).toBe(false);
+   });
+
    it("refuses a view whose result reads the current time, with a warning", () => {
       expect(fixture.viewRefusals.some((r) => r.includes("current time"))).toBe(
          true,
@@ -145,8 +152,9 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
       ],
       ["a view that is not persisted", "run: flights -> plain", undefined],
       // Its nest's stored rows cannot be rebuilt exactly (a `select:` nest's
-      // duplicates, an empty nest), so the leg declines it.
-      ["a nested view, colocated", "run: flights -> nested", "MISSING_FIELD"],
+      // duplicates, an empty nest), so the plan refuses it (`nested_result`)
+      // on either tier and no table is built.
+      ["a nested view, colocated", "run: flights -> nested", undefined],
       [
          "a caller's redefinition of the source",
          "source: flights2 is flights\nrun: flights2 -> by_carrier",

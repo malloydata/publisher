@@ -284,7 +284,7 @@ source: ops is ${TABLE} extend {
       expect(invalidFindings(c).map(([c]) => c)).toEqual([code]);
    });
 
-   it("refuses a nested view stored with storage=, and builds it colocated", async () => {
+   it("refuses a nested view on either tier: no read could use its table", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {
   measure: n is count()
@@ -294,8 +294,18 @@ source: ops is ${TABLE} extend {
   view: colocated is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
 }
 `);
-      expect(viewSources(c)).toEqual(["ops__colocated__view"]);
-      expect(viewFindings(c).some((m) => m.includes("nests"))).toBe(true);
+      expect(viewSources(c)).toEqual([]);
+      const nested = (c.annotationFindings ?? []).filter(
+         (f) => f.code === PERSIST_VIEW_NOT_BUILT,
+      );
+      expect(nested.map((f) => f.subject).sort()).toEqual([
+         "ops -> colocated",
+         "ops -> stored",
+      ]);
+      for (const f of nested) {
+         expect(f.refused?.reason).toBe("nested_result");
+         expect(f.message).toContain("nests");
+      }
    });
 
    describe("a gated source (question 3)", () => {

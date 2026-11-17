@@ -179,13 +179,13 @@ async function persistedViewRefusalReason(
       };
    }
    const last = stages[stages.length - 1];
-   if (
-      plan.storage !== undefined &&
-      (last.outputStruct?.fields ?? []).some(isNested)
-   ) {
+   // On either tier: the view leg never answers from a nested result (it
+   // cannot rebuild a nest's rows exactly), so a table built for one would
+   // never be read.
+   if ((last.outputStruct?.fields ?? []).some(isNested)) {
       return {
          reason:
-            "its result nests, which a storage destination's table cannot declare yet; persist it without storage=",
+            "its result nests, which a persisted view cannot answer from its table: a nest's stored rows cannot be rebuilt exactly",
          refusal: "nested_result",
       };
    }
