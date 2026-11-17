@@ -151,12 +151,13 @@ export class LegDecline extends Error {
    }
 }
 
-/** Whether `error` is a decline of `leg`. */
+/** Whether `error` is a decline of `leg`, or of any of `leg` when it lists several. */
 export function isDeclineOf(
    error: unknown,
-   leg: DecliningLeg,
+   leg: DecliningLeg | readonly DecliningLeg[],
 ): error is LegDecline {
-   return error instanceof LegDecline && error.leg === leg;
+   if (!(error instanceof LegDecline)) return false;
+   return typeof leg === "string" ? error.leg === leg : leg.includes(error.leg);
 }
 
 /** The public reason and candidate code of a decline the router recorded by code. */

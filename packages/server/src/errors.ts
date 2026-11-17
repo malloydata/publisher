@@ -113,9 +113,15 @@ export type ErrorReason =
    | "CONNECTION_AUTH_FAILED"
    // 424: the model names a connection the environment does not have.
    | "CONNECTION_NOT_FOUND"
-   // 403: the object store behind a table refused the database's read of its
-   // files; the query and the model are fine.
+   // 403: the object store under an environment-configured data path (a
+   // storage destination, a DuckLake catalog's data path) refused the
+   // database's read; the query and the model are fine, the operator's
+   // storage credentials are not.
    | "STORAGE_ACCESS_DENIED"
+   // 403: the object store at a path the query or the model reads itself (a
+   // file or table URL) refused access; the fix is the path or the caller's
+   // grant to it.
+   | "PATH_ACCESS_DENIED"
    // 403: a gate (`#(authorize)` or `#(access_filter)`) refused the caller.
    // A gate that could not be decided answers the same; only the metrics and
    // the log tell the two apart.
@@ -877,9 +883,12 @@ export class ConnectionAuthError extends Error {
 
 /**
  * The object store behind a table (a DuckLake data path, a bucket a file is
- * read from) refused the database's read of its files: 403, `reason:
- * STORAGE_ACCESS_DENIED`. The query ran and the model is fine; the storage
- * credentials the database reads with are not. The driver's text quotes the
+ * read from) refused the database's read of its files: 403. Under an
+ * environment-configured data path ({@link managed}), `reason:
+ * STORAGE_ACCESS_DENIED`: the query and the model are fine, the storage
+ * credentials the database reads with are not. At a path the query or the
+ * model names itself, `reason: PATH_ACCESS_DENIED`: the path, or the
+ * caller's grant to it, is what to fix. The driver's text quotes the
  * object's URL (bucket, organization and database paths), so it is this
  * error's message, which is logged, and the answer names only `subject`, the
  * source or connection the caller asked for.
@@ -2007,7 +2016,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       // sent. warn: the storage credentials are the operator's to fix.
       status: 403,
       message: (error) => error.callerMessage,
-      reason: "STORAGE_ACCESS_DENIED",
+      // Who fixes it: the operator's credentials, or the path the query reads.
+      reason: (error) =>
+         error.managed ? "STORAGE_ACCESS_DENIED" : "PATH_ACCESS_DENIED",
       log: { summary: "Storage access denied", level: "warn" },
       mcp: {
          advice: "fixed",

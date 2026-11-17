@@ -1133,11 +1133,15 @@ export function callerTextDecline(
       contents: Record<string, unknown> | undefined;
       declaringURL: string | undefined;
    },
+   /** The leg that asks, which the decline's code is attributed to. */
+   leg: "view" | "query" = "view",
 ): LegDecline | undefined {
+   const code =
+      leg === "query" ? "query_shape_mismatch" : "view_shape_mismatch";
    const named = redeclared.find((n) => n !== undefined && otherNames.has(n));
    if (named !== undefined) {
       return new LegDecline(
-         "view_shape_mismatch",
+         code,
          `the query text names \`${named}\` beside the call of \`${name}\`, a name the stored result's variant gives to the stored rows`,
       );
    }
@@ -1152,7 +1156,7 @@ export function callerTextDecline(
          | undefined;
       if (entry?.type === "query") {
          return new LegDecline(
-            "view_shape_mismatch",
+            code,
             `the query text names the named query \`${other}\` beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
          );
       }
@@ -1165,7 +1169,7 @@ export function callerTextDecline(
             : undefined);
       if (declaredIn === undefined || declaredIn !== model.declaringURL) {
          return new LegDecline(
-            "view_shape_mismatch",
+            code,
             `the query text names \`${other}\`, declared in another file than the stored result's, beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
          );
       }

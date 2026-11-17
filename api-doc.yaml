@@ -4273,12 +4273,16 @@ components:
     Forbidden:
       description: |
         Forbidden - insufficient permissions to perform the operation. With
-        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes,
-        and `sqlTemporaryTable`), the database ran the query and an object
-        store refused its read. Under a data path the environment configures
-        (a DuckLake catalog's), the query and the model are fine and a retry
-        fails the same way until the database's storage credentials are
-        fixed; otherwise the path the query reads refused access. The body
+        `reason: STORAGE_ACCESS_DENIED` or `PATH_ACCESS_DENIED` (the query and
+        raw `sqlQuery` routes, and `sqlTemporaryTable`), the database ran the
+        query and an object store refused its read. `STORAGE_ACCESS_DENIED`:
+        the URL lies under a data path the environment configures (a DuckLake
+        catalog's, a storage destination's), so the query and the model are
+        fine and a retry fails the same way until the database's storage
+        credentials are fixed. `PATH_ACCESS_DENIED`: a path the query or the
+        model reads itself refused access, so the path, or the caller's grant
+        to it, is what to fix. With `reason: ACCESS_DENIED`, a gate refused
+        the caller. The body
         names what the caller read and never a storage path; the full text is
         logged.
       content:
@@ -10164,12 +10168,14 @@ components:
             package was loaded.
 
             STORAGE_ACCESS_DENIED, on a 403, means an object store refused the
-            database's read. Under a data path the environment configures (a
-            DuckLake catalog's), the query and the model are fine and whoever
-            configures the database's storage credentials has to fix it;
-            otherwise the path the query reads refused access. Retrying fails
-            the same way. The body names the source or connection the caller
-            read and no storage path.
+            database's read under a data path the environment configures (a
+            DuckLake catalog's, a storage destination's): the query and the
+            model are fine, and whoever configures the database's storage
+            credentials has to fix it. PATH_ACCESS_DENIED, on a 403, means the
+            object store at a path the query or the model reads itself (a file
+            or table URL) refused access: change the path, or get the caller a
+            grant to it. Retrying either fails the same way. The body names the
+            source or connection the caller read and no storage path.
 
             ACCESS_DENIED, on a 403, means a gate (`#(authorize)` or
             `#(access_filter)`) refused the caller. Every gate 403 carries it,
@@ -10226,7 +10232,9 @@ components:
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
-            STORAGE_ACCESS_DENIED, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
+            STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
+            MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
+            TABLE_OWNERSHIP_UNVERIFIED, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,

@@ -124,6 +124,18 @@ describe("callerTextDecline", () => {
             ?.callerDetail,
       ).toContain("`alias`, declared in another file");
    });
+
+   it("attributes its decline to the leg that asks", () => {
+      for (const others of [["q"], ["fl_q"], ["alias"]]) {
+         expect(
+            callerTextDecline(new Set(others), ["q"], "q", model, "query")
+               ?.code,
+         ).toBe("query_shape_mismatch");
+         expect(
+            callerTextDecline(new Set(others), ["q"], "q", model)?.code,
+         ).toBe("view_shape_mismatch");
+      }
+   });
 });
 
 describe("the view leg's decisions at their edges", () => {

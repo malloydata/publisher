@@ -1751,7 +1751,7 @@
       "json": {
         "code": 403,
         "message": "The storage at a path source \"trips\" reads refused access (HTTP 403).",
-        "reason": "STORAGE_ACCESS_DENIED"
+        "reason": "PATH_ACCESS_DENIED"
       },
       "logged": true,
       "logs": [

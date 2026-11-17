@@ -72,12 +72,13 @@ import type {
 
 /** The decline vocabulary's name for each leg's codes. */
 const DECLINING_LEG = {
-   view: "view",
-   // The query leg declines in the view leg's codes (`view_*`).
-   query: "view",
-   rollup: "rollup",
-   served: "served_copy",
-} as const satisfies Record<LegKind, string>;
+   view: ["view"],
+   // The query leg declines in its own codes (`query_*`) and, where it reads
+   // a stored result through the view leg's code, the view leg's (`view_*`).
+   query: ["query", "view"],
+   rollup: ["rollup"],
+   served: ["served_copy"],
+} as const satisfies Record<LegKind, readonly string[]>;
 
 /** What each leg's skip is logged as, at debug. */
 const SKIP_MESSAGE: Record<LegKind, string> = {

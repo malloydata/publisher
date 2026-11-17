@@ -266,13 +266,13 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "a refinement",
          "m.malloy",
          "run: by_carrier + { limit: 1 }",
-         "MISSING_FIELD",
+         "SHAPE_MISMATCH",
       ],
       [
          "a refinement that filters a limited query",
          "m.malloy",
          "run: top + { where: carrier = 'cc' }",
-         "MISSING_FIELD",
+         "SHAPE_MISMATCH",
       ],
       [
          "a use inside another definition of the model",
@@ -717,10 +717,10 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
                });
             return {
                queryUsed: await count("query", "used", "NONE"),
-               queryMissingField: await count(
+               queryShapeMismatch: await count(
                   "query",
                   "skipped",
-                  "MISSING_FIELD",
+                  "SHAPE_MISMATCH",
                ),
                queryContract: await count("query", "skipped", "ROW_LEVEL_GATE"),
                viewUsed: await count("view", "used", "NONE"),
@@ -734,7 +734,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
 
       const none = {
          queryUsed: 0,
-         queryMissingField: 0,
+         queryShapeMismatch: 0,
          queryContract: 0,
          viewUsed: 0,
          liveUsed: 0,
@@ -747,10 +747,10 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          });
       });
 
-      it("counts a refinement as the query leg skipped MISSING_FIELD, then live", async () => {
+      it("counts a refinement as the query leg skipped SHAPE_MISMATCH, then live", async () => {
          expect(await counted("run: by_carrier + { limit: 1 }")).toEqual({
             ...none,
-            queryMissingField: 1,
+            queryShapeMismatch: 1,
             liveUsed: 1,
          });
       });

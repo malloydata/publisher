@@ -244,6 +244,7 @@ export class PersistedQueryServe {
                | undefined,
             declaringURL: plan.declaringURL,
          },
+         "query",
       );
       if (unfollowed) throw unfollowed;
       const prepared = await readPreparedQuery(args.authorRunnable);
