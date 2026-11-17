@@ -68,7 +68,7 @@ source: s is duckdb.table('ex') extend { primary_key: id }
       model: `#(materialize) name="p2_26_colocated"
 source: s is duckdb.table('ex') extend { primary_key: id }
 `,
-      colocated: ["s"],
+      colocated: ["s"] as string[] | undefined,
    },
 ])(
    "P2-26: a #(materialize) $tier source with a STRUCT(a BIGINT) column answers live as a whole",
