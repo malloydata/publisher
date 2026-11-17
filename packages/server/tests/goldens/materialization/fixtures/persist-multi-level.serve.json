@@ -4,11 +4,11 @@
     "built": [
       {
         "name": "orders_base",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "orders_rollup",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [
@@ -50,6 +50,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315"
           }
@@ -58,6 +59,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "below",
             "sourceName": "orders_rollup",
             "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9"
@@ -71,6 +73,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315",
           "tier": "database",
           "via": "served_copy"
@@ -114,6 +117,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9"
           }
@@ -127,6 +131,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9",
           "tier": "database",
           "via": "served_copy"
@@ -170,6 +175,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315"
           }
@@ -178,6 +184,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "below",
             "sourceName": "orders_rollup",
             "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9"
@@ -191,6 +198,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315",
           "tier": "database",
           "via": "served_copy"
@@ -234,6 +242,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9"
           }
@@ -247,6 +256,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9",
           "tier": "database",
           "via": "served_copy"

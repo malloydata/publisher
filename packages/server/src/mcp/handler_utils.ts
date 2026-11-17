@@ -63,7 +63,11 @@ export function classifyToolError(
             message: mcp.message
                ? mcp.message(error, { operation, identifier })
                : (error as Error).message,
-            suggestions: [...mcp.suggestions],
+            suggestions: [
+               ...(typeof mcp.suggestions === "function"
+                  ? mcp.suggestions(error)
+                  : mcp.suggestions),
+            ],
          };
       case "environment_not_found":
          if (error instanceof EnvironmentNotFoundError && error.lookup) {

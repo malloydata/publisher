@@ -875,7 +875,7 @@ describe("runBuild (branch behavior)", () => {
             reportSourceBuilt(
                {
                   kind: "persist",
-                  tier: "colocated",
+                  tier: "database",
                   sourceEntityId: "build-orders",
                   sourceName: "orders",
                },
@@ -920,7 +920,7 @@ describe("runBuild (branch behavior)", () => {
          ).toEqual([
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "built",
                failure_class: "none",
             },
@@ -1477,6 +1477,34 @@ describe("runInBackground (terminal recording)", () => {
             recorded.error,
             "the persisted record must not carry it either",
          ).not.toContain("hunter2");
+      } finally {
+         errorStub.restore();
+      }
+   });
+});
+
+describe("P6-21: a run's record names no storage path", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("redacts a storage URL from a whole-run failure's recorded error", async () => {
+      const errorStub = sinon.stub(logger, "error");
+      try {
+         const service = ctx.service as unknown as {
+            runInBackground: (id: string, run: () => Promise<void>) => void;
+         };
+         service.runInBackground("bg-storage", async () => {
+            throw new Error(
+               "HTTP GET error on 'https://storage.googleapis.com/bkt/org_1/db_2/t.parquet' (HTTP 500)",
+            );
+         });
+         for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+         const recorded = ctx.repository.updateMaterialization.firstCall
+            .args[1] as { error?: string };
+         expect(recorded.error).toContain("<storage path>");
+         expect(recorded.error).not.toMatch(/googleapis|bkt|org_1/);
       } finally {
          errorStub.restore();
       }

@@ -120,12 +120,12 @@ describe("loadGateText over files a run compiles", () => {
       [
          "#@ preaggregate bogus=1",
          `${HEADER}source: o is ${ROWS} extend {\n  #@ preaggregate grain="category" bogus=1\n  measure: total is amount.sum()\n}\n`,
-         "preaggregate-unknown-key",
+         "rollup-unknown-key",
       ],
       [
          "#@ preaggregate storage=@env.X",
          `${HEADER}source: o is ${ROWS} extend {\n  #@ preaggregate grain="category" storage=@env.X\n  measure: total is amount.sum()\n}\n`,
-         "preaggregate-invalid",
+         "rollup-invalid",
       ],
       [
          "#@ persits",

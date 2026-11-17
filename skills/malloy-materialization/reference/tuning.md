@@ -57,7 +57,7 @@ Look across several runs, not one: the pattern over the recent history (how ofte
 
 Weigh rebuild cost against query benefit. Common findings:
 
-- **Persist candidate:** an expensive, frequently-queried source that is _not_ persisted (recomputed on every query). Recommend adding `#@ persist name="..."`. Strongest when the source is a heavy aggregate/join reused by many queries and its inputs change slowly. If the source carries a `#(access_filter)` gate, check which case it is first. A gate reached only through a `join_*`, or not classifying as a row filter, means the colocated persist is **refused** - the build skips it and it serves live - so do not recommend persisting it at all. Where the gate is the source's own row filter the persist is admitted, and then only recommend it alongside a freshness window (`freshness.fallback="live"`): the gating column freezes at build time, so without one a revoked row can be served under its old access decision indefinitely (see `access-filter.md`).
+- **Persist candidate:** an expensive, frequently-queried source that is _not_ persisted (recomputed on every query). Recommend adding `#@ persist name="..."`. Strongest when the source is a heavy aggregate/join reused by many queries and its inputs change slowly. If the source carries a `#(access_filter)` gate, check which case it is first. A gate reached only through a `join_*`, or not classifying as a row filter, means the database persist is **refused** - the build skips it and it serves live - so do not recommend persisting it at all. Where the gate is the source's own row filter the persist is admitted, and then only recommend it alongside a freshness window (`freshness.fallback="live"`): the gating column freezes at build time, so without one a revoked row can be served under its old access decision indefinitely (see `access-filter.md`).
 - **Removal candidate:** a persisted source that is cheap to compute, rarely queried, or rebuilt far more often than it is read. Recommend dropping the `#@ persist` annotation (and its table): the storage + rebuild cost is not buying anything.
 - **Chain candidate:** a `storage=` rollup whose intermediates re-read the warehouse on every build while a stored root already holds the rows. Rewire the intermediates onto the stored root (declaration order, a distinct `-> { select: * }` intermediate, joins onto stored siblings - `chaining.md`), and read `upstreamReuse` on the next run to confirm the chain holds. Keep a self-join or a wide hash aggregate over a large fact **in the warehouse**: chained, it builds in the destination's engine under its memory bound.
 - **Denominator candidate:** a ratio whose numerator is a rollup and whose denominator counts the fact table per query. Persist the denominator at its own grain.
@@ -76,14 +76,14 @@ Frame each recommendation with the evidence from Step 2 (the run IDs, timings, b
 
   (`--wait` gives up after 120 s by default and exits non-zero while the build continues; raise `--timeout` for a real build.)
 
-- **Remove a persist source:** delete the `#@ persist` annotation, rebuild, then drop the old run's tables:
+- **Remove a persist source:** delete the `#@ persist` annotation, rebuild, delete the old runs, then drop the old table yourself:
 
   ```bash
   malloy-pub materialize --environment <env> --package <pkg> --wait
-  malloy-pub delete materialization <old-id> --environment <env> --package <pkg> --drop-tables
+  malloy-pub delete materialization <old-id> --environment <env> --package <pkg>
   ```
 
-  > `--drop-tables` drops the physical tables in that run's manifest **except any a still-ready run also names** - with the stable names an auto-run assigns, a table the new run carried forward survives the delete. Deleting a run also re-derives the package's serve bindings from the latest remaining ready run (or clears them to serve live), so a delete does not break queries; it can leave a table behind. A removed source's table is therefore dropped only once no ready run names it - delete the old runs that do, or drop it in the warehouse yourself.
+  > Deleting a run is **record-only**: it never drops a table. It re-derives the package's serve bindings from the latest remaining ready run (or clears them to serve live), so a delete does not break queries. To drop the old table, read its `physicalTableName` from the old run's manifest, check that no remaining ready run, of any version, names a table with that name in any place (the runs list answers for the latest version only, so list each version's runs with `versionId`; with the stable names an auto-run assigns, a table the new run carried forward is still served, and two destination names can reach one DuckLake), then drop it through its connection.
 
 - **Change the schedule / cadence:**
 

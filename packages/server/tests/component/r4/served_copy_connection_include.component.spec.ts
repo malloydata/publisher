@@ -104,7 +104,7 @@ describe("R4: a connection-rooted source with an include before its extend", () 
 // include is kept on it and hides them again, whether its base is a
 // connection's SQL or a query: a caller can no more read the hidden column
 // than live. Every one of these sources is answered from the table, equal to
-// live, exactly as on a colocated table.
+// live, exactly as on a database table.
 const ORDERS_SQL = `duckdb.sql("""
   SELECT region, CAST(amount AS DOUBLE) AS amount, CAST(id AS BIGINT) AS id
   FROM read_csv('data/orders.csv', header=true, all_varchar=true)
@@ -204,7 +204,7 @@ describe("an include that hides a column a v1 storage= table stores", () => {
 
    for (const source of sources) {
       const stored = fromTable.has(source);
-      it(`${source}: ${stored ? "is served, with no warning" : "is left as written, warned as on a colocated table"}`, () => {
+      it(`${source}: ${stored ? "is served, with no warning" : "is left as written, warned as on a database table"}`, () => {
          const warnings = (fixture?.warnings ?? []).filter(
             (w) => w.subject === source && w.code === "served-copy-not-served",
          );

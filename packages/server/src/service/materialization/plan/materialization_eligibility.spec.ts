@@ -19,7 +19,7 @@ import * as gatePolicy from "../domain/gate_policy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { deriveAnnotationFields, plannedSources } from "./build_plan";
 import {
-   assertColocatedPersistNotAuthorizeGated,
+   assertDatabasePersistNotAuthorizeGated,
    assertMaterializationEligible,
    assertTierEligible,
    gateEnforcedAtRead,
@@ -373,7 +373,7 @@ source: orders__preagg__category is orders -> {
 }`);
       expect(sources.orders__preagg__category).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.orders__preagg__category,
          ),
       ).toThrow(/authorize/i);
@@ -404,7 +404,7 @@ source: orders__preagg__dim_category is orders -> {
 }`);
       expect(sources.orders__preagg__dim_category).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.orders__preagg__dim_category,
          ),
       ).toThrow(/authorize/i);
@@ -435,10 +435,10 @@ source: orders__preagg__category is orders -> {
 }`);
       let message = "";
       try {
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.orders__preagg__category,
             sources.orders__preagg__category.name,
-            "preaggregate",
+            "rollup",
          );
       } catch (err) {
          message = (err as Error).message;
@@ -450,7 +450,7 @@ source: orders__preagg__category is orders -> {
    });
 
    it("scopes a merge off the source's own terms, not off the classification", async () => {
-      // The two gates refuse different sets: the colocated one deliberately
+      // The two gates refuse different sets: the database one deliberately
       // admits the positional cases (a given in a declared `dimension:`, a
       // join's `on:`, a given-scoped join) that the storage gate refuses. A
       // merge scope taken from the classification is therefore EMPTY for a
@@ -506,11 +506,11 @@ source: mixed is raw -> { select: * } extend {
       } catch (err) {
          storageReason = (err as MaterializationEligibilityError).reason ?? "";
       }
-      // Colocated gate, which does not refuse the positional cases and so is the
+      // Database gate, which does not refuse the positional cases and so is the
       // one that would otherwise let this through.
-      let colocatedReason = "";
+      let databaseReason = "";
       try {
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.mixed,
             "mixed",
             "persist",
@@ -518,20 +518,17 @@ source: mixed is raw -> { select: * } extend {
             fields,
          );
       } catch (err) {
-         colocatedReason =
-            (err as MaterializationEligibilityError).reason ?? "";
+         databaseReason = (err as MaterializationEligibilityError).reason ?? "";
       }
-      expect([storageReason, colocatedReason]).toEqual([
+      expect([storageReason, databaseReason]).toEqual([
          "merge_key_scope_unresolved",
          "merge_key_scope_unresolved",
       ]);
    });
 
-   it("refuses a rollup over a caller-scoped source on its own named grounds", async () => {
-      // The outcome does not change — such a rollup already refused, as a
-      // `given_in_persisted_query`. Two things do. The reason names the rollup
-      // case, so it survives a change to the one it used to ride on; and the
-      // advice is followable. The old message told the author to move the given
+   it("refuses a rollup over a caller-scoped source with followable advice", async () => {
+      // Under the one reason every mechanism gives a build that reads a given,
+      // with a rollup's own advice. The old message told the author to move the given
       // into the source's extend block, where for a rollup it ALREADY is: it is
       // the rollup READING the source that applies that `where:` and bakes the
       // value.
@@ -548,15 +545,17 @@ source: scoped__preagg__category is scoped -> {
 }`);
       let err: MaterializationEligibilityError | undefined;
       try {
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.scoped__preagg__category,
             sources.scoped__preagg__category.name,
-            "preaggregate",
+            "rollup",
          );
       } catch (caught) {
          err = caught as MaterializationEligibilityError;
       }
-      expect(err?.reason).toBe("preaggregate_over_dynamic_source");
+      // The one reason every mechanism gives a build that reads a given;
+      // `preaggregate_over_dynamic_source` is retained, no longer produced.
+      expect(err?.reason).toBe("reads_given");
       // Not the advice that leads nowhere.
       expect(err?.message).not.toContain("extend block");
       expect(err?.message).toContain("no read-time re-application");
@@ -635,7 +634,7 @@ source: by_category is orders -> {
       throw new Error("expected a refusal");
    };
 
-   it("runs the colocated gate for a colocated source, naming the annotation the plan says the author wrote", async () => {
+   it("runs the database gate for a database source, naming the annotation the plan says the author wrote", async () => {
       const source = (await persistSources(gatedModel)).by_category;
       const asPersist = refusal(() => assertTierEligible(source, false, {}));
       expect(asPersist).toBeInstanceOf(MaterializationEligibilityError);
@@ -743,7 +742,7 @@ source: by_category is orders -> {
          }
       });
 
-      it("admits a colocated #(materialize) source's own row-level gate with the gated-sources switch off (G3), and nothing more", async () => {
+      it("admits a database #(materialize) source's own row-level gate with the gated-sources switch off (G3), and nothing more", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          const G3_ONLY = {
@@ -774,7 +773,7 @@ source: by_category is orders -> {
             ),
          ).toBe(true);
          // G3's other conditions hold as for v1: an inherited, unproven or
-         // joined gate, a #@ persist source asked as colocated (the colocated
+         // joined gate, a #@ persist source asked as database (the database
          // tier check's), and v2's switch off.
          for (const plan of [
             inputs(id, {
@@ -797,7 +796,7 @@ source: by_category is orders -> {
          ).toBe(false);
       });
 
-      it("refuses a colocated #(materialize) source's own row-level gate with v2's switch off, naming the served copy and the #@ persist alternative", async () => {
+      it("refuses a database #(materialize) source's own row-level gate with v2's switch off, naming the served copy and the #@ persist alternative", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          for (const gated of ["true", "false"]) {
@@ -813,13 +812,13 @@ source: by_category is orders -> {
             );
             expect(refused).toBeInstanceOf(MaterializationEligibilityError);
             expect(refused.reason).toBe("access_filter");
-            expect(refused.message).toContain("(colocated '#(materialize)')");
+            expect(refused.message).toContain("(database '#(materialize)')");
             expect(refused.message).toContain("PUBLISHER_MATERIALIZE on");
             expect(refused.message).toContain("'#@ persist'");
          }
       });
 
-      it("builds the same gated source colocated as a #@ persist, whose own gate the served copy keeps (G3)", async () => {
+      it("builds the same gated source database as a #@ persist, whose own gate the served copy keeps (G3)", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          withEnv(
@@ -852,7 +851,7 @@ source: by_category is orders -> {
                true,
             );
             withEnv(env, () => assertTierEligible(source, true, v1()));
-            // Asked as colocated, it is the colocated tier check's to decide.
+            // Asked as database, it is the database tier check's to decide.
             expect(withEnv(env, () => gateEnforcedAtRead(id, v1()))).toBe(
                false,
             );
@@ -901,7 +900,7 @@ source: by_category is orders -> {
          }
       });
 
-      it("collectSourceEligibility asks as storage: a colocated-planned gated #(materialize) table is admitted for a storage= bind under G3, and marked kept past its own gate", async () => {
+      it("collectSourceEligibility asks as storage: a database-planned gated #(materialize) table is admitted for a storage= bind under G3, and marked kept past its own gate", async () => {
          // The storage bind (admitStorage / refusedAtBind) reads this record,
          // and marks a binding kept past its own gate from `gateKept`.
          const source = (await persistSources(gatedModel)).by_category;
@@ -914,7 +913,7 @@ source: by_category is orders -> {
             connectionDigests: {},
             tables: { [id]: { ...inputs(id).tables[id], source } },
          } as unknown as Parameters<typeof collectSourceEligibility>[0];
-         // Colocated, the plan admits it (the precondition for the guard).
+         // Database, the plan admits it (the precondition for the guard).
          expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
             true,
          );
@@ -1005,7 +1004,7 @@ source: by_category is orders -> {
          );
       });
 
-      it("refuses a colocated persisted view's build over a gated source with the gated-sources switch off, as storage= does, and builds it with the switch on", async () => {
+      it("refuses a database persisted view's build over a gated source with the gated-sources switch off, as storage= does, and builds it with the switch on", async () => {
          const author = (await persistSources(gatedModel)).by_category;
          // The same compiled source, as a persisted view's companion build.
          const viewID =
@@ -1025,7 +1024,7 @@ source: by_category is orders -> {
          expect(off.reason).toBe("access_filter");
          expect(off.message).toContain("PUBLISHER_MATERIALIZE_GATED_SOURCES");
          withEnv(R3_ON, () => assertTierEligible(view, false, plan));
-         // A v1 source of the same shape is the colocated tier check's, as
+         // A v1 source of the same shape is the database tier check's, as
          // before: admitted with the switch off.
          withEnv(
             {
@@ -1073,36 +1072,36 @@ source: mine is orders -> { select: * } extend { dimension: r is $REGION }`)
    });
 });
 
-describe("assertColocatedPersistNotAuthorizeGated", () => {
-   it("refuses a colocated persist source protected by its own #(authorize) gate", async () => {
+describe("assertDatabasePersistNotAuthorizeGated", () => {
+   it("refuses a database persist source protected by its own #(authorize) gate", async () => {
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #(authorize) $role = 'analyst'
-#@ persist name="mz_colocated_authz"
-source: mz_colocated_authz is base -> { aggregate: c is count() }`);
-      expect(sources.mz_colocated_authz).toBeDefined();
+#@ persist name="mz_database_authz"
+source: mz_database_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_database_authz).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_authz),
+         assertDatabasePersistNotAuthorizeGated(sources.mz_database_authz),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_authz),
+         assertDatabasePersistNotAuthorizeGated(sources.mz_database_authz),
       ).toThrow(/authorize/i);
    });
 
-   it("accepts an ungated colocated persist source", async () => {
+   it("accepts an ungated database persist source", async () => {
       const sources = await persistSources(`##! experimental.persistence
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#@ persist name="mz_colocated_plain"
-source: mz_colocated_plain is base -> { aggregate: c is count() }`);
-      expect(sources.mz_colocated_plain).toBeDefined();
+#@ persist name="mz_database_plain"
+source: mz_database_plain is base -> { aggregate: c is count() }`);
+      expect(sources.mz_database_plain).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_plain),
+         assertDatabasePersistNotAuthorizeGated(sources.mz_database_plain),
       ).not.toThrow();
    });
 
-   it("accepts a colocated persist source that references a given but carries no gate, and so does the storage gate", async () => {
+   it("accepts a database persist source that references a given but carries no gate, and so does the storage gate", async () => {
       // The given sits in the source's extend block, so it is absent from the
       // build and applied over the artifact at read with each caller's value.
       // Previously written with the given INSIDE the persisted query, which is
@@ -1113,33 +1112,33 @@ source: mz_colocated_plain is base -> { aggregate: c is count() }`);
 ##! experimental.givens
 given: tenant :: string is 'acme'
 source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
-#@ persist name="mz_colocated_given"
-source: mz_colocated_given is base -> { select: * } extend { where: tenant = $tenant }`);
-      expect(sources.mz_colocated_given).toBeDefined();
+#@ persist name="mz_database_given"
+source: mz_database_given is base -> { select: * } extend { where: tenant = $tenant }`);
+      expect(sources.mz_database_given).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_given),
+         assertDatabasePersistNotAuthorizeGated(sources.mz_database_given),
       ).not.toThrow();
 
       // The two gates AGREE on this shape, and the agreement is the point. This
       // assertion used to be the contrast — the storage gate refused a given
-      // wherever it sat, and that difference was what "the colocated check is
+      // wherever it sat, and that difference was what "the database check is
       // narrower" meant. The storage gate now asks the same question both do:
       // does the BUILD substitute a value? Here it does not, so both admit it,
       // and the storage side additionally reports the term it will re-apply at
       // read. What still separates the tiers is what they do with that term,
       // not whether they tolerate it.
       assertMaterializationEligible(
-         sources.mz_colocated_given,
-         deriveAnnotationFields(sources.mz_colocated_given),
+         sources.mz_database_given,
+         deriveAnnotationFields(sources.mz_database_given),
       );
-      const admitted = admitGivenPositions(sources.mz_colocated_given);
+      const admitted = admitGivenPositions(sources.mz_database_given);
       expect(admitted.ok && admitted.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
    });
 
    describe("row-level relaxation (gateOutcome)", () => {
-      it("admits a gated colocated source given a proven row_level + attributed outcome", async () => {
+      it("admits a gated database source given a proven row_level + attributed outcome", async () => {
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: role :: string
@@ -1149,7 +1148,7 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 source: mz_relaxed is base -> { aggregate: c is count() }`);
          expect(sources.mz_relaxed).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
+            assertDatabasePersistNotAuthorizeGated(
                sources.mz_relaxed,
                sources.mz_relaxed.name,
                "persist",
@@ -1167,7 +1166,7 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #@ persist name="mz_unattributed"
 source: mz_unattributed is base -> { aggregate: c is count() }`);
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
+            assertDatabasePersistNotAuthorizeGated(
                sources.mz_unattributed,
                sources.mz_unattributed.name,
                "persist",
@@ -1185,7 +1184,7 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #@ persist name="mz_rejected_outcome"
 source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
+            assertDatabasePersistNotAuthorizeGated(
                sources.mz_rejected_outcome,
                sources.mz_rejected_outcome.name,
                "persist",
@@ -1197,7 +1196,7 @@ source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
       it("keeps refusing a pre-aggregation rollup UNCONDITIONALLY, even with a row_level + attributed outcome", async () => {
          // A rollup groups across the gated column by construction, so there is
          // no row left to filter afterward — the relaxation must never reach
-         // `origin === "preaggregate"` no matter what the outcome says.
+         // `origin === "rollup"` no matter what the outcome says.
          const sources =
             await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
@@ -1210,10 +1209,10 @@ source: orders__preagg__category is orders -> {
   aggregate: total__partial is amount.sum()
 }`);
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
+            assertDatabasePersistNotAuthorizeGated(
                sources.orders__preagg__category,
                sources.orders__preagg__category.name,
-               "preaggregate",
+               "rollup",
                { classification: "row_level", attributed: true },
             ),
          ).toThrow(/authorize/i);
@@ -1221,7 +1220,7 @@ source: orders__preagg__category is orders -> {
    });
 });
 
-describe("a given inside the persisted query (colocated)", () => {
+describe("a given inside the persisted query (database)", () => {
    const MODEL = `##! experimental { persistence givens }
 given: ORG_ID :: number is 1
 source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id")
@@ -1241,20 +1240,20 @@ source: clean is raw -> { select: * }`;
       const sources = await persistSources(MODEL);
       expect(sources.inside).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.inside),
+         assertDatabasePersistNotAuthorizeGated(sources.inside),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.inside),
+         assertDatabasePersistNotAuthorizeGated(sources.inside),
       ).toThrow(/persisted query references a given/i);
       // The message has to name the remedy, since the safe shape is one move of
       // placement away from the refused one — and name it as the RULE rather
       // than one spelling of it, because a given applied at read is equally
       // correct written as a dimension, a measure or a join.
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.inside),
+         assertDatabasePersistNotAuthorizeGated(sources.inside),
       ).toThrow(/out of the persisted query/i);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.inside),
+         assertDatabasePersistNotAuthorizeGated(sources.inside),
       ).toThrow(/dimension, measure or join/i);
    });
 
@@ -1265,7 +1264,7 @@ source: clean is raw -> { select: * }`;
       const sources = await persistSources(MODEL);
       expect(sources.outside).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.outside),
+         assertDatabasePersistNotAuthorizeGated(sources.outside),
       ).not.toThrow();
    });
 
@@ -1298,7 +1297,7 @@ source: via_extend_only is raw extend {
       for (const name of ["via_dimension", "via_measure", "via_extend_only"]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources[name]),
+            assertDatabasePersistNotAuthorizeGated(sources[name]),
          ).not.toThrow();
       }
    });
@@ -1326,7 +1325,7 @@ source: given_in_group_by is raw -> {
       for (const name of ["used_in_query", "given_in_group_by"]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources[name]),
+            assertDatabasePersistNotAuthorizeGated(sources[name]),
          ).toThrow(MaterializationEligibilityError);
       }
    });
@@ -1368,7 +1367,7 @@ source: unused_measure is offers_measure -> {
       ]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources[name]),
+            assertDatabasePersistNotAuthorizeGated(sources[name]),
          ).not.toThrow();
       }
    });
@@ -1408,7 +1407,7 @@ source: reads_measure is offers_measure -> {
       for (const name of ["reads_join", "reads_dimension", "reads_measure"]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources[name]),
+            assertDatabasePersistNotAuthorizeGated(sources[name]),
          ).toThrow(MaterializationEligibilityError);
       }
    });
@@ -1434,7 +1433,7 @@ source: reads_measure is offers_measure -> {
             },
          },
       } as unknown as PersistSource;
-      expect(() => assertColocatedPersistNotAuthorizeGated(noMarker)).toThrow(
+      expect(() => assertDatabasePersistNotAuthorizeGated(noMarker)).toThrow(
          MaterializationEligibilityError,
       );
 
@@ -1482,13 +1481,13 @@ source: reads_measure is offers_measure -> {
             },
          }) as unknown as PersistSource;
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(readTimeOnly(true)),
+         assertDatabasePersistNotAuthorizeGated(readTimeOnly(true)),
       ).not.toThrow();
       // A read-time term that cannot be placed in the source's own statement
       // fails closed: it may be inherited, which the read would not re-apply.
       let refusal: unknown;
       try {
-         assertColocatedPersistNotAuthorizeGated(readTimeOnly(false));
+         assertDatabasePersistNotAuthorizeGated(readTimeOnly(false));
       } catch (error) {
          refusal = error;
       }
@@ -1503,7 +1502,7 @@ source: reads_measure is offers_measure -> {
          name: "unreadable",
          _sourceDef: null,
       } as unknown as PersistSource;
-      expect(() => assertColocatedPersistNotAuthorizeGated(unreadable)).toThrow(
+      expect(() => assertDatabasePersistNotAuthorizeGated(unreadable)).toThrow(
          MaterializationEligibilityError,
       );
    });
@@ -1529,10 +1528,10 @@ source: arg_given is pp(x is $ORG_ID) -> { select: * }
 #@ persist name="arg_constant"
 source: arg_constant is pp(x is 1) -> { select: * }`);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.arg_given),
+         assertDatabasePersistNotAuthorizeGated(sources.arg_given),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.arg_constant),
+         assertDatabasePersistNotAuthorizeGated(sources.arg_constant),
       ).not.toThrow();
    });
 
@@ -1560,36 +1559,36 @@ source: withjoin is raw extend { join_one: j is J(x is $ORG_ID) on org_id = j.or
 source: join_arg_read is withjoin -> { group_by: n is j.nm }`);
       expect(sources.join_arg_read).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.join_arg_read),
+         assertDatabasePersistNotAuthorizeGated(sources.join_arg_read),
       ).toThrow(MaterializationEligibilityError);
    });
 
    it("admits a persisted query that references no given", async () => {
       const sources = await persistSources(MODEL);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.clean),
+         assertDatabasePersistNotAuthorizeGated(sources.clean),
       ).not.toThrow();
    });
 
    it("names a rollup by the annotation its author wrote", async () => {
       const sources = await persistSources(MODEL);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.inside,
             "orders__preagg__category",
-            "preaggregate",
+            "rollup",
          ),
       ).toThrow(/Pre-aggregation rollup/i);
    });
 });
 
-describe("read-only dialect (colocated persist)", () => {
-   // The SQL Server connector creates no tables, so a colocated build has
+describe("read-only dialect (database persist)", () => {
+   // The SQL Server connector creates no tables, so a database build has
    // nowhere in the source warehouse to write. Refused at load, naming the
    // connection and the dialect, so the author reads it from the package's
    // warnings rather than from a build's first DDL. A faked source, because
    // the gate reads only the dialect name; no SQL Server is needed.
-   it("refuses a colocated #@ persist on a sqlserver source, naming connection and dialect", () => {
+   it("refuses a database #@ persist on a sqlserver source, naming connection and dialect", () => {
       const source = fakeSource({
          name: "orders",
          sourceEntityId: "orders@x",
@@ -1598,7 +1597,7 @@ describe("read-only dialect (colocated persist)", () => {
       });
       let caught: unknown;
       try {
-         assertColocatedPersistNotAuthorizeGated(source);
+         assertDatabasePersistNotAuthorizeGated(source);
       } catch (err) {
          caught = err;
       }
@@ -1618,11 +1617,7 @@ describe("read-only dialect (colocated persist)", () => {
          dialectName: "sqlserver",
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
-            source,
-            source.name,
-            "preaggregate",
-         ),
+         assertDatabasePersistNotAuthorizeGated(source, source.name, "rollup"),
       ).toThrow(
          /Pre-aggregation rollup 'orders__preagg' cannot be materialized/,
       );
@@ -1631,7 +1626,7 @@ describe("read-only dialect (colocated persist)", () => {
    it("leaves a rollup that declares a storage destination to the storage gate", () => {
       // The rollup branch runs this gate before the storage one for every
       // rollup, so a `storage=` rollup over a SQL Server base must not be
-      // refused here as colocated: the storage build names the source types
+      // refused here as database: the storage build names the source types
       // it can read, and this gate's doc says storage is not its question.
       const source = fakeSource({
          name: "orders__preagg",
@@ -1640,10 +1635,10 @@ describe("read-only dialect (colocated persist)", () => {
          annotationFields: { storage: "lake" },
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             source,
             source.name,
-            "preaggregate",
+            "rollup",
             undefined,
             { storage: "lake" },
          ),
@@ -1697,7 +1692,7 @@ describe("read-only dialect (colocated persist)", () => {
          dialectName: "postgres",
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(source),
+         assertDatabasePersistNotAuthorizeGated(source),
       ).not.toThrow();
    });
 });
@@ -1712,8 +1707,8 @@ describe("gateEnforcedAtRead's tier", () => {
          const gate = { classification: "row_level", attributed: true };
          for (const [persist, tier] of [
             [{ storage: "lake" }, "storage"],
-            [{}, "colocated"],
-            [undefined, "colocated"],
+            [{}, "database"],
+            [undefined, "database"],
          ] as const) {
             spy.mockClear();
             gateEnforcedAtRead(id, {
@@ -1791,7 +1786,7 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`;
       expect(() => assertTierEligible(source, true, {})).not.toThrow();
    });
 
-   it("does not refuse the same source built colocated", async () => {
+   it("does not refuse the same source built in the database tier", async () => {
       const source = (await persistSources(model)).stored;
       expect(() =>
          assertTierEligible(source, false, {

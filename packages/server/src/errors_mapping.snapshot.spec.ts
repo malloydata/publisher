@@ -56,6 +56,7 @@ import {
    ServiceUnavailableError,
    SkillNotFoundError,
    StorageCatalogNotFoundError,
+   StorageAccessDeniedError,
    StorageDestinationNotFoundError,
    TableNotFoundError,
    UnconfiguredConnectionError,
@@ -307,6 +308,14 @@ const CASES: Array<[string, () => unknown]> = [
       () =>
          new ConnectionAuthError(
             'password authentication failed for user "analytics"',
+         ),
+   ],
+   [
+      "StorageAccessDeniedError",
+      () =>
+         new StorageAccessDeniedError(
+            "HTTP Error: HTTP GET error on 'https://storage.googleapis.com/bucket/org_1/db_2/t/data_0.parquet' (HTTP 403 Forbidden)",
+            "trips",
          ),
    ],
    [

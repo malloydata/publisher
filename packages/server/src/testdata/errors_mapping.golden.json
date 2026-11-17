@@ -1744,6 +1744,49 @@
       ]
     }
   },
+  "StorageAccessDeniedError": {
+    "class": "StorageAccessDeniedError",
+    "http": {
+      "status": 403,
+      "json": {
+        "code": 403,
+        "message": "The storage at a path source \"trips\" reads refused access (HTTP 403).",
+        "reason": "STORAGE_ACCESS_DENIED"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Storage access denied"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "The storage at a path source \"trips\" reads refused access (HTTP 403).",
+      "suggestions": [
+        "Check the path the query or the model reads (a file or table URL) and that the database may read it. Retrying unchanged fails the same way."
+      ],
+      "logs": [
+        [
+          "warn",
+          "Storage access denied during executeQuery"
+        ]
+      ]
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: HTTP Error: HTTP GET error on '<storage path>' (HTTP 403 Forbidden)",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "UnsupportedCatalogFormatError": {
     "class": "UnsupportedCatalogFormatError",
     "http": {
@@ -2546,7 +2589,7 @@
       "logs": []
     },
     "mcpSetup": {
-      "message": "An unexpected internal error occurred during executeQuery (Setup).: installed from gs://b/p.zip; a reload would discard the change",
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: installed from <storage path>; a reload would discard the change",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."

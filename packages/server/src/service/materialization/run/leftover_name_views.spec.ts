@@ -27,12 +27,12 @@ import {
    provenOwnView,
    replaceOwnViewStatements,
 } from "./leftover_name_views";
-import { swapIntoPlace } from "./colocated_build_strategy";
+import { swapIntoPlace } from "./database_build_strategy";
 import { createTableAndDescribe } from "./materialization_build_session";
 import { formatPublishRejections } from "../../publish_checks";
 import { packageOwner } from "./table_mark_sql";
 import {
-   colocatedTableSite,
+   databaseTableSite,
    storageTableSite,
    type TableSiteContext,
 } from "./table_site";
@@ -371,14 +371,14 @@ describe("leftover name= views through real builds", () => {
       expect(await views()).toEqual(["moved", "theirs", "unmarked"]);
    });
 
-   it("deleting a run with its tables drops this package's own leftover view first, found on another run's record", async () => {
-      await publish("1.0.0", 1, "package");
+   it("a version's reclaim drops this package's own leftover view first, found on another run's record", async () => {
+      await publish("1.0.0", 1, "version");
       const first = await build({ versionId: VersionRef.parse("1.0.0") });
       expect(first.status).toBe("MANIFEST_FILE_READY");
-      const [table] = await tables();
+      const table = versionTable("1.0.0");
       await leaveView("summary", table, OWNER);
       // The view was recorded by an earlier run that made it; the run
-      // deleted here is the one that names the table, and records none.
+      // reclaimed here is the one that names the table, and records none.
       const earlier = await repo.createMaterialization(
          ENV_ID,
          PKG,
@@ -389,10 +389,8 @@ describe("leftover name= views through real builds", () => {
       await recordViews(earlier, [
          { viewName: "summary", owner: OWNER, target: table },
       ]);
-      await service.deleteMaterialization(ENV, PKG, first.id, {
-         dropTables: true,
-         versionId: VersionRef.parse("1.0.0"),
-      });
+      await publish("2.0.0", 2, "version");
+      await archive("1.0.0");
       expect(await tables()).toEqual([]);
       expect(await views()).toEqual([]);
    });
@@ -503,7 +501,7 @@ describe("leftover name= views, at a site", () => {
       ).rows.map((r) => String(r.view_name));
 
    it("reads only this package's own mark, on a view", async () => {
-      const site = colocatedTableSite(connection);
+      const site = databaseTableSite(connection);
       await view("mine", "g1", OWNER);
       await view("theirs", "g1", OTHER);
       await view("plain", "g1");
@@ -605,7 +603,7 @@ describe("leftover name= views, at a site", () => {
    });
 
    it("never proves a view that reads another relation beside its marked table, or the same name in another schema", async () => {
-      const site = colocatedTableSite(connection);
+      const site = databaseTableSite(connection);
       await run("CREATE TABLE other AS SELECT 1 AS x, 9 AS y");
       await run("CREATE SCHEMA s2");
       await run("CREATE TABLE s2.g1 AS SELECT 3 AS x");
@@ -633,7 +631,7 @@ describe("leftover name= views, at a site", () => {
    });
 
    it("drops its own view in the swap's transaction, and leaves it when it was repointed after the proof", async () => {
-      const site = colocatedTableSite(connection);
+      const site = databaseTableSite(connection);
       const swap = (statements: string[] | undefined) =>
          swapIntoPlace({
             connection,

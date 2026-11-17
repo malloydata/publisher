@@ -53,10 +53,10 @@ function model(body: string): string {
    return `${HEADER}${body}\n}\n`;
 }
 
-/** The package's `preaggregate-not-built` warnings: the rollups refused alone. */
+/** The package's `rollup-not-built` warnings: the rollups refused alone. */
 function rollupRefusals(pkg: Package) {
    return (pkg.getPackageMetadata().warnings ?? []).filter(
-      (w) => w.code === "preaggregate-not-built",
+      (w) => w.code === "rollup-not-built",
    );
 }
 

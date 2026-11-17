@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A colocated rollup over a colocated `#(materialize)` base builds from the
+ * A database rollup over a database `#(materialize)` base builds from the
  * base's stored table when the run holds it, rather than from the warehouse,
  * and stores the same rows, as one over a `#@ persist` base does
  * (materialization_rollup_over_stored_base.component.spec.ts). End to end
@@ -21,7 +21,9 @@
  *    warehouse build's rows and answers each caller as live;
  *  - over an extension table (P10), it reads the extension's own table;
  *  - a base whose stored copy does not compile builds its rollup from the
- *    warehouse, and leaves every other rollup's reuse alone.
+ *    warehouse, and leaves every other rollup's reuse alone;
+ *  - a base whose `except:` names a column its table never stores is read
+ *    from its table, the item dropped from its copy (P2-29).
  */
 
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
@@ -77,7 +79,7 @@ function modelOf(
    rollupExtra = "",
    materializeExtra = "",
 ): string {
-   const rollup = `#(preaggregate) grain=["${grain}"]${rollupExtra}`;
+   const rollup = `#(rollup) grain=["${grain}"]${rollupExtra}`;
    return `##! experimental.persistence
 source: raw is ${RAW}
 
@@ -93,7 +95,7 @@ source: orders is raw extend {
 }
 
 source: plain is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: plain_total is amt.sum()
 }
 `;
@@ -117,7 +119,7 @@ type Entry = {
    dataAsOf?: string;
 };
 
-describe("a colocated rollup over a colocated #(materialize) base", () => {
+describe("a database rollup over a database #(materialize) base", () => {
    let root: string;
    let envPath: string;
    let db: DuckDBConnection;
@@ -217,7 +219,7 @@ describe("a colocated rollup over a colocated #(materialize) base", () => {
    const rollupOf = (m: Materialization, base: string) => {
       const hit = entries(m).find(
          (e) =>
-            e.origin === "preaggregate" &&
+            e.origin === "rollup" &&
             e.sourceName.startsWith(`${base}__rollup__`),
       );
       if (!hit) throw new Error(`no rollup of ${base}`);
@@ -356,7 +358,7 @@ describe("a colocated rollup over a colocated #(materialize) base", () => {
       await setUp();
       const pkg = await env.getPackage(parsePackageName(PKG), false);
       const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
-         (s) => s.origin === "preaggregate" && s.name.startsWith("orders__"),
+         (s) => s.origin === "rollup" && s.name.startsWith("orders__"),
       )!.name;
       const m = await build({ sourceNames: [rollupName] });
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
@@ -378,35 +380,39 @@ describe("a colocated rollup over a colocated #(materialize) base", () => {
    });
 
    it("leaves out only a base whose stored copy does not compile: the other rollups still read their bases' tables", async () => {
-      // `clipped`'s re-rooted copy keeps `except: mark`, and its build source
-      // has no `mark`: the copy does not compile, so its rollup builds from
-      // the warehouse, while the `#@ persist` and the other `#(materialize)`
-      // rollups still read their bases' tables.
+      // `tagged` renames `mark` to `tag` and then excludes `tag`: its table
+      // stores neither, so its re-rooted copy cannot rename `mark` and does
+      // not compile. Its rollup builds from the warehouse, while the
+      // `#@ persist` and the other `#(materialize)` rollups still read their
+      // bases' tables.
       await setUp(`##! experimental.persistence
 source: raw is ${RAW}
 
 #@ persist name="porders_tbl"
 source: porders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: pgrand is amt.sum()
 }
 
 #(materialize) name="orders_mat"
 source: orders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: grand is amt.sum()
 }
 
-#(materialize) name="clipped_mat"
-source: clipped is raw extend {
-  except: mark
-  #(preaggregate) grain=["cat"]
-  measure: cgrand is amt.sum()
+#(materialize) name="tagged_mat"
+source: tagged is raw extend {
+  rename: tag is mark
+}
+extend {
+  except: tag
+  #(rollup) grain=["cat"]
+  measure: tgrand is amt.sum()
 }
 `);
       const query = (base: string, measure: string) =>
          `run: ${base} -> { group_by: cat; aggregate: ${measure}; order_by: cat }`;
-      const live = await answer(query("clipped", "cgrand"));
+      const live = await answer(query("tagged", "tgrand"));
       const m = await build();
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
 
@@ -418,13 +424,48 @@ source: clipped is raw extend {
          expect(create).not.toContain(RAW_MARK);
       }
 
-      const clipped = rollupOf(m, "clipped");
-      expect(clipped.upstreamReuse).toBeUndefined();
-      expect(createdBy(clipped.physicalTableName)).toContain(RAW_MARK);
-      expect(
-         await rowsOf(`SELECT * FROM ${clipped.physicalTableName}`),
-      ).toEqual(await rowsOf(await plannedSQL(clipped)));
-      const served = await answer(query("clipped", "cgrand"));
+      const tagged = rollupOf(m, "tagged");
+      expect(tagged.upstreamReuse).toBeUndefined();
+      expect(createdBy(tagged.physicalTableName)).toContain(RAW_MARK);
+      expect(await rowsOf(`SELECT * FROM ${tagged.physicalTableName}`)).toEqual(
+         await rowsOf(await plannedSQL(tagged)),
+      );
+      const served = await answer(query("tagged", "tgrand"));
+      expect(served.servedBy).toBe("rollup");
+      expect(served.rows).toEqual(live.rows);
+   });
+
+   it("P2-29: reads the table of a base whose except: names a column it never stores", async () => {
+      // The table never stores `mark`, so the re-rooted copy drops the
+      // `except:` item rather than refusing to compile over it.
+      await setUp(`##! experimental.persistence
+source: raw is ${RAW}
+
+#(materialize) name="orders_mat"
+source: orders is raw extend {
+  #(rollup) grain=["cat"]
+  measure: grand is amt.sum()
+}
+
+#(materialize) name="clipped_mat"
+source: clipped is raw extend {
+  except: mark
+  #(rollup) grain=["cat"]
+  measure: cgrand is amt.sum()
+}
+`);
+      const query = `run: clipped -> { group_by: cat; aggregate: cgrand; order_by: cat }`;
+      const live = await answer(query);
+      const m = await build();
+      expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+      for (const name of ["orders", "clipped"]) {
+         const rollup = rollupOf(m, name);
+         expect([name, rollup.upstreamReuse]).toEqual([name, "reused"]);
+         const create = createdBy(rollup.physicalTableName);
+         expect(create).toContain(`"${entryOf(m, name).physicalTableName}"`);
+         expect(create).not.toContain(RAW_MARK);
+      }
+      const served = await answer(query);
       expect(served.servedBy).toBe("rollup");
       expect(served.rows).toEqual(live.rows);
    });
@@ -535,7 +576,7 @@ source: raw is ${RAW}
 #(access_filter) cat = $CAT
 #(materialize) name="orders_mat"
 source: orders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: grand is amt.sum()
 }
 `;
@@ -591,7 +632,7 @@ source: orders is raw extend {
 #(materialize) name="tagged_mat"
 source: tagged is orders extend {
   dimension: tag is concat(upper_cat, '-', sub)
-  #(preaggregate) grain=["tag"]
+  #(rollup) grain=["tag"]
   measure: grand is amt.sum()
 }
 `);

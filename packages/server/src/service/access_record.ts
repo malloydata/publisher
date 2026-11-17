@@ -296,6 +296,8 @@ type AccessOutcome =
 export function outcomeOf(error: unknown, status: number): AccessOutcome {
    const kind = errorKind(error);
    if (kind === "access_denied") return "denied_lock";
+   // A 403 from the storage behind a table, not a gate: the query failed.
+   if (kind === "storage_access_denied") return "error";
    if (kind === "model_not_found" || status === 404) {
       return "refused_surface";
    }
@@ -320,9 +322,20 @@ interface AccessPath {
     * `via: "served_copy"` when the served copy answered, which is how a query
     * through a row-level gate is answered from a stored table (R3).
     */
-   servedBy: { kind: string; tableId?: string; via?: "served_copy" };
+   servedBy: {
+      kind: string;
+      /** The mechanism that declared the table that answered. */
+      origin?: string;
+      /** Where that table lives: `database` or `storage`. */
+      tier?: "database" | "storage";
+      tableId?: string;
+      via?: "served_copy";
+   };
    considered: AccessPathCandidate[];
 }
+
+/** The mechanisms a path report's `origin` names; anything else is dropped. */
+const ORIGINS = new Set(["persist", "materialize", "view", "query", "rollup"]);
 
 /**
  * The access record's copy of a path report: which table answered and each
@@ -337,7 +350,13 @@ interface AccessPath {
 const SAFE_CODE = /^[a-z_]+$/;
 
 export function accessPathOf(report: {
-   servedBy: { kind: string; tableId?: string; via?: string };
+   servedBy: {
+      kind: string;
+      origin?: string;
+      tier?: string;
+      tableId?: string;
+      via?: string;
+   };
    considered: readonly {
       tableId: string;
       kind: string;
@@ -352,6 +371,15 @@ export function accessPathOf(report: {
    return {
       servedBy: {
          kind: report.servedBy.kind,
+         // Coded values only, as `code` below.
+         ...(report.servedBy.origin !== undefined &&
+         ORIGINS.has(report.servedBy.origin)
+            ? { origin: report.servedBy.origin }
+            : {}),
+         ...(report.servedBy.tier === "database" ||
+         report.servedBy.tier === "storage"
+            ? { tier: report.servedBy.tier }
+            : {}),
          ...(report.servedBy.tableId !== undefined
             ? { tableId: report.servedBy.tableId }
             : {}),

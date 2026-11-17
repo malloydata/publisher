@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The measure grammar for `#(preaggregate)` (A2):
+ * The measure grammar for `#(rollup)` (A2):
  * whether a measure's partials can be stored per grain group and merged, read
  * from the measure's own text rather than from the compiled IR.
  *

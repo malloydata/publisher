@@ -152,8 +152,7 @@ describe("MaterializationRepository.getLatestScheduledFireAt (real DuckDB)", () 
 });
 
 // The publisher tracks materialization *records*; dropping the physical tables
-// is opt-in (deleteMaterialization({ dropTables })) and otherwise the caller's
-// responsibility. These cascade deletes therefore remove records only — they
+// is the caller's responsibility, through the connection. These cascade deletes therefore remove records only — they
 // must never issue DDL — so a materialized table intentionally outlives the
 // record when an environment or package is deleted. Locking that in guards the
 // contract against a future refactor that "helpfully" adds a DROP here (which

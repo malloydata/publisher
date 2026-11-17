@@ -15,7 +15,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
-import { ColocatedTier } from "./colocated_build_strategy";
+import { DatabaseTier } from "./database_build_strategy";
 import { UniquenessLedger } from "./inline_uniqueness";
 import { checkAndRecordKey } from "./instructed_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
@@ -42,12 +42,12 @@ async function record(
 }
 
 describe("a key check that throws", () => {
-   it("reads as unknown on the colocated tier, and the build goes on", async () => {
+   it("reads as unknown on the database tier, and the build goes on", async () => {
       const connection = {
          runSQL: sinon.stub().rejects(new Error("warehouse went away")),
       } as unknown as MalloyConnection;
       const result = await record(() =>
-         new ColocatedTier().checkKey({ connection }, CHECK, "t"),
+         new DatabaseTier().checkKey({ connection }, CHECK, "t"),
       );
       expect(result).toEqual({ recorded: undefined, warned: ["did not run"] });
    });

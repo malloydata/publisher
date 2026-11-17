@@ -59,7 +59,11 @@ describe("settings in a running server", () => {
 
    describe("rateLimit", () => {
       it("answers 429 past the limit", async () => {
-         const server = await boot({ env: { PUBLISHER_RATE_LIMIT: "2" } });
+         // A quiet log leaves out the listening lines, so the harness always
+         // probes both ports before returning: the limit must not count those.
+         const server = await boot({
+            env: { PUBLISHER_RATE_LIMIT: "2", LOG_LEVEL: "warn" },
+         });
          const statuses: number[] = [];
          for (let i = 0; i < 3; i++) {
             statuses.push(

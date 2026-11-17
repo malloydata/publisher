@@ -5,7 +5,7 @@
  * DEPRECATED: v1's `#@ preaggregate`, found where an author wrote it, so the
  * package can warn with the v2 rewrite (`docs/materialization-migration.md`).
  *
- * Under materialization v2 `#@ preaggregate` is spelled `#(preaggregate)`. It
+ * Under materialization v2 `#@ preaggregate` is spelled `#(rollup)`. It
  * keeps working through 0.x, is refused at 1.0.0 and loses its reader in 1.1
  * (the Publisher v1 plan's rule, #1563; materialization v2 plan, question 5).
  * `#@ -persist` is not here: it is Malloy core's opt-out, and Publisher keeps

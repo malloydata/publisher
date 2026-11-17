@@ -18,6 +18,7 @@ import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
 import type { BuildPlanPackage } from "./domain/plan_input";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
+import type { KeptTable } from "./domain/types";
 import type {
    BuildPlan,
    FreshnessManifest,
@@ -62,6 +63,11 @@ interface MaterializationPackage extends BuildPlanPackage {
     * never the package's bound tables.
     */
    chainBuildText(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The tables the newest auto-run of this package lists as kept after a
+    * rename, which its warnings name (`table-kept-after-rename`).
+    */
+   setKeptTables?(tables: readonly KeptTable[]): void;
 }
 
 /** The part of an environment's version registry a run consults. */
@@ -117,6 +123,14 @@ export interface MaterializationEnvironment {
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
 
    getVersionService(): MaterializationVersions | null;
+   /**
+    * Whether a host owns the package's binding: bound to a host manifest, or
+    * a version a host has bound (see Environment.isHostOwned). Such a
+    * package's tables are the host's to build and bind.
+    */
+   isHostOwned(pkg: MaterializationPackage): boolean;
+   /** A host's instructed run of the version committed (see isHostOwned). */
+   markVersionHostOwned(packageName: string, versionId: string): Promise<void>;
    peekVersion(
       packageName: string,
       versionId: string,
@@ -133,11 +147,11 @@ export interface MaterializationEnvironment {
    loadRunManifest(params: {
       packageName: string;
       versionId?: string;
-      colocated: FreshnessManifest;
+      database: FreshnessManifest;
       storage: Record<string, ManifestEntry>;
       commit: (outcome: RunManifestLoad) => Promise<void>;
    }): Promise<RunManifestLoad>;
-   /** Bind a freshly built colocated manifest into a slot's models. */
+   /** Bind a freshly built database manifest into a slot's models. */
    reloadAllModelsForPackage(
       packageName: string,
       manifest: FreshnessManifest,
@@ -151,7 +165,7 @@ export interface MaterializationEnvironment {
    rebindPackageFromStore(
       packageName: string,
       read: () => Promise<{
-         colocated: FreshnessManifest;
+         database: FreshnessManifest;
          storage?: Record<string, ManifestEntry>;
       }>,
    ): Promise<void>;

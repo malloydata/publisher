@@ -4,7 +4,7 @@
 /**
  * The declaring-file overlay both router legs that compile a caller's text
  * over a stored table share: the persisted-view leg (`view_variants.ts`) and
- * the `#(preaggregate)` rollup leg (`rollup_variants.ts`).
+ * the `#(rollup)` rollup leg (`rollup_variants.ts`).
  *
  * The queried source is redeclared IN AN OVERLAY OF ITS OWN DECLARING FILE,
  * over the stored table, so it keeps the author's `sourceID`, with the
@@ -37,6 +37,7 @@ import { doubleQuotedString, identifier } from "../../malloy_text";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
 import { splitSourceID } from "../domain/table_plans";
+import { applyEdits, importRewrites } from "../text/declaration_text";
 import { SourceMap } from "../text/source_map";
 import type { GeneratedFiles } from "../text/generated_files";
 import { packageFiles } from "../text/package_files";
@@ -161,6 +162,33 @@ export async function compileDeclaringFileVariant(args: {
       ...(source !== "" ? [source] : []),
       ...(args.alsoRedeclared ?? []),
    ]);
+   // Every other author file that imports the declaring file reads its copy,
+   // so a declaration there (a sibling extension of the redeclared source
+   // that reads a column the stored table lacks) compiles as the author's
+   // model does, and only the query model's run target reads the stored
+   // table (P2-41). The author's model is left alone when it exports a
+   // redeclared name: the query model imports that name from it.
+   const exported = new Set((modelDef as { exports?: string[] }).exports ?? []);
+   const modelHref = overlayKey(pathToFileURL(modelFile));
+   for (const importer of importersOf(modelDef, declaringURL)) {
+      if (
+         overlayKey(importer) === modelHref &&
+         [...redeclared].some((n) => exported.has(n))
+      ) {
+         continue;
+      }
+      const text =
+         overlay.get(overlayKey(importer)) ??
+         (await authorFiles.readIfAny(importer.href));
+      if (text === undefined) continue;
+      const retargeted = importsRetargeted(
+         text,
+         importer,
+         declaringURL,
+         copyURL,
+      );
+      if (retargeted !== undefined) overlay.set(importer.href, retargeted);
+   }
    const declaration = await args.declare({
       declaringURL,
       copyURL,
@@ -296,6 +324,58 @@ async function namesDeclaredIn(
       }
    }
    return { names: [...names].sort(), givens };
+}
+
+/**
+ * The author files that import `declaringURL` directly, by the model's import
+ * edges, the declaring file itself left out.
+ */
+function importersOf(modelDef: ModelDef, declaringURL: URL): URL[] {
+   const to = overlayKey(declaringURL);
+   const out = new Map<string, URL>();
+   const imports =
+      (
+         modelDef as {
+            imports?: { importURL?: unknown; location?: { url?: unknown } }[];
+         }
+      ).imports ?? [];
+   for (const i of imports) {
+      const from = i.location?.url;
+      if (typeof from !== "string" || typeof i.importURL !== "string") continue;
+      if (overlayKey(i.importURL) !== to || overlayKey(from) === to) continue;
+      try {
+         out.set(overlayKey(from), new URL(from));
+      } catch {
+         continue;
+      }
+   }
+   return [...out.values()];
+}
+
+/**
+ * `text`, the file at `fileURL`, with each import of `declaringURL` pointed at
+ * `copyURL`. Undefined when nothing is rewritten or the text does not lex.
+ */
+function importsRetargeted(
+   text: string,
+   fileURL: URL,
+   declaringURL: URL,
+   copyURL: URL,
+): string | undefined {
+   const to = overlayKey(declaringURL);
+   const copy = relativeImport(fileURL, copyURL.href);
+   if (copy === undefined) return undefined;
+   const edits = importRewrites(text, (written) => {
+      let resolved: string;
+      try {
+         resolved = new URL(written, fileURL).href;
+      } catch {
+         return undefined;
+      }
+      return overlayKey(resolved) === to ? copy : undefined;
+   });
+   if (!edits || edits.length === 0) return undefined;
+   return applyEdits(text, edits);
 }
 
 /** The routes a row-level gate is written on. */

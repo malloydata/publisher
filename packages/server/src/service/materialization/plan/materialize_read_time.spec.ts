@@ -222,6 +222,8 @@ source: orders is raw extend { where: s != 'zz' }
    });
 
    describe("P2: what is refused rather than left out", () => {
+      /** The refusal record's reason of the last {@link refusal}. */
+      let lastReason: string | undefined;
       async function refusal(text: string): Promise<string> {
          const { c } = await packages.plan(text);
          // Nothing is planned for it, and so nothing is built.
@@ -242,6 +244,8 @@ source: orders is raw extend { where: s != 'zz' }
          );
          expect(plans).toEqual([]);
          expect(refused).toHaveLength(1);
+         const { outcome } = refused[0];
+         lastReason = "refused" in outcome ? outcome.refused.reason : undefined;
          return refused[0].reason;
       }
 
@@ -287,6 +291,8 @@ source: orders is raw extend {
 }
 `),
             ).toContain("does not store");
+            // The term, not the build, is the fix: its own reason.
+            expect(lastReason).toBe("given_where_over_unstored_field");
          },
          { timeout: 30000 },
       );
@@ -357,7 +363,7 @@ source: orders is raw extend {
             // inlined, so `b`'s build would read `a` (a reference join is not
             // built); a given read through an inlined join refuses `b` at plan
             // (P9), before the eligibility gate that refused it as
-            // `given_in_persisted_query` would see its build.
+            // `reads_given` would see its build.
             const text = `${HEAD}
 #(materialize) storage="lake"
 source: a is raw extend { where: org_id = $ORG_ID }
@@ -619,7 +625,7 @@ source: orders is scoped extend { where: amount >= $MIN_AMT }
 `,
          ],
          [
-            "colocated",
+            "database",
             `${SCOPED}
 #(materialize) name="orders"
 source: orders is scoped extend { measure: n is count() }

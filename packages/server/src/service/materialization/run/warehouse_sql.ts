@@ -5,7 +5,7 @@
  * The SQL text that differs by warehouse dialect, one family per section: the
  * string literal, the relation and view probes and the view drop, the
  * ownership probe and mark, the incremental refresh's probes and its
- * transaction around a delta, the colocated swap's transaction, the
+ * transaction around a delta, the database swap's transaction, the
  * leftover `name=` view's in-transaction replace, the native-type catalog
  * read, the read cost and the query tag.
  *
@@ -45,26 +45,26 @@ function unregistered(knownDialect: undefined): void {
 // ---------------------------------------------------------------------------
 
 /**
- * A SQL string literal for `dialect`, as the marks and their probes write
- * one. An unknown dialect doubles the quote.
+ * A SQL string for `dialect`, as the marks and their probes write one: a
+ * literal, except a MySQL value holding a backslash, which is an expression
+ * (see {@link mysqlString}). An unknown dialect doubles the quote.
  */
 export function sqlString(value: string, dialect: string): string {
    const knownDialect = registeredDialect(dialect);
    switch (knownDialect) {
       // Backslash is the escape character in these dialects' literals.
+      // A BigQuery quoted string cannot hold a raw newline.
       case "standardsql":
+         return `'${bigQueryNewlines(value.replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}'`;
       case "databricks":
          return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
       // Snowflake reads backslash escapes and the doubled quote.
       case "snowflake":
          return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
+      case "mysql":
+         return mysqlString(value);
       case "sqlserver":
          return `N'${value.replace(/'/g, "''")}'`;
-      // MySQL reads backslash escapes too (unless NO_BACKSLASH_ESCAPES,
-      // where a doubled backslash is two characters: a wrong value, never a
-      // literal that ends early).
-      case "mysql":
-         return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
       case "duckdb":
       case "postgres":
       case "trino":
@@ -91,10 +91,36 @@ export function sqlString(value: string, dialect: string): string {
 export function escapeSqlString(value: string, dialect?: string): string {
    const knownDialect = registeredDialect(dialect);
    if (knownDialect === "standardsql") {
-      return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      return bigQueryNewlines(
+         value.replace(/\\/g, "\\\\").replace(/'/g, "\\'"),
+      );
    }
    const quoted = value.replace(/'/g, "''");
    return knownDialect === "snowflake" ? quoted.replace(/\\/g, "\\\\") : quoted;
+}
+
+/**
+ * A BigQuery string body with its line breaks escaped (`\n`, `\r`), which a
+ * quoted BigQuery string cannot hold raw. Its backslashes are escaped first.
+ */
+function bigQueryNewlines(escaped: string): string {
+   return escaped.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+}
+
+/**
+ * A MySQL string that reads the same whatever the session's sql_mode. MySQL
+ * reads `\` as an escape unless NO_BACKSLASH_ESCAPES is set, so no one
+ * spelling of a backslash in a literal is right in both modes: `'a\\b'` is
+ * `a\b` in one and `a\\b` in the other, and a probe written that way misses
+ * the table it is looking for. A value holding one is therefore written as
+ * `CONCAT('a', CHAR(92 USING utf8mb4), 'b')`, an expression, whose pieces hold
+ * no backslash; any other value is a plain literal with its quotes doubled,
+ * which both modes read alike.
+ */
+function mysqlString(value: string): string {
+   if (!value.includes("\\")) return doubledQuoteString(value);
+   const pieces = value.split("\\").map(doubledQuoteString);
+   return `CONCAT(${pieces.join(", CHAR(92 USING utf8mb4), ")})`;
 }
 
 /** A SQL string literal with its single quotes doubled, in any dialect. */
@@ -516,6 +542,14 @@ export function tableCommentSql(
       case "standardsql":
          return `ALTER TABLE ${table} SET OPTIONS(description = ${literal})`;
       case "mysql":
+         // The table option takes a literal, not the CONCAT a backslash needs
+         // (see mysqlString). Publisher's marks are percent-encoded, so none
+         // holds one.
+         if (comment.includes("\\")) {
+            throw new Error(
+               "a MySQL table comment cannot hold a backslash: it would read differently under NO_BACKSLASH_ESCAPES",
+            );
+         }
          return `ALTER TABLE ${table} COMMENT = ${literal}`;
       case "sqlserver": {
          const schema =
@@ -685,20 +719,30 @@ export function snowflakeScriptingBlock(statements: string[]): string {
 }
 
 /**
+ * Whether `dialect` runs a transaction as one scripting block whose rollback
+ * is its own EXCEPTION handler (Snowflake), rather than a BEGIN, the
+ * statements and a COMMIT the caller rolls back on failure.
+ */
+export function transactsInScriptingBlock(dialect: string): boolean {
+   return registeredDialect(dialect) === "snowflake";
+}
+
+/**
  * A delta's statements as one transaction: a Snowflake Scripting block on
  * Snowflake (one statement per call, each possibly on a different pooled
  * session), otherwise the statements between {@link transactionKeywords}'
  * BEGIN and COMMIT.
  */
 export function inOneTransaction(dialect: string, body: string[]): string[] {
-   const knownDialect = registeredDialect(dialect);
-   if (knownDialect === "snowflake") return [snowflakeScriptingBlock(body)];
+   if (transactsInScriptingBlock(dialect)) {
+      return [snowflakeScriptingBlock(body)];
+   }
    const transaction = transactionKeywords(dialect);
    return [transaction.begin, ...body, transaction.commit];
 }
 
 // ---------------------------------------------------------------------------
-// The colocated swap's transaction.
+// The database swap's transaction.
 // ---------------------------------------------------------------------------
 
 /**
@@ -990,7 +1034,22 @@ export interface CatalogBatch {
    columnsOf(
       rows: Record<string, unknown>[],
    ): Map<string, NativeColumn[] | "ambiguous">;
+   /**
+    * On a DuckDB connection, which may attach a DuckLake catalog: the query
+    * that lists its attached catalogs and their types
+    * ({@link DUCKDB_CATALOGS_SQL}), and the catalog the batch's one table
+    * names (undefined: the session's current one).
+    */
+   attachedCatalogs?: { sql: string; catalog: string | undefined };
 }
+
+/**
+ * A DuckDB session's attached catalogs (`database_name`, `type`) and its
+ * current one (`current`): a table in a catalog of type `ducklake` holds a
+ * 128-bit integer as a DOUBLE.
+ */
+const DUCKDB_CATALOGS_SQL =
+   "SELECT database_name, type, current_database() AS current FROM duckdb_databases()";
 
 /** Tables per catalog query: keeps an `IN (...)` list and its SQL bounded. */
 const CATALOG_BATCH_SIZE = 100;
@@ -1040,6 +1099,10 @@ export function nativeTypeCatalogBatches(
                sql: single.sql,
                keys: [t.key],
                columnsOf: (rows) => new Map([[t.key, rows.map(single.read)]]),
+               attachedCatalogs: {
+                  sql: DUCKDB_CATALOGS_SQL,
+                  catalog: t.parts.length >= 3 ? t.parts[0] : undefined,
+               },
             };
          });
       case "postgres":

@@ -157,7 +157,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "classified",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

@@ -30,7 +30,7 @@ The rule is that a refresh may only write rows the author's filter admits.
 
 The `storage=` half of the pair. Its sibling
 (`a-merge-key-must-not-match-rows-outside-the-callers-scope`) is the same model
-built colocated, and the two fail DIFFERENTLY, which is why both exist rather than
+built in the database tier, and the two fail DIFFERENTLY, which is why both exist rather than
 one standing for the other.
 
 ## Publisher
@@ -141,7 +141,7 @@ Expect:
 
 ## Note (since=2026-09-18)
 
-> **This is the tier where nothing else would have caught it.** The colocated
+> **This is the tier where nothing else would have caught it.** The database
 > sibling is refused by its target warehouse: Postgres raises `MERGE command
 > cannot affect row a second time`, so the build fails — unavailable, but not
 > wrong. DuckDB has no such guard. Measured here before the fix: the build
@@ -149,6 +149,6 @@ Expect:
 > refresh whose delta contained nothing of org 2's. No error, and the serve path
 > reported storage as usual.
 >
-> So the guard that made the colocated case survivable was never ours, and it does
+> So the guard that made the database case survivable was never ours, and it does
 > not hold on the tier this feature exists to enable. Both scenarios assert the
 > same rule because only together do they show that.

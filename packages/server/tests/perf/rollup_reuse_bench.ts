@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * What a colocated rollup saves by building from its base's stored table: a
+ * What a database rollup saves by building from its base's stored table: a
  * standalone run of a base and its rollup over a synthetic DuckDB table of
  * ROWS rows, counting the run's statements that scan the raw rows and timing
  * the rollup's build, then timing the same rollup built from the warehouse
  * (its planned SQL) on the same connection. Two bases: a `#@ persist` one
  * grouped to 50k rows with a `#@ preaggregate` rollup, and a `#(materialize)`
  * one that stores the raw rows with a computed dimension, with a
- * `#(preaggregate)` rollup at that dimension.
+ * `#(rollup)` rollup at that dimension.
  *
  *   bun tests/perf/rollup_reuse_bench.ts [rows]
  */
@@ -56,9 +56,9 @@ ${RAW}
 #(materialize) name="bench_orders"
 source: orders is raw extend {
   dimension: band is concat('band-', cast(cat % 10 as string))
-  #(preaggregate) grain=["band"]
+  #(rollup) grain=["band"]
   measure: grand is amt.sum()
-  #(preaggregate) grain=["band"]
+  #(rollup) grain=["band"]
   measure: rows is count()
 }
 `;
@@ -124,7 +124,7 @@ async function bench(base: string, model: string): Promise<unknown> {
          }
       ).entries,
    );
-   const rollup = entries.find((e) => e.origin === "preaggregate")!;
+   const rollup = entries.find((e) => e.origin === "rollup")!;
    const creates = statements.filter((s) => /^\s*CREATE\b/i.test(s.sql));
    const rawScans = creates.filter((s) => s.sql.includes(MARK)).length;
    const reused = creates.find((s) =>

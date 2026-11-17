@@ -127,7 +127,7 @@ interface UniquenessCheckOutcome {
 
 /**
  * What a run's rollup key check found (known limitation 29): whether the
- * rows a `#(preaggregate)` rollup grouped held its one grain dimension (a
+ * rows a `#(rollup)` rollup grouped held its one grain dimension (a
  * join_one's key) once per value. Keyed in the run metadata by the rollup's
  * content address; it describes the table the run that checked wrote, so it
  * is carried to a later run only while that table is not written again and
@@ -664,7 +664,7 @@ function entryTableIdentity(
 }
 
 /**
- * What a rollup key record says of the table `entry` names, colocated or in a
+ * What a rollup key record says of the table `entry` names, database or in a
  * destination, or undefined when it names another table (a record never
  * describes a table it was not taken over).
  */

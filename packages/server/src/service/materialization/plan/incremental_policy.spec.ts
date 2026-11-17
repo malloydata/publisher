@@ -540,10 +540,10 @@ describe("incrementalPolicyAdvisories", () => {
       expect(stored.message).toContain("stored file");
       expect(stored.message).not.toContain("partitioned or clustered");
 
-      const [colocated] = incrementalPolicyAdvisories([
+      const [database] = incrementalPolicyAdvisories([
          source({ declaration: declaration(keyless) }),
       ]);
-      expect(colocated.message).toContain("partitioned or clustered");
+      expect(database.message).toContain("partitioned or clustered");
    });
 
    it("warns about a keyless delta with both consequences", () => {

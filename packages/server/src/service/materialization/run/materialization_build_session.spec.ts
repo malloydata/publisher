@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { describe, expect, it, spyOn } from "bun:test";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -242,6 +243,7 @@ describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
             },
          }),
          read,
+         numericColumns: async () => ({ columns: [], numeric: [] }),
       };
       const dir = mkdtempSync(join(tmpdir(), "tunnel-close-"));
       mkdirSync(storageDestinationRoot(dir), { recursive: true });
@@ -270,6 +272,42 @@ describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
          const result = await buildSourceIntoStorage(h.params);
          expect(result.schema.map((c) => c.name)).toEqual(["x"]);
          expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("P5-10: refuses the CTAS of a run cancelled while the session was idle", async () => {
+      // The abort lands during the read (the session idle meanwhile), so no
+      // statement is in flight to interrupt: the next one must be refused.
+      const run = new AbortController();
+      const h = harness(async () => {
+         run.abort();
+         return { selectSQL: "SELECT 1 AS x", jobId: null, cost: null };
+      });
+      try {
+         await expect(
+            buildSourceIntoStorage({ ...h.params, signal: run.signal }),
+         ).rejects.toBeInstanceOf(BuildCancelledError);
+         expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("P5-10: starts nothing for a run already cancelled", async () => {
+      const run = new AbortController();
+      run.abort();
+      let read = 0;
+      const h = harness(async () => {
+         read += 1;
+         return { selectSQL: "SELECT 1 AS x", jobId: null, cost: null };
+      });
+      try {
+         await expect(
+            buildSourceIntoStorage({ ...h.params, signal: run.signal }),
+         ).rejects.toBeInstanceOf(BuildCancelledError);
+         expect(read).toBe(0);
       } finally {
          rmSync(h.dir, { recursive: true, force: true });
       }
@@ -305,6 +343,7 @@ describe("buildSourceIntoStorage hands the warehouse its SQL verbatim", () => {
             received.push(buildSQL);
             return { selectSQL: "SELECT 1 AS org_id", jobId: null, cost: null };
          },
+         numericColumns: async () => ({ columns: [], numeric: [] }),
       };
       const dir = mkdtempSync(join(tmpdir(), "build-verbatim-"));
       mkdirSync(storageDestinationRoot(dir), { recursive: true });
@@ -994,6 +1033,8 @@ function fileLakeBuild(selectSQL: string) {
          reads.push(buildSQL);
          return { selectSQL, jobId: null, cost: null };
       },
+      // The stubbed warehouse holds no numeric column to read as text.
+      numericColumns: async () => ({ columns: [], numeric: [] }),
    };
    const dir = mkdtempSync(join(tmpdir(), "storage-build-"));
    mkdirSync(storageDestinationRoot(dir), { recursive: true });
@@ -1174,6 +1215,73 @@ describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", ()
    });
 });
 
+// P3-06..09: a Snowflake build session that does not hold Malloy's TIMEZONE
+// and WEEK_START could store other day and week buckets than live answers, so
+// the build fails rather than store them.
+describe("buildSourceIntoStorage refuses a Snowflake session without Malloy's settings", () => {
+   it("P3-09: fails the build when WEEK_START does not read back as 7", async () => {
+      const original = DuckDBConnection.prototype.runSQL;
+      const created: string[] = [];
+      const runSQL = spyOn(
+         DuckDBConnection.prototype,
+         "runSQL",
+      ).mockImplementation(async function (
+         this: DuckDBConnection,
+         sql: string,
+      ) {
+         const shown = /SHOW PARAMETERS LIKE ''(\w+)''/.exec(sql);
+         if (shown) {
+            const value = { TIMEZONE: "UTC", WEEK_START: "1" }[shown[1]];
+            return { rows: [{ KEY: shown[1], VALUE: value }] } as never;
+         }
+         if (sql.includes("CREATE OR REPLACE TABLE")) created.push(sql);
+         if (
+            sql.includes("snowflake_query") ||
+            sql.includes("snowflake_execute")
+         ) {
+            return { rows: [] } as never;
+         }
+         return original.call(this, sql);
+      });
+      const dir = mkdtempSync(join(tmpdir(), "snowflake-settings-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      try {
+         await expect(
+            buildSourceIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               sourceConnection: {
+                  name: "sf",
+                  type: "snowflake",
+               } as ApiConnection,
+               buildSQL: "SELECT 1",
+               physicalTableName: "t",
+               environmentPath: dir,
+               deps: {
+                  federate: async () => ({
+                     handle: "secret_sf",
+                     sourceType: "snowflake" as const,
+                     close: async () => {},
+                  }),
+                  read: async () => ({
+                     selectSQL: "SELECT 1 AS x",
+                     jobId: null,
+                     cost: null,
+                  }),
+               },
+            }),
+         ).rejects.toThrow(/WEEK_START = 1, not Malloy's 7/);
+         expect(created).toEqual([]);
+      } finally {
+         runSQL.mockRestore();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
 describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => {
    // The tag is best-effort, so the session may arrive already tagged by
    // someone else; the cleanup has to run whenever the source is Snowflake.
@@ -1188,6 +1296,12 @@ describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => 
          sql: string,
       ) {
          executed.push(sql);
+         // The session check reads Malloy's settings back, as held.
+         const shown = /SHOW PARAMETERS LIKE ''(\w+)''/.exec(sql);
+         if (shown) {
+            const value = { TIMEZONE: "UTC", WEEK_START: "7" }[shown[1]];
+            return { rows: [{ key: shown[1], value }] } as never;
+         }
          // The passthrough statements need the Snowflake extension; every
          // other statement runs for real so the build completes.
          if (
@@ -1234,6 +1348,22 @@ describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => 
                   sql.includes("secret_sf"),
             ),
          ).toBe(true);
+         // P3-06..09: Malloy's live session settings, issued on the
+         // federated handle before the build's read.
+         const parity = [
+            "QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE",
+            "TIMEZONE = ''UTC''",
+            "WEEK_START = 7",
+         ].map((p) =>
+            executed.findIndex(
+               (sql) => sql.includes(p) && sql.includes("secret_sf"),
+            ),
+         );
+         expect(parity.every((i) => i >= 0)).toBe(true);
+         const create = executed.findIndex((sql) =>
+            sql.includes("CREATE OR REPLACE TABLE"),
+         );
+         expect(Math.max(...parity)).toBeLessThan(create);
       } finally {
          runSQL.mockRestore();
          rmSync(dir, { recursive: true, force: true });
