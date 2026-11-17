@@ -287,6 +287,27 @@ describe("page context", () => {
       expect(JSON.parse(page.fetched[1].init.body).versionId).toBeUndefined();
    });
 
+   it("takes neither latest nor live in a versioned path for a version", async () => {
+      for (const reserved of ["latest", "live"]) {
+         const page = boot({
+            eventSource: true,
+            context: null,
+            url: `${PAGE}/environments/env1/packages/pkg1/versions/${reserved}/public/index.html`,
+         });
+         await page.Publisher.query("m.malloy", "run: x");
+         expect(
+            JSON.parse(page.fetched[0].init.body).versionId,
+         ).toBeUndefined();
+         expect(page.win.EventSource.created).toHaveLength(1);
+      }
+      const named = boot({
+         context: null,
+         url: `${PAGE}/environments/env1/packages/pkg1/versions/latest-1/public/index.html`,
+      });
+      await named.Publisher.query("m.malloy", "run: x");
+      expect(JSON.parse(named.fetched[0].init.body).versionId).toBe("latest-1");
+   });
+
    it("prefers the context's version over the path's", async () => {
       const page = boot({
          context: { ...CONTEXT, versionId: "1.0.9" },
@@ -908,6 +929,7 @@ describe("givens store", () => {
 
    it("applies givens.set sent as an event, and rejects a bad payload as handler_error", async () => {
       const page = boundPage();
+      page.Publisher.onGivensChange(() => {});
       page.send(envelope("givens.set", { payload: { givens: { a: 1 } } }));
       await flush();
       expect(plain(page.Publisher.givens)).toEqual({ a: 1 });
@@ -918,6 +940,51 @@ describe("givens store", () => {
          "handler_error",
       );
       expect(plain(page.Publisher.givens)).toEqual({ a: 1 });
+   });
+
+   it("answers givens.set unhandled, and keeps the store, until the page has called onGivensChange", async () => {
+      const page = boundPage();
+      page.send(
+         envelope("givens.set", { id: "r1", payload: { givens: { a: 1 } } }),
+      );
+      page.send(envelope("givens.set", { payload: { givens: { a: 2 } } }));
+      await flush();
+      expect(page.posted.find((p) => p.msg.reply)!.msg.error.code).toBe(
+         "unhandled",
+      );
+      expect(plain(page.Publisher.givens)).toEqual({});
+
+      const off = page.Publisher.onGivensChange(() => {});
+      off();
+      page.posted.length = 0;
+      page.send(
+         envelope("givens.set", { id: "r2", payload: { givens: { a: 3 } } }),
+      );
+      await flush();
+      expect(page.posted.find((p) => p.msg.reply)!.msg.error.code).toBe(
+         "unhandled",
+      );
+   });
+
+   it("does nothing when the givens it is handed are already held", () => {
+      const page = boundPage();
+      const seen: Json[] = [];
+      page.Publisher.setGivens({ a: 1, nested: { x: [1, { y: 2 }] } });
+      page.Publisher.onGivensChange((g: Json) => seen.push(plain(g)));
+      page.posted.length = 0;
+
+      page.Publisher.setGivens({ a: 1 });
+      page.Publisher.setGivens({ nested: { x: [1, { y: 2 }] } });
+      page.Publisher.setGivens({ absent: null });
+      page.Publisher.setGivens({});
+      expect(seen).toEqual([]);
+      expect(page.postedOfType("givens.changed")).toEqual([]);
+
+      page.Publisher.setGivens({ nested: { x: [1, { y: 3 }] } });
+      expect(seen).toHaveLength(1);
+      expect(page.postedOfType("givens.changed")).toHaveLength(1);
+      page.Publisher.setGivens({ a: null });
+      expect(seen).toHaveLength(2);
    });
 
    it("lets a page's own givens.set handler replace the default", async () => {
@@ -984,6 +1051,28 @@ describe("query wire format", () => {
          a: 1,
          b: 2,
          c: 3,
+      });
+   });
+});
+
+describe("held givens", () => {
+   it("ride only a query on the page's own package, and opts.givens always do", async () => {
+      const page = boot();
+      page.Publisher.setGivens({ region: "EMEA" });
+      await page.Publisher.query("m.malloy", "run: x", { package: "other" });
+      expect(page.fetched[0].init.body).not.toContain("givens");
+      await page.Publisher.query("m.malloy", "run: x", {
+         package: "other",
+         givens: { year: 1 },
+      });
+      expect(JSON.parse(page.fetched[1].init.body).givens).toEqual({ year: 1 });
+      await page.Publisher.query("m.malloy", "run: x", {
+         environment: "elsewhere",
+      });
+      expect(page.fetched[2].init.body).not.toContain("givens");
+      await page.Publisher.query("m.malloy", "run: x");
+      expect(JSON.parse(page.fetched[3].init.body).givens).toEqual({
+         region: "EMEA",
       });
    });
 });
@@ -1202,17 +1291,71 @@ describe("auth over the bus", () => {
       expect(page.postedOfType("auth.token.request")).toHaveLength(2);
    });
 
-   it("throws at once on a cookie-only page (bus unbound)", async () => {
-      const page = boot();
-      page.posted.length = 0;
+   it("throws at once on a page with no nonce, whatever the bus", async () => {
+      for (const bound of [false, true]) {
+         const page = boot({
+            url: `${PAGE}/environments/env1/packages/pkg1/index.html`,
+         });
+         if (bound) page.hello();
+         page.posted.length = 0;
+         page.replies.push(unauthorized);
+         const err = await page.Publisher.query("m.malloy", "run: x").catch(
+            (e: Json) => e,
+         );
+         expect(err.status).toBe(401);
+         expect(page.fetched).toHaveLength(1);
+         expect(page.posted).toEqual([]);
+         expect(page.clock.pending()).toBe(0);
+      }
+   });
+
+   it("throws at once on a page whose context names no host (no bus to bind)", async () => {
+      const page = boot({ context: { ...CONTEXT, hostOrigins: [] } });
       page.replies.push(unauthorized);
       const err = await page.Publisher.query("m.malloy", "run: x").catch(
          (e: Json) => e,
       );
       expect(err.status).toBe(401);
-      expect(page.fetched).toHaveLength(1);
       expect(page.posted).toEqual([]);
       expect(page.clock.pending()).toBe(0);
+   });
+
+   it("waits for a page with a nonce to bind, then asks for a token and retries", async () => {
+      const page = boot();
+      page.posted.length = 0;
+      page.replies.push(unauthorized, rowsResult(1));
+      const pending = page.Publisher.query("m.malloy", "run: x");
+      await flush();
+      expect(page.postedOfType("auth.token.request")).toEqual([]);
+      page.hello();
+      await flush();
+      expect(page.postedOfType("auth.token.request")).toHaveLength(1);
+      page.send(envelope("auth.token", { payload: { token: "tok-b" } }));
+      expect(await pending).toEqual([{ i: 0 }]);
+      expect(page.fetched[1].init.headers.Authorization).toBe("Bearer tok-b");
+      expect(page.clock.pending()).toBe(0);
+   });
+
+   it("gives up with the 401, sending nothing, when no host binds within 5 s", async () => {
+      const page = boot();
+      page.posted.length = 0;
+      page.replies.push(unauthorized);
+      const settled = page.Publisher.query("m.malloy", "run: x").catch(
+         (e: Json) => e,
+      );
+      await flush();
+      await page.clock.advance(4999);
+      expect(page.fetched).toHaveLength(1);
+      await page.clock.advance(1);
+      expect((await settled).status).toBe(401);
+      expect(page.posted).toEqual([]);
+      expect(page.clock.pending()).toBe(0);
+      // a host that binds later is not held against the next query
+      page.hello();
+      page.replies.push(unauthorized);
+      page.Publisher.query("m.malloy", "run: x").catch(() => {});
+      await flush();
+      expect(page.postedOfType("auth.token.request")).toHaveLength(1);
    });
 
    it("sets the bearer token from auth.token, replies to a request, and ignores a bad payload", async () => {
@@ -1940,6 +2083,21 @@ describe("Publisher.embed (host side)", () => {
       expect(tokens).toBe(0);
       expect(page.clock.pending()).toBe(0);
       await expect(m.handle.send("again")).rejects.toThrow("destroyed");
+   });
+
+   it("destroy() takes its load listener off the frame", () => {
+      const page = bootHost();
+      const m = mount(page);
+      const removed: string[] = [];
+      const remove = m.handle.iframe.removeEventListener.bind(m.handle.iframe);
+      m.handle.iframe.removeEventListener = (type: string, fn: Json) => {
+         removed.push(type);
+         remove(type, fn);
+      };
+      m.handle.destroy();
+      expect(removed).toContain("load");
+      m.load();
+      expect(m.childPosts).toEqual([]);
    });
 
    it("requires opts.src and a matching element", () => {

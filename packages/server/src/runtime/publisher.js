@@ -21,14 +21,15 @@
 //       the URL instead and is deprecated. Every embed adds a random #publisher-nonce=<n> to src; the host accepts
 //       bus messages only from that window, at src's origin, echoing that nonce. The host
 //       never sends the nonce: a document that navigated into the frame cannot learn it.
-//   - Publisher.context  ({ environment, package } from the injected page context, else inferred from URL)
+//   - Publisher.context  ({ environment, package } inferred from the URL, else from the injected page context)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
 //   - Publisher.on(type, fn) → unsubscribe  (host → page messages; fn(payload, meta) may
 //       return a value or promise, which answers a request)
 //   - Publisher.emit(type, payload)  (page → host event; dropped until the host has said hello)
 //   - Publisher.givens (a copy), setGivens(g), onGivensChange(fn) → unsubscribe
-//       A page-held name→value map, merged under opts.givens of every query once non-empty.
-//       A null value removes its key.
+//       A page-held name→value map, merged under opts.givens of every query on the page's own
+//       package once non-empty (never on a query aimed at another package). A null value removes
+//       its key; setting what is already held does nothing.
 //
 // Server-injected context: Publisher serves every data-app HTML page with
 // <script type="application/json" id="publisher-context"> carrying
@@ -48,12 +49,13 @@
 // echoes the nonce from #publisher-nonce= when the URL has one (read once, then removed
 // from the URL; restored before the runtime's own reload); host → page ones carry none.
 // Page → host events: ready, query.ran, givens.changed, version.unavailable. Host → page:
-// auth.token (built in), givens.set (built in; advertised once the page calls
-// onGivensChange), and whatever the page registers with on(). A request nobody handles
-// gets error "unhandled".
-// On a 401 with the bus bound, the runtime sends the request auth.token.request, which the
-// host answers with { token } (or "unhandled" when it has no getToken, which fails the
-// query at once), waits up to 10 s for that or an auth.token event, and retries once.
+// auth.token (built in), givens.set (built in; applies only once the page has called
+// onGivensChange, which also advertises it), and whatever the page registers with on(). A
+// request nobody handles gets error "unhandled".
+// On a 401 a page that holds a nonce waits up to 5 s for the host to bind, sends the request
+// auth.token.request, which the host answers with { token } (or "unhandled" when it has no
+// getToken, which fails the query at once), waits up to 10 s for that or an auth.token event,
+// and retries once. A page with no nonce has no host to ask and fails at once.
 //
 // When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...,
 // the runtime auto-subscribes to a Server-Sent Events live-reload stream
@@ -125,8 +127,9 @@
           }
         : {};
    // A version in the path never changes, so it pins queries and needs no live reload, context or not.
+   // `latest` and `live` name no version, so they pin nothing and keep live reload on.
    var pathVersion = location.pathname.match(
-      /^\/environments\/[^/]+\/packages\/[^/]+\/versions\/([^/]+)\/public\//,
+      /^\/environments\/[^/]+\/packages\/[^/]+\/versions\/(?!(?:latest|live)\/)([^/]+)\/public\//,
    );
    var fixedVersion =
       pageContext && isString(pageContext.versionId) && pageContext.versionId
@@ -208,6 +211,7 @@
    var RUNTIME_VERSION = "1";
    var QUERY_TEXT_LIMIT = 2000;
    var TOKEN_WAIT_MS = 10000;
+   var BIND_WAIT_MS = 5000;
 
    var hostOrigins =
       pageContext && Array.isArray(pageContext.hostOrigins)
@@ -257,10 +261,11 @@
       hostOrigins.length > 0 &&
       typeof window.addEventListener === "function";
    var boundOrigin = null; // set by the first valid `hello`; every post targets it
-   var handlers = {};
+   var handlers = new Map();
    var givensStore = {};
    var givensListeners = [];
    var readyScheduled = false;
+   var boundWaiters = [];
    var tokenWait = null;
    var tokenSettle = null;
    var tokenRequestId = null;
@@ -337,8 +342,8 @@
    }
 
    function handleTypes() {
-      var types = Object.keys(handlers).filter(function (t) {
-         return handlers[t].length > 0;
+      var types = Array.from(handlers.keys()).filter(function (t) {
+         return handlers.get(t).length > 0;
       });
       if (givensListeners.length > 0 && types.indexOf("givens.set") === -1) {
          types.push("givens.set");
@@ -364,11 +369,12 @@
             "Publisher.on(type, fn): type must be a string and fn a function",
          );
       }
-      (handlers[type] = handlers[type] || []).push(fn);
+      var list = handlers.get(type);
+      if (!list) handlers.set(type, (list = []));
+      list.push(fn);
       scheduleReady();
       return function () {
-         var list = handlers[type];
-         var i = list ? list.indexOf(fn) : -1;
+         var i = list.indexOf(fn);
          if (i === -1) return;
          list.splice(i, 1);
          scheduleReady();
@@ -382,15 +388,35 @@
    function cloneGivens(g) {
       return JSON.parse(JSON.stringify(g));
    }
+   function sameValue(a, b) {
+      if (a === b) return true;
+      if (!a || !b || typeof a !== "object" || typeof b !== "object") {
+         return false;
+      }
+      if (Array.isArray(a) !== Array.isArray(b)) return false;
+      var keys = Object.keys(a);
+      return (
+         keys.length === Object.keys(b).length &&
+         keys.every(function (k) {
+            return (
+               Object.prototype.hasOwnProperty.call(b, k) &&
+               sameValue(a[k], b[k])
+            );
+         })
+      );
+   }
    function setGivens(g) {
       if (!g || typeof g !== "object" || Array.isArray(g)) {
          throw new TypeError("Publisher.setGivens(g): g must be an object");
       }
-      var next = cloneGivens(g);
-      Object.keys(next).forEach(function (k) {
-         if (next[k] === null) delete givensStore[k];
-         else givensStore[k] = next[k];
+      var patch = cloneGivens(g);
+      var next = Object.assign({}, givensStore);
+      Object.keys(patch).forEach(function (k) {
+         if (patch[k] === null) delete next[k];
+         else next[k] = patch[k];
       });
+      if (sameValue(next, givensStore)) return;
+      givensStore = next;
       givensListeners.slice().forEach(function (fn) {
          try {
             fn(cloneGivens(givensStore));
@@ -443,6 +469,22 @@
          if (tokenSettle) tokenSettle(false);
       }
    }
+   // Resolves true once the host has bound, false after BIND_WAIT_MS or when no bus can bind.
+   function awaitBound() {
+      if (boundOrigin) return Promise.resolve(true);
+      if (!busEnabled) return Promise.resolve(false);
+      return new Promise(function (resolve) {
+         var timer = setTimeout(function () {
+            boundWaiters.splice(boundWaiters.indexOf(bound), 1);
+            resolve(false);
+         }, BIND_WAIT_MS);
+         function bound() {
+            clearTimeout(timer);
+            resolve(true);
+         }
+         boundWaiters.push(bound);
+      });
+   }
    // Resolves true when a token arrives (as the reply or an auth.token event), false on an error
    // reply or after TOKEN_WAIT_MS. Concurrent callers share one wait.
    function awaitToken() {
@@ -467,8 +509,14 @@
    }
 
    function handlersFor(type) {
-      var list = (handlers[type] || []).slice();
-      if (type === "givens.set" && list.length === 0) list.push(applyGivensSet);
+      var list = (handlers.get(type) || []).slice();
+      if (
+         type === "givens.set" &&
+         list.length === 0 &&
+         givensListeners.length > 0
+      ) {
+         list.push(applyGivensSet);
+      }
       if (type === "auth.token") list.unshift(applyAuthToken);
       return list;
    }
@@ -485,6 +533,9 @@
       var isRequest = m.id !== undefined;
       if (m.type === "hello") {
          boundOrigin = e.origin;
+         boundWaiters.splice(0).forEach(function (fn) {
+            fn();
+         });
          if (isRequest) {
             post("hello", readyPayload(), { id: m.id, reply: true });
          } else {
@@ -590,22 +641,31 @@
       if (opts.queryName) body.queryName = opts.queryName;
       if (opts.filterParams) body.filterParams = opts.filterParams;
       if (opts.bypassFilters) body.bypassFilters = true;
-      // Store givens ride along only once the page has set some, so an untouched page's body is unchanged.
-      if (opts.givens || Object.keys(givensStore).length > 0) {
-         body.givens = Object.assign({}, givensStore, opts.givens);
-      }
-      // The page's own version applies only to its own package; a query aimed
-      // elsewhere gets that package's latest unless it names one.
+      // The page's own version and held givens apply only to its own package: a
+      // query aimed elsewhere gets that package's latest, and only the givens it names.
       var isOwnPackage =
          target.env === ctx.environment && target.pkg === ctx.package;
+      var heldGivens = isOwnPackage && Object.keys(givensStore).length > 0;
+      if (opts.givens || heldGivens) {
+         body.givens = Object.assign(
+            {},
+            heldGivens ? givensStore : null,
+            opts.givens,
+         );
+      }
       var versionId =
          opts.versionId || (isOwnPackage ? await pinnedVersion() : undefined);
       if (versionId) body.versionId = versionId;
 
       var started = Date.now();
       var out = await postQuery(url, body);
-      // Only a bound bus can be handed a token; a cookie-only page fails at once. The retry is never retried.
-      if (out.res.status === 401 && boundOrigin && (await awaitToken())) {
+      // Only a page with a nonce has a host to ask; a cookie-only page fails at once. The retry is never retried.
+      if (
+         out.res.status === 401 &&
+         pageNonce &&
+         (await awaitBound()) &&
+         (await awaitToken())
+      ) {
          out = await postQuery(url, body);
       }
       var res = out.res;
@@ -760,8 +820,8 @@
          "allow-scripts allow-same-origin allow-forms",
       );
 
-      var pending = {};
-      var hostHandlers = {};
+      var pending = new Map();
+      var hostHandlers = new Map();
       var ready = false;
       var readyWaiters = [];
       var helloTries = 0;
@@ -844,9 +904,9 @@
          var isRequest = m.id !== undefined && !m.reply;
          if (m.reply) {
             if (m.type === "hello") return onReady();
-            var waiting = pending[m.id];
+            var waiting = pending.get(m.id);
             if (!waiting) return;
-            delete pending[m.id];
+            pending.delete(m.id);
             clearTimeout(waiting.timer);
             if (m.error) {
                var err = new Error(
@@ -865,7 +925,7 @@
             helloTries = 0;
             sayHello();
          }
-         var list = (hostHandlers[m.type] || []).slice();
+         var list = (hostHandlers.get(m.type) || []).slice();
          if (m.type === "auth.token.request" && isRequest && options.getToken) {
             list.unshift(answerTokenRequest);
          }
@@ -935,24 +995,27 @@
       }
       window.addEventListener("message", onMessage);
       // A (re)load is a fresh page that has not bound yet.
-      iframe.addEventListener("load", function () {
+      function onLoad() {
          generation++;
          ready = false;
          helloTries = 0;
          sayHello();
-      });
+      }
+      iframe.addEventListener("load", onLoad);
 
       function cleanup() {
          gone = true;
          generation++;
          clearTimeout(helloTimer);
          window.removeEventListener("message", onMessage);
+         iframe.removeEventListener("load", onLoad);
          observer.disconnect();
-         Object.keys(pending).forEach(function (id) {
-            clearTimeout(pending[id].timer);
-            pending[id].reject(new Error("Publisher.embed: destroyed"));
+         pending.forEach(function (waiting) {
+            clearTimeout(waiting.timer);
+            waiting.reject(new Error("Publisher.embed: destroyed"));
          });
-         pending = {};
+         pending.clear();
+         readyWaiters = [];
       }
       // Best-effort cleanup if the host removes the iframe
       var observer = new MutationObserver(function () {
@@ -976,27 +1039,34 @@
                }
                var id = "h" + ++seq;
                var timer = setTimeout(function () {
-                  delete pending[id];
+                  pending.delete(id);
+                  var queued = readyWaiters.indexOf(go);
+                  if (queued !== -1) readyWaiters.splice(queued, 1);
                   reject(
                      new Error(
                         "Publisher.embed: no reply to '" + type + "' in 5 s",
                      ),
                   );
                }, SEND_TIMEOUT_MS);
-               pending[id] = { resolve: resolve, reject: reject, timer: timer };
+               pending.set(id, {
+                  resolve: resolve,
+                  reject: reject,
+                  timer: timer,
+               });
                // Not generation-guarded: a queued send posts once the current document has proved itself.
                function go() {
-                  if (pending[id]) hostPost(type, payload, { id: id });
+                  if (pending.has(id)) hostPost(type, payload, { id: id });
                }
                if (ready) go();
                else readyWaiters.push(go);
             });
          },
          on: function (type, fn) {
-            (hostHandlers[type] = hostHandlers[type] || []).push(fn);
+            var list = hostHandlers.get(type);
+            if (!list) hostHandlers.set(type, (list = []));
+            list.push(fn);
             return function () {
-               var list = hostHandlers[type];
-               var i = list ? list.indexOf(fn) : -1;
+               var i = list.indexOf(fn);
                if (i !== -1) list.splice(i, 1);
             };
          },

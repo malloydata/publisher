@@ -436,6 +436,7 @@ export function createDataAppBridge(
             const id = `h${++seq}`;
             const timer = setTimeout(() => {
                pending.delete(id);
+               readyWaiters = readyWaiters.filter((w) => w !== go);
                reject(
                   new PublisherBridgeError(
                      `Publisher bridge: no reply to '${type}' in 5 s`,
