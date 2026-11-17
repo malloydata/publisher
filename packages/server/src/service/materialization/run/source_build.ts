@@ -372,6 +372,12 @@ const COLOCATED = new ColocatedTier();
 
 /** One source's build: what {@link buildSource} reads. */
 export interface SourceBuildOptions {
+   /**
+    * The run's cancel signal. Passed to the statements that read the
+    * warehouse (the CTAS, an incremental delta) and never to a swap, DROP or
+    * backup, so a cancel never leaves a half-swapped table.
+    */
+   signal?: AbortSignal;
    persistSource: PersistSource;
    instruction: BuildInstruction;
    connection: MalloyConnection;
@@ -441,6 +447,7 @@ export async function buildSource(
       replacesView,
       storedBase,
       rollup,
+      signal,
    } = options;
    const physicalTableName = instruction.physicalTableName;
    const rendered = renderBuildSQL(
@@ -523,6 +530,7 @@ export async function buildSource(
          ...(replacesView ? { replacesView } : {}),
          ...(storedBase ? { storedBase } : {}),
          ...(rollup ? { rollup } : {}),
+         ...(signal ? { signal } : {}),
       });
    }
 
@@ -543,6 +551,7 @@ export async function buildSource(
          sourceEntityId: contentSourceEntityId,
       }),
       ...(replacesView ? { replacesView } : {}),
+      ...(signal ? { signal } : {}),
    };
    return COLOCATED.build(request);
 }

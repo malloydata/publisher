@@ -28,9 +28,9 @@ const seedSql = [
     ) AS t(id, region, amt, d)`,
 ];
 
-// `kept` is declared in another file: a re-root keeps a base's blocks only
-// for a base in its own file (G8), so `kept_west` would lose `grand` and is
-// left as written (call 2).
+// `kept` is declared in another file: the re-root keeps its blocks (G8),
+// across files as in one (P2-22), so `kept_west` keeps `grand` and is served
+// from its own table.
 const keptModel = `source: kept is duckdb.table('ev') extend {
   measure: grand is amt.sum()
 }
@@ -133,30 +133,25 @@ describe("R4: the served copy over #(materialize) answers equal to live", () => 
       expect(notes).toContain("#(classification) internal");
    });
 
-   it("warns only for the source that loses an inherited field, not for an extension", async () => {
-      const problems = await fixture.servedCopyProblems();
-      expect(problems.map((p) => [p.sourceName, p.reason])).toEqual([
-         ["kept_west", "fields_not_carried"],
-      ]);
+   it("leaves no problem on the served copy, an extension and a source whose base is in another file alike", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
    });
 
-   it("leaves a source whose base in another file declares a measure as written, and answers live", async () => {
+   it("serves a source whose base in another file declares a measure, keeping the measure", async () => {
       const run = await fixture.run({
          name: "inherited measure",
          malloy: "run: kept_west -> { aggregate: grand }",
       });
-      expect(run.servedVia).toBeUndefined();
+      expect(run.servedVia).toBe("served_copy");
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    });
 
-   it("reports that source's table as WARNED with the package warning's code, not a missing field", async () => {
+   it("reports that source's own table as used", async () => {
       fixture.setBindings(fixture.bindings);
       const { path } = await fixture.runAsIs(
          "run: kept_west -> { aggregate: grand }",
       );
-      expect(path?.servedBy.kind).toBe("live");
-      expect(
-         path?.considered.map((c) => [c.outcome, c.reason, c.code]),
-      ).toEqual([["skipped", "WARNED", "served-copy-not-served"]]);
+      expect(path?.servedBy.kind).toBe("materialized");
+      expect(path?.considered.map((c) => c.outcome)).toEqual(["used"]);
    });
 });

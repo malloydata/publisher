@@ -58,6 +58,7 @@ describe("executeInstructedBuild", () => {
       strict = false,
       // The host instructed the run (orchestrated).
       hostInstructed = false,
+      signal: AbortSignal = new AbortController().signal,
    ): Promise<ExecuteResult> {
       // A stub BuildEnvironment. The `storage=` branch reads it, and so does the
       // per-source failure path, which redacts against the connection's CONFIG.
@@ -91,7 +92,7 @@ describe("executeInstructedBuild", () => {
          environment,
          instructions,
          seedEntries: seed,
-         signal: new AbortController().signal,
+         signal,
          strict,
          priorRefusals: [],
          hostInstructed,
@@ -201,6 +202,95 @@ describe("executeInstructedBuild", () => {
          updates,
          "a seed with no table name must not be bound into the build manifest",
       ).not.toContain("seedNameless");
+   });
+
+   it("P5-10: a source cancelled while its CTAS reads is recorded cancelled, its staging dropped and never swapped in", async () => {
+      // The driver ignores the signal (DuckDB, Postgres): the CTAS finishes,
+      // and the build stops before the swap.
+      const run = new AbortController();
+      const statements: { sql: string; signal?: AbortSignal }[] = [];
+      const runSQL = sinon
+         .stub()
+         .callsFake(
+            async (sql: string, options?: { abortSignal?: AbortSignal }) => {
+               statements.push({
+                  sql: String(sql),
+                  signal: options?.abortSignal,
+               });
+               if (/CREATE TABLE .*slow_v1/.test(String(sql))) run.abort();
+               return { rows: [] };
+            },
+         );
+      const connection = {
+         runSQL,
+         fetchSchemaForTables: async () => ({ schemas: {}, errors: {} }),
+      } as unknown as MalloyConnection;
+      const good = fakeSource({
+         name: "good",
+         sourceEntityId: "bgoodaaaaaaaaaa",
+      });
+      const slow = fakeSource({
+         name: "slow",
+         sourceEntityId: "bslowssssssssss",
+      });
+      const compiled = {
+         builds: [
+            {
+               connectionName: "duckdb",
+               order: ["good", "slow"],
+               dependsOn: {},
+            },
+         ],
+         tables: persistTables({ good, slow }),
+         connectionDigests: { duckdb: "dig" },
+         connections: new Map([["duckdb", connection]]),
+      };
+      const { failures } = await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bgoodaaaaaaaaaa",
+               materializedTableId: "mt-g",
+               physicalTableName: "good_v1",
+               realization: "COPY",
+            },
+            {
+               sourceEntityId: "bslowssssssssss",
+               materializedTableId: "mt-s",
+               physicalTableName: "slow_v1",
+               realization: "COPY",
+            },
+         ],
+         {},
+         undefined,
+         false,
+         false,
+         run.signal,
+      ).catch((error: unknown) => {
+         throw error;
+      });
+      expect(
+         (failures["bslowssssssssss"] as { cancelled?: boolean }).cancelled,
+      ).toBe(true);
+      expect(
+         (failures["bgoodaaaaaaaaaa"] as { cancelled?: boolean } | undefined)
+            ?.cancelled,
+      ).toBeUndefined();
+      const slowStatements = statements.filter((s) =>
+         s.sql.includes("slow_v1"),
+      );
+      // The CTAS carried the run's signal; nothing after it did.
+      const ctas = slowStatements.find((s) => s.sql.startsWith("CREATE TABLE"));
+      expect(ctas?.signal).toBe(run.signal);
+      expect(
+         slowStatements.filter((s) => s !== ctas && s.signal !== undefined),
+      ).toEqual([]);
+      // The staging table is dropped after the cancel, and nothing renames it
+      // onto the served name.
+      const after = slowStatements.slice(slowStatements.indexOf(ctas!) + 1);
+      expect(after.map((s) => s.sql)).toEqual([
+         expect.stringMatching(/^DROP TABLE IF EXISTS .*slow_v1/),
+      ]);
    });
 
    it("keeps healthy sources when one of several fails, and records why it failed", async () => {

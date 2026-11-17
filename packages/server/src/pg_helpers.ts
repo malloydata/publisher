@@ -275,3 +275,30 @@ export function redactConnectionSecretShapes(s: string): string {
          .replace(SECRET_BARE_PATTERN, "$1***"),
    );
 }
+
+/**
+ * Object-store and HTTP URLs, the scheme through to the first quote,
+ * whitespace or closing bracket. An httpfs read error quotes the object it
+ * read, bucket and path included (`https://storage.googleapis.com/<bucket>/
+ * <org>/<database>/…`), and DuckDB echoes the statement, the same URL in it.
+ */
+const STORAGE_URL_PATTERN =
+   /\b(?:gs|gcs|s3|s3a|s3n|r2|az|azure|abfss|hf|https?):\/\/[^\s'"`)\]}>]+/gi;
+
+/** The placeholder a redacted storage URL becomes. */
+export const REDACTED_STORAGE_URL = "<storage path>";
+
+/**
+ * `s` with every object-store or HTTP URL replaced by
+ * {@link REDACTED_STORAGE_URL}: driver text that reaches a response body must
+ * not name a bucket, an organization's or a database's storage path. Any
+ * URL is hidden, a caller's own `read_parquet('https://…')` included: hiding
+ * a URL loses only where it pointed.
+ */
+export function redactStorageUrls(s: string): string {
+   // Sentence punctuation after a URL stays: `gs://b/p.zip;` keeps its `;`.
+   return s.replace(STORAGE_URL_PATTERN, (url) => {
+      const trailing = /[.,;:!?]+$/.exec(url)?.[0] ?? "";
+      return REDACTED_STORAGE_URL + trailing;
+   });
+}

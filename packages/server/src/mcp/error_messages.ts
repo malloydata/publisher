@@ -7,6 +7,7 @@ import {
    InvalidQueryRequestError,
    logInternalFailure,
 } from "../errors";
+import { redactStorageUrls } from "../pg_helpers";
 import {
    isRestrictedByMessage,
    matchMalloyErrorText,
@@ -92,7 +93,10 @@ export function getInternalError(
          suggestions,
       };
    }
-   const errorMessage = error instanceof Error ? error.message : String(error);
+   // Driver text can quote a storage URL: never in an answer.
+   const errorMessage = redactStorageUrls(
+      error instanceof Error ? error.message : String(error),
+   );
    return {
       message: error ? `${baseMessage}: ${errorMessage}` : baseMessage,
       suggestions,
@@ -158,7 +162,9 @@ export function getMalloyErrorDetails(
          };
       }
 
-      baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${error.message}`;
+      // Driver text can quote a storage URL (bucket, organization and
+      // database paths): never in an answer.
+      baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${redactStorageUrls(error.message)}`;
 
       // What Publisher's own errors say they are, read as data; then what a
       // Malloy message says, read as text (malloy_error_text.ts).

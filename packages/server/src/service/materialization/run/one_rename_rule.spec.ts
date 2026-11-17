@@ -24,8 +24,9 @@ import { WRITES_TABLES_KEY } from "../../versions/materialization_scope";
  * store: an auto-run reclaims a table it replaced only when it can prove the
  * table is its own (a Publisher suffix, this package's own auto-run built it
  * there, nothing else names it, the replacement committed and is served),
- * keeps and lists one at an author's exact `name=` or in a destination no
- * longer configured, and never drops anything else. What the derive offers is
+ * keeps and lists one at an author's exact `name=`, one in a destination no
+ * longer configured, and one left under the name the source is served under
+ * now in another place (`may_be_served`), and never drops anything else. What the derive offers is
  * self_table_naming.spec.ts's; the drops on a real warehouse are
  * one_rename_rule_duckdb.spec.ts's and the Postgres integration spec's.
  */
@@ -95,25 +96,14 @@ async function reclaim(
       /** Tables the drop leaves in place (another package's mark). */
       marked?: string[];
       bound?: boolean;
-      /** Destination names configured as another's DuckLake. */
-      aliases?: Record<string, string>;
-      /** The warehouse connection's type (postgres by default). */
-      connectionType?: string;
       /** Runs that commit while the reclaim waits for the run lock. */
       commitWhileLocking?: Materialization[];
-      /** Destination schemas, by destination name. */
-      schemas?: Record<string, string>;
-      /**
-       * Whether a table is the served one, as the identity probe on the
-       * table itself would answer; by default, one exactly when both are
-       * in the same DuckLake (aliases).
-       */
-      sameTable?: (old: string, served: string) => boolean | undefined;
+      /** The warehouse connection the reclaim reaches, if any. */
+      warehouse?: { dialectName: string; runSQL: (sql: string) => unknown };
    } = {},
 ) {
    const dropped: string[] = [];
    let locks = 0;
-   let probes = 0;
    const records = new Map(runs.map((m) => [m.id, m.metadata ?? null]));
    const repository = {
       getEnvironmentByName: async () => ({ id: "env-1" }),
@@ -134,12 +124,11 @@ async function reclaim(
       host: {
          getEnvironment: async () =>
             ({
-               // Each configured destination its own DuckLake: its own
-               // catalog database and data path, unless `aliases` names
-               // two for one.
+               // Each configured destination its own DuckLake, on its own
+               // catalog database and data path: the reclaim never reads
+               // a config to decide whether two places are one.
                getStorageDestination: (name: string) => {
                   if (!configured.has(name)) throw new Error("not configured");
-                  const lake = options.aliases?.[name] ?? name;
                   return {
                      name,
                      type: "ducklake",
@@ -148,22 +137,20 @@ async function reclaim(
                            postgresConnection: {
                               host: "pg",
                               port: 5432,
-                              databaseName: `catalog_${lake}`,
+                              databaseName: `catalog_${name}`,
                            },
                         },
-                        storage: { bucketUrl: `/data/${lake}` },
-                        ...(options.schemas?.[name]
-                           ? { destinationSchema: options.schemas[name] }
-                           : {}),
+                        storage: { bucketUrl: `/data/${name}` },
                      },
                   };
                },
                getApiConnection: (name: string) => ({
                   name,
-                  type: options.connectionType ?? "postgres",
+                  type: "postgres",
                }),
                getPackage: async () => ({
-                  getMalloyConnection: async () => undefined,
+                  getMalloyConnection: async (name: string) =>
+                     name === CONN ? options.warehouse : undefined,
                }),
                peekVersion: () => ({
                   getMalloyConnection: async () => undefined,
@@ -171,20 +158,6 @@ async function reclaim(
             }) as never,
       } as never,
       lifecycle: {} as never,
-      sameTable: async (old, served) => {
-         probes += 1;
-         const lakeOf = (t: { storageDestinationName?: string }) =>
-            t.storageDestinationName === undefined
-               ? `own:${CONN}`
-               : (options.aliases?.[t.storageDestinationName] ??
-                 t.storageDestinationName);
-         return options.sameTable
-            ? options.sameTable(
-                 old.storageDestinationName ?? CONN,
-                 served.storageDestinationName ?? CONN,
-              )
-            : lakeOf(old) === lakeOf(served);
-      },
       withRunLock: async (_e, _i, _p, _v, fn) => {
          locks += 1;
          for (const m of options.commitWhileLocking ?? []) {
@@ -230,7 +203,6 @@ async function reclaim(
       dropped,
       kept,
       locks,
-      probes,
       renamedOn: (id: string) =>
          (records.get(id)?.[RENAMED_TABLES_KEY] as
             | RenamedTable[]
@@ -272,11 +244,6 @@ describe("an auto-run reclaims a renamed table it can prove is its own", () => {
          "pa__sales__summary__p0123abcd",
          "summary_t",
       ],
-      [
-         "a rollup moved to another container",
-         "old_ns.pa__sales__orders_by_category__p0123abcd",
-         "ns.pa__sales__orders_by_category__p0123abcd",
-      ],
    ];
    for (const [label, before, after] of cases) {
       it(label, async () => {
@@ -301,21 +268,22 @@ describe("an auto-run reclaims a renamed table it can prove is its own", () => {
       });
    }
 
-   it("a table left in an old storage= destination that is still configured", async () => {
-      // lake -> lake2, lake -> the source's own database, and back.
+   it("a table renamed as it moved between places, wherever it moves", async () => {
+      // Renamed as it moved: a different name is never the served table.
+      const before = "pa__sales__old_summary__p0123abcd";
+      const after = "pa__sales__summary__p4567cdef";
       for (const [from, to] of [
          ["lake", "lake2"],
          ["lake", undefined],
          [undefined, "lake"],
       ] as const) {
-         const name = "pa__sales__summary__p0123abcd";
-         const old = run("old", { a1: entry(name, "a1", from) });
+         const old = run("old", { a1: entry(before, "a1", from) });
          const now = run(
             "now",
-            { a1: entry(name, "a1", to) },
+            { a1: entry(after, "a1", to) },
             {
                metadata: recording(
-                  renamed(name, name, {
+                  renamed(before, after, {
                      ...(to ? { storageDestinationName: to } : {}),
                      previousPlace: from
                         ? { storageDestinationName: from }
@@ -327,8 +295,9 @@ describe("an auto-run reclaims a renamed table it can prove is its own", () => {
          const r = await reclaim([old, now], "now", {
             destinations: ["lake", "lake2"],
          });
-         expect(r.dropped).toEqual([`${from ?? CONN}:${name}`]);
+         expect(r.dropped).toEqual([`${from ?? CONN}:${before}`]);
          expect(r.kept).toEqual([]);
+         expect(r.renamedOn("now")).toEqual([]);
       }
    });
 });
@@ -427,8 +396,8 @@ describe("a table at an author's exact name= is kept and listed", () => {
       expect(guards).toContain("destination_missing");
    });
 
-   it("a destination no longer configured, its table under the same name: may be the one served, so neither dropped nor listed", async () => {
-      // `lake` may be `gone_lake` renamed: nothing proves them apart.
+   it("a destination no longer configured, its table under the same name: may be the one served, so kept and listed may_be_served", async () => {
+      // `lake` may be `gone_lake` renamed.
       const name = "pa__sales__summary__p0123abcd";
       const old = run("old", { a1: entry(name, "a1", "gone_lake") });
       const now = run(
@@ -445,8 +414,17 @@ describe("a table at an author's exact name= is kept and listed", () => {
       );
       const r = await reclaim([old, now], "now", { destinations: ["lake"] });
       expect(r.dropped).toEqual([]);
-      expect(r.kept).toEqual([]);
-      expect(guards).toEqual(["still-served"]);
+      expect(r.kept).toEqual([
+         {
+            sourceEntityId: "a1",
+            sourceName: "summary",
+            physicalTableName: name,
+            connectionName: CONN,
+            storageDestinationName: "gone_lake",
+            reason: "may_be_served",
+         },
+      ]);
+      expect(guards).toEqual(["may_be_served"]);
    });
 });
 
@@ -620,53 +598,13 @@ describe("the run lock", () => {
    });
 });
 
-describe("a move between places that may be one", () => {
+describe("a table a move left under the name the source is served under now", () => {
    const NAME = "pa__sales__summary__p0123abcd";
-   const move = (from: string | undefined, to: string | undefined) => [
-      run("old", { a1: entry(NAME, "a1", from) }),
-      run(
-         "now",
-         { a1: entry(NAME, "a1", to) },
-         {
-            metadata: recording(
-               renamed(NAME, NAME, {
-                  ...(to ? { storageDestinationName: to } : {}),
-                  previousPlace: from ? { storageDestinationName: from } : {},
-               }),
-            ),
-         },
-      ),
-   ];
-
-   it("two destination names for one DuckLake: the table moved to is never dropped", async () => {
-      const r = await reclaim(move("lake", "lake2"), "now", {
-         destinations: ["lake", "lake2"],
-         aliases: { lake2: "lake" },
-      });
-      expect(r.dropped).toEqual([]);
-      expect(r.kept).toEqual([]);
-      expect(guards).toEqual(["still-served"]);
-   });
-
-   it("a connection that may reach the destination: never dropped, either way", async () => {
-      for (const [from, to] of [
-         ["lake", undefined],
-         [undefined, "lake"],
-      ] as const) {
-         guards = [];
-         const r = await reclaim(move(from, to), "now", {
-            destinations: ["lake"],
-            // A MotherDuck connection may attach the lake.
-            connectionType: "motherduck",
-         });
-         expect(r.dropped).toEqual([]);
-         expect(guards).toEqual(["still-served"]);
-      }
-   });
-});
-
-describe("two names for one DuckLake the config does not tell apart", () => {
-   const move = (name: string, from: string, to: string) => [
+   const move = (
+      from: string | undefined,
+      to: string | undefined,
+      name = NAME,
+   ) => [
       run("old", { a1: entry(name, "a1", from) }),
       run(
          "now",
@@ -674,71 +612,217 @@ describe("two names for one DuckLake the config does not tell apart", () => {
          {
             metadata: recording(
                renamed(name, name, {
-                  storageDestinationName: to,
-                  previousPlace: { storageDestinationName: from },
+                  ...(to ? { storageDestinationName: to } : {}),
+                  previousPlace: from ? { storageDestinationName: from } : {},
                }),
             ),
          },
       ),
    ];
+   const keptAt = (from: string | undefined, name = NAME): KeptTable => ({
+      sourceEntityId: "a1",
+      sourceName: "summary",
+      physicalTableName: name,
+      connectionName: CONN,
+      ...(from ? { storageDestinationName: from } : {}),
+      reason: "may_be_served",
+   });
 
-   it("a destination schema spelled in another case is the same schema", async () => {
-      const r = await reclaim(
-         move("pa__sales__summary__p0123abcd", "lake", "lake2"),
-         "now",
-         {
+   // Whatever the two places are: two names for one DuckLake, a connection
+   // that reaches the destination, a schema spelled in another case, a name
+   // with its own container, or two DuckLakes that are truly apart. A
+   // table's name does not say where it is, and no config or read of the
+   // table settles it (a stale instance, an open transaction, a concurrent
+   // writer), so it is never dropped.
+   for (const [label, from, to, name] of [
+      ["one destination to another", "lake", "lake2", NAME],
+      ["a destination to the source's own database", "lake", undefined, NAME],
+      ["the source's own database to a destination", undefined, "lake", NAME],
+      [
+         "a name with its own container",
+         "lake",
+         "lake2",
+         "analytics.pa__sales__summary__v1_0_0__p0123abcd",
+      ],
+   ] as const) {
+      it(`${label}: never dropped, kept and listed may_be_served`, async () => {
+         const r = await reclaim(move(from, to, name), "now", {
             destinations: ["lake", "lake2"],
-            aliases: { lake2: "lake" },
-            schemas: { lake2: "MAIN" },
-            sameTable: () => undefined,
+         });
+         expect(r.dropped).toEqual([]);
+         expect(r.kept).toEqual([keptAt(from, name)]);
+         expect(r.keptOn("now")).toEqual([keptAt(from, name)]);
+         expect(guards).toEqual(["may_be_served"]);
+         // Decided for good: listed, and no longer in the rename record.
+         expect(r.renamedOn("now")).toEqual([]);
+      });
+   }
+
+   // What a read of either table would return cannot change the decision:
+   // nothing is read to make it, and nothing is written on either table.
+   for (const [mode, answer] of [
+      // A stale instance cache, or a lagging read: the name is not found.
+      ["a stale instance", () => []],
+      // An open transaction: the snapshot from before, its old comment.
+      [
+         "an open transaction",
+         () => [
+            {
+               kind: "BASE TABLE",
+               comment: "malloy-publisher:table owner=e1/pa",
+            },
+         ],
+      ],
+      // A concurrent writer: the comment another writer just set.
+      [
+         "a concurrent writer",
+         () => [
+            { kind: "BASE TABLE", comment: `another writer ${Math.random()}` },
+         ],
+      ],
+   ] as const) {
+      it(`whatever a read returns (${mode}): kept, and nothing written on it`, async () => {
+         for (const [from, to] of [
+            ["lake", undefined],
+            [undefined, "lake"],
+         ] as const) {
+            guards = [];
+            const statements: string[] = [];
+            const r = await reclaim(move(from, to), "now", {
+               destinations: ["lake"],
+               warehouse: {
+                  dialectName: "postgres",
+                  runSQL: async (sql: string) => {
+                     statements.push(sql);
+                     return { rows: answer() };
+                  },
+               },
+            });
+            expect(r.dropped).toEqual([]);
+            expect(guards).toEqual(["may_be_served"]);
+            expect(r.renamedOn("now")).toEqual([]);
+            expect(
+               statements.filter((sql) =>
+                  /^\s*(COMMENT|DROP|ALTER|CREATE|INSERT|UPDATE|DELETE)\b/i.test(
+                     sql,
+                  ),
+               ),
+            ).toEqual([]);
+         }
+      });
+   }
+
+   // A container does not say which table a name reaches either: on DuckDB a
+   // two-part name may be a catalog's or a schema's (`memory.t` is `main.t`).
+   for (const [before, after] of [
+      [
+         "old_ns.pa__sales__orders_by_category__p0123abcd",
+         "ns.pa__sales__orders_by_category__p0123abcd",
+      ],
+      [
+         "memory.pa__sales__summary__p0123abcd",
+         "main.pa__sales__summary__p0123abcd",
+      ],
+   ] as const) {
+      it(`a container-only change (${before} to ${after}): never dropped, kept and listed may_be_served`, async () => {
+         const r = await reclaim(
+            [
+               run("old", { a1: entry(before) }),
+               run(
+                  "now",
+                  { a1: entry(after) },
+                  { metadata: recording(renamed(before, after)) },
+               ),
+            ],
+            "now",
+         );
+         expect(r.dropped).toEqual([]);
+         expect(r.kept).toEqual([keptAt(undefined, before)]);
+         expect(guards).toEqual(["may_be_served"]);
+      });
+   }
+
+   it("a kept destination_missing table whose name is later served elsewhere is listed may_be_served", async () => {
+      const before = "pa__sales__old_summary__p0123abcd";
+      const old = run("old", { a1: entry(before, "a1", "gone_lake") });
+      const listed = run(
+         "now",
+         { a1: entry("pa__sales__summary__p4567cdef", "a1", "lake") },
+         {
+            metadata: {
+               mode: "auto",
+               keptTables: [
+                  {
+                     sourceEntityId: "a1",
+                     physicalTableName: before,
+                     connectionName: CONN,
+                     storageDestinationName: "gone_lake",
+                     reason: "destination_missing",
+                  },
+               ],
+            },
          },
       );
+      const back = run("back", { a1: entry(before, "a1", "lake") });
+      const r = await reclaim([old, listed, back], "back", {
+         destinations: ["lake"],
+      });
       expect(r.dropped).toEqual([]);
-      expect(guards).toEqual(["still-served"]);
+      expect(r.kept?.map((t) => t.reason)).toEqual(["may_be_served"]);
    });
 
-   it("a name with its own container is one table in one lake, whatever the schemas", async () => {
-      const r = await reclaim(
-         move(
-            "analytics.pa__sales__summary__v1_0_0__p0123abcd",
-            "lake",
-            "lake2",
-         ),
+   it("stays listed by later runs, until the source moves back to it", async () => {
+      const [old, now] = move("lake", "lake2");
+      const first = await reclaim([old, now], "now", {
+         destinations: ["lake", "lake2"],
+      });
+      const listed = {
+         ...now,
+         metadata: { mode: "auto", keptTables: first.keptOn("now") },
+      };
+      const next = run("next", { a1: entry(NAME, "a1", "lake2") });
+      const carried = await reclaim([old, listed, next], "next", {
+         destinations: ["lake", "lake2"],
+      });
+      expect(carried.dropped).toEqual([]);
+      expect(carried.kept).toEqual([keptAt("lake")]);
+      // Back in `lake`: that table is the one served, no longer listed.
+      const back = run("back", { a1: entry(NAME, "a1", "lake") });
+      const reused = await reclaim([old, listed, back], "back", {
+         destinations: ["lake", "lake2"],
+      });
+      expect(reused.dropped).toEqual([]);
+      expect(reused.kept).toEqual([]);
+   });
+
+   it("an author's kept name= the source is now served under in another place is listed may_be_served, never advised dropped", async () => {
+      const old = run("old", { a1: entry("named_t") });
+      const now = run(
          "now",
+         { a1: entry("named_new") },
+         { metadata: recording(renamed("named_t", "named_new")) },
+      );
+      const first = await reclaim([old, now], "now");
+      expect(first.kept?.map((t) => t.reason)).toEqual(["author_name"]);
+      const listed = {
+         ...now,
+         metadata: { mode: "auto", keptTables: first.keptOn("now") },
+      };
+      // The name taken again, in a destination.
+      const moved = run("moved", { a1: entry("named_t", "a1", "lake") });
+      const r = await reclaim([old, listed, moved], "moved", {
+         destinations: ["lake"],
+      });
+      expect(r.dropped).toEqual([]);
+      expect(r.kept).toEqual([
          {
-            destinations: ["lake", "lake2"],
-            aliases: { lake2: "lake" },
-            schemas: { lake2: "s2" },
-            sameTable: () => undefined,
+            sourceEntityId: "a1",
+            sourceName: "summary",
+            physicalTableName: "named_t",
+            connectionName: CONN,
+            reason: "may_be_served",
          },
-      );
-      expect(r.dropped).toEqual([]);
-      expect(guards).toEqual(["still-served"]);
-   });
-
-   it("one the config calls apart is still tested on the table itself: kept when it is the served table", async () => {
-      // The configs differ (a catalog spelled another way, say), but the
-      // table at the old place is the one the package serves.
-      const r = await reclaim(
-         move("pa__sales__summary__p0123abcd", "lake", "lake2"),
-         "now",
-         { destinations: ["lake", "lake2"], sameTable: () => true },
-      );
-      expect(r.probes).toBe(1);
-      expect(r.dropped).toEqual([]);
-      expect(guards).toEqual(["still-served"]);
-      expect(r.renamedOn("now")).toEqual([]);
-   });
-
-   it("kept, and tried again, when the table cannot be asked", async () => {
-      const r = await reclaim(
-         move("pa__sales__summary__p0123abcd", "lake", "lake2"),
-         "now",
-         { destinations: ["lake", "lake2"], sameTable: () => undefined },
-      );
-      expect(r.dropped).toEqual([]);
-      expect(guards).toEqual(["identity-unknown"]);
-      expect(r.renamedOn("now")).toHaveLength(1);
+      ]);
    });
 });
 
@@ -890,5 +974,33 @@ describe("the table-kept-after-rename warning", () => {
       expect(warnings[0].message).toContain("never drops");
       expect(warnings[1].message).toContain("no longer configured");
       expect(keptTableWarnings(plan, [])).toEqual([]);
+   });
+
+   it("for a table that may be the one served: says so, says to check, and never advises dropping it", () => {
+      const [warning] = keptTableWarnings(null, [
+         {
+            sourceEntityId: "a1",
+            sourceName: "summary",
+            physicalTableName: "summary__p0123abcd",
+            connectionName: CONN,
+            storageDestinationName: "lake",
+            reason: "may_be_served",
+         },
+      ]);
+      expect(warning).toMatchObject({
+         subject: "summary",
+         code: TABLE_KEPT_AFTER_RENAME_CODE,
+         severity: "warn",
+      });
+      expect(warning.message).toContain(
+         "table `summary__p0123abcd` in storage destination `lake` was kept",
+      );
+      expect(warning.message).toContain("may be the very table");
+      expect(warning.message).toContain("Check whether it is");
+      expect(warning.message).toContain("a delete is record-only");
+      expect(warning.message).not.toContain("no longer read");
+      expect(warning.message).not.toMatch(
+         /drop it yourself|before dropping|built it with dropTables/i,
+      );
    });
 });

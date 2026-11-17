@@ -19,8 +19,8 @@
 //   ## Model [<pkg>/]<path.malloy>      + a ```malloy block                  -> write model
 //   ## Publish [<pkg>] [(forceRefresh, sources=a[+b])]  [body: `expect binding: src -> conn`]
 //   ## Delete [<pkg>]                    -> unload + DELETE the package from serving
-//   ## Reclaim [<pkg>]                   -> DELETE the latest materialization with dropTables
-//                                        (destination-aware physical-table drop / GC)
+//   ## Forget [<pkg>]                    -> DELETE the latest successful materialization's
+//                                        record (record-only: its tables stay)
 //   ## Destination tables|files|drop <table>|cleanup [(dest=lake, schema=main, snapshots=7d, files=1d)]
 //                                        -> the storage-destination table routes; `tables` and
 //                                        `files` take an Expect: table (`name` / `table`),
@@ -175,7 +175,7 @@ type Step =
         mode: PersistStorageMode;
      }
    | {
-        kind: "reclaim";
+        kind: "forget";
         pub?: string;
         env: string;
         pkg: string;
@@ -421,7 +421,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    },
    await: { attrs: ["label"] },
    delete: {},
-   reclaim: {},
+   forget: {},
    destination: {
       attrs: ["dest", "schema", "snapshots", "files", "within"],
       keys: ["deleted", "status"],
@@ -751,9 +751,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             });
             break;
          }
-         case "reclaim": {
+         case "forget": {
             steps.push({
-               kind: "reclaim",
+               kind: "forget",
                pub,
                env,
                pkg: arg.trim() || defaultPackage,
@@ -3125,14 +3125,14 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                }
                break;
             }
-            case "reclaim": {
-               // Reclaim the latest successful materialization: DELETE it with
-               // dropTables (the destination-aware read-write drop of the physical
-               // table). A following `## Restart` re-establishes serving from the
-               // store — now empty for this source — so it reverts to live.
+            case "forget": {
+               // Delete the latest successful materialization's record
+               // (record-only: its tables stay). The post-delete rebind, or a
+               // following `## Restart`, re-establishes serving from the store,
+               // now empty for this source, so it reverts to live.
                const rest = await serverFor(step.pub, step.env);
-               const id = await rest.reclaimLatest(step.pkg);
-               assert.ok(`reclaim ${step.pkg}`, !!id, `reclaimed ${id}`);
+               const id = await rest.forgetLatest(step.pkg);
+               assert.ok(`forget ${step.pkg}`, !!id, `deleted ${id}`);
                break;
             }
             case "delete": {

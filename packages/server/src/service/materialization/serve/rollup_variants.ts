@@ -181,7 +181,11 @@ import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import { type Binding, type Pinned, storageLookupOf } from "../domain/binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
-import { isDeclineOf, LegDecline } from "../domain/leg_decline";
+import {
+   isDeclineOf,
+   LegDecline,
+   withMemberDeclines,
+} from "../domain/leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
@@ -512,6 +516,9 @@ export class RollupVariantServe {
       // and measure check (the one closest to answering), else the first's.
       let first: LegDecline | undefined;
       let closest: LegDecline | undefined;
+      // Each rollup's own decline, by its synthesized source name: the path
+      // report gives each rollup its own reason (P2-32).
+      const members = new Map<string, LegDecline>();
       // An extension that adds more than fields declines its base's rollups
       // (row 22); its own joins' rollups (A7) are still tried.
       let ownPlans = plans;
@@ -522,6 +529,7 @@ export class RollupVariantServe {
             if (!isDeclineOf(error, "rollup")) throw error;
             first = error;
             ownPlans = [];
+            for (const plan of plans) members.set(plan.rollupSourceName, error);
          }
       }
       // The views the query reads by name (row 11): the one its text runs,
@@ -552,6 +560,7 @@ export class RollupVariantServe {
             if (!isDeclineOf(error, "rollup")) throw error;
             first ??= error;
             if (!error.shapeCheck) closest ??= error;
+            members.set(plan.rollupSourceName, error);
          }
       }
       // Then a joined source's rollup, read through the join (A7): R1's
@@ -560,14 +569,18 @@ export class RollupVariantServe {
       for (const { branch, refusal } of branches) {
          // Through a join, a zoned query is read live (A5).
          if (zoned) {
-            first ??= zonedQueryDecline();
+            const decline = zonedQueryDecline();
+            first ??= decline;
+            members.set(branch.plan.rollupSourceName, decline);
             continue;
          }
          // A join branch redeclares the author's source around the join, not
          // over its declaring file, so it carries no gate to prove: past an
          // entry-point gate it declines (CONTRACT).
          if (gates) {
-            first ??= contractSkip();
+            const decline = contractSkip();
+            first ??= decline;
+            members.set(branch.plan.rollupSourceName, decline);
             continue;
          }
          try {
@@ -585,9 +598,12 @@ export class RollupVariantServe {
             if (!isDeclineOf(error, "rollup")) throw error;
             first ??= error;
             if (!error.shapeCheck) closest ??= error;
+            members.set(branch.plan.rollupSourceName, error);
          }
       }
-      throw closest ?? first ?? new NoRollupForQuery("no rollup");
+      const summary = closest ?? first;
+      if (!summary) throw new NoRollupForQuery("no rollup");
+      throw withMemberDeclines(summary, members);
    }
 
    /**

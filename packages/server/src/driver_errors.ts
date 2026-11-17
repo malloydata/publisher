@@ -256,3 +256,27 @@ export function isCredentialRejection(error: unknown): boolean {
    }
    return false;
 }
+
+/**
+ * An object store refusing a read, as DuckDB's httpfs reports it: `HTTP GET
+ * error on '<url>' (HTTP 403 Forbidden)`, `HTTP GET error reading '<url>' in
+ * region '' (HTTP 403 …)` (S3), `HTTP error on '<url>' (HTTP 401 …)` (GCS).
+ * Only 401 and 403 on an object-store or HTTP URL: anything else (a 404, a
+ * 500, a refused socket) is not a refusal of access.
+ */
+const OBJECT_STORE_REFUSAL =
+   /HTTP (?:[A-Z]+ )?error (?:on|reading) '(?:gs|gcs|s3|s3a|s3n|r2|az|azure|abfss|https?):\/\/[^']*'[^\n(]*\(HTTP (?:401|403)\b/i;
+
+/**
+ * Whether `error` is an object store refusing to let the database read the
+ * files behind a table (a DuckLake data path, a Parquet or CSV file it
+ * reads): the database ran, and its storage credentials were refused.
+ * Matched on the message, on the error and its `cause` chain, since httpfs
+ * raises it with no code.
+ */
+export function isObjectStoreRefusal(error: unknown): boolean {
+   for (const current of causeChain(error)) {
+      if (OBJECT_STORE_REFUSAL.test(current.message)) return true;
+   }
+   return false;
+}
