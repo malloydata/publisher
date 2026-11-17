@@ -1276,6 +1276,21 @@ export class RollupVariantServe {
       if (!table) {
          throw this.noFreshTable(plan, args.pinned);
       }
+      // A gate that reads a stored column no read gives live's values (the
+      // bind's, or the read plan's) could not be grafted on the variant: the
+      // query answers live rather than being denied.
+      if (query.gates) {
+         const unread = gateReadsLeftOut(
+            query.gates,
+            this.leftOutColumns(plan, table),
+         );
+         if (unread) {
+            throw new LegDecline(
+               "rollup_missing_field",
+               `the stored rollup cannot answer with live's columns: a gate reads \`${unread}\`, which its table no longer serves`,
+            );
+         }
+      }
       const variant = await this.compiledVariant(
          plan,
          {
@@ -1671,6 +1686,28 @@ export class RollupVariantServe {
     * reads one: the bind's (a database table altered outside its build),
     * else the first its read plan leaves out ({@link storedRollupReads}).
     */
+   /**
+    * The stored columns a rollup does not declare: the bind's (a database
+    * table altered outside its build), and those its read plan leaves out
+    * ({@link storedRollupReads}).
+    */
+   private leftOutColumns(
+      plan: RollupVariantPlan,
+      table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
+   ): string[] {
+      return [
+         ...(table.leftOut ?? []),
+         ...(table.binding
+            ? storedRollupReads(
+                 plan,
+                 table.binding,
+                 this.host.modelDef(),
+                 declaredRollupColumns(this.host.catalog(), table.binding),
+              ).leftOut
+            : []),
+      ];
+   }
+
    private unreadDetailOf(
       plan: RollupVariantPlan,
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
@@ -2362,6 +2399,33 @@ function notCompiledDetail(
    return variant.unreadDetail
       ? `the stored rollup cannot answer with live's columns: ${variant.unreadDetail}`
       : "the query does not compile against the rollup";
+}
+
+/**
+ * The first name an entry-point gate reads that is a stored column the
+ * rollup leaves out, or undefined. A name is any identifier in a gate's text
+ * (`big = $TENANT` reads `big`), matched without case; a given or keyword
+ * that happens to share a column's name only declines more often.
+ *
+ * Written over the gate texts alone, so a shared reader of a gate's
+ * identifiers (`gateIdentifiers`) can replace {@link gateNames}: the rollup
+ * counterpart of the served copy's check that a gate's columns are kept
+ * (`checkGateColumnsKept`).
+ */
+function gateReadsLeftOut(
+   gates: EnforcedGates,
+   leftOut: readonly string[],
+): string | undefined {
+   if (leftOut.length === 0) return undefined;
+   const out = new Set(leftOut.map((c) => c.toLowerCase()));
+   return gateNames([...gates.authorize, ...gates.accessFilter]).find((n) =>
+      out.has(n.toLowerCase()),
+   );
+}
+
+/** The identifiers a gate's text names, fields or not. */
+function gateNames(exprs: readonly string[]): string[] {
+   return [...new Set(exprs.flatMap((expr) => malloyIdentifiers(expr)))];
 }
 
 /** The rollup's own `sourceID`, as its build companion declares it. */
