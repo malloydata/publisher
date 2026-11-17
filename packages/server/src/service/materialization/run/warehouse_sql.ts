@@ -719,14 +719,24 @@ export function snowflakeScriptingBlock(statements: string[]): string {
 }
 
 /**
+ * Whether `dialect` runs a transaction as one scripting block whose rollback
+ * is its own EXCEPTION handler (Snowflake), rather than a BEGIN, the
+ * statements and a COMMIT the caller rolls back on failure.
+ */
+export function transactsInScriptingBlock(dialect: string): boolean {
+   return registeredDialect(dialect) === "snowflake";
+}
+
+/**
  * A delta's statements as one transaction: a Snowflake Scripting block on
  * Snowflake (one statement per call, each possibly on a different pooled
  * session), otherwise the statements between {@link transactionKeywords}'
  * BEGIN and COMMIT.
  */
 export function inOneTransaction(dialect: string, body: string[]): string[] {
-   const knownDialect = registeredDialect(dialect);
-   if (knownDialect === "snowflake") return [snowflakeScriptingBlock(body)];
+   if (transactsInScriptingBlock(dialect)) {
+      return [snowflakeScriptingBlock(body)];
+   }
    const transaction = transactionKeywords(dialect);
    return [transaction.begin, ...body, transaction.commit];
 }

@@ -168,6 +168,14 @@ export interface Reroot {
     */
    dropsUnstoredExcepts?: true;
    /**
+    * With {@link keepsIncludes}: the query's own output names, under which a
+    * v1 query-shaped table stores its columns. The kept `rename:`s read
+    * those names as written, so no column stored under one is renamed back
+    * first, even when a rename's new name is also an output name (a swap,
+    * `rename: n is total; rename: total is n` by way of a third name).
+    */
+   outputNames?: readonly string[];
+   /**
     * A v1 `#@ persist` source declared by refinement alone (`high_value is
     * raw extend { where: … }`) whose base chain carries no filter and no
     * gate: its table holds its root's rows, so re-rooting it with its own
@@ -920,6 +928,7 @@ export function rerootDeclaration(
       | "computedAtRead"
       | "keepsIncludes"
       | "dropsUnstoredExcepts"
+      | "outputNames"
       | "zone"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
@@ -954,22 +963,22 @@ export function rerootDeclaration(
       if (edited === undefined) return undefined;
       kept = edited.text;
    }
-   // The table stores a renamed field under its new name; the kept text
-   // renames it from the old one, so the old name is given back first.
-   const renames = inverseRenameBlocks(
-      kept,
-      new Set((r.columns ?? []).map((c) => c.name)),
+   // A table that stores a renamed field under its new name: the kept text
+   // renames it from the old one, so the old name is given back first. A
+   // column stored under the query's own output name is read by the kept
+   // renames as it is, and is never renamed back.
+   const outputs = new Set(r.outputNames ?? []);
+   const renamedStore = new Set(
+      (r.columns ?? []).map((c) => c.name).filter((n) => !outputs.has(n)),
    );
+   const renames = inverseRenameBlocks(kept, renamedStore);
    if (renames === undefined) return undefined;
    const columns = r.columns ?? [];
    const redefined = timeframedColumns(columns, reserved);
    // A cast column the inverse renames give an old name back cannot be read
    // under its stored name after them: it is cast in a block of its own just
    // ahead of them, and the renames then rename the cast field.
-   const renamedBack = inverselyRenamedColumns(
-      kept,
-      new Set(columns.map((c) => c.name)),
-   );
+   const renamedBack = inverselyRenamedColumns(kept, renamedStore);
    const early = redefined.filter(
       (c) => c.nativeCast !== undefined && renamedBack.has(c.name),
    );

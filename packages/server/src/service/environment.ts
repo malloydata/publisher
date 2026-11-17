@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { isUnderStorageLocation } from "../driver_errors";
 import type { GivenValue } from "@malloydata/malloy";
 import { recordAnnotationFindings } from "../materialization_metrics";
 import { type CompiledDocument } from "./compile_document";
@@ -822,6 +823,25 @@ export class Environment {
 
    public listApiConnections(): ApiConnection[] {
       return this.apiConnections;
+   }
+
+   /**
+    * Whether `url` lies under a data path this environment configures: a
+    * DuckLake connection's or a storage destination's `storage.bucketUrl`.
+    * An object store refusing such a URL is the database's storage
+    * credentials at fault, not the query (StorageAccessDeniedError.managed).
+    */
+   public isConfiguredStorageUrl(url: string): boolean {
+      const locations: string[] = [];
+      for (const c of [...this.apiConnections, ...this.destinations]) {
+         const bucketUrl = (
+            c as { ducklakeConnection?: { storage?: { bucketUrl?: unknown } } }
+         ).ducklakeConnection?.storage?.bucketUrl;
+         if (typeof bucketUrl === "string" && bucketUrl) {
+            locations.push(bucketUrl);
+         }
+      }
+      return isUnderStorageLocation(url, locations);
    }
 
    public getApiConnection(connectionName: string): ApiConnection {

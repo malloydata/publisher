@@ -1750,7 +1750,7 @@
       "status": 403,
       "json": {
         "code": 403,
-        "message": "The storage holding the data \"trips\" reads refused the database's read (HTTP 403). The query and the model are fine; the database's storage credentials are not.",
+        "message": "The storage at a path source \"trips\" reads refused access (HTTP 403).",
         "reason": "STORAGE_ACCESS_DENIED"
       },
       "logged": true,
@@ -1762,10 +1762,9 @@
       ]
     },
     "mcp": {
-      "message": "The storage holding the data \"trips\" reads refused the database's read (HTTP 403). The query and the model are fine; the database's storage credentials are not.",
+      "message": "The storage at a path source \"trips\" reads refused access (HTTP 403).",
       "suggestions": [
-        "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the storage credentials are fixed.",
-        "Report that the database's credentials for the storage holding this table's data were refused."
+        "Check the path the query or the model reads (a file or table URL) and that the database may read it. Retrying unchanged fails the same way."
       ],
       "logs": [
         [

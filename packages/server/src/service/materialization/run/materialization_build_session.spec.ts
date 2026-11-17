@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { describe, expect, it, spyOn } from "bun:test";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -271,6 +272,42 @@ describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
          const result = await buildSourceIntoStorage(h.params);
          expect(result.schema.map((c) => c.name)).toEqual(["x"]);
          expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("P5-10: refuses the CTAS of a run cancelled while the session was idle", async () => {
+      // The abort lands during the read (the session idle meanwhile), so no
+      // statement is in flight to interrupt: the next one must be refused.
+      const run = new AbortController();
+      const h = harness(async () => {
+         run.abort();
+         return { selectSQL: "SELECT 1 AS x", jobId: null, cost: null };
+      });
+      try {
+         await expect(
+            buildSourceIntoStorage({ ...h.params, signal: run.signal }),
+         ).rejects.toBeInstanceOf(BuildCancelledError);
+         expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("P5-10: starts nothing for a run already cancelled", async () => {
+      const run = new AbortController();
+      run.abort();
+      let read = 0;
+      const h = harness(async () => {
+         read += 1;
+         return { selectSQL: "SELECT 1 AS x", jobId: null, cost: null };
+      });
+      try {
+         await expect(
+            buildSourceIntoStorage({ ...h.params, signal: run.signal }),
+         ).rejects.toBeInstanceOf(BuildCancelledError);
+         expect(read).toBe(0);
       } finally {
          rmSync(h.dir, { recursive: true, force: true });
       }

@@ -18,6 +18,7 @@
  * logs and counts.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -792,17 +793,26 @@ export async function withDestinationSession<T>(
 }
 
 /**
- * Interrupt `session` when `signal` aborts (now, if it already has), until
- * the returned function is called. DuckDB stops the statement in flight at
- * its next poll and refuses the next. A read DuckDB makes through a
- * warehouse extension (BigQuery's) is not cancelled in the warehouse: its
- * job runs to completion, and DuckDB raises only once its wait returns.
+ * Stop `session`'s work when `signal` aborts (now, if it already has), until
+ * the returned function is called. A statement in flight is interrupted,
+ * and DuckDB stops it at its next poll; every statement after the abort is
+ * refused with {@link BuildCancelledError} before it starts, so an abort that
+ * lands while the session is idle (between the federation and the CTAS, say)
+ * is not lost. A read DuckDB makes through a warehouse extension
+ * (BigQuery's) is not cancelled in the warehouse: its job runs to
+ * completion, and DuckDB raises only once its wait returns.
  */
 export function interruptOnAbort(
    session: DuckDBConnection,
    signal: AbortSignal | undefined,
 ): () => void {
    if (!signal) return () => {};
+   const original = session.runSQL;
+   const guarded: typeof session.runSQL = (...args) =>
+      signal.aborted
+         ? Promise.reject(new BuildCancelledError())
+         : original.apply(session, args);
+   session.runSQL = guarded;
    const interrupt = () => {
       // The node-api connection is library-internal, as in dispose.
       const connection = (
@@ -816,12 +826,16 @@ export function interruptOnAbort(
          });
       }
    };
+   const release = () => {
+      signal.removeEventListener("abort", interrupt);
+      if (session.runSQL === guarded) session.runSQL = original;
+   };
    if (signal.aborted) {
       interrupt();
-      return () => {};
+      return release;
    }
    signal.addEventListener("abort", interrupt, { once: true });
-   return () => signal.removeEventListener("abort", interrupt);
+   return release;
 }
 
 /** Result of building one source into a storage destination. */
