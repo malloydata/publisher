@@ -328,9 +328,10 @@ common case: a rollup's base is usually a table extended with measures, and Mall
 only query-shaped sources as build roots, so most bases cannot carry `#@ persist` at all.
 
 **A rollup over a stored base builds and serves.** A rollup over a `storage=` base is planned
-over the author's rows, and a run may build it from its base's stored table instead, with the
-same rows: a rollup in the source's database over a base stored there, or a `storage=` rollup over a base stored
-in the same destination (see **A rollup builds from its base's table when it can**, below). So
+over the author's rows. A `storage=` rollup may build from its base's stored table instead,
+with the same rows, when the base's own `#@ persist storage=` names the same destination and
+the run holds that table (see **A rollup builds from its base's table when it can**, below);
+a rollup in the source's own database does the same only over a base stored there. So
 a `#@ preaggregate` on a source that is itself
 `#@ persist storage=` is planned, built and served exactly as the `#(preaggregate)` it
 reads as. Each grain is one table, in the destination its own line names or, with no
