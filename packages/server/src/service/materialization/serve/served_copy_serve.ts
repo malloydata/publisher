@@ -1613,6 +1613,7 @@ export class ServedCopyServe {
             ? {
                  keepsIncludes: true as const,
                  dropsUnstoredExcepts: true as const,
+                 outputNames: queryOutputNames(def.fields),
                  ...(refinesUnfilteredBase(map.node(node.sourceID), map)
                     ? { refinementRooted: true as const }
                     : {}),
@@ -4762,6 +4763,28 @@ export function chainBuildText(
    return request.rollup
       ? copy.rollupBuildFiles(request.rollup, request.downstream.name, bindings)
       : copy.chainBuildFiles(request.downstream.sourceID, bindings);
+}
+
+/**
+ * A query-shaped source's output names: each field its query outputs, by the
+ * name it has before its `extend` renames it (`name`, beside `as`). A
+ * dimension the `extend` computes (`e`) is none.
+ */
+function queryOutputNames(fields: readonly unknown[] | undefined): string[] {
+   return (fields ?? []).flatMap((f) => {
+      const { name, e, join, type } = (f ?? {}) as {
+         name?: unknown;
+         e?: unknown;
+         join?: unknown;
+         type?: unknown;
+      };
+      return typeof name === "string" &&
+         e === undefined &&
+         join === undefined &&
+         type !== "turtle"
+         ? [name]
+         : [];
+   });
 }
 
 /** Whether a stale binding stores a source on `chain` (the queried source's). */
