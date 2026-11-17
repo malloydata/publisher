@@ -2,14 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A persisted view or query whose source's column is retyped in its warehouse
- * after the build: the table is as built, and its content address does not
- * move (the build's SQL is the same), so the bind finds it, but the source now
- * declares another type than the one the table holds. Each is answered live,
- * equal to live, with the reason on its path report and a
- * `storage-column-type-mismatch` warning naming the column, as a table
- * altered outside a build is; never served from the table, whose values
- * Malloy would read as the type it no longer holds.
+ * Every materialization mechanism over a warehouse column retyped after the
+ * build: the table is as built, and its content address does not move (the
+ * build's SQL is the same), so the bind finds it, but the source now declares
+ * another type than the one the table holds. A query that reads the column is
+ * answered live, equal to live, with the reason on its path report, and the
+ * package warns `storage-column-type-mismatch` for each table; a query that
+ * does not read it is still served. Never served from the table, whose values
+ * Malloy would read as the type it no longer holds (before this, the query
+ * failed: `Invalid string 1`).
+ *
+ * Mechanisms: a persisted view and a persisted named query (read by Malloy's
+ * manifest substitution), a `#(materialize)` source and a `#@ persist` source
+ * (each through the served copy), and a `#(preaggregate)` rollup.
  *
  * The retype is read as a server that has not seen the table before reads it:
  * the package-load schema cache is off and the connection's own schema cache
@@ -52,9 +57,28 @@ source: viewed is raw extend {
 }
 #@ persist
 query: q is raw -> { group_by: cat; aggregate: top is n.max(); order_by: cat }
+#(materialize)
+source: mat is warehouse.table('t')
+#@ persist
+source: per is warehouse.table('t') -> { select: cat, n, k is 1 }
+source: rolled is raw extend {
+  #(preaggregate) grain=["cat"]
+  measure: rtop is n.max()
+  #(preaggregate) grain=["cat"]
+  measure: rc is count()
+}
 `;
 
-const QUERIES = { view: "run: viewed -> v", query: "run: q" } as const;
+const QUERIES = {
+   view: "run: viewed -> v",
+   query: "run: q",
+   mat_n: "run: mat -> { group_by: n; order_by: n }",
+   mat_cat: "run: mat -> { group_by: cat; order_by: cat }",
+   per_n: "run: per -> { group_by: n; order_by: n }",
+   per_cat: "run: per -> { group_by: cat; order_by: cat }",
+   roll_n: "run: rolled -> { group_by: cat; aggregate: rtop; order_by: cat }",
+   roll_c: "run: rolled -> { group_by: cat; aggregate: rc; order_by: cat }",
+} as const;
 
 interface Answer {
    rows: unknown;
@@ -62,7 +86,7 @@ interface Answer {
    considered?: { outcome?: string; reason?: string; detail?: string }[];
 }
 
-describe("a persisted view or query over a column retyped upstream after its build", () => {
+describe("every materialization over a column retyped upstream after its build", () => {
    let restore: () => void;
    let root: string;
    let env: Environment;
@@ -181,7 +205,11 @@ describe("a persisted view or query over a column retyped upstream after its bui
       // The bind a run's commit, a manifest bind and a restart take.
       await pkg.reloadAllModels(bound);
       for (const [name, query] of Object.entries(QUERIES)) {
-         after[name] = await ask(query);
+         try {
+            after[name] = await ask(query);
+         } catch (e) {
+            after[name] = { rows: `ERR ${(e as Error).message}` };
+         }
       }
    }, 300_000);
 
@@ -193,33 +221,55 @@ describe("a persisted view or query over a column retyped upstream after its bui
       await freshLoadPool();
    });
 
+   /** What reads the retyped column, by query, and the kind each served before. */
+   const READS: Record<keyof typeof QUERIES, { kind: string; reads?: string }> =
+      {
+         view: { kind: "view", reads: "total" },
+         query: { kind: "query", reads: "top" },
+         mat_n: { kind: "materialized", reads: "n" },
+         mat_cat: { kind: "materialized" },
+         per_n: { kind: "materialized", reads: "n" },
+         per_cat: { kind: "materialized" },
+         roll_n: { kind: "rollup", reads: "rtop" },
+         roll_c: { kind: "rollup" },
+      };
+
    it("served each from its table before the retype", () => {
-      expect(before.view.kind).toBe("view");
-      expect(before.query.kind).toBe("query");
+      for (const [name, { kind }] of Object.entries(READS)) {
+         expect({ name, kind: before[name].kind }).toEqual({ name, kind });
+      }
    });
 
-   for (const name of Object.keys(QUERIES)) {
-      it(`${name}: answered live, equal to live, with the reason on its path report`, () => {
-         expect(after[name].kind).toBe("live");
-         expect(after[name].rows).toEqual(live[name]);
-         expect(after[name].considered).toEqual([
-            expect.objectContaining({
-               outcome: "skipped",
-               reason: "MISSING_FIELD",
-               detail: expect.stringContaining(
-                  "cannot be read as live's string",
-               ),
-            }),
-         ]);
-      });
+   for (const [name, { kind, reads }] of Object.entries(READS)) {
+      if (reads) {
+         it(`${name}: reads \`${reads}\`, so answered live, equal to live, with the reason on its path report`, () => {
+            expect(after[name].kind).toBe("live");
+            expect(after[name].rows).toEqual(live[name]);
+            expect(after[name].considered).toEqual([
+               expect.objectContaining({
+                  outcome: "skipped",
+                  reason: "MISSING_FIELD",
+                  detail: expect.stringContaining(`\`${reads}\``),
+               }),
+            ]);
+         });
+      } else {
+         it(`${name}: reads no retyped column, so still served from its table, equal to live`, () => {
+            expect(after[name].kind).toBe(kind);
+            expect(after[name].rows).toEqual(live[name]);
+         });
+      }
    }
 
-   it("warns for each, naming the column and the forced rebuild that clears it", () => {
+   it("warns for each table, naming the column and the forced rebuild that clears it", () => {
       const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
          (w) => w.code === "storage-column-type-mismatch",
       );
       expect(warnings.map((w) => w.subject).sort()).toEqual([
+         "mat",
+         "per",
          "q__query",
+         "rolled",
          "viewed__v__view",
       ]);
       for (const w of warnings) {

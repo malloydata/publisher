@@ -658,6 +658,7 @@ export function applyObservedColumns(args: {
       const read = reads.get(b.virtualHandle);
       if (!read) return [b];
       const entry = args.entries[b.virtualHandle];
+      const declaration = args.declared?.(b.virtualHandle);
       const built = new Map((entry?.schema ?? []).map((c) => [c.name, c]));
       const extra: ObservedDrift["columns"] = [];
       let moved = false;
@@ -671,7 +672,31 @@ export function applyObservedColumns(args: {
             c.name,
          );
          const d = columnDrift(built.get(c.name) ?? c, builtNative, read);
-         if (d.kind === "none") return [c];
+         if (d.kind === "none") {
+            // The table is as built, but its source now declares a type the
+            // stored value does not read as (a column retyped upstream since
+            // the build): declared with the type it holds, so the served
+            // copy's read plan casts it or leaves it out.
+            const [declaredMove] = declaration
+               ? declaredMoves(
+                    {
+                       schema: [built.get(c.name) ?? c],
+                    } as FreshnessManifest[string],
+                    read,
+                    declaration,
+                    [],
+                 )
+               : [];
+            if (!declaredMove?.observedType) return [c];
+            extra.push(declaredMove);
+            decided.set(c.name, declaredMove);
+            moved = true;
+            movedColumns.push({
+               name: c.name,
+               type: declaredMove.observedType,
+            });
+            return [{ name: c.name, type: declaredMove.observedType }];
+         }
          moved = true;
          // With no captured type the binding's declared one stands in, which
          // is not what the build wrote when the warehouse returns a type of

@@ -347,6 +347,17 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
          } else if (!answered && readByRun(input, t)) {
             markUsed(t);
             answered = true;
+         } else if (
+            storageDecision?.code === "served_copy_column_left_out" &&
+            storageDecision.outcome !== "used"
+         ) {
+            // The served copy read this table and declined the query for a
+            // stored column its type leaves out: that is why it was not read.
+            skip(
+               t,
+               skipReasonOf(storageDecision),
+               storageDecision.callerDetail,
+            );
          }
       }
    }

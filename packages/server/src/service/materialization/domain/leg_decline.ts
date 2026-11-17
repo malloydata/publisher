@@ -52,6 +52,9 @@ type SkipReason = components["schemas"]["SkipReason"];
  *   only live's join computes. `served_copy_joined_annotations`: the query
  *   returns a field of such a join that the author annotated, whose notes
  *   its record cannot carry, so the table lacks the field as live returns it.
+ * - `served_copy_column_left_out`: the query reads a stored column the
+ *   re-root leaves out of its table's type, since no cast reads what the
+ *   table holds as the source declares it.
  * - `served_copy_pair_shape`: the query aggregates a pair table (an inlined
  *   join_many, served flat) in a way that table does not reproduce exactly.
  * - `served_copy_pair_parent_only`: exact or not, a query that reads nothing
@@ -84,6 +87,7 @@ const DECLINES = {
    served_copy_opt_out: { reason: "WARNED", warnedCode: "persist-opt-out" },
    served_copy_count_semantics: { reason: "COUNT_SEMANTICS" },
    served_copy_joined_annotations: { reason: "MISSING_FIELD" },
+   served_copy_column_left_out: { reason: "MISSING_FIELD" },
    served_copy_pair_shape: { reason: "COUNT_SEMANTICS" },
    served_copy_pair_parent_only: { reason: "COUNT_SEMANTICS" },
 } as const satisfies Record<
