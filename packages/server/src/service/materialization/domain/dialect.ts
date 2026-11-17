@@ -150,6 +150,12 @@ export interface Capabilities {
     * Snowflake's NUMBER already arrive as DECIMAL.
     */
    passthroughNumericAsDouble: boolean;
+   /**
+    * A table the session's grants do not show is missing from its catalog
+    * views (Snowflake, MySQL), so a probe that finds none cannot tell a
+    * dropped table from a hidden one.
+    */
+   catalogHidesTables: boolean;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -171,6 +177,7 @@ const NONE: Capabilities = Object.freeze({
    utcSessions: false,
    leafBudget: 50,
    passthroughNumericAsDouble: false,
+   catalogHidesTables: false,
 });
 
 /** Each dialect's capabilities. */
@@ -217,6 +224,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
    }),
    snowflake: Object.freeze({
       ...NONE,
+      catalogHidesTables: true,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
       merge: true,
@@ -248,6 +256,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
    }),
    mysql: Object.freeze({
       ...NONE,
+      catalogHidesTables: true,
       tableOwnership: true,
    }),
    sqlserver: Object.freeze({

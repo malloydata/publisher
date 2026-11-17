@@ -104,6 +104,7 @@ import type {
    ChainBuildRequest,
    ChainBuildText,
 } from "./materialization/domain/chain_build";
+import type { KeptTable } from "./materialization/domain/types";
 import {
    confinedPackagePath,
    errMessage,
@@ -1674,6 +1675,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
    }
 
+   /**
+    * The host port's `setKeptTables`: the tables the newest auto-run lists as
+    * kept after a rename (see PackageMaterialization.setKeptTables).
+    */
+   public setKeptTables(tables: readonly KeptTable[]): void {
+      this.mz.setKeptTables(tables);
+   }
+
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
    public chainBuildText(request: ChainBuildRequest): ChainBuildText {
       return this.mz.chainBuildText(request);
@@ -2117,6 +2126,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.databaseTableUnreadWarnings(),
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
+         ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.mz.persistRefusalWarnings(),

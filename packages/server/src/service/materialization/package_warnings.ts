@@ -28,6 +28,7 @@ import type { MaterializePlan } from "./domain/table_plans";
 import type {
    BuildPlan,
    FreshnessManifest,
+   KeptTable,
    UnreadReason,
 } from "./domain/types";
 import {
@@ -165,6 +166,62 @@ export function repeatedJoinOneKeyWarnings(
       });
    }
    return warnings;
+}
+
+/** The code on the warning for a table a rename left that Publisher keeps. */
+export const TABLE_KEPT_AFTER_RENAME_CODE = "table-kept-after-rename";
+
+/** Why a kept table stays, and what to do about it. */
+const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
+   author_name:
+      "It is at a name= the author chose, which Publisher never drops, since " +
+      "a reader outside Malloy may rely on it. Drop it yourself once nothing " +
+      "reads it, or delete the runs that built it with dropTables=true.",
+   destination_missing:
+      "Its storage destination is no longer configured under that name, so " +
+      "Publisher cannot reach it to drop it. If the destination was renamed " +
+      "rather than removed, this may be a table the package still serves " +
+      "under the new name: check that before dropping anything. Configure " +
+      "the destination again for the next run to decide it.",
+};
+
+/**
+ * One warning per table the newest auto-run lists as kept after a rename
+ * (Reclaimer.reclaimRenamedTables): the source no longer reads it, and
+ * Publisher does not drop it. `subject` the source (a rollup's base), the
+ * message naming the table and where it is. Cleared once the run that lists
+ * it no longer does: the table was dropped, or its name taken again.
+ */
+export function keptTableWarnings(
+   plan: BuildPlan | null,
+   kept: readonly KeptTable[],
+): ApiPackageWarning[] {
+   if (kept.length === 0) return [];
+   const bySourceEntity = new Map(
+      Object.values(plan?.sources ?? {}).flatMap((source) =>
+         source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
+      ),
+   );
+   return kept.map((table) => {
+      const source = bySourceEntity.get(table.sourceEntityId);
+      const subject =
+         source?.preaggregate?.baseSourceName ??
+         source?.name ??
+         table.sourceName;
+      const where = table.storageDestinationName
+         ? `in storage destination \`${table.storageDestinationName}\``
+         : `on connection \`${table.connectionName}\``;
+      return {
+         ...(source?.modelPath ? { model: source.modelPath } : {}),
+         ...(subject ? { subject } : {}),
+         code: TABLE_KEPT_AFTER_RENAME_CODE,
+         severity: "warn" as const,
+         message:
+            `table \`${table.physicalTableName}\` ${where} is no longer read: ` +
+            `the source's table was renamed or moved, and its new table ` +
+            `serves now. ${KEPT_REASON_TEXT[table.reason]}`,
+      };
+   });
 }
 
 /**
