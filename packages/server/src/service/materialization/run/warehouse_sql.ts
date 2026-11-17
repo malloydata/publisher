@@ -55,8 +55,11 @@ export function sqlString(value: string, dialect: string): string {
       case "standardsql":
       case "databricks":
          return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-      // Snowflake reads backslash escapes and the doubled quote.
+      // Snowflake and MySQL (unless NO_BACKSLASH_ESCAPES is set, where a
+      // doubled backslash is only a wrong value, never an early close) read
+      // backslash escapes and the doubled quote.
       case "snowflake":
+      case "mysql":
          return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
       case "sqlserver":
          return `N'${value.replace(/'/g, "''")}'`;
@@ -64,7 +67,6 @@ export function sqlString(value: string, dialect: string): string {
       case "postgres":
       case "trino":
       case "presto":
-      case "mysql":
          return doubledQuoteString(value);
       default:
          unregistered(knownDialect);
@@ -867,7 +869,7 @@ export function nativeTypeCatalogRead(
          return {
             sql:
                `SELECT column_name, data_type FROM ${dataset}.INFORMATION_SCHEMA.COLUMNS ` +
-               `WHERE table_name = ${doubledQuoteString(table)} ORDER BY ordinal_position`,
+               `WHERE table_name = ${sqlString(table, dialect)} ORDER BY ordinal_position`,
             read: (r) => ({
                name: String(field(r, "column_name")),
                type: String(field(r, "data_type")),
@@ -920,7 +922,7 @@ function informationSchemaCatalogRead(
    // MySQL resolves an unqualified name in the connection's database,
    // and its `information_schema` shows every database's tables.
    const schemaFilter = schema
-      ? ` AND lower(table_schema) = lower(${doubledQuoteString(schema)})`
+      ? ` AND lower(table_schema) = lower(${sqlString(schema, dialect)})`
       : knownDialect === "mysql"
         ? " AND table_schema = DATABASE()"
         : "";
@@ -929,7 +931,7 @@ function informationSchemaCatalogRead(
          "SELECT table_catalog, table_schema, table_name, column_name, data_type" +
          precision +
          ` FROM ${catalog}information_schema.columns` +
-         ` WHERE lower(table_name) = lower(${doubledQuoteString(table)})` +
+         ` WHERE lower(table_name) = lower(${sqlString(table, dialect)})` +
          schemaFilter +
          " ORDER BY ordinal_position",
       read: (r) => ({

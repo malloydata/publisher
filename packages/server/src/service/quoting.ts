@@ -13,14 +13,67 @@ export function bareTableName(tableName: string): string {
 
 // Keyed by Malloy `dialectName`; everything else uses double quotes. Must stay
 // byte-compatible with the control plane's `PhysicalTableName.BACKTICK_TYPES`
-// (keyed by connection type); see the conformance table in quoting.spec.ts.
+// (keyed by connection type), quote character and escape alike; see the
+// conformance table in quoting.spec.ts.
 const BACKTICK_DIALECTS = new Set(["standardsql", "mysql", "databricks"]);
 
+/** Thrown for a name part a dialect's quoted identifier cannot hold. */
+export class UnquotableIdentifierError extends Error {
+   constructor(identifier: string, dialect: string, reason: string) {
+      super(
+         `${dialect} cannot quote the identifier ${JSON.stringify(identifier)}: ${reason}`,
+      );
+      this.name = "UnquotableIdentifierError";
+   }
+}
+
+// C0 controls and DEL. BigQuery's quoted identifier, like its quoted string,
+// cannot hold a raw newline, and no BigQuery name holds a control character,
+// so one is refused rather than encoded.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
 /**
- * Quote a single SQL identifier for {@code dialect}, escaping any embedded quote
- * character by doubling it.
+ * Quote a single SQL identifier for {@code dialect}, so it reads back as
+ * exactly `identifier` and ends at its closing quote.
+ *
+ * - BigQuery (`standardsql`): backticks, with `\` as the escape character, as
+ *   BigQuery's lexer reads a quoted identifier (the escape sequences of a
+ *   string literal): `\` becomes `\\` and a backtick `` \` ``. An empty
+ *   name or one holding a control character (a newline among them) is
+ *   refused with {@link UnquotableIdentifierError}.
+ * - MySQL and Databricks: backticks, an embedded backtick doubled; a
+ *   backslash is an ordinary character in their quoted identifiers.
+ * - Everything else: double quotes, an embedded double quote doubled.
+ *
+ * NUL is refused in every dialect: MySQL and Postgres do not allow it in an
+ * identifier.
  */
 export function quoteIdentifier(identifier: string, dialect: string): string {
+   if (identifier.includes("\0")) {
+      throw new UnquotableIdentifierError(
+         identifier,
+         dialect,
+         "an identifier cannot contain NUL",
+      );
+   }
+   if (dialect === "standardsql") {
+      if (identifier === "") {
+         throw new UnquotableIdentifierError(
+            identifier,
+            dialect,
+            "a quoted identifier cannot be empty",
+         );
+      }
+      if (CONTROL_CHARACTER.test(identifier)) {
+         throw new UnquotableIdentifierError(
+            identifier,
+            dialect,
+            "a quoted identifier cannot contain a newline or other control character",
+         );
+      }
+      return "`" + identifier.replace(/[\\`]/g, (c) => "\\" + c) + "`";
+   }
    if (BACKTICK_DIALECTS.has(dialect)) {
       return "`" + identifier.replace(/`/g, "``") + "`";
    }

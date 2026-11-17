@@ -258,14 +258,15 @@ export type SqlRunner = (
 /**
  * Per-dialect table-path decoding. The physical name arrives as SQL (bare or
  * quoted segments) while `information_schema` compares RAW identifier text, so it
- * is decoded first. Postgres folds bare segments to lower case, Snowflake to
- * UPPER, BigQuery not at all (its names are case-sensitive).
+ * is decoded first, with the escape `quoting.ts` writes: a doubled quote, or on
+ * BigQuery a backslash escape. Postgres folds bare segments to lower case,
+ * Snowflake to UPPER, BigQuery not at all (its names are case-sensitive).
  */
 const TABLE_PATH_OPTIONS: Record<
    string,
    {
       quoteChar: string;
-      escapeStyle: "doubled";
+      escapeStyle: "doubled" | "backslash";
       bareIdentRegex: RegExp;
       foldCase?: "lower" | "upper";
    }
@@ -284,7 +285,7 @@ const TABLE_PATH_OPTIONS: Record<
    },
    standardsql: {
       quoteChar: "`",
-      escapeStyle: "doubled",
+      escapeStyle: "backslash",
       bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_-]*/,
    },
    // A `storage=` destination path: `<destination>.<name>` or

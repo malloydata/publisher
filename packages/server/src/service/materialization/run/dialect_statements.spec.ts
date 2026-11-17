@@ -73,11 +73,15 @@ const DIALECTS = [
    "unknown_dialect",
 ] as const;
 
-/** A table path of one, two and three segments, with a quote and a space. */
+/**
+ * A table path of one, two and three segments, with a quote and a space, and
+ * one whose parts hold each dialect's quote characters and a backslash.
+ */
 const PATHS: Record<string, string[]> = {
    one: ["orders"],
    two: ["Sales Data", "orders'x"],
    three: ["cat", "sch", "Orders"],
+   hostile: ["p`j\\", 'd"s\\`', "t`'x"],
 };
 
 /** A statement, or the refusal a dialect answers it with. */
@@ -183,6 +187,7 @@ async function statements(): Promise<Record<string, unknown>> {
       bare: decodeTablePathSegments(d, "Cat.Sch.Orders") ?? null,
       quoted: decodeTablePathSegments(d, '"Cat"."sch"."Or ders"') ?? null,
       backtick: decodeTablePathSegments(d, "`p-1`.ds.t") ?? null,
+      escapedBacktick: decodeTablePathSegments(d, "`p\\`1\\\\`.ds.t") ?? null,
    }));
    out.probeSelect = perDialect((d) => probeSelect(d, "SELECT 1 AS n"));
    out.probeTargetColumns = await perDialectAsync(async (d) => {
@@ -366,7 +371,10 @@ async function statements(): Promise<Record<string, unknown>> {
 
    // The colocated drop: the table, then the staging and backup names a
    // crash can leave beside it when the table names its source.
-   const colocatedDrop = (leftoversOf?: string) =>
+   const colocatedDrop = (
+      leftoversOf?: string,
+      physicalTableName = "sch.Orders x__m1",
+   ) =>
       perDialectAsync(async (d) => {
          const r = recorder();
          await new ColocatedTier().drop(
@@ -374,12 +382,16 @@ async function statements(): Promise<Record<string, unknown>> {
                connection: { runSQL: r.run, dialectName: d } as never,
                runOptions: {},
             },
-            { physicalTableName: "sch.Orders x__m1", leftoversOf },
+            { physicalTableName, leftoversOf },
          );
          return r.statements;
       });
    out["ColocatedTier.drop"] = await colocatedDrop();
    out["ColocatedTier.drop.leftoversOf"] = await colocatedDrop("orders");
+   out["ColocatedTier.drop.hostile"] = await colocatedDrop(
+      undefined,
+      's`c\\.Or"d`ers__m1',
+   );
 
    // The native-type catalog read.
    for (const [shape, segments] of Object.entries(PATHS)) {

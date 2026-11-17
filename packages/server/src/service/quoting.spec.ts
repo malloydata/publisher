@@ -9,7 +9,10 @@ import {
    quoteManifestTablePath,
    quoteRenameTarget,
    quoteTablePath,
+   UnquotableIdentifierError,
 } from "./quoting";
+import { getDialect } from "@malloydata/malloy";
+import { decodeTablePathSegments } from "./materialization/run/incremental_apply";
 
 describe("bareTableName", () => {
    it("returns the segment after the last dot for a qualified name", () => {
@@ -34,9 +37,207 @@ describe("quoteIdentifier", () => {
       expect(quoteIdentifier("t", "snowflake")).toBe('"t"');
    });
 
-   it("escapes an embedded quote char by doubling it", () => {
-      expect(quoteIdentifier("a`b", "standardsql")).toBe("`a``b`");
+   it("escapes a backtick and a backslash with a backslash on BigQuery", () => {
+      expect(quoteIdentifier("a`b", "standardsql")).toBe("`a\\`b`");
+      expect(quoteIdentifier("a\\b", "standardsql")).toBe("`a\\\\b`");
+      expect(quoteIdentifier("a\\", "standardsql")).toBe("`a\\\\`");
+   });
+
+   it("doubles an embedded quote char on every other dialect", () => {
+      expect(quoteIdentifier("a`b", "mysql")).toBe("`a``b`");
+      expect(quoteIdentifier("a`b", "databricks")).toBe("`a``b`");
       expect(quoteIdentifier('a"b', "postgres")).toBe('"a""b"');
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Hostile name parts, decoded by each dialect's DOCUMENTED rule rather than by
+// the encoder's inverse, so a quoting that a warehouse reads differently fails
+// here.
+// ---------------------------------------------------------------------------
+
+/** What a reader made of a quoted identifier at the start of `sql`. */
+type Read = { name: string; end: number } | { error: string };
+
+/**
+ * BigQuery's lexer on a quoted identifier: backticks, the escape sequences of a
+ * string literal, and no raw newline
+ * (https://cloud.google.com/bigquery/docs/reference/standard-sql/lexical).
+ * Octal, hex and Unicode escapes are not decoded: nothing here writes them.
+ */
+function readBigQuery(sql: string): Read {
+   const simple: Record<string, string> = {
+      a: "\x07",
+      b: "\b",
+      f: "\f",
+      n: "\n",
+      r: "\r",
+      t: "\t",
+      v: "\v",
+      "\\": "\\",
+      "?": "?",
+      '"': '"',
+      "'": "'",
+      "`": "`",
+   };
+   if (sql[0] !== "`") return { error: "not quoted" };
+   let name = "";
+   for (let i = 1; i < sql.length; i++) {
+      const c = sql[i];
+      if (c === "\n" || c === "\r") return { error: "newline in identifier" };
+      if (c === "`") {
+         return name === "" ? { error: "empty" } : { name, end: i + 1 };
+      }
+      if (c === "\\") {
+         const e = simple[sql[i + 1]];
+         if (e === undefined) return { error: "illegal escape" };
+         name += e;
+         i++;
+         continue;
+      }
+      name += c;
+   }
+   return { error: "unterminated" };
+}
+
+/**
+ * A quoted identifier whose quote char is doubled to escape it and where a
+ * backslash is an ordinary character: MySQL and Databricks with a backtick
+ * (https://dev.mysql.com/doc/refman/8.4/en/identifiers.html,
+ * https://docs.databricks.com/sql/language-manual/sql-ref-identifiers.html),
+ * Postgres, DuckDB, Snowflake, Trino and SQL Server with a double quote.
+ */
+function readDoubled(sql: string, q: string): Read {
+   if (sql[0] !== q) return { error: "not quoted" };
+   let name = "";
+   for (let i = 1; i < sql.length; i++) {
+      if (sql[i] === q) {
+         if (sql[i + 1] === q) {
+            name += q;
+            i++;
+            continue;
+         }
+         return { name, end: i + 1 };
+      }
+      name += sql[i];
+   }
+   return { error: "unterminated" };
+}
+
+const READERS: Record<string, (sql: string) => Read> = {
+   standardsql: readBigQuery,
+   mysql: (sql) => readDoubled(sql, "`"),
+   databricks: (sql) => readDoubled(sql, "`"),
+   postgres: (sql) => readDoubled(sql, '"'),
+   duckdb: (sql) => readDoubled(sql, '"'),
+   snowflake: (sql) => readDoubled(sql, '"'),
+   trino: (sql) => readDoubled(sql, '"'),
+   presto: (sql) => readDoubled(sql, '"'),
+   sqlserver: (sql) => readDoubled(sql, '"'),
+};
+
+/** Name parts that would end an identifier early under a wrong escape. */
+const HOSTILE = [
+   "a`b",
+   "a``b",
+   "trailing`",
+   "`",
+   "a\\b",
+   "trailing\\",
+   "\\`",
+   "\\\\`",
+   'a"b',
+   "a'b",
+   '"',
+   "`;\\\\\"'",
+   "dots.stay.one.part",
+];
+
+describe("quoteIdentifier on hostile name parts", () => {
+   for (const [dialect, read] of Object.entries(READERS)) {
+      for (const part of HOSTILE) {
+         it(`${dialect} reads ${JSON.stringify(part)} back whole`, () => {
+            const quoted = quoteIdentifier(part, dialect);
+            // Followed by more SQL, the identifier still ends where the
+            // quoting ends: no early close, no swallowed closing quote.
+            const read1 = read(quoted + ".x");
+            expect(read1).toEqual({ name: part, end: quoted.length });
+         });
+      }
+   }
+
+   it("refuses a BigQuery part with a newline or other control character", () => {
+      for (const part of ["a\nb", "a\rb", "a\tb", "\u007f", "\u0001"]) {
+         expect(() => quoteIdentifier(part, "standardsql")).toThrow(
+            UnquotableIdentifierError,
+         );
+      }
+   });
+
+   it("refuses an empty BigQuery part, which BigQuery cannot quote", () => {
+      expect(() => quoteIdentifier("", "standardsql")).toThrow(
+         UnquotableIdentifierError,
+      );
+      expect(() => quoteTablePath("ds..t", "standardsql")).toThrow(
+         UnquotableIdentifierError,
+      );
+   });
+
+   it("keeps a newline literally on dialects whose quoted identifiers hold one", () => {
+      for (const [dialect, read] of Object.entries(READERS)) {
+         if (dialect === "standardsql") continue;
+         const quoted = quoteIdentifier("a\nb", dialect);
+         expect(read(quoted)).toEqual({ name: "a\nb", end: quoted.length });
+      }
+   });
+
+   it("refuses NUL on every dialect", () => {
+      for (const dialect of Object.keys(READERS)) {
+         expect(() => quoteIdentifier("a\u0000b", dialect)).toThrow(
+            UnquotableIdentifierError,
+         );
+      }
+   });
+
+   it("matches Malloy's own BigQuery quoting wherever Malloy quotes the name", () => {
+      // Malloy's standardsql dialect escapes with backslashes too, but refuses
+      // a backtick outright and encodes a newline that this module refuses.
+      const malloy = getDialect("standardsql");
+      for (const part of HOSTILE.filter((p) => !p.includes("`"))) {
+         expect(quoteIdentifier(part, "standardsql")).toBe(
+            malloy.sqlQuoteIdentifier(part),
+         );
+      }
+   });
+});
+
+describe("quoteTablePath on hostile name parts", () => {
+   const parts = ["my-proj", "d`s\\", "t\"'x"];
+
+   it("quotes project.dataset.table so it decodes to the intended parts", () => {
+      const path = quoteTablePath(parts.join("."), "standardsql");
+      expect(path).toBe("`my-proj`.`d\\`s\\\\`.`t\"'x`");
+      expect(decodeTablePathSegments("standardsql", path)).toEqual(parts);
+      let rest = path;
+      const read: string[] = [];
+      for (;;) {
+         const r = readBigQuery(rest);
+         if ("error" in r) throw new Error(r.error);
+         read.push(r.name);
+         if (r.end === rest.length) break;
+         expect(rest[r.end]).toBe(".");
+         rest = rest.slice(r.end + 1);
+      }
+      expect(read).toEqual(parts);
+   });
+
+   it("decodes the doubled form on the doubling dialects", () => {
+      expect(
+         decodeTablePathSegments(
+            "postgres",
+            quoteTablePath('s"x.t\\', "postgres"),
+         ),
+      ).toEqual(['s"x', "t\\"]);
    });
 });
 
