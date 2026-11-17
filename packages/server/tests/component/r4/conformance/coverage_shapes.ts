@@ -99,8 +99,8 @@ source: typed is duckdb.sql("""
                "database@parquet": {
                   kind: "wrong",
                   reason:
-                     "F-13: DuckLake writes the sum's HUGEINT column to Parquet as a DOUBLE while its catalog says HUGEINT, so the rollup answers -9007199254740992 for -9007199254740993; fixed by the DECIMAL(38,0) build cast and the 128-bit read guard in #1846",
-                  issue: "#1846",
+                     "F-13, still open after #1846: a database rollup on a DuckDB connection that attached and USEd a DuckLake stores its BIGINT sum's HUGEINT column in Parquet as a DOUBLE (this fixture builds the table without the build session's DECIMAL(38,0) cast), and the serve path reads the rounded value as the DOUBLE it holds rather than answering live: -9007199254740992 for -9007199254740993",
+                  issue: "F-13",
                },
             },
          },
