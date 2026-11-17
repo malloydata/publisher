@@ -227,7 +227,9 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
             expect(observed.drifted.length).toBeGreaterThan(0);
             for (const d of observed.drifted) {
                expect(d.columns.map((c) => c.column).sort()).toEqual(
-                  ["amt", "d", "d2", "flag"].sort(),
+                  // `n`, INTEGER altered to BIGINT, is the same Malloy type
+                  // with another native type: retyped, read alike.
+                  ["amt", "d", "d2", "flag", "n"].sort(),
                );
             }
          }

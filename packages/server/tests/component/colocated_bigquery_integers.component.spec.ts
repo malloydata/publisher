@@ -54,8 +54,16 @@ function standInBigQuery(name: string): Connection {
          sql.includes("INFORMATION_SCHEMA.COLUMNS")
             ? {
                  rows: [
-                    { column_name: "k", data_type: "STRING" },
-                    { column_name: "total", data_type: "INT64" },
+                    {
+                       table_name: "by_k_table",
+                       column_name: "k",
+                       data_type: "STRING",
+                    },
+                    {
+                       table_name: "by_k_table",
+                       column_name: "total",
+                       data_type: "INT64",
+                    },
                  ],
                  totalRows: 2,
               }
