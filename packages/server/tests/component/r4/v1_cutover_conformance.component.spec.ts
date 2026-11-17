@@ -45,6 +45,13 @@ describe("the dry run's verdicts", () => {
       try {
          const pkg = (await loader.bind({ includeRollups: true })).pkg;
          const verdicts = await pkg.previewServeVerdicts();
+         // The deprecated names carry the same values, this release only.
+         for (const v of verdicts) {
+            expect([v.cutoverPath, v.cutoverReason]).toEqual([
+               v.servePath,
+               v.servePathReason,
+            ]);
+         }
          return Object.fromEntries(
             verdicts.map((v) => [
                v.sourceName,

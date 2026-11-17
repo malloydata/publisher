@@ -603,7 +603,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
             (c) => (c.kind as string) === leg,
          );
          expect(considered?.outcome).toBe("skipped");
-         expect(considered?.reason).toBe("MISSING_FIELD");
+         expect(considered?.reason).toBe("SHAPE_MISMATCH");
          expect(considered?.detail).toContain(detail);
       });
    }

@@ -1684,6 +1684,7 @@ source: plain is raw extend { measure: total is amt.sum() }
          );
          expect(failures).toEqual([
             {
+               code: "table-owned-elsewhere",
                sourceEntityId: expect.any(String),
                sourceName: "owned",
                materializedTableId: expect.stringMatching(/^local-/),
@@ -2335,8 +2336,8 @@ source: sb_sales is sb_raw extend {
                "persist-query-not-built:sb_query__query",
                "persist-view-not-built:sb_viewed__by_cat__view",
                "rollup-not-built:sb_sales",
-               // No repeat under the former `persist-source-refused`: no
-               // earlier release raised this refusal.
+               // Its 0.14 code, repeated beside it this release only.
+               "preaggregate-not-built:sb_sales",
             ].sort(),
          );
          const plan = lake.pkg.getBuildPlan();

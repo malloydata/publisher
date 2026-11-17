@@ -55,11 +55,10 @@
       "path": {
         "considered": [
           {
-            "code": "persist-opt-out",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "OPTED_OUT",
             "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
           }
         ],
@@ -126,11 +125,10 @@
       "path": {
         "considered": [
           {
-            "code": "persist-opt-out",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "OPTED_OUT",
             "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
           }
         ],
@@ -270,11 +268,10 @@
       "path": {
         "considered": [
           {
-            "code": "persist-opt-out",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "OPTED_OUT",
             "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
           }
         ],
@@ -341,11 +338,10 @@
       "path": {
         "considered": [
           {
-            "code": "persist-opt-out",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "OPTED_OUT",
             "tableId": "1f62ee077661338e4aa69c6e0c67fa4a23d17f33d7806206cd5caf829b2ff57e"
           }
         ],

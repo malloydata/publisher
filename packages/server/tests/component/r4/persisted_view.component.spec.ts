@@ -137,7 +137,7 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
       [
          "a refined call",
          "run: flights -> by_carrier + { limit: 1 }",
-         "MISSING_FIELD",
+         "SHAPE_MISMATCH",
       ],
       [
          "a hand-written look-alike with identical SQL",
