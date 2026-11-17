@@ -54,7 +54,10 @@ import {
    upstreamReuseFromManifest,
    wrongTierDetail,
 } from "./materialization_run_support";
-import type { StorageBuildRequest } from "./storage_build_strategy";
+import type {
+   StorageBuildRequest,
+   StoredRollupBase,
+} from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
 
 /**
@@ -395,6 +398,13 @@ export interface SourceBuildOptions {
     * Postgres; leftover_name_views.ts).
     */
    replacesView?: string[];
+   /**
+    * A `storage=` rollup's base stored in its destination, which the run
+    * holds current and fresh enough (instructed_build.ts): the build groups
+    * that table's rows in the destination, and reads the warehouse only
+    * when it cannot.
+    */
+   storedBase?: StoredRollupBase;
 }
 
 /**
@@ -423,6 +433,7 @@ export async function buildSource(
       contentSourceEntityId,
       planFacts = NO_PLAN_FACTS,
       replacesView,
+      storedBase,
    } = options;
    const physicalTableName = instruction.physicalTableName;
    const rendered = renderBuildSQL(
@@ -503,6 +514,7 @@ export async function buildSource(
          planFacts,
          lift,
          ...(replacesView ? { replacesView } : {}),
+         ...(storedBase ? { storedBase } : {}),
       });
    }
 

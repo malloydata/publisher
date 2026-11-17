@@ -33,6 +33,16 @@ export interface ChainBuildRequest {
       entry: ManifestEntry;
       names: Readonly<Record<string, readonly string[] | undefined>>;
    }[];
+   /**
+    * Set for a rollup, whose build source no author file declares: its
+    * base, which the one upstream stores, and the rollup's own generated
+    * build file (`downstream.name` declares it), served at `url` beside the
+    * base's model and importing the base from it.
+    */
+   rollup?: {
+      baseSourceID: string;
+      companion: { url: string; text: string };
+   };
 }
 
 /**

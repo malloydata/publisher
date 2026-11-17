@@ -812,7 +812,16 @@ async function collectGeneratedMaterialize(
    // free: a source that is both `#@ persist` and `#(materialize)` is refused.
    const generatedPlans = new Map<PersistSource, MaterializePlan>();
    const rename = new Map<string, string>();
+   // A build source of another file's companion, which a cross-file
+   // extension's build reads (P10): that file plans its table, and this
+   // model's builds name it by the author's source, so the extension orders
+   // after it.
+   const ownIDs = new Set(generated.plans.map((p) => p.sourceID));
+   for (const [from, to] of generated.renames) {
+      if (!ownIDs.has(to)) rename.set(from, to);
+   }
    for (const source of plannedSources(targets)) {
+      if (rename.has(source.sourceID)) continue;
       const plan = planByName.get(source.name);
       if (!plan) continue;
       generatedPlans.set(source, plan);
@@ -961,6 +970,9 @@ async function collectGeneratedRollups(
                  overStoredBase: async () =>
                     (await generated.overStoredBases()).get(source.sourceID),
               }
+            : {}),
+         ...(generated.storedBaseBuilds.has(source.sourceID)
+            ? { storedBase: generated.storedBaseBuilds.get(source.sourceID) }
             : {}),
          gate: await classifyPersistSourceGate(
             source,

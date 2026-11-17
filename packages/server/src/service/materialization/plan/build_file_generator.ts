@@ -216,6 +216,13 @@
  * does not compile, builds over the raw chain: the same rows, from the
  * warehouse.
  *
+ * Across files, an extension whose parent another file declares (and its
+ * file imports directly) builds over the parent's build source too: its
+ * build copy imports a copy of the parent's file with the parent re-rooted,
+ * and the companion compiles the parent file's own companion beside it, so
+ * the parent's build source is the same build (`materialize_compile.ts`,
+ * `crossFileParents`).
+ *
  * A declaration that is not built is reported as a package warning
  * (`materialize-not-built`), so an author sees why, and the source serves live.
  *
@@ -752,14 +759,17 @@ export function chainLevels(
 /**
  * `plans` with every `buildsOver` whose parent is no longer planned removed,
  * to a fixpoint: a parent refused after planning leaves its extension to
- * build over the raw chain.
+ * build over the raw chain. A parent in another file is planned by that
+ * file's companion, so its extension keeps it.
  */
 export function settledChains(
    plans: readonly MaterializePlan[],
 ): MaterializePlan[] {
    const ids = new Set(plans.map((p) => p.sourceID));
    return plans.map((p) =>
-      p.buildsOver && !ids.has(p.buildsOver.sourceID) ? withoutParent(p) : p,
+      p.buildsOver && !p.buildsOver.crossFile && !ids.has(p.buildsOver.sourceID)
+         ? withoutParent(p)
+         : p,
    );
 }
 

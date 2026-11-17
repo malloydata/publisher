@@ -112,7 +112,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "builds an extension in another destination than its parent, an incremental one, and one in another file, over the raw chain",
+      "builds an extension in another destination than its parent and an incremental one over the raw chain, and one in another file over its parent's build source",
       async () => {
          const c = await compiled({
             "m.malloy": `${BASE}
@@ -131,11 +131,20 @@ source: other_ext is orders extend { dimension: n is 1 }
 `,
          });
          for (const p of generatedPlans(c)) {
-            expect([p.sourceName, p.buildsOver]).toEqual([
+            expect([p.sourceName, p.buildsOver?.sourceName]).toEqual([
                p.sourceName,
-               undefined,
+               p.sourceName === "other_ext" ? "orders" : undefined,
             ]);
          }
+         // Across files (P10): imported from a copy of `m.malloy` with the
+         // parent re-rooted on its build source.
+         const other = generatedPlans(c).find(
+            (p) => p.sourceName === "other_ext",
+         )!;
+         expect(other.buildsOver?.crossFile?.modelFile).toMatch(/m\.malloy$/);
+         expect(other.buildsOver?.overStored?.declarations).toContain(
+            "orders is orders__mat",
+         );
          expect(
             generatedPlans(c)
                .map((p) => p.sourceName)

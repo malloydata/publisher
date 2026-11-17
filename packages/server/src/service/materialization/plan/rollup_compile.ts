@@ -142,6 +142,67 @@ interface GeneratedRollups {
    overStoredBases(): Promise<ReadonlyMap<string, OverStoredBase>>;
    /** The sourceIDs {@link overStoredBases} may hold: the reuse candidates. */
    overStoredCandidates: ReadonlySet<string>;
+   /**
+    * The `storage=` rollups that may build over their base's stored table in
+    * their destination ({@link storedBaseBuildsOf}), by sourceID: each with
+    * its base and its own generated build file, which a run compiles there
+    * over the base re-rooted on that table.
+    */
+   storedBaseBuilds: ReadonlyMap<string, StoredBaseBuild>;
+}
+
+/**
+ * What a `storage=` rollup's build over its base's stored table compiles: the
+ * rollup's own generated build file, served at `url` beside the base's model
+ * (it imports the base from it), over the base re-rooted on its table there.
+ */
+interface StoredBaseBuild {
+   baseSourceID: string;
+   companion: { url: string; text: string };
+}
+
+/**
+ * The `storage=` rollups that may build over their base's stored table: a
+ * rollup over a base whose own notes declare `#@ persist` in the same
+ * destination, read from the base itself (no build copy, so no given-reading
+ * term is left out of the base's rows). Each with the one-rollup build file
+ * that a run compiles in the destination over the base re-rooted on its
+ * table, which reads nothing but that table (storage_build_strategy.ts).
+ */
+function storedBaseBuildsOf(
+   map: SourceMap,
+   plans: readonly RollupVariantPlan[],
+   companionHref: string,
+   modelFileName: string,
+): Map<string, StoredBaseBuild> {
+   const out = new Map<string, StoredBaseBuild>();
+   for (const plan of plans) {
+      if (plan.storage === undefined || readsBuildCopy(plan)) continue;
+      const def = map.node(plan.baseSourceID)?.def as
+         | { annotations?: AnnotationsDef }
+         | undefined;
+      const own = ownLevelNotes(def?.annotations).filter(
+         (n) => routeOfNote(n.text) === "@",
+      );
+      if (!notesDeclarePersist(own)) continue;
+      const tag = readNotesIfAny(own, "@");
+      const placed = tag ? placementOf(tag, "persist") : undefined;
+      if (
+         !placed ||
+         !("placement" in placed) ||
+         placed.placement.tier !== "storage" ||
+         placed.placement.destination !== plan.storage
+      ) {
+         continue;
+      }
+      const text = generateRollupBuildFile([plan], modelFileName);
+      if (text === undefined) continue;
+      out.set(`${plan.rollupSourceName}@${companionHref}`, {
+         baseSourceID: plan.baseSourceID,
+         companion: { url: companionHref, text },
+      });
+   }
+   return out;
 }
 
 /**
@@ -479,6 +540,12 @@ export async function tryCompileRollupCompanion(args: {
                   materialized: args.materialized,
                })),
             overStoredCandidates: overStored.rollups,
+            storedBaseBuilds: storedBaseBuildsOf(
+               SourceMap.of(args.modelDef),
+               planned.plans,
+               url.href,
+               path.basename(args.modelPath),
+            ),
          },
          refused,
       };
