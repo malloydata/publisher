@@ -191,7 +191,7 @@ import {
    type ReportTag,
 } from "./report";
 import { sqlLiteral } from "./introspection_sql";
-import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
+import { quoteManifestTablePath, UnquotableIdentifierError } from "./quoting";
 import { Model } from "./model";
 import {
    callerVisibleText,
@@ -1468,6 +1468,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                (connectionName) =>
                   malloyConfig.connections.lookupConnection(connectionName),
                colocatedEntries,
+               Package.planConnectionsOf(
+                  outcome.buildPlan?.ok ? outcome.buildPlan.outcome.plan : null,
+               ),
             ),
          };
       }
@@ -2655,12 +2658,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * Quote each manifest table path for its connection's dialect, mirroring how
     * the builder CREATEs it: Malloy pastes `tableName` into `FROM` verbatim, so
     * on a case-folding engine the case-preserved name is reachable only quoted.
-    * An already-quoted name passes through.
-    *
-    * Verbatim otherwise in two different cases: no `connectionName` (an
-    * engine-folding producer; benign), or an unresolvable one (a
-    * misconfiguration; that entry is degraded and logged at ERROR, not the
-    * whole bind, since it could not serve anyway).
+    * A name written as SQL is parsed and re-quoted. An entry with no
+    * `connectionName` is quoted for its plan source's connection. An entry
+    * with no connection either way, an unresolvable one, or a name the
+    * dialect cannot read or quote is left out (logged at ERROR, that entry
+    * alone), so its source answers live: no name is inlined as given.
     */
    private quoteBoundTableNames(
       entries: FreshnessManifest,
@@ -2669,7 +2671,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          this.packageName,
          (connectionName) => this.getMalloyConnection(connectionName),
          entries,
+         Package.planConnectionsOf(this.buildPlan),
       );
+   }
+
+   /** Each planned source's connection, by its content address. */
+   private static planConnectionsOf(
+      plan: BuildPlan | null | undefined,
+   ): Map<string, string> {
+      const out = new Map<string, string>();
+      for (const source of Object.values(plan?.sources ?? {})) {
+         if (source.sourceEntityId && source.connectionName) {
+            out.set(source.sourceEntityId, source.connectionName);
+         }
+      }
+      return out;
    }
 
    /** {@link quoteBoundTableNames} for a package not constructed yet. */
@@ -2677,36 +2693,65 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       packageName: string,
       lookupConnection: (connectionName: string) => Promise<Connection>,
       entries: FreshnessManifest,
+      planConnections: ReadonlyMap<string, string> = new Map(),
    ): Promise<FreshnessManifest> {
       const out: FreshnessManifest = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
-         let tableName = entry.tableName;
-         if (entry.connectionName && !isQuotedIdentifierPath(tableName)) {
-            try {
-               const connection = await lookupConnection(entry.connectionName);
-               tableName = quoteManifestTablePath(
-                  tableName,
-                  connection.dialectName,
-               );
-            } catch (err) {
-               recordManifestBindDegraded();
-               logger.error(
-                  `Manifest entry '${sourceEntityId}' names connection ` +
-                     `'${entry.connectionName}', which this package cannot ` +
-                     `resolve: binding its table path unquoted, so this source ` +
-                     `will not serve on a case-folding engine (and queries ` +
-                     `against it fail regardless, since Malloy needs the ` +
-                     `connection to run them). Fix: ensure a connection named ` +
-                     `'${entry.connectionName}' exists in this package's ` +
-                     `config, or rebuild the manifest against the current config.`,
-                  {
-                     packageName,
-                     sourceEntityId,
-                     connectionName: entry.connectionName,
-                     error: err instanceof Error ? err.message : String(err),
-                  },
-               );
-            }
+         // The entry's own connection, else its plan source's, as the
+         // column read finds it (readDatabaseColumns).
+         const connectionName =
+            entry.connectionName ?? planConnections.get(sourceEntityId);
+         // Never inlined as given: a name with no dialect to quote it in, or
+         // one its dialect cannot read or quote, is not bound, and its
+         // source answers live.
+         const leaveOut = (problem: string, error?: string) => {
+            recordManifestBindDegraded();
+            logger.error(
+               `Manifest entry '${sourceEntityId}' ${problem}, so it is not ` +
+                  `bound and its source answers live.`,
+               {
+                  packageName,
+                  sourceEntityId,
+                  ...(connectionName ? { connectionName } : {}),
+                  ...(error ? { error } : {}),
+               },
+            );
+         };
+         if (!connectionName) {
+            leaveOut(
+               "names no connection, and the build plan has no source at its " +
+                  "address to name one, so no dialect quotes its table. Fix: " +
+                  "rebuild the manifest, which records each entry's connection",
+            );
+            continue;
+         }
+         let connection: Connection;
+         try {
+            connection = await lookupConnection(connectionName);
+         } catch (err) {
+            leaveOut(
+               `names connection '${connectionName}', which this package ` +
+                  `cannot resolve. Fix: ensure a connection named ` +
+                  `'${connectionName}' exists in this package's config, or ` +
+                  `rebuild the manifest against the current config`,
+               err instanceof Error ? err.message : String(err),
+            );
+            continue;
+         }
+         let tableName: string;
+         try {
+            tableName = quoteManifestTablePath(
+               entry.tableName,
+               connection.dialectName,
+            );
+         } catch (err) {
+            if (!(err instanceof UnquotableIdentifierError)) throw err;
+            leaveOut(
+               "names a table its connection's dialect cannot read or quote. " +
+                  "Fix: rebuild the manifest, or correct the entry's table name",
+               err.message,
+            );
+            continue;
          }
          out[sourceEntityId] = { ...entry, tableName };
       }

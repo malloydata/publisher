@@ -154,7 +154,12 @@ export async function provenOwnView(
    const definition =
       answer === undefined ? undefined : field(answer, "definition");
    return typeof definition === "string" &&
-      viewDefinitionReadsOnly(definition, target, field(answer!, "view_schema"))
+      viewDefinitionReadsOnly(
+         definition,
+         target,
+         field(answer!, "view_schema"),
+         site.dialect,
+      )
       ? { name, target, comment, definition }
       : undefined;
 }

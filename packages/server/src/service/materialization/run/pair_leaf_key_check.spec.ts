@@ -225,6 +225,7 @@ describe("a pair table's leaf key check, on a build", () => {
                   name: s.source.name,
                   sourceEntityId: s.address,
                   connectionName: "duckdb",
+                  dialect: "duckdb",
                },
             },
             materializePlans: materializePlansIn(s.compiled) ?? {},
@@ -286,6 +287,7 @@ describe("a pair table's leaf key check, on a build", () => {
                name: "flights",
                sourceEntityId: "a",
                connectionName: "duckdb",
+               dialect: "duckdb",
             },
          },
       } as never;
@@ -314,7 +316,7 @@ describe("a pair table's leaf key check, on a build", () => {
       });
       expect(bound()?.primaryKeys).toEqual({ "segs@m": true });
       materialization.forgetKeyUniqueness(["a"]);
-      expect(bound()?.tablePath).toBe("flights_pairs");
+      expect(bound()?.tablePath).toBe('"flights_pairs"');
       expect(bound()?.primaryKeys).toBeUndefined();
       // A later bind that holds the record again pushes it.
       materialization.bind({

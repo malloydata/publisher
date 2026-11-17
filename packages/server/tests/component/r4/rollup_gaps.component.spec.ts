@@ -16,8 +16,9 @@
  *   written again on the variant, where each caller's givens bind it (the
  *   pre-proof and `govern()` re-prove it, as a gate). Two callers,
  *   interleaved and repeated, each get exactly their own rows. A term over a
- *   field the grain does not keep, or one inherited from another source, is
- *   refused (`reads_given`) and answered live.
+ *   field the grain does not keep (`given_where_over_unstored_field`), or one
+ *   inherited from another source (`inherited_where_with_given`), is refused
+ *   and answered live.
  * - **A zoned query that reads no time.** A query that sets its own
  *   `timezone:` is read from the rollup when nothing it reads depends on the
  *   zone; one reading a stored truncation is still answered live.
@@ -401,7 +402,7 @@ for (const placement of ["colocated", "storage"] as const) {
                   sourceName: "scoped_inherited",
                },
                {
-                  reason: "given_in_persisted_query",
+                  reason: "given_where_over_unstored_field",
                   sourceName: "scoped_outside",
                },
             ]);
