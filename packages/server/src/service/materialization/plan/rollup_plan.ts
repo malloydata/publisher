@@ -412,6 +412,8 @@ interface Declaration {
    namespace?: string;
    /** {@link namespace} was written as the deprecated `namespace=`. */
    deprecatedNamespace?: true;
+   /** Its `name=`'s leaf, the readable prefix of its table's name. */
+   prefix?: string;
    /** Its `freshness` group (freshness_declaration.ts). */
    freshness?: DeclaredFreshness;
    /**
@@ -523,6 +525,7 @@ function readDeclaration(
       ...(storage !== undefined ? { storage } : {}),
       ...(namespace !== undefined ? { namespace } : {}),
       ...(placedIn.deprecatedNamespace ? { deprecatedNamespace: true } : {}),
+      ...(placedIn.prefix !== undefined ? { prefix: placedIn.prefix } : {}),
       ...(fresh.freshness ? { freshness: fresh.freshness } : {}),
    };
 }
@@ -688,6 +691,18 @@ export function planSourceRollups(
          }
          continue;
       }
+      // One table has one name: measures at one grain and placement that
+      // write different `name=` leaves are malformed.
+      const prefixes = new Set(group.declarations.map((d) => d.prefix ?? ""));
+      if (prefixes.size > 1) {
+         refused.push({
+            tier: "malformed",
+            code: PREAGGREGATE_INVALID_CODE,
+            message: `rollups of source "${sourceName}" name different tables (name=) on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same name=`,
+            sourceName,
+         });
+         continue;
+      }
       const freshness = rollupSourceFreshness(merged.freshness, baseFreshness);
       plans.push({
          ...rollupPlanOf(group, node, facts, ctx),
@@ -822,6 +837,9 @@ function rollupDeclarationsOf(
                      : {}),
                   ...(grain.deprecatedNamespace
                      ? { deprecatedNamespace: true }
+                     : {}),
+                  ...(grain.prefix !== undefined
+                     ? { prefix: grain.prefix }
                      : {}),
                }),
             );
@@ -1276,6 +1294,7 @@ function rollupPlanOf(
       grainDimensions: decl.grain,
       ...(decl.storage !== undefined ? { storage: decl.storage } : {}),
       ...(decl.namespace !== undefined ? { namespace: decl.namespace } : {}),
+      ...(decl.prefix !== undefined ? { prefix: decl.prefix } : {}),
       // The v1 shape the build plan's wire entry reads (measure names).
       measures: sorted.map((m) => ({
          name: m.name,

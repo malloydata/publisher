@@ -2109,10 +2109,17 @@ async function overStoredBaseSource(
  *    match. The build source must instead be at the base's planned address
  *    (the same build source, so the same table), the rollup's SQL rendered
  *    over the base's entry alone must read that table, and its columns must
- *    be the planned rollup's, by name and type. The rows are the base's
- *    either way, as an extension's build over its parent's table (P10).
+ *    be the planned rollup's, by name, type and numeric subtype. The rows
+ *    are the base's either way, as an extension's build over its parent's
+ *    table (P10).
+ *
+ * The three `#(materialize)` checks are defensive: a compile that re-roots
+ * the base as planned passes all three, so none is false in practice. Each
+ * guards a drift between the second compile and the plan (another build
+ * source, a rollup that no longer reads the base's table, other columns) and
+ * fails closed, to the warehouse build. Exported for its unit spec.
  */
-function buildsPlannedTable(
+export function buildsPlannedTable(
    run: InstructedRun,
    planned: PersistSource,
    variant: OverStoredBase,
@@ -2147,13 +2154,26 @@ function buildsPlannedTable(
    if (table === undefined) return false;
    const only = new Manifest();
    only.update(at.baseAddress, { tableName: table });
-   if (!buildSQLOf(variant.source, only.buildManifest).includes(table)) {
+   if (!readsTable(buildSQLOf(variant.source, only.buildManifest), table)) {
       return false;
    }
    return sameColumns(variant.source, planned);
 }
 
-/** Whether two sources output the same columns, by name and type, in order. */
+/**
+ * Whether `sql` reads the table `table` (a manifest's table path) by its whole
+ * reference: not as the tail of another schema's path, nor as the head of a
+ * longer one.
+ */
+function readsTable(sql: string, table: string): boolean {
+   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(sql);
+}
+
+/**
+ * Whether two sources output the same columns, by name, type and numeric
+ * subtype, in order: an integer column where the plan has a float is drift.
+ */
 function sameColumns(a: PersistSource, b: PersistSource): boolean {
    return (
       JSON.stringify(outputColumnsOf(a)) === JSON.stringify(outputColumnsOf(b))

@@ -108,7 +108,10 @@ const compiled = (): CompiledBuildPlan =>
    );
 
 const ROLLUP = "orders__preagg__category__1a2b3c4d";
-const withRollup = (c: CompiledBuildPlan): CompiledBuildPlan => ({
+const withRollup = (
+   c: CompiledBuildPlan,
+   prefix?: string,
+): CompiledBuildPlan => ({
    ...c,
    tables: {
       ...c.tables,
@@ -118,6 +121,8 @@ const withRollup = (c: CompiledBuildPlan): CompiledBuildPlan => ({
          rollup: {
             baseSourceName: "orders",
             grainDimensions: ["category"],
+            namespace: "ns",
+            ...(prefix !== undefined ? { prefix } : {}),
          } as never,
          materialize: undefined,
       },
@@ -757,6 +762,63 @@ describe("a table built under a readable name", () => {
          "named_t__v1_2_0__p0123abcd",
       );
    });
+});
+
+describe("a rollup's name= leaf, the prefix of its readable name", () => {
+   const run = (prefix: string | undefined, recorded: string) =>
+      deriveSelfInstructions(
+         withRollup(compiled(), prefix),
+         undefined,
+         { a4: prior(recorded, "a4") },
+         undefined,
+         PKG,
+      );
+
+   it("names the table after the leaf, its container kept", () => {
+      const r = deriveSelfInstructions(
+         withRollup(compiled(), "orders_rollup"),
+         undefined,
+         {},
+         undefined,
+         PKG,
+      );
+      expect(names(r).a4).toMatch(/^ns\.orders_rollup__p[0-9a-f]{8}$/);
+   });
+
+   it("keeps the table's name while the leaf is the same, its file moved", () => {
+      const recorded = "ns.orders_rollup__p0123abcd";
+      const r = run("orders_rollup", recorded);
+      expect(r.carried.a4.physicalTableName).toBe(recorded);
+      expect(r.renamed).toEqual([]);
+   });
+
+   for (const [label, prefix, recorded, now] of [
+      [
+         "the leaf changed",
+         "orders_rollup",
+         "ns.old_rollup__p0123abcd",
+         /^ns\.orders_rollup__p/,
+      ],
+      [
+         "the leaf removed",
+         undefined,
+         "ns.orders_rollup__p0123abcd",
+         /^ns\.pa__sales__orders_by_category__p/,
+      ],
+      [
+         "namespace= changed to name=",
+         "orders_rollup",
+         "ns.pa__sales__orders_by_category__p0123abcd",
+         /^ns\.orders_rollup__p/,
+      ],
+   ] as const) {
+      it(`renames the table, rebuilt once, and offers the old one for reclaim: ${label}`, () => {
+         const r = run(prefix, recorded);
+         expect(names(r).a4).toMatch(now);
+         expect(r.carried.a4).toBeUndefined();
+         expect(r.renamed.map((t) => t.previousName)).toEqual([recorded]);
+      });
+   }
 });
 
 describe("a forced refresh (every scheduled fire)", () => {

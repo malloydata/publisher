@@ -193,10 +193,10 @@ Nothing about a rollup appears in model discovery. Your model is never edited, s
 
 ## Where the rollup's table is created
 
-You do not name a rollup's table — Publisher derives it from the base, the grain and a
-digest, so the resolver and the content address can rely on it. You *do* choose the
-schema or dataset it is created in, with the same `name=` every other table is placed
-with, and on some warehouses you must.
+A rollup's table is Publisher's to identify — its address and the hash ending its name
+derive from the base, the grain and a digest, so the resolver and the content address can
+rely on it. With the same `name=` every other table takes, you choose the schema or
+dataset it is created in, which on some warehouses you must, and how its name starts.
 
 ```malloy
 source: orders is bigquery.table('project.raw.orders') extend {
@@ -205,18 +205,27 @@ source: orders is bigquery.table('project.raw.orders') extend {
 }
 ```
 
-That builds `analytics.<package>__<file>__orders_by_category__p<hash>`, the rollup's
-[readable name](materialization.md#readable-table-names) in `analytics`. A rollup's
-`name=` places its table: everything before the last dot is the container, and the leaf
-is not used, since Publisher names a rollup's table itself. A `name=` with no container
-(`name="orders_rollup"`) would place nothing, so it fails the publish and the load
-(`preaggregate-invalid`). `#@ preaggregate grain="category" name="analytics.orders_rollup"`
+That builds `analytics.orders_rollup__p<hash>`. Everything before the last dot is the
+container, and the leaf takes the place of the
+[readable name](materialization.md#readable-table-names)'s prefix
+(`<package>__<file>__orders_by_category`), as a `name=` does under `scope: "version"`; the
+`__p<hash>` that keeps the name unique is always Publisher's, so the table is never at the
+`name=` itself. A `name=` with no dot (`name="orders_rollup"`) sets only the prefix, in the
+connection's default schema. Without `name=`, the table takes the readable name. The leaf
+is written into the name as it reads, lowercased (`OrdersRollup` names `ordersrollup__p<hash>`):
+a leaf the name would otherwise rewrite (a space, punctuation, a leading digit, `__`), an
+empty one, a container needing quotes, or a leaf ending as Publisher's own names do
+(`__p<8 hex>`) fails the publish and the load (`preaggregate-invalid`), and so do measures at
+one grain naming different leaves. Two rollups that compile alike but name different leaves
+are two tables. Changing the leaf renames the table, which is rebuilt once under the new
+name, and the old table is dropped once that run commits and is served. `#@ preaggregate grain="category" name="analytics.orders_rollup"`
 places a v1 rollup the same way.
 
-**`namespace=` is deprecated.** `namespace="analytics"` is the older spelling of the same
-container. It is read for one more release, places the table exactly where
-`name="analytics.<table>"` does (the table does not move when you switch), and warns
-`deprecated-preaggregate-namespace` naming the rewrite. Writing both `name=` and
+**`namespace=` is deprecated.** `namespace="analytics"` is the older spelling of the
+container alone. It is read for one more release, places the table in `analytics` under
+its readable name, and warns `deprecated-preaggregate-namespace` naming the rewrite,
+`name="analytics.<table>"`; switching keeps the table's container and address, and
+renames it under the leaf you choose. Writing both `name=` and
 `namespace=` on one line fails the publish and the load (`preaggregate-invalid`).
 
 **BigQuery requires it.** An unqualified `CREATE` is rejected outright there
@@ -254,7 +263,7 @@ on `#(preaggregate)` and `#@ preaggregate` alike, so the two spellings land in o
 schema. A rollup's own `name=` overrides that, and is the only option when the base is
 not materialized at all, which is common: the annotation goes on a measure, and the
 source it belongs to need not be materialized. A rollup's table is never its base's,
-whatever the two `name=`s say: the rollup's leaf is always its own readable name.
+whatever the two `name=`s say: the rollup's name always ends in its own `__p<hash>`.
 
 A base that also carries `storage=` lends nothing — not its container, and not its
 destination. See [Rollups in the managed store](#rollups-in-the-managed-store) below.
@@ -375,7 +384,7 @@ Two things are specific to rollups:
 
 **A stale rollup is skipped, not served.** When a rollup's table falls outside its freshness window it drops out of the serving set and queries recompute from the base, unless its fallback is `stale_ok`. The answer is the same either way, which is what makes a refresh schedule a cost decision rather than a correctness one.
 
-**A rollup builds from its base's table when it can.** A colocated rollup over a colocated `#@ persist` base, or over a colocated `#(materialize)` base that stores the base's own rows (not a pair table, and not one whose `where:` reads a given or the current time), reads the base's stored table rather than the warehouse, when the run building it holds that table: built earlier in the same run, or carried forward from an earlier one. Such a rollup builds after every other table in the run, so a base the run builds is there to read; any other rollup keeps its place. The stored rows are the ones a build from the warehouse stores, its `upstreamReuse` reads `reused`, and its `dataAsOf` is the base's when that is older. A rollup with a freshness window reads a carried base only when the base's `dataAsOf` is known and inside the rollup's window, so a rollup is never fresher than the rows it holds; otherwise it builds from the warehouse, and its entry has no `upstreamReuse`. A `storage=` rollup over a base whose own `#@ persist` stores it in the same destination does the same in the destination: when the run holds the base's table there, current and, for a rollup with a window, inside it, the rollup groups that table, read as the served copy reads the base for a query, and reads nothing from the warehouse. It keeps that table only when it has the columns, with the same types, a build from the warehouse writes, and builds from the warehouse otherwise, as planned. Its `upstreamReuse` reads `reused` when it read the base's table. A colocated rollup over a base that is not persisted, or is stored in a destination, builds from the warehouse, as does a `storage=` rollup over a base stored elsewhere, not persisted, or read through a build copy (a given-reading `where:`, a private grain dimension).
+**A rollup builds from its base's table when it can.** A colocated rollup over a colocated `#@ persist` base, or over a colocated `#(materialize)` base that stores the base's own rows (not a pair table, and not one whose `where:` reads a given or the current time), reads the base's stored table rather than the warehouse, when the run building it holds that table: built earlier in the same run, or carried forward from an earlier one. Such a rollup builds after every other table in the run, so a base the run builds is there to read; any other rollup keeps its place. It stores the rows of the base's stored table, which equal the warehouse's while that table is current. An incremental base's deletions and restatements below its watermark carry into the rollup, as they do for a rollup over a `#@ persist` base. Its `upstreamReuse` reads `reused`, and its `dataAsOf` is the base's when that is older. A rollup with a freshness window reads a carried base only when the base's `dataAsOf` is known and inside the rollup's window, so a rollup is never fresher than the rows it holds; otherwise it builds from the warehouse, and its entry has no `upstreamReuse`. A `storage=` rollup over a base whose own `#@ persist` stores it in the same destination does the same in the destination: when the run holds the base's table there, current and, for a rollup with a window, inside it, the rollup groups that table, read as the served copy reads the base for a query, and reads nothing from the warehouse. It keeps that table only when it has the columns a build from the warehouse writes, with the same types, and the base's table holds the columns its current build writes, with the same physical types; otherwise it builds from the warehouse, as planned. Its `upstreamReuse` reads `reused` when it read the base's table, and is absent when it built from the warehouse. A colocated rollup over a base that is not persisted, or is stored in a destination, builds from the warehouse, as does a `storage=` rollup over a base stored elsewhere, not persisted, or read through a build copy (a given-reading `where:`, a private grain dimension).
 
 ### Freshness
 
