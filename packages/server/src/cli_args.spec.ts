@@ -41,16 +41,14 @@ describe("flags read with the variables", () => {
       );
    });
 
-   it("fails an old PUBLISHER_WATCH that differs from --watch-env, rather than adding to it", () => {
+   it("takes --watch-env over PUBLISHER_WATCH_ENVIRONMENTS, rather than adding to it", () => {
       withSettings(
          {
-            env: { PUBLISHER_WATCH: "a" },
+            env: { PUBLISHER_WATCH_ENVIRONMENTS: "a" },
             argv: ["--watch-env", "b"],
          },
          () => {
-            expect(() => settings.get("watchEnvironments")).toThrow(
-               "given different values under its old and new names",
-            );
+            expect(settings.get("watchEnvironments")).toEqual(["b"]);
          },
       );
    });

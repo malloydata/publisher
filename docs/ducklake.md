@@ -160,7 +160,7 @@ server, off unless configured:
 ```bash
 PUBLISHER_ADMIN_PORT=4050 \
 PUBLISHER_ADMIN_CATALOG_DATABASE="host=localhost port=5432 dbname=ducklake user=lake password=…" \
-malloy-publisher --server_root .
+malloy-publisher --root .
 ```
 
 `PUBLISHER_ADMIN_CATALOG_DATABASE` is the Postgres database your catalogs live in. For files in a cloud
@@ -331,7 +331,7 @@ The same provisioning applies to every DuckDB-backed connection (BigQuery, Snowf
 cloud storage attachments), but it matters most here because DuckLake pulls in the widest set.
 
 Publisher installs the extensions it needs **explicitly**, and controls whether the runtime may fetch
-them from the network with the `EXTENSION_FETCH_POLICY` environment variable:
+them from the network with the `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY` environment variable:
 
 - **`on-demand` (default)** — a missing extension is installed on first use. This is the right mode
   for local/standalone use, where a runtime `INSTALL` _is_ how you provision extensions. Behaviour is
@@ -387,4 +387,4 @@ extension you place there out-of-band (e.g. running Publisher outside Docker, or
 also loads with no network. The network is the only thing `local-only` turns off; if you need an
 extension that isn't present and can't pre-provision it, use `on-demand`.
 
-See [configuration.md](configuration.md#environment-variables--cli-flags) for the `EXTENSION_FETCH_POLICY` reference.
+See [configuration.md](configuration.md#environment-variables--cli-flags) for the `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY` reference.

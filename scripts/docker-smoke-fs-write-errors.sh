@@ -333,7 +333,7 @@ echo "S7: an unreadable publisher.config.json"
 docker volume create "$CONFIG_VOLUME" >/dev/null
 as_root -v "$CONFIG_VOLUME:/cfg" "$IMAGE" sh -c \
    'printf "{\"environments\":[]}" >/cfg/publisher.config.json && chown 0:0 /cfg/publisher.config.json && chmod 600 /cfg/publisher.config.json'
-start s7 -v "$CONFIG_VOLUME:/cfg" -e PUBLISHER_CONFIG_PATH=/cfg/publisher.config.json
+start s7 -v "$CONFIG_VOLUME:/cfg" -e PUBLISHER_CONFIG=/cfg/publisher.config.json
 # The server refuses to start rather than run with the file's settings at
 # their defaults, so the cause is in its log, not on /status.
 for _ in $(seq 1 60); do

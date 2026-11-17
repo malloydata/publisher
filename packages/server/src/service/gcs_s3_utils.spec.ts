@@ -220,7 +220,7 @@ describe("DEFAULT_S3_CREDENTIAL_CHAIN", () => {
    });
 });
 
-describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
+describe("PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN", () => {
    const chainConn = () => ({ provider: "credential_chain" }) as never;
 
    it("permits chain auth anywhere when unset, so no deployment changes", () => {
@@ -235,7 +235,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
       // The whole point of the setting: a storage destination is the OPERATOR's
       // configuration, while a connection may be authored by whoever can reach the
       // connection endpoints — and Publisher's take an arbitrary body.
-      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" });
+      installEnv({ PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "destinations-only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted.*destinations-only/s,
       );
@@ -245,7 +245,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
    });
 
    it("under off, refuses both", () => {
-      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "off" });
+      installEnv({ PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "off" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted/,
       );
@@ -258,7 +258,7 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
       // A caller that does not say which path it is on is treated as the
       // author-supplied one. Failing closed is the only safe default for a
       // parameter whose whole job is to decide whether to lend the host identity.
-      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" });
+      installEnv({ PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "destinations-only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          /not permitted/,
       );
@@ -267,15 +267,15 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
    it("leaves a key-pair connection alone under every policy", () => {
       const keyed = { accessKeyId: "AKIA", secretAccessKey: "s" } as never;
       for (const p of ["any", "destinations-only", "off"]) {
-         installEnv({ S3_CREDENTIAL_CHAIN_POLICY: p });
+         installEnv({ PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: p });
          expect(() => validateS3ProviderShape(keyed, "c")).not.toThrow();
       }
    });
 
    it("refuses an unrecognized policy value rather than choosing the permissive one", () => {
-      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "destinations_only" });
+      installEnv({ PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "destinations_only" });
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
-         'allow.s3CredentialChain from S3_CREDENTIAL_CHAIN_POLICY: expected one of "any", "destinations-only" or "off", got "destinations_only"',
+         'allow.s3CredentialChain from PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: expected one of "any", "destinations-only" or "off", got "destinations_only"',
       );
    });
 });

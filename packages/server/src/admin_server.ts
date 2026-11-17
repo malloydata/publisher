@@ -34,7 +34,7 @@ const adminServer = adminApp.listen(
 adminServer.on("error", (error: NodeJS.ErrnoException) => {
    logger.error(
       error.code === "EADDRINUSE"
-         ? `Port ${ADMIN_PORT} in use; pass --admin_port <n>`
+         ? `Port ${ADMIN_PORT} in use; pass --admin-port <n>`
          : `Admin listener failed on port ${ADMIN_PORT}: ${error.message}`,
    );
    process.exit(1);

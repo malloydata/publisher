@@ -9,7 +9,7 @@
  * build; gates on the base; multi-block bases. Then an access-filtered
  * same-file base with gated sources on, with the base declaring a measure (G8
  * keeps its block) against the same base without one (no kept block). Last,
- * through the package path (PUBLISHER_MATERIALIZE on, the v1 switch off): each
+ * through the package path (PUBLISHER_MATERIALIZE_ENABLED on, the v1 switch off): each
  * source's serve verdict and warnings against what actually answers, and every
  * answer against live.
  */
@@ -168,8 +168,8 @@ for (const gated of [false, true]) {
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                ...(gated
                   ? { PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" }
                   : {}),
@@ -315,8 +315,8 @@ describe("kept base blocks: an access-filtered same-file base, gated sources on"
    beforeAll(async () => {
       restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             ...(process.env.R_GATED
                ? { PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" }
                : {}),

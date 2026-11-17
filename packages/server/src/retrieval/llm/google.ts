@@ -102,7 +102,7 @@ export class GeminiChat implements RawChat {
          signal: req.signal,
          timeoutMs: req.timeoutMs,
          secrets: [this.apiKey],
-         authHint: "LLM_API_KEY",
+         authHint: "PUBLISHER_RETRIEVAL_LLM_API_KEY",
          what: "Chat request",
       });
       return parseGeminiReply(reply, url);
@@ -136,7 +136,7 @@ export function geminiEmbedChunk(args: {
          signal,
          timeoutMs,
          secrets: [args.apiKey],
-         authHint: "EMBEDDING_API_KEY",
+         authHint: "PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY",
          what: "Embedding request",
       })) as { embeddings?: { values?: unknown }[] };
       const embeddings = reply?.embeddings;

@@ -40,7 +40,7 @@ const backpressureActivations = lazyCounter(
  * than push the pod into an OOM kill. It is admission control, not eviction:
  * loaded packages keep serving.
  *
- * Only constructed when `PUBLISHER_MAX_MEMORY_BYTES` is set.
+ * Only constructed when `PUBLISHER_MEMORY_MAX_BYTES` is set.
  */
 export class PackageMemoryGovernor {
    private readonly config: MemoryGovernorConfig;
@@ -81,13 +81,13 @@ export class PackageMemoryGovernor {
          ),
          gauge(
             "publisher_memory_backpressure_active",
-            "1 when the publisher is rejecting new package loads to stay under PUBLISHER_MAX_MEMORY_BYTES; 0 otherwise",
+            "1 when the publisher is rejecting new package loads to stay under PUBLISHER_MEMORY_MAX_BYTES; 0 otherwise",
             (g) => (g.backpressured ? 1 : 0),
          ),
          // The band itself, so dashboards can draw it alongside RSS.
          gauge(
             "publisher_memory_max_bytes",
-            "Configured PUBLISHER_MAX_MEMORY_BYTES",
+            "Configured PUBLISHER_MEMORY_MAX_BYTES",
             (g) => g.config.maxMemoryBytes,
             "By",
          ),

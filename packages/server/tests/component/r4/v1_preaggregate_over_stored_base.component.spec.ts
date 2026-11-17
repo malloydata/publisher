@@ -3,7 +3,7 @@
 
 /**
  * R4 for a v1 `#@ preaggregate` over a `#@ persist storage=` base, with
- * PUBLISHER_MATERIALIZE at its default (off), where `#@ preaggregate` is the
+ * PUBLISHER_MATERIALIZE_ENABLED at its default (off), where `#@ preaggregate` is the
  * spelling that builds. The line is read as a `#(preaggregate)` declaration
  * and built over the author's rows by the rollup leg, so it builds and serves
  * as that declaration would: a covered query is answered from the rollup,
@@ -90,7 +90,10 @@ for (const [shape, { text, baseStored }] of Object.entries(SHAPES)) {
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "false" },
+            env: {
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "false",
+            },
          }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": text },

@@ -24,13 +24,13 @@ let slots = new QuerySlots();
 let restoreSettings: (() => void) | undefined;
 
 /**
- * Make `cap` the PUBLISHER_MAX_CONCURRENT_QUERIES of the current settings (or
+ * Make `cap` the PUBLISHER_QUERY_MAX_CONCURRENT of the current settings (or
  * the default, given none), replacing whatever this case installed before.
  */
 function setCap(cap?: string): void {
    restoreSettings?.();
    restoreSettings = installSettings({
-      env: cap === undefined ? {} : { PUBLISHER_MAX_CONCURRENT_QUERIES: cap },
+      env: cap === undefined ? {} : { PUBLISHER_QUERY_MAX_CONCURRENT: cap },
    }).restore;
 }
 
@@ -118,7 +118,7 @@ describe("QuerySlots.middleware", () => {
       const { error } = callMiddleware(makeReq(), makeRes());
       expect(error.value).toBeInstanceOf(ServiceUnavailableError);
       expect((error.value as Error).message).toContain(
-         "PUBLISHER_MAX_CONCURRENT_QUERIES",
+         "PUBLISHER_QUERY_MAX_CONCURRENT",
       );
       // Gauge is unchanged by the rejection (we never claimed the
       // slot), so subsequent legitimate completions don't go

@@ -33,7 +33,7 @@ mentioning `$USER_ID` and serve the whole thing live.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.qts_orders
 

@@ -251,7 +251,7 @@ export function persistQueryNotBuiltFinding(
       message:
          reason === undefined
             ? `#@ persist on query "${name}" is not built: persisted named ` +
-              `queries are built only with PUBLISHER_MATERIALIZE on, so the ` +
+              `queries are built only with PUBLISHER_MATERIALIZE_ENABLED on, so the ` +
               `query is answered live. ${workaround(name)}`
             : `#@ persist on query "${name}" is not built, so the query is ` +
               `answered live: ${reason}. ${workaround(name)}`,

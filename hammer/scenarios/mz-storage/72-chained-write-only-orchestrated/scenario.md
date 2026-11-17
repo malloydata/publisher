@@ -31,7 +31,7 @@ live.
 
 Build into the lake, serve live.
 
-- PERSIST_STORAGE_MODE: write-only
+- PUBLISHER_PERSIST_STORAGE_MODE: write-only
 
 ## Data orders_pg.cwoo_orders
 

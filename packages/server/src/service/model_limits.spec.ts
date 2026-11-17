@@ -130,7 +130,7 @@ describe("assertWithinModelRowLimit", () => {
       // Raising the cap IS a remedy here, unlike the unserializable case.
       expect(() =>
          assertWithinModelRowLimit(1001, 1000, "model_query"),
-      ).toThrow("PUBLISHER_MAX_QUERY_ROWS");
+      ).toThrow("PUBLISHER_QUERY_MAX_ROWS");
    });
 
    it("is disabled by a cap of 0", () => {
@@ -248,7 +248,7 @@ describe("stringifyQueryResponse", () => {
       expect(message).toContain("filter wide values");
       // Raising the cap cannot help a response that will not serialize at any
       // cap, so the byte-cap message's third remedy must not be repeated here.
-      expect(message).not.toContain("PUBLISHER_MAX_RESPONSE_BYTES");
+      expect(message).not.toContain("PUBLISHER_QUERY_MAX_RESPONSE_BYTES");
    });
 
    it("omits the cap from the message when the byte cap is disabled", () => {

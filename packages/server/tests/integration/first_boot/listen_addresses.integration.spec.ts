@@ -27,12 +27,12 @@ describe("listener bind addresses", () => {
    });
 
    async function boot(env: Record<string, string | undefined>) {
-      // The "listening at" lines are info, whatever LOG_LEVEL the shell exports.
+      // The "listening at" lines are info, whatever PUBLISHER_LOGGING_LEVEL the shell exports.
       server = await spawnServer({
          env: {
             PUBLISHER_HOST: undefined,
-            MCP_HOST: undefined,
-            LOG_LEVEL: "info",
+            PUBLISHER_MCP_HOST: undefined,
+            PUBLISHER_LOGGING_LEVEL: "info",
             ...env,
          },
       });

@@ -100,7 +100,7 @@ export interface ChainedPlanFacts {
    /**
     * Where the plan's sources at each content address live NOW: a storage
     * destination's name, or null for the source's own warehouse (a `storage=`
-    * source counts as null while `PERSIST_STORAGE_MODE` is off). Read from the
+    * source counts as null while `PUBLISHER_PERSIST_STORAGE_MODE` is off). Read from the
     * run's instruction for the source when there is one (a host can imply a
     * destination the annotation does not declare), else from `storage=`. A
     * destination that is the source's own connection counts as null: the same
@@ -821,7 +821,7 @@ export function manifestExcludingStorage(
 
 /**
  * The `storage=` destination a source DECLARES, or undefined. Independent of
- * `PERSIST_STORAGE_MODE`, so a `storage=` source is recognizable even when the
+ * `PUBLISHER_PERSIST_STORAGE_MODE`, so a `storage=` source is recognizable even when the
  * tier is off.
  */
 export { declaredStorage };
@@ -831,7 +831,7 @@ export { declaredStorage };
  * colocated path. Managed-tier aliases are resolved by the host and arrive on
  * the wire instruction's `destination`, never here.
  *
- * `PERSIST_STORAGE_MODE=off` returns undefined regardless, a kill switch that
+ * `PUBLISHER_PERSIST_STORAGE_MODE=off` returns undefined regardless, a kill switch that
  * never fails a package (the ignored `storage=` is a package warning).
  * Undefined does NOT mean "build colocated" for a source that declared
  * `storage=`: `deriveSelfInstructions` skips it so it serves live; see

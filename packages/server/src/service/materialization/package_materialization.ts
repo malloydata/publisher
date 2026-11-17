@@ -1091,7 +1091,7 @@ export class PackageMaterialization {
    /**
     * Every invalid materialization annotation, one per line with its code, or
     * "" when there is none: every `malformed` finding, and two sources an
-    * author's names put on one table (unless `PERSIST_COLLISION_ENFORCE=false`).
+    * author's names put on one table (unless `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`).
     * Each fails the publish AND the load, on every path: an invalid annotation
     * is the author's to fix, never something to serve around. A valid
     * annotation Publisher cannot build is a `*-not-built` warning instead.
@@ -1144,14 +1144,14 @@ export class PackageMaterialization {
    /**
     * Within-package persist-target COLLISIONS: distinct sources resolving to
     * one physical table in one destination, where each build would overwrite
-    * the other. A publish refusal unless `PERSIST_COLLISION_ENFORCE=false`,
+    * the other. A publish refusal unless `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`,
     * and a warning at load either way; none is served from the shared table.
     */
    persistenceCollisionWarnings(): string[] {
       return this.persistenceCollisions().map((c) => c.message);
    }
 
-   /** The collisions as refusals, under `PERSIST_COLLISION_ENFORCE=false`. */
+   /** The collisions as refusals, under `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`. */
    persistenceCollisionRefusals(): ApiPackageWarning[] {
       return this.persistenceCollisions().map(({ message, code, subject }) => ({
          message,

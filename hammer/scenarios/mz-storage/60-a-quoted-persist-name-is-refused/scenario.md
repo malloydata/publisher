@@ -30,7 +30,7 @@ quoted name must round-trip write-to-read) and stood known-red while that was op
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.qn_orders
 

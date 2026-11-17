@@ -17,7 +17,7 @@ measure both route to storage.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.d1_orders
 

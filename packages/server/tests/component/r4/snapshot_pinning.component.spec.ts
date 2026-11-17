@@ -119,7 +119,7 @@ describe("C1b: a colocated rollup and its query read the same manifest", () => {
    let undo: (() => void) | undefined;
    beforeAll(async () => {
       restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true" },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
       }).restore;
       fixture = await buildScenario({
          files: {

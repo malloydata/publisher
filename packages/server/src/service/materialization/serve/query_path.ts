@@ -201,7 +201,7 @@ export interface QueryPathInput {
    /** This model's `storage=` bindings, and the fresh subset of them. */
    storage: { all: readonly StorageTable[]; fresh: readonly StorageTable[] };
    /**
-    * The storage tier is not routed (`PERSIST_STORAGE_MODE` off or write-only),
+    * The storage tier is not routed (`PUBLISHER_PERSIST_STORAGE_MODE` off or write-only),
     * and the package warns about every `storage=` source for it. Its tables are
     * then reported `WARNED`.
     */

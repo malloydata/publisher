@@ -25,7 +25,7 @@ Without the filter, this source's rows total 375. With it, 300.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.fsl_regions
 

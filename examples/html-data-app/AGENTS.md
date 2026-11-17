@@ -170,7 +170,7 @@ authenticates with it). Never put a long-lived or admin token in client HTML. Se
 
 ## Live reload
 
-Run the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`). Editing a
+Run the server with `--watch-env <env>` (or `PUBLISHER_WATCH_ENVIRONMENTS=<env>`). Editing a
 `.malloy` file recompiles the package; editing a file under `public/` reloads open
 pages on its own. Nothing to wire in the page.
 

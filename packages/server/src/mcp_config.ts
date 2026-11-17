@@ -208,8 +208,8 @@ export function ensureMcpConfig(options: {
       const staleConfig = existing?.path;
 
       // Only write a port that will still be this port next boot, since the
-      // file is never corrected. Covers `--mcp_port 0`, which binds
-      // ephemerally. A non-numeric MCP_PORT, which once did too, now fails
+      // file is never corrected. Covers `--mcp-port 0`, which binds
+      // ephemerally. A non-numeric PUBLISHER_MCP_PORT, which once did too, now fails
       // startup.
       if (boundPort !== requestedPort) {
          return {
@@ -317,13 +317,13 @@ function staleNote(
 /**
  * Say whether an agent opened here will find this server, and what to do when
  * it will not. Every skip logs at `info` with the command: a silent skip looks
- * like a broken install, and `debug` vanishes at `LOG_LEVEL=info`.
+ * like a broken install, and `debug` vanishes at `PUBLISHER_LOGGING_LEVEL=info`.
  */
 export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
    switch (outcome.action) {
       case "created":
          logger.info(
-            `Wrote ${outcome.file} so an agent started in this directory finds this server. Disable with --no-mcp-config.`,
+            `Wrote ${outcome.file} so an agent started in this directory finds this server. Disable with --no-mcp-config-file-enabled.`,
          );
          return;
       case "exists":

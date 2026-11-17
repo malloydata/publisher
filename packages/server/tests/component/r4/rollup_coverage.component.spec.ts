@@ -36,7 +36,10 @@ function withoutSubtype(fields: { name: string; type: unknown }[]): unknown {
 }
 
 const SETTINGS = {
-   env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+   env: {
+      PUBLISHER_PERSIST_STORAGE_MODE: "on",
+      PUBLISHER_MATERIALIZE_ENABLED: "true",
+   },
 };
 
 /** Served from a rollup, with live's rows by both comparators. */

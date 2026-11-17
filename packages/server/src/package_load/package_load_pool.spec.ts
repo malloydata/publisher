@@ -53,11 +53,11 @@ import { writeTempPackage } from "../test_helpers/temp_package";
 
 describe("getPackageLoadWorkerCount", () => {
    const workersFrom = (raw: string) =>
-      withSettings({ env: { PACKAGE_LOAD_WORKERS: raw } }, () =>
+      withSettings({ env: { PUBLISHER_PACKAGE_LOAD_WORKERS: raw } }, () =>
          getPackageLoadWorkerCount(),
       );
    const refusal = (raw: string) =>
-      `packageLoad.workers from PACKAGE_LOAD_WORKERS: expected an integer of at least 1, got "${raw}"`;
+      `packageLoad.workers from PUBLISHER_PACKAGE_LOAD_WORKERS: expected an integer of at least 1, got "${raw}"`;
 
    it("defaults to 1 worker when env unset", () => {
       expect(withSettings({}, () => getPackageLoadWorkerCount())).toBe(1);
@@ -93,7 +93,7 @@ describe("getPackageLoadSchemaCacheBytes", () => {
             env:
                raw === undefined
                   ? {}
-                  : { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: raw },
+                  : { PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: raw },
          },
          () => getPackageLoadSchemaCacheBytes(),
       );
@@ -111,7 +111,7 @@ describe("getPackageLoadSchemaCacheBytes", () => {
    it("refuses a value that is not a byte count rather than ignoring it", () => {
       for (const raw of ["16MiB", "-1", "1.5", "lots"]) {
          expect(() => cacheBytesFrom(raw)).toThrow(
-            `packageLoad.schemaCacheBytes from PACKAGE_LOAD_SCHEMA_CACHE_BYTES: expected an integer of at least 0, got "${raw}"`,
+            `packageLoad.schemaCacheBytes from PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: expected an integer of at least 0, got "${raw}"`,
          );
       }
    });
@@ -787,7 +787,7 @@ source: orders is duckdb.table('limit_t') extend {
 `,
       );
       const cacheOff = installSettings({
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
+         env: { PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
       });
       let limitFetches = 0;
       const { duckdb, load, tearDown } = await setUp(
@@ -828,7 +828,7 @@ source: orders is duckdb.table('shared_t') extend {
       // the model's, the rollup companion's, and a second one's if the plan
       // compiled its own.
       const cacheOff = installSettings({
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
+         env: { PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
       });
       const { duckdb, tableFetches, load, tearDown } = await setUp(() =>
          Promise.resolve(),

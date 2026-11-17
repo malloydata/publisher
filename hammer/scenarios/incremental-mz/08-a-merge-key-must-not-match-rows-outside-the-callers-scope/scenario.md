@@ -34,7 +34,7 @@ combination needs nothing from the storage tier to be reachable.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.xt_orders
 

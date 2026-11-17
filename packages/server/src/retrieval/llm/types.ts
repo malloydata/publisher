@@ -91,7 +91,7 @@ export interface EmbeddingModel {
    ): Promise<number[][]>;
 }
 
-/** What `retrieval.llm` resolves to, with the API key from `LLM_API_KEY`. */
+/** What `retrieval.llm` resolves to, with the API key from `PUBLISHER_RETRIEVAL_LLM_API_KEY`. */
 export interface LlmSettings {
    provider: ProviderName;
    model: string;
@@ -105,7 +105,7 @@ export interface LlmSettings {
    maxCallsPerRequest: number;
 }
 
-/** What `retrieval.embedding` resolves to, with the key from `EMBEDDING_API_KEY`. */
+/** What `retrieval.embedding` resolves to, with the key from `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY`. */
 export interface EmbeddingSettings {
    provider: ProviderName;
    model: string;

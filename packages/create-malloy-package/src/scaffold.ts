@@ -308,7 +308,7 @@ export const SERVER_VERSION = "0.0.250";
 
 function startCommandFor(envName: string): string {
    return (
-      `npx -y @malloy-publisher/server@${SERVER_VERSION} --server_root . ` +
+      `npx -y @malloy-publisher/server@${SERVER_VERSION} --root . ` +
       `--config ./publisher.config.json --host ${BIND_HOST} ` +
       `--watch-env ${envName}`
    );
@@ -331,7 +331,7 @@ function resetCommandFor(envName: string): string {
  * taken. Shared by AGENTS.md and the closing output so the two cannot drift.
  * It has to be the same boot as the primary one with two flags added:
  * hardcoding `npm start -- --port ...` ran the workspace's own start script
- * (`vite --port 4100 --mcp_port 4140`) whenever that script was not ours, and
+ * (`vite --port 4100 --mcp-port 4140`) whenever that script was not ours, and
  * npm's `--` separator only belongs on the `npm start` form in the first place.
  */
 export function portOverrideCommandFor(result: {
@@ -365,7 +365,7 @@ export function resetPortOverrideCommandFor(result: {
 function withAlternatePorts(command: string, viaNpmScript: boolean): string {
    return (
       `${command}${viaNpmScript ? " --" : ""} ` +
-      `--port ${ALT_PUBLISHER_PORT} --mcp_port ${ALT_MCP_PORT}`
+      `--port ${ALT_PUBLISHER_PORT} --mcp-port ${ALT_MCP_PORT}`
    );
 }
 
@@ -1268,7 +1268,7 @@ function declineReasonFor(
    // adopted script: AGENTS.md says "http://localhost:4000 ... MCP endpoint on
    // http://localhost:4040/mcp, and mounts this workspace's packages in watch
    // mode", .mcp.json is written with that url, and the CLI prints both curls
-   // against 4000. A script carrying `--port 4100 --mcp_port 4140` (which this
+   // against 4000. A script carrying `--port 4100 --mcp-port 4140` (which this
    // tool's own AGENTS.md tells the reader to add, on the documented
    // second-package path) satisfies every check above, so all of it was false and
    // every command printed answered connection-refused, or worse, answered from
@@ -1298,7 +1298,7 @@ const GENERATED_FLAGS: Record<
 > = {
    // Relative to the workspace root, which is where npm runs the script from.
    // Any other root mounts someone else's packages under this workspace's name.
-   "--server_root": (value) => value === "." || value === "./",
+   "--root": (value) => value === "." || value === "./",
    "--config": (value) =>
       value === "./publisher.config.json" || value === "publisher.config.json",
    // Already checked above, and checked again here so this function stands on
@@ -1585,16 +1585,34 @@ function isSingleServerInvocation(script: string): boolean {
  * exposure warning that a script with no --host at all correctly gets.
  */
 /**
+ * Value-taking flags a server before the configuration design's step 3 read
+ * and the in-tree server does not: a script that pins such a server still
+ * passes them.
+ */
+export const OLDER_SERVER_VALUE_FLAGS = new Set([
+   "--server_root",
+   "--mcp_port",
+   "--mcp_host",
+   "--admin_port",
+   "--admin_host",
+   "--shutdown_drain_duration_seconds",
+   "--shutdown_graceful_close_timeout_seconds",
+]);
+
+/**
  * The server flags that consume the following argv entry, mirroring
  * `flagsTakingAValue()` in `packages/server/src/settings/settings.ts`: every
  * setting's flag but a boolean's. `--init` and `--help` take no value and so
  * are deliberately absent.
  *
  * This is the in-tree server's list, so it also holds the derived names
- * (`--mcp-port`) that a SERVER_VERSION from before them does not read. That
- * direction is the safe one: a flag listed here that the pinned server skips
- * can only hide a --host it would bind, which warns about an exposure there is
- * not, while a flag missing here could take the --host it swallows for a bind.
+ * (`--mcp-port`) that a SERVER_VERSION from before them does not read, and,
+ * from {@link OLDER_SERVER_VALUE_FLAGS}, the names those versions read that the
+ * in-tree server no longer does: a workspace's script pins the server it was
+ * written for. That direction is the safe one: a flag listed here that the
+ * pinned server skips can only hide a --host it would bind, which warns about
+ * an exposure there is not, while a flag missing here could take the --host it
+ * swallows for a bind.
  */
 export const SERVER_VALUE_FLAGS = new Set([
    "--port",
@@ -1604,20 +1622,15 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--caller-header",
    "--version-promotion",
    "--root",
-   "--server_root",
    "--config",
    "--watch-environments",
    "--watch-env",
    "--mcp-port",
-   "--mcp_port",
    "--mcp-host",
-   "--mcp_host",
    "--mcp-cors-origins",
    "--mcp-trace",
    "--admin-port",
-   "--admin_port",
    "--admin-host",
-   "--admin_host",
    "--admin-storage-provider",
    "--admin-storage-key-id",
    "--admin-storage-region",
@@ -1646,9 +1659,7 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--allow-s3-credential-chain",
    "--logging-level",
    "--shutdown-drain-duration-seconds",
-   "--shutdown_drain_duration_seconds",
    "--shutdown-graceful-close-timeout-seconds",
-   "--shutdown_graceful_close_timeout_seconds",
    "--retrieval-embedding-model",
    "--retrieval-embedding-base-url",
    "--retrieval-embedding-dimensions",
@@ -1673,6 +1684,7 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--workload-log-store",
    "--workload-log-retention-days",
    "--workload-log-max-rows",
+   ...OLDER_SERVER_VALUE_FLAGS,
 ]);
 
 /** True when a quote is left open, which sh refuses to run at all. */
@@ -1737,7 +1749,7 @@ function hostFlagOf(script: string): string | undefined {
    // A positional walk rather than a scan, because that is what the server
    // does. Every value-taking flag consumes the NEXT token, so a flag whose own
    // value is missing swallows `--host` as that value and the server never sees
-   // a host at all. A scan reads `--server_root --host 127.0.0.1` as loopback;
+   // a host at all. A scan reads `--root --host 127.0.0.1` as loopback;
    // the server binds 0.0.0.0. This is what decides whether the exposure
    // warning is suppressed, so it has to agree with the server rather than with
    // the text.

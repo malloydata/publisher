@@ -28,7 +28,7 @@ describe("Materialization REST API: single-call (E2E)", () => {
       baseUrl = env.baseUrl;
 
       // Create the test project via the REST API using an absolute
-      // path to the fixture so it works regardless of SERVER_ROOT.
+      // path to the fixture so it works regardless of PUBLISHER_ROOT.
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",

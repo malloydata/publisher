@@ -10,4 +10,4 @@ purpose, so scenario discovery never picks it up as a real scenario.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on

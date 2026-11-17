@@ -25,7 +25,7 @@ stored answer is wrong in a way nothing reports. The right answer is 350:
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.pow_orders
 

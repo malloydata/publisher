@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+   OLDER_SERVER_VALUE_FLAGS,
    SERVER_VALUE_FLAGS,
    scaffold,
    shellTokens,
@@ -67,7 +68,7 @@ function workspaceScripts(): Record<string, string> {
 
 /** A Publisher start script of the shape this tool writes, for a fixture. */
 const OUR_START =
-   `npx -y @malloy-publisher/server --server_root . ` +
+   `npx -y @malloy-publisher/server --root . ` +
    `--config ./publisher.config.json --host 127.0.0.1 --watch-env default`;
 
 function writePackageJson(scripts: Record<string, string>): void {
@@ -1013,7 +1014,7 @@ describe("scaffold: binding host", () => {
 
 describe("scaffold: a runner word is not a package runner", () => {
    const TAIL =
-      "--server_root . --config ./publisher.config.json " +
+      "--root . --config ./publisher.config.json " +
       "--host 127.0.0.1 --watch-env default";
 
    function declines(start: string): boolean {
@@ -1118,11 +1119,7 @@ describe("shellTokens splits the way sh does", () => {
       // A falsy argv entry, which is why the server drops the flag before it.
       ["a quoted empty string is its own entry", '--host ""', ["--host", ""]],
       ["quotes inside a word", '--config=a"b"c', ["--config=abc"]],
-      [
-         "a quoted value keeps its spaces",
-         '--server_root "a b"',
-         ["--server_root", "a b"],
-      ],
+      ["a quoted value keeps its spaces", '--root "a b"', ["--root", "a b"]],
       ["the other quote nests", '--x "it\'s"', ["--x", "it's"]],
       ["adjacent quote pairs collapse", `--x ""''`, ["--x", ""]],
       // sh separates on its own IFS and nothing else. JavaScript's \s counts
@@ -1152,7 +1149,18 @@ describe("SERVER_VALUE_FLAGS drift against packages/server", () => {
 
       // A registry that gave nothing would pass vacuously.
       expect(declared.size).toBeGreaterThan(4);
-      expect([...SERVER_VALUE_FLAGS].sort()).toEqual([...declared].sort());
+      const current = [...SERVER_VALUE_FLAGS].filter(
+         (flag) => !OLDER_SERVER_VALUE_FLAGS.has(flag),
+      );
+      expect(current.sort()).toEqual([...declared].sort());
+   });
+
+   test("keeps the flags older servers read, which the in-tree one no longer does", () => {
+      const declared = new Set(flagsTakingAValue());
+      for (const flag of OLDER_SERVER_VALUE_FLAGS) {
+         expect(SERVER_VALUE_FLAGS.has(flag), flag).toBe(true);
+         expect(declared.has(flag), flag).toBe(false);
+      }
    });
 });
 
@@ -1509,9 +1517,9 @@ describe("scaffold: AGENTS.md across every start/reset script state", () => {
       );
       expect(override).toBeDefined();
       // The failure this replaces: a hardcoded `npm start -- --port 4100
-      // --mcp_port 4140` in the template, which here ran vite.
+      // --mcp-port 4140` in the template, which here ran vite.
       expect(override).toContain("@malloy-publisher/server");
-      expect(override).toContain("--mcp_port");
+      expect(override).toContain("--mcp-port");
       // npm's argument separator belongs only on the `npm start` form.
       expect(override).not.toContain(" -- ");
    });
@@ -1565,7 +1573,7 @@ describe("scaffold: which existing start script counts as ours", () => {
       const label = host === "" ? "no --host at all" : host;
       test(`${label} is ${adopted ? "adopted" : "not adopted"}`, () => {
          const script =
-            `npx -y @malloy-publisher/server --server_root . ` +
+            `npx -y @malloy-publisher/server --root . ` +
             `--config ./publisher.config.json ${host} --watch-env default`;
          writePackageJson({ start: script });
          const result = run();
@@ -1622,7 +1630,7 @@ describe("scaffold: which existing start script counts as ours", () => {
    for (const { label, prefix, ok } of runnerPrefixCases) {
       test(`runner prefix ${label} is ${ok ? "adopted" : "not adopted"}`, () => {
          const script =
-            `npx ${prefix} @malloy-publisher/server --server_root . ` +
+            `npx ${prefix} @malloy-publisher/server --root . ` +
             `--config ./publisher.config.json --host 127.0.0.1 ` +
             `--watch-env default`.replace(/\s+/g, " ");
          writePackageJson({ start: script });
@@ -1651,7 +1659,7 @@ describe("scaffold: which existing start script counts as ours", () => {
    test("a joined --host is reported as a declined Publisher script", () => {
       writePackageJson({
          start:
-            `npx -y @malloy-publisher/server --server_root . ` +
+            `npx -y @malloy-publisher/server --root . ` +
             `--config ./publisher.config.json --host=127.0.0.1 ` +
             `--watch-env default`,
       });
@@ -1672,7 +1680,7 @@ describe("scaffold: which existing start script counts as ours", () => {
    test("AGENTS.md claims no loopback bind over a foreign start script", () => {
       writePackageJson({
          start:
-            `npx -y @malloy-publisher/server --server_root . ` +
+            `npx -y @malloy-publisher/server --root . ` +
             `--config ./publisher.config.json --host=127.0.0.1 ` +
             `--watch-env default`,
       });
@@ -2433,7 +2441,7 @@ describe("scaffold: a start script that runs more than Publisher", () => {
    const shellTest = process.platform === "win32" ? test.skip : test;
 
    const PUBLISHER_BOOT =
-      `npx -y @malloy-publisher/server --server_root . ` +
+      `npx -y @malloy-publisher/server --root . ` +
       `--config ./publisher.config.json --host 127.0.0.1 --watch-env default`;
 
    /**
@@ -2585,10 +2593,10 @@ describe("scaffold: a start script that runs more than Publisher", () => {
  * is a Publisher boot but not the boot this tool writes.
  *
  * The ports, the workspace root and the watch mode are three separate claims,
- * and all three were constants: PUBLISHER_PORT/MCP_PORT copied onto the result
+ * and all three were constants: PUBLISHER_PORT/PUBLISHER_MCP_PORT copied onto the result
  * and interpolated into AGENTS.md, .mcp.json and every printed curl, while the
  * adoption check read only the server name, the shell metacharacters, the
- * runner tokens and --host. A script carrying `--port 4100 --mcp_port 4140`
+ * runner tokens and --host. A script carrying `--port 4100 --mcp-port 4140`
  * (which is exactly what AGENTS.md tells the reader to add, and to keep adding
  * on every later boot) was adopted as `npm start` and then described as serving
  * 4000 and 4040. Every check the tool prints then answers connection-refused, or
@@ -2640,7 +2648,7 @@ describe("scaffold: what the run asserts about the boot it names", () => {
       };
       return {
          publisher: read("--port", DEFAULT_PUBLISHER_PORT),
-         mcp: read("--mcp_port", DEFAULT_MCP_PORT),
+         mcp: read("--mcp-port", DEFAULT_MCP_PORT),
       };
    }
 
@@ -2728,7 +2736,7 @@ describe("scaffold: what the run asserts about the boot it names", () => {
 
    /**
     * The briefing describes the workspace it sits in, so the boot it names has
-    * to be pointed at that workspace. A `--server_root` or `--config` outside it
+    * to be pointed at that workspace. A `--root` or `--config` outside it
     * serves someone else's packages and someone else's data under a file that
     * says "this workspace's packages", and the status response an agent is told
     * to trust looks identical.
@@ -2737,7 +2745,7 @@ describe("scaffold: what the run asserts about the boot it names", () => {
       const { command, resolved } = startBoot();
       // realpath, because macOS hands out /var/... and resolves to /private/var.
       const root = fs.realpathSync(tmp);
-      for (const flag of ["--server_root", "--config"]) {
+      for (const flag of ["--root", "--config"]) {
          const value = lastFlagValue(resolved, flag);
          if (value === undefined) {
             // No flag is the server's own default, which is this directory:
@@ -2787,11 +2795,11 @@ describe("scaffold: what the run asserts about the boot it names", () => {
          // collision, offers the two flags, and says every later boot needs them
          // spelled out again, so the reader puts them in the start script.
          label: "the port pair the briefing itself hands the reader",
-         start: `${OUR_START} --port 4100 --mcp_port 4140`,
+         start: `${OUR_START} --port 4100 --mcp-port 4140`,
       },
       {
          label: "a port pair nothing in this tool would guess",
-         start: `${OUR_START} --port 5311 --mcp_port 5312`,
+         start: `${OUR_START} --port 5311 --mcp-port 5312`,
       },
       {
          label: "only the REST port moved",
@@ -2799,14 +2807,14 @@ describe("scaffold: what the run asserts about the boot it names", () => {
       },
       {
          label: "only the MCP port moved",
-         start: `${OUR_START} --mcp_port 4140`,
+         start: `${OUR_START} --mcp-port 4140`,
       },
       {
          label: "a boot pointed at another workspace entirely",
          start:
-            `npx -y @malloy-publisher/server@0.0.228 --server_root ${elsewhere} ` +
+            `npx -y @malloy-publisher/server@0.0.228 --root ${elsewhere} ` +
             `--config ${elsewhere}/publisher.config.json --host 127.0.0.1 ` +
-            `--port 5555 --mcp_port 5556 --watch-env other`,
+            `--port 5555 --mcp-port 5556 --watch-env other`,
       },
       {
          label: "a boot that mounts nothing in watch mode",
@@ -2865,7 +2873,7 @@ describe("scaffold: what the run asserts about the boot it names", () => {
       writePackageJson({ start: OUR_START });
       const result = run();
       expect(result.hasStartScript).toBe(true);
-      writePackageJson({ start: `${OUR_START} --port 4100 --mcp_port 4140` });
+      writePackageJson({ start: `${OUR_START} --port 4100 --mcp-port 4140` });
       expect(() => expectEveryPortClaimMatchesTheBoot(result)).toThrow();
    });
 
@@ -2874,10 +2882,7 @@ describe("scaffold: what the run asserts about the boot it names", () => {
       const result = run();
       expect(result.hasStartScript).toBe(true);
       writePackageJson({
-         start: OUR_START.replace(
-            "--server_root .",
-            `--server_root ${elsewhere}`,
-         ),
+         start: OUR_START.replace("--root .", `--root ${elsewhere}`),
       });
       expect(() => expectTheBootServesThisWorkspace()).toThrow();
    });
@@ -2915,7 +2920,7 @@ describe("scaffold: a start script whose server spec is not a version", () => {
    for (const spec of specs) {
       test(`@${spec} is not adopted as npm start`, () => {
          const script =
-            `npx -y @malloy-publisher/server@${spec} --server_root . ` +
+            `npx -y @malloy-publisher/server@${spec} --root . ` +
             `--config ./publisher.config.json --host 127.0.0.1 ` +
             `--watch-env default`;
          writePackageJson({ start: script });
@@ -2932,7 +2937,7 @@ describe("scaffold: a start script whose server spec is not a version", () => {
    /** The control: the one spec form the allowance was added for. */
    test("a pinned version is still a Publisher boot", () => {
       const script =
-         `npx -y @malloy-publisher/server@0.0.228 --server_root . ` +
+         `npx -y @malloy-publisher/server@0.0.228 --root . ` +
          `--config ./publisher.config.json --host 127.0.0.1 ` +
          `--watch-env default`;
       writePackageJson({ start: script });

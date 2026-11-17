@@ -118,7 +118,7 @@ describe("isPortFree / portsReportedInUse", () => {
    it("names the ports Publisher reported in use", () => {
       const log =
          "info: Publisher server listening at http://127.0.0.1:50236\n" +
-         "error: Port 50237 in use; pass --mcp_port <n>\n";
+         "error: Port 50237 in use; pass --mcp-port <n>\n";
       expect(portsReportedInUse(log)).toEqual([50237]);
       expect(portsReportedInUse("listen EADDRINUSE")).toEqual([]);
    });
@@ -130,14 +130,14 @@ describe("portsTakenAtExit", () => {
    };
 
    it("is the named port when it is one of ours", async () => {
-      const out = "error: Port 50237 in use; pass --mcp_port <n>\n";
+      const out = "error: Port 50237 in use; pass --mcp-port <n>\n";
       expect(await portsTakenAtExit(out, [50236, 50237], never)).toEqual([
          50237,
       ]);
    });
 
    it("is empty when the named port is not ours (no retry would help)", async () => {
-      const out = "error: Port 9999 in use; pass --admin_port <n>\n";
+      const out = "error: Port 9999 in use; pass --admin-port <n>\n";
       expect(await portsTakenAtExit(out, [50236, 50237], never)).toEqual([]);
    });
 

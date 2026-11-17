@@ -23,7 +23,7 @@ Run bare like that, the package comes with a small sample dataset, so there is s
 **Existing directory of models?** Write a `publisher.config.json` beside a package directory that holds a `publisher.json`, then run the server pointing at it:
 
 ```bash
-npx @malloy-publisher/server --server_root . --watch-env local
+npx @malloy-publisher/server --root . --watch-env local
 ```
 
 ```json
@@ -51,7 +51,7 @@ Poll `curl -s http://localhost:4000/api/v0/status` until `operationalState` is `
 
 ## Configuration
 
-Two example configs ship in the npm package, beside this README: [`publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (the GitHub-hosted sample packages, no connection block) and [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) (adds a BigQuery connection). Copy either one to `publisher.config.json` and point `--server_root` at its directory.
+Two example configs ship in the npm package, beside this README: [`publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (the GitHub-hosted sample packages, no connection block) and [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) (adds a BigQuery connection). Copy either one to `publisher.config.json` and point `--root` at its directory.
 
 In a clone, the live `publisher.config.json` lives in this directory, and the repository root contains a symlink (`/publisher.config.json` → `./packages/server/publisher.config.json`) so that running the server from either location picks up the same config. Edit one and you've edited both.
 

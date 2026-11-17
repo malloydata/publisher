@@ -23,11 +23,11 @@ export function createMcpApp(services: McpServices): express.Express {
    registerHealthEndpoints(mcpApp);
 
    mcpApp.use(MCP_ENDPOINT, express.json());
-   // Cross-origin access is opt-in via MCP_CORS_ORIGINS (origins, or `*`). By
+   // Cross-origin access is opt-in via PUBLISHER_MCP_CORS_ORIGINS (origins, or `*`). By
    // default no Allow-Origin is reflected, so a page on another origin cannot
    // read this unauthenticated endpoint's responses. Non-browser MCP clients
    // send no Origin and are unaffected. The permissive value CodeQL looks for
-   // is reachable only when an operator sets MCP_CORS_ORIGINS=* on purpose,
+   // is reachable only when an operator sets PUBLISHER_MCP_CORS_ORIGINS=* on purpose,
    // the documented escape hatch.
    // codeql[js/cors-permissive-configuration]
    mcpApp.use(MCP_ENDPOINT, cors({ origin: getMcpCorsOrigins() }));

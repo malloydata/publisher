@@ -500,7 +500,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(environment.hasAuthoritativeStorageDestinations()).toBe(false);
    });
 
-   describe("S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
+   describe("PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN=destinations-only", () => {
       // DuckDB reads the AWS variables from the process itself; the policy is
       // a setting.
       const ENV_KEYS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
@@ -512,7 +512,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          process.env.AWS_ACCESS_KEY_ID = "AKIAFAKE";
          process.env.AWS_SECRET_ACCESS_KEY = "fakesecret";
          restoreSettings = installSettings({
-            env: { S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" },
+            env: { PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "destinations-only" },
          }).restore;
       });
       afterEach(() => {

@@ -273,7 +273,7 @@ export function describeMembers(
  * so serving it hands one source's readers the other's rows. Both are still
  * planned and built; a query on either is answered live until each
  * has a `name=` of its own. Serving is refused whatever
- * `PERSIST_COLLISION_ENFORCE` says: that flag (on by default) decides whether
+ * `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED` says: that flag (on by default) decides whether
  * a publish is refused, and a wrong answer is never the alternative.
  */
 export function sharedTables(
@@ -299,14 +299,14 @@ export function sharedTables(
  * another source's table (same destination, same physical name, a different
  * content address), each reported as `materialization-table-collision`
  * naming the others, which fails the load (under
- * `PERSIST_COLLISION_ENFORCE=false`, a `materialize-not-built` refusal). Refused outright, not built, whether its name is the default (the
+ * `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`, a `materialize-not-built` refusal). Refused outright, not built, whether its name is the default (the
  * source's own, with no `name=`) or a `name=` the author chose:
  * `#(materialize)` has no packages to stay compatible with, and a build over
  * another source's table would hand one source's readers the other's rows.
  * The same source reached through two models is one address, and is no
  * collision. What still shares a table afterwards (v1 sources only) is
  * {@link sharedTables}', served live, and a load failure under
- * `PERSIST_COLLISION_ENFORCE`.
+ * `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED`.
  */
 export function refuseCollidingMaterialize<
    T extends EligibilityPlan & {
@@ -340,7 +340,7 @@ export function refuseCollidingMaterialize<
                : destination,
          );
          // An author's names collide: invalid, unless the deployment opts
-         // out (PERSIST_COLLISION_ENFORCE=false, applied where the package
+         // out (PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false, applied where the package
          // loads), which refuses each source alone. A `#@ persist` partner is
          // refused with it, so neither side is built.
          refused.set(

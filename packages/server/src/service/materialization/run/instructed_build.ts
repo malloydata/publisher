@@ -927,7 +927,7 @@ export class InstructedBuild {
       // persist` is inherited) compile to the same address, and a source used
       // across models appears in several builds. Only the same-content case is
       // decided here; DIFFERENT definitions on one table were reported (and
-      // refused unless PERSIST_COLLISION_ENFORCE=false) by
+      // refused unless PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false) by
       // assertNoTableCollisions, so reaching here means the deployment opted
       // out, to warn and write anyway.
       const target = physicalTargetKey(instruction, graphConnectionName);

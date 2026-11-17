@@ -46,7 +46,7 @@ source: daily_orders is orders -> {
 
 The publisher runs with the storage tier off — a plain in-warehouse persist.
 
-- PERSIST_STORAGE_MODE: off
+- PUBLISHER_PERSIST_STORAGE_MODE: off
 
 ## Publish
 
@@ -86,7 +86,7 @@ source: daily_orders is orders -> {
 Restart into `on`. The restart re-reads the edited model and enables the storage
 tier.
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Publish
 

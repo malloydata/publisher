@@ -10,7 +10,7 @@
  *
  * - `compile`: a model's text, or several files, to its compiled definition;
  * - `plan`: a package's files through the package's own build-plan compile
- *   (`compilePackageBuildPlan`), with `PUBLISHER_MATERIALIZE` on unless the
+ *   (`compilePackageBuildPlan`), with `PUBLISHER_MATERIALIZE_ENABLED` on unless the
  *   spec installs other settings;
  * - `servedCopy`: a model's files written as a package's are, so a served
  *   copy (which reads the author's own files) can re-root them.
@@ -193,7 +193,7 @@ export interface PlanPackages {
    /** Write `files` as a package, uncompiled. */
    create: ReturnType<typeof tempBuildPlanPackages>["create"];
    /**
-    * Install `env` over `PUBLISHER_MATERIALIZE=true` for the rest of this
+    * Install `env` over `PUBLISHER_MATERIALIZE_ENABLED=true` for the rest of this
     * test, in place of what was installed before it.
     */
    settings(env?: Record<string, string>): void;
@@ -201,7 +201,7 @@ export interface PlanPackages {
 
 /**
  * Temporary packages whose build plans the spec compiles, with
- * `PUBLISHER_MATERIALIZE=true` (and `env`) installed before each test and
+ * `PUBLISHER_MATERIALIZE_ENABLED=true` (and `env`) installed before each test and
  * restored, and the packages removed, after it.
  */
 export function planPackages(
@@ -214,7 +214,7 @@ export function planPackages(
    const settings = (more: Record<string, string> = env) => {
       restore?.();
       restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true", ...more },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "true", ...more },
       }).restore;
    };
    beforeEach(() => settings());

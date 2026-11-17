@@ -23,7 +23,7 @@ rebound.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Model chsh/report.malloy
 

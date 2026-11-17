@@ -106,7 +106,7 @@ source: b_hides2 is orders_raw -> { where: id > 0; select: id, region, status } 
 
 /** The suite's settings. */
 const SUITE_ENV = {
-   PERSIST_STORAGE_MODE: "on",
+   PUBLISHER_PERSIST_STORAGE_MODE: "on",
    PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
    PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
 };
@@ -723,7 +723,10 @@ describe.skipIf(process.platform === "win32")(
             );
             // The opt-out loads it, each colliding source refused alone.
             const optOut = installSettings({
-               env: { ...SUITE_ENV, PERSIST_COLLISION_ENFORCE: "false" },
+               env: {
+                  ...SUITE_ENV,
+                  PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false",
+               },
             }).restore;
             let after: Materialization;
             try {

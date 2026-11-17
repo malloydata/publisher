@@ -48,7 +48,10 @@ const packages = tempBuildPlanPackages();
 let restore: () => void;
 beforeEach(() => {
    restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "off" },
+      env: {
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
+         PUBLISHER_PERSIST_STORAGE_MODE: "off",
+      },
    }).restore;
 });
 afterEach(async () => {

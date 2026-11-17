@@ -200,9 +200,9 @@ lookup regions: 40 of its 44 rows match and 4 do not, and the four are findings.
 ### Row cap and looping contexts
 
 Publisher caps a model query at 1000 rows unless the Malloy states its own `limit:`
-(`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`), and nothing reports the cut. A per-cell comparison
+(`PUBLISHER_QUERY_DEFAULT_ROW_LIMIT`), and nothing reports the cut. A per-cell comparison
 over more rows silently truncates: put an explicit `limit:` in the query, above the row
-count you expect (the hard cap is `PUBLISHER_MAX_QUERY_ROWS`, 100000 by default; the REST
+count you expect (the hard cap is `PUBLISHER_QUERY_MAX_ROWS`, 100000 by default; the REST
 body has no row-limit field), and compare the returned row count with the key's.
 
 To check one view at several criteria contexts, loop the values through `givens` and

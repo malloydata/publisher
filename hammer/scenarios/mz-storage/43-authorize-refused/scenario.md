@@ -25,7 +25,7 @@ given — see the eligibility unit tests and
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.az_orders
 

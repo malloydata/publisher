@@ -55,7 +55,7 @@ describe("an except: inside a join's own extend on a v1 re-root", () => {
    ] as const) {
       it(`keeps the joined field hidden (${label})`, async () => {
          const restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          }).restore;
          await freshLoadPool();
          const loader = await loadFixture({

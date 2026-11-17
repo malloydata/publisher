@@ -127,7 +127,7 @@ again later. The
 rest of this section is for serving it on a Publisher of its own.
 
 ```bash
-publisher --server_root <parent-of-package> --mcp_port 4049
+publisher --root <parent-of-package> --mcp-port 4049
 # app      http://localhost:4000/environments/evals/packages/eval-run/index.html
 # notebook http://localhost:4000/evals/eval-run/notebooks/eval_run
 ```
@@ -158,7 +158,7 @@ its cells' compiled schemas under `modelInfo`, but only the cells it treats as
 anonymous queries -- do not read a low count there as cells failing to compile. To
 verify every cell, run each named query through `execute_query`.
 
-Pass `--mcp_port` explicitly. It defaults to 4040 and any other local Publisher
+Pass `--mcp-port` explicitly. It defaults to 4040 and any other local Publisher
 already holds it; the server logs `Port 4040 in use` and carries on without an MCP
 endpoint, so the failure is quiet and only shows up later as a tool that isn't
 there. `PORT` / `--port` was ignored in the version tested here -- it bound 4000

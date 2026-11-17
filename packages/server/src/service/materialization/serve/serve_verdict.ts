@@ -63,7 +63,7 @@ export const VERDICT_WARNING_CODES: Readonly<
 type ServeVerdictReason =
    /** The plan refused to build it (the eligibility gate). */
    | "refused"
-   /** `storage=` while PERSIST_STORAGE_MODE is not `on`. */
+   /** `storage=` while PUBLISHER_PERSIST_STORAGE_MODE is not `on`. */
    | "storage_mode"
    /** Nothing on the package's published surface reaches it. */
    | "unreachable"
@@ -79,7 +79,7 @@ type ServeVerdictReason =
    | "connection_cannot_hold_table"
    /**
     * A `#(materialize)` source, which only the served copy reads: the served
-    * copy is off (PUBLISHER_MATERIALIZE, or PERSIST_STORAGE_MODE for a
+    * copy is off (PUBLISHER_MATERIALIZE_ENABLED, or PUBLISHER_PERSIST_STORAGE_MODE for a
     * `storage=` table), or no model's served copy re-roots it (see the
     * `served-copy-not-served` warning).
     */
@@ -139,7 +139,7 @@ export interface ServeVerdict {
 /** What {@link computeServeVerdicts} reads. Every predicate is per source. */
 export interface ServeVerdictFacts {
    plan: BuildPlan | null;
-   /** PERSIST_STORAGE_MODE. */
+   /** PUBLISHER_PERSIST_STORAGE_MODE. */
    storageMode: "on" | "off" | "write-only" | string;
    /**
     * Whether some query on the published surface can read this source. A
@@ -314,10 +314,12 @@ function verdictFor(
       return live(
          "storage_mode",
          facts.storageMode === "off"
-            ? `${subject} declares storage=, which PERSIST_STORAGE_MODE=off ignores.`
-            : `${subject} is built into storage, but PERSIST_STORAGE_MODE is ` +
+            ? `${subject} declares storage=, which PUBLISHER_PERSIST_STORAGE_MODE=off ignores.`
+            : `${subject} is built into storage, but PUBLISHER_PERSIST_STORAGE_MODE is ` +
                  `${facts.storageMode}, so no query is routed to it.`,
-         ["Set PERSIST_STORAGE_MODE=on on the server, or drop storage=."],
+         [
+            "Set PUBLISHER_PERSIST_STORAGE_MODE=on on the server, or drop storage=.",
+         ],
       );
    }
 
@@ -385,8 +387,8 @@ function verdictFor(
             `answered live.`,
          [
             tier === "storage"
-               ? "Set PUBLISHER_MATERIALIZE=true and PERSIST_STORAGE_MODE=on."
-               : "Set PUBLISHER_MATERIALIZE=true.",
+               ? "Set PUBLISHER_MATERIALIZE_ENABLED=true and PUBLISHER_PERSIST_STORAGE_MODE=on."
+               : "Set PUBLISHER_MATERIALIZE_ENABLED=true.",
          ],
       );
    }

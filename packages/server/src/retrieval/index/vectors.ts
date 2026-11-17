@@ -130,7 +130,7 @@ export async function syncVectors(args: {
    const table: VectorTable = args.table ?? "catalog_embeddings";
    const prefix = provider.documentPrefix ?? "";
    // The requested vector length is part of a row's identity: a vector
-   // stored under another EMBEDDING_DIMENSIONS is embedded again, never
+   // stored under another PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS is embedded again, never
    // reused beside query vectors of the new length.
    const dimsTag = `\u0000dims=${provider.dimensions ?? "default"}`;
    const wanted = new Map<

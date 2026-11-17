@@ -56,8 +56,8 @@ async function compile(
    restore?.();
    restore = installSettings({
       env: {
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: v2 ? "true" : "false",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: v2 ? "true" : "false",
       },
    }).restore;
    // One file for both spellings: its path is in the build's SQL.
@@ -228,7 +228,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'east' AS reg
       ]);
    });
 
-   it("plans the v1 spelling the same with PUBLISHER_MATERIALIZE on", async () => {
+   it("plans the v1 spelling the same with PUBLISHER_MATERIALIZE_ENABLED on", async () => {
       const off = await compile(spelled(QUERY_SHAPED, false), false);
       const on = await compile(spelled(QUERY_SHAPED, false), true);
       expect(rollupsOf(on.compiled)).toEqual(rollupsOf(off.compiled));

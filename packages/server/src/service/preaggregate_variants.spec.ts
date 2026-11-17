@@ -69,8 +69,8 @@ afterEach(async () => {
 function switchOn(on: boolean): void {
    restore = installSettings({
       env: {
-         PUBLISHER_MATERIALIZE: on ? "true" : "false",
-         PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: on ? "true" : "false",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
       },
    }).restore;
 }

@@ -2725,7 +2725,7 @@ export class Model {
    /**
     * Whether the router may try the served copy: a model file. It reads a
     * colocated table on the source's own connection, and a storage table
-    * only while `PERSIST_STORAGE_MODE=on` (its host withholds the
+    * only while `PUBLISHER_PERSIST_STORAGE_MODE=on` (its host withholds the
     * destinations otherwise). Warnings and the compile at bind follow the
     * same rule, so a package never warns about a copy that is not routed.
     */

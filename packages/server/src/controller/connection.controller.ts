@@ -943,10 +943,10 @@ export class ConnectionController {
       const queryCorrelationId = resolvedMetadata.metadata?.query_id ?? null;
 
       // Two layered caps:
-      //   - Row cap (PUBLISHER_MAX_QUERY_ROWS), pushed to the driver as
+      //   - Row cap (PUBLISHER_QUERY_MAX_ROWS), pushed to the driver as
       //     rowLimit = min(callerLimit, cap+1). cap+1 rows back is the
       //     sentinel for overflow, answered 413. 0 disables it.
-      //   - Byte cap (PUBLISHER_MAX_RESPONSE_BYTES), the real memory bound,
+      //   - Byte cap (PUBLISHER_QUERY_MAX_RESPONSE_BYTES), the real memory bound,
       //     since one 10 MB JSON column defeats the row cap. Streaming
       //     connections only: buffered `runSQL` has already allocated.
       // Connectors are trusted to honor rowLimit.
@@ -1013,7 +1013,7 @@ export class ConnectionController {
          // connector, not just streaming ones.
          recordQueryCapExceeded("rows", "connection_sql");
          throw new PayloadTooLargeError(
-            `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
+            `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_QUERY_MAX_ROWS.`,
          );
       }
 

@@ -18,7 +18,7 @@ have is refused rather than answered from another.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: on
 
 ## Model sales/sales.malloy

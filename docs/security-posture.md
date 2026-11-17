@@ -195,7 +195,7 @@ Concretely:
   real, and they are the right place to put data policy. They are not end-user authentication:
   a given is whatever the caller sends.
   One request-level exception, and it is load-bearing: `x-publisher-bypass-authorize` carrying
-  the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET` skips gate evaluation on BOTH routes outright —
+  the value of `PUBLISHER_AUTHORIZE_BYPASS_SECRET` skips gate evaluation on BOTH routes outright —
   the `#(authorize)` lock as well as the `#(access_filter)` filter — for trusted data-management
   callers (indexers). With that variable unset the bypass is refused, so
   the default is closed; a deployment that configures the secret and reaches untrusted callers
@@ -335,7 +335,7 @@ them and lists each one's connections. That is deliberate (an agent with no prio
 to start somewhere) and it is correct on a deployment serving one tenant. It is a tenant
 directory on a deployment serving several. The transport defaults now make MCP harder to reach
 (loopback bind, no cross-origin by default), but neither narrows what a caller who does reach it
-can enumerate, and `MCP_HOST=0.0.0.0` is exactly the setting an operator reaches for to use MCP
+can enumerate, and `PUBLISHER_MCP_HOST=0.0.0.0` is exactly the setting an operator reaches for to use MCP
 remotely. Publisher has no tenant model to scope these tools against, so until it has one the
 control is a deployment constraint rather than code: a worker reachable by more than one tenant
 must not expose MCP. The REST surface has no equivalent: every route is addressed under a

@@ -52,7 +52,7 @@ eval.py check --set <set>
 #    if it does not reach `ready`: while the index builds, get_context returns
 #    `retrieval: "indexing"` with no sources, so without the wait the first
 #    cases would record empty answers as retrieval misses.
-#    Semantic retrieval needs EMBEDDING_API_KEY in the server's environment
+#    Semantic retrieval needs PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY in the server's environment
 #    (the Publisher does not read OPENAI_API_KEY). The script warns when it is
 #    unset; without it the status is `lexical` and every ranking is lexical.
 #    A key the provider rejects shows as status `error`; the warm-up prints

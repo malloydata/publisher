@@ -915,7 +915,7 @@ describe("connection integration tests", () => {
                // EnvironmentStore at a non-empty or shared serverRoot
                // — it will delete state.
                const { restore } = installSettings({
-                  env: { INITIALIZE_STORAGE: "true" },
+                  env: { PUBLISHER_INITIALIZE_STORAGE: "true" },
                   cwd: tempServerRoot,
                });
 

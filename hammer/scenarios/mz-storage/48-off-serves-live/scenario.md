@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 # Kill switch off: a storage= source serves LIVE, never a colocated build
 
-When `PERSIST_STORAGE_MODE=off`, a source that declares `storage=` is NOT
+When `PUBLISHER_PERSIST_STORAGE_MODE=off`, a source that declares `storage=` is NOT
 materialized at all — the build skips it and it serves **live** from its own
 warehouse. It must NOT fall back to a colocated build: a colocated build writes a
 CTAS into the source's own warehouse, which the author did not intend (they asked
@@ -33,7 +33,7 @@ So a **fresh** re-query proves nothing was materialized into the warehouse.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: off
+- PUBLISHER_PERSIST_STORAGE_MODE: off
 
 ## Data orders_pg.obp_orders
 

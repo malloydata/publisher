@@ -49,7 +49,7 @@ let restore: () => void;
 
 beforeEach(() => {
    restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true" },
+      env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
    }).restore;
 });
 const opened: { runSQL: (sql: string) => Promise<unknown> }[] = [];

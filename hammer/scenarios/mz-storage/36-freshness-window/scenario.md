@@ -23,7 +23,7 @@ and the freshness behavior is identical — placement is orthogonal to freshness
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.fr_orders
 

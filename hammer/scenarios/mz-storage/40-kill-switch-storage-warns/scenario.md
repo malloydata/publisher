@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT
 # Kill switch down: a storage= source is served live AND warns
 
 `mode-matrix` proves the serve *behavior* across the kill switch; this pins the
-complementary operator signal. When `PERSIST_STORAGE_MODE` is not `on`, a source
+complementary operator signal. When `PUBLISHER_PERSIST_STORAGE_MODE` is not `on`, a source
 that declares `storage=` can't be routed to a materialized table — so the publisher
 serves it live and surfaces a package **warning** on the status API saying so
 (distinct message per rung). The warning is how an operator notices a package is
@@ -28,7 +28,7 @@ fixed at startup):
 
 Start with the kill switch at `write-only`.
 
-- PERSIST_STORAGE_MODE: write-only
+- PUBLISHER_PERSIST_STORAGE_MODE: write-only
 
 ## Data orders_pg.ksw_orders
 
@@ -77,7 +77,7 @@ Expect:
 
 Restart with the kill switch fully `off`.
 
-- PERSIST_STORAGE_MODE: off
+- PUBLISHER_PERSIST_STORAGE_MODE: off
 
 ## Warns ksw
 

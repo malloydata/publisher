@@ -124,7 +124,7 @@ export async function registerPackageEnv(
    };
    expect(
       described.versionId,
-      `start the server with PUBLISHER_WATCH=${AUTHORING_ENVS.join(",")}`,
+      `start the server with PUBLISHER_WATCH_ENVIRONMENTS=${AUTHORING_ENVS.join(",")}`,
    ).toBeUndefined();
    return {
       env,

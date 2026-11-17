@@ -8,10 +8,10 @@
  * loop long enough to fail the Kubernetes liveness probe and restart the pod.
  * This pool runs the CPU-bound bulk of `Package.create` in `worker_threads`
  * workers instead. The pool is REQUIRED: there is no in-process fallback, and
- * `PACKAGE_LOAD_WORKERS=0` throws at boot. Pool failures reject `loadPackage()`,
+ * `PUBLISHER_PACKAGE_LOAD_WORKERS=0` throws at boot. Pool failures reject `loadPackage()`,
  * which `Package.loadViaWorker` rewraps as a 503.
  *
- * - Workers spawn lazily, up to `PACKAGE_LOAD_WORKERS`, and take jobs only
+ * - Workers spawn lazily, up to `PUBLISHER_PACKAGE_LOAD_WORKERS`, and take jobs only
  *   after their `ready` handshake.
  * - One job per worker: compile does not overlap inside one event loop, so a
  *   second job only doubles both latencies. Excess jobs queue here. A worker's
@@ -79,7 +79,7 @@ import { connectionTypeOf } from "../service/connection_type";
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * The configured pool size (`packageLoad.workers`, `PACKAGE_LOAD_WORKERS`,
+ * The configured pool size (`packageLoad.workers`, `PUBLISHER_PACKAGE_LOAD_WORKERS`,
  * default 1). There is deliberately no way to turn the pool off: compiling on
  * the main event loop is what fails the liveness probe.
  */
@@ -1113,7 +1113,7 @@ export function getPackageLoadPool(): PackageLoadPool {
       singleton = new PackageLoadPool(n);
       logger.info(
          `Malloy package-load worker pool enabled (size=${n}). ` +
-            `Override with PACKAGE_LOAD_WORKERS=N (N >= 1).`,
+            `Override with PUBLISHER_PACKAGE_LOAD_WORKERS=N (N >= 1).`,
       );
    }
    return singleton;

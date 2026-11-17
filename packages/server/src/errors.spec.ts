@@ -201,14 +201,14 @@ describe("internalErrorToHttpError", () => {
    it("maps PayloadTooLargeError to 413", () => {
       const { status, json } = internalErrorToHttpError(
          new PayloadTooLargeError(
-            "Query returned more than 100000 rows; refine the query or raise PUBLISHER_MAX_QUERY_ROWS.",
+            "Query returned more than 100000 rows; refine the query or raise PUBLISHER_QUERY_MAX_ROWS.",
          ),
       );
       expect(status).toBe(413);
       expect(json).toEqual({
          code: 413,
          message:
-            "Query returned more than 100000 rows; refine the query or raise PUBLISHER_MAX_QUERY_ROWS.",
+            "Query returned more than 100000 rows; refine the query or raise PUBLISHER_QUERY_MAX_ROWS.",
       });
    });
 

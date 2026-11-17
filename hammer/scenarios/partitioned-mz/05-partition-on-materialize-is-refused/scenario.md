@@ -18,8 +18,8 @@ alone and answered live; only a valid one Publisher cannot build is.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
-- PUBLISHER_MATERIALIZE: true
+- PUBLISHER_PERSIST_STORAGE_MODE: on
+- PUBLISHER_MATERIALIZE_ENABLED: true
 - PUBLISHER_PACKAGE_VERSIONING: off
 
 ## Data orders_pg.pcs_orders

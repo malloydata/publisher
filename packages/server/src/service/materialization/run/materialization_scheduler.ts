@@ -45,7 +45,7 @@ interface ScheduleState {
  * **Orchestration safety (two independent guards):**
  *   1. Disabled by default: only constructed when
  *      {@link getMaterializationSchedulerConfig} returns non-null
- *      (`PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER`), which an orchestrated
+ *      (`PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED`), which an orchestrated
  *      deployment never sets.
  *   2. A package with a `manifestLocation` (control-plane-driven) is skipped;
  *      the control plane already fires it.

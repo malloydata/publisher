@@ -30,26 +30,26 @@ describe("getExtensionFetchPolicy", () => {
    it("defaults to on-demand when unset or empty", () => {
       installEnv({});
       expect(getExtensionFetchPolicy()).toBe("on-demand");
-      installEnv({ EXTENSION_FETCH_POLICY: "   " });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "   " });
       expect(getExtensionFetchPolicy()).toBe("on-demand");
    });
 
    it("accepts the two policies case-insensitively", () => {
-      installEnv({ EXTENSION_FETCH_POLICY: "local-only" });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only" });
       expect(getExtensionFetchPolicy()).toBe("local-only");
-      installEnv({ EXTENSION_FETCH_POLICY: "On-Demand" });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "On-Demand" });
       expect(getExtensionFetchPolicy()).toBe("on-demand");
    });
 
    it("throws loudly on an unrecognised value", () => {
-      installEnv({ EXTENSION_FETCH_POLICY: "offline" });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "offline" });
       expect(() => getExtensionFetchPolicy()).toThrow(
-         'duckdb.extensionFetchPolicy from EXTENSION_FETCH_POLICY: expected one of "on-demand" or "local-only", got "offline"',
+         'duckdb.extensionFetchPolicy from PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: expected one of "on-demand" or "local-only", got "offline"',
       );
    });
 });
 
-describe("EXTENSION_FETCH_POLICY=local-only extension loading", () => {
+describe("PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY=local-only extension loading", () => {
    const envPath = path.join(process.cwd(), "test-extension-policy");
 
    beforeEach(async () => {
@@ -61,7 +61,7 @@ describe("EXTENSION_FETCH_POLICY=local-only extension loading", () => {
    });
 
    it("never runs INSTALL and raises a loud, actionable error when a required extension is missing", async () => {
-      installEnv({ EXTENSION_FETCH_POLICY: "local-only" });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only" });
 
       // Session PRAGMAs and metadata probes succeed; the first extension LOAD
       // fails, simulating an extension that was never baked into the image.
@@ -132,7 +132,7 @@ describe("applyExtensionSessionSettings", () => {
       ({ runSQL }) as unknown as DuckDBConnection;
 
    it("pins autoinstall off (autoload on) under local-only", async () => {
-      installEnv({ EXTENSION_FETCH_POLICY: "local-only" });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only" });
       const runSQL = sinon.stub().resolves({ rows: [] });
       await applyExtensionSessionSettings(mockConn(runSQL));
       const sql = runSQL.getCalls().map((c) => String(c.args[0]));
@@ -169,7 +169,7 @@ describe("applyExtensionSessionSettings", () => {
    });
 
    it("pins each connection only once (dedup)", async () => {
-      installEnv({ EXTENSION_FETCH_POLICY: "local-only" });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only" });
       const runSQL = sinon.stub().resolves({ rows: [] });
       const conn = mockConn(runSQL);
       await applyExtensionSessionSettings(conn);
@@ -178,11 +178,11 @@ describe("applyExtensionSessionSettings", () => {
    });
 
    it("fails closed under local-only when the pin cannot be applied", async () => {
-      installEnv({ EXTENSION_FETCH_POLICY: "local-only" });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only" });
       const runSQL = sinon.stub().rejects(new Error("pragma unsupported"));
       await expect(
          applyExtensionSessionSettings(mockConn(runSQL)),
-      ).rejects.toThrow(/EXTENSION_FETCH_POLICY=local-only/);
+      ).rejects.toThrow(/PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY=local-only/);
    });
 
    it("does NOT fail a tier attach under on-demand when the pin fails", async () => {
@@ -196,7 +196,7 @@ describe("applyExtensionSessionSettings", () => {
    });
 });
 
-describe("EXTENSION_FETCH_POLICY=on-demand (default) — no behaviour change", () => {
+describe("PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY=on-demand (default) — no behaviour change", () => {
    const envPath = path.join(process.cwd(), "test-extension-policy-ondemand");
 
    beforeEach(async () => {
@@ -325,7 +325,7 @@ describe("credential_chain loads the aws extension before the secret", () => {
    // stays inside the policy. If it is ever dropped from the bake list, this is
    // the test that should start failing.
    it("never issues INSTALL aws under local-only", async () => {
-      installEnv({ EXTENSION_FETCH_POLICY: "local-only" });
+      installEnv({ PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only" });
       const sql = await attachGenericS3({ provider: "credential_chain" });
       expect(sql.some((s) => /^\s*LOAD aws/i.test(s))).toBe(true);
       expect(sql.some((s) => /^\s*INSTALL\s/i.test(s))).toBe(false);

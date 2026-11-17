@@ -90,8 +90,8 @@ describe("R4: an upper-bound or two-sided window served at a pinned clock answer
    beforeAll(async () => {
       restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
          },
       }).restore;

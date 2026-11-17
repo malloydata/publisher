@@ -52,9 +52,9 @@ describe("settings at startup", () => {
       let flagMcpPort = await getFreePort();
       while (flagMcpPort === flagPort) flagMcpPort = await getFreePort();
       server = await spawnServer({
-         args: ["--port", String(flagPort), "--mcp_port", String(flagMcpPort)],
-         // "Settings given" is info, whatever LOG_LEVEL the shell exports.
-         env: { LOG_LEVEL: "info" },
+         args: ["--port", String(flagPort), "--mcp-port", String(flagMcpPort)],
+         // "Settings given" is info, whatever PUBLISHER_LOGGING_LEVEL the shell exports.
+         env: { PUBLISHER_LOGGING_LEVEL: "info" },
       });
 
       const line = await waitForReady();
@@ -66,14 +66,14 @@ describe("settings at startup", () => {
       expect(server.output()).toContain("Settings given: ");
       expect(server.output()).toContain(`port=${flagPort} from --port`);
       expect(server.output()).toContain(
-         `mcp.port=${flagMcpPort} from --mcp_port`,
+         `mcp.port=${flagMcpPort} from --mcp-port`,
       );
    });
 
    it("refuses a flag it does not know and a flag missing its value, naming both", async () => {
       server = await spawnServer({
          // A misspelled flag, then a known flag with nothing after it.
-         args: ["--mcp_prot", "1", "--admin_port"],
+         args: ["--mcp_prot", "1", "--admin-port"],
       });
 
       expect(await server.waitForExit()).not.toBe(0);
@@ -81,22 +81,22 @@ describe("settings at startup", () => {
       expect(stderr).toContain(
          "Unknown flag --mcp_prot. Did you mean --mcp-port?",
       );
-      expect(stderr).toContain("--admin_port has no value after it.");
+      expect(stderr).toContain("--admin-port has no value after it.");
       expect(stderr).toContain("PUBLISHER_INIT_FAILED");
    });
 
    it("fails startup on bad values, naming every one, before anything binds", async () => {
       server = await spawnServer({
-         env: { MCP_PORT: "40a0", PUBLISHER_MAX_QUERY_ROWS: "-1" },
+         env: { PUBLISHER_MCP_PORT: "40a0", PUBLISHER_QUERY_MAX_ROWS: "-1" },
       });
 
       expect(await server.waitForExit()).not.toBe(0);
       const stderr = server.stderr();
       expect(stderr).toContain(
-         'mcp.port from MCP_PORT: expected an integer from 0 to 65535, got "40a0"',
+         'mcp.port from PUBLISHER_MCP_PORT: expected an integer from 0 to 65535, got "40a0"',
       );
       expect(stderr).toContain(
-         'query.maxRows from PUBLISHER_MAX_QUERY_ROWS: expected an integer of at least 0, got "-1"',
+         'query.maxRows from PUBLISHER_QUERY_MAX_ROWS: expected an integer of at least 0, got "-1"',
       );
       expect(stderr).toContain("PUBLISHER_INIT_FAILED");
       expect(stderr).not.toContain("PUBLISHER_READY");
@@ -107,7 +107,7 @@ describe("settings at startup", () => {
       // report has to come first.
       server = await spawnServer({
          env: {
-            DISABLE_RESPONSE_LOGGING: "enabled",
+            PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "enabled",
             PUBLISHER_RATE_LIMIT: "abc",
          },
       });
@@ -122,7 +122,7 @@ describe("settings at startup", () => {
       ).toBe(true);
       const stderr = server.stderr();
       expect(stderr).toContain(
-         'logging.responseBodiesEnabled from DISABLE_RESPONSE_LOGGING: expected a boolean (true/false, 1/0, yes/no or on/off), got "enabled"',
+         'logging.responseBodiesEnabled from PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: expected a boolean (true/false, 1/0, yes/no or on/off), got "enabled"',
       );
       expect(stderr).toContain(
          'rateLimit from PUBLISHER_RATE_LIMIT: expected an integer of at least 0, got "abc"',
@@ -146,7 +146,7 @@ describe("--help from the real entry point", () => {
             "--serving-api-enabled, --no-serving-api-enabled",
          );
          expect(out).toContain("--admin-port <n>");
-         expect(out).toContain("(was --admin_port)");
+         expect(out).not.toContain("(was ");
          expect(out).not.toContain("PUBLISHER_READY");
       });
    }

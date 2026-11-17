@@ -105,7 +105,10 @@ async function bindWithoutNativeSchema(
    nativeSchema?: { name: string; type: string }[],
 ) {
    restore = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_PACKAGE_VERSIONING: "off" },
+      env: {
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_PACKAGE_VERSIONING: "off",
+      },
    }).restore;
    work = fs.mkdtempSync(path.join(os.tmpdir(), "colocated-bq-int-"));
    const dir = path.join(work, "pkg");

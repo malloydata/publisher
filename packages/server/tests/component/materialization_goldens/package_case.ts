@@ -73,7 +73,7 @@ export interface GoldenCase {
    entry: string;
    queries: GoldenQuery[];
    /**
-    * Settings beyond the harness's (`PERSIST_STORAGE_MODE=on` and the
+    * Settings beyond the harness's (`PUBLISHER_PERSIST_STORAGE_MODE=on` and the
     * materialize switch), such as `PUBLISHER_MATERIALIZE_GATED_SOURCES`.
     * A case with any loads in a load pool of its own.
     */
@@ -92,8 +92,8 @@ const SWITCHES: Switch[] = ["off", "on"];
 function settingsFor(c: GoldenCase, materialize: Switch): () => void {
    return installSettings({
       env: {
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: materialize === "on" ? "true" : "false",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: materialize === "on" ? "true" : "false",
          ...c.env,
       },
    }).restore;

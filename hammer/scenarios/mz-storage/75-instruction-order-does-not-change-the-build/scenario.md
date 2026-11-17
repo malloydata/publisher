@@ -32,7 +32,7 @@ one that never got far enough to matter.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.iob_orders
 

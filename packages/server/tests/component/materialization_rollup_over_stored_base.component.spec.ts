@@ -533,7 +533,7 @@ source: summed is daily -> { ${where}group_by: cat; aggregate: grand is total.su
    it("builds a rollup over a gated base from the base's table, storing the warehouse build's rows, and answers each caller as live", async () => {
       const restore = installSettings({
          env: {
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
          },
       }).restore;

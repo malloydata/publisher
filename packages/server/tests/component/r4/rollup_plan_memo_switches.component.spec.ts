@@ -3,7 +3,7 @@
 
 /**
  * The rollup leg's plans are memoised per model, and since 6f
- * they depend on `PUBLISHER_MATERIALIZE` (`readsPreaggregateDeclarations`: `#(preaggregate)` is read
+ * they depend on `PUBLISHER_MATERIALIZE_ENABLED` (`readsPreaggregateDeclarations`: `#(preaggregate)` is read
  * only with it on) as well as on the v1 cutover (`readsPreaggregateLines`). A memo keyed on
  * the model alone kept the plans read under whichever switch asked first, so
  * a model queried with the materialize switch off and then on never routed a

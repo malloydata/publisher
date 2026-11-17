@@ -243,11 +243,11 @@ describe("leftover name= views through real builds", () => {
       restoreSettings = installSettings({
          env: {
             PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
          },
       }).restore;
       // A load worker reads its settings when it spawns: a fresh pool, so
-      // the package's build plan sees PUBLISHER_MATERIALIZE.
+      // the package's build plan sees PUBLISHER_MATERIALIZE_ENABLED.
       await __setPackageLoadPoolForTests(null);
       ({ root, envPath, db, repo } = await openTempStorage(
          "leftover-name-view-",

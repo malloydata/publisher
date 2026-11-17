@@ -67,12 +67,12 @@ export function reportAppOrigin(
       url = new URL(raw);
    } catch {
       throw new Error(
-         `Invalid MCP_APP_ORIGIN "${raw}": expected an origin such as http://localhost:4000 or https://publisher.example.com.`,
+         `Invalid PUBLISHER_MCP_APP_ORIGIN "${raw}": expected an origin such as http://localhost:4000 or https://publisher.example.com.`,
       );
    }
    if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new Error(
-         `Invalid MCP_APP_ORIGIN "${raw}": expected an http or https origin.`,
+         `Invalid PUBLISHER_MCP_APP_ORIGIN "${raw}": expected an http or https origin.`,
       );
    }
    return url.origin;
@@ -294,7 +294,7 @@ export async function answerReportApi(
                // The REST route's controller, so gates, givens and the access
                // record are the route's. The slot is taken inside the record,
                // from the route's pool, so a panel full of tiles cannot get
-               // around PUBLISHER_MAX_CONCURRENT_QUERIES and a refusal at the
+               // around PUBLISHER_QUERY_MAX_CONCURRENT and a refusal at the
                // cap is recorded.
                data: await deps.queryController.getQuery(
                   {

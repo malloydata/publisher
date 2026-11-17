@@ -3,7 +3,7 @@
 
 /**
  * `#@ persist` on a top-level `query:`, through the real package path (load,
- * build, bind, query). With PUBLISHER_MATERIALIZE on, a persisted query's
+ * build, bind, query). With PUBLISHER_MATERIALIZE_ENABLED on, a persisted query's
  * table answers exactly the shapes that call it (REST and MCP `queryName`, a
  * report naming it, `run: q`, `run: q -> { … }`), equal to live: its rows, and
  * each column's name, kind and annotations, apart from Malloy's per-compile
@@ -15,7 +15,7 @@
  * statement beside the call, or a later stage that extends or joins, is
  * declined by both legs (the variant gives the run target's name to the
  * stored result). Every query here orders its rows fully: rows that tie on
- * `order_by:`, or have none, may come back in another order than live's. With PUBLISHER_MATERIALIZE off, a persisted query is
+ * `order_by:`, or have none, may come back in another order than live's. With PUBLISHER_MATERIALIZE_ENABLED off, a persisted query is
  * warned and answered live.
  */
 
@@ -655,8 +655,8 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
       it(`answers a gated query live with gated sources ${gatedSwitch ? "on" : "off"}, per caller`, async () => {
          const inner = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: gatedSwitch
                   ? "true"
                   : "false",
@@ -788,13 +788,16 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
    });
 });
 
-describe("R4: a persisted named query with PUBLISHER_MATERIALIZE off", () => {
+describe("R4: a persisted named query with PUBLISHER_MATERIALIZE_ENABLED off", () => {
    let restore: () => void;
    let loaded: Awaited<ReturnType<typeof loadFixture>>;
    let fixture: LoadedFixture;
    beforeAll(async () => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "false" },
+         env: {
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "false",
+         },
       }).restore;
       await freshLoadPool();
       loaded = await loadFixture({ "m.malloy": MODEL });
@@ -834,7 +837,7 @@ describe("R4: a persisted named query with PUBLISHER_MATERIALIZE off", () => {
    });
 });
 
-describe("R4: a persisted view with PUBLISHER_MATERIALIZE off", () => {
+describe("R4: a persisted view with PUBLISHER_MATERIALIZE_ENABLED off", () => {
    /** One valid persisted view, and a model whose view's line is invalid. */
    const VIEWS = `##! experimental.persistence
 source: fl is ${TABLE} extend {
@@ -850,7 +853,10 @@ source: fl is ${TABLE} extend {
    let restore: () => void;
    beforeAll(async () => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "false" },
+         env: {
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "false",
+         },
       }).restore;
       await freshLoadPool();
    });
@@ -864,7 +870,7 @@ source: fl is ${TABLE} extend {
             (w) => w.code === "persist-view-not-built",
          );
          expect(warned.map((w) => w.subject)).toEqual(["fl -> by_carrier"]);
-         expect(warned[0]?.message).toContain("PUBLISHER_MATERIALIZE");
+         expect(warned[0]?.message).toContain("PUBLISHER_MATERIALIZE_ENABLED");
          expect(fixture.built.filter((b) => b.name.endsWith("__view"))).toEqual(
             [],
          );

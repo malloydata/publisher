@@ -27,28 +27,17 @@ export const REFERENCE_END = "<!-- settings-reference:end -->";
 /** The markdown table of every setting a variable or flag gives. */
 export function settingsReferenceTable(): string {
    const rows = NAMED.map((entry) => {
-      const names = namesOf(entry);
-      const deprecated = [
-         ...names.env.filter(({ old }) => old),
-         ...names.flags.filter(({ old }) => old),
-      ].map(({ name }) => code(name));
       return [
          code(entry.key),
-         cell(
-            names.env
-               .filter(({ old }) => !old)
-               .map(({ name }) => code(name))
-               .join(", "),
-         ),
+         cell(namesOf(entry).env.map(code).join(", ")),
          cell(flagSpecs(entry).map(code).join(", ")),
-         cell(deprecated.join(", ")),
          cell(defaultText(entry, "markdown")),
          cell(withReferences(entry.notes ?? entry.description, "markdown")),
       ].join(" | ");
    });
    return [
-      "| Setting | Env var | CLI flag | Deprecated names | Default | Meaning |",
-      "| --- | --- | --- | --- | --- | --- |",
+      "| Setting | Env var | CLI flag | Default | Meaning |",
+      "| --- | --- | --- | --- | --- |",
       ...rows.map((row) => `| ${row} |`),
    ].join("\n");
 }
@@ -131,7 +120,7 @@ export function validatedBlockOf(key: string): string | undefined {
    )?.key;
 }
 
-/** `--help`: today's flags, with what each sets and its default. */
+/** `--help`: every flag, with what it sets and its default. */
 export function helpText(): string {
    const flagged = NAMED.filter((entry) => flagSpecs(entry).length > 0).map(
       (entry) => ({ entry, spec: flagSpecs(entry).join(", ") }),
@@ -140,10 +129,7 @@ export function helpText(): string {
    const width = 40;
    const lines = flagged.map(({ entry, spec }) => {
       const fallback = defaultText(entry, "text");
-      const was = namesOf(entry)
-         .flags.filter(({ old }) => old)
-         .map(({ name }) => name);
-      const text = `${withReferences(entry.description, "text")}${fallback ? ` (default: ${fallback})` : ""}${was.length > 0 ? ` (was ${was.join(", ")})` : ""}`;
+      const text = `${withReferences(entry.description, "text")}${fallback ? ` (default: ${fallback})` : ""}`;
       return spec.length < width
          ? `  ${spec.padEnd(width)}${text}`
          : `  ${spec}\n  ${"".padEnd(width)}${text}`;
@@ -219,18 +205,13 @@ function withReferences(text: string, style: "markdown" | "text"): string {
       if (!entry) return whole;
       if (style === "markdown") return code(key);
       const names = namesOf(entry);
-      const named =
-         names.flags.find(({ old }) => !old) ??
-         names.env.find(({ old }) => !old);
-      return named?.name ?? key;
+      return names.flags[0] ?? names.env[0] ?? key;
    });
 }
 
 /** `--port <n>`, or a boolean's switches: `--serving-api-enabled`, `--no-...`. */
 function flagSpecs(entry: RegisteredSetting): string[] {
-   const flags = namesOf(entry)
-      .flags.filter(({ old }) => !old)
-      .map(({ name }) => name);
+   const flags = namesOf(entry).flags;
    if (entry.type instanceof BooleanType) return flags;
    return flags.map((flag) => `${flag} <${valueName(entry)}>`);
 }
@@ -250,9 +231,6 @@ function defaultText(
    entry: RegisteredSetting,
    style: "markdown" | "text",
 ): string {
-   // A row's names are the derived ones, which say what the key says, so the
-   // key's default reads the right way round even where a deprecated name is
-   // negated (`PUBLISHER_NO_MCP_CONFIG`).
    if (entry.defaultText !== undefined) {
       return style === "markdown"
          ? withReferences(entry.defaultText, style)

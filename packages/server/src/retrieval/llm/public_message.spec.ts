@@ -62,9 +62,11 @@ describe("publicMessage", () => {
          "Chat request failed (500): boom",
       );
       expect(publicMessage(vendor)).toBe("Chat request failed (500): boom");
-      expect(publicMessage(new Error("EMBEDDING_API_BASE is not a URL"))).toBe(
-         "EMBEDDING_API_BASE is not a URL",
-      );
+      expect(
+         publicMessage(
+            new Error("PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL is not a URL"),
+         ),
+      ).toBe("PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL is not a URL");
       expect(publicMessage("plain")).toBe("plain");
    });
 

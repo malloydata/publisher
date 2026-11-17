@@ -23,7 +23,7 @@ from the refused one and the message says which move.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.gbb_orders
 

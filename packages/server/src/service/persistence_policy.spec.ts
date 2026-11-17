@@ -378,7 +378,9 @@ source: b is duckdb.sql("SELECT 2 as y")
          expect(message).toContain('"dup"');
          expect(message).toContain("[materialization-table-collision]");
          // Naming the operator's opt-out.
-         expect(message).toContain("PERSIST_COLLISION_ENFORCE=false");
+         expect(message).toContain(
+            "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false",
+         );
       },
       { timeout: 30000 },
    );
@@ -458,10 +460,10 @@ source: b is duckdb.sql("SELECT 2 as y")
    );
 
    it(
-      "with PERSIST_COLLISION_ENFORCE=false, loads and refuses the colliding sources alone, on the package's warnings",
+      "with PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false, loads and refuses the colliding sources alone, on the package's warnings",
       async () => {
          const { restore } = installSettings({
-            env: { PERSIST_COLLISION_ENFORCE: "false" },
+            env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false" },
          });
          try {
             const pkg = await loadPackage(COLLIDING_MODEL);

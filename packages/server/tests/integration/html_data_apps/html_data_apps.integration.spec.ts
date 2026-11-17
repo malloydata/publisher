@@ -43,8 +43,8 @@ const nopublicFixtureDir = path.resolve(
 // publisher_data AFTER the package mounts — never in the source fixture — so it
 // never gets routed through env-creation's `fs.cp`. (Copying an absolute-target
 // symlink is not portable across platforms and was breaking CI on Linux.) The
-// package is served from a copy (no --watch-env), at <SERVER_ROOT>/
-// publisher_data/<env>/<pkg>/public; SERVER_ROOT defaults to the server package
+// package is served from a copy (no --watch-env), at <PUBLISHER_ROOT>/
+// publisher_data/<env>/<pkg>/public; PUBLISHER_ROOT defaults to the server package
 // dir under `bun test`.
 const serverPkgRoot = path.resolve(__dirname, "../../..");
 const servedEscapeLink = path.join(

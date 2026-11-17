@@ -22,7 +22,7 @@ materialized snapshot (a later source mutation is invisible).
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.dop_orders
 

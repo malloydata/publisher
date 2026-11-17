@@ -19,7 +19,7 @@ import {
  * copy-mode gate it depends on.
  *
  * Watch mode only recompiles source edits when the server is started with
- * `--watch-env` (i.e. `PUBLISHER_WATCH=<env>`): that flag mounts local-dir
+ * `--watch-env` (i.e. `PUBLISHER_WATCH_ENVIRONMENTS=<env>`): that flag mounts local-dir
  * packages as in-place symlinks instead of copies, so an edit to the source
  * directory is visible to the chokidar watcher, which recompiles just that
  * package via `Environment.getPackage(name, reload=true)`. Without the flag
@@ -31,7 +31,7 @@ import {
  * `publisher.config.json`. Neither can be driven through the shared in-process
  * REST harness (one cached server + store for the whole file), so this suite
  * boots dedicated server subprocesses from source, each with its own
- * `SERVER_ROOT`, optional `PUBLISHER_WATCH`, and a seeded config pointing at a
+ * `PUBLISHER_ROOT`, optional `PUBLISHER_WATCH_ENVIRONMENTS`, and a seeded config pointing at a
  * writable temp source package that the tests then edit.
  */
 
@@ -59,7 +59,7 @@ const modelsText = async (baseUrl: string): Promise<string> => {
 
 /**
  * Boot a dedicated Publisher server subprocess from source against a seeded
- * config. With `watch: true` the env is passed via `PUBLISHER_WATCH`, enabling
+ * config. With `watch: true` the env is passed via `PUBLISHER_WATCH_ENVIRONMENTS`, enabling
  * the in-place symlink mount and auto-starting the watcher after env load.
  */
 async function startServer(opts: { watch: boolean }): Promise<TestServer> {
@@ -71,7 +71,7 @@ async function startServer(opts: { watch: boolean }): Promise<TestServer> {
          location: src.dir,
       }),
       env: {
-         PUBLISHER_WATCH: opts.watch ? ENV_NAME : undefined,
+         PUBLISHER_WATCH_ENVIRONMENTS: opts.watch ? ENV_NAME : undefined,
          PUBLISHER_ADMIN_PORT: String(adminPort),
       },
    });

@@ -68,7 +68,7 @@ bun run perf:loads --targets gen --preset large  --duration 120 --warmup-rounds 
 | `--loader-vus N`                | `1`                 | `mixed`: VUs in each loader scenario.                                                      |
 | `--weights a,b,c,d,e`           | `40,35,20,2.5,2.5`  | Query mix: cheap, medium, heavy, report list, report get.                                  |
 | `--max-error-rate R`            | `0.05`              | Sanity threshold on `http_req_failed`; crossing it makes k6 exit 99 and the run say so.    |
-| `--server-env KEY=VALUE`        | none                | Extra server environment, repeatable — e.g. `PACKAGE_LOAD_WORKERS=4`.                      |
+| `--server-env KEY=VALUE`        | none                | Extra server environment, repeatable — e.g. `PUBLISHER_PACKAGE_LOAD_WORKERS=4`.                      |
 | `--port P` / `--mcp-port P`     | `4200` / `4240`     | The dedicated server's ports. 4000/4040 and 4100/4140 are refused: other servers own them. |
 | `--out DIR`                     | `results/perf-<ts>` | Results directory.                                                                         |
 | `--keep-temp`                   | off                 | Keep the temp server root and generated package for inspection.                            |
@@ -78,11 +78,11 @@ bun run perf:loads --targets gen --preset large  --duration 120 --warmup-rounds 
 1. Generates the package into a fresh temp directory, and copies `examples/storefront` beside it
    (nothing in the repo is touched).
 2. Writes a config with one environment, `perf`, serving both, and starts the server with
-   `NODE_ENV=production DISABLE_RESPONSE_LOGGING=true LOG_LEVEL=warn`:
+   `NODE_ENV=production PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED=false PUBLISHER_LOGGING_LEVEL=warn`:
 
    ```bash
-   bun run dist/server.mjs --server_root <temp> --config <temp>/publisher.config.json \
-     --port 4200 --mcp_port 4240 --host 127.0.0.1 --no-mcp-config --init
+   bun run dist/server.mjs --root <temp> --config <temp>/publisher.config.json \
+     --port 4200 --mcp-port 4240 --host 127.0.0.1 --no-mcp-config-file-enabled --init
    ```
 
    It waits for the `PUBLISHER_READY` line, and refuses to start if a package failed to load.
@@ -154,7 +154,7 @@ fixed, interleaved weighted schedule, so two runs issue the same mix:
 
 Queries go through `POST …/models/{path}/query` with `compactJson: true`. Each VU holds one request
 in flight, so the concurrency level is also the server-side query concurrency — note the server's
-default `PUBLISHER_MAX_CONCURRENT_QUERIES` is 32, so at 32 VUs the cap is exactly reached.
+default `PUBLISHER_QUERY_MAX_CONCURRENT` is 32, so at 32 VUs the cap is exactly reached.
 
 Warm-up: every query text and report once, then `--warmup-rounds` × N requests of the mix.
 
@@ -212,9 +212,9 @@ Raw files beside the report: per run, `*.summary.json` (k6 `--summary-export`), 
 - **Client and server share the machine.** k6, the Publisher process, its package-load worker and
   DuckDB compete for the same cores, and nothing else should be running. The report records load
   average for that reason; a run whose start load average is well above zero is suspect.
-- **One package-load worker by default.** `PACKAGE_LOAD_WORKERS` defaults to 1, so concurrent loads
+- **One package-load worker by default.** `PUBLISHER_PACKAGE_LOAD_WORKERS` defaults to 1, so concurrent loads
   queue for the worker: `loads` at concurrency 2 and 4 measures that queue as much as compile speed.
-  Re-run with `--server-env PACKAGE_LOAD_WORKERS=4` to see the pool's effect.
+  Re-run with `--server-env PUBLISHER_PACKAGE_LOAD_WORKERS=4` to see the pool's effect.
 - **DuckDB and OS caching.** Parquet files are read through the OS page cache and DuckDB's own
   caches; after warm-up the queries measure warm reads, not first reads. Each package also has its
   own DuckDB connection, so concurrent queries against one package may serialize there.
@@ -242,7 +242,7 @@ no load errors.
 | ------------ | ------------------------------------------------------------------------------------------------------------------------- |
 | machine      | Apple M5 Pro, 18 cores, 48 GiB, macOS (Darwin 25.5.0 arm64)                                                               |
 | runtimes     | Bun 1.4.2, Node v24.6.0, k6 v2.0.0                                                                                        |
-| server knobs | defaults: `PACKAGE_LOAD_WORKERS=1`, `PUBLISHER_MAX_CONCURRENT_QUERIES=32`                                                 |
+| server knobs | defaults: `PUBLISHER_PACKAGE_LOAD_WORKERS=1`, `PUBLISHER_QUERY_MAX_CONCURRENT=32`                                                 |
 | load average | 3.3 at the start, 3.4 at the end (1 min). Not idle (other sessions were open), so treat differences under ~10 % as noise. |
 | packages     | storefront: 6 files, 0.9 MB. gen (medium): 10 Malloy files, 112 KB of Malloy, 1M fact rows (18 MB parquet)                |
 

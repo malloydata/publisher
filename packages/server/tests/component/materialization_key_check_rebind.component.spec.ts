@@ -91,8 +91,8 @@ async function fixture(
 ): Promise<Fixture> {
    const restore = installSettings({
       env: {
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: "true",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
          PUBLISHER_PACKAGE_VERSIONING: versioned ? "on" : "off",
       },
    }).restore;

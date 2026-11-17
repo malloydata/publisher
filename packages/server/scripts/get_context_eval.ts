@@ -11,7 +11,7 @@
  * (`semantic` / `lexical`; servers without an embedding provider report no
  * mode and run the lexical baseline).
  *
- * A/B: run once against a server started WITHOUT `EMBEDDING_API_KEY`
+ * A/B: run once against a server started WITHOUT `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY`
  * (lexical baseline), then once against a server started with it, and
  * compare the two summaries. The cases marked `gap` share no tokens with
  * their target entity's name or docs, so the lexical run is expected to
@@ -358,7 +358,7 @@ async function main(): Promise<void> {
       "The [gap] cases share no tokens with their target entity, so a lexical",
    );
    console.log(
-      "run misses them by construction; a semantic run (EMBEDDING_API_KEY set)",
+      "run misses them by construction; a semantic run (PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY set)",
    );
    console.log("is expected to close them. Compare the two summaries.");
 }

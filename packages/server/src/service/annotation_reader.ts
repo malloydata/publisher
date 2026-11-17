@@ -13,7 +13,7 @@
  *
  * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) are in the
  * registry with their closed key sets, and are read only with the materialize
- * switch on (`PUBLISHER_MATERIALIZE`): see {@link MATERIALIZE_V2_ROUTES}.
+ * switch on (`PUBLISHER_MATERIALIZE_ENABLED`): see {@link MATERIALIZE_V2_ROUTES}.
  */
 
 import {
@@ -339,7 +339,7 @@ const SCHEDULE_RETIRED =
 
 /**
  * The materialization v2 routes. Each is read only with the materialize switch
- * on (`PUBLISHER_MATERIALIZE`); off, nothing reads them and the near-miss scan
+ * on (`PUBLISHER_MATERIALIZE_ENABLED`); off, nothing reads them and the near-miss scan
  * treats them as it did before they were registered. A key outside a
  * route's set is malformed (`<route>-unknown-key`), on every route.
  */
@@ -432,7 +432,7 @@ export const PERSIST_QUERY_UNPARSEABLE_CODE = "persist-query-unparseable";
 /** Two sources an author's `name=` puts on one table. */
 export const MATERIALIZATION_TABLE_COLLISION_CODE =
    "materialization-table-collision";
-/** A storage source the deployment's `PERSIST_STORAGE_MODE` does not honour. */
+/** A storage source the deployment's `PUBLISHER_PERSIST_STORAGE_MODE` does not honour. */
 export const MATERIALIZATION_STORAGE_MODE_CODE = "materialization-storage-mode";
 /** A misspelled materialization route or directive (`#(materialise)`). */
 export const MATERIALIZATION_NEAR_MISS_CODE = "materialization-near-miss";

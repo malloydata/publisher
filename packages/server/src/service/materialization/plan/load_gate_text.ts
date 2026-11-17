@@ -9,7 +9,7 @@
  *
  * It carries every `malformed` finding (the invalid annotations, near misses
  * excepted, which are the loaded models'), two sources an author's `name=`
- * puts on one table (unless `PERSIST_COLLISION_ENFORCE=false`), and the
+ * puts on one table (unless `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`), and the
  * invalid incremental declarations, each line with its code.
  */
 
@@ -67,7 +67,7 @@ interface GatedPlan {
 
 /** How this deployment judges the plan. */
 interface GateJudgement {
-   /** `PERSIST_COLLISION_ENFORCE`: a collision fails the load. */
+   /** `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED`: a collision fails the load. */
    enforceCollisions: boolean;
    /** A published version of a `scope: "version"` package. */
    versionScoped: boolean;
@@ -82,7 +82,7 @@ interface GateJudgement {
  * A table collision found as the plan is refused alone (a `#(materialize)`
  * source, or a `#@ persist` partner on its table) as this deployment judges
  * it: invalid (it fails the load) by default, or, under
- * `PERSIST_COLLISION_ENFORCE=false`, that source refused alone under its
+ * `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`, that source refused alone under its
  * own not-built code.
  */
 export function relaxedCollision(
@@ -230,7 +230,7 @@ export function planCollisions(
          enforced:
             `${what}the package does not load until each has a distinct ` +
             `#@ persist name= (a deployment that must load it anyway can ` +
-            `set PERSIST_COLLISION_ENFORCE=false, which refuses the ` +
+            `set PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false, which refuses the ` +
             `colliding sources alone and serves them live).`,
       });
    }

@@ -26,7 +26,7 @@ pre-mutation value) proves the stored table answered.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.pwf_orders
 

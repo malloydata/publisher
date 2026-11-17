@@ -47,12 +47,12 @@ function observeCap(
 const capExceededCounter = lazyInstrument(() => {
    observeCap(
       "publisher_max_query_rows",
-      "Current effective PUBLISHER_MAX_QUERY_ROWS cap (0 = disabled, -1 = misconfigured)",
+      "Current effective PUBLISHER_QUERY_MAX_ROWS cap (0 = disabled, -1 = misconfigured)",
       getMaxQueryRows,
    );
    observeCap(
       "publisher_max_response_bytes",
-      "Current effective PUBLISHER_MAX_RESPONSE_BYTES cap (0 = disabled, -1 = misconfigured)",
+      "Current effective PUBLISHER_QUERY_MAX_RESPONSE_BYTES cap (0 = disabled, -1 = misconfigured)",
       getMaxResponseBytes,
       "By",
    );

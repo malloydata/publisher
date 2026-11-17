@@ -30,7 +30,7 @@ inline refinement, and a target that is not materialized into storage.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.pvj_opps
 

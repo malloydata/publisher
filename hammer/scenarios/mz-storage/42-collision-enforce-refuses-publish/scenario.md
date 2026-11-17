@@ -8,18 +8,18 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A colliding publish is refused by default; PERSIST_COLLISION_ENFORCE=false opts out
+# A colliding publish is refused by default; PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false opts out
 
 A within-package persist-target collision is a hard **publish rejection** by
-default (`PERSIST_COLLISION_ENFORCE` defaults to `true`) — but only on the
+default (`PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED` defaults to `true`) — but only on the
 author-in-the-loop publish path (POST /packages), never at startup/reload, which
 stays fail-safe and only warns (see `within-package-collision`). A deployment
 whose existing packages carry a latent collision it cannot fix yet opts out with
-`PERSIST_COLLISION_ENFORCE=false`, which turns the rejection back into a warning.
+`PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`, which turns the rejection back into a warning.
 
 The discriminating pair: the SAME colliding package published against two
 publishers. The one booted with the default refuses the publish; the one booted
-with `PERSIST_COLLISION_ENFORCE=false` accepts it (warn-only). The flag is fixed
+with `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false` accepts it (warn-only). The flag is fixed
 at process start, so each is a separate publisher (`## Publisher` carries the
 env var).
 
@@ -31,7 +31,7 @@ Package versioning is off on both publishers: `## Republish` re-publishes in pla
 
 Boot with the default: collisions are enforced.
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: off
 
 ## Data orders_pg.coe_orders
@@ -71,9 +71,9 @@ cites: resolve to the same materialized table
 
 A second publisher that opts out.
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: off
-- PERSIST_COLLISION_ENFORCE: false
+- PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: false
 
 ## Republish coe
 

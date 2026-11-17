@@ -39,7 +39,7 @@ async function compile(
 ): Promise<{ compiled: FinishedBuildPlan; packagePath: string }> {
    restore?.();
    restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true" },
+      env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
    }).restore;
    const pkg = await packages.create({ "m.malloy": text });
    return {

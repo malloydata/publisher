@@ -287,8 +287,8 @@ Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`ware
  * Registers search_database_schema: natural-language search over a
  * configured connection's schema.
  *
- * Ranking is lexical (lunr/BM25) unless both EMBEDDING_API_KEY and
- * EMBEDDING_INDEX_CONNECTION_SCHEMA are set, because embedding sends table and
+ * Ranking is lexical (lunr/BM25) unless both PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY and
+ * PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED are set, because embedding sends table and
  * column names to a third party (see config.schemaEmbeddingEnabled).
  */
 export function registerSearchDatabaseSchemaTool(

@@ -24,7 +24,7 @@ the 50 is never counted.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.pvd_orders
 

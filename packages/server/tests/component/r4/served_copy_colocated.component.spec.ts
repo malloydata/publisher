@@ -251,8 +251,8 @@ for (const tier of tiers) {
          // The storage tier is off: a colocated table needs none.
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "off",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "off",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
             },
          }).restore;
@@ -395,8 +395,8 @@ source: gated is orders_raw extend {
    async function loaded(gatedSources: "true" | "false") {
       const restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "off",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "off",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: gatedSources,
          },
       }).restore;
@@ -494,7 +494,10 @@ source: gated is orders_raw extend {
 
    it("binds a v1 colocated #@ persist on the served copy, which answers it (the v1 cutover, G1)", async () => {
       const restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
+         env: {
+            PUBLISHER_PERSIST_STORAGE_MODE: "off",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
+         },
       }).restore;
       await freshLoadPool();
       const loader = await loadFixture({
@@ -541,8 +544,8 @@ describe("a storage= table while the storage tier does not serve", () => {
    beforeAll(async () => {
       restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "write-only",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "write-only",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
          },
       }).restore;
       fixture = await buildScenario({

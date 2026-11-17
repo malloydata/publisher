@@ -7,6 +7,7 @@ import path from "path";
 import { getRetrievalConfig } from "../config";
 import { withSettings } from "../test_helpers/settings_env";
 import { REGISTRY, Settings, type SettingKey } from ".";
+import { namesOf } from "./settings";
 import {
    exampleConfigText,
    helpText,
@@ -17,7 +18,6 @@ import {
    settingsReferenceTable,
    withReferenceTable,
 } from "./reference";
-import { derivedEnvName } from "./setting";
 
 const DOC = path.resolve(import.meta.dir, "../../../../docs/configuration.md");
 
@@ -39,10 +39,8 @@ describe("the generated settings reference", () => {
          doc.indexOf(REFERENCE_END),
       );
       for (const entry of REGISTRY) {
-         for (const name of [
-            ...(entry.aliases.env ?? []),
-            ...(entry.aliases.flags ?? []),
-         ]) {
+         const names = namesOf(entry);
+         for (const name of [...names.env, ...names.flags]) {
             expect(table, name).toContain(`\`${name}`);
          }
       }
@@ -53,27 +51,6 @@ describe("the generated settings reference", () => {
          if (typeof entry.default === "function") {
             expect(entry.defaultText, entry.key).toBeDefined();
          }
-      }
-   });
-
-   it("gives a setting with negated old names the key's default, which its derived names read the right way round", () => {
-      const doc = readDoc();
-      const negated = REGISTRY.filter((entry) => entry.aliases.negated);
-      expect(negated.map((entry) => entry.key)).toContain(
-         "mcp.configFileEnabled",
-      );
-      for (const entry of negated) {
-         const row = doc
-            .split("\n")
-            .find((line) => line.startsWith(`| \`${entry.key}\` |`));
-         expect(row, entry.key).toBeDefined();
-         // Setting | Env var | CLI flag | Deprecated names | Default | Meaning
-         const cells = row!.split(" | ");
-         expect(cells[1], entry.key).toBe(`\`${derivedEnvName(entry.key)}\``);
-         for (const name of entry.aliases.env ?? []) {
-            expect(cells[3], entry.key).toContain(`\`${name}\``);
-         }
-         expect(cells[4], entry.key).toBe(`\`${String(entry.default)}\``);
       }
    });
 
@@ -129,12 +106,12 @@ describe("publisher.config.json.example", () => {
       expect(validatedBlockOf("mcp.port")).toBeUndefined();
    });
 
-   it("changes nothing when copied in as the config, and warns about nothing", () => {
+   it("changes nothing when copied in as the config, and fails nothing", () => {
       const read = (file?: Record<string, unknown>) =>
          withSettings(file === undefined ? {} : { file }, ({ serverRoot }) => {
             const settings = Settings.current();
             return {
-               warnings: settings.warnings.map((warning) => warning.message),
+               errors: settings.errors().map((error) => error.message),
                // `retrieval` itself is the file's block as written; what the
                // server uses is the block assembled from it.
                values: Object.fromEntries(
@@ -149,7 +126,7 @@ describe("publisher.config.json.example", () => {
             };
          });
       const copied = read(JSON.parse(readExample()));
-      expect(copied.warnings).toEqual([]);
+      expect(copied.errors).toEqual([]);
       expect(copied.retrieval).toBeUndefined();
       // `mcp.host` follows `host` when it is given, so `host` is `null`
       // there: given its own default, it would move MCP onto every interface.
@@ -162,7 +139,7 @@ describe("--help", () => {
    it("lists every flag the server reads, with its default", () => {
       const help = helpText();
       for (const entry of REGISTRY) {
-         for (const flag of entry.aliases.flags ?? []) {
+         for (const flag of namesOf(entry).flags) {
             expect(help, flag).toContain(flag);
          }
       }
@@ -180,10 +157,10 @@ describe("--help", () => {
       expect(help).toContain("and MCP too unless --mcp-host is given.");
       expect(help).toContain("(default: --host when given, else 127.0.0.1)");
       expect(help).toContain("--host does not move it.");
-      expect(help).not.toMatch(/\{[a-zA-Z.]+\}|unless mcp\.host|--mcp_host is/);
+      expect(help).not.toMatch(/\{[a-zA-Z.]+\}|unless mcp\.host/);
    });
 
-   it("gives a setting with a negated old flag its derived switches and the key's default", () => {
+   it("gives a positive boolean both switches and its default", () => {
       const help = helpText();
       expect(help).toContain(
          "--mcp-config-file-enabled, --no-mcp-config-file-enabled",
@@ -196,7 +173,7 @@ describe("--help", () => {
       expect(text).toBeDefined();
       expect(text).toContain("is inside a git working tree");
       expect(text).toContain("(default: on)");
-      expect(text).toContain("(was --no-mcp-config)");
+      expect(text).not.toContain("(was ");
    });
 });
 
@@ -208,7 +185,7 @@ describe("the startup settings line", () => {
                PUBLISHER_PORT: "4100",
                PUBLISHER_ADMIN_CATALOG_DATABASE: "postgresql://u:pw@h/db",
             },
-            argv: ["--mcp_port", "4141"],
+            argv: ["--mcp-port", "4141"],
             file: { frozenConfig: true, environments: [] },
          },
          ({ serverRoot }) =>
@@ -218,7 +195,7 @@ describe("the startup settings line", () => {
             ),
       );
       expect(line).toBe(
-         "Settings given: frozenConfig=true from <file>, port=4100 from PUBLISHER_PORT, environments from <file>, mcp.port=4141 from --mcp_port, admin.catalogDatabase=(set) from PUBLISHER_ADMIN_CATALOG_DATABASE",
+         "Settings given: frozenConfig=true from <file>, port=4100 from PUBLISHER_PORT, environments from <file>, mcp.port=4141 from --mcp-port, admin.catalogDatabase=(set) from PUBLISHER_ADMIN_CATALOG_DATABASE",
       );
       expect(line).not.toContain("pw");
    });
@@ -237,7 +214,8 @@ describe("the startup settings line", () => {
             env: {
                PUBLISHER_ADMIN_STORAGE_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
                PUBLISHER_ADMIN_STORAGE_ENDPOINT: "https://k:s@minio:9000",
-               EMBEDDING_API_BASE: "https://user:hunter2@proxy.example/v1",
+               PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL:
+                  "https://user:hunter2@proxy.example/v1",
             },
          },
          () => settingsLine(Settings.current()),
@@ -249,7 +227,7 @@ describe("the startup settings line", () => {
          'admin.storage.endpoint="https://***@minio:9000" from PUBLISHER_ADMIN_STORAGE_ENDPOINT',
       );
       expect(line).toContain(
-         'retrieval.embedding.baseUrl="https://***@proxy.example/v1" from EMBEDDING_API_BASE',
+         'retrieval.embedding.baseUrl="https://***@proxy.example/v1" from PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL',
       );
       for (const leak of ["AKIAIOSFODNN7EXAMPLE", "k:s", "hunter2", "user:"]) {
          expect(line).not.toContain(leak);
@@ -260,14 +238,15 @@ describe("the startup settings line", () => {
       const line = withSettings(
          {
             env: {
-               EMBEDDING_API_BASE: "https://user:pa/ss@llm.example.com/v1",
+               PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL:
+                  "https://user:pa/ss@llm.example.com/v1",
                PUBLISHER_ADMIN_STORAGE_ENDPOINT: "https://user:p@ss@minio:9000",
             },
          },
          () => settingsLine(Settings.current()),
       );
       expect(line).toContain(
-         'retrieval.embedding.baseUrl="https://***@llm.example.com/v1" from EMBEDDING_API_BASE',
+         'retrieval.embedding.baseUrl="https://***@llm.example.com/v1" from PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL',
       );
       expect(line).toContain(
          'admin.storage.endpoint="https://***@minio:9000" from PUBLISHER_ADMIN_STORAGE_ENDPOINT',
@@ -294,10 +273,10 @@ describe("the generated reference, when it is out of date", () => {
 
 describe("the startup settings line, for a value that did not parse", () => {
    it("names the setting without the value", () => {
-      const line = withSettings({ env: { MCP_PORT: "40a0" } }, () =>
+      const line = withSettings({ env: { PUBLISHER_MCP_PORT: "40a0" } }, () =>
          settingsLine(Settings.current()),
       );
-      expect(line).toContain("mcp.port=(invalid) from MCP_PORT");
+      expect(line).toContain("mcp.port=(invalid) from PUBLISHER_MCP_PORT");
       expect(line).not.toContain("40a0");
    });
 });

@@ -12,7 +12,7 @@ SPDX-License-Identifier: MIT
 
 The settings registry reads every boolean setting with one reader: `true/false`,
 `1/0`, `yes/no` and `on/off`, in any case (docs/configuration.md). This holds it
-end to end, on a setting fixed at process start: `PERSIST_COLLISION_ENFORCE`
+end to end, on a setting fixed at process start: `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED`
 spelled `Yes` makes a publisher refuse a colliding publish, and spelled `OFF`
 leaves it warn-only (see `collision-enforce-refuses-publish`, which uses `true`).
 
@@ -22,9 +22,9 @@ Package versioning is off on both publishers: `## Republish` re-publishes in pla
 
 ## Publisher strict
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: off
-- PERSIST_COLLISION_ENFORCE: Yes
+- PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: Yes
 
 ## Data orders_pg.sbs_orders
 
@@ -61,9 +61,9 @@ cites: resolve to the same materialized table
 
 ## Publisher lax
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: off
-- PERSIST_COLLISION_ENFORCE: OFF
+- PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: OFF
 
 ## Republish sbs
 

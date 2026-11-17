@@ -27,9 +27,4 @@ export {
 export { externalEnv, referencedVariable } from "./external";
 export { REGISTRY, type SettingKey, type SettingValue } from "./registry";
 export { derivedEnvName, derivedFlagName } from "./setting";
-export {
-   Settings,
-   type LoadInput,
-   type SerializedSettings,
-   type SettingWarning,
-} from "./settings";
+export { Settings, type LoadInput, type SerializedSettings } from "./settings";

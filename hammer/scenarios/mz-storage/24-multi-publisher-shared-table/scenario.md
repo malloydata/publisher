@@ -23,7 +23,7 @@ live (`1150`).
 
 ## Publisher p1
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.cl_orders
 
@@ -60,7 +60,7 @@ A second worker on the same config. It has the package but has NOT built or been
 given a manifest. (Starting it also makes it active, but the queries below name
 their target explicitly.)
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Mutate orders_pg.cl_orders
 

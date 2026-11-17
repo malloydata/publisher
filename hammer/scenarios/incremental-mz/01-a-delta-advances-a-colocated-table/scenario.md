@@ -36,7 +36,7 @@ empty range and skip — correct, but nothing a test can watch advance.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.iv_orders
 

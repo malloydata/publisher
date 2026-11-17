@@ -3,7 +3,7 @@
 
 /**
  * Streaming for the ad-hoc connection SQL endpoints, so the byte cap
- * (`PUBLISHER_MAX_RESPONSE_BYTES`) bounds memory as rows arrive. Row count is
+ * (`PUBLISHER_QUERY_MAX_RESPONSE_BYTES`) bounds memory as rows arrive. Row count is
  * a poor proxy for memory (one wide JSON column defeats it), and `runSQL`
  * buffers the whole result before bytes could be counted. Connections that
  * cannot stream stay on the buffered, row-capped path.
@@ -81,14 +81,14 @@ export async function streamSqlWithBudget(
             byteTotal += Buffer.byteLength(JSON.stringify(row), "utf8");
             if (byteTotal > maxBytes) {
                recordQueryCapExceeded("bytes", "connection_sql");
-               overflowMessage = `Query response exceeded ${maxBytes} bytes (had at least ${byteTotal}). Refine the query (project fewer columns, add a LIMIT, or filter wide values) or raise PUBLISHER_MAX_RESPONSE_BYTES.`;
+               overflowMessage = `Query response exceeded ${maxBytes} bytes (had at least ${byteTotal}). Refine the query (project fewer columns, add a LIMIT, or filter wide values) or raise PUBLISHER_QUERY_MAX_RESPONSE_BYTES.`;
                capAc.abort();
                break;
             }
          }
          if (maxRows > 0 && rows.length > maxRows) {
             recordQueryCapExceeded("rows", "connection_sql");
-            overflowMessage = `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`;
+            overflowMessage = `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_QUERY_MAX_ROWS.`;
             capAc.abort();
             break;
          }

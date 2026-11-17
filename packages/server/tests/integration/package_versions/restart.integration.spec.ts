@@ -74,15 +74,15 @@ async function poll(
 /**
  * This process's environment, minus what would change how the child starts:
  * a sibling spec in the same run that failed before its cleanup can leave
- * `INITIALIZE_STORAGE` (which would drop the store this test restarts on), a
+ * `PUBLISHER_INITIALIZE_STORAGE` (which would drop the store this test restarts on), a
  * config path, or a shutdown setting behind.
  */
 function inheritedEnv(): NodeJS.ProcessEnv {
    const env = { ...process.env };
    for (const key of Object.keys(env)) {
       if (
-         key === "INITIALIZE_STORAGE" ||
-         key === "PUBLISHER_CONFIG_PATH" ||
+         key === "PUBLISHER_INITIALIZE_STORAGE" ||
+         key === "PUBLISHER_CONFIG" ||
          key.startsWith("SHUTDOWN_")
       ) {
          delete env[key];
@@ -117,13 +117,13 @@ class Server {
          cwd: SERVER_DIR,
          env: {
             ...inheritedEnv(),
-            SERVER_ROOT: this.serverRoot,
+            PUBLISHER_ROOT: this.serverRoot,
             PUBLISHER_HOST: "127.0.0.1",
             PUBLISHER_PORT: String(port),
-            MCP_PORT: String(mcpPort),
+            PUBLISHER_MCP_PORT: String(mcpPort),
             PUBLISHER_PACKAGE_VERSIONING: "on",
             PUBLISHER_VERSION_PROMOTION: "on-publish",
-            PUBLISHER_NO_MCP_CONFIG: "1",
+            PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false",
          },
          stdio: ["ignore", "pipe", "pipe"],
       });

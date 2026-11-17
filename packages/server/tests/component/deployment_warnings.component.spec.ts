@@ -49,13 +49,13 @@ let restoreSettings: () => void;
 function useStorageMode(mode: "on" | "off" | "write-only"): void {
    restoreSettings();
    restoreSettings = installSettings({
-      env: { PERSIST_STORAGE_MODE: mode },
+      env: { PUBLISHER_PERSIST_STORAGE_MODE: mode },
    }).restore;
 }
 
 beforeEach(async () => {
    restoreSettings = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on" },
+      env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
    }).restore;
    rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-p13-"));
    envPath = path.join(rootDir, "env");
@@ -150,7 +150,7 @@ describe("a storage= destination the environment does not configure (P13)", () =
       expect(warningsWith(pkg, DESTINATION_MISSING)).toEqual([]);
    });
 
-   it("is not reported under PERSIST_STORAGE_MODE=off, which ignores storage=", async () => {
+   it("is not reported under PUBLISHER_PERSIST_STORAGE_MODE=off, which ignores storage=", async () => {
       useStorageMode("off");
       const { pkg } = await load([]);
       expect(warningsWith(pkg, DESTINATION_MISSING)).toEqual([]);

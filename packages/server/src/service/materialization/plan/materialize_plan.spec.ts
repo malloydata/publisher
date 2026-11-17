@@ -39,13 +39,13 @@ import {
  * source is planned and under what name, what it stores, the parent an
  * extension builds over, and every refusal and package warning, read through
  * the companion compiled into the build plan or from `planModelMaterialize`
- * directly. With PUBLISHER_MATERIALIZE off nothing is planned. The generated
+ * directly. With PUBLISHER_MATERIALIZE_ENABLED off nothing is planned. The generated
  * text is `build_file_generator.spec.ts`'s.
  */
 
 const packages = planPackages({}, { keepIncrementalUnbuildable: true });
 const enable = (on: boolean) =>
-   packages.settings({ PUBLISHER_MATERIALIZE: on ? "true" : "false" });
+   packages.settings({ PUBLISHER_MATERIALIZE_ENABLED: on ? "true" : "false" });
 
 const compiled = async (files: ModelFiles) => (await packages.plan(files)).c;
 
@@ -547,7 +547,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "with PUBLISHER_MATERIALIZE off, plans nothing for #(materialize) and leaves #@ persist sources as they were",
+      "with PUBLISHER_MATERIALIZE_ENABLED off, plans nothing for #(materialize) and leaves #@ persist sources as they were",
       async () => {
          const files = `##! experimental.persistence
 ${BASE}
@@ -1128,7 +1128,7 @@ source: orders is orders_raw
 
    async function outcome(gatedSources: boolean, text = GATED) {
       packages.settings({
-         PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
          PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
       });
       const c = await compiled(text);

@@ -26,7 +26,7 @@ function installHeapGauges(): void {
    meter
       .createObservableGauge("publisher_heap_size_limit_bytes", {
          description:
-            "V8 heap_size_limit (--max-old-space-size). Compare with PUBLISHER_MAX_MEMORY_BYTES.",
+            "V8 heap_size_limit (--max-old-space-size). Compare with PUBLISHER_MEMORY_MAX_BYTES.",
          unit: "By",
       })
       .addCallback((observation) => {
@@ -84,7 +84,7 @@ export function checkHeapConfiguration(options: CheckHeapOptions = {}): {
       log.warn(
          `V8 heap_size_limit is ${limitMiB} MiB, below the recommended ${recommendedMiB} MiB. ` +
             `Pass --max-old-space-size=${recommendedMiB} (or higher) on the node process to keep ` +
-            `the row/byte caps (PUBLISHER_MAX_QUERY_ROWS / PUBLISHER_MAX_RESPONSE_BYTES) within ` +
+            `the row/byte caps (PUBLISHER_QUERY_MAX_ROWS / PUBLISHER_QUERY_MAX_RESPONSE_BYTES) within ` +
             `safe margin. With a smaller heap, a single large query can OOM the pod before the ` +
             `memory governor's back-pressure has a chance to trip.`,
          {

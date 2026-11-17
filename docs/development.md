@@ -35,7 +35,7 @@ samples, see [configuration.md](configuration.md#bring-your-own-config).
 > bun run build && bun run start -- --watch-env examples
 > ```
 >
-> (or set `PUBLISHER_WATCH=examples`). Watch mode mounts the packages in place as symlinks, which happens
+> (or set `PUBLISHER_WATCH_ENVIRONMENTS=examples`). Watch mode mounts the packages in place as symlinks, which happens
 > when the environment is first loaded: on a fresh server root, or on any boot with `--init`. If you
 > already started the env without `--watch-env`, its packages were copied into `publisher_data/` and
 > edits to `examples/` will not show up, so run once with both flags together, `--watch-env examples

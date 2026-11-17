@@ -102,7 +102,10 @@ for (const [route, annotate] of Object.entries(ROUTES)) {
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+            env: {
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
+            },
          }).restore;
          fixture = await buildScenario({
             files: {

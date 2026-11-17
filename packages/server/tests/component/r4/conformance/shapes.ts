@@ -181,7 +181,7 @@ const LIVE_ACROSS_CONNECTIONS: Partial<Record<Variant, Expect>> = {
  * Two sources an author's `name=` puts on one table in one destination
  * (#6644's class). By default the package fails to load
  * (`materialization-table-collision`); under the operator's opt-out
- * (`PERSIST_COLLISION_ENFORCE=false`) both are refused rather than
+ * (`PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`) both are refused rather than
  * mis-served, so each answers live.
  */
 const SHARED_TABLE_LIVE: Expect = "live";
@@ -197,7 +197,7 @@ const V1_STORAGE_ROLLUP_ANNOTATIONS: Gap = {
 const PERSISTED_VIEW_OFF: Gap = {
    kind: "live",
    reason:
-      "a #@ persist view is planned and served only with PUBLISHER_MATERIALIZE on (phase 4's view leg)",
+      "a #@ persist view is planned and served only with PUBLISHER_MATERIALIZE_ENABLED on (phase 4's view leg)",
 };
 
 /** Guard 1: a v1 `#@ persist` in a file without the flag is not planned before the cutover. */
@@ -780,7 +780,7 @@ source: summary is orders_raw -> {
       // The default, a load failure, is covered by
       // materialization_load_policy.spec.ts and coverage_refusals; this
       // holds the serve path to the opt-out.
-      env: { PERSIST_COLLISION_ENFORCE: "false" },
+      env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false" },
       // `#(materialize)` renders no `name=`, so only the v1 forms collide.
       variants: ["storage", "colocated"],
       files: {
@@ -1584,7 +1584,7 @@ source: orders is orders_raw extend {
    },
    {
       name: "persisted view",
-      about: "#@ persist on a view, served only to a query that calls the view exactly (phase 4's view leg, behind PUBLISHER_MATERIALIZE)",
+      about: "#@ persist on a view, served only to a query that calls the view exactly (phase 4's view leg, behind PUBLISHER_MATERIALIZE_ENABLED)",
       variants: ["storage", "colocated"],
       files: {
          "m.malloy": `${HEADER}

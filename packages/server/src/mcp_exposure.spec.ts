@@ -9,7 +9,7 @@
  * The CORS cases drive the real MCP app over a real request and read the
  * headers it emits, because the policy that matters is the one the library
  * applies, not the shape of the option object. The bind cases assert the
- * resolution rule the server applies to MCP_HOST / PUBLISHER_HOST; the
+ * resolution rule the server applies to PUBLISHER_MCP_HOST / PUBLISHER_HOST; the
  * listeners themselves are covered by the first-boot integration spec.
  */
 
@@ -25,7 +25,7 @@ import {
 } from "./test_helpers/settings_env";
 import { mcpServicesFor } from "./test_helpers/mcp_services";
 
-const ENV = "MCP_CORS_ORIGINS";
+const ENV = "PUBLISHER_MCP_CORS_ORIGINS";
 
 /**
  * The MCP app the server listens with. A GET is refused with 405 before the
@@ -36,7 +36,7 @@ function mcpApp() {
    return createMcpApp(mcpServicesFor({}));
 }
 
-/** Settings with MCP_CORS_ORIGINS at `value`, or unset. */
+/** Settings with PUBLISHER_MCP_CORS_ORIGINS at `value`, or unset. */
 const corsEnv = (value: string | undefined): SettingsInput => ({
    env: value === undefined ? {} : { [ENV]: value },
 });
@@ -159,11 +159,13 @@ describe("getMcpCorsOrigins", () => {
  * interface.
  */
 describe("MCP host resolution", () => {
-   const resolve_ = (MCP_HOST?: string, PUBLISHER_HOST?: string) =>
+   const resolve_ = (PUBLISHER_MCP_HOST?: string, PUBLISHER_HOST?: string) =>
       withSettings(
          {
             env: {
-               ...(MCP_HOST === undefined ? {} : { MCP_HOST }),
+               ...(PUBLISHER_MCP_HOST === undefined
+                  ? {}
+                  : { PUBLISHER_MCP_HOST }),
                ...(PUBLISHER_HOST === undefined ? {} : { PUBLISHER_HOST }),
             },
          },
@@ -178,7 +180,7 @@ describe("MCP host resolution", () => {
       expect(resolve_(undefined, "0.0.0.0")).toBe("0.0.0.0");
    });
 
-   it("lets MCP_HOST override PUBLISHER_HOST", () => {
+   it("lets PUBLISHER_MCP_HOST override PUBLISHER_HOST", () => {
       expect(resolve_("127.0.0.1", "0.0.0.0")).toBe("127.0.0.1");
       expect(resolve_("0.0.0.0", "127.0.0.1")).toBe("0.0.0.0");
    });

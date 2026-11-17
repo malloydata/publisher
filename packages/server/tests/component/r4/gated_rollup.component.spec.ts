@@ -338,8 +338,8 @@ for (const [placement, gatedSources] of [
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
             },
          }).restore;
@@ -743,8 +743,8 @@ describe("R4: gated queries on storage= rollups with gated sources off", () => {
    beforeAll(async () => {
       restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
          },
       }).restore;

@@ -75,8 +75,8 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
       restoreSettings = installSettings({
          env: {
             PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "false",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "false",
             // What an upgraded deployment may still set: no longer read.
             PUBLISHER_V1_SERVED_COPY: "off",
          },

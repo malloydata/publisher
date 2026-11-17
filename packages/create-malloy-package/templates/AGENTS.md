@@ -25,13 +25,13 @@ is written in the command, and this paragraph cannot see what yours says. Go and
 read it, and where it is an `npm` script, read the script `package.json` runs for it.
 Five flags decide whether the rest of this file is true:
 
-- `--port` and `--mcp_port` are absent from a command that uses the defaults above,
+- `--port` and `--mcp-port` are absent from a command that uses the defaults above,
   which is the usual case. Where either one is present, it moves every URL here.
 - `--watch-env` is not a default, so watch mode is on only if you can see it. Without
   it, each package is published at boot as the immutable version its `publisher.json`
   declares, and an edit on disk is never picked up, reload or not: to ship one, bump
   that `version` and publish the package again.
-- `--server_root` and `--config` say which workspace is being served. Pointing either
+- `--root` and `--config` say which workspace is being served. Pointing either
   one outside this directory serves a different workspace entirely, and then nothing
   below describes what you are talking to.
 - `--host` decides whether the endpoint is reachable from off this machine. That one
@@ -132,7 +132,7 @@ the config, then go back to the normal start:
 Stop the running server first. It wants the ports and the `publisher.db` the live
 one already holds, so with the server up it fails twice over: `EADDRINUSE` on both
 ports, then `Could not set lock on file "publisher.db"` (which names the PID holding
-it). If you moved the ports above, add the same `--port` and `--mcp_port` flags to
+it). If you moved the ports above, add the same `--port` and `--mcp-port` flags to
 this command as well, spelled exactly the way the port-override command above spells
 them, `--` separator and all where that command carries one; nothing carries them
 over for you. Note also that `--init` clears persisted runtime state, so materialized

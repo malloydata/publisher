@@ -24,7 +24,7 @@ for itself, because it re-declares the source rather than swapping its base.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.fsc_orders
 

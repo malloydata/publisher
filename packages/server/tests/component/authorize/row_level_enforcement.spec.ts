@@ -1613,7 +1613,7 @@ run: joiner -> { aggregate: n is count() }
 describe("row-level authorize — storage routing", () => {
    it("CRITICAL — a row-level gated query does not route to storage", async () => {
       const { restore: restoreSettings } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-"));
@@ -1718,7 +1718,7 @@ source: X is duckdb.table('parent') extend {
 }
 `);
       const { restore: restoreSettings } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       try {
          // Confirms the premise: `hasAuthorize()` really is blind here, which
@@ -1767,7 +1767,7 @@ source: X is duckdb.table('parent') extend {
 
    it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (`queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
       const { restore: restoreSettings } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
@@ -1895,7 +1895,7 @@ source: W_except is X extend { except: org_id }
       // routing. That escape is gone: EVERY gate blocks storage now, whether
       // or not its condition happens to mention a column.
       const { restore: restoreSettings } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(
@@ -1973,7 +1973,7 @@ source: X is duckdb.table('parent') extend {
    // not a gap: a misbound plain `where:` must still deny, routed or not.
    it("CRITICAL — a plain (unannotated) where:-filtered source's misbound derivation still denies under storage routing", async () => {
       const { restore: restoreSettings } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       const duckdb = await seededDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-plain-"));

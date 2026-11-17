@@ -417,8 +417,8 @@ const NO_GROUP = { REGIONS: [] as string[], ROLE: "admin" };
 const NOBODY = {};
 
 const G3_ONLY = {
-   PERSIST_STORAGE_MODE: "on",
-   PUBLISHER_MATERIALIZE: "true",
+   PUBLISHER_PERSIST_STORAGE_MODE: "on",
+   PUBLISHER_MATERIALIZE_ENABLED: "true",
    PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
 };
 

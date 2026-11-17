@@ -18,7 +18,7 @@ publish and the load fail, with a message that says to remove it.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: off
 
 ## Data orders_pg.pws_orders

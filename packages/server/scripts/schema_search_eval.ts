@@ -20,7 +20,7 @@
  *
  * A/B: run once against a server started WITHOUT the embedding variables (the
  * lexical baseline), then once against a server started with BOTH
- * `EMBEDDING_API_KEY` and `EMBEDDING_INDEX_CONNECTION_SCHEMA=true`, and compare
+ * `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` and `PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED=true`, and compare
  * the two summaries. Cases marked `gap` share no tokens with their target
  * table's name or columns, so lexical is expected to miss them; they are the
  * cases that justify the semantic path at all.

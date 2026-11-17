@@ -238,8 +238,8 @@ for (const tier of tiers) {
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PUBLISHER_MATERIALIZE: "true",
-               PERSIST_STORAGE_MODE: "off",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "off",
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
             },
          }).restore;

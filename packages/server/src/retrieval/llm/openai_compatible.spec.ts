@@ -164,7 +164,7 @@ describe("openai-compatible chat adapter", () => {
       expect(requests[0].headers.Authorization).toBeUndefined();
    });
 
-   it("does not retry a 401, says to check LLM_API_KEY and never logs the key", async () => {
+   it("does not retry a 401, says to check PUBLISHER_RETRIEVAL_LLM_API_KEY and never logs the key", async () => {
       const warn = spyOn(logger, "warn");
       const { fetchFn, requests } = stubFetch([
          () =>
@@ -185,7 +185,7 @@ describe("openai-compatible chat adapter", () => {
       }
       expect(requests).toHaveLength(1);
       expect(message).toContain("(401)");
-      expect(message).toContain("LLM_API_KEY");
+      expect(message).toContain("PUBLISHER_RETRIEVAL_LLM_API_KEY");
       expect(message).not.toContain(KEY);
       expect(JSON.stringify(warn.mock.calls)).not.toContain(KEY);
       expect(

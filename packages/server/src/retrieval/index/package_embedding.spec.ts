@@ -87,7 +87,10 @@ describe("getPackageEmbeddingStatus", () => {
       try {
          await withSettings(
             {
-               env: { EMBEDDING_API_KEY: "k", EMBEDDING_API_BASE: "not a url" },
+               env: {
+                  PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k",
+                  PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "not a url",
+               },
             },
             async () => {
                const status = await getPackageEmbeddingStatus(
@@ -98,7 +101,7 @@ describe("getPackageEmbeddingStatus", () => {
                );
                expect(status.status).toBe("error");
                expect(status.lastError?.message).toContain(
-                  "EMBEDDING_API_BASE",
+                  "PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL",
                );
             },
          );

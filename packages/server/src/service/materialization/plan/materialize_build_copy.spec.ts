@@ -296,7 +296,7 @@ source: orders is raw include { internal: org_id; private: id; public: * }
             `gated serving ${on ? "on" : "off"}: planned with its hidden columns`,
             async () => {
                settings({
-                  PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_PERSIST_STORAGE_MODE: "on",
                   PUBLISHER_MATERIALIZE_GATED_SOURCES: String(on),
                });
                const { c, plans } = await planOf(GATED);
@@ -320,7 +320,7 @@ source: orders is raw include { internal: org_id; private: id; public: * }
       it(
          "plans a private or internal join_one, each joined column carrying the join's modifier, and builds it through the lifted copy",
          async () => {
-            settings({ PERSIST_STORAGE_MODE: "on" });
+            settings({ PUBLISHER_PERSIST_STORAGE_MODE: "on" });
             const { c, plans } =
                await planOf(`##! experimental { access_modifiers }
 source: orders0 is duckdb.sql("select 1 as id, 'east' as region, 2.0 as amount")
@@ -396,7 +396,7 @@ source: private_join is orders0 extend {
       it(
          "plans a private or internal join_many's pair table, each joined column carrying the join's modifier, and builds it through the lifted copy",
          async () => {
-            settings({ PERSIST_STORAGE_MODE: "on" });
+            settings({ PUBLISHER_PERSIST_STORAGE_MODE: "on" });
             const { c, plans } =
                await planOf(`##! experimental { access_modifiers }
 source: orders0 is duckdb.sql("select 1 as id, 'east' as region, 2.0 as amount") extend {
@@ -464,7 +464,7 @@ source: private_many is orders0 extend {
       it(
          "refuses a path through a join its joined source hides, alone, so the model's other sources still build",
          async () => {
-            settings({ PERSIST_STORAGE_MODE: "on" });
+            settings({ PUBLISHER_PERSIST_STORAGE_MODE: "on" });
             const { c, plans } =
                await planOf(`##! experimental { access_modifiers }
 source: orders0 is duckdb.sql("select 1 as id, 2.0 as amount") extend {

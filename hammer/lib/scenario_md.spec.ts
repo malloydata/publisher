@@ -29,7 +29,7 @@ package: p
 const WELL_FORMED = `${FRONT}
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Query rollup
 
@@ -259,7 +259,7 @@ status: 404
 
    it("does not mistake a publisher env bullet for a body key", () => {
       const parsed = parseMarkdownForTest(
-         `${FRONT}\n## Publisher\n\n- PERSIST_COLLISION_ENFORCE: true\n`,
+         `${FRONT}\n## Publisher\n\n- PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: true\n`,
          "t",
       );
       expect(parsed.steps).toHaveLength(1);

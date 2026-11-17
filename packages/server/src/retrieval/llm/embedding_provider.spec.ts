@@ -270,7 +270,7 @@ describe("getEmbeddingProvider / embeddingConfigured", () => {
       _clearEmbeddingProviderForTests();
    });
 
-   it("returns null (feature off) without EMBEDDING_API_KEY", () => {
+   it("returns null (feature off) without PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY", () => {
       expect(getEmbeddingProvider()).toBeNull();
       expect(embeddingConfigured()).toBe(false);
    });
@@ -291,22 +291,33 @@ describe("getEmbeddingProvider / embeddingConfigured", () => {
    });
 
    it("builds a provider with defaults when the key is set", () => {
-      withSettings({ env: { EMBEDDING_API_KEY: "k" } }, () => {
-         const provider = getEmbeddingProvider();
-         expect(provider).not.toBeNull();
-         expect(provider!.model).toBe("text-embedding-3-small");
-         expect(embeddingConfigured()).toBe(true);
-      });
+      withSettings(
+         { env: { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k" } },
+         () => {
+            const provider = getEmbeddingProvider();
+            expect(provider).not.toBeNull();
+            expect(provider!.model).toBe("text-embedding-3-small");
+            expect(embeddingConfigured()).toBe(true);
+         },
+      );
    });
 
    it("rebuilds the provider when the configuration changes", () => {
-      const first = withSettings({ env: { EMBEDDING_API_KEY: "k" } }, () => {
-         const provider = getEmbeddingProvider();
-         expect(getEmbeddingProvider()).toBe(provider);
-         return provider;
-      });
+      const first = withSettings(
+         { env: { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k" } },
+         () => {
+            const provider = getEmbeddingProvider();
+            expect(getEmbeddingProvider()).toBe(provider);
+            return provider;
+         },
+      );
       const second = withSettings(
-         { env: { EMBEDDING_API_KEY: "k", EMBEDDING_MODEL: "other-model" } },
+         {
+            env: {
+               PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k",
+               PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "other-model",
+            },
+         },
          () => getEmbeddingProvider(),
       );
       expect(second).not.toBe(first);
@@ -315,27 +326,42 @@ describe("getEmbeddingProvider / embeddingConfigured", () => {
 
    it("does not stick to null after the key appears", () => {
       expect(getEmbeddingProvider()).toBeNull();
-      withSettings({ env: { EMBEDDING_API_KEY: "k" } }, () => {
-         expect(getEmbeddingProvider()).not.toBeNull();
-      });
+      withSettings(
+         { env: { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k" } },
+         () => {
+            expect(getEmbeddingProvider()).not.toBeNull();
+         },
+      );
    });
 
    it("throws on a malformed base URL but still reports configured", () => {
       withSettings(
-         { env: { EMBEDDING_API_KEY: "k", EMBEDDING_API_BASE: "not a url" } },
+         {
+            env: {
+               PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k",
+               PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "not a url",
+            },
+         },
          () => {
-            expect(() => getEmbeddingProvider()).toThrow("EMBEDDING_API_BASE");
+            expect(() => getEmbeddingProvider()).toThrow(
+               "PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL",
+            );
             expect(embeddingConfigured()).toBe(true);
          },
       );
    });
 
-   it("throws on a malformed EMBEDDING_DIMENSIONS", () => {
+   it("throws on a malformed PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS", () => {
       withSettings(
-         { env: { EMBEDDING_API_KEY: "k", EMBEDDING_DIMENSIONS: "lots" } },
+         {
+            env: {
+               PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k",
+               PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "lots",
+            },
+         },
          () => {
             expect(() => getEmbeddingProvider()).toThrow(
-               'retrieval.embedding.dimensions from EMBEDDING_DIMENSIONS: expected an integer of at least 1, got "lots"',
+               'retrieval.embedding.dimensions from PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: expected an integer of at least 1, got "lots"',
             );
          },
       );

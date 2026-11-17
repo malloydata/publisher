@@ -12,7 +12,7 @@ Publisher accepts a request header that **skips gate evaluation on both routes**
 x-publisher-bypass-authorize: <the configured secret>
 ```
 
-The header is honoured only when `PUBLISHER_BYPASS_AUTHORIZE_SECRET` is set on the server and
+The header is honoured only when `PUBLISHER_AUTHORIZE_BYPASS_SECRET` is set on the server and
 the header carries exactly that value. With the variable unset the bypass is refused outright,
 whatever the header says, and gates are enforced.
 

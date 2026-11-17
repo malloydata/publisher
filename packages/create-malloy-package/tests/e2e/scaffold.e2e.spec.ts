@@ -188,13 +188,13 @@ beforeAll(async () => {
       "node",
       [
          serverBin,
-         "--server_root",
+         "--root",
          ".",
          "--config",
          "./publisher.config.json",
          "--port",
          String(publisherPort),
-         "--mcp_port",
+         "--mcp-port",
          String(mcpPort),
          // The flag the generated start script carries, and the only thing
          // between this data and the rest of the network: Publisher's own
@@ -608,7 +608,7 @@ describe("Publisher's own parser refuses --host=<address>", () => {
                name: "someone-elses-app",
                scripts: {
                   start:
-                     `npx -y @malloy-publisher/server --server_root . ` +
+                     `npx -y @malloy-publisher/server --root . ` +
                      `--config ./publisher.config.json --host=${BIND_HOST} ` +
                      `--watch-env default`,
                },
@@ -694,9 +694,9 @@ describe("the documented URLs reach the documented boot", () => {
                name: "someone-elses-app",
                scripts: {
                   start:
-                     `npx -y @malloy-publisher/server --server_root . ` +
+                     `npx -y @malloy-publisher/server --root . ` +
                      `--config ./publisher.config.json --host ${BIND_HOST} ` +
-                     `--port ${restPort} --mcp_port ${mcpPortForScript} ` +
+                     `--port ${restPort} --mcp-port ${mcpPortForScript} ` +
                      `--watch-env default`,
                },
             },

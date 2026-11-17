@@ -881,7 +881,7 @@ ERROR_ADVICE = {
     "cooldown": ("the embedding provider failed and the package is waiting "
                  "out a cool-down (about 60 seconds). Wait, then re-run"),
     "provider-error": ("the embedding provider rejected the request (often a "
-                       "bad EMBEDDING_API_KEY or EMBEDDING_MODEL). Fix the "
+                       "bad PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY or PUBLISHER_RETRIEVAL_EMBEDDING_MODEL). Fix the "
                        "provider settings and re-run"),
     "unavailable": ("semantic search cannot serve this package. Read the "
                     "Publisher log for the cause, fix it and re-run"),

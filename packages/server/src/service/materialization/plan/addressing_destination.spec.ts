@@ -4,7 +4,7 @@
 // P12: a `storage=` source's destination folded into its content address,
 // behind `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION`. Off, no address
 // moves; on, exactly the `storage=` sources move, and only while
-// `PERSIST_STORAGE_MODE` lets `storage=` take effect. The compiler's own key
+// `PUBLISHER_PERSIST_STORAGE_MODE` lets `storage=` take effect. The compiler's own key
 // never moves: a manifest handed to the compiler carries both keys, as it
 // already does for a partitioned source.
 
@@ -88,7 +88,7 @@ const plain = (name: string) =>
 
 describe("P12: the storage destination in the content address", () => {
    it("moves nothing while the switch is off (the default)", () => {
-      withSettings({ PERSIST_STORAGE_MODE: "on" });
+      withSettings({ PUBLISHER_PERSIST_STORAGE_MODE: "on" });
       for (const name of Object.keys(sources)) {
          expect(addressDestination(sources[name])).toBeUndefined();
          expect(address(name)).toBe(plain(name));
@@ -97,7 +97,7 @@ describe("P12: the storage destination in the content address", () => {
 
    it("moves exactly the storage= sources while the switch is on", () => {
       withSettings({
-         PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
       expect(address("colocated")).toBe(plain("colocated"));
@@ -113,7 +113,7 @@ describe("P12: the storage destination in the content address", () => {
 
    it("gives an extension its base's table under the new address too", () => {
       withSettings({
-         PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
       // `#@ persist` is inherited along extend, so the extension shares the
@@ -124,12 +124,12 @@ describe("P12: the storage destination in the content address", () => {
 
    it("folds the destination while writing only, and not while storage= is off", () => {
       withSettings({
-         PERSIST_STORAGE_MODE: "write-only",
+         PUBLISHER_PERSIST_STORAGE_MODE: "write-only",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
       expect(address("stored")).not.toBe(plain("stored"));
       withSettings({
-         PERSIST_STORAGE_MODE: "off",
+         PUBLISHER_PERSIST_STORAGE_MODE: "off",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
       // Off, storage= is inert and the source builds colocated.
@@ -138,10 +138,10 @@ describe("P12: the storage destination in the content address", () => {
    });
 
    it("never moves the compiler's own key", () => {
-      withSettings({ PERSIST_STORAGE_MODE: "on" });
+      withSettings({ PUBLISHER_PERSIST_STORAGE_MODE: "on" });
       const before = compilerBuildId(sources.stored);
       withSettings({
-         PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
       expect(compilerBuildId(sources.stored)).toBe(before);

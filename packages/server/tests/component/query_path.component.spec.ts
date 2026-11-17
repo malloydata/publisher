@@ -509,8 +509,8 @@ describe("a table past its freshness window, bound by a host's reload", () => {
    async function underMode(_mode: Mode): Promise<void> {
       restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
          },
       }).restore;
       // A worker reads its settings at spawn, and the plan is made there.

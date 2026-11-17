@@ -79,7 +79,7 @@ export default defineConfig({
               // the authoring specs write into, which are mounted in place.
               env: {
                  PUBLISHER_PACKAGE_VERSIONING: "on",
-                 PUBLISHER_WATCH: AUTHORING_ENVS.join(","),
+                 PUBLISHER_WATCH_ENVIRONMENTS: AUTHORING_ENVS.join(","),
               },
               url: `${BASE_URL}/api/v0/status`,
               reuseExistingServer: true,

@@ -152,8 +152,8 @@ jobs:
             "environments": [{ "name": "ci", "connections": [],
               "packages": [{ "name": "clinical-records", "location": "$GITHUB_WORKSPACE" }] }] }
           JSON
-          npx -y @malloy-publisher/server@latest --server_root "$root" --port 4000 \
-            --no-mcp-config > "$RUNNER_TEMP/publisher.log" 2>&1 &
+          npx -y @malloy-publisher/server@latest --root "$root" --port 4000 \
+            --no-mcp-config-file-enabled > "$RUNNER_TEMP/publisher.log" 2>&1 &
           for i in $(seq 1 120); do
             state=$(curl -s localhost:4000/api/v0/status | jq -r .operationalState 2>/dev/null)
             [ "$state" = serving ] && exit 0

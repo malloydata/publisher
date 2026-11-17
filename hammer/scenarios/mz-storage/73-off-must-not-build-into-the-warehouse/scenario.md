@@ -36,7 +36,7 @@ declining is safe, and redirecting the write is not.
 
 Kill switch fully off — destinations cannot be honored.
 
-- PERSIST_STORAGE_MODE: off
+- PUBLISHER_PERSIST_STORAGE_MODE: off
 
 ## Data orders_pg.osw_orders
 

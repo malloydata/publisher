@@ -131,7 +131,7 @@ export class Rest {
     * (POST /environments/:env/packages with `{ name }`, no location — registering
     * the already-on-disk directory). Unlike startup/reload (fail-safe, warn-only),
     * this path is strict, so it 4xx's on e.g. a persist-target collision under
-    * PERSIST_COLLISION_ENFORCE. Returns the outcome rather than throwing so a
+    * PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED. Returns the outcome rather than throwing so a
     * scenario can assert either an accept or a refusal.
     */
    async addPackage(

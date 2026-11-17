@@ -26,7 +26,7 @@ must come back live and correct, not as an error.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.rtf_orders
 

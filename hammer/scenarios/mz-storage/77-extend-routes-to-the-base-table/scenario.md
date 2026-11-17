@@ -22,7 +22,7 @@ average. One table is built (they share a content address). Both should read it.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.erb_orders
 

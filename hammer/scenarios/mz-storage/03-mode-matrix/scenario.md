@@ -8,9 +8,9 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# `PERSIST_STORAGE_MODE` governs building and serving independently
+# `PUBLISHER_PERSIST_STORAGE_MODE` governs building and serving independently
 
-One `storage=lake` package, three modes. `PERSIST_STORAGE_MODE` is a server-level
+One `storage=lake` package, three modes. `PUBLISHER_PERSIST_STORAGE_MODE` is a server-level
 setting fixed at startup, so each mode is a **separate publisher process** — the
 scenario restarts the publisher (a `## Publisher` section) to change it, rather
 than toggling it per request. Each mode is decided by a mutate-then-undo probe:
@@ -46,7 +46,7 @@ source: daily_orders is orders -> {
 
 Start the publisher with the tier fully on (build + routed serve).
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Publish
 
@@ -91,7 +91,7 @@ DELETE FROM b1_orders WHERE order_id = 99;
 Restart the publisher in write-only mode — it materializes into the lake but
 does NOT route reads to the table.
 
-- PERSIST_STORAGE_MODE: write-only
+- PUBLISHER_PERSIST_STORAGE_MODE: write-only
 
 ## Publish
 
@@ -122,7 +122,7 @@ DELETE FROM b1_orders WHERE order_id = 99;
 
 Restart with the kill switch off — `storage=` is ignored entirely.
 
-- PERSIST_STORAGE_MODE: off
+- PUBLISHER_PERSIST_STORAGE_MODE: off
 
 ## Query rollup (again)
 

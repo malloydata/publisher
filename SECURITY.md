@@ -44,7 +44,7 @@ caller-asserted conventions rather than boundaries — that shapes what counts a
 ### Working as documented (not vulnerabilities)
 
 - The REST and MCP surfaces being unauthenticated, and the REST port binding `0.0.0.0` by default
-  (MCP binds `127.0.0.1` unless `MCP_HOST` or `PUBLISHER_HOST` widens it)
+  (MCP binds `127.0.0.1` unless `PUBLISHER_MCP_HOST` or `PUBLISHER_HOST` widens it)
   ([README.md § Point your agent at it](README.md#point-your-agent-at-it),
   [docs/ai-agents.md](docs/ai-agents.md)). The supported posture is loopback for local use, an
   authenticating gateway in front for anything wider.
@@ -53,7 +53,7 @@ caller-asserted conventions rather than boundaries — that shapes what counts a
   [§ Known limitations](docs/authorize.md#known-limitations), and in
   [docs/row-level-access.md](docs/row-level-access.md).
 - A gate skipped for a request carrying `x-publisher-bypass-authorize` with the configured
-  `PUBLISHER_BYPASS_AUTHORIZE_SECRET` — the documented
+  `PUBLISHER_AUTHORIZE_BYPASS_SECRET` — the documented
   data-management bypass ([docs/authorize.md § Authorize
   bypass](docs/authorize.md#authorize-bypass-for-trusted-data-management-callers)). Publisher
   bounds nobody who may send it; stripping it at the edge is the deployment's job

@@ -12,24 +12,18 @@ import { withSettings, type SettingsInput } from "../test_helpers/settings_env";
 import { PROBES } from "../test_helpers/settings_probes";
 
 /**
- * What each setting gives for each way an operator can set it, today. One
- * entry per setting, under its key in the configuration design
- * (docs/configuration-design.md), with today's variable, flag and file key as
- * the sources. Every row is a case a deployment can hit: unset, each source
- * read today, a blank variable, and values that are wrong. The expected result
- * is today's, quirks included, so a change to how a setting is read shows up
- * here as a changed row. Step 1's rules (#1477) are such rows: a value of
- * another type fails startup, a blank variable is unset, and an unreadable
- * file fails startup. So are step 2's: one precedence, flag then variable then
- * file, and an old name and a new one given different values fail. And step
- * 3's: what steps 1 and 2 only warned about fails startup, including a boolean
- * today's name reads differently from every other boolean. The rows still use
- * today's names, which step 2 deprecates; settings.spec.ts covers the derived
- * names.
+ * What each setting gives for each way an operator can set it. One entry per
+ * setting, under its key in the configuration design
+ * (docs/configuration-design.md), with its variable, flag and file key as the
+ * sources. Every row is a case a deployment can hit: unset, each source, a
+ * blank variable, and values that are wrong. A change to how a setting is read
+ * shows up here as a changed row. The design's rules are such rows: a value of
+ * another type fails startup, a blank variable is unset, an unreadable file
+ * fails startup, and one precedence holds, flag then variable then file.
  *
- * A row expects a value, read with no warning but a deprecation, or a failure
- * whose message names the setting. A failure is at startup, as server.ts
- * reports it, or where the server reads the setting.
+ * A row expects a value or a failure whose message names the setting. A
+ * failure is at startup, as server.ts reports it, or where the server reads
+ * the setting.
  */
 type Expected = { value: unknown } | { fails: string };
 
@@ -42,7 +36,7 @@ const value = (v: unknown): Expected => ({ value: v });
 const fails = (name: string): Expected => ({ fails: name });
 
 /** Embedding settings are off without a key, so their rows set one. */
-const KEY = { EMBEDDING_API_KEY: "sk-test" };
+const KEY = { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "sk-test" };
 /**
  * A `retrieval` block retrieval/config.ts rejects (an unknown LLM provider),
  * holding these embedding keys. The server runs retrieval on its defaults.
@@ -67,9 +61,9 @@ const EMBEDDING = (fields: Record<string, unknown> = {}) => ({
    retrieval: { embedding: { ...fields } },
 });
 /** The memory governor's tunables are read only with a ceiling set. */
-const CEILING = { PUBLISHER_MAX_MEMORY_BYTES: "1000000" };
+const CEILING = { PUBLISHER_MEMORY_MAX_BYTES: "1000000" };
 /** The scheduler's tunables are read only with the scheduler on. */
-const SCHEDULER = { PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER: "true" };
+const SCHEDULER = { PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED: "true" };
 /** The admin API's storage is read only with a catalog database set. */
 const CATALOG = { PUBLISHER_ADMIN_CATALOG_DATABASE: "postgresql://h/catalog" };
 const S3 = {
@@ -99,15 +93,15 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(false),
       },
       {
-         name: 'the string "false" fails: it froze the server, where every other boolean reads it as off',
+         name: 'the string "false" is off, where it used to freeze the server',
          file: { frozenConfig: "false" },
-         expect: fails('"frozenConfig": "false"'),
+         expect: value(false),
       },
       {
-         name: "a ${VAR} fails: it read as a string, so any value froze the server",
+         name: "a ${VAR} is read as a boolean, where any value used to freeze the server",
          env: { FROZEN: "false" },
          file: { frozenConfig: "${FROZEN}" },
-         expect: fails('"frozenConfig": "${FROZEN}"'),
+         expect: value(false),
       },
       {
          name: "a string of only whitespace is unset, where it used to freeze",
@@ -176,8 +170,13 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_SERVING_API_ENABLED"),
       },
       {
-         name: "a string in the file",
-         file: { servingApiEnabled: "yes" },
+         name: "a string in the file is read as a boolean",
+         file: { servingApiEnabled: "no" },
+         expect: value(false),
+      },
+      {
+         name: "a string in the file that is no boolean fails",
+         file: { servingApiEnabled: "enabled" },
          expect: fails("servingApiEnabled"),
       },
       {
@@ -526,11 +525,6 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(["e"]),
       },
       {
-         name: 'the old "projects" key is still read',
-         file: { projects: ONE_ENVIRONMENT },
-         expect: value(["e"]),
-      },
-      {
          name: "environments that are not a list are none",
          file: { environments: { e: {} } },
          expect: value([]),
@@ -541,33 +535,33 @@ export const CONTRACT: Record<string, Case[]> = {
    root: [
       { name: "unset", expect: value(".") },
       {
-         name: "SERVER_ROOT",
-         env: { SERVER_ROOT: "/srv/models" },
+         name: "PUBLISHER_ROOT",
+         env: { PUBLISHER_ROOT: "/srv/models" },
          expect: value("/srv/models"),
       },
       {
-         name: "--server_root",
-         argv: ["--server_root", "/x"],
+         name: "--root",
+         argv: ["--root", "/x"],
          expect: value("/x"),
       },
       {
-         name: "--server_root wins over the variable",
-         env: { SERVER_ROOT: "/srv/models" },
-         argv: ["--server_root", "/x"],
+         name: "--root wins over the variable",
+         env: { PUBLISHER_ROOT: "/srv/models" },
+         argv: ["--root", "/x"],
          expect: value("/x"),
       },
-      { name: "blank", env: { SERVER_ROOT: "" }, expect: value(".") },
+      { name: "blank", env: { PUBLISHER_ROOT: "" }, expect: value(".") },
       {
          name: "whitespace only is unset",
-         env: { SERVER_ROOT: "   " },
+         env: { PUBLISHER_ROOT: "   " },
          expect: value("."),
       },
    ],
    config: [
       { name: "unset", expect: value(undefined) },
       {
-         name: "PUBLISHER_CONFIG_PATH",
-         env: { PUBLISHER_CONFIG_PATH: "/nonexistent/a.json" },
+         name: "PUBLISHER_CONFIG",
+         env: { PUBLISHER_CONFIG: "/nonexistent/a.json" },
          expect: value("/nonexistent/a.json"),
       },
       {
@@ -576,19 +570,19 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("/nonexistent/b.json"),
       },
       {
-         name: "--config and an old PUBLISHER_CONFIG_PATH that differ fail",
-         env: { PUBLISHER_CONFIG_PATH: "/nonexistent/a.json" },
+         name: "--config wins over the variable",
+         env: { PUBLISHER_CONFIG: "/nonexistent/a.json" },
          argv: ["--config", "/nonexistent/b.json"],
-         expect: fails("given different values under its old and new names"),
+         expect: value("/nonexistent/b.json"),
       },
       {
          name: "blank",
-         env: { PUBLISHER_CONFIG_PATH: "" },
+         env: { PUBLISHER_CONFIG: "" },
          expect: value(undefined),
       },
       {
          name: "whitespace only is unset",
-         env: { PUBLISHER_CONFIG_PATH: "   " },
+         env: { PUBLISHER_CONFIG: "   " },
          expect: value(undefined),
       },
    ],
@@ -600,14 +594,14 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(true),
       },
       {
-         name: "--server_root turns it off",
+         name: "--root turns it off",
          env: { NODE_ENV: "production" },
-         argv: ["--server_root", "/x"],
+         argv: ["--root", "/x"],
          expect: value(false),
       },
       {
-         name: "SERVER_ROOT turns it off too",
-         env: { NODE_ENV: "production", SERVER_ROOT: "/x" },
+         name: "PUBLISHER_ROOT turns it off too",
+         env: { NODE_ENV: "production", PUBLISHER_ROOT: "/x" },
          expect: value(false),
       },
       {
@@ -621,14 +615,14 @@ export const CONTRACT: Record<string, Case[]> = {
       {
          name: "the variable turns it on despite a flag",
          env: { NODE_ENV: "production", PUBLISHER_USE_BUNDLED_DEFAULT: "true" },
-         argv: ["--server_root", "/x"],
+         argv: ["--root", "/x"],
          expect: value(true),
       },
       {
-         name: '"1" fails: only exactly "true" turned it on',
+         name: '"1" turns it on, where only exactly "true" used to',
          env: { NODE_ENV: "production", PUBLISHER_USE_BUNDLED_DEFAULT: "1" },
-         argv: ["--server_root", "/x"],
-         expect: fails("PUBLISHER_USE_BUNDLED_DEFAULT=1 is refused"),
+         argv: ["--root", "/x"],
+         expect: value(true),
       },
       {
          name: "the variable turns it on in tests",
@@ -639,56 +633,64 @@ export const CONTRACT: Record<string, Case[]> = {
    initializeStorage: [
       { name: "unset", expect: value(false) },
       {
-         name: "INITIALIZE_STORAGE",
-         env: { INITIALIZE_STORAGE: "true" },
+         name: "PUBLISHER_INITIALIZE_STORAGE",
+         env: { PUBLISHER_INITIALIZE_STORAGE: "true" },
          expect: value(true),
       },
       { name: "--init", argv: ["--init"], expect: value(true) },
       {
-         name: '"1" fails: it was read as off',
-         env: { INITIALIZE_STORAGE: "1" },
-         expect: fails("INITIALIZE_STORAGE=1 is refused"),
+         name: '"1" is on, where it used to be off',
+         env: { PUBLISHER_INITIALIZE_STORAGE: "1" },
+         expect: value(true),
       },
       {
-         name: '"TRUE" fails: it was read as off',
-         env: { INITIALIZE_STORAGE: "TRUE" },
-         expect: fails("INITIALIZE_STORAGE=TRUE is refused"),
+         name: '"TRUE" is on, where it used to be off',
+         env: { PUBLISHER_INITIALIZE_STORAGE: "TRUE" },
+         expect: value(true),
       },
       {
-         name: '"yes" fails: it was read as off',
-         env: { INITIALIZE_STORAGE: "yes" },
-         expect: fails("INITIALIZE_STORAGE=yes is refused"),
+         name: '"yes" is on, where it used to be off',
+         env: { PUBLISHER_INITIALIZE_STORAGE: "yes" },
+         expect: value(true),
       },
-      { name: "blank", env: { INITIALIZE_STORAGE: "" }, expect: value(false) },
+      {
+         name: "blank",
+         env: { PUBLISHER_INITIALIZE_STORAGE: "" },
+         expect: value(false),
+      },
       {
          name: "not a boolean fails",
-         env: { INITIALIZE_STORAGE: "enabled" },
-         expect: fails("INITIALIZE_STORAGE"),
+         env: { PUBLISHER_INITIALIZE_STORAGE: "enabled" },
+         expect: fails("PUBLISHER_INITIALIZE_STORAGE"),
       },
    ],
    watchEnvironments: [
       { name: "unset", expect: value([]) },
       {
-         name: "PUBLISHER_WATCH",
-         env: { PUBLISHER_WATCH: "a,b" },
+         name: "PUBLISHER_WATCH_ENVIRONMENTS",
+         env: { PUBLISHER_WATCH_ENVIRONMENTS: "a,b" },
          expect: value(["a", "b"]),
       },
       { name: "--watch-env", argv: ["--watch-env", "c"], expect: value(["c"]) },
       {
-         name: "--watch-env and an old PUBLISHER_WATCH that differ fail",
-         env: { PUBLISHER_WATCH: "a" },
+         name: "--watch-env wins over the variable",
+         env: { PUBLISHER_WATCH_ENVIRONMENTS: "a" },
          argv: ["--watch-env", "c"],
-         expect: fails("given different values under its old and new names"),
+         expect: value(["c"]),
       },
       {
          name: "--watch-env repeats",
          argv: ["--watch-env", "c", "--watch-env", "d"],
          expect: value(["c", "d"]),
       },
-      { name: "blank", env: { PUBLISHER_WATCH: "" }, expect: value([]) },
+      {
+         name: "blank",
+         env: { PUBLISHER_WATCH_ENVIRONMENTS: "" },
+         expect: value([]),
+      },
       {
          name: "spaces and empty items",
-         env: { PUBLISHER_WATCH: " a , ,b" },
+         env: { PUBLISHER_WATCH_ENVIRONMENTS: " a , ,b" },
          expect: value(["a", "b"]),
       },
       {
@@ -701,36 +703,40 @@ export const CONTRACT: Record<string, Case[]> = {
    // ── mcp ───────────────────────────────────────────────────────────────
    "mcp.port": [
       { name: "unset", expect: value(4040) },
-      { name: "MCP_PORT", env: { MCP_PORT: "4141" }, expect: value(4141) },
-      { name: "--mcp_port", argv: ["--mcp_port", "4242"], expect: value(4242) },
       {
-         name: "--mcp_port wins over the variable",
-         env: { MCP_PORT: "4141" },
-         argv: ["--mcp_port", "4242"],
+         name: "PUBLISHER_MCP_PORT",
+         env: { PUBLISHER_MCP_PORT: "4141" },
+         expect: value(4141),
+      },
+      { name: "--mcp-port", argv: ["--mcp-port", "4242"], expect: value(4242) },
+      {
+         name: "--mcp-port wins over the variable",
+         env: { PUBLISHER_MCP_PORT: "4141" },
+         argv: ["--mcp-port", "4242"],
          expect: value(4242),
       },
       {
          name: "0 is an ephemeral port",
-         env: { MCP_PORT: "0" },
+         env: { PUBLISHER_MCP_PORT: "0" },
          expect: value(0),
       },
-      { name: "blank", env: { MCP_PORT: "" }, expect: value(4040) },
+      { name: "blank", env: { PUBLISHER_MCP_PORT: "" }, expect: value(4040) },
       {
          name: "not a number fails",
-         env: { MCP_PORT: "40a0" },
-         expect: fails("MCP_PORT"),
+         env: { PUBLISHER_MCP_PORT: "40a0" },
+         expect: fails("PUBLISHER_MCP_PORT"),
       },
    ],
    "mcp.host": [
       { name: "unset is loopback", expect: value("127.0.0.1") },
       {
-         name: "MCP_HOST",
-         env: { MCP_HOST: "0.0.0.0" },
+         name: "PUBLISHER_MCP_HOST",
+         env: { PUBLISHER_MCP_HOST: "0.0.0.0" },
          expect: value("0.0.0.0"),
       },
       {
-         name: "--mcp_host",
-         argv: ["--mcp_host", "10.0.0.2"],
+         name: "--mcp-host",
+         argv: ["--mcp-host", "10.0.0.2"],
          expect: value("10.0.0.2"),
       },
       {
@@ -744,18 +750,18 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("10.0.0.3"),
       },
       {
-         name: "MCP_HOST wins over PUBLISHER_HOST",
-         env: { PUBLISHER_HOST: "10.0.0.1", MCP_HOST: "10.0.0.2" },
+         name: "PUBLISHER_MCP_HOST wins over PUBLISHER_HOST",
+         env: { PUBLISHER_HOST: "10.0.0.1", PUBLISHER_MCP_HOST: "10.0.0.2" },
          expect: value("10.0.0.2"),
       },
       {
          name: "blank follows PUBLISHER_HOST",
-         env: { PUBLISHER_HOST: "10.0.0.1", MCP_HOST: "" },
+         env: { PUBLISHER_HOST: "10.0.0.1", PUBLISHER_MCP_HOST: "" },
          expect: value("10.0.0.1"),
       },
       {
          name: "whitespace only is unset",
-         env: { MCP_HOST: "   " },
+         env: { PUBLISHER_MCP_HOST: "   " },
          expect: value("127.0.0.1"),
       },
    ],
@@ -763,47 +769,58 @@ export const CONTRACT: Record<string, Case[]> = {
       { name: "unset denies", expect: value(false) },
       {
          name: "* allows any",
-         env: { MCP_CORS_ORIGINS: "*" },
+         env: { PUBLISHER_MCP_CORS_ORIGINS: "*" },
          expect: value("*"),
       },
       {
          name: "a list",
-         env: { MCP_CORS_ORIGINS: "https://a.example, https://b.example" },
+         env: {
+            PUBLISHER_MCP_CORS_ORIGINS: "https://a.example, https://b.example",
+         },
          expect: value(["https://a.example", "https://b.example"]),
       },
       {
          name: "a list of nothing denies",
-         env: { MCP_CORS_ORIGINS: "," },
-         expect: value(false),
-      },
-      { name: "blank", env: { MCP_CORS_ORIGINS: "" }, expect: value(false) },
-   ],
-   "mcp.configFileEnabled": [
-      { name: "unset", expect: value(true) },
-      {
-         name: "PUBLISHER_NO_MCP_CONFIG=1",
-         env: { PUBLISHER_NO_MCP_CONFIG: "1" },
-         expect: value(false),
-      },
-      {
-         name: "PUBLISHER_NO_MCP_CONFIG=false",
-         env: { PUBLISHER_NO_MCP_CONFIG: "false" },
-         expect: value(true),
-      },
-      {
-         name: "--no-mcp-config",
-         argv: ["--no-mcp-config"],
+         env: { PUBLISHER_MCP_CORS_ORIGINS: "," },
          expect: value(false),
       },
       {
          name: "blank",
-         env: { PUBLISHER_NO_MCP_CONFIG: "" },
+         env: { PUBLISHER_MCP_CORS_ORIGINS: "" },
+         expect: value(false),
+      },
+   ],
+   "mcp.configFileEnabled": [
+      { name: "unset", expect: value(true) },
+      {
+         name: "PUBLISHER_MCP_CONFIG_FILE_ENABLED=0",
+         env: { PUBLISHER_MCP_CONFIG_FILE_ENABLED: "0" },
+         expect: value(false),
+      },
+      {
+         name: "PUBLISHER_MCP_CONFIG_FILE_ENABLED=true",
+         env: { PUBLISHER_MCP_CONFIG_FILE_ENABLED: "true" },
+         expect: value(true),
+      },
+      {
+         name: "--no-mcp-config-file-enabled",
+         argv: ["--no-mcp-config-file-enabled"],
+         expect: value(false),
+      },
+      {
+         name: "the file",
+         file: { mcp: { configFileEnabled: false } },
+         expect: value(false),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_MCP_CONFIG_FILE_ENABLED: "" },
          expect: value(true),
       },
       {
          name: "not a boolean",
-         env: { PUBLISHER_NO_MCP_CONFIG: "maybe" },
-         expect: fails("PUBLISHER_NO_MCP_CONFIG"),
+         env: { PUBLISHER_MCP_CONFIG_FILE_ENABLED: "maybe" },
+         expect: fails("PUBLISHER_MCP_CONFIG_FILE_ENABLED"),
       },
    ],
    "mcp.includeHiddenFilesAndSources": [
@@ -814,11 +831,9 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(true),
       },
       {
-         name: "a string in the file fails",
+         name: "a string in the file is read as a boolean, where it used to fail",
          file: { mcp: { includeHiddenFilesAndSources: "yes" } },
-         expect: fails(
-            'expected true or false as a JSON boolean, not a string, got "yes"',
-         ),
+         expect: value(true),
       },
       {
          name: "a value no boolean reader accepts fails",
@@ -852,13 +867,15 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("http://localhost:4100"),
       },
       {
-         name: "MCP_APP_ORIGIN",
-         env: { MCP_APP_ORIGIN: "https://publisher.example.com" },
+         name: "PUBLISHER_MCP_APP_ORIGIN",
+         env: { PUBLISHER_MCP_APP_ORIGIN: "https://publisher.example.com" },
          expect: value("https://publisher.example.com"),
       },
       {
          name: "a path is cut to the origin",
-         env: { MCP_APP_ORIGIN: "https://publisher.example.com/base/" },
+         env: {
+            PUBLISHER_MCP_APP_ORIGIN: "https://publisher.example.com/base/",
+         },
          expect: value("https://publisher.example.com"),
       },
    ],
@@ -891,15 +908,15 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(4100),
       },
       {
-         name: "--admin_port",
-         argv: ["--admin_port", "4200"],
+         name: "--admin-port",
+         argv: ["--admin-port", "4200"],
          expect: value(4200),
       },
       {
-         name: "an old --admin_port and PUBLISHER_ADMIN_PORT that differ fail",
+         name: "--admin-port wins over the variable",
          env: { PUBLISHER_ADMIN_PORT: "4100" },
-         argv: ["--admin_port", "4200"],
-         expect: fails("given different values under its old and new names"),
+         argv: ["--admin-port", "4200"],
+         expect: value(4200),
       },
       { name: "blank", env: { PUBLISHER_ADMIN_PORT: "" }, expect: value(null) },
       {
@@ -926,8 +943,8 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("0.0.0.0"),
       },
       {
-         name: "--admin_host",
-         argv: ["--admin_host", "10.0.0.4"],
+         name: "--admin-host",
+         argv: ["--admin-host", "10.0.0.4"],
          expect: value("10.0.0.4"),
       },
       {
@@ -1078,70 +1095,70 @@ export const CONTRACT: Record<string, Case[]> = {
    "query.maxRows": [
       { name: "unset", expect: value(100_000) },
       {
-         name: "PUBLISHER_MAX_QUERY_ROWS",
-         env: { PUBLISHER_MAX_QUERY_ROWS: "500" },
+         name: "PUBLISHER_QUERY_MAX_ROWS",
+         env: { PUBLISHER_QUERY_MAX_ROWS: "500" },
          expect: value(500),
       },
       {
          name: "0 turns the cap off",
-         env: { PUBLISHER_MAX_QUERY_ROWS: "0" },
+         env: { PUBLISHER_QUERY_MAX_ROWS: "0" },
          expect: value(0),
       },
       {
          name: "blank",
-         env: { PUBLISHER_MAX_QUERY_ROWS: "" },
+         env: { PUBLISHER_QUERY_MAX_ROWS: "" },
          expect: value(100_000),
       },
       {
          name: "negative",
-         env: { PUBLISHER_MAX_QUERY_ROWS: "-1" },
-         expect: fails("PUBLISHER_MAX_QUERY_ROWS"),
+         env: { PUBLISHER_QUERY_MAX_ROWS: "-1" },
+         expect: fails("PUBLISHER_QUERY_MAX_ROWS"),
       },
       {
          name: "an exponent",
-         env: { PUBLISHER_MAX_QUERY_ROWS: "1e3" },
-         expect: fails("PUBLISHER_MAX_QUERY_ROWS"),
+         env: { PUBLISHER_QUERY_MAX_ROWS: "1e3" },
+         expect: fails("PUBLISHER_QUERY_MAX_ROWS"),
       },
       {
          name: "not a number",
-         env: { PUBLISHER_MAX_QUERY_ROWS: "many" },
-         expect: fails("PUBLISHER_MAX_QUERY_ROWS"),
+         env: { PUBLISHER_QUERY_MAX_ROWS: "many" },
+         expect: fails("PUBLISHER_QUERY_MAX_ROWS"),
       },
    ],
    "query.maxResponseBytes": [
       { name: "unset", expect: value(50_000_000) },
       {
-         name: "PUBLISHER_MAX_RESPONSE_BYTES",
-         env: { PUBLISHER_MAX_RESPONSE_BYTES: "1000" },
+         name: "PUBLISHER_QUERY_MAX_RESPONSE_BYTES",
+         env: { PUBLISHER_QUERY_MAX_RESPONSE_BYTES: "1000" },
          expect: value(1000),
       },
       {
          name: "blank",
-         env: { PUBLISHER_MAX_RESPONSE_BYTES: "" },
+         env: { PUBLISHER_QUERY_MAX_RESPONSE_BYTES: "" },
          expect: value(50_000_000),
       },
       {
          name: "negative",
-         env: { PUBLISHER_MAX_RESPONSE_BYTES: "-5" },
-         expect: fails("PUBLISHER_MAX_RESPONSE_BYTES"),
+         env: { PUBLISHER_QUERY_MAX_RESPONSE_BYTES: "-5" },
+         expect: fails("PUBLISHER_QUERY_MAX_RESPONSE_BYTES"),
       },
    ],
    "query.defaultRowLimit": [
       { name: "unset", expect: value(1000) },
       {
-         name: "PUBLISHER_DEFAULT_QUERY_ROW_LIMIT",
-         env: { PUBLISHER_DEFAULT_QUERY_ROW_LIMIT: "50" },
+         name: "PUBLISHER_QUERY_DEFAULT_ROW_LIMIT",
+         env: { PUBLISHER_QUERY_DEFAULT_ROW_LIMIT: "50" },
          expect: value(50),
       },
       {
          name: "blank",
-         env: { PUBLISHER_DEFAULT_QUERY_ROW_LIMIT: "" },
+         env: { PUBLISHER_QUERY_DEFAULT_ROW_LIMIT: "" },
          expect: value(1000),
       },
       {
          name: "0 is refused",
-         env: { PUBLISHER_DEFAULT_QUERY_ROW_LIMIT: "0" },
-         expect: fails("PUBLISHER_DEFAULT_QUERY_ROW_LIMIT"),
+         env: { PUBLISHER_QUERY_DEFAULT_ROW_LIMIT: "0" },
+         expect: fails("PUBLISHER_QUERY_DEFAULT_ROW_LIMIT"),
       },
    ],
    "query.timeoutMs": [
@@ -1170,52 +1187,57 @@ export const CONTRACT: Record<string, Case[]> = {
    "query.maxConcurrent": [
       { name: "unset", expect: value(32) },
       {
-         name: "PUBLISHER_MAX_CONCURRENT_QUERIES",
-         env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "4" },
+         name: "PUBLISHER_QUERY_MAX_CONCURRENT",
+         env: { PUBLISHER_QUERY_MAX_CONCURRENT: "4" },
          expect: value(4),
       },
       {
          name: "0 turns it off",
-         env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "0" },
+         env: { PUBLISHER_QUERY_MAX_CONCURRENT: "0" },
          expect: value(0),
       },
       {
          name: "blank",
-         env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "" },
+         env: { PUBLISHER_QUERY_MAX_CONCURRENT: "" },
          expect: value(32),
       },
       {
          name: "negative",
-         env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "-1" },
-         expect: fails("PUBLISHER_MAX_CONCURRENT_QUERIES"),
+         env: { PUBLISHER_QUERY_MAX_CONCURRENT: "-1" },
+         expect: fails("PUBLISHER_QUERY_MAX_CONCURRENT"),
       },
    ],
    "query.metadataEnabled": [
       { name: "unset", expect: value("off") },
       {
          name: "on",
-         env: { PUBLISHER_QUERY_METADATA: "on" },
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: "on" },
          expect: value("on"),
       },
       {
          name: "any case",
-         env: { PUBLISHER_QUERY_METADATA: " On " },
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: " On " },
          expect: value("on"),
       },
       {
          name: "off",
-         env: { PUBLISHER_QUERY_METADATA: "OFF" },
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: "OFF" },
          expect: value("off"),
       },
       {
          name: "blank",
-         env: { PUBLISHER_QUERY_METADATA: "" },
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: "" },
          expect: value("off"),
       },
       {
-         name: '"true" is refused',
-         env: { PUBLISHER_QUERY_METADATA: "true" },
-         expect: fails("PUBLISHER_QUERY_METADATA"),
+         name: '"true" is on, where only "on" and "off" used to be read',
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: "true" },
+         expect: value("on"),
+      },
+      {
+         name: "not a boolean fails",
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: "full" },
+         expect: fails("PUBLISHER_QUERY_METADATA_ENABLED"),
       },
    ],
    "postgres.poolMax": [
@@ -1240,23 +1262,23 @@ export const CONTRACT: Record<string, Case[]> = {
       { name: "unset turns the governor off", expect: value(null) },
       {
          name: "0 turns the governor off",
-         env: { PUBLISHER_MAX_MEMORY_BYTES: "0" },
+         env: { PUBLISHER_MEMORY_MAX_BYTES: "0" },
          expect: value(null),
       },
       {
-         name: "PUBLISHER_MAX_MEMORY_BYTES",
+         name: "PUBLISHER_MEMORY_MAX_BYTES",
          env: CEILING,
          expect: value(1_000_000),
       },
       {
          name: "blank",
-         env: { PUBLISHER_MAX_MEMORY_BYTES: "" },
+         env: { PUBLISHER_MEMORY_MAX_BYTES: "" },
          expect: value(null),
       },
       {
          name: "negative",
-         env: { PUBLISHER_MAX_MEMORY_BYTES: "-1" },
-         expect: fails("PUBLISHER_MAX_MEMORY_BYTES"),
+         env: { PUBLISHER_MEMORY_MAX_BYTES: "-1" },
+         expect: fails("PUBLISHER_MEMORY_MAX_BYTES"),
       },
    ],
    "memory.highWaterFraction": [
@@ -1326,93 +1348,93 @@ export const CONTRACT: Record<string, Case[]> = {
    "memory.backpressureEnabled": [
       { name: "unset", env: CEILING, expect: value(true) },
       {
-         name: "PUBLISHER_MEMORY_BACKPRESSURE",
-         env: { ...CEILING, PUBLISHER_MEMORY_BACKPRESSURE: "false" },
+         name: "PUBLISHER_MEMORY_BACKPRESSURE_ENABLED",
+         env: { ...CEILING, PUBLISHER_MEMORY_BACKPRESSURE_ENABLED: "false" },
          expect: value(false),
       },
       {
          name: "blank",
-         env: { ...CEILING, PUBLISHER_MEMORY_BACKPRESSURE: "" },
+         env: { ...CEILING, PUBLISHER_MEMORY_BACKPRESSURE_ENABLED: "" },
          expect: value(true),
       },
       {
          name: "not a boolean",
-         env: { ...CEILING, PUBLISHER_MEMORY_BACKPRESSURE: "maybe" },
-         expect: fails("PUBLISHER_MEMORY_BACKPRESSURE"),
+         env: { ...CEILING, PUBLISHER_MEMORY_BACKPRESSURE_ENABLED: "maybe" },
+         expect: fails("PUBLISHER_MEMORY_BACKPRESSURE_ENABLED"),
       },
    ],
    "packageLoad.workers": [
       { name: "unset", expect: value(1) },
       {
-         name: "PACKAGE_LOAD_WORKERS",
-         env: { PACKAGE_LOAD_WORKERS: "4" },
+         name: "PUBLISHER_PACKAGE_LOAD_WORKERS",
+         env: { PUBLISHER_PACKAGE_LOAD_WORKERS: "4" },
          expect: value(4),
       },
       {
          name: "blank is unset",
-         env: { PACKAGE_LOAD_WORKERS: "" },
+         env: { PUBLISHER_PACKAGE_LOAD_WORKERS: "" },
          expect: value(1),
       },
       {
          name: "0 is refused",
-         env: { PACKAGE_LOAD_WORKERS: "0" },
-         expect: fails("PACKAGE_LOAD_WORKERS"),
+         env: { PUBLISHER_PACKAGE_LOAD_WORKERS: "0" },
+         expect: fails("PUBLISHER_PACKAGE_LOAD_WORKERS"),
       },
       {
          name: "a number then text fails",
-         env: { PACKAGE_LOAD_WORKERS: "5abc" },
-         expect: fails("PACKAGE_LOAD_WORKERS"),
+         env: { PUBLISHER_PACKAGE_LOAD_WORKERS: "5abc" },
+         expect: fails("PUBLISHER_PACKAGE_LOAD_WORKERS"),
       },
    ],
    "packageLoad.jobTimeoutMs": [
       { name: "unset", expect: value(120_000) },
       {
-         name: "PACKAGE_LOAD_JOB_TIMEOUT_MS",
-         env: { PACKAGE_LOAD_JOB_TIMEOUT_MS: "5000" },
+         name: "PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS",
+         env: { PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS: "5000" },
          expect: value(5000),
       },
       {
          name: "blank",
-         env: { PACKAGE_LOAD_JOB_TIMEOUT_MS: "" },
+         env: { PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS: "" },
          expect: value(120_000),
       },
       {
          name: "0 is refused",
-         env: { PACKAGE_LOAD_JOB_TIMEOUT_MS: "0" },
-         expect: fails("PACKAGE_LOAD_JOB_TIMEOUT_MS"),
+         env: { PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS: "0" },
+         expect: fails("PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS"),
       },
       {
          name: "not a number fails",
-         env: { PACKAGE_LOAD_JOB_TIMEOUT_MS: "soon" },
-         expect: fails("PACKAGE_LOAD_JOB_TIMEOUT_MS"),
+         env: { PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS: "soon" },
+         expect: fails("PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS"),
       },
    ],
    "packageLoad.schemaCacheBytes": [
       { name: "unset", expect: value(16 * 1024 * 1024) },
       {
          name: "0 turns the cache off",
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
+         env: { PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "0" },
          expect: value(0),
       },
       {
-         name: "PACKAGE_LOAD_SCHEMA_CACHE_BYTES",
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "1024" },
+         name: "PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES",
+         env: { PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "1024" },
          expect: value(1024),
       },
       {
          name: "blank",
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "" },
+         env: { PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "" },
          expect: value(16 * 1024 * 1024),
       },
       {
          name: "a fraction",
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "1.5" },
-         expect: fails("PACKAGE_LOAD_SCHEMA_CACHE_BYTES"),
+         env: { PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "1.5" },
+         expect: fails("PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES"),
       },
       {
          name: "an exponent, which Number() read, fails",
-         env: { PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "16e6" },
-         expect: fails("PACKAGE_LOAD_SCHEMA_CACHE_BYTES"),
+         env: { PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES: "16e6" },
+         expect: fails("PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES"),
       },
    ],
 
@@ -1420,24 +1442,24 @@ export const CONTRACT: Record<string, Case[]> = {
    "duckdb.extensionFetchPolicy": [
       { name: "unset", expect: value("on-demand") },
       {
-         name: "EXTENSION_FETCH_POLICY",
-         env: { EXTENSION_FETCH_POLICY: "local-only" },
+         name: "PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY",
+         env: { PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only" },
          expect: value("local-only"),
       },
       {
          name: "any case",
-         env: { EXTENSION_FETCH_POLICY: " LOCAL-ONLY " },
+         env: { PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: " LOCAL-ONLY " },
          expect: value("local-only"),
       },
       {
          name: "blank",
-         env: { EXTENSION_FETCH_POLICY: "" },
+         env: { PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "" },
          expect: value("on-demand"),
       },
       {
          name: "an unknown policy",
-         env: { EXTENSION_FETCH_POLICY: "never" },
-         expect: fails("EXTENSION_FETCH_POLICY"),
+         env: { PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "never" },
+         expect: fails("PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY"),
       },
    ],
    "duckdb.memoryLimit": [
@@ -1557,24 +1579,24 @@ export const CONTRACT: Record<string, Case[]> = {
    "persist.storageMode": [
       { name: "unset", expect: value("off") },
       {
-         name: "PERSIST_STORAGE_MODE",
-         env: { PERSIST_STORAGE_MODE: "on" },
+         name: "PUBLISHER_PERSIST_STORAGE_MODE",
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          expect: value("on"),
       },
       {
          name: "any case",
-         env: { PERSIST_STORAGE_MODE: "Write-Only" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "Write-Only" },
          expect: value("write-only"),
       },
       {
          name: "blank",
-         env: { PERSIST_STORAGE_MODE: "" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "" },
          expect: value("off"),
       },
       {
          name: "an unknown mode",
-         env: { PERSIST_STORAGE_MODE: "always" },
-         expect: fails("PERSIST_STORAGE_MODE"),
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "always" },
+         expect: fails("PUBLISHER_PERSIST_STORAGE_MODE"),
       },
    ],
    "persist.addressIncludesDestination": [
@@ -1593,14 +1615,14 @@ export const CONTRACT: Record<string, Case[]> = {
    "materialize.enabled": [
       { name: "unset", expect: value(true) },
       {
-         name: "PUBLISHER_MATERIALIZE",
-         env: { PUBLISHER_MATERIALIZE: "false" },
+         name: "PUBLISHER_MATERIALIZE_ENABLED",
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "false" },
          expect: value(false),
       },
       {
          name: "not a boolean",
-         env: { PUBLISHER_MATERIALIZE: "sometimes" },
-         expect: fails("PUBLISHER_MATERIALIZE"),
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "sometimes" },
+         expect: fails("PUBLISHER_MATERIALIZE_ENABLED"),
       },
    ],
    "materialize.gatedSources": [
@@ -1619,37 +1641,37 @@ export const CONTRACT: Record<string, Case[]> = {
    "persist.collisionEnforcementEnabled": [
       { name: "unset", expect: value(true) },
       {
-         name: "PERSIST_COLLISION_ENFORCE",
-         env: { PERSIST_COLLISION_ENFORCE: "0" },
+         name: "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED",
+         env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "0" },
          expect: value(false),
       },
       {
          name: "blank",
-         env: { PERSIST_COLLISION_ENFORCE: "" },
+         env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "" },
          expect: value(true),
       },
       {
          name: "not a boolean",
-         env: { PERSIST_COLLISION_ENFORCE: "strict" },
-         expect: fails("PERSIST_COLLISION_ENFORCE"),
+         env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "strict" },
+         expect: fails("PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED"),
       },
    ],
    "materialization.schedulerEnabled": [
       { name: "unset", expect: value(false) },
       {
-         name: "PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER",
+         name: "PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED",
          env: SCHEDULER,
          expect: value(true),
       },
       {
          name: "blank",
-         env: { PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER: "" },
+         env: { PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED: "" },
          expect: value(false),
       },
       {
          name: "not a boolean",
-         env: { PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER: "local" },
-         expect: fails("PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER"),
+         env: { PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED: "local" },
+         expect: fails("PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED"),
       },
    ],
    "materialization.schedulerIntervalMs": [
@@ -1718,14 +1740,14 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(true),
       },
       {
-         name: '"1" fails: it was read as off',
+         name: '"1" is on, where it used to be off',
          env: { PUBLISHER_ALLOW_PROXY_CONNECTIONS: "1" },
-         expect: fails("PUBLISHER_ALLOW_PROXY_CONNECTIONS=1 is refused"),
+         expect: value(true),
       },
       {
-         name: '"yes" fails: it was read as off',
+         name: '"yes" is on, where it used to be off',
          env: { PUBLISHER_ALLOW_PROXY_CONNECTIONS: "yes" },
-         expect: fails("PUBLISHER_ALLOW_PROXY_CONNECTIONS=yes is refused"),
+         expect: value(true),
       },
       {
          name: "blank",
@@ -1775,91 +1797,108 @@ export const CONTRACT: Record<string, Case[]> = {
    "allow.s3CredentialChain": [
       { name: "unset", expect: value("any") },
       {
-         name: "S3_CREDENTIAL_CHAIN_POLICY",
-         env: { S3_CREDENTIAL_CHAIN_POLICY: "off" },
+         name: "PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN",
+         env: { PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "off" },
          expect: value("off"),
       },
       {
          name: "any case",
-         env: { S3_CREDENTIAL_CHAIN_POLICY: " Destinations-Only " },
+         env: { PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: " Destinations-Only " },
          expect: value("destinations-only"),
       },
       {
          name: "blank",
-         env: { S3_CREDENTIAL_CHAIN_POLICY: "" },
+         env: { PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "" },
          expect: value("any"),
       },
       {
          name: "an unknown policy",
-         env: { S3_CREDENTIAL_CHAIN_POLICY: "none" },
-         expect: fails("S3_CREDENTIAL_CHAIN_POLICY"),
+         env: { PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "none" },
+         expect: fails("PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN"),
       },
    ],
    "authorize.bypassSecret": [
       { name: "unset turns the bypass off", expect: value(false) },
       {
-         name: "PUBLISHER_BYPASS_AUTHORIZE_SECRET",
-         env: { PUBLISHER_BYPASS_AUTHORIZE_SECRET: "s3cret" },
+         name: "PUBLISHER_AUTHORIZE_BYPASS_SECRET",
+         env: { PUBLISHER_AUTHORIZE_BYPASS_SECRET: "s3cret" },
          expect: value(true),
       },
       {
          name: "the variable is trimmed",
-         env: { PUBLISHER_BYPASS_AUTHORIZE_SECRET: " s3cret " },
+         env: { PUBLISHER_AUTHORIZE_BYPASS_SECRET: " s3cret " },
          expect: value(true),
       },
       {
          name: "another secret does not match",
-         env: { PUBLISHER_BYPASS_AUTHORIZE_SECRET: "other" },
+         env: { PUBLISHER_AUTHORIZE_BYPASS_SECRET: "other" },
          expect: value(false),
       },
       {
          name: "blank",
-         env: { PUBLISHER_BYPASS_AUTHORIZE_SECRET: "" },
+         env: { PUBLISHER_AUTHORIZE_BYPASS_SECRET: "" },
          expect: value(false),
       },
       {
          name: "whitespace only is unset",
-         env: { PUBLISHER_BYPASS_AUTHORIZE_SECRET: "   " },
+         env: { PUBLISHER_AUTHORIZE_BYPASS_SECRET: "   " },
          expect: value(false),
       },
    ],
    "logging.level": [
       { name: "unset", expect: value("debug") },
-      { name: "LOG_LEVEL", env: { LOG_LEVEL: "info" }, expect: value("info") },
-      { name: "any case", env: { LOG_LEVEL: "WARN" }, expect: value("warn") },
-      { name: "blank", env: { LOG_LEVEL: "" }, expect: value("debug") },
+      {
+         name: "PUBLISHER_LOGGING_LEVEL",
+         env: { PUBLISHER_LOGGING_LEVEL: "info" },
+         expect: value("info"),
+      },
+      {
+         name: "any case",
+         env: { PUBLISHER_LOGGING_LEVEL: "WARN" },
+         expect: value("warn"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_LOGGING_LEVEL: "" },
+         expect: value("debug"),
+      },
       {
          name: "surrounding whitespace is trimmed, where it used to be unknown",
-         env: { LOG_LEVEL: " info" },
+         env: { PUBLISHER_LOGGING_LEVEL: " info" },
          expect: value("info"),
       },
       {
          name: "an unknown level fails",
-         env: { LOG_LEVEL: "loud" },
-         expect: fails("LOG_LEVEL"),
+         env: { PUBLISHER_LOGGING_LEVEL: "loud" },
+         expect: fails("PUBLISHER_LOGGING_LEVEL"),
       },
    ],
    "logging.responseBodiesEnabled": [
       { name: "unset", expect: value(true) },
       {
-         name: "DISABLE_RESPONSE_LOGGING=true",
-         env: { DISABLE_RESPONSE_LOGGING: "true" },
+         name: "PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED=false",
+         env: { PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "false" },
          expect: value(false),
       },
       {
-         name: "DISABLE_RESPONSE_LOGGING=1",
-         env: { DISABLE_RESPONSE_LOGGING: "1" },
+         name: "PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED=no",
+         env: { PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "no" },
          expect: value(false),
       },
       {
-         name: '"yes" fails: it did not disable',
-         env: { DISABLE_RESPONSE_LOGGING: "yes" },
-         expect: fails("DISABLE_RESPONSE_LOGGING=yes is refused"),
+         name: "--no-logging-response-bodies-enabled",
+         argv: ["--no-logging-response-bodies-enabled"],
+         expect: value(false),
       },
       {
          name: "blank",
-         env: { DISABLE_RESPONSE_LOGGING: "" },
+         env: { PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "" },
          expect: value(true),
+      },
+      {
+         name: "not a boolean fails",
+         env: { PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "quiet" },
+         expect: fails("PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED"),
       },
    ],
    "workloadLog.store": [
@@ -1929,53 +1968,53 @@ export const CONTRACT: Record<string, Case[]> = {
    "shutdown.drainDurationSeconds": [
       { name: "unset", expect: value(0) },
       {
-         name: "SHUTDOWN_DRAIN_DURATION_SECONDS",
-         env: { SHUTDOWN_DRAIN_DURATION_SECONDS: "5" },
+         name: "PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS",
+         env: { PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS: "5" },
          expect: value(5),
       },
       {
-         name: "--shutdown_drain_duration_seconds",
-         argv: ["--shutdown_drain_duration_seconds", "7"],
+         name: "--shutdown-drain-duration-seconds",
+         argv: ["--shutdown-drain-duration-seconds", "7"],
          expect: value(7),
       },
       {
          name: "the flag wins over the variable",
-         env: { SHUTDOWN_DRAIN_DURATION_SECONDS: "5" },
-         argv: ["--shutdown_drain_duration_seconds", "7"],
+         env: { PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS: "5" },
+         argv: ["--shutdown-drain-duration-seconds", "7"],
          expect: value(7),
       },
       {
          name: "blank",
-         env: { SHUTDOWN_DRAIN_DURATION_SECONDS: "" },
+         env: { PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS: "" },
          expect: value(0),
       },
       {
          name: "not a number fails",
-         env: { SHUTDOWN_DRAIN_DURATION_SECONDS: "abc" },
-         expect: fails("SHUTDOWN_DRAIN_DURATION_SECONDS"),
+         env: { PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS: "abc" },
+         expect: fails("PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS"),
       },
    ],
    "shutdown.gracefulCloseTimeoutSeconds": [
       { name: "unset", expect: value(0) },
       {
-         name: "SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS",
-         env: { SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS: "5" },
+         name: "PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS",
+         env: { PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS: "5" },
          expect: value(5),
       },
       {
-         name: "--shutdown_graceful_close_timeout_seconds",
-         argv: ["--shutdown_graceful_close_timeout_seconds", "7"],
+         name: "--shutdown-graceful-close-timeout-seconds",
+         argv: ["--shutdown-graceful-close-timeout-seconds", "7"],
          expect: value(7),
       },
       {
          name: "blank",
-         env: { SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS: "" },
+         env: { PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS: "" },
          expect: value(0),
       },
       {
          name: "not a number fails",
-         env: { SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS: "abc" },
-         expect: fails("SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS"),
+         env: { PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS: "abc" },
+         expect: fails("PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS"),
       },
    ],
 
@@ -1983,27 +2022,31 @@ export const CONTRACT: Record<string, Case[]> = {
    "retrieval.embedding.apiKey": [
       { name: "unset turns semantic search off", expect: value(null) },
       {
-         name: "EMBEDDING_API_KEY",
-         env: { EMBEDDING_API_KEY: "sk-1" },
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY",
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "sk-1" },
          expect: value("sk-1"),
       },
       {
          name: "trimmed",
-         env: { EMBEDDING_API_KEY: " sk-1 " },
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: " sk-1 " },
          expect: value("sk-1"),
       },
-      { name: "blank", env: { EMBEDDING_API_KEY: "" }, expect: value(null) },
+      {
+         name: "blank",
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "" },
+         expect: value(null),
+      },
       {
          name: "whitespace only is unset",
-         env: { EMBEDDING_API_KEY: "   " },
+         env: { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "   " },
          expect: value(null),
       },
    ],
    "retrieval.embedding.model": [
       { name: "unset", env: KEY, expect: value("text-embedding-3-small") },
       {
-         name: "EMBEDDING_MODEL",
-         env: { ...KEY, EMBEDDING_MODEL: "m1" },
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_MODEL",
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "m1" },
          expect: value("m1"),
       },
       {
@@ -2013,14 +2056,14 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("m2"),
       },
       {
-         name: "the file and an old EMBEDDING_MODEL that differ fail",
-         env: { ...KEY, EMBEDDING_MODEL: "m1" },
+         name: "the variable wins over the file",
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "m1" },
          file: { retrieval: { embedding: { model: "m2" } } },
-         expect: fails("given different values under its old and new names"),
+         expect: value("m1"),
       },
       {
          name: "blank",
-         env: { ...KEY, EMBEDDING_MODEL: "" },
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "" },
          expect: value("text-embedding-3-small"),
       },
       {
@@ -2047,25 +2090,31 @@ export const CONTRACT: Record<string, Case[]> = {
    "retrieval.embedding.baseUrl": [
       { name: "unset", env: KEY, expect: value("https://api.openai.com/v1") },
       {
-         name: "EMBEDDING_API_BASE, without its trailing slash",
-         env: { ...KEY, EMBEDDING_API_BASE: "http://e.example/v1/" },
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL, without its trailing slash",
+         env: {
+            ...KEY,
+            PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "http://e.example/v1/",
+         },
          expect: value("http://e.example/v1"),
       },
       {
-         name: "the file and an old EMBEDDING_API_BASE that differ fail",
-         env: { ...KEY, EMBEDDING_API_BASE: "http://e.example/v1" },
+         name: "the variable wins over the file",
+         env: {
+            ...KEY,
+            PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "http://e.example/v1",
+         },
          file: { retrieval: { embedding: { baseUrl: "http://f.example/v1" } } },
-         expect: fails("given different values under its old and new names"),
+         expect: value("http://e.example/v1"),
       },
       {
          name: "blank",
-         env: { ...KEY, EMBEDDING_API_BASE: "" },
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "" },
          expect: value("https://api.openai.com/v1"),
       },
       {
          name: "not a URL",
-         env: { ...KEY, EMBEDDING_API_BASE: "not a url" },
-         expect: fails("EMBEDDING_API_BASE"),
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "not a url" },
+         expect: fails("PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL"),
       },
       {
          name: "a rejected retrieval block's base URL is not used",
@@ -2077,30 +2126,30 @@ export const CONTRACT: Record<string, Case[]> = {
    "retrieval.embedding.dimensions": [
       { name: "unset", env: KEY, expect: value(undefined) },
       {
-         name: "EMBEDDING_DIMENSIONS",
-         env: { ...KEY, EMBEDDING_DIMENSIONS: "256" },
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS",
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "256" },
          expect: value(256),
       },
       {
-         name: "the file and an old EMBEDDING_DIMENSIONS that differ fail",
-         env: { ...KEY, EMBEDDING_DIMENSIONS: "256" },
+         name: "the variable wins over the file",
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "256" },
          file: { retrieval: { embedding: { dimensions: 512 } } },
-         expect: fails("given different values under its old and new names"),
+         expect: value(256),
       },
       {
          name: "blank",
-         env: { ...KEY, EMBEDDING_DIMENSIONS: "" },
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "" },
          expect: value(undefined),
       },
       {
          name: "0 is refused",
-         env: { ...KEY, EMBEDDING_DIMENSIONS: "0" },
-         expect: fails("EMBEDDING_DIMENSIONS"),
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "0" },
+         expect: fails("PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS"),
       },
       {
          name: "not a number",
-         env: { ...KEY, EMBEDDING_DIMENSIONS: "wide" },
-         expect: fails("EMBEDDING_DIMENSIONS"),
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "wide" },
+         expect: fails("PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS"),
       },
       {
          name: "a rejected retrieval block's dimensions are not used",
@@ -2112,60 +2161,75 @@ export const CONTRACT: Record<string, Case[]> = {
    "retrieval.embedding.minSimilarity": [
       { name: "unset", env: KEY, expect: value(0.2) },
       {
-         name: "EMBEDDING_MIN_SIMILARITY",
-         env: { ...KEY, EMBEDDING_MIN_SIMILARITY: "0.35" },
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY",
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY: "0.35" },
          expect: value(0.35),
       },
       {
          name: "blank",
-         env: { ...KEY, EMBEDDING_MIN_SIMILARITY: "" },
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY: "" },
          expect: value(0.2),
       },
       {
          name: "1 is refused",
-         env: { ...KEY, EMBEDDING_MIN_SIMILARITY: "1" },
-         expect: fails("EMBEDDING_MIN_SIMILARITY"),
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY: "1" },
+         expect: fails("PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY"),
       },
       {
          name: "not a number",
-         env: { ...KEY, EMBEDDING_MIN_SIMILARITY: "close" },
-         expect: fails("EMBEDDING_MIN_SIMILARITY"),
+         env: { ...KEY, PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY: "close" },
+         expect: fails("PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY"),
       },
    ],
    "retrieval.embedding.connectionSchemaIndexingEnabled": [
       { name: "unset", expect: value(false) },
       {
-         name: "EMBEDDING_INDEX_CONNECTION_SCHEMA",
-         env: { EMBEDDING_INDEX_CONNECTION_SCHEMA: "true" },
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED",
+         env: {
+            PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED:
+               "true",
+         },
          expect: value(true),
       },
       {
          name: "blank",
-         env: { EMBEDDING_INDEX_CONNECTION_SCHEMA: "" },
+         env: {
+            PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED:
+               "",
+         },
          expect: value(false),
       },
       {
          name: "not a boolean",
-         env: { EMBEDDING_INDEX_CONNECTION_SCHEMA: "schemas" },
-         expect: fails("EMBEDDING_INDEX_CONNECTION_SCHEMA"),
+         env: {
+            PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED:
+               "schemas",
+         },
+         expect: fails(
+            "PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED",
+         ),
       },
    ],
    "retrieval.llm.apiKey": [
       { name: "unset turns the LLM off", expect: value(null) },
       {
-         name: "LLM_API_KEY",
-         env: { LLM_API_KEY: "sk-2" },
+         name: "PUBLISHER_RETRIEVAL_LLM_API_KEY",
+         env: { PUBLISHER_RETRIEVAL_LLM_API_KEY: "sk-2" },
          expect: value("sk-2"),
       },
       {
          name: "trimmed",
-         env: { LLM_API_KEY: " sk-2 " },
+         env: { PUBLISHER_RETRIEVAL_LLM_API_KEY: " sk-2 " },
          expect: value("sk-2"),
       },
-      { name: "blank", env: { LLM_API_KEY: "" }, expect: value(null) },
+      {
+         name: "blank",
+         env: { PUBLISHER_RETRIEVAL_LLM_API_KEY: "" },
+         expect: value(null),
+      },
       {
          name: "whitespace only is unset",
-         env: { LLM_API_KEY: "   " },
+         env: { PUBLISHER_RETRIEVAL_LLM_API_KEY: "   " },
          expect: value(null),
       },
    ],
@@ -2375,14 +2439,12 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("google"),
       },
       {
-         name: "a provider that needs a model, with only an old EMBEDDING_MODEL, fails naming it",
+         name: "PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER, with the model's variable",
          env: {
             PUBLISHER_RETRIEVAL_EMBEDDING_PROVIDER: "google",
-            EMBEDDING_MODEL: "text-embedding-3-small",
+            PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "gemini-embedding-001",
          },
-         expect: fails(
-            "retrieval.embedding.model from EMBEDDING_MODEL, which a google or vertex provider does not read",
-         ),
+         expect: value("google"),
       },
       {
          name: "anthropic has no embeddings API",
@@ -2469,20 +2531,20 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(false),
       },
       {
-         name: "a string in the file is still refused, naming what the file takes",
+         name: "a string in the file is refused by the block's parser",
          file: { retrieval: { dimensionValues: { enabled: "false" } } },
          expect: fails(
-            'expected true or false as a JSON boolean, not a string, got "false"',
+            'Invalid retrieval.dimensionValues.enabled: expected a boolean, got "false"',
          ),
       },
    ],
 };
 
-/** Read one case: its value and warnings, or the message it failed with. */
+/** Read one case: its value, or the message it failed with. */
 function outcome(
    key: string,
    input: SettingsInput,
-): { value: unknown; warns: string[] } | { fails: string } {
+): { value: unknown } | { fails: string } {
    try {
       return withSettings(input, (context) => {
          const current = Settings.current();
@@ -2492,14 +2554,7 @@ function outcome(
          if (startup.length > 0) {
             return { fails: startup.map((error) => error.message).join("\n") };
          }
-         return {
-            value: PROBES[key](context),
-            // An old name in use is deprecated from step 2; settings.spec.ts
-            // checks those warnings, so a row here names only the others.
-            warns: current.warnings
-               .filter((warning) => warning.kind !== "deprecated")
-               .map((warning) => warning.message),
-         };
+         return { value: PROBES[key](context) };
       });
    } catch (error) {
       return { fails: error instanceof Error ? error.message : String(error) };
@@ -2533,9 +2588,9 @@ describe("settings contract", () => {
                   return;
                }
                expect(actual).toHaveProperty("value");
-               const read = actual as { value: unknown; warns: string[] };
-               expect(read.value).toEqual(expected.value);
-               expect(read.warns).toEqual([]);
+               expect((actual as { value: unknown }).value).toEqual(
+                  expected.value,
+               );
             });
          }
       });
@@ -2595,7 +2650,7 @@ describe("settings contract: the server APIs' cross-setting rules", () => {
 
    it("serving off with an admin port starts", () => {
       expect(
-         check({ argv: ["--no-serving-api-enabled", "--admin_port", "4100"] }),
+         check({ argv: ["--no-serving-api-enabled", "--admin-port", "4100"] }),
       ).toEqual(value("starts"));
    });
 });

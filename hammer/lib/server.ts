@@ -79,7 +79,7 @@ export interface ServerOptions {
    /**
     * Extra environment variables for the spawned server, beyond
     * `PUBLISHER_PERSIST_STORAGE_MODE` (which is set from `mode`). Lets a scenario boot a
-    * publisher with a deployment flag like `PERSIST_COLLISION_ENFORCE=true` that,
+    * publisher with a deployment flag like `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=true` that,
     * like the mode, is fixed at process start.
     */
    extraEnv?: Record<string, string>;
@@ -128,12 +128,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    // inherited MCP host would move MCP elsewhere. An inherited admin port would
    // be the same fixed port for every publisher, the collision this harness
    // allocates ports to avoid, so only a scenario's own env can turn it on.
-   // Today's names for what the harness sets go too: an old name that differs
-   // from its new one fails startup.
    const inherited: Record<string, string | undefined> = { ...process.env };
    delete inherited.PUBLISHER_ADMIN_PORT;
-   delete inherited.MCP_HOST;
-   delete inherited.PERSIST_STORAGE_MODE;
    const proc: Subprocess = Bun.spawn(args, {
       cwd: serverDir,
       env: {

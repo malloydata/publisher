@@ -61,7 +61,7 @@ describe("R4: a connection-rooted source with an include before its extend", () 
    let fixture: R4Fixture;
    beforeAll(async () => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       }).restore;
       fixture = await buildScenario({ files: { "m.malloy": model }, seedSql });
    });

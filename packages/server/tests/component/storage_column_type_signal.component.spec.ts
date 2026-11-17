@@ -70,7 +70,10 @@ let harness: MetricsHarness;
 
 beforeEach(async () => {
    restore = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      env: {
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
+      },
    }).restore;
    // `storage=` on the sandbox is refused; it stands in for a warehouse.
    restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });

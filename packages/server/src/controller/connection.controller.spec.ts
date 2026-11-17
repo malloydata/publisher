@@ -170,7 +170,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("passes the SQL through verbatim and asks the connector for cap+1 rows", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "5" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "5" });
       const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
       const { controller } = buildController(runSQL);
 
@@ -197,7 +197,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("returns the result when row count equals the cap exactly", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "3" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "3" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -218,7 +218,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("throws PayloadTooLargeError when the connection returns cap+1 rows", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "3" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "3" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -250,7 +250,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("forwards non-SELECT statements verbatim with rowLimit applied", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "10" });
       const rows = [{ table_name: "a" }, { table_name: "b" }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -271,8 +271,8 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       expect(opts.rowLimit).toBe(11);
    });
 
-   it("disables rowLimit when PUBLISHER_MAX_QUERY_ROWS=0", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "0" });
+   it("disables rowLimit when PUBLISHER_QUERY_MAX_ROWS=0", async () => {
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "0" });
       const rows = Array.from({ length: 100 }, (_, i) => ({ a: i }));
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -295,8 +295,8 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       expect(parsed.rows.length).toBe(100);
    });
 
-   it("uses the default cap when PUBLISHER_MAX_QUERY_ROWS is unset", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: undefined });
+   it("uses the default cap when PUBLISHER_QUERY_MAX_ROWS is unset", async () => {
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: undefined });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
@@ -317,7 +317,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("preserves a caller-supplied rowLimit when it is below the cap", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "100" });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
@@ -337,7 +337,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
    });
 
    it("clamps a caller-supplied rowLimit that exceeds the cap+1 sentinel and replaces any caller-supplied abortSignal with the publisher's timeout signal", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "10" });
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const { controller } = buildController(runSQL);
 
@@ -655,7 +655,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    }
 
    it("routes through runSQLStream and asks the driver for cap+1 rows", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "5" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "5" });
       const rows = [{ a: 1 }, { a: 2 }];
       const { controller, seenSql, seenOptions } = buildStreamingController({
          rows,
@@ -679,7 +679,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("preserves a caller-supplied rowLimit when it is below the cap+1 ceiling", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "100" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "100" });
       const { controller, seenOptions } = buildStreamingController({
          rows: [{ a: 1 }],
       });
@@ -699,7 +699,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("throws PayloadTooLargeError when the stream yields more than the row cap", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "2" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "2" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }];
       const { controller } = buildStreamingController({
          rows,
@@ -734,8 +734,8 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
 
    it("throws PayloadTooLargeError when the stream exceeds the byte cap", async () => {
       setEnv({
-         PUBLISHER_MAX_QUERY_ROWS: "1000",
-         PUBLISHER_MAX_RESPONSE_BYTES: "60",
+         PUBLISHER_QUERY_MAX_ROWS: "1000",
+         PUBLISHER_QUERY_MAX_RESPONSE_BYTES: "60",
       });
       const big = "x".repeat(40);
       const rows = [{ s: big }, { s: big }, { s: big }];
@@ -770,10 +770,10 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
       ).rejects.toThrow("exceeded 60 bytes");
    });
 
-   it("disables byte cap when PUBLISHER_MAX_RESPONSE_BYTES=0", async () => {
+   it("disables byte cap when PUBLISHER_QUERY_MAX_RESPONSE_BYTES=0", async () => {
       setEnv({
-         PUBLISHER_MAX_QUERY_ROWS: "1000",
-         PUBLISHER_MAX_RESPONSE_BYTES: "0",
+         PUBLISHER_QUERY_MAX_ROWS: "1000",
+         PUBLISHER_QUERY_MAX_RESPONSE_BYTES: "0",
       });
       const big = "x".repeat(10_000);
       const rows: QueryRecord[] = Array.from({ length: 3 }, () => ({ s: big }));
@@ -797,8 +797,8 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
       expect(parsed.rows.length).toBe(3);
    });
 
-   it("omits rowLimit when PUBLISHER_MAX_QUERY_ROWS=0 and no caller limit is given", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "0" });
+   it("omits rowLimit when PUBLISHER_QUERY_MAX_ROWS=0 and no caller limit is given", async () => {
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "0" });
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];
       const { controller, seenOptions } = buildStreamingController({
          rows,
@@ -822,7 +822,7 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    });
 
    it("replaces caller-supplied abortSignal with a real AbortSignal", async () => {
-      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "10" });
+      setEnv({ PUBLISHER_QUERY_MAX_ROWS: "10" });
       const { controller, seenOptions } = buildStreamingController({
          rows: [{ a: 1 }],
       });

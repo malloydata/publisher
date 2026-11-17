@@ -4,7 +4,7 @@
 // The scenario contract + a tiny assertion recorder. A scenario declares the
 // Postgres source tables and packages it needs (so the orchestrator can seed +
 // register them before booting a server), then drives the server itself via
-// `ctx.use(mode)` — because PERSIST_STORAGE_MODE is read at server startup, a
+// `ctx.use(mode)` — because PUBLISHER_PERSIST_STORAGE_MODE is read at server startup, a
 // scenario that spans modes (migration) or exercises the mode matrix asks for
 // the mode it wants and gets a server in that mode (reused if already running).
 
@@ -167,7 +167,7 @@ export interface Scenario {
    note?: { since?: string; text: string };
    sourceTables?: SourceTable[];
    /**
-    * The `PERSIST_STORAGE_MODE` values this scenario asks for, in order. A mode is
+    * The `PUBLISHER_PERSIST_STORAGE_MODE` values this scenario asks for, in order. A mode is
     * fixed at publisher start, so changing it restarts the server — the runner uses
     * this to run same-mode scenarios consecutively and stop paying for churn.
     */

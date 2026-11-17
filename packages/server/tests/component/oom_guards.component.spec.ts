@@ -12,13 +12,13 @@
  *      `ConnectionController` short-circuits with 503 BEFORE the
  *      connector is touched.
  *   2. Concurrency middleware — when the pod is at
- *      `PUBLISHER_MAX_CONCURRENT_QUERIES`, new requests get 503
+ *      `PUBLISHER_QUERY_MAX_CONCURRENT`, new requests get 503
  *      BEFORE the controller is invoked.
  *   3. Timeout — when the underlying driver takes longer than
  *      `PUBLISHER_QUERY_TIMEOUT_MS`, the request gets 504 and the
  *      abort signal fires.
  *   4. Row cap — when the driver returns more rows than
- *      `PUBLISHER_MAX_QUERY_ROWS`, the request gets 413.
+ *      `PUBLISHER_QUERY_MAX_ROWS`, the request gets 413.
  *
  * Mocked: only the Malloy `Connection.runSQL`. Everything else
  * (admission gate, concurrency middleware, timeout helper, cap
@@ -136,7 +136,7 @@ describe("OOM guardrails: end-to-end chain", () => {
    function installEnv(env: Record<string, string> = {}): void {
       restoreSettings?.();
       restoreSettings = installSettings({
-         env: { PUBLISHER_QUERY_METADATA: "on", ...env },
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: "on", ...env },
       }).restore;
    }
 
@@ -174,7 +174,7 @@ describe("OOM guardrails: end-to-end chain", () => {
    });
 
    it("concurrency cap fires SECOND: 503 before the controller is touched, once the slot pool is full", async () => {
-      installEnv({ PUBLISHER_MAX_CONCURRENT_QUERIES: "1" });
+      installEnv({ PUBLISHER_QUERY_MAX_CONCURRENT: "1" });
       // The first query holds its slot until the second request has been
       // answered. Ordered by events, not timers: a fixed head start for the
       // first request and a fixed hold time for its query lost the race on a
@@ -248,8 +248,8 @@ describe("OOM guardrails: end-to-end chain", () => {
       expect(observedSignal?.aborted).toBe(true);
    });
 
-   it("row cap fires LAST: 413 when the driver overshoots PUBLISHER_MAX_QUERY_ROWS", async () => {
-      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "2" });
+   it("row cap fires LAST: 413 when the driver overshoots PUBLISHER_QUERY_MAX_ROWS", async () => {
+      installEnv({ PUBLISHER_QUERY_MAX_ROWS: "2" });
       // Driver returns 3 rows even though we asked for cap+1 = 3
       // — the sentinel pattern catches this and 413s.
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];

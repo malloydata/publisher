@@ -27,7 +27,7 @@ written, so the filter it applies over the stored rows is the author's own.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.fsf_orders
 

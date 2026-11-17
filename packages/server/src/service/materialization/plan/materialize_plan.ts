@@ -170,7 +170,7 @@ export interface MaterializeRefusal {
     * unknown or retired key, a bad value or a contradictory combination), so
     * the finding is `malformed` under this code and fails the publish and the
     * load; `whenRelaxed` is its refusal where the deployment refuses it alone
-    * instead (a collision under `PERSIST_COLLISION_ENFORCE=false`).
+    * instead (a collision under `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`).
     * `refused`: a valid declaration Publisher cannot build, its reason and
     * tier in `refusedSources`.
     */

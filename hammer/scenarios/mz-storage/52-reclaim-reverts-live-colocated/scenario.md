@@ -29,7 +29,7 @@ rebind cleared the colocated binding and serving fell back to live.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: off
+- PUBLISHER_PERSIST_STORAGE_MODE: off
 
 ## Data orders_pg.rrc_orders
 

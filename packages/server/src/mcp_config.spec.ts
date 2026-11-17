@@ -440,11 +440,14 @@ describe("ensureMcpConfig", () => {
 
       // Every way the bound port can differ from the requested one. Checking
       // `requestedPort === 0` missed most of them. A NaN no longer comes from
-      // MCP_PORT, since a non-numeric one fails startup, but the function
+      // PUBLISHER_MCP_PORT, since a non-numeric one fails startup, but the function
       // still takes whatever number its caller hands it.
       const unstable: Array<[string, number]> = [
-         ["--mcp_port 0", 0],
-         ["a non-numeric MCP_PORT (NaN)", Number("tcp://10.96.0.1:4040")],
+         ["--mcp-port 0", 0],
+         [
+            "a non-numeric PUBLISHER_MCP_PORT (NaN)",
+            Number("tcp://10.96.0.1:4040"),
+         ],
          ["a negative port", -1],
       ];
       for (const [label, requestedPort] of unstable) {
@@ -648,7 +651,7 @@ describe("logMcpConfigOutcome", () => {
          restore();
       }
       expect(said.join("\n")).toContain("/w/.mcp.json");
-      expect(said.join("\n")).toContain("--no-mcp-config");
+      expect(said.join("\n")).toContain("--no-mcp-config-file-enabled");
    });
 
    // Both skips were silent when this shipped for review, and three separate
@@ -679,7 +682,7 @@ describe("logMcpConfigOutcome", () => {
    it("names an up-tree config without pretending it covers this server", () => {
       // This branch was `logger.debug` for one commit, to keep a clone quiet on
       // every boot. That only looked quiet because the default level is debug:
-      // under LOG_LEVEL=info it went silent, which is the very defect three
+      // under PUBLISHER_LOGGING_LEVEL=info it went silent, which is the very defect three
       // reviewers had already found. A config at the repo root may register an
       // unrelated server, or name a port this run is not on, and the module
       // never reads it to find out, so it must still give the endpoint.
@@ -700,7 +703,7 @@ describe("logMcpConfigOutcome", () => {
 
    it("emits every no-file branch at info, never below it", () => {
       // The regression guard for the above. A branch logged at debug is invisible
-      // the moment an operator sets LOG_LEVEL=info, which is the production shape,
+      // the moment an operator sets PUBLISHER_LOGGING_LEVEL=info, which is the production shape,
       // and an invisible skip is indistinguishable from a broken install.
       const noFile = outcomes.filter((o) => o.action !== "created");
       for (const outcome of noFile) {
@@ -906,7 +909,12 @@ describe("mcpConfigEnabled", () => {
    /** Run `body` with the settings the variable at `value` (or unset) gives. */
    function withEnv(value: string | undefined, body: () => void): void {
       withSettings(
-         { env: value === undefined ? {} : { PUBLISHER_NO_MCP_CONFIG: value } },
+         {
+            env:
+               value === undefined
+                  ? {}
+                  : { PUBLISHER_MCP_CONFIG_FILE_ENABLED: value },
+         },
          body,
       );
    }
@@ -917,28 +925,28 @@ describe("mcpConfigEnabled", () => {
       }
    });
 
-   it("stays on for every spelling of no", () => {
-      // The bug this guards: `!process.env.X` made =false DISABLE the feature it
-      // names, because every non-empty string is truthy.
+   it("turns off for every spelling of no", () => {
+      // The bug this guards: reading the variable's truthiness made =false
+      // ENABLE the feature, because every non-empty string is truthy.
       for (const value of ["false", "FALSE", "0", "no", "OFF", "  false  "]) {
-         withEnv(value, () => expect(mcpConfigEnabled()).toBe(true));
-      }
-   });
-
-   it("turns off for every spelling of yes", () => {
-      for (const value of ["1", "true", "YES", "on"]) {
          withEnv(value, () => expect(mcpConfigEnabled()).toBe(false));
       }
    });
 
+   it("stays on for every spelling of yes", () => {
+      for (const value of ["1", "true", "YES", "on"]) {
+         withEnv(value, () => expect(mcpConfigEnabled()).toBe(true));
+      }
+   });
+
    it("reads the settings when called, not when the module was imported", () => {
-      // server.ts installs the settings (--no-mcp-config among them) at startup
+      // server.ts installs the settings (--no-mcp-config-file-enabled among them) at startup
       // and reads this afterwards. If the value were captured at import, before
       // the settings were installed, the flag would silently stop working.
       withEnv(undefined, () => {
          expect(mcpConfigEnabled()).toBe(true);
          const { restore } = installSettings({
-            env: { PUBLISHER_NO_MCP_CONFIG: "true" },
+            env: { PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false" },
          });
          try {
             expect(mcpConfigEnabled()).toBe(false);
@@ -951,7 +959,7 @@ describe("mcpConfigEnabled", () => {
    it("throws on a value that is neither, like every other flag in this server", () => {
       withEnv("please", () =>
          expect(() => mcpConfigEnabled()).toThrow(
-            'mcp.configFileEnabled from PUBLISHER_NO_MCP_CONFIG: expected a boolean (true/false, 1/0, yes/no or on/off), got "please"',
+            'mcp.configFileEnabled from PUBLISHER_MCP_CONFIG_FILE_ENABLED: expected a boolean (true/false, 1/0, yes/no or on/off), got "please"',
          ),
       );
    });

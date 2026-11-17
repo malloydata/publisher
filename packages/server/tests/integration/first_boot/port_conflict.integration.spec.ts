@@ -64,7 +64,7 @@ async function boot(
       restPort,
       mcpPort,
       config: { frozenConfig: false, environments: [] },
-      env: { PUBLISHER_NO_MCP_CONFIG: undefined },
+      env: { PUBLISHER_MCP_CONFIG_FILE_ENABLED: undefined },
    });
    cleanups.push(work.cleanup, () => server.stop());
    return { server, mcpJson: path.join(workDir, ".mcp.json") };
@@ -111,14 +111,14 @@ describe("boot with a busy port", () => {
       expect(fs.existsSync(mcpJson)).toBe(false);
    });
 
-   it("MCP port busy: names --mcp_port, nonzero exit, and no .mcp.json left behind", async () => {
+   it("MCP port busy: names --mcp-port, nonzero exit, and no .mcp.json left behind", async () => {
       const blocker = await occupyPort();
       cleanups.push(blocker.release);
 
       const { server, mcpJson } = await boot(await getFreePort(), blocker.port);
       expect(await server.waitForExit()).not.toBe(0);
       expect(server.output()).toContain(
-         `Port ${blocker.port} in use; pass --mcp_port <n>`,
+         `Port ${blocker.port} in use; pass --mcp-port <n>`,
       );
       expect(fs.existsSync(mcpJson)).toBe(false);
    });

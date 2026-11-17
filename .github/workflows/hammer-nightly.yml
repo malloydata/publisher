@@ -5,7 +5,7 @@
 # a real Publisher against a throwaway Postgres (Docker) and a local DuckLake,
 # so it is too slow for every pull request; it is not a PR check, and nothing
 # else depends on it. Each leg runs the whole suite under one setting of
-# PUBLISHER_MATERIALIZE, the switch the materialization paths branch on.
+# PUBLISHER_MATERIALIZE_ENABLED, the switch the materialization paths branch on.
 
 name: hammer-nightly
 
@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   hammer:
-    name: hammer (PUBLISHER_MATERIALIZE=${{ matrix.materialize }})
+    name: hammer (PUBLISHER_MATERIALIZE_ENABLED=${{ matrix.materialize }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -67,7 +67,7 @@ jobs:
         run: bun hammer/run.ts --list
       - name: Run the hammer
         env:
-          PUBLISHER_MATERIALIZE: ${{ matrix.materialize }}
+          PUBLISHER_MATERIALIZE_ENABLED: ${{ matrix.materialize }}
           HAMMER_LOG_DIR: ${{ runner.temp }}/hammer-logs
           SCENARIOS: ${{ inputs.scenarios }}
         run: |

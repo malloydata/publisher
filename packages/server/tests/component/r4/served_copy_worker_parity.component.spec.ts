@@ -283,8 +283,8 @@ for (const g3 of G3_CASES) {
       it("grafts each caller's gate as the main thread's copy does", async () => {
          const restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
          }).restore;

@@ -213,7 +213,10 @@ const duckdbCases = [...DUCKDB_CASES, ...AUTHOR_FIELD_CASES];
 const tiers: Tier[] = [
    {
       label: "#@ persist storage=, served copy",
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      env: {
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
+      },
       cases: duckdbCases,
       scenario: async () => ({
          files: { "m.malloy": models("duckdb", "").persist },
@@ -222,7 +225,10 @@ const tiers: Tier[] = [
    },
    {
       label: "#(materialize) storage=",
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      env: {
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
+      },
       cases: [...duckdbCases, ...JOIN_CASES],
       scenario: async () => ({
          files: {
@@ -234,7 +240,10 @@ const tiers: Tier[] = [
    },
    {
       label: "colocated #(materialize), DuckDB",
-      env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
+      env: {
+         PUBLISHER_PERSIST_STORAGE_MODE: "off",
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
+      },
       cases: [...duckdbCases, ...JOIN_CASES],
       scenario: async () => ({
          files: {
@@ -249,8 +258,8 @@ const tiers: Tier[] = [
            {
               label: "colocated #(materialize), Postgres",
               env: {
-                 PERSIST_STORAGE_MODE: "off",
-                 PUBLISHER_MATERIALIZE: "true",
+                 PUBLISHER_PERSIST_STORAGE_MODE: "off",
+                 PUBLISHER_MATERIALIZE_ENABLED: "true",
               },
               cases: [...duckdbCases, ...JOIN_CASES].filter(
                  (c) => !c.duckdbOnly,
@@ -637,7 +646,10 @@ for (const tier of narrowingTiers) {
       let cleanup: (() => Promise<void>) | undefined;
       beforeAll(async () => {
          restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
+            env: {
+               PUBLISHER_PERSIST_STORAGE_MODE: "off",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
+            },
          }).restore;
          const scenario = await tier.scenario();
          cleanup = scenario.cleanup;

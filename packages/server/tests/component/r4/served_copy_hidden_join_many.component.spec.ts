@@ -640,8 +640,8 @@ describe("R4: row-level gates over a hidden join_many, gated serving on", () => 
    beforeAll(async () => {
       restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
          },
       }).restore;
@@ -762,7 +762,10 @@ describe("R4: a colocated extension of a pair table, hidden join_many or not", (
    let fixture: R4Fixture;
    beforeAll(async () => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
+         env: {
+            PUBLISHER_PERSIST_STORAGE_MODE: "off",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
+         },
       }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": colocatedModel },

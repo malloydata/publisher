@@ -178,8 +178,8 @@ describe.skipIf(!url)("tables of packages that share a schema", () => {
       server = await spawnServer({
          config: { frozenConfig: false, environments },
          env: {
-            PUBLISHER_MATERIALIZE: "true",
-            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
          },
       });
       await server.waitUntilServing();

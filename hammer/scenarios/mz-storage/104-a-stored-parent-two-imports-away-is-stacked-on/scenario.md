@@ -23,7 +23,7 @@ table, and `weekly` on `daily`'s, which its planning model never names.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.tim_orders
 

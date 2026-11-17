@@ -30,7 +30,7 @@ either failing or working. A publish is still refused — this is the load path 
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.ph_orders
 

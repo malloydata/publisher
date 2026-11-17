@@ -1269,7 +1269,7 @@ export class InvalidStateTransitionError extends Error {
    }
 }
 
-/** Temporary refusal (e.g. to stay under `PUBLISHER_MAX_MEMORY_BYTES`): 503, retry with back-off. */
+/** Temporary refusal (e.g. to stay under `PUBLISHER_MEMORY_MAX_BYTES`): 503, retry with back-off. */
 export class ServiceUnavailableError extends Error {
    get kind(): ServiceUnavailableKind {
       return "service_unavailable";
@@ -1303,7 +1303,7 @@ export class DryRunCapacityError extends PackageAdmissionRefusedError {
 
 /**
  * A response would exceed a server-side size cap (e.g.
- * `PUBLISHER_MAX_QUERY_ROWS`): 413, refine the query or raise the cap, not retry.
+ * `PUBLISHER_QUERY_MAX_ROWS`): 413, refine the query or raise the cap, not retry.
  */
 export class PayloadTooLargeError extends Error {
    get kind(): PayloadTooLargeKind {

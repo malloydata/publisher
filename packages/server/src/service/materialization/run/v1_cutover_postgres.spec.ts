@@ -224,7 +224,7 @@ for (const flag of [true, false])
             restore = installSettings({
                env: {
                   PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-                  PUBLISHER_MATERIALIZE: "true",
+                  PUBLISHER_MATERIALIZE_ENABLED: "true",
                },
             }).restore;
             await __setPackageLoadPoolForTests(null);

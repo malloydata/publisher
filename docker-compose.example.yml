@@ -55,8 +55,8 @@ services:
     # Uncomment to override defaults. See packages/server/README.docker.md
     # for the full env-var table.
     # environment:
-    #   LOG_LEVEL: info
-    #   SHUTDOWN_DRAIN_DURATION_SECONDS: "10"
+    #   PUBLISHER_LOGGING_LEVEL: info
+    #   PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS: "10"
     restart: unless-stopped
     # The first boot clones sample packages from GitHub, which can
     # take ~30s on a slow link; `start_period` keeps the container

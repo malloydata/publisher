@@ -561,7 +561,7 @@ export class ManifestCommitter {
     * every slot rebound (or was taken out of service), so a caller can tell
     * that nothing loaded still reads what the store no longer names.
     *
-    * Colocated is rebound regardless of `PERSIST_STORAGE_MODE` (it is not gated
+    * Colocated is rebound regardless of `PUBLISHER_PERSIST_STORAGE_MODE` (it is not gated
     * by the storage kill switch); storage= only when the tier is not `off`.
     */
    async rebindLoadedVersions(

@@ -97,8 +97,8 @@ function asR4(model: string): string {
 }
 
 const SETTINGS = {
-   PERSIST_STORAGE_MODE: "on",
-   PUBLISHER_MATERIALIZE: "true",
+   PUBLISHER_PERSIST_STORAGE_MODE: "on",
+   PUBLISHER_MATERIALIZE_ENABLED: "true",
    PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
 };
 

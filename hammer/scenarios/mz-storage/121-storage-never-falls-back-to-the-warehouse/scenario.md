@@ -30,7 +30,7 @@ right answer.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.nw_orders
 
@@ -103,6 +103,6 @@ Expect:
 ## Note
 
 > The mode-off case is guarded separately and has been: an instruction that DOES carry a
-> destination while `PERSIST_STORAGE_MODE=off` is refused on that ground. This scenario
+> destination while `PUBLISHER_PERSIST_STORAGE_MODE=off` is refused on that ground. This scenario
 > covers the mirror, where the instruction carries no destination at all and only the
 > source's own annotation says the warehouse is not an option.

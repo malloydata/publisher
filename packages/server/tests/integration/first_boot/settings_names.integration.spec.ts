@@ -13,20 +13,19 @@ import {
 } from "../../harness/spawn_server";
 
 /**
- * Step 2 of the configuration design through the real entry point: the
- * derived names configure a server from a variable, a flag or the file, with
- * one precedence; today's names still work, each with a deprecation warning
- * and a count in publisher_deprecated_usage_total; and an old and a new name
- * that disagree stop it starting.
+ * The configuration design's names through the real entry point: the derived
+ * names configure a server from a variable, a flag or the file, with one
+ * precedence, and the names step 3 removed are read by nothing: a removed
+ * variable is ignored and a removed flag stops it starting.
  */
 
 setDefaultTimeout(150_000);
 
-/** The harness's own variables, by today's names, which a case replaces. */
-const TODAYS_NAMES = {
-   SERVER_ROOT: undefined,
-   MCP_PORT: undefined,
-   PUBLISHER_NO_MCP_CONFIG: undefined,
+/** The harness's own variables, which a case replaces. */
+const HARNESS_NAMES = {
+   PUBLISHER_ROOT: undefined,
+   PUBLISHER_MCP_PORT: undefined,
+   PUBLISHER_MCP_CONFIG_FILE_ENABLED: undefined,
 };
 
 describe("settings by their derived names", () => {
@@ -63,21 +62,20 @@ describe("settings by their derived names", () => {
       return dir.dir;
    };
 
-   it("starts from the derived variables alone, with no deprecation warning", async () => {
+   it("starts from the derived variables alone", async () => {
       const serverRoot = root();
       const mcpPort = await getFreePort();
       const server = await boot({
          serverRoot,
          mcpPort,
          env: {
-            ...TODAYS_NAMES,
+            ...HARNESS_NAMES,
             PUBLISHER_ROOT: serverRoot,
             PUBLISHER_MCP_PORT: String(mcpPort),
             PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false",
          },
       });
       expect(server.stderr()).toContain(`mcp=http://127.0.0.1:${mcpPort} `);
-      expect(server.output()).not.toContain("is deprecated");
    });
 
    it("takes the derived flags", async () => {
@@ -85,7 +83,7 @@ describe("settings by their derived names", () => {
       const mcpPort = await getFreePort();
       const server = await boot({
          serverRoot,
-         env: { ...TODAYS_NAMES, PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false" },
+         env: { ...HARNESS_NAMES, PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false" },
          args: [
             "--root",
             serverRoot,
@@ -123,24 +121,17 @@ describe("settings by their derived names", () => {
       ).toBe("frame-ancestors https://env.example");
    });
 
-   it("still reads today's names, warns about each and counts it", async () => {
-      // The harness starts servers by today's names (MCP_PORT, SERVER_ROOT).
-      const server = await boot();
+   it("ignores a removed variable with a warning, and refuses a removed flag", async () => {
+      // Read, MCP_PORT=1 would bind a port this process cannot open.
+      const server = await boot({ env: { MCP_PORT: "1" } });
+      expect(server.stderr()).not.toContain("mcp=http://127.0.0.1:1 ");
       expect(server.output()).toContain(
-         "MCP_PORT is deprecated: set PUBLISHER_MCP_PORT instead (mcp.port). A later release stops reading it.",
+         "MCP_PORT is set, but this release no longer reads it: set PUBLISHER_MCP_PORT (mcp.port) instead.",
       );
-      const metrics = await (await fetch(`${server.baseUrl}/metrics`)).text();
-      expect(metrics).toMatch(
-         /publisher_deprecated_usage_total\{[^}]*feature="config:MCP_PORT"[^}]*\} 1/,
-      );
-   });
 
-   it("refuses to start when an old and a new name disagree", async () => {
-      const stderr = await refused({
-         env: { MCP_PORT: "4141", PUBLISHER_MCP_PORT: "4242" },
-      });
+      const stderr = await refused({ args: ["--mcp_port", "4141"] });
       expect(stderr).toContain(
-         "mcp.port is given different values under its old and new names: MCP_PORT (4141) and PUBLISHER_MCP_PORT (4242). Remove the old one.",
+         "Unknown flag --mcp_port. Did you mean --mcp-port?",
       );
       expect(stderr).toContain("PUBLISHER_INIT_FAILED");
    });
@@ -153,17 +144,6 @@ describe("settings by their derived names", () => {
          "a secret in the file must be one ${VAR} reference and nothing else",
       );
       expect(stderr).not.toContain("s3cret");
-   });
-
-   it("refuses a launch setting's conflict with PUBLISHER_INIT_FAILED, not a crash", async () => {
-      // The harness gives the root as SERVER_ROOT; this gives a different one
-      // under the new name, as `docker run -e PUBLISHER_ROOT=…` does against
-      // a CMD that passes the root.
-      const stderr = await refused({ env: { PUBLISHER_ROOT: root() } });
-      expect(stderr).toContain(
-         "root is given different values under its old and new names: SERVER_ROOT",
-      );
-      expect(stderr).toContain("PUBLISHER_INIT_FAILED");
    });
 
    it("refuses a launch setting in the file, and says what to set instead", async () => {

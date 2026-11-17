@@ -24,7 +24,7 @@ import {
  * The #7098 fixture, served after the v1 cutover: no serve shape exists, so
  * every stored answer is the served copy's (or a leg's). Every answer must
  * equal live. (Before the retirement it also ran through today's storage
- * serve shape, and with PUBLISHER_MATERIALIZE on beside it.)
+ * serve shape, and with PUBLISHER_MATERIALIZE_ENABLED on beside it.)
  */
 for (const mode of ["cutover"] as const) {
    const servedCopy = true;
@@ -33,8 +33,8 @@ for (const mode of ["cutover"] as const) {
       beforeAll(() => {
          restoreSettings = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               ...(servedCopy ? { PUBLISHER_MATERIALIZE: "true" } : {}),
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               ...(servedCopy ? { PUBLISHER_MATERIALIZE_ENABLED: "true" } : {}),
             },
          }).restore;
       });

@@ -77,8 +77,8 @@ describe("a host manifest from an older worker of the v1 cutover (mixed fleet)",
       restoreSettings = installSettings({
          env: {
             PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "false",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "false",
          },
       }).restore;
       await __setPackageLoadPoolForTests(null);

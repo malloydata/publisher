@@ -30,7 +30,7 @@ A second, isolated destination for `rollup`.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.cxd_orders
 

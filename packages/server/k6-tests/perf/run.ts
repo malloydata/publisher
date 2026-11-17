@@ -91,7 +91,7 @@ const USAGE = `usage: bun perf/run.ts <loads|queries|mixed|all> [options]
   --weights a,b,c,d,e           query mix: cheap,medium,heavy,report_list,report_get
   --max-error-rate R            sanity threshold on http_req_failed (default 0.05)
   --port P / --mcp-port P       server ports (default 4200 / 4240)
-  --server-env KEY=VALUE        extra server env, repeatable (e.g. PACKAGE_LOAD_WORKERS=2)
+  --server-env KEY=VALUE        extra server env, repeatable (e.g. PUBLISHER_PACKAGE_LOAD_WORKERS=2)
   --out DIR                     results directory (default results/perf-<timestamp>)
   --keep-temp                   keep the temp server root and generated package
 `;
@@ -250,17 +250,17 @@ async function startServer(
          "bun",
          "run",
          SERVER_ENTRY,
-         "--server_root",
+         "--root",
          serverRoot,
          "--config",
          configPath,
          "--port",
          String(opts.port),
-         "--mcp_port",
+         "--mcp-port",
          String(opts.mcpPort),
          "--host",
          "127.0.0.1",
-         "--no-mcp-config",
+         "--no-mcp-config-file-enabled",
          "--init",
       ],
       {
@@ -268,9 +268,9 @@ async function startServer(
          env: {
             ...process.env,
             NODE_ENV: "production",
-            DISABLE_RESPONSE_LOGGING: "true",
-            LOG_LEVEL: "warn",
-            PUBLISHER_NO_MCP_CONFIG: "1",
+            PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "false",
+            PUBLISHER_LOGGING_LEVEL: "warn",
+            PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false",
             ...opts.serverEnv,
          },
          stdout: "pipe",
@@ -469,8 +469,8 @@ function effectiveServerEnv(opts: Options): Record<string, string> {
       string | undefined
    >;
    const defaults: Record<string, string> = {
-      PACKAGE_LOAD_WORKERS: "1",
-      PUBLISHER_MAX_CONCURRENT_QUERIES: "32",
+      PUBLISHER_PACKAGE_LOAD_WORKERS: "1",
+      PUBLISHER_QUERY_MAX_CONCURRENT: "32",
    };
    const out: Record<string, string> = {};
    for (const [key, fallback] of Object.entries(defaults)) {

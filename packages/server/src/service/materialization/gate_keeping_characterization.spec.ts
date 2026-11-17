@@ -184,8 +184,8 @@ async function loadRows(
 ): Promise<Record<string, Row>> {
    const restore = installSettings({
       env: {
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: String(s.materialize),
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: String(s.materialize),
          PUBLISHER_MATERIALIZE_GATED_SOURCES: String(s.gatedSources),
       },
    }).restore;
@@ -610,7 +610,7 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
          it(label, () => {
             const restore = installSettings({
                env: {
-                  PUBLISHER_MATERIALIZE: String(s.materialize),
+                  PUBLISHER_MATERIALIZE_ENABLED: String(s.materialize),
                   PUBLISHER_MATERIALIZE_GATED_SOURCES: String(s.gatedSources),
                },
             }).restore;
@@ -801,7 +801,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       it(label, async () => {
          const restore = installSettings({
             env: {
-               PUBLISHER_MATERIALIZE: String(s.materialize),
+               PUBLISHER_MATERIALIZE_ENABLED: String(s.materialize),
                PUBLISHER_MATERIALIZE_GATED_SOURCES: String(s.gatedSources),
             },
          }).restore;

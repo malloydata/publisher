@@ -26,7 +26,7 @@ other wrappers, and the fact's view, keep the tier.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.wmf_orders
 

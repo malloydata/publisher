@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 # With the storage tier off, a lake rollup is not built — and not built anywhere else
 
-`PERSIST_STORAGE_MODE=off` is the tier's kill switch. For an authored
+`PUBLISHER_PERSIST_STORAGE_MODE=off` is the tier's kill switch. For an authored
 `#@ persist storage=`, off means the source serves live from its own warehouse: the
 annotation is inert and nothing is written.
 
@@ -26,7 +26,7 @@ switch should cost.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: off
+- PUBLISHER_PERSIST_STORAGE_MODE: off
 
 ## Data orders_pg.pm_orders
 

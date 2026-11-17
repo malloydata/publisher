@@ -390,7 +390,7 @@ describe.skipIf(process.platform === "win32")(
          "keep every chained source's address, outcome and stored schema",
          async () => {
             const { restore } = installSettings({
-               env: { PERSIST_STORAGE_MODE: "on" },
+               env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
             });
             try {
                const hammer = await hammerModels();

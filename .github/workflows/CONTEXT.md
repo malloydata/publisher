@@ -50,7 +50,7 @@ package can come from its own file rather than from `build.yml`.** Know which jo
 `hammer-nightly.yml` runs the hammer scenario suite (`hammer/README.md`) against a real server,
 a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
 `workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
-`PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
+`PUBLISHER_MATERIALIZE_ENABLED=true` and one with `false`, each upload their logs as an artifact.
 
 `main-thread-regression.yml` is the main-thread regression check
 (`packages/server/tests/perf/main-thread/README.md`): a storm-lite A/B of two server builds on

@@ -25,21 +25,26 @@ const run = (
 
 describe("embeddingStartupNotices", () => {
    for (const provider of ["openai", "openai-compatible", "google"] as const) {
-      it(`warns when provider ${provider} is set and EMBEDDING_API_KEY is not`, () => {
+      it(`warns when provider ${provider} is set and PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY is not`, () => {
          const notices = run({ provider, model: "m" });
          expect(notices).toHaveLength(1);
          expect(notices[0].level).toBe("warn");
          expect(notices[0].message).toContain(
-            `retrieval.embedding names provider "${provider}" but EMBEDDING_API_KEY is not set`,
+            `retrieval.embedding names provider "${provider}" but PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY is not set`,
          );
          expect(notices[0].message).toContain("lexical");
-         expect(notices[0].message).toContain("Fix: set EMBEDDING_API_KEY");
+         expect(notices[0].message).toContain(
+            "Fix: set PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY",
+         );
       });
    }
 
    it("does not warn when the key is set", () => {
       expect(
-         run({ provider: "openai", model: "m" }, { EMBEDDING_API_KEY: "k" }),
+         run(
+            { provider: "openai", model: "m" },
+            { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k" },
+         ),
       ).toEqual([]);
    });
 
@@ -59,7 +64,7 @@ describe("embeddingStartupNotices", () => {
             model: "file-model",
          },
          {
-            EMBEDDING_API_KEY: "k",
+            PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k",
             PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "env-model",
          },
       );
@@ -79,7 +84,7 @@ describe("embeddingStartupNotices", () => {
             baseUrl: "https://file.example.com/v1",
          },
          {
-            EMBEDDING_API_KEY: "k",
+            PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k",
             PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "512",
             PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL:
                "https://user:pw@env.example.com/v1/x",
@@ -97,10 +102,13 @@ describe("embeddingStartupNotices", () => {
       expect(text).not.toContain("/v1/x");
    });
 
-   it("has nothing to say for an old variable that differs from the file, which fails startup instead", () => {
+   it("has nothing to say when a variable differs from the file, which it wins over", () => {
       withSettings(
          {
-            env: { EMBEDDING_API_KEY: "k", EMBEDDING_MODEL: "env-model" },
+            env: {
+               PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k",
+               PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "env-model",
+            },
             file: {
                retrieval: {
                   embedding: { provider: "openai", model: "file-model" },
@@ -108,22 +116,20 @@ describe("embeddingStartupNotices", () => {
             },
          },
          () => {
-            expect(
-               Settings.current()
-                  .errors()
-                  .map((error) => error.message),
-            ).toEqual([
-               expect.stringContaining(
-                  "retrieval.embedding.model is given different values",
-               ) as unknown as string,
-            ]);
+            expect(Settings.current().errors()).toEqual([]);
+            expect(Settings.current().get("retrieval.embedding.model")).toBe(
+               "env-model",
+            );
          },
       );
    });
 
    it("says nothing when the file and a variable agree, or no variable is set", () => {
       expect(
-         run({ provider: "openai", model: "m" }, { EMBEDDING_API_KEY: "k" }),
+         run(
+            { provider: "openai", model: "m" },
+            { PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k" },
+         ),
       ).toEqual([]);
       expect(
          run(
@@ -133,7 +139,7 @@ describe("embeddingStartupNotices", () => {
                dimensions: 512,
             },
             {
-               EMBEDDING_API_KEY: "k",
+               PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "k",
                PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "m",
                PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: "512",
             },

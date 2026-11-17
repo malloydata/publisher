@@ -23,7 +23,7 @@ would refuse a build the passthrough completes.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.ujs_orders
 

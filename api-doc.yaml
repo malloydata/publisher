@@ -876,10 +876,10 @@ paths:
         Executes a SQL statement against the specified database connection and returns the results.
         The results include data, metadata, and execution information.
 
-        Rows returned are capped at PUBLISHER_MAX_QUERY_ROWS (default 100,000).
+        Rows returned are capped at PUBLISHER_QUERY_MAX_ROWS (default 100,000).
         The cap is forwarded to the connector as a rowLimit on RunSQLOptions;
         queries that return more rows than the cap fail with HTTP 413 rather
-        than serializing the response. Set PUBLISHER_MAX_QUERY_ROWS=0 to
+        than serializing the response. Set PUBLISHER_QUERY_MAX_ROWS=0 to
         disable the cap. A caller-supplied rowLimit smaller than the cap is
         preserved; larger values are clamped down to cap+1.
       parameters:
@@ -1290,7 +1290,7 @@ paths:
         Executes a SQL statement against the specified database connection,
         resolved in the context of the named package, and returns the results.
 
-        Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the
+        Subject to the same PUBLISHER_QUERY_MAX_ROWS row cap as the
         environment-level sqlQuery endpoint.
       parameters:
         - name: environmentName
@@ -4344,14 +4344,14 @@ components:
           * Initialization or draining state (rolling updates, graceful
             shutdown).
           * Memory back-pressure — the publisher's RSS crossed the
-            high-water mark derived from PUBLISHER_MAX_MEMORY_BYTES and
+            high-water mark derived from PUBLISHER_MEMORY_MAX_BYTES and
             PUBLISHER_MEMORY_HIGH_WATER_FRACTION, so new queries are
             rejected until RSS drops below the low-water mark
             (PUBLISHER_MEMORY_LOW_WATER_FRACTION).
-          * Per-pod query concurrency cap reached — PUBLISHER_MAX_CONCURRENT_QUERIES
+          * Per-pod query concurrency cap reached — PUBLISHER_QUERY_MAX_CONCURRENT
             in-flight queries are already running on this pod.
         Clients should retry with backoff; under sustained pressure, scale
-        out, raise PUBLISHER_MAX_MEMORY_BYTES / PUBLISHER_MAX_CONCURRENT_QUERIES,
+        out, raise PUBLISHER_MEMORY_MAX_BYTES / PUBLISHER_QUERY_MAX_CONCURRENT,
         or refine the offending queries.
       content:
         application/json:
@@ -4361,8 +4361,8 @@ components:
       description: |
         The request was well-formed but the response is too large to return.
         Three cases, and the message says which:
-          * PUBLISHER_MAX_QUERY_ROWS (default 100000) exceeded: too many rows.
-          * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) exceeded: the
+          * PUBLISHER_QUERY_MAX_ROWS (default 100000) exceeded: too many rows.
+          * PUBLISHER_QUERY_MAX_RESPONSE_BYTES (default 50 MB) exceeded: the
             JSON-serialized response measured over the cap. What is measured is
             the shape the request asked for, so on the model-query endpoint two
             requests differing only in compactJson reach this cap at different
@@ -4687,7 +4687,7 @@ components:
             initialized and ready to serve requests, draining when the
             server is going to shut down, and throttled when the server has hit
             its memory back-pressure limit and is rejecting new package loads and
-            queries to stay under PUBLISHER_MAX_MEMORY_BYTES (see the memory
+            queries to stay under PUBLISHER_MEMORY_MAX_BYTES (see the memory
             governor). Already-loaded packages remain serviceable while throttled;
             callers can treat a throttled server as unhealthy for new load.
             Only reported when the memory governor is enabled.
@@ -5132,7 +5132,7 @@ components:
           type: string
           description: >-
             For a `live` verdict, why: `refused` (the plan refused to build it),
-            `storage_mode` (`storage=` while `PERSIST_STORAGE_MODE` is not
+            `storage_mode` (`storage=` while `PUBLISHER_PERSIST_STORAGE_MODE` is not
             `on`), `rollup_over_stored_base` (retained, never reported by a
             released server: a rollup over a `storage=` base is planned like
             any other), `unreachable` (no source on the package's
@@ -5320,7 +5320,7 @@ components:
             `bound` reports that the bind ran to completion, NOT that any query
             routes to a materialized table: an entry whose source fails the
             eligibility gate is dropped, and the storage tier serves live under a
-            `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
+            `PUBLISHER_PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
             and `storageServeBindings` for what actually bound.
 
             An EMPTY manifest is a bind like any other: it is fetched and applied,
@@ -5396,7 +5396,7 @@ components:
             read cross-connection from its destination, not substituted in the
             manifest). Present only when at least one source is bound. Whether a
             query actually routes to these tables additionally depends on
-            `PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
+            `PUBLISHER_PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
             be present but the serve path still runs live (see `warnings`).
 
             Like `boundManifestUri`, this describes whatever is CURRENTLY bound
@@ -5427,7 +5427,7 @@ components:
 
             A `live` verdict is the package-level form of a live fallback
             that is otherwise visible only per query: a source built into
-            storage while `PERSIST_STORAGE_MODE` is off, one no published
+            storage while `PUBLISHER_PERSIST_STORAGE_MODE` is off, one no published
             source reaches, one under a row-level gate the storage tier cannot
             keep. `POST …/packages?dryRun=true` answers the same verdicts for a
             package before it is published, with each stored source's named
@@ -5878,7 +5878,7 @@ components:
                   `#@ preaggregate`, whose v2 spelling is `#(preaggregate)` (one
                   per measure, `model` its file, `subject` the source and the
                   message the measure; `warn`; only while
-                  `PUBLISHER_MATERIALIZE` is on).
+                  `PUBLISHER_MATERIALIZE_ENABLED` is on).
                   `deprecated-preaggregate-namespace`: a rollup line placed with
                   `namespace=`, the deprecated spelling of its `name=`
                   container; still read, in that container under the readable
@@ -5929,7 +5929,7 @@ components:
                   and `preaggregate-not-mergeable`;
                   `materialization-table-collision` (two sources whose
                   `name=` puts them on one table; under
-                  `PERSIST_COLLISION_ENFORCE=false` a refusal instead); and
+                  `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false` a refusal instead); and
                   `materialization-near-miss` (a misspelled materialization
                   route or directive, such as `#(materialise)` or
                   `#@ persits`). `preaggregate-malformed` is retained and no
@@ -5964,7 +5964,7 @@ components:
                   `inherited_where_with_given`, `unreadable_measure`,
                   `join_level` and `name_clash`.
                   `materialization-storage-mode`: a `storage=` source the
-                  deployment's `PERSIST_STORAGE_MODE` (`off` or `write-only`)
+                  deployment's `PUBLISHER_PERSIST_STORAGE_MODE` (`off` or `write-only`)
                   does not serve from storage (`subject` the source, or a
                   rollup's base; `warn`).
                   `persist-incremental-no-merge-key`: an incremental source
@@ -6603,7 +6603,7 @@ components:
             is decided by the same completed sync the search path gates on, not
             by whether cached rows happen to cover the current entity names.
             `error` = the index cannot serve now; `reason` and `lastError`
-            say why. A changed `EMBEDDING_MODEL` or a changed package moves a
+            say why. A changed `PUBLISHER_RETRIEVAL_EMBEDDING_MODEL` or a changed package moves a
             `ready` package back to `indexing`.
             `cooldown` and `too-many-entities` are deprecated. Earlier versions
             reported them as the `status` itself; they are now the `reason` of
@@ -6713,7 +6713,7 @@ components:
             one row for its name plus one per chunk of its documentation, so
             this exceeds `totalEntities` on a documented model and is not a
             count of entities. A vector stored under another embedding model or
-            `EMBEDDING_DIMENSIONS` is embedded again rather than counted.
+            `PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS` is embedded again rather than counted.
         totalRows:
           type: integer
           description: >-
@@ -8520,7 +8520,7 @@ components:
             name (`query_id` is reserved).
 
             Null when no metadata was attached — which is every query until a
-            deployment sets `PUBLISHER_QUERY_METADATA=on`, since query metadata
+            deployment sets `PUBLISHER_QUERY_METADATA_ENABLED=on`, since query metadata
             ships off by default.
         renderLogs:
           type: array
@@ -8699,7 +8699,7 @@ components:
           type: string
           description: >-
             The serve verdict's reason: `storage_mode` (built into storage, but
-            the server's PERSIST_STORAGE_MODE routes no query to it),
+            the server's PUBLISHER_PERSIST_STORAGE_MODE routes no query to it),
             `unreachable` (no published source reaches it), `row_level_gate`
             (every published entry point over it carries a gate it cannot keep
             yet), `refused` (the package refuses to serve it), `shadowed` (its
@@ -8787,7 +8787,7 @@ components:
             How a `materialized` table was read, when it was not today's serve
             shape: `served_copy` means the model's served copy answered (the
             author's own files with each stored source re-rooted on its table,
-            behind `PUBLISHER_MATERIALIZE`). An open string; absent
+            behind `PUBLISHER_MATERIALIZE_ENABLED`). An open string; absent
             otherwise.
 
     QueryPathCandidate:
@@ -9770,7 +9770,7 @@ components:
         and optional setup SQL for anything they do not cover (e.g. ATTACH
         commands for external lakehouses). Setup SQL must be enabled with
         PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true and is refused under
-        EXTENSION_FETCH_POLICY=local-only. Database files, working directories,
+        PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY=local-only. Database files, working directories,
         filesystem/network policy, extension loading, temp directories, and
         resource knobs remain owned by Publisher.
       properties:
@@ -10786,7 +10786,7 @@ components:
             `storage_source_unsupported` (`storage=` on a
             source whose connection the build cannot pass through to a
             destination, e.g. the package's DuckDB sandbox);
-            `table_name_collision` (under `PERSIST_COLLISION_ENFORCE=false`, a
+            `table_name_collision` (under `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`, a
             declaration whose `name=` puts it on one table with another, so
             neither is built; by default such a package does not load; a run
             also records it in its `metadata.refusedSources` for a source
@@ -10801,7 +10801,7 @@ components:
 
 
             A persisted view or named query: `materialization_off` (persisted
-            named queries are built only with `PUBLISHER_MATERIALIZE` on),
+            named queries are built only with `PUBLISHER_MATERIALIZE_ENABLED` on),
             `multi_line_annotation` (its `#@` line spans more than one line),
             `build_name_collision` (its generated build source's name is one
             the model, or another persisted view, already takes),

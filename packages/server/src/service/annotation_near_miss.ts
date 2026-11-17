@@ -266,7 +266,7 @@ export function annotationNearMisses(
       // A near miss of a materialization route or directive fails the load,
       // as a misspelled gate does: a declaration that silently does nothing
       // is an invalid annotation. Not when the route is spelled exactly but
-      // switched off (`#(preaggregate)` with PUBLISHER_MATERIALIZE=false):
+      // switched off (`#(preaggregate)` with PUBLISHER_MATERIALIZE_ENABLED=false):
       // that is the deployment's choice, not the author's mistake.
       const materialization =
          MATERIALIZATION_ROUTES.has(intended.route) &&

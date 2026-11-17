@@ -28,7 +28,7 @@ Proves the three steps are distinct, and each does only its own part:
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.dgc_orders
 

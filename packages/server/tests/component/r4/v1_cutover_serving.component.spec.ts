@@ -618,11 +618,11 @@ source: t is ev -> {
       ["serve_shape uncast", {}, true],
       [
          "served_copy (materialize) cast",
-         { PUBLISHER_MATERIALIZE: "true" },
+         { PUBLISHER_MATERIALIZE_ENABLED: "true" },
          false,
       ],
-      ["cutover uncast", { PUBLISHER_MATERIALIZE: "true" }, true],
-      ["cutover cast", { PUBLISHER_MATERIALIZE: "true" }, false],
+      ["cutover uncast", { PUBLISHER_MATERIALIZE_ENABLED: "true" }, true],
+      ["cutover cast", { PUBLISHER_MATERIALIZE_ENABLED: "true" }, false],
    ] as const) {
       describe(mode, () => {
          afterAll(disposeScenarios);
@@ -631,7 +631,7 @@ source: t is ev -> {
          ]) {
             it(q, async () => {
                const restore = installSettings({
-                  env: { PERSIST_STORAGE_MODE: "on", ...env },
+                  env: { PUBLISHER_PERSIST_STORAGE_MODE: "on", ...env },
                }).restore;
                try {
                   const f = await buildScenario({
@@ -2162,8 +2162,8 @@ source: through_join is duckdb.table('orders_raw') extend {
          beforeAll(async () => {
             restore = installSettings({
                env: {
-                  PERSIST_STORAGE_MODE: "on",
-                  PUBLISHER_MATERIALIZE: "true",
+                  PUBLISHER_PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_MATERIALIZE_ENABLED: "true",
                   PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
                },
             }).restore;
@@ -2544,8 +2544,8 @@ source: through_join is duckdb.table('orders_raw') extend {
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
          }).restore;
@@ -2595,8 +2595,8 @@ source: through_join is duckdb.table('orders_raw') extend {
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
             },
          }).restore;

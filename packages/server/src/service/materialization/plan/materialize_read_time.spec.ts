@@ -510,7 +510,7 @@ source: orders is dated extend { where: t >= now - 30 days }
             // The address reads the switch when it is computed, so each is
             // computed under its own setting.
             const addressUnder = async (env: Record<string, string>) => {
-               settings({ PERSIST_STORAGE_MODE: "on", ...env });
+               settings({ PUBLISHER_PERSIST_STORAGE_MODE: "on", ...env });
                const { c } = await packages.plan(ORDERS);
                const g = generated(c);
                return {

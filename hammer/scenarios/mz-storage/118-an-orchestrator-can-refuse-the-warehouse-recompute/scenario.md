@@ -24,7 +24,7 @@ succeeds and recomputes, so the value is read, not merely present.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.owr_orders
 

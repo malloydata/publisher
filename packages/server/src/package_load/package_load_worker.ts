@@ -209,7 +209,7 @@ type CachedSchema = TableSourceDef | SQLSourceDef;
 
 /**
  * Schemas fetched through the main thread, kept across loads within
- * PACKAGE_LOAD_SCHEMA_CACHE_BYTES of serialized schema (heap use is a few
+ * PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES of serialized schema (heap use is a few
  * times that). Without a budget from the pool, nothing is cached.
  */
 const schemaCache = new SchemaCache<CachedSchema>(

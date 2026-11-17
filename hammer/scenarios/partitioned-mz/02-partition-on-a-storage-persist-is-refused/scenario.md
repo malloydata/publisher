@@ -23,7 +23,7 @@ layout must not publish today with silently none.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: off
 
 ## Data orders_pg.pla_orders

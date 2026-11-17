@@ -19,7 +19,7 @@ process start: `On` makes a publish from a location publish its version, and
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: On
 - PUBLISHER_VERSION_PROMOTION: Explicit
 

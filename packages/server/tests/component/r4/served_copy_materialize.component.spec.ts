@@ -3,7 +3,7 @@
 
 /**
  * R4 for the served copy over `#(materialize)` (materialization v2, phase 3
- * PR 3b): with PUBLISHER_MATERIALIZE on, the author's source is re-rooted on
+ * PR 3b): with PUBLISHER_MATERIALIZE_ENABLED on, the author's source is re-rooted on
  * its generated build source's table, each computed dimension stored under
  * its own name (its definition dropped, its annotations on the stored field),
  * and every answer equals live.

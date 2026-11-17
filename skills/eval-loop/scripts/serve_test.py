@@ -286,16 +286,16 @@ class ServerCmd(unittest.TestCase):
             with self.subTest(seed=seed):
                 cmd = serve.server_cmd(SERVER, pathlib.Path("/root"), 4811,
                                        4040, seed=seed)
-                self.assertEqual(cmd[cmd.index("--server_root") + 1], "/root")
+                self.assertEqual(cmd[cmd.index("--root") + 1], "/root")
                 self.assertEqual(cmd[cmd.index("--port") + 1], "4811")
-                self.assertEqual(cmd[cmd.index("--mcp_port") + 1], "4040")
+                self.assertEqual(cmd[cmd.index("--mcp-port") + 1], "4040")
 
     def test_a_second_server_gets_its_own_mcp_port(self):
         # Two Publishers on one machine (the model under test and the truth
         # server) collide on the default MCP port otherwise.
         cmd = serve.server_cmd(SERVER, pathlib.Path("/r2"), 4812, 4102,
                                seed=False)
-        self.assertEqual(cmd[cmd.index("--mcp_port") + 1], "4102")
+        self.assertEqual(cmd[cmd.index("--mcp-port") + 1], "4102")
 
 
 def a_set(toml: str, truth_package: bool = True) -> pathlib.Path:
@@ -371,8 +371,8 @@ class Roles(unittest.TestCase):
     def test_a_keyless_server_says_it_ranks_lexically(self):
         self.assertIn("ranks get_context lexically", serve.retrieval_note({}))
         self.assertIn("lexically",
-                      serve.retrieval_note({"EMBEDDING_API_KEY": "  "}))
-        self.assertIsNone(serve.retrieval_note({"EMBEDDING_API_KEY": "k"}))
+                      serve.retrieval_note({"PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY": "  "}))
+        self.assertIsNone(serve.retrieval_note({"PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY": "k"}))
 
     def test_a_role_on_the_other_roles_port_is_refused(self):
         cfg = serve.config.load(a_set(TOML))
@@ -493,7 +493,7 @@ class Roles(unittest.TestCase):
                         "--server-root", str(root), "--publisher-dir", str(pub),
                         "--wait", "1", "--no-warm-retrieval",
                         "--watch-env", "evals"])
-        self.assertEqual(seen.get("PUBLISHER_WATCH"), "evals")
+        self.assertEqual(seen.get("PUBLISHER_WATCH_ENVIRONMENTS"), "evals")
 
 
 
@@ -514,18 +514,18 @@ class WatchNote(unittest.TestCase):
 
 class WarmByDefault(unittest.TestCase):
     def test_the_model_role_warms_when_there_is_a_key(self):
-        self.assertTrue(serve.warm_by_default("model", False, {"EMBEDDING_API_KEY": "k"}))
+        self.assertTrue(serve.warm_by_default("model", False, {"PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY": "k"}))
 
     def test_no_key_nothing_to_warm(self):
         self.assertFalse(serve.warm_by_default("model", False, {}))
-        self.assertFalse(serve.warm_by_default("model", False, {"EMBEDDING_API_KEY": " "}))
+        self.assertFalse(serve.warm_by_default("model", False, {"PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY": " "}))
 
     def test_the_flag_opts_out(self):
-        self.assertFalse(serve.warm_by_default("model", True, {"EMBEDDING_API_KEY": "k"}))
+        self.assertFalse(serve.warm_by_default("model", True, {"PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY": "k"}))
 
     def test_the_truth_server_is_never_warmed(self):
         """Nothing ranks on it; the answerer never reaches it."""
-        self.assertFalse(serve.warm_by_default("truth", False, {"EMBEDDING_API_KEY": "k"}))
+        self.assertFalse(serve.warm_by_default("truth", False, {"PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY": "k"}))
 
 
 if __name__ == "__main__":

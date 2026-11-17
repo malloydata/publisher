@@ -91,7 +91,7 @@ export class AnthropicChat implements RawChat {
          signal: req.signal,
          timeoutMs: req.timeoutMs,
          secrets: [this.apiKey],
-         authHint: "LLM_API_KEY",
+         authHint: "PUBLISHER_RETRIEVAL_LLM_API_KEY",
          what: "Chat request",
       })) as AnthropicReply;
 

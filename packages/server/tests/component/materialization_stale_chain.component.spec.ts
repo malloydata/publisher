@@ -72,7 +72,7 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
    beforeEach(async () => {
       restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
          },
       }).restore;
       ({ root, envPath, db, repo } = await openTempStorage("stale-chain-", {

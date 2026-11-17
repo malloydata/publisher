@@ -27,7 +27,7 @@ Either way the package serves — never a 5xx from a manifest the host can't rea
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.bml_orders
 

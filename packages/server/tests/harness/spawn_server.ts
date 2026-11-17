@@ -130,7 +130,7 @@ const portInUseLine = (port: number, flag: string) =>
 
 /**
  * Both listening lines `main_server.ts` logs once its listeners bind. They are
- * info-level, so a quieter LOG_LEVEL leaves them out; see `settled`.
+ * info-level, so a quieter PUBLISHER_LOGGING_LEVEL leaves them out; see `settled`.
  */
 const bothListening = (log: string) =>
    log.includes("Publisher server listening at") &&
@@ -154,7 +154,7 @@ function accepts(port: number): Promise<boolean> {
  * Resolves once `server` has exited or holds both its ports. The listening
  * lines and PUBLISHER_READY say so at the default log level, and the lines
  * also cover ports moved through `args` or `env`; a connection to both ports
- * covers a quieter LOG_LEVEL. A port lost to another process accepts a
+ * covers a quieter PUBLISHER_LOGGING_LEVEL. A port lost to another process accepts a
  * connection too, but the server exits within milliseconds of failing to
  * bind, so connections must succeed on two polls in a row with the process
  * still up.
@@ -227,7 +227,7 @@ export async function spawnServer(
                  options.restPort === undefined &&
                     portInUseLine(restPort, "--port"),
                  options.mcpPort === undefined &&
-                    portInUseLine(mcpPort, "--mcp_port"),
+                    portInUseLine(mcpPort, "--mcp-port"),
               ].filter((line): line is string => line !== false)
             : [];
       try {
@@ -281,11 +281,11 @@ function launch(
    const env: Record<string, string> = {};
    for (const [key, value] of Object.entries({
       ...process.env,
-      SERVER_ROOT: serverRoot,
+      PUBLISHER_ROOT: serverRoot,
       PUBLISHER_HOST: "127.0.0.1",
       PUBLISHER_PORT: String(restPort),
-      MCP_PORT: String(mcpPort),
-      PUBLISHER_NO_MCP_CONFIG: "true",
+      PUBLISHER_MCP_PORT: String(mcpPort),
+      PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false",
       ...options.env,
    })) {
       if (value !== undefined) env[key] = value;

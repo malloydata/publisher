@@ -48,7 +48,7 @@ let env: Environment | undefined;
 beforeEach(async () => {
    restoreSettings = installSettings({
       env: {
-         PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
          PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
       },
    }).restore;

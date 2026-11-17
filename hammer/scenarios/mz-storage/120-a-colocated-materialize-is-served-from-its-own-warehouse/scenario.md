@@ -22,12 +22,12 @@ Proves, against a real Postgres warehouse and a real server:
   only the rows the source's `where:` keeps, with the computed `tier` stored;
 - a query is answered from that table: after the source table changes, the
   answer is the built snapshot, not a fresh recompute;
-- no storage tier is involved (`PERSIST_STORAGE_MODE: off`).
+- no storage tier is involved (`PUBLISHER_PERSIST_STORAGE_MODE: off`).
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: off
-- PUBLISHER_MATERIALIZE: true
+- PUBLISHER_PERSIST_STORAGE_MODE: off
+- PUBLISHER_MATERIALIZE_ENABLED: true
 
 ## Data orders_pg.cmz_orders
 
