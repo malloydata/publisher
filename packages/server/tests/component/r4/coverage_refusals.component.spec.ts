@@ -58,7 +58,7 @@ import {
 } from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
-type Tier = "live" | "storage" | "colocated" | "rollup" | "view";
+type Tier = "live" | "storage" | "database" | "rollup" | "view";
 
 interface Probe {
    name: string;
@@ -130,7 +130,7 @@ async function expectAsLive(l: Loaded, p: Probe): Promise<void> {
       case "view":
          expect(served.answer.servedBy).toBe(p.tier);
          return;
-      case "colocated":
+      case "database":
          expect(served.answer.servedBy).toBe("materialized");
          expect(served.answer.servedFrom).toBe("database");
          return;
@@ -180,7 +180,7 @@ const HEADER = "##! experimental { persistence }";
 // Naming and placement
 // ---------------------------------------------------------------------------
 
-for (const tier of ["storage", "colocated"] as const) {
+for (const tier of ["storage", "database"] as const) {
    const at = tier === "storage" ? ` storage="lake"` : "";
    scenario(
       `two #@ persist names that differ only in case, ${tier} on DuckDB (folds case)`,
@@ -610,7 +610,7 @@ export { published }
       {
          name: "the published source",
          malloy: "run: published -> { group_by: region; aggregate: total }",
-         tier: "colocated",
+         tier: "database",
       },
    ],
    {
@@ -651,7 +651,7 @@ const ADDRESSED_PROBES: Probe[] = [
    {
       name: "the colocated source",
       malloy: "run: placed -> { group_by: region; aggregate: total }",
-      tier: "colocated",
+      tier: "database",
    },
 ];
 
@@ -816,7 +816,7 @@ source: open_t is orders_raw -> { select: id, region, amount } extend {
       {
          name: "an ungated source beside it",
          malloy: "run: open_t -> { group_by: region; aggregate: total }",
-         tier: "colocated",
+         tier: "database",
       },
    ],
 );

@@ -8,7 +8,7 @@
       },
       {
         "name": "mz_dim",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [

@@ -1,0 +1,44 @@
+// conformance: rollup over non-ASCII names [database]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { access_modifiers persistence virtual_source }
+
+import { bestellungen__rollup______83ff97ff__built is bestellungen__rollup______83ff97ff } from "m.malloy.preaggregate.malloy"
+source: bestellungen__rollup______83ff97ff__served is bestellungen__rollup______83ff97ff__built extend {
+  measure:
+    #@ preaggregate grain="地域"
+    summe is summe__partial.sum()
+    #@ preaggregate grain="地域"
+    `件数` is `件数__partial`.sum()
+}
+source: bestellungen is bestellungen__rollup______83ff97ff__served include { internal: summe__partial, `件数__partial` public: * }
+
+// ==== <pkg>/m.malloy.preaggregate.malloy
+##! experimental.persistence
+import { bestellungen__rollup_base is bestellungen } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: bestellungen__rollup______83ff97ff is bestellungen__rollup_base -> {
+  group_by:
+    `地域`
+  aggregate:
+    summe__partial is amount.sum()
+    `件数__partial` is count()
+}
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { persistence }
+import "raw.malloy"
+
+source: bestellungen is orders_raw extend {
+  dimension: 地域 is region
+  #@ preaggregate grain="地域"
+  measure: summe is amount.sum()
+  #@ preaggregate grain="地域"
+  measure: 件数 is count()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy
+##! experimental { access_modifiers persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { bestellungen } from "m.malloy"

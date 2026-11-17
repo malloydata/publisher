@@ -229,7 +229,7 @@ describe("R4: extension tables answer equal to live", () => {
    });
 
    for (const [label, fixture] of [
-      ["colocated", () => colocated],
+      ["database", () => colocated],
       ["storage=", () => storage],
    ] as const) {
       describe(label, () => {
@@ -241,7 +241,7 @@ describe("R4: extension tables answer equal to live", () => {
                expect(run.servedVia).toBe("served_copy");
                // A colocated table is the source's own warehouse.
                expect(run.servedFrom).toBe(
-                  label === "colocated" ? "database" : "storage",
+                  label === "database" ? "database" : "storage",
                );
                expect(run.live.length).toBeGreaterThan(0);
                expect(rowDifference(run.live, run.served)).toBeUndefined();
@@ -349,7 +349,7 @@ source: ev_week is ev_recent extend {
    useMaterializationOn();
    beforeAll(async () => {
       for (const [label, storage] of [
-         ["colocated", ""],
+         ["database", ""],
          ["storage=", 'storage="lake" '],
       ]) {
          const files = { "m.malloy": windowModel(storage) };
@@ -370,7 +370,7 @@ source: ev_week is ev_recent extend {
       await disposeScenarios();
    });
 
-   for (const label of ["colocated", "storage="]) {
+   for (const label of ["database", "storage="]) {
       describe(label, () => {
          it("builds each window's extension over its parent's table", () => {
             const f = fixtures[label];

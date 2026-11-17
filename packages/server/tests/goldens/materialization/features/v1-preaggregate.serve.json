@@ -4,7 +4,7 @@
     "built": [
       {
         "name": "orders__rollup__m_region__75e7c0f9",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [],

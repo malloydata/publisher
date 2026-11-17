@@ -296,7 +296,7 @@ const SHAPE: Shape = {
    queries: [],
 };
 
-type Tier = "storage" | "colocated";
+type Tier = "storage" | "database";
 
 interface Case {
    name: string;
@@ -406,48 +406,48 @@ const CASES: Case[] = [
    {
       name: "measures alone (no dimension to key the stored rows)",
       malloy: "run: ov -> totals",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a having: that leaves no row, with no dimension",
       malloy: "run: ov -> having_only",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a select: with a calculate:, whose duplicate rows a regroup would merge",
       malloy: "run: ov -> select_calc",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a select: nest, whose duplicate rows a regroup would merge",
       malloy: "run: ov -> select_nest",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a later stage counting a select: nest's rows",
       malloy:
          "run: ov -> select_nest -> { aggregate: g is total.sum(), n is lines.count() }",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a nest left empty by its where:",
       malloy: "run: ov -> empty_nest",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a view nested by name and a nest in a nest",
       malloy: "run: ov -> deep",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a nest with its own where:",
       malloy: "run: ov -> filtered_nest",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a nest's fields",
       malloy: "run: ov -> nested",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
 ];
 
@@ -480,7 +480,7 @@ afterAll(freshLoadPool);
 const VARIANTS: { name: string; tier: Tier; storeUncast?: true }[] = [
    { name: "storage", tier: "storage" },
    { name: "storage, stored uncast", tier: "storage", storeUncast: true },
-   { name: "colocated", tier: "colocated" },
+   { name: "database", tier: "database" },
 ];
 
 for (const { name: variantName, tier: variant, storeUncast } of VARIANTS) {

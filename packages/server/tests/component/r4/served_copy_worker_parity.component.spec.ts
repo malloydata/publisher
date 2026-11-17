@@ -244,7 +244,7 @@ const G3_CASES: {
    sources: string[];
 }[] = [
    {
-      name: "colocated",
+      name: "database",
       model: G3_COLOCATED_MODEL,
       sources: [
          "gated",

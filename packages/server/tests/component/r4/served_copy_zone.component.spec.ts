@@ -64,7 +64,7 @@ source: ev_ny is duckdb.table('ev') extend {
 }
 `;
 
-type Tier = "colocated" | "storage";
+type Tier = "database" | "storage";
 
 /**
  * The model for one tier: colocated tables (`name=`), or `storage=` tables in
@@ -73,7 +73,7 @@ type Tier = "colocated" | "storage";
  */
 function modelFor(tier: Tier): string {
    const at = (name: string) =>
-      tier === "colocated" ? `name="${name}"` : `storage="lake"`;
+      tier === "database" ? `name="${name}"` : `storage="lake"`;
    const core = `import "base.malloy"
 
 #(materialize) ${at("mzny_t")}
@@ -137,7 +137,7 @@ interface Case {
    tiers?: Tier[];
 }
 
-const COLOCATED: Tier[] = ["colocated"];
+const COLOCATED: Tier[] = ["database"];
 
 const CASES: Case[] = [
    // A table built in New York, read through a join.
@@ -274,7 +274,7 @@ const CASES: Case[] = [
 /** The served copy's time-zone declines, whose messages each name a zone. */
 const ZONE_DECLINE = /another (time )?zone than/;
 
-for (const tier of ["colocated", "storage"] as const) {
+for (const tier of ["database", "storage"] as const) {
    describe(`R4: a served-copy table is read in the zone it was built in, or answered live [${tier}]`, () => {
       let fixture: R4Fixture;
       useMaterializationOn();

@@ -90,7 +90,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
                refused: expect.objectContaining({
                   name: "orders",
                   reason: "table_name_collision",
-                  tier: "colocated",
+                  tier: "database",
                }),
             },
             {
@@ -104,7 +104,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
                refused: expect.objectContaining({
                   name: "placed",
                   reason: "table_name_collision",
-                  tier: "colocated",
+                  tier: "database",
                }),
             },
          ]);

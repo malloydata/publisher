@@ -76,7 +76,7 @@ export const GATE_KINDS = [
 type GateKind = (typeof GATE_KINDS)[number];
 
 /** Where a stored table lives. */
-export const GATE_TIERS = ["colocated", "storage"] as const;
+export const GATE_TIERS = ["database", "storage"] as const;
 type GateTier = (typeof GATE_TIERS)[number];
 
 /** A stored table over a gated source, as the policy reads it. */
@@ -138,8 +138,8 @@ const ROWS: Record<GateKind, Row> = {
       !t.v1 &&
       t.baseGateProven === true &&
       (s.gatedSources
-         ? t.tier === "colocated" || s.gatedStorageRollupsReviewed
-         : t.tier === "colocated" && ownRowLevelGate(t)),
+         ? t.tier === "database" || s.gatedStorageRollupsReviewed
+         : t.tier === "database" && ownRowLevelGate(t)),
    // A persisted view's gate is decided at the router, per leg.
    view: () => false,
 };
@@ -221,7 +221,7 @@ export interface TableRead {
  * the v1 cutover), or a `storage=` one plan admitted past its own gate.
  */
 function g3Table(t: TableRead): boolean {
-   return t.tier === "colocated" || t.ownGateKept === true;
+   return t.tier === "database" || t.ownGateKept === true;
 }
 
 /**
@@ -264,5 +264,5 @@ export function answerKeepsGates(
    if (s.gatedSources) return true;
    if (!ctx.colocatedReadsKeepGates || tablesRead.length === 0) return false;
    if (leg === "served") return tablesRead.every(g3Table);
-   return leg === "rollup" && tablesRead.every((t) => t.tier === "colocated");
+   return leg === "rollup" && tablesRead.every((t) => t.tier === "database");
 }

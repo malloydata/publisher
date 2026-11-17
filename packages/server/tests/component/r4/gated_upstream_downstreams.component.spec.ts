@@ -231,9 +231,9 @@ function expectedGateRefusals(): string[] {
          if (s === "join" || g !== "az") {
             // Named by the gate's kind: a row filter or a lock.
             const reason = g === "az" ? "authorize" : "access_filter";
-            out.push(`${g}_pc_${s}:colocated:${reason}`);
+            out.push(`${g}_pc_${s}:database:${reason}`);
             out.push(`${g}_ps_${s}:storage:${reason}`);
-            out.push(`${g}_mc_${s}:colocated:${reason}`);
+            out.push(`${g}_mc_${s}:database:${reason}`);
             out.push(`${g}_ms_${s}:storage:${reason}`);
          }
          // The authorize-route lock is admitted on both tiers (it is decided
@@ -312,7 +312,7 @@ for (const gated of [false, true]) {
                if (s === "ext") {
                   expect([name, hit]).toEqual([
                      name,
-                     `${name}:${v.endsWith("c") ? "colocated" : "storage"}:inherited_where_with_given`,
+                     `${name}:${v.endsWith("c") ? "database" : "storage"}:inherited_where_with_given`,
                   ]);
                   expect([name, built.includes(name)]).toEqual([name, false]);
                } else expect(hit).toEndWith(":given_in_persisted_query");

@@ -207,7 +207,7 @@ const SHAPE: Shape = {
    queries: [],
 };
 
-type Tier = "storage" | "colocated";
+type Tier = "storage" | "database";
 
 interface Case {
    name: string;
@@ -225,7 +225,7 @@ interface Case {
    servedSkipReason?: string;
 }
 
-const BOTH: Tier[] = ["storage", "colocated"];
+const BOTH: Tier[] = ["storage", "database"];
 
 const CASES: Case[] = [
    // Bug A: a timestamp truncation under a time zone.
@@ -266,10 +266,10 @@ const CASES: Case[] = [
    {
       name: "an index: view",
       malloy: "run: ov -> idx",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
       declinedBecause: {
          storage: "it is an `index:`",
-         colocated: "it is an `index:`",
+         database: "it is an `index:`",
       },
    },
    // The served copy, for comparison.
@@ -281,39 +281,39 @@ const CASES: Case[] = [
    {
       name: "a query-shaped source's TIMESTAMP_NS column, through the served copy",
       malloy: "run: tsn_src -> { select: *; order_by: id }",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
    },
    {
       name: "a query-shaped source's zoned truncations, through the served copy",
       malloy: "run: zoned_src -> { select: *; order_by: h }",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
       servedSkipReason: "TIME_ZONE",
    },
    {
       name: "a query that sets a time zone over a query-shaped source's truncations, through the served copy",
       malloy:
          "run: utc_src -> { timezone: 'America/New_York'; select: *; order_by: h }",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
       servedSkipReason: "TIME_ZONE",
    },
    {
       name: "a query-shaped source with its own time zone, through the served copy",
       malloy: "run: zoned_own_src -> { select: *; order_by: h }",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
       servedSkipReason: "TIME_ZONE",
    },
    {
       name: "a later stage over a query-shaped source with its own time zone, through the served copy",
       malloy:
          "run: zoned_own_src -> { group_by: m is d.month; aggregate: n is c.sum(); order_by: m }",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
       servedSkipReason: "TIME_ZONE",
    },
    {
       name: "a later stage over a query-shaped source's zoned truncation, through the served copy",
       malloy:
          "run: zoned_src -> { group_by: m is d.month; aggregate: n is c.sum(); order_by: m }",
-      liveIn: ["storage", "colocated"],
+      liveIn: ["storage", "database"],
       servedSkipReason: "TIME_ZONE",
    },
    // A zone the read is not built in declines only the queries that read a
@@ -427,7 +427,7 @@ afterAll(freshLoadPool);
 const VARIANTS: { name: string; tier: Tier; storeUncast?: true }[] = [
    { name: "storage", tier: "storage" },
    { name: "storage, stored uncast", tier: "storage", storeUncast: true },
-   { name: "colocated", tier: "colocated" },
+   { name: "database", tier: "database" },
 ];
 
 for (const { name: variantName, tier, storeUncast } of VARIANTS) {

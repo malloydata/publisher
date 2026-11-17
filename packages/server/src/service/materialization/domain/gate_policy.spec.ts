@@ -31,7 +31,7 @@ const table = (t: Partial<GatedTable>): GatedTable => ({
 describe("the gate policy's rows", () => {
    it("keeps a materialized or pair table's own row-level gate on either tier, with v2's switch and with or without the gated-sources one (G3)", () => {
       for (const kind of ["materialize", "pair"] as const) {
-         for (const tier of ["colocated", "storage"] as const) {
+         for (const tier of ["database", "storage"] as const) {
             expect(tableKeepsGates(table({ kind, tier }), ON)).toBe(true);
             expect(
                tableKeepsGates(table({ kind, tier }), {
@@ -57,7 +57,7 @@ describe("the gate policy's rows", () => {
    it("keeps a v2 rollup's proven base gate colocated, and in storage only once reviewed", () => {
       const rollup = (t: Partial<GatedTable>) =>
          table({ kind: "rollup", gate: undefined, baseGateProven: true, ...t });
-      expect(tableKeepsGates(rollup({ tier: "colocated" }), ON)).toBe(true);
+      expect(tableKeepsGates(rollup({ tier: "database" }), ON)).toBe(true);
       expect(tableKeepsGates(rollup({ tier: "storage" }), ON)).toBe(false);
       expect(
          tableKeepsGates(rollup({ tier: "storage" }), {
@@ -66,19 +66,19 @@ describe("the gate policy's rows", () => {
          }),
       ).toBe(true);
       expect(
-         tableKeepsGates(rollup({ tier: "colocated" }), {
+         tableKeepsGates(rollup({ tier: "database" }), {
             ...ON,
             gatedSources: false,
          }),
       ).toBe(false);
       // The rollup row does not read the materialize switch.
       expect(
-         tableKeepsGates(rollup({ tier: "colocated" }), {
+         tableKeepsGates(rollup({ tier: "database" }), {
             ...ON,
             materialize: false,
          }),
       ).toBe(true);
-      expect(tableKeepsGates(rollup({ v1: true, tier: "colocated" }), ON)).toBe(
+      expect(tableKeepsGates(rollup({ v1: true, tier: "database" }), ON)).toBe(
          false,
       );
       expect(tableKeepsGates(rollup({ baseGateProven: false }), ON)).toBe(
@@ -100,14 +100,14 @@ describe("the gate policy's rows", () => {
       const rollup = (t: Partial<GatedTable>) =>
          table({ kind: "rollup", gate: own, baseGateProven: true, ...t });
       for (const sw of [OFF_ALL, { ...OFF_ALL, materialize: true }]) {
-         expect(tableKeepsGates(rollup({ tier: "colocated" }), sw)).toBe(true);
+         expect(tableKeepsGates(rollup({ tier: "database" }), sw)).toBe(true);
          // In a storage destination: awaits its review.
          expect(tableKeepsGates(rollup({ tier: "storage" }), sw)).toBe(false);
          // An inherited gate, or one not proven on the grain.
          expect(
             tableKeepsGates(
                rollup({
-                  tier: "colocated",
+                  tier: "database",
                   gate: { ...own, attributed: false, inheritedRowFilter: true },
                }),
                sw,
@@ -115,12 +115,12 @@ describe("the gate policy's rows", () => {
          ).toBe(false);
          expect(
             tableKeepsGates(
-               rollup({ tier: "colocated", baseGateProven: false }),
+               rollup({ tier: "database", baseGateProven: false }),
                sw,
             ),
          ).toBe(false);
          expect(
-            tableKeepsGates(rollup({ tier: "colocated", v1: true }), sw),
+            tableKeepsGates(rollup({ tier: "database", v1: true }), sw),
          ).toBe(false);
       }
    });
@@ -135,7 +135,7 @@ describe("the gate policy's rows", () => {
       };
       for (const s of [ON, NONE]) {
          expect(tableKeepsGates(persist({ tier: "storage" }), s)).toBe(true);
-         expect(tableKeepsGates(persist({ tier: "colocated" }), s)).toBe(true);
+         expect(tableKeepsGates(persist({ tier: "database" }), s)).toBe(true);
          for (const gate of [
             { ...OWN_GATE, rowLevel: false },
             { ...OWN_GATE, attributed: false },
@@ -162,8 +162,8 @@ describe("the gate policy at the router", () => {
    const G3 = { colocatedReadsKeepGates: true };
    const NO_G3 = { colocatedReadsKeepGates: false };
    const OFF = { ...ON, gatedSources: false };
-   const colocated = [{ tier: "colocated" as const }];
-   const mixed = [{ tier: "colocated" as const }, { tier: "storage" as const }];
+   const colocated = [{ tier: "database" as const }];
+   const mixed = [{ tier: "database" as const }, { tier: "storage" as const }];
 
    it("lets every leg past a gate under the gated-sources switch", () => {
       for (const leg of ["view", "rollup", "served"] as const) {
@@ -214,7 +214,7 @@ describe("the gate policy's rows at their edges", () => {
    it("fails closed on a rollup whose base gate was never proven", () => {
       expect(
          tableKeepsGates(
-            table({ kind: "rollup", tier: "colocated", gate: undefined }),
+            table({ kind: "rollup", tier: "database", gate: undefined }),
             ON,
          ),
       ).toBe(false);
@@ -240,7 +240,7 @@ describe("the gate policy's rows at their edges", () => {
       for (const v1 of [true, false]) {
          expect(
             tableKeepsGates(
-               table({ kind: "persist", v1, tier: "colocated" }),
+               table({ kind: "persist", v1, tier: "database" }),
                all,
             ),
          ).toBe(true);

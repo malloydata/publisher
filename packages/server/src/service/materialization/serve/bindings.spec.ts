@@ -45,7 +45,7 @@ describe("sqlReadsTable", () => {
 describe("tablesReadForGates", () => {
    const colocated: Binding = {
       kind: "materialize",
-      tier: "colocated",
+      tier: "database",
       sourceName: "c",
       destinationName: "duckdb",
       virtualHandle: "h1",
@@ -79,7 +79,7 @@ describe("tablesReadForGates", () => {
       const found = [colocated, storage].filter((b) =>
          sqlReadsTable(
             sql,
-            b.tier === "colocated" ? b.tablePath : '"main"."s_tbl"',
+            b.tier === "database" ? b.tablePath : '"main"."s_tbl"',
          ),
       );
       expect(found).toEqual([colocated]);

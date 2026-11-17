@@ -386,7 +386,7 @@ export function deriveColocatedServeBindings(args: {
       }
       bindings.push({
          kind: plan ? "materialize" : "persist",
-         tier: "colocated",
+         tier: "database",
          sourceName: source.name,
          sourceIDs: [sourceID],
          destinationName: source.connectionName,
@@ -575,7 +575,7 @@ export function applyObservedColumns(args: {
    >();
    const served = new Set(
       args.bindings
-         .filter((b) => b.tier === "colocated")
+         .filter((b) => b.tier === "database")
          .map((b) => b.virtualHandle),
    );
    for (const [id, entry] of Object.entries(args.entries)) {
@@ -615,7 +615,7 @@ export function applyObservedColumns(args: {
       entries[id] = entry;
    }
    const bindings = args.bindings.flatMap((b): Binding[] => {
-      if (b.tier !== "colocated") return [b];
+      if (b.tier !== "database") return [b];
       if (left.has(b.virtualHandle)) return [];
       const read = reads.get(b.virtualHandle);
       if (!read) return [b];

@@ -252,7 +252,7 @@ function overStoredBaseNotes(
       const tag = readNotesIfAny(own, "@");
       const placed = tag ? placementOf(tag, "persist") : undefined;
       if (!placed || !("placement" in placed)) continue;
-      if (placed.placement.tier !== "colocated") continue;
+      if (placed.placement.tier !== "database") continue;
       const spans = own.flatMap((n) => {
          const at = (n as { at?: NotePosition }).at;
          return at ? [noteSpanKey(at.url, at.range)] : [];
@@ -285,7 +285,7 @@ function storedMaterializeBase(
    const tag = readNotesIfAny(own, "materialize");
    const placed = tag ? placementOf(tag) : undefined;
    if (!placed || !("placement" in placed)) return undefined;
-   if (placed.placement.tier !== "colocated") return undefined;
+   if (placed.placement.tier !== "database") return undefined;
    const plan = materialized.plans.find((p) => p.sourceID === baseSourceID);
    if (
       !plan ||

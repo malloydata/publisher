@@ -383,7 +383,7 @@ describe("the query pipeline over a fake leg list", () => {
          runFailed: false,
          colocatedRead: new Set(),
       });
-      const colocated = binding("orders", { tier: "colocated" });
+      const colocated = binding("orders", { tier: "database" });
       expect(servedFromOf(LIVE_ANSWER)).toBeUndefined();
       expect(
          servedFromOf(routed("served", { tablesRead: [binding("orders")] })),

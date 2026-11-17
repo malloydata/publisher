@@ -647,7 +647,7 @@ describe("two sources whose readable names meet", () => {
       // Refused, with its own reason, so the run's record says why.
       expect(r.refused["orders@second"]).toMatchObject({
          reason: "table_name_collision",
-         tier: "colocated",
+         tier: "database",
          modelPath: "m.malloy",
       });
    });

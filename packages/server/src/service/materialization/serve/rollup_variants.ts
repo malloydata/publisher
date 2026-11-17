@@ -1546,7 +1546,7 @@ export class RollupVariantServe {
             : "base",
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
-            : "colocated",
+            : "database",
          // The views vary by query; an extension's dimensions follow from
          // its name and the plan.
          ...(use.kind === "base" ? use.views : []),

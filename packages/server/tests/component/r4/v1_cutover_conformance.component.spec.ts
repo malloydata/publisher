@@ -61,14 +61,14 @@ describe("the dry run's verdicts", () => {
       afterEach(freshLoadPool);
 
       it("names the served copy for v1 storage= and colocated sources", async () => {
-         for (const variant of ["storage", "colocated"] as const) {
+         for (const variant of ["storage", "database"] as const) {
             const paths = await preview("baseline", variant, "cutover");
             expect(paths.daily).toEqual(["served_copy", undefined]);
          }
       }, 120_000);
 
       it("names the served copy for a source with hidden columns, colocated or storage= (G2)", async () => {
-         for (const variant of ["colocated", "storage"] as const) {
+         for (const variant of ["database", "storage"] as const) {
             const paths = await preview(
                "joined persisted source with hidden fields, from an index",
                variant,
@@ -144,7 +144,7 @@ describe("the dry run against what serves", () => {
          const saidServedNeverServed: string[] = [];
          const rollupNeverRollup: string[] = [];
          for (const shape of SHAPES) {
-            for (const variant of ["storage", "colocated"] as Variant[]) {
+            for (const variant of ["storage", "database"] as Variant[]) {
                if (shape.variants && !shape.variants.includes(variant))
                   continue;
                const restore = withSwitch("cutover");
@@ -338,7 +338,7 @@ describe("the runner as a library", () => {
          try {
             writePackageFiles(dir, {
                ...DATA_FILES,
-               ...renderFiles(shape, "colocated"),
+               ...renderFiles(shape, "database"),
             });
             const rows = await runV1CutoverConformance({
                package: { packageDir: dir },
@@ -551,7 +551,7 @@ describe("the runner as a CLI", () => {
          async () => {
             const { code, stdout, stderr } = await runScript(
                "baseline",
-               "colocated",
+               "database",
             );
             expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({
                code: 0,

@@ -272,7 +272,7 @@ for (const tier of tiers) {
             fixture.bindings
                .map((b) => [
                   b.sourceName,
-                  b.tier === "colocated",
+                  b.tier === "database",
                   b.destinationName,
                   b.virtualHandle === fixture.tableIds[b.sourceName],
                ])
@@ -424,7 +424,7 @@ source: gated is orders_raw extend {
    it("serves a gated colocated source from the served copy, the gate grafted, for each caller equal to live", async () => {
       const { fixture, live, restore } = await loaded("true");
       try {
-         expect(fixture.built).toEqual([{ name: "gated", tier: "colocated" }]);
+         expect(fixture.built).toEqual([{ name: "gated", tier: "database" }]);
          expect(fixture.verdicts).toEqual(["gated:serves"]);
          // A colocated bind alone (no storage bind after it) reaches the
          // served copy: unbound, the query is live; bound again, served.
@@ -474,7 +474,7 @@ source: gated is orders_raw extend {
          // The entry point's own row-level gate is kept on a colocated
          // table without the switch (G3): the table stays in the warehouse
          // and the gate is grafted and proven at read.
-         expect(fixture.built).toEqual([{ name: "gated", tier: "colocated" }]);
+         expect(fixture.built).toEqual([{ name: "gated", tier: "database" }]);
          expect(fixture.verdicts).toEqual(["gated:serves"]);
          const model = fixture.pkg.getModel("m.malloy") as unknown as {
             servedCopy: { hasBindings(): boolean };

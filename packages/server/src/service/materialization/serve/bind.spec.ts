@@ -70,7 +70,7 @@ describe("deriveColocatedServeBindings", () => {
       expect(derive()).toEqual([
          {
             kind: "materialize",
-            tier: "colocated",
+            tier: "database",
             sourceName: "orders",
             sourceIDs: [ID],
             destinationName: "pg",
@@ -297,7 +297,7 @@ describe("deriveColocatedServeBindings: v1 colocated #@ persist (the v1 cutover,
       expect(derive({ schema: captured })).toEqual([
          {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             sourceName: "daily",
             sourceIDs: [V1],
             destinationName: "duckdb",
@@ -713,7 +713,7 @@ describe("applyObservedColumns", () => {
    ];
    const binding: Binding = {
       kind: "materialize",
-      tier: "colocated",
+      tier: "database",
       sourceName: "orders",
       sourceIDs: [ID],
       destinationName: "pg",

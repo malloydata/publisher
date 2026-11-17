@@ -94,7 +94,7 @@ for (const kind of ["join_one", "pair"] as const) {
          ? [""]
          : ["", "internal ", "private "]) {
          for (const [shape, h] of Object.entries(hiddenShapes)) {
-            const label = `${kind} ${colocated ? "colocated" : "storage"}, join ${access || "public "}, hidden by ${shape}`;
+            const label = `${kind} ${colocated ? "database" : "storage"}, join ${access || "public "}, hidden by ${shape}`;
             it(label, async () => {
                const { restore } = installSettings({
                   env: {

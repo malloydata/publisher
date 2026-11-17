@@ -494,7 +494,7 @@ export class ServeVerdicts {
    private refusedAtBind(
       sourceID: string,
       source: { name: string; sourceEntityId: string; origin?: string },
-      tier: "colocated" | "storage",
+      tier: "database" | "storage",
    ): string | undefined {
       const { plan } = this.host;
       const never = "the source was never examined for eligibility";

@@ -44,7 +44,7 @@ type RouteParse = ReturnType<typeof parseRouteTag>;
 
 /** Where a declaration asks its table to live. */
 type Placement =
-   | { tier: "colocated"; name?: string }
+   | { tier: "database"; name?: string }
    | { tier: "storage"; destination: string; name?: string };
 
 /** Why a declaration's placement is refused: its `storage=` names nothing. */
@@ -154,7 +154,7 @@ export function placementOf(tag: RouteTag, key?: string): PlacementRead {
    const name = inside("name") ?? tag.text("name");
    const named = name !== undefined ? { name } : {};
    if (!nested && !tag.has("storage")) {
-      return { placement: { tier: "colocated", ...named } };
+      return { placement: { tier: "database", ...named } };
    }
    // The nested form wins whenever it is written, even when it is unusable:
    // a nested list or block never falls through to the flat value.

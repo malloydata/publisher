@@ -62,11 +62,11 @@ const WINDOW_SECONDS = 6;
 setDefaultTimeout(120_000);
 
 type Fallback = "live" | "stale_ok";
-type Tier = "colocated" | "storage";
+type Tier = "database" | "storage";
 
 /** One source per mechanism, each declaring the same window and fallback. */
 function modelOf(tier: Tier, fallback: Fallback): string {
-   const conn = tier === "colocated" ? "duckdb" : "warehouse";
+   const conn = tier === "database" ? "duckdb" : "warehouse";
    const place = tier === "storage" ? ` storage="${LAKE}"` : "";
    const fresh = `freshness.window="${WINDOW_SECONDS}s" freshness.fallback="${fallback}"`;
    return `##! experimental.persistence
@@ -147,8 +147,8 @@ describe.skipIf(process.platform === "win32")(
       const spies: { mockRestore(): void }[] = [];
       const catalogFile = () => path.join(lakeDir, "catalog.ducklake");
       const PACKAGES: { name: string; tier: Tier; fallback: Fallback }[] = [
-         { name: "colocated_live", tier: "colocated", fallback: "live" },
-         { name: "colocated_ok", tier: "colocated", fallback: "stale_ok" },
+         { name: "colocated_live", tier: "database", fallback: "live" },
+         { name: "colocated_ok", tier: "database", fallback: "stale_ok" },
          { name: "storage_live", tier: "storage", fallback: "live" },
          { name: "storage_ok", tier: "storage", fallback: "stale_ok" },
       ];

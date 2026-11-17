@@ -8,7 +8,7 @@
       },
       {
         "name": "pv_base__by_region__view",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [

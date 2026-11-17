@@ -1,0 +1,786 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "inherits_zone",
+        "tier": "database"
+      },
+      {
+        "name": "sets_zone",
+        "tier": "database"
+      }
+    ],
+    "verdicts": [
+      "inherits_zone:serves",
+      "sets_zone:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_at"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "extract:hour(created_at)"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "330908b4c0a5c288",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "inherits_zone",
+          "stages": 1
+        },
+        "source": "inherits_zone"
+      },
+      "equalToLive": true,
+      "malloy": "run: inherits_zone -> { group_by: h is hour(created_at); aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "sets_zone",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_at"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "inherits_zone"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the inherited zone: hour(ts)",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_at"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "trunc:day(created_at)"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "e5e73e68ca808fd7",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "inherits_zone",
+          "stages": 1
+        },
+        "source": "inherits_zone"
+      },
+      "equalToLive": true,
+      "malloy": "run: inherits_zone -> { group_by: d is created_at.day; aggregate: total; order_by: d }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "sets_zone",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_at"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "inherits_zone"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the inherited zone: a day truncation",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "h"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "h"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "7765d7fc49818841",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "sets_zone",
+          "stages": 1
+        },
+        "source": "sets_zone"
+      },
+      "equalToLive": true,
+      "malloy": "run: sets_zone -> { group_by: h; aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "inherits_zone",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "h"
+          ],
+          "measures": [],
+          "sourceName": "sets_zone"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the zone-setting stage: its stored hour",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "s.d"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "s.d"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "da650816d06d7908",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "reader",
+          "stages": 1
+        },
+        "source": "reader"
+      },
+      "equalToLive": true,
+      "malloy": "run: reader -> { group_by: s.d; aggregate: n is count() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "sets_zone",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "inherits_zone",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "s.d"
+          ],
+          "measures": [],
+          "sourceName": "reader"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "through a join: the zone-setting stage's stored day",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "z.created_at"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "trunc:day(z.created_at)"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b2aaa30f7209ccc7",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "reader",
+          "stages": 1
+        },
+        "source": "reader"
+      },
+      "equalToLive": true,
+      "malloy": "run: reader -> { group_by: zd is z.created_at.day; aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "sets_zone",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "inherits_zone",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "z.created_at"
+          ],
+          "measures": [],
+          "sourceName": "reader"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "through a join: a truncation of the inherited-zone column",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_at"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "extract:hour(created_at)"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "330908b4c0a5c288",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "inherits_zone",
+          "stages": 1
+        },
+        "source": "inherits_zone"
+      },
+      "equalToLive": true,
+      "malloy": "run: inherits_zone -> { group_by: h is hour(created_at); aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "sets_zone",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_at"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "inherits_zone"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the inherited zone: hour(ts)",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_at"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "trunc:day(created_at)"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "e5e73e68ca808fd7",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "inherits_zone",
+          "stages": 1
+        },
+        "source": "inherits_zone"
+      },
+      "equalToLive": true,
+      "malloy": "run: inherits_zone -> { group_by: d is created_at.day; aggregate: total; order_by: d }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "sets_zone",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "created_at"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "inherits_zone"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the inherited zone: a day truncation",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "h"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "h"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "7765d7fc49818841",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "sets_zone",
+          "stages": 1
+        },
+        "source": "sets_zone"
+      },
+      "equalToLive": true,
+      "malloy": "run: sets_zone -> { group_by: h; aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "inherits_zone",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "h"
+          ],
+          "measures": [],
+          "sourceName": "sets_zone"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the zone-setting stage: its stored hour",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "s.d"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "s.d"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "da650816d06d7908",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "reader",
+          "stages": 1
+        },
+        "source": "reader"
+      },
+      "equalToLive": true,
+      "malloy": "run: reader -> { group_by: s.d; aggregate: n is count() }",
+      "path": {
+        "considered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "sets_zone",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "inherits_zone",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "s.d"
+          ],
+          "measures": [],
+          "sourceName": "reader"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "through a join: the zone-setting stage's stored day",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "z.created_at"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "trunc:day(z.created_at)"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b2aaa30f7209ccc7",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "reader",
+          "stages": 1
+        },
+        "source": "reader"
+      },
+      "equalToLive": true,
+      "malloy": "run: reader -> { group_by: zd is z.created_at.day; aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "sets_zone",
+            "tableId": "3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "relationship": "sibling",
+            "sourceName": "inherits_zone",
+            "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "z.created_at"
+          ],
+          "measures": [],
+          "sourceName": "reader"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "through a join: a truncation of the inherited-zone column",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    }
+  ]
+}

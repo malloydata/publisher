@@ -64,7 +64,7 @@ source: orders_ext is orders extend {
    {
       name: "rollup over a base with typed columns",
       about: "A colocated rollup over a base whose grain is a DECIMAL or a TIMESTAMPTZ, whose measures sum a BIGINT past 2^53 and a DECIMAL, and which carries STRUCT and MAP columns outside the grain. In a storage= destination the BIGINT sum comes back rounded and the TIMESTAMPTZ grain as a timestamp: known gaps, in r4/rollup_coverage. An array column is the next shape: v1 refuses it as a fan-out join",
-      variants: ["colocated"],
+      variants: ["database"],
       files: {
          "m.malloy": `${HEADER}
 
@@ -96,7 +96,7 @@ source: typed is duckdb.sql("""
                "run: typed -> { group_by: g; aggregate: big_sum; order_by: g }",
             expect: "rollup",
             gaps: {
-               "colocated@parquet": {
+               "database@parquet": {
                   kind: "wrong",
                   reason:
                      "F-13: DuckLake writes the sum's HUGEINT column to Parquet as a DOUBLE while its catalog says HUGEINT, so the rollup answers -9007199254740992 for -9007199254740993; fixed by the DECIMAL(38,0) build cast and the 128-bit read guard in #1846",
@@ -127,7 +127,7 @@ source: typed is duckdb.sql("""
    {
       name: "rollup over a base with an array column",
       about: "A #(preaggregate) rollup over a base carrying an array column outside its grain (v1 #@ preaggregate refuses that base as a fan-out join and fails the load: r4/coverage_refusals)",
-      variants: ["materialize", "materialize_colocated"],
+      variants: ["materialize", "materialize_database"],
       files: {
          "m.malloy": `${HEADER}
 
@@ -208,12 +208,7 @@ source: bestellungen is orders_raw extend {
    {
       name: "array queries under persist",
       about: "##! experimental.array_queries: a persisted query that stores an array query's result, and a persisted source that stores the array a caller's array query reads",
-      variants: [
-         "colocated",
-         "storage",
-         "materialize",
-         "materialize_colocated",
-      ],
+      variants: ["database", "storage", "materialize", "materialize_database"],
       files: {
          "m.malloy": `##! experimental { persistence array_queries }
 
@@ -286,7 +281,7 @@ source: classified is orders_raw -> {
    {
       name: "persist with a rolling window",
       about: "#@ persist on a query whose body filters on now (refused, current_time: built, it would bake the window in as of the build, so it answers live), and on one whose extend block does (built, the window applied at read). The window is wide, so the goldens hold still; r4/persist_rolling_window_coverage cuts the rows at a pinned clock",
-      variants: ["storage", "colocated"],
+      variants: ["storage", "database"],
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -499,7 +494,7 @@ source: mz_joined is mz_fact extend {
             name: "the colocated source alone",
             malloy:
                "run: mz_dim -> { group_by: segment; aggregate: customers }",
-            expect: "colocated",
+            expect: "database",
          },
          {
             name: "the storage= source alone",

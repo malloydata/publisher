@@ -253,112 +253,110 @@ afterAll(() => {
 /** Plan and serve verdict, per gate shape and switches: see the header. */
 const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
    "a gate on the declared source, materialize on, gated sources on": {
-      mat_col: "planned | colocated | not_built",
+      mat_col: "planned | database | not_built",
       mat_sto: "planned | storage | not_built",
-      pair_col: "planned | colocated | not_built",
+      pair_col: "planned | database | not_built",
       pair_sto: "planned | storage | not_built",
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll.total_sto": "refused access_filter | colocated | live refused",
-      roll__rollup__category_region__7617040b:
-         "planned | colocated | not_built",
-      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
-      views__by_region_col__view: "planned | colocated | not_built",
+      "roll.total_sto": "refused access_filter | database | live refused",
+      roll__rollup__category_region__7617040b: "planned | database | not_built",
+      roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
+      views__by_region_col__view: "planned | database | not_built",
       views__by_region_sto__view:
          "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize on, gated sources off": {
-      mat_col: "planned | colocated | not_built",
+      mat_col: "planned | database | not_built",
       mat_sto: "planned | storage | not_built",
-      pair_col: "planned | colocated | not_built",
+      pair_col: "planned | database | not_built",
       pair_sto: "planned | storage | not_built",
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       // G3 for a colocated rollup: the base's own gate, proven on its grain.
-      roll__rollup__category_region__7617040b:
-         "planned | colocated | not_built",
-      "roll.total_sto": "refused access_filter | colocated | live refused",
-      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      roll__rollup__category_region__7617040b: "planned | database | not_built",
+      "roll.total_sto": "refused access_filter | database | live refused",
+      roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
       views__by_region_col__view:
-         "refused access_filter | colocated | live refused",
+         "refused access_filter | database | live refused",
       views__by_region_sto__view:
          "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources on": {
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
-      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
       views__by_region_col__view:
-         "refused materialization_off | colocated | live refused",
+         "refused materialization_off | database | live refused",
       views__by_region_sto__view:
          "refused materialization_off | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources off": {
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
-      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
       views__by_region_col__view:
-         "refused materialization_off | colocated | live refused",
+         "refused materialization_off | database | live refused",
       views__by_region_sto__view:
          "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize on, gated sources on": {
-      mat_col: "planned | colocated | not_built",
+      mat_col: "planned | database | not_built",
       mat_sto: "planned | storage | not_built",
-      pair_col: "planned | colocated | not_built",
+      pair_col: "planned | database | not_built",
       pair_sto: "planned | storage | not_built",
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       roll__rollup__category_region__7617040b:
-         "planned | colocated | live row_level_gate",
+         "planned | database | live row_level_gate",
       roll__rollup__category_region__b1b70c25:
          "planned | storage | live row_level_gate",
       roll_v1__rollup__region__b3ca2623:
-         "planned | colocated | live row_level_gate",
-      secure_persist_col: "planned | colocated | not_built",
+         "planned | database | live row_level_gate",
+      secure_persist_col: "planned | database | not_built",
       secure_persist_sto: "planned | storage | not_built",
-      views__by_region_col__view: "planned | colocated | not_built",
+      views__by_region_col__view: "planned | database | not_built",
       views__by_region_sto__view: "planned | storage | not_built",
    },
    "a gate above it, materialize on, gated sources off": {
-      mat_col: "planned | colocated | not_built",
+      mat_col: "planned | database | not_built",
       mat_sto: "planned | storage | live row_level_gate",
-      pair_col: "planned | colocated | not_built",
+      pair_col: "planned | database | not_built",
       pair_sto: "planned | storage | live row_level_gate",
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       roll__rollup__category_region__7617040b:
-         "planned | colocated | live row_level_gate",
+         "planned | database | live row_level_gate",
       roll__rollup__category_region__b1b70c25:
          "planned | storage | live row_level_gate",
       roll_v1__rollup__region__b3ca2623:
-         "planned | colocated | live row_level_gate",
-      secure_persist_col: "planned | colocated | not_built",
+         "planned | database | live row_level_gate",
+      secure_persist_col: "planned | database | not_built",
       secure_persist_sto: "planned | storage | not_built",
-      views__by_region_col__view: "planned | colocated | not_built",
+      views__by_region_col__view: "planned | database | not_built",
       views__by_region_sto__view: "planned | storage | live row_level_gate",
    },
    "a gate above it, materialize off, gated sources on": {
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623:
-         "planned | colocated | live row_level_gate",
-      secure_persist_col: "planned | colocated | not_built",
+         "planned | database | live row_level_gate",
+      secure_persist_col: "planned | database | not_built",
       secure_persist_sto: "planned | storage | not_built",
       views__by_region_col__view:
-         "refused materialization_off | colocated | live refused",
+         "refused materialization_off | database | live refused",
       views__by_region_sto__view:
          "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize off, gated sources off": {
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623:
-         "planned | colocated | live row_level_gate",
-      secure_persist_col: "planned | colocated | not_built",
+         "planned | database | live row_level_gate",
+      secure_persist_col: "planned | database | not_built",
       secure_persist_sto: "planned | storage | not_built",
       views__by_region_col__view:
-         "refused materialization_off | colocated | live refused",
+         "refused materialization_off | database | live refused",
       views__by_region_sto__view:
          "refused materialization_off | storage | live refused",
    },
@@ -735,10 +733,10 @@ const ROUTER: Record<string, Record<string, string>> = {
 
 describe("gate keeping at the router, under an entry-point veto", () => {
    const table = (
-      tier: "colocated" | "storage",
+      tier: "database" | "storage",
    ): {
       kind: string;
-      tier: "colocated" | "storage";
+      tier: "database" | "storage";
       sourceName: string;
       tablePath: string;
       ownGateKept?: boolean;
@@ -749,9 +747,9 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tablePath: `t_${tier}`,
    });
    const reads: Record<string, ReturnType<typeof table>[]> = {
-      "colocated tables": [table("colocated")],
+      "colocated tables": [table("database")],
       "storage tables": [table("storage")],
-      "colocated and storage tables": [table("colocated"), table("storage")],
+      "colocated and storage tables": [table("database"), table("storage")],
       // G3 on the storage tier: a table plan admitted past its own gate,
       // alone and beside one it did not admit.
       "storage tables kept past their own gate": [

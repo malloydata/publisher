@@ -435,7 +435,7 @@ describe("a bare name between two schemas", () => {
    }
 
    for (const storage of [false, true]) {
-      it(`gives each of s1.t and s2.t its own address, and t neither's, in every order (${storage ? "storage=" : "colocated"})`, () => {
+      it(`gives each of s1.t and s2.t its own address, and t neither's, in every order (${storage ? "storage=" : "database"})`, () => {
          const results = withStorage(() =>
             ORDERS3.map((order) => {
                const compiled = trio(order, storage);
@@ -516,7 +516,7 @@ describe("a bare name between two schemas, over the real compiler", () => {
          ["t", "s2.t", "s1.t"],
          ["s2.t", "t", "s1.t"],
       ]) {
-         it(`fails the load with materialization-table-collision (${storage ? "storage=" : "colocated"}, ${order.join(" ")})`, async () => {
+         it(`fails the load with materialization-table-collision (${storage ? "storage=" : "database"}, ${order.join(" ")})`, async () => {
             const model = [
                "##! experimental.persistence",
                RAW,

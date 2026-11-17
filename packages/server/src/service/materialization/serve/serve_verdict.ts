@@ -120,7 +120,7 @@ export interface ServeVerdict {
     */
    origin: "persist" | "materialize" | "view" | "query" | "preaggregate";
    /** Where its table lives: the source's own connection, or a `storage=` destination. */
-   tier: "colocated" | "storage";
+   tier: "database" | "storage";
    /**
     * `serves`: bound, and queries can be answered from its table.
     * `not_built`: nothing is bound yet; queries will be answered from its
@@ -164,7 +164,7 @@ export interface ServeVerdictFacts {
     * `materialize.gatedSources`), or a rollup whose variant keeps its base's
     * gates.
     */
-   keepsGate(sourceID: string, tier: "colocated" | "storage"): boolean;
+   keepsGate(sourceID: string, tier: "database" | "storage"): boolean;
    /**
     * Why the bind refuses this source although the plan holds it (the
     * eligibility gate the bind applies, such as a rollup name two models
@@ -173,7 +173,7 @@ export interface ServeVerdictFacts {
    refusedAtBind(
       sourceID: string,
       source: PersistSourcePlan,
-      tier: "colocated" | "storage",
+      tier: "database" | "storage",
    ): string | undefined;
    /** Colocated: the plan's sourceEntityIds the bound manifest has a table for. */
    boundEntityIds: ReadonlySet<string>;
@@ -254,8 +254,8 @@ function originOf(
 }
 
 /** The tier a plan source's table lives in. */
-function planTier(source: PersistSourcePlan): "colocated" | "storage" {
-   return source.annotationFields?.storage?.trim() ? "storage" : "colocated";
+function planTier(source: PersistSourcePlan): "database" | "storage" {
+   return source.annotationFields?.storage?.trim() ? "storage" : "database";
 }
 
 /**
@@ -279,7 +279,7 @@ export function computeServeVerdicts(facts: ServeVerdictFacts): ServeVerdict[] {
          sourceID,
          ...(refused.modelPath ? { modelPath: refused.modelPath } : {}),
          origin: originOf(sourceID, refused.tier === "preaggregate", facts),
-         tier: refused.tier === "storage" ? "storage" : "colocated",
+         tier: refused.tier === "storage" ? "storage" : "database",
          verdict: "live",
          reason: "refused",
          message: `Not built, so queries on it are answered live: ${refused.message}`,
@@ -399,7 +399,7 @@ interface VerdictSubject {
    source: PersistSourcePlan;
    facts: ServeVerdictFacts;
    origin: ServeVerdict["origin"];
-   tier: "colocated" | "storage";
+   tier: "database" | "storage";
    base: Omit<ServeVerdict, "verdict" | "message">;
    rollupBase: string | undefined;
    view: ReturnType<NonNullable<ServeVerdictFacts["persistedViewOf"]>>;
@@ -504,7 +504,7 @@ function deploymentVerdict(
       };
    }
    if (
-      tier === "colocated" &&
+      tier === "database" &&
       !facts.boundEntityIds.has(source.sourceEntityId) &&
       facts.connectionCanHoldTable(source.connectionName) === false
    ) {

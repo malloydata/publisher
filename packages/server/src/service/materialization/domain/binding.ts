@@ -38,7 +38,7 @@ export type BindingKind =
    | "query";
 
 /** Where a stored table lives: the source's own warehouse, or a storage destination. */
-type BindingTier = "colocated" | "storage";
+type BindingTier = "database" | "storage";
 
 /**
  * One stored table as serving reads it, under one source name.
@@ -109,7 +109,7 @@ export interface Binding {
 
 /** Whether a binding is a colocated table. */
 export function isColocated(b: Pick<Binding, "tier">): boolean {
-   return b.tier === "colocated";
+   return b.tier === "database";
 }
 
 /**

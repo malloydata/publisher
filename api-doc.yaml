@@ -5119,8 +5119,10 @@ components:
         tier:
           type: string
           description: >-
-            Where its table lives: `colocated` (the source's own connection) or
-            `storage` (a `storage=` destination).
+            Where its table lives: `database` (the source's own connection's
+            database) or `storage` (a `storage=` destination). `colocated` is
+            retained, no longer produced: releases before this one said it for
+            `database`, so a client should accept both.
         verdict:
           type: string
           description: >-
@@ -10710,16 +10712,19 @@ components:
             model path could not be resolved.
         tier:
           type: string
-          enum: [storage, colocated, preaggregate]
+          enum: [storage, database, preaggregate, colocated]
           description: >-
             Which build path this declaration was evaluated against: `storage`
             for one declaring `storage=<ref>` (a `#@ persist` source is
             evaluated against the full storage-destination eligibility gate,
-            which never admits an authorize-gated source); `colocated` for one
-            built in its own connection (a `#@ persist` source is evaluated
-            against the colocated gate, which admits a proven row-level,
-            fully-attributed gate); `preaggregate` for a rollup, whatever its
-            placement.
+            which never admits an authorize-gated source); `database` for one
+            built in its own connection's database (a `#@ persist` source is
+            evaluated against the database gate, which admits a proven
+            row-level, fully-attributed gate); `preaggregate` for a rollup,
+            whatever its placement (read `origin` for the mechanism; a later
+            release gives a rollup its real tier here). `colocated` is
+            retained, no longer produced: it is what releases before this one
+            said for `database`, and a client should read it as `database`.
         reason:
           type: string
           enum:

@@ -1153,7 +1153,7 @@ export function previewNativeSchema(
    sources: Readonly<Record<string, { dialect?: string }>>,
 ): Binding {
    const dialect = sources[binding.sourceIDs?.[0] ?? ""]?.dialect;
-   if (binding.tier !== "colocated" || !dialect) return binding;
+   if (binding.tier !== "database" || !dialect) return binding;
    let type: string;
    try {
       type = getDialect(dialect).malloyTypeToSQLType({

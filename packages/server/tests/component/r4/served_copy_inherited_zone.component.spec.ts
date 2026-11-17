@@ -54,7 +54,7 @@ source: ev_ny is duckdb.table('ev') extend {
 /** The model, colocated (`name=`) or `storage=` in one destination. */
 function modelFor(tier: string) {
    const at = (n: string) =>
-      tier === "colocated" ? `name="${n}"` : `storage="lake"`;
+      tier === "database" ? `name="${n}"` : `storage="lake"`;
    return `import "base.malloy"
 #(materialize) ${at("mzny_t")}
 source: mzny is ev_base extend {
@@ -252,7 +252,7 @@ const CASES: [string, string, boolean][] = [
    ],
 ];
 
-for (const tier of ["colocated", "storage"]) {
+for (const tier of ["database", "storage"]) {
    describe(`R4: a re-rooted source computes in the author's zone [${tier}]`, () => {
       let fixture: R4Fixture;
       useMaterializationOn();

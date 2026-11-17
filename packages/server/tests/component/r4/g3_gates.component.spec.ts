@@ -928,7 +928,7 @@ source: gated_mix is orders_raw -> {
          rowDifference(live.answer.rows, outcome.answer.rows),
       ).toBeUndefined();
       expect(served.at(-1)?.gateTablesRead?.map((b) => b.tier)).toEqual([
-         "colocated",
+         "database",
       ]);
    });
 
@@ -936,7 +936,7 @@ source: gated_mix is orders_raw -> {
       const { outcome, served } = await runRecording(true);
       // The served copy's exact match finds the colocated table alone…
       expect(served.at(-1)?.tablesRead.map((b) => b.tier)).toEqual([
-         "colocated",
+         "database",
       ]);
       // …and the gate judgement sees the storage binding beside it.
       expect(
@@ -944,7 +944,7 @@ source: gated_mix is orders_raw -> {
             .at(-1)
             ?.gateTablesRead?.map((b) => b.tier)
             .sort(),
-      ).toEqual(["colocated", "storage"]);
+      ).toEqual(["database", "storage"]);
       // So the router keeps it off G3: answered exactly as live.
       if ("error" in live) throw new Error(live.error);
       if ("error" in outcome) throw new Error(outcome.error);
@@ -1027,12 +1027,12 @@ query: q_col is g_orders -> { group_by: region; aggregate: c is count() }
                (gated
                   ? [
                        "g_orders__by_region_sto__view:storage:access_filter",
-                       "q_col__query:colocated:access_filter",
+                       "q_col__query:database:access_filter",
                     ]
                   : [
-                       "g_orders__by_region_col__view:colocated:access_filter",
+                       "g_orders__by_region_col__view:database:access_filter",
                        "g_orders__by_region_sto__view:storage:access_filter",
-                       "q_col__query:colocated:access_filter",
+                       "q_col__query:database:access_filter",
                     ]
                ).sort(),
             );

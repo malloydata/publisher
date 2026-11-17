@@ -1861,7 +1861,7 @@ function refuseColocatedTablesSharedWithARefusal(
          name: planned.name,
          sourceID: planned.sourceID,
          modelPath: tables[sourceID]?.modelPath,
-         tier: "colocated",
+         tier: "database",
          reason: (sibling.reason ?? "authorize") as WireRefusedSource["reason"],
          message:
             `'${planned.name}' is not built: it shares its table with ` +

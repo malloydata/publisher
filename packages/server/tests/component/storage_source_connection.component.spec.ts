@@ -25,7 +25,7 @@ source: orders is shared_duckdb.sql("SELECT 1 AS id, 'east' AS region")
 #@ persist name="by_region" storage=lake
 source: by_region is orders -> { group_by: region; aggregate: n is count() }
 
-#@ persist name="colocated"
+#@ persist name="database"
 source: colocated is orders -> { group_by: region }
 `;
 

@@ -468,7 +468,7 @@ source: s is base -> { select: * } extend {
    });
 
    it("binds the table colocated", () => {
-      expect(fixture.built).toEqual([{ name: "s", tier: "colocated" }]);
+      expect(fixture.built).toEqual([{ name: "s", tier: "database" }]);
    });
 
    for (const c of duckdbCases) {

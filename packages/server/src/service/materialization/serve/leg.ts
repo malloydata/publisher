@@ -241,7 +241,7 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
             // build manifest.
             gateTablesRead: answer.binding
                ? [answer.binding]
-               : [{ tier: answer.virtualMap ? "storage" : "colocated" }],
+               : [{ tier: answer.virtualMap ? "storage" : "database" }],
             // Every stored table the answer reads, when that is more than the
             // rollup's (a join branch answered in a storage destination reads
             // the query source's table there too): together they decide

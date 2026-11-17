@@ -42,7 +42,7 @@ export function optsOutOfPersist(def: DerivedSourceDef): boolean {
  * for its own connection's dialect.
  */
 export function boundTablePath(b: Binding): string {
-   return b.tier === "colocated"
+   return b.tier === "database"
       ? b.tablePath
       : quoteManifestTablePath(b.tablePath, STORAGE_DIALECT);
 }

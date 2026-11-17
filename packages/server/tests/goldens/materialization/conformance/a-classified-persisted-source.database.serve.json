@@ -1,0 +1,348 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "classified",
+        "tier": "database"
+      }
+    ],
+    "verdicts": [
+      "classified:serves"
+    ],
+    "warnings": [
+      {
+        "code": "classification-coverage",
+        "message": "Source orders_raw publishes 9 fields with no #(classification): id, customer_id, region, status, amount, discount, order_date, created_at, order. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+        "subject": "orders_raw"
+      },
+      {
+        "code": "classification-coverage",
+        "message": "Source customers_raw publishes 5 fields with no #(classification): id, name, segment, home_region, signup_date. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+        "subject": "customers_raw"
+      },
+      {
+        "code": "classification-coverage",
+        "message": "Source lines_raw publishes 4 fields with no #(classification): line_id, order_id, sku, qty. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+        "subject": "lines_raw"
+      },
+      {
+        "code": "classification-coverage",
+        "message": "Source orders_raw publishes 9 fields with no #(classification): id, customer_id, region, status, amount, discount, order_date, created_at, order. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+        "subject": "orders_raw"
+      },
+      {
+        "code": "classification-coverage",
+        "message": "Source customers_raw publishes 5 fields with no #(classification): id, name, segment, home_region, signup_date. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+        "subject": "customers_raw"
+      },
+      {
+        "code": "classification-coverage",
+        "message": "Source lines_raw publishes 4 fields with no #(classification): line_id, order_id, sku, qty. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+        "subject": "lines_raw"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [
+              "none"
+            ],
+            "path": "region"
+          },
+          {
+            "classifications": [
+              "none"
+            ],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "f74b9e2c4932c909",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "classified",
+          "stages": 1
+        },
+        "source": "classified"
+      },
+      "equalToLive": true,
+      "malloy": "run: classified -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "classified"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a none-classed column",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [
+              "pii"
+            ],
+            "path": "customer_id"
+          },
+          {
+            "classifications": [
+              "none"
+            ],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customer_id"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3df58919cc89b012",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "classified",
+          "stages": 1
+        },
+        "source": "classified"
+      },
+      "equalToLive": true,
+      "malloy": "run: classified -> { group_by: customer_id; aggregate: t is total.sum(); order_by: customer_id }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customer_id"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "classified"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a pii-classed column",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [
+              "none"
+            ],
+            "path": "region"
+          },
+          {
+            "classifications": [
+              "none"
+            ],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "f74b9e2c4932c909",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "classified",
+          "stages": 1
+        },
+        "source": "classified"
+      },
+      "equalToLive": true,
+      "malloy": "run: classified -> { group_by: region; aggregate: t is total.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "classified"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a none-classed column",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [
+              "pii"
+            ],
+            "path": "customer_id"
+          },
+          {
+            "classifications": [
+              "none"
+            ],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "customer_id"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3df58919cc89b012",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(total)"
+          ],
+          "source": "classified",
+          "stages": 1
+        },
+        "source": "classified"
+      },
+      "equalToLive": true,
+      "malloy": "run: classified -> { group_by: customer_id; aggregate: t is total.sum(); order_by: customer_id }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "outcome": "used",
+            "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "customer_id"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "classified"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "tableId": "7faf16dcee23ae32da24c3501e44774f7e91f7c67c06dac0e640e8c9937b12c2",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a pii-classed column",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    }
+  ]
+}

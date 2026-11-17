@@ -852,7 +852,7 @@ describe("hidden columns (G2)", () => {
       });
    }
 
-   for (const variant of ["colocated", "storage"] as const) {
+   for (const variant of ["database", "storage"] as const) {
       describeShape(
          "joined persisted source with hidden fields, from an index",
          variant,
@@ -891,12 +891,12 @@ ${exposed}}
 `,
    });
 
-   const PERSIST: Record<"colocated" | "storage", string> = {
-      colocated: "#@ persist",
+   const PERSIST: Record<"database" | "storage", string> = {
+      database: "#@ persist",
       storage: '#@ persist storage="lake"',
    };
 
-   for (const variant of ["colocated", "storage"] as const) {
+   for (const variant of ["database", "storage"] as const) {
       describe(`v1 cutover: #(carries) over a ${variant} table's hidden column`, () => {
          let restore: () => void = () => {};
          let fixture: LoadedFixture;
@@ -2154,7 +2154,7 @@ source: through_join is duckdb.table('orders_raw') extend {
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    }
 
-   for (const placement of ["colocated", "storage"] as const) {
+   for (const placement of ["database", "storage"] as const) {
       describe(`v1 cutover R4: gated queries on ${placement} rollups (row 1, gated sources on)`, () => {
          let restore: () => void;
          let restoreReview: () => void;

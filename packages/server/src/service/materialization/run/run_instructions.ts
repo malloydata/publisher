@@ -240,7 +240,7 @@ function gateSources(
                      ? "preaggregate"
                      : destination
                        ? "storage"
-                       : "colocated",
+                       : "database",
                   compiled.tables[persistSource.sourceID]?.modelPath,
                );
                // A refused rollup never fails the run: the author asked for
@@ -258,7 +258,7 @@ function gateSources(
          }
          cleared.set(
             persistSource.sourceID,
-            destination ? "storage" : "colocated",
+            destination ? "storage" : "database",
          );
          sources.push({
             persistSource,
@@ -519,7 +519,7 @@ function tableNameCollision(
          ? "preaggregate"
          : destination
            ? "storage"
-           : "colocated",
+           : "database",
       compiled.tables[persistSource.sourceID]?.modelPath,
    );
 }

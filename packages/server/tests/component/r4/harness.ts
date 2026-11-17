@@ -447,7 +447,7 @@ export function colocatedFiles(
  */
 export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const exploringColocated =
-      process.env.R4_MATERIALIZE_TIER === "colocated" && !!scenario.materialize;
+      process.env.R4_MATERIALIZE_TIER === "database" && !!scenario.materialize;
    if (exploringColocated) {
       scenario = { ...scenario, files: colocatedFiles(scenario.files) };
    }
@@ -1296,7 +1296,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          (e) => [e.sourceName, e.physicalTableName] as const,
       ),
       ...bindings
-         .filter((b) => b.tier === "colocated")
+         .filter((b) => b.tier === "database")
          .map((b) => [b.sourceName, b.tablePath] as const),
    ]);
    return {

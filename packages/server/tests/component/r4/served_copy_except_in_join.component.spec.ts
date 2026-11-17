@@ -50,7 +50,7 @@ describe("an except: inside a join's own extend on a v1 re-root", () => {
    });
 
    for (const [label, storage] of [
-      ["colocated", ""],
+      ["database", ""],
       ["storage=", ` storage="lake"`],
    ] as const) {
       it(`keeps the joined field hidden (${label})`, async () => {

@@ -217,7 +217,7 @@ export function upstreamReuseFromManifest(params: {
    full: Record<string, unknown>;
    /** The run's entries so far, by id, for a storage entry's destination. */
    builtEntries: Record<string, ManifestEntry>;
-   tier: "colocated" | "storage";
+   tier: "database" | "storage";
    /** The build SQL differs from the SQL rendered with every stored entry available. */
    sqlInlinesStored: boolean;
    /** The persisted source the SQL reads that no manifest holds, per the compiler's strict render. */
@@ -245,7 +245,7 @@ export function upstreamReuseFromManifest(params: {
          // compare says a stored table was inlined; otherwise an unused join.
          if (!params.sqlInlinesStored) continue;
          inManifestOnly.push(name);
-         if (params.tier === "colocated") {
+         if (params.tier === "database") {
             const destination =
                params.builtEntries[address]?.storageDestinationName;
             reasons.push(
@@ -599,7 +599,7 @@ export function wrongTierDetail(
 const wrongTierNoted = new WeakMap<object, Set<string>>();
 export function noteWrongTierRecompute(params: {
    planFacts: object;
-   build: "colocated" | "storage";
+   build: "database" | "storage";
    sourceName: string;
    upstream: string;
    detail: string;

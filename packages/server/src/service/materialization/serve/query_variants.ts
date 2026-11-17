@@ -316,7 +316,7 @@ export class PersistedQueryServe {
          plan.buildSourceID,
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
-            : "colocated",
+            : "database",
       ].join("\u0000");
       let compiled = this.compiled.get(key);
       if (!compiled) {

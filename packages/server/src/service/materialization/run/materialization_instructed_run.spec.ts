@@ -2189,14 +2189,14 @@ describe("executeInstructedBuild", () => {
                {
                   name: "ext",
                   sourceID: "ext",
-                  tier: "colocated",
+                  tier: "database",
                   reason: "authorize",
                   message: "Source 'ext' cannot be materialized",
                },
             ],
             clearedTiers: new Map([
-               ["ok", "colocated"],
-               ["base", "colocated"],
+               ["ok", "database"],
+               ["base", "database"],
             ]),
          });
          expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(

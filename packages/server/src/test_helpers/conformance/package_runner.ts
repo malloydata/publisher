@@ -208,7 +208,7 @@ export interface LoadedFixture {
    /** Each planned source's serve verdict after the bind, `name:verdict[:reason]`. */
    verdicts: string[];
    /** The plan's sources that were built, by name and tier. */
-   built: { name: string; tier: "storage" | "colocated" }[];
+   built: { name: string; tier: "storage" | "database" }[];
    /** The table each built content address was written to, by sourceEntityId. */
    tables: Record<string, string>;
    /** Problems building a planned source, by name. */
@@ -746,7 +746,7 @@ async function buildAll(
                   ...(nativeSchema ? { nativeSchema } : {}),
                   ...(await leafKeys(entry.sourceID, warehouse)),
                };
-               built.push({ name: entry.name, tier: "colocated" });
+               built.push({ name: entry.name, tier: "database" });
             }
          } catch (error) {
             buildErrors[entry.name] =

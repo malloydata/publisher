@@ -1712,8 +1712,8 @@ describe("gateEnforcedAtRead's tier", () => {
          const gate = { classification: "row_level", attributed: true };
          for (const [persist, tier] of [
             [{ storage: "lake" }, "storage"],
-            [{}, "colocated"],
-            [undefined, "colocated"],
+            [{}, "database"],
+            [undefined, "database"],
          ] as const) {
             spy.mockClear();
             gateEnforcedAtRead(id, {

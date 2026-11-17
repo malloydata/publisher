@@ -318,7 +318,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
                ).sourceIDOf("X")!,
             ],
          },
-         { tier: "colocated" },
+         { tier: "database" },
          { kind: "materialize" },
       ];
       for (const change of changes) {

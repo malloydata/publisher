@@ -131,7 +131,7 @@ export interface ViewAnswer {
 export interface ViewTable {
    /** The table's `sourceEntityId`, when the plan knows it. */
    tableId?: string;
-   tier: "storage" | "colocated";
+   tier: "storage" | "database";
    /** Bound to the package at all. */
    built: boolean;
    /** Bound, but past its freshness window. */
@@ -401,7 +401,7 @@ export class PersistedViewServe {
       const bound =
          tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
       if (!bound || tableId === undefined) {
-         return { ...withId, tier: "colocated", built: false, stale: false };
+         return { ...withId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
@@ -409,7 +409,7 @@ export class PersistedViewServe {
          ? {
               ...withId,
               ...dataAsOf,
-              tier: "colocated",
+              tier: "database",
               built: true,
               stale: false,
               colocatedTable: fresh,
@@ -417,7 +417,7 @@ export class PersistedViewServe {
          : {
               ...withId,
               ...dataAsOf,
-              tier: "colocated",
+              tier: "database",
               built: true,
               stale: true,
            };
@@ -433,7 +433,7 @@ export class PersistedViewServe {
          localName,
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
-            : "colocated",
+            : "database",
       ].join("\u0000");
       let compiled = this.compiled.get(key);
       if (!compiled) {

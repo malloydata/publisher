@@ -188,9 +188,7 @@ source: summary is orders_raw -> {
       try {
          // Built into the source's own warehouse, and read there by the
          // served copy (phase 3 pull request 6).
-         expect(fixture.built).toEqual([
-            { name: "summary", tier: "colocated" },
-         ]);
+         expect(fixture.built).toEqual([{ name: "summary", tier: "database" }]);
          expect(codes(fixture, "materialize-not-built")).toEqual([]);
          expect(fixture.verdicts).toEqual(["summary:serves"]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
@@ -358,7 +356,7 @@ const SAME_NAMED_QUERIES = {
 
 describe("same-named sources in two models (#6644)", () => {
    for (const [tier, annotation] of [
-      ["colocated", "#@ persist"],
+      ["database", "#@ persist"],
       ["storage", '#@ persist storage="lake"'],
    ] as const) {
       it(`v1 ${tier} with no name=: each takes a readable name of its own, builds, and serves its own rows`, async () => {
@@ -382,7 +380,7 @@ describe("same-named sources in two models (#6644)", () => {
                expect(ran.servedBy).toBe("materialized");
                // A storage table is read through its destination's alias,
                // which the report check does not resolve.
-               if (tier === "colocated") expectReportMatchesSQL(fixture, ran);
+               if (tier === "database") expectReportMatchesSQL(fixture, ran);
             }
             expect(fixture.verdicts).toEqual([
                "summary:serves",
@@ -516,7 +514,7 @@ source: summary is orders_raw -> {
       });
 
       for (const [tier, annotation] of [
-         ["colocated", '#@ persist name="s_dup"'],
+         ["database", '#@ persist name="s_dup"'],
          ["storage", '#@ persist storage="lake" name="s_dup"'],
       ] as const) {
          it(`v1 ${tier}: neither model reads the other's rows, both answer live`, async () => {

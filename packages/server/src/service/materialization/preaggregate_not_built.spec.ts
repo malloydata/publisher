@@ -69,7 +69,7 @@ const GATE_MESSAGE =
    "Pre-aggregation rollup 'orders__category__0a1b2c3d' cannot be built: the reason.";
 
 function refusedPlan(
-   tier: "preaggregate" | "colocated",
+   tier: "preaggregate" | "database",
    sources: BuildPlan["sources"] = {},
 ): BuildPlan {
    return {
@@ -172,7 +172,7 @@ describe("preaggregate-not-built", () => {
 
    it("warns persist-not-built for a refused #@ persist source, and its former code beside it for one release", () => {
       const warnings = holding(
-         refusedPlan("colocated"),
+         refusedPlan("database"),
       ).persistRefusalWarnings();
       const expected = {
          severity: "warn" as const,

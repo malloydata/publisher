@@ -4,7 +4,7 @@
     "built": [
       {
         "name": "dim_c",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "fact_s",

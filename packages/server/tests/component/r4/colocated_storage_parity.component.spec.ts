@@ -55,7 +55,7 @@ const TIERS = [
       servedFrom: "storage",
    },
    {
-      label: "colocated",
+      label: "database",
       place: (name: string) => ` name="${name}"`,
       servedFrom: "database",
    },

@@ -4,11 +4,11 @@
     "built": [
       {
         "name": "orders_base",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "orders_rollup",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [

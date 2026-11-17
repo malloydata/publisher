@@ -435,7 +435,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       throw new MaterializationEligibilityError({
          // An inherited row filter is a row filter.
          reason: "access_filter",
-         message: inheritedRowFilterRefusal(sourceName, "colocated"),
+         message: inheritedRowFilterRefusal(sourceName, "database"),
       });
    }
    // G3, the gate policy's: the entry point's own gate compiles to a row
@@ -446,7 +446,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       tableKeepsGates(
          {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             v1: true,
             gate: {
                rowLevel: gateOutcome?.classification === "row_level",
@@ -884,7 +884,7 @@ export function gateEnforcedAtRead(
          // G3 admits a colocated table alone, so a doubt reads as storage.
          tier:
             !storage && materialized.persist?.storage === undefined
-               ? "colocated"
+               ? "database"
                : "storage",
          v1: false,
          gate,
@@ -916,7 +916,7 @@ export function storageKeepsOwnGate(
  */
 function inheritedRowFilterRefusal(
    sourceName: string,
-   tier: "colocated" | "storage",
+   tier: "database" | "storage",
 ): string {
    return (
       `Source '${sourceName}' cannot be materialized (${tier}): it reads an ` +

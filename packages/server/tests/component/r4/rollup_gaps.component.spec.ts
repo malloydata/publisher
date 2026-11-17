@@ -114,7 +114,7 @@ function expectLive(run: R4Run): void {
    expect(rowDifference(run.live, run.served)).toBeUndefined();
 }
 
-for (const placement of ["colocated", "storage"] as const) {
+for (const placement of ["database", "storage"] as const) {
    describe(`R4: rollup gaps closed (opportunity 13), ${placement}`, () => {
       let restore: () => void;
       let fixture: R4Fixture;

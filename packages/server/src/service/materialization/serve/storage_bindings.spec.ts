@@ -65,7 +65,7 @@ describe("modelStorageTables", () => {
          modelStorageTables(
             [
                binding({ kind: "materialize" }),
-               binding({ tier: "colocated" }),
+               binding({ tier: "database" }),
                binding({ kind: "view" }),
             ],
             modelDef,
@@ -324,7 +324,7 @@ describe("boundTableTypeFindings", () => {
                binding({ schema: stored }),
                binding({
                   kind: "materialize",
-                  tier: "colocated",
+                  tier: "database",
                   schema: stored,
                }),
             ],

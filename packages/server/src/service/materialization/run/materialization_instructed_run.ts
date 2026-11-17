@@ -124,7 +124,7 @@ export interface InstructedBuildOptions {
 }
 
 /** The eligibility gate a source was cleared by. */
-export type EligibilityTier = "storage" | "colocated";
+export type EligibilityTier = "storage" | "database";
 
 /**
  * Everything one instructed build run reads and records, in one place: the

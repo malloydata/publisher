@@ -299,7 +299,7 @@ describe("upstreamReuseFromManifest", () => {
          substituted: { "addr-daily": {}, "addr-sites": {} },
          full: { "addr-daily": {}, "addr-sites": {} },
          builtEntries: {},
-         tier: "colocated",
+         tier: "database",
       });
       expect(out).toEqual({
          fields: { upstreamReuse: "reused" },
@@ -323,7 +323,7 @@ describe("upstreamReuseFromManifest", () => {
                physicalTableName: "daily__g1",
             },
          },
-         tier: "colocated",
+         tier: "database",
       });
       expect(out.fields).toEqual({ upstreamReuse: "reused" });
    });
@@ -337,7 +337,7 @@ describe("upstreamReuseFromManifest", () => {
          substituted: {},
          full: { "addr-daily": {} },
          builtEntries,
-         tier: "colocated",
+         tier: "database",
       });
       expect(out.inManifestOnly).toEqual(["daily"]);
       expect(out.fields.upstreamReuse).toBe("recomputed");
@@ -390,7 +390,7 @@ describe("upstreamReuseFromManifest", () => {
             substituted: {},
             full: {},
             builtEntries: {},
-            tier: "colocated",
+            tier: "database",
          }).fields,
       ).toEqual({});
    });
@@ -802,7 +802,7 @@ describe("noteWrongTierRecompute", () => {
          const note = (upstream: string) =>
             noteWrongTierRecompute({
                planFacts: run,
-               build: "colocated",
+               build: "database",
                sourceName: "down",
                upstream,
                detail: "d",
@@ -812,7 +812,7 @@ describe("noteWrongTierRecompute", () => {
          note("other");
          noteWrongTierRecompute({
             planFacts: {},
-            build: "colocated",
+            build: "database",
             sourceName: "down",
             upstream: "up",
             detail: "d",

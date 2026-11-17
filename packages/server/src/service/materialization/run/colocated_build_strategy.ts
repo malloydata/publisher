@@ -58,7 +58,7 @@ import { transactionalSwapSql } from "./warehouse_sql";
 export class ColocatedTier
    implements TierAdapter<ColocatedBuildRequest, ColocatedSite>
 {
-   readonly tier = "colocated" as const;
+   readonly tier = "database" as const;
 
    /** A delta for an incremental table the run can advance, else a rebuild in full. */
    async build(request: ColocatedBuildRequest): Promise<ManifestEntry> {

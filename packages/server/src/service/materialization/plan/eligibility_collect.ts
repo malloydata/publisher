@@ -728,7 +728,7 @@ function eligibilityOf(
          ? {
               refused: refusal(
                  err,
-                 declaresStorage ? "storage" : "colocated",
+                 declaresStorage ? "storage" : "database",
                  "authorize",
               ),
               refusal: err,

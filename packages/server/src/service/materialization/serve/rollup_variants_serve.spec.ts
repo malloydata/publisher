@@ -296,7 +296,7 @@ describe("RollupVariantServe (storage=)", () => {
       const pinned = pinnedOf([
          mine,
          { ...mine, kind: "persist" },
-         { ...mine, tier: "colocated" },
+         { ...mine, tier: "database" },
       ]);
       expect(f.rollups.rollupBindings(pinned, "bound")).toEqual([mine]);
       expect(f.rollups.rollupBindings(pinned, "fresh")).toEqual([mine]);

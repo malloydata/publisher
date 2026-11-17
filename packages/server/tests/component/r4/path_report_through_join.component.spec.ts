@@ -40,7 +40,7 @@ describe("the path report names the queried source's table through a join", () =
       }).restore;
       await freshLoadPool();
       const shape = SHAPES.find((s) => s.name === SHAPE)!;
-      const files = renderFiles(shape, "colocated");
+      const files = renderFiles(shape, "database");
       // The joined source on the surface too, to read its table's id.
       files["index.malloy"] = `import "facts.malloy"
 import "dims.malloy"

@@ -53,7 +53,7 @@ const BIG_SUM =
 
 for (const [route, annotate] of Object.entries(ROUTES)) {
    for (const [label, placement] of [
-      ["colocated", ""],
+      ["database", ""],
       ["storage=", ` storage="${DESTINATION}"`],
    ] as const) {
       describe(`R4: the stored types a ${route} rollup reads [${label}]`, () => {

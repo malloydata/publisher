@@ -8,7 +8,7 @@
       },
       {
         "name": "orders_wide_local",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [

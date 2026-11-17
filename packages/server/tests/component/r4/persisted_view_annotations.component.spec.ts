@@ -98,7 +98,7 @@ const authorNotes = (f: Field) =>
       .filter((v) => !v.startsWith("#(malloy)"));
 
 describe.each([
-   ["colocated", (v: string): string => `#@ persist name="orders_${v}"`, true],
+   ["database", (v: string): string => `#@ persist name="orders_${v}"`, true],
    [
       "in a storage destination",
       (_v: string): string => `#@ persist storage="${DESTINATION}"`,

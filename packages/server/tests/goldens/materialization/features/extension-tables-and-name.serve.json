@@ -4,7 +4,7 @@
     "built": [
       {
         "name": "colocated_ext",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "stored",

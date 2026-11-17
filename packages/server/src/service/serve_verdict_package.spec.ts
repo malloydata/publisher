@@ -80,7 +80,7 @@ describe("a package's serve verdicts", () => {
       });
       const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders).toMatchObject({
-         tier: "colocated",
+         tier: "database",
          verdict: "not_built",
       });
       expect(verdicts.staging).toMatchObject({
@@ -313,7 +313,7 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
          verdict: "live",
          reason: "storage_mode",
       });
-      expect(verdicts.staging.tier).toBe("colocated");
+      expect(verdicts.staging.tier).toBe("database");
    });
 });
 

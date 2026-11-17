@@ -395,7 +395,7 @@ for (const lake of LAKES) {
                for (const q of shape.queries) {
                   const want = expectedTier(q, variant, on);
                   const gap = gapFor(shape, q, variant, on, lake);
-                  const title = `${q.name}, switch ${on}: ${want === "colocated" ? "served" : want}, equal to live`;
+                  const title = `${q.name}, switch ${on}: ${want === "database" ? "served" : want}, equal to live`;
                   const test = () => {
                      expect(loadError).toBeUndefined();
                      const l =
@@ -437,7 +437,7 @@ for (const lake of LAKES) {
                         return;
                      }
                      expect(s.answer.servedBy).toBe("materialized");
-                     if (isColocated(variant) || want === "colocated") {
+                     if (isColocated(variant) || want === "database") {
                         expect(s.answer.servedFrom).toBe("database");
                         // After the cutover a colocated table is read by the
                         // served copy, never Malloy's build manifest.
@@ -478,7 +478,7 @@ describe("conformance: the parquet run reads Parquet", () => {
                  .map(String)
                  .filter((f) => f.endsWith(".parquet"))
             : [];
-      for (const variant of ["storage", "colocated"] as const) {
+      for (const variant of ["storage", "database"] as const) {
          const restore = withSwitch("cutover");
          await freshLoadPool();
          const loader = await loadFixture(

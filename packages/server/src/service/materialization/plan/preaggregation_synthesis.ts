@@ -137,7 +137,7 @@ export function basePersistNamespace(
       if (
          !declared ||
          !("placement" in declared) ||
-         declared.placement.tier !== "colocated"
+         declared.placement.tier !== "database"
       ) {
          return undefined;
       }

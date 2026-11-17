@@ -182,7 +182,7 @@ export interface MaterializeRefusal {
 /** A refusal's reason, and the tier the table would have been built in. */
 interface TierRefusal {
    reason: RefusedReason;
-   tier: "colocated" | "storage";
+   tier: "database" | "storage";
 }
 
 /** The Malloy atomic types a stored column can hold. */
@@ -1295,7 +1295,7 @@ class Declined {
 function declaredTier(
    def: SourceDefLike,
    contents: Record<string, unknown>,
-): "colocated" | "storage" {
+): "database" | "storage" {
    try {
       const declaration = readMaterializeDeclaration(def, contents);
       const placed = declaration ? placementOf(declaration.tag) : undefined;
@@ -1305,7 +1305,7 @@ function declaredTier(
             : undefined,
       );
    } catch {
-      return "colocated";
+      return "database";
    }
 }
 

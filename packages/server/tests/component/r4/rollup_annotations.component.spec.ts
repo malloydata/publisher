@@ -114,7 +114,7 @@ interface Answer {
 }
 
 describe.each([
-   ["colocated", ""],
+   ["database", ""],
    ["in a storage destination", ` storage="${DESTINATION}"`],
 ] as const)(
    "R4: a #(preaggregate) rollup %s answers with live's annotations",

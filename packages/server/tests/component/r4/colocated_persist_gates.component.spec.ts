@@ -211,8 +211,8 @@ describe("R4: colocated #@ persist past its own row-level gate, and its column s
    it("the harness binds a table only where the package's colocated tier admits one", () => {
       expect(pkg.buildErrors).toEqual({});
       expect(pkg.built.map((b) => `${b.name}:${b.tier}`).sort()).toEqual([
-         "gated:colocated",
-         "shaped:colocated",
+         "gated:database",
+         "shaped:database",
       ]);
       // The package's colocated eligibility refuses the inherited gate and
       // the joined one, so neither is built or bound.
@@ -229,7 +229,7 @@ describe("R4: colocated #@ persist past its own row-level gate, and its column s
       expect(refusedNames).toEqual(["inherits", "joiner"]);
       expect(
          r4.bindings.map((b) => `${b.sourceName}:${b.tier}`).sort(),
-      ).toEqual(["gated:colocated", "shaped:colocated"]);
+      ).toEqual(["gated:database", "shaped:database"]);
    });
 
    for (const kase of CASES) {

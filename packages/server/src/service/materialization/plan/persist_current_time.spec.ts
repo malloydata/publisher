@@ -202,7 +202,7 @@ describe("assertTierEligible: the current_time refusal on both tiers", () => {
       [`#@ persist name="p"`, false],
       [`#@ persist name="p" storage=lake`, true],
    ] as const) {
-      it(`refuses ${storage ? "storage=" : "colocated"} with current_time`, async () => {
+      it(`refuses ${storage ? "storage=" : "database"} with current_time`, async () => {
          const source = await persistSource(
             `${annotation}\nsource: p is ev -> { where: ts < now; select: * }`,
          );
@@ -219,7 +219,7 @@ describe("assertTierEligible: the current_time refusal on both tiers", () => {
          expect((caught as Error).message).toContain("answered live");
       });
 
-      it(`admits ${storage ? "storage=" : "colocated"} with now in its own extend block`, async () => {
+      it(`admits ${storage ? "storage=" : "database"} with now in its own extend block`, async () => {
          const source = await persistSource(
             `${annotation}\nsource: p is ev extend { where: ts < now }`,
          );

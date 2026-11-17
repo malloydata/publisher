@@ -323,9 +323,9 @@ function expectLive(run: R4Run): void {
 }
 
 for (const [placement, gatedSources] of [
-   ["colocated", true],
+   ["database", true],
    ["storage", true],
-   ["colocated", false],
+   ["database", false],
 ] as const) {
    // With the switch off (G3), only a base's own gates are kept.
    const cases = CASES.filter(

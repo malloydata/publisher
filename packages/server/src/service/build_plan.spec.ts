@@ -884,7 +884,7 @@ source: leaky is base -> { aggregate: c is count() }
          const refused = Object.values(plan?.refusedSources ?? {});
          const ok = refused.find((r) => r.name === "ok");
          expect(ok).toMatchObject({
-            tier: "colocated",
+            tier: "database",
             reason: "env_reference",
          });
          expect(ok?.message).toStartWith(

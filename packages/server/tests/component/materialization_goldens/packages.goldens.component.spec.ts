@@ -89,7 +89,7 @@ function conformanceCases(): GoldenCase[] {
       // conformance specs; its plan and build text are the colocated v1
       // variant's and the `materialize` variant's, so it adds no golden.
       for (const variant of (shape.variants ?? VARIANTS).filter(
-         (v) => v !== "materialize_colocated",
+         (v) => v !== "materialize_database",
       )) {
          const entry = Object.keys(shape.files)[0];
          out.push({

@@ -53,7 +53,7 @@
         "name": "inside",
         "reason": "given_in_persisted_query",
         "sourceID": "inside@<hammer>/gpq/gpq.malloy",
-        "tier": "colocated"
+        "tier": "database"
       }
     },
     "sources": {}

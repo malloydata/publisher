@@ -169,7 +169,7 @@ describe("persistRefusalWarnings", () => {
          name: sourceID.split("@")[0],
          sourceID,
          modelPath: "m.malloy",
-         tier: "colocated" as const,
+         tier: "database" as const,
          reason: "authorize" as const,
          message: "refused",
          ...o,

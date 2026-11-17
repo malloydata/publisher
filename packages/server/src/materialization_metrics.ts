@@ -53,7 +53,7 @@ export const BUILD_KINDS = [
 export type BuildKind = (typeof BUILD_KINDS)[number];
 
 /** Where a table is built: the source's own warehouse, or a `storage=` destination. */
-export const BUILD_TIERS = ["colocated", "storage"] as const;
+export const BUILD_TIERS = ["database", "storage"] as const;
 export type BuildTier = (typeof BUILD_TIERS)[number];
 
 /** A full rebuild, or an incremental delta applied in place. */
@@ -276,7 +276,7 @@ const buildCounter = lazyCounter(
    "publisher_materialization_build_total",
    "Source builds, one per source per run at its finish or failure. Labels: " +
       "kind ('materialize'|'persist'|'rollup'|'view'|'query'|'pair'), tier " +
-      "('colocated'|'storage'), outcome ('built'|'reused'|'refused'|'failed'|" +
+      "('database'|'storage'), outcome ('built'|'reused'|'refused'|'failed'|" +
       "'cancelled'), failure_class ('none' unless outcome is 'failed'; then " +
       "'deterministic'|'transient'|'unclassified'|'billed_read_lost'). " +
       "'billed_read_lost' is the expensive one: the warehouse read ran and was " +
@@ -480,7 +480,7 @@ const staleUpstreamEntryCounter = lazyCounter(
       "different tier than the upstream is declared on now (ms2data/service#7087: " +
       "a source moved to or from storage= keeps its content address). The build " +
       "recomputes that upstream from raw instead, which reads the warehouse. " +
-      "Label: build ('colocated'|'storage'), the tier of the build that " +
+      "Label: build ('database'|'storage'), the tier of the build that " +
       "recomputed.",
 );
 
@@ -876,7 +876,7 @@ export function recordChainedStorageBuild(
  * manifest entry is at a different tier than it is declared on now (see
  * {@link staleUpstreamEntryCounter}). Once per run per upstream.
  */
-export function recordStaleUpstreamEntry(build: "colocated" | "storage"): void {
+export function recordStaleUpstreamEntry(build: "database" | "storage"): void {
    staleUpstreamEntryCounter().add(1, { build });
 }
 

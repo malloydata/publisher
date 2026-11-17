@@ -285,7 +285,7 @@ describe("run telemetry through the build loop", () => {
       expect(
          await harness.collectCounter("publisher_materialization_build_total", {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "built",
             failure_class: "none",
          }),
@@ -293,14 +293,14 @@ describe("run telemetry through the build loop", () => {
       expect(
          await harness.collectHistogram(
             "publisher_materialization_build_duration_ms",
-            { kind: "persist", tier: "colocated", method: "full" },
+            { kind: "persist", tier: "database", method: "full" },
          ),
       ).toMatchObject({ count: 2, sum: 500 });
       expect(
          (
             await harness.collectHistogram(
                "publisher_materialization_build_read_bytes",
-               { tier: "colocated" },
+               { tier: "database" },
             )
          ).count,
       ).toBe(2);
@@ -318,7 +318,7 @@ describe("run telemetry through the build loop", () => {
             sourceEntityId: "a1aaaaaaaaaaaaaa",
             sourceName: "s1",
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             method: "full",
             durationMs: 250,
             rows: 7,
@@ -440,7 +440,7 @@ describe("run telemetry through the build loop", () => {
       );
       expect(points).toContainEqual({
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          outcome: "failed",
          failure_class: "billed_read_lost",
       });
@@ -492,7 +492,7 @@ describe("run telemetry through the build loop", () => {
       ).toEqual([
          {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "cancelled",
             failure_class: "none",
          },
@@ -525,13 +525,13 @@ describe("run telemetry through the build loop", () => {
          expect.arrayContaining([
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "refused",
                failure_class: "none",
             },
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "built",
                failure_class: "none",
             },

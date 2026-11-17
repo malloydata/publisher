@@ -4,15 +4,15 @@
     "built": [
       {
         "name": "lines__rollup__order_id__906dde44",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "lines__rollup__order_id_sku__c5895963",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "orders__rollup__region__409e9efb",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "orders__rollup__m_region__7877d8b1",

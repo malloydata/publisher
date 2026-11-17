@@ -213,7 +213,7 @@ function rollupsServeGatedBases(
    return tableKeepsGates(
       {
          kind: "rollup",
-         tier: placement.storage === undefined ? "colocated" : "storage",
+         tier: placement.storage === undefined ? "database" : "storage",
          v1: false,
          baseGateProven: true,
          gate: baseGateOf(own),
@@ -268,7 +268,7 @@ export function rollupGateEnforcedAtRead(plan: unknown): boolean {
          kind: "rollup",
          tier:
             (plan as { storage?: unknown }).storage === undefined
-               ? "colocated"
+               ? "database"
                : "storage",
          v1: !variant,
          baseGateProven: variant && plan.baseGated === true,

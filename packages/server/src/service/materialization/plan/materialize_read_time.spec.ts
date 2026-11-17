@@ -625,7 +625,7 @@ source: orders is scoped extend { where: amount >= $MIN_AMT }
 `,
          ],
          [
-            "colocated",
+            "database",
             `${SCOPED}
 #(materialize) name="orders"
 source: orders is scoped extend { measure: n is count() }

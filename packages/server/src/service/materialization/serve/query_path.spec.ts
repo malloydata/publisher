@@ -115,7 +115,7 @@ describe("buildQueryPath", () => {
             view: {
                kind: "query",
                tableId: "id_q",
-               tier: "colocated",
+               tier: "database",
                built: true,
                stale: false,
             },
@@ -297,7 +297,7 @@ describe("buildQueryPath", () => {
                input({
                   view: {
                      tableId: "id_view",
-                     tier: "colocated",
+                     tier: "database",
                      built: true,
                      stale: false,
                   },
@@ -641,7 +641,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       const tables = {
          ...catalog([planned("daily")]),
          liveVerdicts: verdicts({
-            "colocated:id_daily": { reason: "refused", sourceName: "daily" },
+            "database:id_daily": { reason: "refused", sourceName: "daily" },
          }),
       };
       const report = buildQueryPath(input({ catalog: tables }));
@@ -742,7 +742,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             catalog: {
                ...catalog([rollup], { id_orders_rollup: "rollup_t" }),
                liveVerdicts: verdicts({
-                  "colocated:id_orders_rollup": {
+                  "database:id_orders_rollup": {
                      reason: "refused",
                      sourceName: "orders_rollup",
                   },
@@ -954,7 +954,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
    it("keeps what only this query shows: a table that answered, STALE and RUN_FAILED", () => {
       const daily = storageOf("daily");
       const liveVerdicts = verdicts({
-         "colocated:id_daily": { reason: "unreachable", sourceName: "daily" },
+         "database:id_daily": { reason: "unreachable", sourceName: "daily" },
          "storage:id_daily": { reason: "unreachable", sourceName: "daily" },
       });
       const usedReport = buildQueryPath(
@@ -999,7 +999,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             catalog: {
                ...catalog([planned("daily")]),
                liveVerdicts: verdicts({
-                  "colocated:id_daily": {
+                  "database:id_daily": {
                      reason: "unreachable",
                      sourceName: "daily",
                   },
@@ -1115,7 +1115,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
                // Only the colocated copy is refused; the storage copy is
                // merely unrouted, which this verdict does not explain.
                liveVerdicts: verdicts({
-                  "colocated:id_daily": {
+                  "database:id_daily": {
                      reason: "refused",
                      sourceName: "daily",
                   },

@@ -869,7 +869,7 @@ export class InstructedBuild {
       reportSourceBuilt(
          {
             kind: buildKindOf(compiled, persistSource.sourceID),
-            tier: entry.storageDestinationName ? "storage" : "colocated",
+            tier: entry.storageDestinationName ? "storage" : "database",
             sourceEntityId,
             sourceName: persistSource.name,
             physicalTableName: instruction.physicalTableName,
@@ -1537,7 +1537,7 @@ function recordPendingRefusal(
             ? "preaggregate"
             : instruction.destination
               ? "storage"
-              : "colocated",
+              : "database",
          run.compiled.tables[persistSource.sourceID]?.modelPath,
       ),
       sourceID: persistSource.sourceID,

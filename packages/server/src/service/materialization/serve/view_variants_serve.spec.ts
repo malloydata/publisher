@@ -109,7 +109,7 @@ describe("PersistedViewServe (colocated)", () => {
       const call = "run: orders -> by_region";
       expect(f.views.reportedTable(call, pinnedOf())).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: false,
          stale: false,
       });
@@ -128,14 +128,14 @@ describe("PersistedViewServe (colocated)", () => {
          ),
       ).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: true,
          dataAsOf: old,
       });
       expect(f.views.reportedTable(call, pinnedOf([], built))).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: false,
       });
@@ -148,7 +148,7 @@ describe("PersistedViewServe (colocated)", () => {
       const answer = await attemptOf(f, "run: orders -> by_region", built);
       expect(answer.table).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: false,
       });
@@ -300,7 +300,7 @@ describe("PersistedViewServe (storage=)", () => {
          mine,
          storedViewBinding("other@file:///x.malloy"),
          { ...mine, kind: "persist" },
-         { ...mine, tier: "colocated" },
+         { ...mine, tier: "database" },
       ]);
       expect(f.views.viewBindings(pinned, "bound")).toEqual([mine]);
       expect(f.views.viewBindings(pinned, "fresh")).toEqual([mine]);

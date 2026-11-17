@@ -299,14 +299,14 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
          try {
             const candidate = rollupCandidate();
             expect(candidate?.keepsContracts).toBe(true);
-            const read = (tier: "colocated" | "storage") =>
+            const read = (tier: "database" | "storage") =>
                candidate?.keepsContractsFor?.({
                   runnable,
                   tablesRead: undefined,
                   gateTablesRead: [{ tier }],
                   shapeBindings: [],
                } as never);
-            expect(read("colocated")).toBe(true);
+            expect(read("database")).toBe(true);
             expect(read("storage")).toBe(on);
          } finally {
             restore();
@@ -353,7 +353,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
    const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
    const colocated = binding("c", {
       kind: "materialize",
-      tier: "colocated",
+      tier: "database",
       destinationName: "duckdb",
       tablePath: '"c_tbl"',
    });

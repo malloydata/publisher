@@ -61,7 +61,7 @@ const FLIGHTS_SEED = [
 ];
 
 for (const [label, placement] of [
-   ["colocated", ""],
+   ["database", ""],
    ["storage=", ` storage="${DESTINATION}"`],
 ] as const) {
    describe(`R4: join-to-rollup through a v1 #@ preaggregate [${label}]`, () => {
@@ -201,7 +201,7 @@ const ROUTES = {
 
 for (const [route, annotate] of Object.entries(ROUTES)) {
    for (const [label, placement] of [
-      ["colocated", ""],
+      ["database", ""],
       ["storage=", ` storage="${DESTINATION}"`],
    ] as const) {
       describe(`R4: the column types a ${route} rollup stores [${label}]`, () => {

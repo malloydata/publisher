@@ -1048,7 +1048,7 @@ export class MaterializationService {
             reportSourceRefused(
                {
                   kind: buildKindOf(compiled, refusal.sourceID),
-                  tier: refusal.tier === "storage" ? "storage" : "colocated",
+                  tier: refusal.tier === "storage" ? "storage" : "database",
                   sourceName: refusal.name,
                },
                refusal.reason,
@@ -1681,7 +1681,7 @@ export class MaterializationService {
          reportSourceReused(
             kindByAddress.get(address) ??
                (entry.origin === "preaggregate" ? "rollup" : "persist"),
-            entry.storageDestinationName ? "storage" : "colocated",
+            entry.storageDestinationName ? "storage" : "database",
          );
       }
       // A run that lost sources is partial: its manifest is missing tables a

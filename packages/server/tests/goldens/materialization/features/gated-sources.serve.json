@@ -8,11 +8,11 @@
       },
       {
         "name": "by_column__rollup__region_status__5f704d70",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "by_lock__rollup__status__eb4380b4",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [

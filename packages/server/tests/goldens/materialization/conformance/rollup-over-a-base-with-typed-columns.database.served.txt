@@ -1,0 +1,100 @@
+// conformance: rollup over a base with typed columns [database]: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 3)
+##! experimental { access_modifiers persistence virtual_source }
+
+import { typed__rollup__g__b3e24831__built is typed__rollup__g__b3e24831 } from "m.malloy.preaggregate.malloy"
+source: typed__rollup__g__b3e24831__served is typed__rollup__g__b3e24831__built extend {
+  measure:
+    #@ preaggregate grain="g"
+    big_sum is big_sum__partial.sum()
+    #@ preaggregate grain="g"
+    dec_sum is dec_sum__partial.sum()
+}
+source: typed is typed__rollup__g__b3e24831__served include { internal: big_sum__partial, dec_sum__partial public: * }
+
+// ==== <pkg>/m.malloy (text 2 of 3)
+##! experimental { access_modifiers persistence virtual_source }
+
+import { typed__rollup__dec__dadb73aa__built is typed__rollup__dec__dadb73aa } from "m.malloy.preaggregate.malloy"
+source: typed__rollup__dec__dadb73aa__served is typed__rollup__dec__dadb73aa__built extend {
+  measure:
+    #@ preaggregate grain="dec"
+    n_by_dec is n_by_dec__partial.sum()
+}
+source: typed is typed__rollup__dec__dadb73aa__served include { internal: n_by_dec__partial public: * }
+
+// ==== <pkg>/m.malloy (text 3 of 3)
+##! experimental { access_modifiers persistence virtual_source }
+
+import { typed__rollup__tstz__7a053bfd__built is typed__rollup__tstz__7a053bfd } from "m.malloy.preaggregate.malloy"
+source: typed__rollup__tstz__7a053bfd__served is typed__rollup__tstz__7a053bfd__built extend {
+  measure:
+    #@ preaggregate grain="tstz"
+    n_by_tstz is n_by_tstz__partial.sum()
+}
+source: typed is typed__rollup__tstz__7a053bfd__served include { internal: n_by_tstz__partial public: * }
+
+// ==== <pkg>/m.malloy.preaggregate.malloy (text 1 of 3)
+##! experimental.persistence
+import { typed__rollup_base is typed } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: typed__rollup__g__b3e24831 is typed__rollup_base -> {
+  group_by:
+    g
+  aggregate:
+    big_sum__partial is big.sum()
+    dec_sum__partial is dec.sum()
+}
+
+// ==== <pkg>/m.malloy.preaggregate.malloy (text 2 of 3)
+##! experimental.persistence
+import { typed__rollup_base is typed } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: typed__rollup__dec__dadb73aa is typed__rollup_base -> {
+  group_by:
+    dec
+  aggregate:
+    n_by_dec__partial is count()
+}
+
+// ==== <pkg>/m.malloy.preaggregate.malloy (text 3 of 3)
+##! experimental.persistence
+import { typed__rollup_base is typed } from "m.malloy.rollup-author.malloy"
+
+#@ persist
+source: typed__rollup__tstz__7a053bfd is typed__rollup_base -> {
+  group_by:
+    tstz
+  aggregate:
+    n_by_tstz__partial is count()
+}
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { persistence }
+
+source: typed is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (CAST('9007199254740993' AS BIGINT), CAST(1.25 AS DECIMAL(10,2)),
+     TIMESTAMPTZ '2024-01-01 10:00:00+00', 'a', {'k': 1}, MAP {'x': 1}),
+    (CAST('9007199254740991' AS BIGINT), CAST(1.25 AS DECIMAL(10,2)),
+     TIMESTAMPTZ '2024-01-01 10:00:00+00', 'a', {'k': 2}, MAP {'y': 2}),
+    (CAST('-9007199254740993' AS BIGINT), CAST(2.50 AS DECIMAL(10,2)),
+     TIMESTAMPTZ '2024-06-30 23:30:00+00', 'b', {'k': 3}, MAP {'z': 3})
+  ) AS t(big, dec, tstz, g, st, mp)
+""") extend {
+  #@ preaggregate grain="g"
+  measure: big_sum is big.sum()
+  #@ preaggregate grain="g"
+  measure: dec_sum is dec.sum()
+  #@ preaggregate grain="dec"
+  measure: n_by_dec is count()
+  #@ preaggregate grain="tstz"
+  measure: n_by_tstz is count()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy
+##! experimental { access_modifiers persistence virtual_source }
+import { typed } from "m.malloy"

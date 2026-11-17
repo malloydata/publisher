@@ -115,7 +115,7 @@ export interface MaterializedTableCatalog {
 
 /** The key of {@link MaterializedTableCatalog.liveVerdicts}. */
 export function liveVerdictKey(
-   tier: "storage" | "colocated",
+   tier: "storage" | "database",
    sourceEntityId: string,
 ): string {
    return `${tier}:${sourceEntityId}`;
@@ -160,7 +160,7 @@ interface TableState {
     */
    tableId?: string;
    kind: "materialized" | "rollup" | "view" | "query";
-   tier: "storage" | "colocated";
+   tier: "storage" | "database";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
    /** Not bound to the package at all. */
@@ -249,7 +249,7 @@ export interface QueryPathInput {
    view?: {
       kind?: "query";
       tableId?: string;
-      tier: "storage" | "colocated";
+      tier: "storage" | "database";
       built: boolean;
       stale: boolean;
       dataAsOf?: string;
@@ -335,7 +335,7 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       let answered = false;
       for (const t of tables) {
          if (
-            t.tier !== "colocated" ||
+            t.tier !== "database" ||
             t.kind !== "materialized" ||
             t.unbuilt ||
             t.binding
@@ -400,7 +400,7 @@ function pathTally(): PathTally {
          kind: t.kind,
          ...(t.tableId ? { tableId: t.tableId } : {}),
          // The wire names the colocated tier by where it lives.
-         tier: t.tier === "colocated" ? "database" : "storage",
+         tier: t.tier === "database" ? "database" : "storage",
          ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
       };
    };
@@ -584,7 +584,7 @@ function colocatedRollupDecisions(
    const { markUsed, skip } = tally;
    const colocatedRollups = tables.filter(
       (t) =>
-         (t.tier === "colocated" || t.variant) &&
+         (t.tier === "database" || t.variant) &&
          t.kind === "rollup" &&
          !t.unbuilt,
    );
@@ -881,7 +881,7 @@ function tablesFor(
    // Storage first, then colocated; chain order within each.
    return [
       ...out.filter((t) => t.tier === "storage"),
-      ...out.filter((t) => t.tier === "colocated"),
+      ...out.filter((t) => t.tier === "database"),
    ];
 }
 
@@ -936,10 +936,10 @@ function storageState(
    fresh: ReadonlySet<string>,
 ): TableState {
    return {
-      key: `${binding.colocated ? "colocated" : "storage"}:${binding.tablePath}`,
+      key: `${binding.colocated ? "database" : "storage"}:${binding.tablePath}`,
       ...(plan ? { tableId: plan.sourceEntityId } : {}),
       kind,
-      tier: binding.colocated ? "colocated" : "storage",
+      tier: binding.colocated ? "database" : "storage",
       stale: !fresh.has(binding.tablePath),
       unbuilt: false,
       ...(binding.freshAsOf ? { dataAsOf: binding.freshAsOf } : {}),
@@ -957,7 +957,7 @@ function colocatedState(
       key: `colocated:${plan.sourceEntityId}`,
       tableId: plan.sourceEntityId,
       kind,
-      tier: "colocated",
+      tier: "database",
       // Bound, but left out of this query's build manifest by its window.
       stale:
          !!bound &&

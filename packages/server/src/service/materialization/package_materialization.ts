@@ -1084,7 +1084,7 @@ export class PackageMaterialization {
       return databaseDriftFindings(drifted, this.plan.buildPlan, {
          servedCopy: (id) =>
             bindings.some(
-               (b) => b.tier === "colocated" && b.virtualHandle === id,
+               (b) => b.tier === "database" && b.virtualHandle === id,
             ),
          queryTimezone: (sourceID, source) =>
             queryTimezoneOf(

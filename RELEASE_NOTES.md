@@ -21,6 +21,24 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — one vocabulary: `database` replaces `colocated` on the wire
+
+**Contract change: every tier value that said `colocated` now says `database`.** A table built in the source's own connection was called `colocated` on some surfaces and `database` on others (`servedFrom`, `path.servedBy.tier`). It is `database` everywhere now. `colocated` is retained, no longer produced, where it was an API enum value, and Publisher keeps accepting it wherever it reads a stored or legacy record. Clients should accept both values for one release. Credible's control plane already does.
+
+| Surface | Before | Now |
+| --- | --- | --- |
+| `ServeVerdict.tier` (package read, `serveVerdicts`) | `colocated` \| `storage` | `database` \| `storage` |
+| `RefusedSource.tier` (`buildPlan.refusedSources`) | `storage` \| `colocated` \| `preaggregate` | `storage` \| `database` \| `preaggregate` (`colocated` retained, no longer produced) |
+| Metric label `publisher_materialization_build_total{tier}` | `colocated` \| `storage` | `database` \| `storage` |
+| Metric label `publisher_materialization_build_duration_ms{tier}` | `colocated` \| `storage` | `database` \| `storage` |
+| Metric label `publisher_materialization_build_read_bytes{tier}` | `colocated` \| `storage` | `database` \| `storage` |
+| Metric label `publisher_materialization_stale_upstream_entry_total{build}` | `colocated` \| `storage` | `database` \| `storage` |
+| Log field `build` on the line logged when a build recomputes an upstream from raw | `colocated` | `database` |
+
+**Dashboards:** a metric label value cannot be aliased. A panel or alert that filters on `tier="colocated"` or `build="colocated"` sees no new series after the upgrade. Change it to `database`, or to `tier=~"colocated|database"` to span the upgrade.
+
+`RefusedSource.tier` still says `preaggregate` for a rollup for one more release, so a control plane that checks `tier == preaggregate` keeps working.
+
 ## [Unreleased] — database-table drift reported like `storage=`; DOUBLE incremental tables re-seed; unreadable rollup grains refused at plan
 
 **A database table altered outside a build now raises the package warning.** The bind's read of a database table's columns (see the section below on a database table altered outside a build) found drift, but said so only in a log line. It now raises the same `storage-column-type-mismatch` package warning a `storage=` table does, one per table and column, and counts each in `publisher_storage_column_type_mismatch_total{stage="serve"}`, once per bind. No new code or label: the warning gains database-table subjects (a source, or a rollup's base), and its message says the table was altered outside a build and whether the column is read through a cast, answered live, or, for a rollup, persisted view or persisted query, the whole table answered live. A gone column is reported too; one whose new type still reads as its declared type is not. Rebuilding the table clears it.

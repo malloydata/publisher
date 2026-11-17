@@ -327,7 +327,7 @@ function classifyStoredUpstreams(
            substituted: buildManifest.entries,
            full: manifest.buildManifest.entries,
            builtEntries,
-           tier: isStorageBuild ? "storage" : "colocated",
+           tier: isStorageBuild ? "storage" : "database",
            sqlInlinesStored,
            compilerMissing,
            // The content address: orchestrators may assign their own ids.
@@ -354,7 +354,7 @@ function classifyStoredUpstreams(
          }
          noteWrongTierRecompute({
             planFacts,
-            build: "colocated",
+            build: "database",
             sourceName: persistSource.name,
             upstream: name,
             detail,

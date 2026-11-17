@@ -396,7 +396,7 @@ describe("the build loop's instruments", () => {
 
    it("publisher_materialization_stale_upstream_entry_total: once per run per upstream, by the recomputing build's tier", async () => {
       const planFacts = {};
-      const note = (upstream: string, build: "colocated" | "storage") =>
+      const note = (upstream: string, build: "database" | "storage") =>
          noteWrongTierRecompute({
             planFacts,
             build,
@@ -406,7 +406,7 @@ describe("the build loop's instruments", () => {
          });
       note("up_a", "storage");
       note("up_a", "storage");
-      note("up_b", "colocated");
+      note("up_b", "database");
       // Another run (its own plan facts) counts the same upstream again.
       noteWrongTierRecompute({
          planFacts: {},
@@ -424,7 +424,7 @@ describe("the build loop's instruments", () => {
       expect(
          await harness.collectCounter(
             "publisher_materialization_stale_upstream_entry_total",
-            { build: "colocated" },
+            { build: "database" },
          ),
       ).toBe(1);
    });

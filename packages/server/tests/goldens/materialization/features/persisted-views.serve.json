@@ -8,7 +8,7 @@
       },
       {
         "name": "orders__by_status__view",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "orders__two_stage__view",

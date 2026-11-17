@@ -108,7 +108,7 @@ describe("PersistedQueryServe (colocated)", () => {
          f.queries.reportedTable("run: q_region", pinnedOf([], built)),
       ).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: false,
          kind: "query",
@@ -122,7 +122,7 @@ describe("PersistedQueryServe (colocated)", () => {
       const answer = await attempt("run: q_region", built);
       expect(answer.table).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: false,
       });
@@ -233,7 +233,7 @@ describe("PersistedQueryServe (storage=)", () => {
       const pinned = pinnedOf([
          mine,
          storedViewBinding("other@file:///x.malloy"),
-         { ...mine, tier: "colocated" },
+         { ...mine, tier: "database" },
       ]);
       expect(f.queries.queryBindings(pinned, "bound")).toEqual([mine]);
       expect(f.queries.queryBindings(pinned, "fresh")).toEqual([mine]);

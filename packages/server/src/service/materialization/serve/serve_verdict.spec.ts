@@ -77,7 +77,7 @@ describe("computeServeVerdicts", () => {
                "refused_mat@file:///pkg/m.malloy": {
                   name: "refused_mat",
                   sourceID: "refused_mat@file:///pkg/m.malloy",
-                  tier: "colocated",
+                  tier: "database",
                   reason: "access_filter",
                   message: "gated",
                },
@@ -98,7 +98,7 @@ describe("computeServeVerdicts", () => {
       const [unbound] = computeServeVerdicts(facts([plan("orders")]));
       expect(unbound).toMatchObject({
          sourceName: "orders",
-         tier: "colocated",
+         tier: "database",
          origin: "persist",
          verdict: "not_built",
       });
@@ -169,7 +169,7 @@ describe("computeServeVerdicts", () => {
       // G3 with gated sources off: the policy keeps a colocated table's gate.
       const gated = {
          gated: () => true,
-         keepsGate: (_id: string, tier: string) => tier === "colocated",
+         keepsGate: (_id: string, tier: string) => tier === "database",
       };
       const [stored] = computeServeVerdicts(
          facts([plan("orders", STORAGE)], gated),
@@ -188,7 +188,7 @@ describe("computeServeVerdicts", () => {
          boundStorageNames: new Set(["orders", "other"]),
          servedStorageNames: new Set(["orders", "other"]),
          keepsGate: (id: string, tier: string) =>
-            tier === "colocated" || id.startsWith("orders@"),
+            tier === "database" || id.startsWith("orders@"),
       };
       const verdicts = computeServeVerdicts(
          facts([plan("orders", STORAGE), plan("other", STORAGE)], bound),
@@ -495,7 +495,7 @@ describe("computeServeVerdicts", () => {
             }),
          );
          expect(v).toMatchObject({
-            tier: "colocated",
+            tier: "database",
             verdict: "live",
             reason: "connection_cannot_hold_table",
          });

@@ -9,7 +9,7 @@
           "name": "daily_orders",
           "reason": "incremental_unsupported",
           "sourceID": "daily_orders@<pkg>/persist_incremental_test.malloy",
-          "tier": "colocated"
+          "tier": "database"
         },
         "route": "@",
         "subject": "daily_orders",
@@ -42,7 +42,7 @@
         "name": "daily_orders",
         "reason": "incremental_unsupported",
         "sourceID": "daily_orders@<pkg>/persist_incremental_test.malloy",
-        "tier": "colocated"
+        "tier": "database"
       }
     },
     "sources": {}

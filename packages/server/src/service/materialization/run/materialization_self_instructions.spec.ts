@@ -363,7 +363,7 @@ describe("deriveSelfInstructions", () => {
          expect(Object.keys(refused)).toEqual(["refused"]);
          expect(refused.refused).toMatchObject({
             name: "refused",
-            tier: "colocated",
+            tier: "database",
          });
          expect(refused.refused.message).toMatch(/authorize/i);
       });
