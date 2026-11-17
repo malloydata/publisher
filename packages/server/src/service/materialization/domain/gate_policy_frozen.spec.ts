@@ -220,6 +220,32 @@ describe("the gate policy, frozen until the security review (plan question 14)",
       if (DUMP) dumpAndFail(`${DUMP}.legs.json`, legRows());
       expectFrozen(legRows(), FROZEN_LEG_ROWS);
    });
+
+   // F-14 (P4-03): a rollup with no `storage=` that a host instructed into a
+   // destination is read from its storage binding (storageLookupOf), and the
+   // rollup leg reports that binding as the table it read, so the answer is
+   // judged as a `storage=` rollup's: under G3 alone it keeps no gate, and
+   // the gated query is answered live. Not a row of its own: the
+   // binding's tier puts it in the `read=storage` rows above.
+   it("F-14: refuses, under G3, a rollup with no storage= read from a host's storage binding", () => {
+      const hostChosen = { tier: "storage" as const };
+      const g3Only: GateSwitches = {
+         materialize: true,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      expect(
+         answerKeepsGates("rollup", [hostChosen], g3Only, {
+            colocatedReadsKeepGates: true,
+         }),
+      ).toBe(false);
+      // The same rollup read colocated keeps its gates under G3.
+      expect(
+         answerKeepsGates("rollup", [{ tier: "colocated" }], g3Only, {
+            colocatedReadsKeepGates: true,
+         }),
+      ).toBe(true);
+   });
 });
 
 // Rows added outside the review, by maintainer decision, for consistency

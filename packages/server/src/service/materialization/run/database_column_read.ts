@@ -15,12 +15,21 @@
  * than one schema, whose name does not parse, or whose connection is
  * unknown, is `unread`: the bind leaves it out and its sources answer live
  * (fail safe). Never throws.
+ *
+ * A table in a DuckLake catalog (a `ducklake` connection's, or one a DuckDB
+ * connection attached) whose catalog names a 128-bit integer column is read
+ * as holding a DOUBLE, which its Parquet files do
+ * (`ducklakeStoresAsDouble`), so the bind never reads it as exact.
  */
 
 import { getDialect, type Connection } from "@malloydata/malloy";
 import { errMessage } from "../../../utils";
 import { tablePathParts } from "../../quoting";
-import { storedColumnsOfOutput } from "../stored_column_types";
+import { connectionTypeOf } from "../../connection_type";
+import {
+   ducklakeStoresAsDouble,
+   storedColumnsOfOutput,
+} from "../stored_column_types";
 import type { FreshnessManifest, ObservedColumns } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
 import { redactConnectionSecrets } from "./materialization_run_support";
@@ -96,11 +105,15 @@ export async function observedDatabaseColumns(args: {
             });
          }
       }
+      // DuckLake writes a 128-bit integer to Parquet as a DOUBLE: decided
+      // per table, from the catalog it is in.
+      const ducklake = await ducklakeTablesOf(connection, batches);
       for (const batch of batches) {
          tasks.push(() =>
             readBatch(
                connection,
                dialect,
+               ducklake,
                batch,
                args.timeoutMs ?? BIND_READ_TIMEOUT_MS,
                out,
@@ -112,10 +125,56 @@ export async function observedDatabaseColumns(args: {
    return out;
 }
 
+/**
+ * The keys of `tables` that live in a DuckLake catalog. Every table of a
+ * `ducklake` connection does; on a DuckDB connection, a table does when its
+ * catalog (its path's first part, else the session's current database) is
+ * one DuckDB attached as DuckLake, as a `setupSQL` that attaches and USEs a
+ * lake makes it. Read from `duckdb_databases()` once per connection; a read
+ * that fails counts every table of a DuckDB connection as DuckLake (fail
+ * safe: a 128-bit column then answers live).
+ */
+async function ducklakeTablesOf(
+   connection: ReadConnection,
+   batches: readonly CatalogBatch[],
+): Promise<Set<string>> {
+   const all = new Set(batches.flatMap((b) => b.keys));
+   if (connectionTypeOf(connection) === "ducklake") return all;
+   const probe = batches.find((b) => b.attachedCatalogs)?.attachedCatalogs;
+   if (!probe) return new Set();
+   let rows: Record<string, unknown>[];
+   try {
+      rows = (
+         await connection.runSQL(probe.sql, {
+            rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
+         })
+      ).rows as Record<string, unknown>[];
+   } catch {
+      return all;
+   }
+   const lakes = new Set(
+      rows
+         .filter((r) => String(r.type).toLowerCase() === "ducklake")
+         .map((r) => String(r.database_name).toLowerCase()),
+   );
+   if (lakes.size === 0) return new Set();
+   const current = String(rows[0]?.current ?? "").toLowerCase();
+   return new Set(
+      batches.flatMap((b) =>
+         b.attachedCatalogs &&
+         lakes.has((b.attachedCatalogs.catalog ?? current).toLowerCase())
+            ? b.keys
+            : [],
+      ),
+   );
+}
+
 /** Run one batch and record each of its keys' answer. */
 async function readBatch(
    connection: ReadConnection,
    dialect: string,
+   /** The keys of tables in a DuckLake catalog: a 128-bit integer holds a DOUBLE. */
+   ducklake: ReadonlySet<string>,
    batch: CatalogBatch,
    timeoutMs: number,
    out: Map<string, ObservedColumns>,
@@ -155,6 +214,17 @@ async function readBatch(
                : {
                     dialect,
                     columns: named.map((c) => {
+                       if (
+                          ducklake.has(key) &&
+                          ducklakeStoresAsDouble(c.type)
+                       ) {
+                          return {
+                             name: c.name,
+                             type: "DOUBLE",
+                             nativeType: "DOUBLE",
+                             storedAsDouble: true as const,
+                          };
+                       }
                        // Spelled as the build's capture spells it; a type
                        // Malloy reads as no basic type has no spelling.
                        const [spelled] = storedColumnsOfOutput(
