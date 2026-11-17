@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { unrecordedAudit } from "../../access_record";
-import { BuildRunFailedError } from "./build_failure_class";
+import {
+   BuildRunFailedError,
+   withFailedRunManifest,
+} from "./build_failure_class";
+import { newestServingEntries } from "../../versions/materialization_scope";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
@@ -870,6 +874,56 @@ describe('scope "package": the versions share the package\'s tables', () => {
       ).toBe(true);
       // Unrecognized: omitted, so the consumer keeps its own judgment.
       expect(await failWith(new Error("something odd"))).toBeUndefined();
+   });
+
+   it("F-17: a run that builds nothing records each source's failure on its FAILED manifest, which is never bound", async () => {
+      await publish("1.0.0", 1, "package");
+      await build({});
+      await tamper("summary", 101);
+      expect(await answerOf("1.0.0")).toBe(101);
+      const failing = rejectingBuilds(
+         withFailedRunManifest(
+            new BuildRunFailedError(
+               "summary: Binder Error: no column x",
+               false,
+            ),
+            {
+               failures: {
+                  bsummary: {
+                     sourceEntityId: "bsummary",
+                     sourceName: "summary",
+                     reason: "Binder Error: no column x",
+                     retryable: false,
+                  },
+               },
+            },
+         ),
+      );
+      const failed = await build({ forceRefresh: true });
+      failing.mockRestore();
+      expect(failed.status).toBe("FAILED");
+      expect(failed.error).toBe("summary: Binder Error: no column x");
+      expect(failed.metadata?.errorRetryable).toBe(false);
+      expect(failed.manifest?.entries).toEqual({});
+      expect(failed.manifest?.builtAt).toBeUndefined();
+      expect(failed.manifest?.failures).toEqual({
+         bsummary: {
+            sourceEntityId: "bsummary",
+            sourceName: "summary",
+            reason: "Binder Error: no column x",
+            retryable: false,
+         },
+      });
+      // Still answered by the run before it, from the store too.
+      expect(await answerOf("1.0.0")).toBe(101);
+      expect(
+         Object.keys(
+            newestServingEntries(
+               (await repo.listMaterializations(ENV_ID, PKG)) ?? [],
+               {},
+            ),
+         ).length,
+      ).toBeGreaterThan(0);
    });
 
    it("a run that fails after it starts rebuilding leaves the shared tables unbound for every other definition", async () => {

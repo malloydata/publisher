@@ -60,6 +60,11 @@ import {
    RefusedSource,
 } from "../domain/types";
 import {
+   type BuildRunFailedError,
+   failedRunManifestOf,
+   withFailedRunManifest,
+} from "./build_failure_class";
+import {
    incrementalRunContext,
    type IncrementalRunContext,
 } from "./incremental_build";
@@ -1079,6 +1084,18 @@ export class MaterializationService {
          markRunFailureReported(err);
          if (state.packagePath !== undefined && err instanceof Error) {
             err.message = packageRelativeText(err.message, state.packagePath);
+            // Each source's reason on the failed run's manifest, as a
+            // committed run names them.
+            const failed = failedRunManifestOf(err);
+            if (failed) {
+               // failedRunManifestOf found it on an error that carries one.
+               withFailedRunManifest(err as BuildRunFailedError, {
+                  failures: packageRelativeRun(
+                     { entries: {}, failures: failed.failures, refused: {} },
+                     state.packagePath,
+                  ).failures,
+               });
+            }
          }
          if (state.markedShared && opts.version !== null) {
             // The run may have rebuilt some shared tables before it failed.

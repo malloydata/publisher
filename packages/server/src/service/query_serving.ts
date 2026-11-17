@@ -28,7 +28,7 @@ import {
    SERVING_GATE_CONTEXT,
 } from "./materialization/domain/gate_policy";
 import { logger } from "../logger";
-import { sourceChain } from "./materialization/text/source_map";
+import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
    type Binding,
    isColocated,
@@ -36,7 +36,10 @@ import {
    type Snapshot,
 } from "./materialization/domain/binding";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
-import { isDeclineOf } from "./materialization/domain/leg_decline";
+import {
+   explanationOfDecline,
+   isDeclineOf,
+} from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -143,12 +146,7 @@ export function variantsOf(
          },
          explain: (err): VariantSkipExplanation | undefined =>
             isDeclineOf(err, DECLINING_LEG[leg.kind])
-               ? {
-                    code: err.code,
-                    ...(err.callerDetail
-                       ? { callerDetail: err.callerDetail }
-                       : {}),
-                 }
+               ? explanationOfDecline(err)
                : undefined,
          onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };
@@ -344,7 +342,7 @@ export async function queryPathFor(
       return buildQueryPath({
          shape,
          modelPath: host.modelPath,
-         chain: sourceChain(struct, modelDef),
+         chain: chainOfQuerySource(struct, modelDef, host.modelDef()),
          catalog,
          freshColocated: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
@@ -413,4 +411,24 @@ export async function queryPathFor(
       });
       return undefined;
    }
+}
+
+/**
+ * The queried source's chain ({@link sourceChain}), walked on the model's own
+ * definition when it declares the source: the query's compile may not carry
+ * the model's imports, and an extension of a table-backed source declared in
+ * another file finds its base only through them (P2-41). Otherwise on the
+ * query's.
+ */
+function chainOfQuerySource(
+   struct: unknown,
+   queryModelDef: unknown,
+   modelDef: unknown,
+): string[] {
+   const id = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+   const own =
+      typeof id === "string" && modelDef !== queryModelDef
+         ? SourceMap.of(modelDef).node(id)?.def
+         : undefined;
+   return own ? sourceChain(own, modelDef) : sourceChain(struct, queryModelDef);
 }

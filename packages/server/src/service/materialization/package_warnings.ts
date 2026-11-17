@@ -184,12 +184,21 @@ const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
       "rather than removed, this may be a table the package still serves " +
       "under the new name: check that before dropping anything. Configure " +
       "the destination again for the next run to decide it.",
+   may_be_served:
+      "A table's name does not say where it is: two places can reach one " +
+      "table (two names for one DuckLake, a connection that reaches the " +
+      "destination, or on DuckDB a catalog and a schema of one database). " +
+      "So this may be the very table the package serves now, and Publisher " +
+      "never drops it. Check whether it is before doing anything with it. " +
+      "To clear this warning, delete the runs that built it here (a delete " +
+      "is record-only); the next auto-run stops listing it.",
 };
 
 /**
  * One warning per table the newest auto-run lists as kept after a rename
- * (Reclaimer.reclaimRenamedTables): the source no longer reads it, and
- * Publisher does not drop it. `subject` the source (a rollup's base), the
+ * (Reclaimer.reclaimRenamedTables), which Publisher does not drop: the
+ * source no longer reads it, or (`may_be_served`) it may be the very table
+ * the source reads now. `subject` the source (a rollup's base), the
  * message naming the table and where it is. Cleared once the run that lists
  * it no longer does: the table was dropped, or its name taken again.
  */
@@ -218,9 +227,13 @@ export function keptTableWarnings(
          code: TABLE_KEPT_AFTER_RENAME_CODE,
          severity: "warn" as const,
          message:
-            `table \`${table.physicalTableName}\` ${where} is no longer read: ` +
-            `the source's table was renamed or moved, and its new table ` +
-            `serves now. ${KEPT_REASON_TEXT[table.reason]}`,
+            (table.reason === "may_be_served"
+               ? `table \`${table.physicalTableName}\` ${where} was kept: ` +
+                 `the package now serves a table of the same name from ` +
+                 `another place or container. `
+               : `table \`${table.physicalTableName}\` ${where} is no longer ` +
+                 `read: the source's table was renamed or moved, and its new ` +
+                 `table serves now. `) + KEPT_REASON_TEXT[table.reason],
       };
    });
 }

@@ -184,6 +184,8 @@ export class PackageMaterialization {
    private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
    /** What the last snapshot found of the observation: drift, and tables not read. */
    /** The pending re-read of the tables the last read left unread. */
+   /** Set by {@link dispose}: the package is released. */
+   private disposed = false;
    private unreadRetry:
       | { timer: ReturnType<typeof setTimeout>; attempt: number }
       | undefined;
@@ -542,6 +544,15 @@ export class PackageMaterialization {
       );
    }
 
+   /**
+    * The package is released: cancel the unread tables' retry, and schedule
+    * none after it, so no timer outlives its package.
+    */
+   dispose(): void {
+      this.disposed = true;
+      this.cancelUnreadRetry();
+   }
+
    private cancelUnreadRetry(): void {
       if (this.unreadRetry) clearTimeout(this.unreadRetry.timer);
       this.unreadRetry = undefined;
@@ -555,6 +566,7 @@ export class PackageMaterialization {
     */
    private scheduleUnreadRetry(attempt: number): void {
       this.cancelUnreadRetry();
+      if (this.disposed) return;
       const observed = this.observedColumns;
       const entries = this.colocatedEntries;
       if (!observed || !entries || attempt > UNREAD_RETRY_ATTEMPTS) return;
@@ -586,7 +598,9 @@ export class PackageMaterialization {
       attempt: number,
    ): Promise<void> {
       const current = () =>
-         this.colocatedEntries === entries && this.observedColumns === observed;
+         !this.disposed &&
+         this.colocatedEntries === entries &&
+         this.observedColumns === observed;
       if (!current()) return;
       const reread = await this.readDatabaseColumns(
          Object.fromEntries(unread.map((id) => [id, entries[id]])),
@@ -641,13 +655,26 @@ export class PackageMaterialization {
       }
       for (const drift of this.observedOutcome.drifted) {
          if (!read(drift.sourceEntityId)) continue;
+         const asDouble = drift.columns.filter((c) => c.storedAsDouble);
+         if (asDouble.length > 0) {
+            logger.warn(
+               "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
+               {
+                  code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+                  packageName: this.owner.packageName(),
+                  sourceEntityId: drift.sourceEntityId,
+                  columns: asDouble,
+               },
+            );
+            if (asDouble.length === drift.columns.length) continue;
+         }
          logger.warn(
             "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
             {
                code: STORED_COLUMN_TYPE_MISMATCH_CODE,
                packageName: this.owner.packageName(),
                sourceEntityId: drift.sourceEntityId,
-               columns: drift.columns,
+               columns: drift.columns.filter((c) => !c.storedAsDouble),
             },
          );
       }

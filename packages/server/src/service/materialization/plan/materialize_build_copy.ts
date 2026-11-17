@@ -21,10 +21,12 @@ import {
    declarationSpans,
    accessLiftEdits,
    dropDimensions,
+   dropExceptItems,
+   importRewrites,
    inverseRenameBlocks,
    type TextEdit,
 } from "../text/declaration_text";
-import { lexAll, offsetOf } from "../text/malloy_lexer";
+import { offsetOf } from "../text/malloy_lexer";
 import {
    NOT_FOUND,
    declarationOf,
@@ -417,51 +419,6 @@ const PARENT_IMPORT_NOT_REWRITTEN =
    "the extension's file does not import the parent's file in a way its " +
    "build copy can point at the parent's re-rooted copy";
 
-/**
- * The edits that point each top-level `import` of `text` at another path:
- * the path string of every `import` statement whose path `importOf` answers
- * for. Undefined when the text does not lex, or an import's path is written
- * with an escape, which is never guessed at.
- */
-function importRewrites(
-   text: string,
-   importOf: (written: string) => string | undefined,
-): TextEdit[] | undefined {
-   const tokens = lexAll(text);
-   if (!tokens) return undefined;
-   const edits: TextEdit[] = [];
-   for (let k = 0; k < tokens.length; k++) {
-      const t = tokens[k];
-      if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
-      // The path is the statement's first string at the top level: right
-      // after `import`, or after `{ … } from`.
-      let j = k + 1;
-      while (
-         j < tokens.length &&
-         !(tokens[j].depth === 0 && /^["']/.test(tokens[j].text))
-      ) {
-         if (tokens[j].depth === 0 && tokens[j].kind === "word") {
-            if (tokens[j].text !== "from") break;
-         }
-         j++;
-      }
-      const literal = tokens[j];
-      if (!literal || literal.depth !== 0 || !/^["']/.test(literal.text)) {
-         continue;
-      }
-      const body = literal.text.slice(1, -1);
-      if (body.includes("\\")) return undefined;
-      const to = importOf(body);
-      if (to === undefined) continue;
-      edits.push({
-         start: literal.start,
-         end: literal.end,
-         insert: stringLiteral(to),
-      });
-   }
-   return edits;
-}
-
 const PARENT_NOT_REROOTED =
    "the parent's declaration could not be re-rooted on its build source";
 
@@ -526,12 +483,24 @@ function rerootOnBuildSource(
       new Set(stored.filter((c) => c.computed).map((c) => c.dimension)),
    );
    if (!kept) return undefined;
-   const renames = inverseRenameBlocks(
+   // An `except:` naming a column the table does not store has nothing to
+   // exclude from the build source, as on the served copy's re-root.
+   const storedNames = new Set(
+      stored.flatMap((c) =>
+         [c.column, c.dimension].map((n) => n.toLowerCase()),
+      ),
+   );
+   const excepted = dropExceptItems(
       kept.text,
+      (n) => !storedNames.has(n.toLowerCase()),
+   );
+   if (excepted === undefined) return undefined;
+   const renames = inverseRenameBlocks(
+      excepted.text,
       new Set(stored.map((c) => c.column)),
    );
    if (renames === undefined) return undefined;
-   let text = kept.text;
+   let text = excepted.text;
    if (options.joinRecords) {
       const records = parentJoinRecords(parent);
       for (const j of records) {

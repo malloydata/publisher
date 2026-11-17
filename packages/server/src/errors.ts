@@ -9,6 +9,7 @@ import {
    causeChain,
    isConnectionFailure,
    isCredentialRejection,
+   isObjectStoreRefusal,
 } from "./driver_errors";
 import { redactPgSecrets } from "./pg_helpers";
 import { RetrievalSettingsError } from "./settings/errors";
@@ -108,6 +109,9 @@ export type ErrorReason =
    | "CONNECTION_AUTH_FAILED"
    // 424: the model names a connection the environment does not have.
    | "CONNECTION_NOT_FOUND"
+   // 403: the object store behind a table refused the database's read of its
+   // files; the query and the model are fine.
+   | "STORAGE_ACCESS_DENIED"
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
@@ -832,6 +836,53 @@ export class ConnectionAuthError extends Error {
    }
 }
 
+/**
+ * The object store behind a table (a DuckLake data path, a bucket a file is
+ * read from) refused the database's read of its files: 403, `reason:
+ * STORAGE_ACCESS_DENIED`. The query ran and the model is fine; the storage
+ * credentials the database reads with are not. The driver's text quotes the
+ * object's URL (bucket, organization and database paths), so it is this
+ * error's message, which is logged, and the answer names only `subject`, the
+ * source or connection the caller asked for.
+ */
+export class StorageAccessDeniedError extends Error {
+   get kind(): "storage_access_denied" {
+      return "storage_access_denied";
+   }
+
+   constructor(
+      message: string,
+      /** What the caller read, in its own terms: a source or a connection. */
+      readonly subject?: string,
+   ) {
+      super(message);
+   }
+
+   /** The answer's message: no URL, no driver text. */
+   get callerMessage(): string {
+      const what = this.subject
+         ? ` "${this.subject}" reads`
+         : " the query reads";
+      return `The storage holding the data${what} refused the database's read (HTTP 403). The query and the model are fine; the database's storage credentials are not.`;
+   }
+}
+
+/**
+ * `error` as a {@link StorageAccessDeniedError} when it is an object store
+ * refusing a read ({@link isObjectStoreRefusal}), naming `subject`; undefined
+ * otherwise. One classifier for the query route and the raw `sqlQuery`
+ * route.
+ */
+export function storageAccessFailure(
+   error: unknown,
+   subject?: string,
+): StorageAccessDeniedError | undefined {
+   if (error instanceof StorageAccessDeniedError) return error;
+   if (!isObjectStoreRefusal(error)) return undefined;
+   const message = error instanceof Error ? error.message : String(error);
+   return new StorageAccessDeniedError(message, subject);
+}
+
 // A reachable catalog whose on-disk format the pinned DuckLake extension cannot
 // attach (see ducklake_version.ts). 422, so it does not read as a credentials
 // problem.
@@ -903,6 +954,13 @@ export class MaterializationEligibilityError extends Error {
    }
 
    readonly reason?: EligibilityRefusalReason;
+
+   /**
+    * When a run refused every source it was asked to build: each source's
+    * own refusal, by sourceEntityId, which the FAILED run records on its
+    * manifest (`failedRunManifestOf`, materialization/run).
+    */
+   runFailures?: Record<string, object>;
 
    constructor(error: { message: string; reason?: EligibilityRefusalReason }) {
       super(error.message);
@@ -1415,6 +1473,7 @@ interface ErrorByKind {
    storage_destination_not_found: StorageDestinationNotFoundError;
    storage_catalog_not_found: StorageCatalogNotFoundError;
    connection_auth: ConnectionAuthError;
+   storage_access_denied: StorageAccessDeniedError;
    unsupported_catalog_format: UnsupportedCatalogFormatError;
    model_compilation: ModelCompilationError;
    version_files_missing: VersionFilesMissingError;
@@ -1498,6 +1557,7 @@ const ERROR_CLASSES: {
    storage_destination_not_found: StorageDestinationNotFoundError,
    storage_catalog_not_found: StorageCatalogNotFoundError,
    connection_auth: ConnectionAuthError,
+   storage_access_denied: StorageAccessDeniedError,
    unsupported_catalog_format: UnsupportedCatalogFormatError,
    model_compilation: ModelCompilationError,
    version_files_missing: VersionFilesMissingError,
@@ -1822,6 +1882,23 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
             "Report that the connection's user, password, key or token needs updating.",
          ],
          log: "Connection credentials rejected",
+      },
+   },
+   storage_access_denied: {
+      // The driver's text quotes the object's URL: logged in full, never
+      // sent. warn: the storage credentials are the operator's to fix.
+      status: 403,
+      message: (error) => error.callerMessage,
+      reason: "STORAGE_ACCESS_DENIED",
+      log: { summary: "Storage access denied", level: "warn" },
+      mcp: {
+         advice: "fixed",
+         message: (error) => error.callerMessage,
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the storage credentials are fixed.",
+            "Report that the database's credentials for the storage holding this table's data were refused.",
+         ],
+         log: "Storage access denied",
       },
    },
    connection_failed: {

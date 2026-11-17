@@ -61,6 +61,7 @@ source: colocated_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84
     id is id__stored::"BIGINT"
     customer_id is customer_id__stored::"BIGINT"
     order is order__stored::"BIGINT"
+ primary_key: id } extend {
   measure:
     n is count()
     total is amount.sum()
@@ -163,6 +164,7 @@ source: stored is __served_copy_alias_of_lake.virtual('4c8462933bea4ad5a18f5d69a
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
+ primary_key: id } extend {
   measure:
     n is count()
     total is amount.sum()
@@ -179,6 +181,7 @@ source: east is __served_copy_alias_of_lake.virtual('00d0e92abe259082227975f4087
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
+ primary_key: id } extend {
   measure:
     n is count()
     total is amount.sum()
@@ -197,6 +200,7 @@ source: east_big is __served_copy_alias_of_lake.virtual('42ab988725be5a10da59d4d
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
+ primary_key: id } extend {
   measure:
     n is count()
     total is amount.sum()
@@ -217,6 +221,7 @@ source: by_given is __served_copy_alias_of_lake.virtual('89346a5441a6acebb9ed864
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
+ primary_key: id } extend {
   measure:
     n is count()
     total is amount.sum()
@@ -238,6 +243,7 @@ source: renamed is __served_copy_alias_of_lake.virtual('d5200d694f4551cc166e0f82
   dimension:
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
+ primary_key: id } extend {
   measure:
     n is count()
     total is amount.sum()
@@ -257,6 +263,7 @@ source: colocated_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84
     id is id__stored::"BIGINT"
     customer_id is customer_id__stored::"BIGINT"
     order is order__stored::"BIGINT"
+ primary_key: id } extend {
   measure:
     n is count()
     total is amount.sum()
