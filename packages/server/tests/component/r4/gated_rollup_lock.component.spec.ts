@@ -20,7 +20,6 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { AccessDeniedError } from "../../../src/errors";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -139,9 +138,24 @@ source: lock_and_filter is locked extend {
 #(access_filter) region = $REGION
 source: inh1_filtered is inh1 extend {}
 
+// A lock beside a given-reading where: of the base's own, own and inherited.
+// The router counts the where:'s column as a gate column, so on storage= no
+// answer is lock-only: the plan agrees and builds no such rollup there.
+given: CAT :: string
+#(authorize) 'admin' = $ROLE
+source: lw is duckdb.table('orders_raw') extend {
+  where: category = $CAT
+  #(preaggregate) grain=["category"]${p}
+  measure: lw_total is amount.sum()
+}
+source: inh_w is locked extend {
+  where: region = $REGION
+  #(preaggregate) grain=["category", "region"]${p}
+  measure: iw_total is amount.sum()
+}
+
 // The same over a field the rollup keeps: only the router's lock-only rule
 // tells it from a lock-only entry point.
-given: CAT :: string
 #(access_filter) category = $CAT
 source: inh1_by_cat is inh1 extend {}
 `;
@@ -214,7 +228,7 @@ function expectLive(run: R4Run): void {
    expect(rowDifference(run.live, run.served)).toBeUndefined();
 }
 
-/** Both runs refuse, with the same error. */
+/** Both runs refuse, with the same error (a denial, or a missing given). */
 async function expectDeniedAsLive(
    fixture: R4Fixture,
    malloy: string,
@@ -225,7 +239,9 @@ async function expectDeniedAsLive(
          await fixture.runAsIs(malloy, givens);
          return "answered";
       } catch (e) {
-         expect(e).toBeInstanceOf(AccessDeniedError);
+         // A refusal is AccessDeniedError; a missing given a where: reads
+         // is the compiler's error. Either way served must equal live.
+         if (!(e instanceof Error)) throw e;
          return `${(e as Error).constructor.name}: ${(e as Error).message}`;
       }
    };
@@ -342,6 +358,47 @@ for (const placement of ["colocated", "storage"] as const) {
             }
          });
 
+         it("builds a lock beside a given-reading where: only colocated, and answers every caller as live does", async () => {
+            const refused = fixture.rollupRefusals.map((r) => r.sourceName);
+            const colocated = placement === "colocated";
+            for (const [source, malloy, admitted, refusedCallers] of [
+               [
+                  "lw",
+                  "run: lw -> { group_by: category; aggregate: lw_total }",
+                  [
+                     { ROLE: "admin", CAT: "A" },
+                     { ROLE: "admin", CAT: "Z" },
+                  ],
+                  [{ ROLE: "viewer", CAT: "A" }, { CAT: "A" }, ADMIN],
+               ],
+               [
+                  "inh_w",
+                  "run: inh_w -> { group_by: category; aggregate: iw_total }",
+                  [
+                     { ROLE: "admin", REGION: "east" },
+                     { ROLE: "admin", REGION: "north" },
+                  ],
+                  [{ ROLE: "viewer", REGION: "east" }, ADMIN],
+               ],
+            ] as const) {
+               expect(refused.includes(source)).toBe(!colocated);
+               for (const givens of admitted) {
+                  const run = await fixture.run({
+                     name: `${source} ${JSON.stringify(givens)}`,
+                     malloy,
+                     givens,
+                     expectLive: !colocated,
+                  });
+                  expect(rowDifference(run.live, run.served)).toBeUndefined();
+                  if (colocated) expect(run.servedBy?.kind).toBe("rollup");
+                  else expectLive(run);
+               }
+               for (const givens of refusedCallers) {
+                  await expectDeniedAsLive(fixture, malloy, givens);
+               }
+            }
+         });
+
          it("answers a lock with a row filter as live does", async () => {
             for (const givens of [
                { ROLE: "admin", REGION: "east" },
@@ -422,6 +479,132 @@ for (const placement of ["colocated", "storage"] as const) {
                );
             }
          });
+      });
+   }
+}
+
+/**
+ * The join-to-rollup leg (A7) over a stored parent table: a parent joining a
+ * rollup's base, its own table stored, the rollup in the same tier. Ungated,
+ * the join leg engages: colocated it answers from the rollup; on `storage=`
+ * this harness cannot store the DuckDB parent in the destination, so it
+ * declines `CROSS_CONNECTION`. Behind a lock, own or
+ * inherited, the leg declines `CONTRACT` before the gate policy is asked (its
+ * variant redeclares the parent around the join and carries no gate), so
+ * `gatesReadNoColumn` never widens it: every caller is answered as live is.
+ */
+const KIDS_SEED = [
+   ...seedSql,
+   `CREATE TABLE kids_raw AS SELECT * FROM (VALUES
+      (1, 1, 2.0), (2, 1, 3.0), (3, 2, 4.0), (4, 3, 1.0), (5, 5, 6.0), (6, 6, 2.5)
+    ) AS t(kid_id, pid, v)`,
+];
+
+/** The rollup leg's step in a path report. */
+function rollupStep(
+   path: unknown,
+): { outcome?: string; reason?: string } | undefined {
+   return (
+      path as
+         | {
+              considered?: {
+                 kind: string;
+                 outcome?: string;
+                 reason?: string;
+              }[];
+           }
+         | undefined
+   )?.considered?.find((c) => c.kind === "rollup");
+}
+
+function joinModel(rollup: string, persist: string): string {
+   return `##! experimental { givens access_modifiers }
+given: ROLE :: string
+
+source: kids is duckdb.table('kids_raw') extend {
+  primary_key: kid_id
+  #(preaggregate) grain=["pid"]${rollup}
+  measure: kid_amt is v.sum()
+}
+
+#@ persist${persist}
+source: parent is duckdb.table('orders_raw') extend {
+  primary_key: id
+  join_many: kids on kids.pid = id
+}
+
+#(authorize) 'admin' = $ROLE
+source: parent_locked is parent extend {}
+
+source: parent_inherited is parent_locked extend {}
+`;
+}
+
+for (const placement of ["colocated", "storage"] as const) {
+   for (const gatedSources of [false, true]) {
+      describe(`R4: the join-to-rollup leg over a stored parent behind a lock, ${placement} (gated sources ${gatedSources ? "on" : "off"})`, () => {
+         let restore: () => void;
+         let fixture: R4Fixture;
+         beforeAll(async () => {
+            restore = installSettings({
+               env: {
+                  PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_MATERIALIZE: "true",
+                  PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+               },
+            }).restore;
+            const at =
+               placement === "storage" ? ` storage="${DESTINATION}"` : "";
+            fixture = await buildScenario({
+               files: { "m.malloy": joinModel(at, at) },
+               seedSql: KIDS_SEED,
+               preaggregate: true,
+            });
+         });
+         afterAll(async () => {
+            restore();
+            await disposeScenarios();
+         });
+
+         const query = (s: string) =>
+            `run: ${s} -> { group_by: category; aggregate: kids.kid_amt }`;
+
+         it("engages for the ungated parent, equal to live", async () => {
+            const run = await fixture.run({
+               name: "parent",
+               malloy: query("parent"),
+               expectLive: placement === "storage",
+            });
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            if (placement === "colocated") {
+               expect(run.servedBy?.kind).toBe("rollup");
+               return;
+            }
+            // A DuckDB parent is not stored in a destination here, so the
+            // leg is tried and declines across connections.
+            fixture.setBindings(fixture.bindings);
+            const served = await fixture.runAsIs(query("parent"));
+            expect(rollupStep(served.path)?.reason).toBe("CROSS_CONNECTION");
+         });
+
+         for (const source of ["parent_locked", "parent_inherited"]) {
+            it(`declines CONTRACT for ${source} and answers every caller as live does`, async () => {
+               fixture.setBindings(fixture.bindings);
+               const served = await fixture.runAsIs(query(source), ADMIN);
+               expect(rollupStep(served.path)?.reason).toBe("CONTRACT");
+               const run = await fixture.run({
+                  name: `${source} admin`,
+                  malloy: query(source),
+                  givens: ADMIN,
+                  expectLive: true,
+               });
+               expect(run.servedBy?.kind).not.toBe("rollup");
+               expect(rowDifference(run.live, run.served)).toBeUndefined();
+               for (const givens of [{ ROLE: "viewer" }, {}]) {
+                  await expectDeniedAsLive(fixture, query(source), givens);
+               }
+            });
+         }
       });
    }
 }
