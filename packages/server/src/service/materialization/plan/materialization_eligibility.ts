@@ -371,16 +371,18 @@ export function assertColocatedPersistNotAuthorizeGated(
    // is refused. No parameter equivalent exists: the compiler rejects a
    // parameter in a persisted source's own query.
    if (buildSubstitutesAGiven(persistSource)) {
-      // A rollup gets its own reason: the generic advice (move the given to the
-      // extend block) is where a rollup's given already is, since the rollup
-      // READING the source bakes it. And nothing else guards rollups: their
+      // A rollup gets its own message, under the one reason every mechanism
+      // gives a build that reads a given (`given_in_persisted_query`): the
+      // generic advice (move the given to the extend block) is where a
+      // rollup's given already is, since the rollup READING the source bakes
+      // it. And nothing else guards rollups: their
       // bindings bypass `serveBindingsWithRefinements`, so there is no filter
       // re-emission and no fail-closed shape compile. If the rollup build ever
       // stripped its base's read-time terms, it would aggregate across every
       // caller and serve that to all of them.
       if (origin === "preaggregate") {
          throw new MaterializationEligibilityError({
-            reason: "preaggregate_over_dynamic_source",
+            reason: "given_in_persisted_query",
             message:
                `Pre-aggregation rollup '${sourceName}' cannot be materialized: ` +
                `the source it rolls up is scoped by a given. Building the rollup ` +

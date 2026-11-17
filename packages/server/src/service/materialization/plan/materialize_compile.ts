@@ -1133,7 +1133,7 @@ function copyRefusal(
             "re-applied over the table at read",
          refusal:
             unstored.kind === "given"
-               ? "given_in_persisted_query"
+               ? "given_where_over_unstored_field"
                : "current_time",
       };
    }

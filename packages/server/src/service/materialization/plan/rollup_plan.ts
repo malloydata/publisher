@@ -56,8 +56,10 @@
  *   over grain dimensions only, is left out of the build (its build copy
  *   replaces it by `true`) and written again on the variant, where each
  *   caller's givens bind it; any other is refused with the reason the one
- *   classifier gives it on `#(materialize)` (`inherited_where_with_given`,
- *   `given_in_persisted_query`).
+ *   classifier gives it on `#(materialize)`: `inherited_where_with_given`
+ *   for an inherited one, `given_where_over_unstored_field` for one over a
+ *   field the grain drops, `given_in_persisted_query` for one the build
+ *   would read.
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
@@ -891,7 +893,10 @@ interface RollupFacts {
       | {
            refused: string;
            /** The shared classifier's reason (`readTimeTermsOf`), as on `#(materialize)`. */
-           reason: "inherited_where_with_given" | "given_in_persisted_query";
+           reason:
+              | "inherited_where_with_given"
+              | "given_in_persisted_query"
+              | "given_where_over_unstored_field";
         };
    /** Where the base is declared, for its build copy's edits. */
    declaration: TermUse | undefined;
@@ -944,9 +949,10 @@ function rollupFactsOf(
    const timeFields = currentTimeFields(def.fields);
    // A given-reading `where:` of the base's own, over its dimensions, is left
    // out of the build and written again on the variant, as the served copy
-   // re-applies one (P2); an inherited one (`inherited_where_with_given`), or
-   // one over anything else (`given_in_persisted_query`), is refused by the
-   // one classifier `#(materialize)` reads, with its reason.
+   // re-applies one (P2); an inherited one (`inherited_where_with_given`), one
+   // over a field that is not a dimension (`given_where_over_unstored_field`),
+   // or one the build would read (`given_in_persisted_query`), is refused by
+   // the one classifier `#(materialize)` reads, with its reason.
    const read = readTimeTermsOf(
       def as SourceDefLike,
       classifyWhereTerms(def).filter((t) => t.dependsOn.kind === "given"),
@@ -1162,9 +1168,9 @@ function declarationRefusal(
       .filter((c) => !decl.grain.includes(c));
    if (ungrained.length > 0) {
       // A given-reading `where:` over a field the table does not store, as
-      // the classifier names it on `#(materialize)`.
+      // the classifier names it on `#(materialize)`: the fix is the grain.
       return unservable(
-         "given_in_persisted_query",
+         "given_where_over_unstored_field",
          decl,
          // malloy-text: a warning message for a person, not Malloy
          `the source's \`where:\` reads a given and ${[...new Set(ungrained)].map((c) => `\`${c}\``).join(", ")}, which the grain does not keep, so it could not be re-applied to the rollup's rows per caller`,
