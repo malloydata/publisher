@@ -123,6 +123,14 @@ export interface MaterializationEnvironment {
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
 
    getVersionService(): MaterializationVersions | null;
+   /**
+    * Whether a host owns the package's binding: bound to a host manifest, or
+    * a version a host has bound (see Environment.isHostOwned). Such a
+    * package's tables are the host's to build and bind.
+    */
+   isHostOwned(pkg: MaterializationPackage): boolean;
+   /** A host's instructed run of the version committed (see isHostOwned). */
+   markVersionHostOwned(packageName: string, versionId: string): Promise<void>;
    peekVersion(
       packageName: string,
       versionId: string,
