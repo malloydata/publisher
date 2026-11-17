@@ -25,7 +25,8 @@ for an answer run (eval-answer's ledger-schema.md). A target may also say
 `"absent": true` (nothing in the model answers it; `closest` lists the near
 misses a response may offer), and a case may carry its own `scope`, sent in
 place of the set's, so one set can span packages and pinned sources. A case's
-`givens` and `filter_params` are sent as written.
+`givens` and `filter_params` are sent as written, and `scopes` (a list) stands in
+for `scope` on a call that searches several packages at once.
 
 PER TARGET. Each target is also scored on its own (`target_outcomes.py`):
 recall over required answers, precision over what that target returned, whether
@@ -105,6 +106,13 @@ def case_problems(case: dict[str, Any]) -> list[str]:
             isinstance(k, str) and isinstance(v, str) and v for k, v in scope.items())):
         out.append(f"{qid}: scope must be an object of get_context scope fields, such as "
                    '{"environment": "e", "package": "p", "source": "s"}')
+    scopes = case.get("scopes")
+    if scopes is not None and not (isinstance(scopes, list) and scopes and all(
+            isinstance(x, dict) and x and all(isinstance(k, str) and isinstance(v, str) and v for k, v in x.items())
+            for x in scopes)):
+        out.append(f"{qid}: scopes must be a non-empty list of get_context scope objects")
+    if scopes is not None and scope is not None:
+        out.append(f"{qid}: a case carries `scope` or `scopes`, not both")
     for key in ("givens", "filter_params"):
         if case.get(key) is not None and not isinstance(case[key], dict):
             out.append(f"{qid}: {key} must be an object of name to value, as get_context takes it")
@@ -182,7 +190,8 @@ def request_for(case: dict[str, Any], scope: dict[str, str]) -> dict[str, Any]:
         sent.append(target)
     # A case's own scope replaces the set's: a set built from real requests
     # spans packages, model files and pinned sources.
-    args: dict[str, Any] = {"search_targets": sent, "scopes": [case.get("scope") or scope]}
+    args: dict[str, Any] = {"search_targets": sent,
+                            "scopes": list(case.get("scopes") or [case.get("scope") or scope])}
     if isinstance(case.get("question"), str) and case["question"].strip():
         args["user_prompt"] = case["question"]
     # Values a host needs to read a source's rows: a model that scopes its data
@@ -201,7 +210,7 @@ def call_event(qid: str, args: dict[str, Any], payload: Any, error: str | None) 
     if error is None:
         ids = entity_ids(payload or {})
         ranked = {"entityIds": ids, "hits": entity_hits(payload or {}), "resultCount": len(ids),
-                  "docTokens": doc_tokens(payload or {})}
+                  "docTokens": doc_tokens(payload or {}), "cards": cards_of(payload or {})}
     mode = payload.get("retrieval") if isinstance(payload, dict) else None
     warnings = payload.get("warnings") if isinstance(payload, dict) else None
     extra: dict[str, Any] = {}
@@ -216,6 +225,17 @@ def call_event(qid: str, args: dict[str, Any], payload: Any, error: str | None) 
                         error=error, **extra)
 
 
+def cards_of(payload: Any) -> list[list[Any]]:
+    """Each source card of the response as [source, package, model path], in order. Kept because the entity
+    ids are deduplicated: the same source returned on two cards shows only here."""
+    out = []
+    for node in (payload.get("sources") if isinstance(payload, dict) else None) or []:
+        rid = ((node.get("source_info") or {}).get("resource_id") or {}) if isinstance(node, dict) else {}
+        if rid.get("source"):
+            out.append([rid["source"], rid.get("package"), rid.get("model_path")])
+    return out
+
+
 def response_checks(event: dict[str, Any], targets: list[dict[str, Any]]) -> dict[str, Any]:
     """Promises that hold for every response, whatever the labels say. Each
     check is `None` when this response gives it nothing to check, else a list of
@@ -226,8 +246,16 @@ def response_checks(event: dict[str, Any], targets: list[dict[str, Any]]) -> dic
                        host returns a `warnings` list at all.
     pinned_source_only when the scope pins one source, every returned entity is
                        on that source's card.
+    one_card_per_source  no source of one package is returned on two cards (a
+                       source several model files import is one source).
     """
-    out: dict[str, Any] = {"not_found_says_so": None, "pinned_source_only": None}
+    out: dict[str, Any] = {"not_found_says_so": None, "pinned_source_only": None, "one_card_per_source": None}
+    cards = (event.get("rankedSummary") or {}).get("cards")
+    if cards:
+        seen: dict[tuple, int] = {}
+        for source, package, _path in cards:
+            seen[(package, source)] = seen.get((package, source), 0) + 1
+        out["one_card_per_source"] = sorted(f"{s} on {n} cards" for (_p, s), n in seen.items() if n > 1)
     warnings = event.get("warnings")
     if isinstance(warnings, list):
         text = " \n ".join(warnings).lower()
@@ -266,7 +294,7 @@ def score(case: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
                      [event], (qid, None, PHASE), verdict=None)
     keep = ("recall", "precision", "n_required", "n_returned", "delivery", "missing", "noise")
     out = {**base, "error": None, **{k: row[k] for k in keep}}
-    out["scope"] = case.get("scope")
+    out["scope"] = case.get("scopes") or case.get("scope")
     out["recall_exact"] = None if row["recall"] is None else recall_exact(labels, row["delivery"])
     out["returned"] = event["rankedSummary"]["entityIds"]
     # Per target: what each search returned against that target's own key.
@@ -333,7 +361,7 @@ def summarize(rows: list[dict[str, Any]], skipped: int) -> dict[str, Any]:
     }
     out["per_target"] = per_target(rows)
     out["checks"] = {}
-    for name in ("not_found_says_so", "pinned_source_only"):
+    for name in ("not_found_says_so", "pinned_source_only", "one_card_per_source"):
         seen = [(r["qid"], r["checks"][name]) for r in ok if (r.get("checks") or {}).get(name) is not None]
         broke = [(q, v) for q, v in seen if v]
         out["checks"][name] = {"checked": len(seen), "failed": len(broke),
@@ -560,7 +588,7 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     scope = {k: v for k, v in (("environment", a.environment), ("package", a.package)) if v}
     if a.model_path:
         scope["model_path"] = a.model_path
-    unscoped = [c["qid"] for c in cases if not c.get("scope")]
+    unscoped = [c["qid"] for c in cases if not (c.get("scope") or c.get("scopes"))]
     if a.case_scopes and unscoped:
         raise SystemExit(f"--case-scopes: {len(unscoped)} case(s) carry no scope, first {unscoped[0]}.")
     started = ledger.now()

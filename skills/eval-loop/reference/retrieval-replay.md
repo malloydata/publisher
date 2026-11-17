@@ -56,6 +56,8 @@ serve both kinds of run.
   of the set's scope, so a set built from real requests can span packages,
   model files and pinned sources. `--case-scopes` says every case has one, and
   then no `--environment` or `--package` is needed.
+- A case that searches several packages at once carries `scopes`, a list of
+  scope objects, in place of `scope`.
 - A case may carry `givens` and `filter_params`, objects of name to value,
   sent as written. A model that scopes its rows by a given returns no stored
   values without it, so a value search on such a model needs the given on
@@ -126,13 +128,14 @@ targets and a case with one otherwise weigh the same:
 `latency_p50_s` and `latency_p95_s` are the request times as the replay saw
 them, one request at a time.
 
-`checks` counts two promises that hold for every response whatever the labels
+`checks` counts three promises that hold for every response whatever the labels
 say, each as responses checked and responses that broke it, with examples:
 
 | check | holds when |
 |---|---|
 | `not_found_says_so` | every target that returned nothing is named in one of the response's `warnings`, by its search text or as "target N". Counted only on a host that returns `warnings` |
 | `pinned_source_only` | with a scope that pins one source, every returned entity is on that source's card |
+| `one_card_per_source` | no source of one package comes back on two cards. A source that several model files import is one source |
 
 `by_tag` repeats the pooled numbers for each tag, with its own `per_target`. `events.jsonl` holds one
 `tool_call` event per case, in the shape an answer run writes, with every

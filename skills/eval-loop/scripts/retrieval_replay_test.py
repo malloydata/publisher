@@ -107,6 +107,15 @@ class Request(unittest.TestCase):
         case["scope"] = {"environment": "e2", "package": 7}
         self.assertIn("q1: scope must be an object of get_context scope fields", rr.case_problems(case)[0])
 
+    def test_a_case_may_search_several_scopes_at_once(self):
+        case = a_case()
+        case["scopes"] = [{"environment": "e", "package": "a"}, {"environment": "e", "package": "b"}]
+        self.assertEqual(rr.request_for(case, {"environment": "x", "package": "y"})["scopes"], case["scopes"])
+        self.assertEqual(rr.case_problems(case), [])
+        case["scope"] = {"environment": "e", "package": "a"}
+        self.assertIn("q1: a case carries `scope` or `scopes`, not both", rr.case_problems(case))
+        self.assertIn("q1: scopes must be a non-empty list", rr.case_problems({**a_case(), "scopes": []})[0])
+
     def test_a_cases_givens_and_filter_params_are_sent_as_written(self):
         case = a_case()
         case["givens"] = {"REPORT_ID": 7}
@@ -305,6 +314,16 @@ class Checks(unittest.TestCase):
         leak = self.row([], scope, ids=(SALES, PCAT))
         self.assertEqual(leak["checks"]["pinned_source_only"], sorted({PCAT, "source:products:products"}))
         self.assertIsNone(self.row([])["checks"]["pinned_source_only"])
+
+    def test_one_source_on_two_cards_is_reported(self):
+        case = a_case("q1", required=[SALES])
+        card = lambda path: {"source_info": {"resource_id": {"source": "order_items", "package": "p", "model_path": path}},
+                             "entities": [{"entity_id": SALES}]}
+        args = rr.request_for(case, {"environment": "e", "package": "p"})
+        twice = rr.score(case, rr.call_event("q1", args, {"sources": [card("a.malloy"), card("b.malloy")]}, None))
+        self.assertEqual(twice["checks"]["one_card_per_source"], ["order_items on 2 cards"])
+        once = rr.score(case, rr.call_event("q1", args, {"sources": [card("a.malloy")]}, None))
+        self.assertEqual(once["checks"]["one_card_per_source"], [])
 
     def test_the_summary_counts_checked_and_broken_responses(self):
         rows = [dict(self.row(["Something unrelated."]), latency_s=1.0),
