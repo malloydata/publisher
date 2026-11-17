@@ -92,9 +92,9 @@ function writeManifest(name: string, sourceEntityId: string): string {
 }
 
 /**
- * Run the persisted source. Live, it computes from the package's CSV and
- * answers 200; bound, it reads BOUND_TABLE, which does not exist, so the
- * answer names that table.
+ * Run the persisted source. It answers 200 either way: live, from the
+ * package's CSV; bound, BOUND_TABLE does not exist, so the bind could not read
+ * its columns and the source answers live.
  */
 async function runOrderSummary(): Promise<{ status: number; text: string }> {
    const res = await fetch(
@@ -113,9 +113,13 @@ async function runOrderSummary(): Promise<{ status: number; text: string }> {
 async function expectBoundTo(location: string): Promise<void> {
    const version = await call("GET", `/${PKG}/versions/1.0.0`);
    expect(version.json.manifestLocation).toBe(location);
-   const served = await runOrderSummary();
-   expect(served.status).not.toBe(200);
-   expect(served.text).toContain(BOUND_TABLE);
+   // The manifest is bound: the package reads it from `location`. Its table
+   // (BOUND_TABLE) does not exist, so the bind's read of its columns fails
+   // and the source answers live rather than erroring (fail safe).
+   const pkg = await call("GET", `/${PKG}?versionId=1.0.0`);
+   expect(pkg.json.boundManifestUri).toBe(location);
+   expect(pkg.json.manifestBindingStatus).toBe("bound");
+   expect((await runOrderSummary()).status).toBe(200);
 }
 
 async function expectLive(): Promise<void> {
