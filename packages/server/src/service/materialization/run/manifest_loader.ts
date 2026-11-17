@@ -113,13 +113,17 @@ export async function fetchManifestEntries(
 }
 
 /**
- * Whether a manifest's table name is one this server reads: no backslash
- * anywhere, and any quote in it forming whole quoted parts
- * ({@link tablePathParts}).
+ * Whether a table name a host or the run store supplies (a manifest entry,
+ * a build instruction, a reference, a ledger entry) is one this server puts
+ * in SQL: no backslash anywhere, and a path that parses into parts, none
+ * empty ({@link tablePathParts}), quoted or not. A quoted name has real
+ * writers: an author's own `manifestLocation` manifest, whose entries no
+ * `name=` rule checks, and the manifests of Publisher v0.0.229 to v0.2.4.
+ * The control plane never sends one. The one predicate for the build route
+ * and the bind.
  */
-function isUsableTableName(name: string): boolean {
+export function isUsableTableName(name: string): boolean {
    if (name.includes("\\")) return false;
-   if (!name.includes('"') && !name.includes("`")) return true;
    return tablePathParts(name, "") !== undefined;
 }
 
@@ -165,14 +169,14 @@ export function splitManifestEntries(
          }
          continue;
       }
-      // A name this server would put in SQL it cannot read safely: a
-      // backslash anywhere (an escape in several dialects' literals and
-      // identifiers), or a quote that does not form quoted parts. An
-      // author's quoted `name=` (`"My Schema".t`) parses and is kept.
+      // A name this server would not put in SQL (isUsableTableName): a
+      // backslash, quotes that do not form whole quoted parts, or an empty
+      // part. A quoted name that parses (an author's own manifestLocation
+      // manifest, or a legacy one) is kept.
       if (!isUsableTableName(physicalTableName)) {
          if (!quiet) {
             logger.warn(
-               "Manifest entry names a table this server cannot read safely (a backslash, or quotes that do not parse); skipping, so its source answers live",
+               "Manifest entry names a table this server cannot read safely (a backslash, quotes that do not parse, or an empty part); skipping, so its source answers live",
                { source, sourceEntityId },
             );
          }

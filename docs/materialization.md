@@ -584,8 +584,9 @@ through a faithful cast or leaves it out, so only a query that reads it is answe
 rollup, persisted view or persisted query, which no cast reaches, is answered live as a whole. The
 log line has the same `storage-column-type-mismatch` code and names each changed column. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
-live, with a `database-table-unread` package warning that names the reason and whether a retry is
-pending, and read again with backoff (after 1 second, doubling to at most a
+live, with a `database-table-unread` package warning that names the table, a fixed reason (the
+driver's own text, secrets redacted, is in the log alone) and whether a retry is pending, and read
+again with backoff (after 1 second, doubling to at most a
 minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds, when the
 warning clears. A change made after a bind is read at the next one.
 
