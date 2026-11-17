@@ -586,12 +586,17 @@ async function buildAll(
    const databaseFor = async (connectionName: string | undefined) => {
       const warehouse = await warehouseFor(connectionName);
       if (parquetOriginDir && !parquetOrigins.has(warehouse)) {
-         for (const statement of parquetLakeSQL(
-            parquetOriginDir,
-            "origin_parquet",
-         ).split(";\n")) {
-            await warehouse.runSQL(statement);
-         }
+         // The origin is the package's sandbox, locked down and confined to
+         // the package (duckdb_lockdown.ts): its lake sits inside the
+         // package, and row inlining is an ATTACH option, as no SET runs
+         // once the sandbox is locked.
+         const dir = path.join(pkg.getPackagePath(), ".origin_parquet");
+         fs.mkdirSync(dir, { recursive: true });
+         const q = (p: string) => p.replace(/'/g, "''");
+         await warehouse.runSQL(
+            `ATTACH IF NOT EXISTS 'ducklake:${q(path.join(dir, "origin_parquet.ducklake"))}' AS origin_parquet (DATA_PATH '${q(path.join(dir, "data"))}/', DATA_INLINING_ROW_LIMIT 0)`,
+         );
+         await warehouse.runSQL("USE origin_parquet");
          parquetOrigins.add(warehouse);
       }
       return warehouse;

@@ -1149,7 +1149,19 @@ export async function authorSqlRefusals(
             checks.set(record.selectStr, `a .sql() source`);
          }
          if (record.node === "genericSQLExpr" && Array.isArray(record.src)) {
-            const text = (record.src as unknown[]).map(String).join(" NULL ");
+            // The text with each argument (between, or after, the fragments)
+            // standing as NULL.
+            const args = (record.kids as { args?: unknown[] } | undefined)
+               ?.args;
+            const argCount = Array.isArray(args) ? args.length : 0;
+            let text = "";
+            (record.src as unknown[]).forEach((fragment, index) => {
+               text += String(fragment);
+               if (index < argCount) text += " NULL ";
+            });
+            for (let extra = record.src.length; extra < argCount; extra++) {
+               text += " NULL ";
+            }
             checks.set(`SELECT ${text}`, `a raw SQL expression`);
          }
       }
@@ -1163,10 +1175,11 @@ export async function authorSqlRefusals(
    for (const [sql, what] of checks) {
       const verdict = await classifySelect(sql);
       if (!("selects" in verdict) || verdict.selects !== 1) {
+         const shown = sql.length > 120 ? `${sql.slice(0, 117)}...` : sql;
          refusals.push(
             `${modelPath}: ${what} on a DuckDB connection must read as one SELECT ` +
                `(raw SQL on a locked-down DuckDB connection runs only as a single ` +
-               `SELECT), and this one does not.`,
+               `SELECT), and this one does not: ${shown}`,
          );
       }
    }
