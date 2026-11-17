@@ -1236,6 +1236,7 @@ export class PackageMaterialization {
          message,
          code,
          subject,
+         reason: "table_name_collision",
          severity: "warn" as const,
       }));
    }

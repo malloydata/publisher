@@ -9,7 +9,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { relaxedCollision } from "./plan/load_gate_text";
 import {
+   annotationFindingWarnings,
    RETAINED_WARNING_ALIASES,
    storageWarnings,
    verdictWarnings,
@@ -101,6 +103,27 @@ describe("a materialization warning's reason", () => {
          expect.objectContaining({
             code: "materialization-storage-mode",
             reason: "storage_mode",
+         }),
+      ]);
+   });
+
+   it("is table_name_collision on a collision refused alone under the opt-out", () => {
+      const relaxed = relaxedCollision(
+         {
+            route: "@",
+            tier: "malformed",
+            code: "materialization-table-collision",
+            message: "#@ persist on source a is invalid: it shares a table",
+            model: "m.malloy",
+            subject: "a",
+         },
+         false,
+      );
+      expect(annotationFindingWarnings([relaxed])).toEqual([
+         expect.objectContaining({
+            code: "persist-not-built",
+            reason: "table_name_collision",
+            severity: "warn",
          }),
       ]);
    });

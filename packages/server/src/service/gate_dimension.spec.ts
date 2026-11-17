@@ -144,9 +144,11 @@ describe("validateSourceLineGateGivenUsage", () => {
       expect(warnings).toEqual([
          expect.stringContaining(
             "source_line_gate_negated_membership: The #(authorize) gate on " +
-               'source "orders" nests too deeply to check',
+               'source "orders" is too deep to check',
          ),
       ]);
+      // It found no negation, so it never says it found one.
+      expect(warnings[0]).not.toContain("negates a membership test;");
    });
 
    it("does not call a deny-all `false` lock a gate that forgot its given", () => {

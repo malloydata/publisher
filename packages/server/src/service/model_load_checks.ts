@@ -183,7 +183,10 @@ export async function extractCheckedModel(
                warnings.push({
                   sourceName,
                   code: GATE_LOAD_WARNING_CODES[cause],
-                  message: `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                  // The code names the finding; the detail says what was
+                  // found, or, for a gate too deep to scan, that it could
+                  // not be checked.
+                  message: `#(${route}) gate warning on "${sourceName}": ${detail}`,
                });
             },
          );

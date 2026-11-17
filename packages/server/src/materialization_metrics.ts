@@ -308,7 +308,7 @@ const buildReadBytes = lazyHistogram(
 );
 const annotationFindingsCounter = lazyCounter(
    "publisher_annotation_findings_total",
-   "Coded findings on authored annotations (the #@ route, and the near-miss and malformed-route scan over every route), counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable', 'persist-not-built'), outcome ('invalid' for an error-severity finding, which fails the load, 'not_built' for a warning).",
+   "Coded findings on authored annotations (the #@ route, and the near-miss and malformed-route scan over every route), counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable', 'persist-not-built'), outcome ('invalid' for an error-severity finding, which fails the load, 'not_built' for a warning: a valid annotation not built here, and also the warn-level 'annotation-near-miss' and 'persist-incremental-no-merge-key' advisories, which build).",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",

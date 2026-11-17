@@ -98,6 +98,7 @@ export function relaxedCollision(
    return {
       ...finding,
       tier: "unservable",
+      reason: "table_name_collision",
       // Each source under its own not-built code.
       code:
          finding.route !== "@"

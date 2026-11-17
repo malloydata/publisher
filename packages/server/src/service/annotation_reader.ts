@@ -501,6 +501,12 @@ export interface AnnotationFinding {
    tier: "malformed" | "unservable" | "deprecated";
    /** Stable, for counting and for clients: `persist-unknown-key`. */
    code: string;
+   /**
+    * For an `unservable` finding that is a refusal: its bounded
+    * `RefusedSource.reason` (`table_name_collision`), carried as the
+    * package warning's `reason`.
+    */
+   reason?: string;
    message: string;
    /** The fix, when there is one. */
    rewrite?: string;

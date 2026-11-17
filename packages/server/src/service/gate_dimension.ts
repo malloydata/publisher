@@ -249,9 +249,12 @@ export function validateSourceLineGateGivenUsage(
    } else if (negated === "too_deep") {
       onWarning?.(
          "source_line_gate_negated_membership",
-         `The ${gate} on source "${sourceName}" nests too deeply to check ` +
-            `for a negated membership test, which would match everything ` +
-            `when its given is empty; simplify the condition`,
+         // No negation was found: the scan stopped. Say so, never that the
+         // gate negates one.
+         `The ${gate} on source "${sourceName}" is too deep to check: the ` +
+            `scan stops before it can tell whether the gate negates a ` +
+            `membership test (one would match everything when its given is ` +
+            `empty); simplify the condition so it can be checked`,
       );
    }
 }

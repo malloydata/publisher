@@ -199,7 +199,8 @@ function denyUnlessAdmitted(
       site,
       ...(resolution.cause ? { cause: resolution.cause } : {}),
    });
-   throw AccessDeniedError.forSource(label, "lock");
+   // Booked as a row filter's refusal, as the row-level metric books it.
+   throw AccessDeniedError.forSource(label, "row_filter");
 }
 
 /**

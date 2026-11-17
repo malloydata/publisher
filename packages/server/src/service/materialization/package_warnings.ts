@@ -155,6 +155,7 @@ export function annotationFindingWarnings(
          ? `${finding.message}; ${finding.rewrite}`
          : finding.message,
       code: finding.code,
+      ...(finding.reason ? { reason: finding.reason } : {}),
       severity: findingSeverity(finding),
    }));
 }

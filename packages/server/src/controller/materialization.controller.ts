@@ -54,7 +54,7 @@ export class MaterializationController {
    }
 
    // Whitelist of client body fields. Never accept `trigger` here: only the
-   // in-process scheduler (which calls the service directly) sets `SCHEDULER`,
+   // in-process scheduler (which calls the service directly) sets `scheduler`,
    // and accepting it would let an API caller forge a scheduled run.
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
