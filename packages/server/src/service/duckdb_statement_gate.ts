@@ -69,7 +69,11 @@ async function acquireUnlessAborted(
    });
    try {
       const release = await Promise.race([acquired, aborted]);
-      if (!release) void acquired.then((handOn) => handOn());
+      if (!release)
+         void acquired.then(
+            (handOn) => handOn(),
+            () => {},
+         );
       return release;
    } finally {
       signal.removeEventListener("abort", onAbort);

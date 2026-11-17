@@ -151,10 +151,18 @@ describe("concurrent statements on one DuckDB connection", () => {
             // drained
          }
       })();
-      await sleep(20);
-      ac.abort();
-      await waiter;
-      holder.release();
+      try {
+         await sleep(20);
+         ac.abort();
+         // Bounded, so a waiter that ignores its signal fails this test instead of hanging the file.
+         const outcome = await Promise.race([
+            waiter.then(() => "resolved"),
+            sleep(1500).then(() => "still waiting"),
+         ]);
+         expect(outcome).toBe("resolved");
+      } finally {
+         holder.release();
+      }
       await holder.done;
       const { rows } = await connection.runSQL(
          "SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'side'",

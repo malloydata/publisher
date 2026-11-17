@@ -102,7 +102,7 @@ export async function streamSqlWithBudget(
 
    if (overflowMessage) throw new PayloadTooLargeError(overflowMessage);
    // A driver ends quietly on abort; without this a timed-out query answers 200 with the rows it had.
-   // A quiet end can't be told from an abort cut, so a stream that finished as the timer fired also gets the 504, despite query_timeout.ts:48-50.
+   // A quiet end can't be told from an abort cut, so a stream that finished as the timer fired also gets the 504, despite runWithQueryTimeout's "a completed query beats a 504".
    externalSignal?.throwIfAborted();
 
    return { rows, totalRows: rows.length };
