@@ -139,7 +139,7 @@ source: smoke_raw is my_conn.table('some_dataset.some_table')
 #@ persist name="scratch_dataset.persist_smoke_test"
 source: persist_smoke is smoke_raw -> { aggregate: n is count() }
 ```
-If **even this** doesn't build after a real run, the problem is package-wide: read the run's error (a non-persistable source anywhere fails the whole run and names it), then check that the connection can write the target dataset. If the smoke source builds and your real one doesn't, your real source is the problem: its file's flag, or its entry in `failures` / `refusedSources`. Delete the smoke file and drop its table afterward (`malloy-pub delete materialization <id> --drop-tables`).
+If **even this** doesn't build after a real run, the problem is package-wide: read the run's error (a non-persistable source anywhere fails the whole run and names it), then check that the connection can write the target dataset. If the smoke source builds and your real one doesn't, your real source is the problem: its file's flag, or its entry in `failures` / `refusedSources`. Delete the smoke file, delete its run (`malloy-pub delete materialization <id>`, record-only), and drop its table yourself through the connection.
 
 ## Gotchas
 
@@ -150,7 +150,7 @@ If **even this** doesn't build after a real run, the problem is package-wide: re
 - **A ready run can still have lost a source** - read `manifest.failures` and `metadata.refusedSources`.
 - **A reload unbinds; a restart rebinds** - run a build before trusting a timing.
 - **Reuse is by content address, not by name** - `--force-refresh` and every scheduler fire defeat it.
-- **Removing a persist source does not drop its table** - `delete materialization --drop-tables` drops what no other ready run names, and serving reverts to live in place.
+- **Removing a persist source does not drop its table** - and neither does `delete materialization`, which is record-only. Drop the table yourself through its connection once no remaining ready run names it; serving reverts to live in place.
 - **A given inside the persisted query is refused; in the source's own `extend` block it is applied per caller; inherited from a base it is refused and the source answers live** - `reference/storage.md`.
 - **A join to a non-persisted source, or a nested column, serves live for the queries that touch it** - the source's own fields still serve from the table.
 - **A `#(access_filter)`-gated source freezes its gating column when persisted** - `#@ preaggregate` refuses it outright; a `storage=` table holds every caller's rows, ungated, in the destination; `reference/access-filter.md`.

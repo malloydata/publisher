@@ -122,7 +122,7 @@ still build and serve.
 | `materialization-near-miss` | A misspelled route, such as `#(materialise)`. The publish and the load fail. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
 | `stored-native-schema-missing` | A colocated table is bound with no recorded warehouse type for a big-integer column (a table built before Publisher recorded them). On BigQuery the column is read as `INT64` and serves; elsewhere a query that reads it is answered live. | Run a full rebuild of the source; it records the types. |
-| `table-kept-after-rename` | A source's table was renamed or moved, and its old table is kept rather than dropped: it is at an author's exact `name=`, which Publisher never drops, or in a storage destination that is no longer configured. The table is no longer read; the newest run lists it in `metadata.keptTables`. | For an author's `name=`: drop the table yourself once nothing reads it, or delete the runs that built it with `dropTables=true`. For a destination no longer configured: if it was renamed rather than removed, the table may still be served under the new name, so check before dropping it. See [the rename rule](materialization.md#the-rename-rule). |
+| `table-kept-after-rename` | A source's table was renamed or moved, and its old table is kept rather than dropped: it is at an author's exact `name=`, which Publisher never drops, or in a storage destination that is no longer configured. The table is no longer read; the newest run lists it in `metadata.keptTables`. | For an author's `name=`: check that no remaining run still serves it, then drop the table yourself through its connection once nothing reads it. For a destination no longer configured: if it was renamed rather than removed, the table may still be served under the new name, so check before dropping it. See [the rename rule](materialization.md#the-rename-rule). |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
 | `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize). |
 | `deprecated-preaggregate-annotation` | A measure still uses `#@ preaggregate`. | Rewrite it as `#(preaggregate)`. |
@@ -313,8 +313,8 @@ dataset and its last segment takes the version's suffix, as in v1; a host-orches
 the name the host assigns, in that container. In neither case is a view made at `name=`, so a reader
 outside Malloy that needs one stable name reads it from an unversioned or `scope: "package"`
 package. Dropping `name=` instead moves the source to its readable name: it is rebuilt there, and
-the old table stays with the runs that built it until they are deleted with their tables
-(`dropTables=true`).
+the old table stays in place: deleting the runs that built it removes their records only, so drop
+the table yourself through its connection once no remaining run serves it.
 
 ### A query-shaped source
 

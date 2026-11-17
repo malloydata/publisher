@@ -468,20 +468,16 @@ window is the job of a caller that assigns physical names per build and
 distributes serve bindings (the orchestrated build path), not of the auto-run
 server.
 
-A materialization record can be reclaimed by deleting it with `dropTables=true` —
-a destination-aware drop (Publisher only ever drops a table name it recorded
-building, never a catalog scan):
+Deleting a materialization record is record-only: the table it built stays in
+the destination. Drop it yourself afterwards, once no remaining run names it
+([Dropping a run's tables](materialization.md#dropping-a-runs-tables)):
 
 ```bash
 # delete a materialization (find its id in the list)
 curl -s -X DELETE \
-  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<ID>?dropTables=true" \
+  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<ID>" \
   -o /dev/null -w "HTTP %{http_code}\n"
 # -> HTTP 204
-```
-
-```
-info: Dropped materialized storage table on delete { physicalTableName: "daily_orders", storageDestinationName: "lake" }
 ```
 
 ---
