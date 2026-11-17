@@ -45,17 +45,23 @@ export function exploreOf<T extends { _explore: unknown }>(
 }
 
 /**
- * A persist source's output columns, by name (its `as` name when it has one)
- * and IR type, in order: what its table holds.
+ * A persist source's output columns, by name (its `as` name when it has one),
+ * IR type and numeric subtype (`numberType`, for a number), in order: what
+ * its table holds.
  */
 export function outputColumnsOf(source: {
    _explore: { structDef: unknown };
-}): [string | undefined, string | undefined][] {
+}): [string | undefined, string | undefined, string | undefined][] {
    const fields =
       (source._explore.structDef as { fields?: unknown[] }).fields ?? [];
    return fields.map((f) => {
-      const field = f as { name?: string; as?: string; type?: string };
-      return [field.as ?? field.name, field.type];
+      const field = f as {
+         name?: string;
+         as?: string;
+         type?: string;
+         numberType?: string;
+      };
+      return [field.as ?? field.name, field.type, field.numberType];
    });
 }
 

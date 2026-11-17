@@ -19,7 +19,9 @@
  *    warehouse as planned;
  *  - over a gated base, under G3 or with gated sources on, it stores the
  *    warehouse build's rows and answers each caller as live;
- *  - over an extension table (P10), it reads the extension's own table.
+ *  - over an extension table (P10), it reads the extension's own table;
+ *  - a base whose stored copy does not compile builds its rollup from the
+ *    warehouse, and leaves every other rollup's reuse alone.
  */
 
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
@@ -373,6 +375,58 @@ describe("a colocated rollup over a colocated #(materialize) base", () => {
       const rollup = rollupOf(m, "plain");
       expect(rollup.upstreamReuse).toBeUndefined();
       expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+   });
+
+   it("leaves out only a base whose stored copy does not compile: the other rollups still read their bases' tables", async () => {
+      // `clipped`'s re-rooted copy keeps `except: mark`, and its build source
+      // has no `mark`: the copy does not compile, so its rollup builds from
+      // the warehouse, while the `#@ persist` and the other `#(materialize)`
+      // rollups still read their bases' tables.
+      await setUp(`##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist name="porders_tbl"
+source: porders is raw extend {
+  #(preaggregate) grain=["cat"]
+  measure: pgrand is amt.sum()
+}
+
+#(materialize) name="orders_mat"
+source: orders is raw extend {
+  #(preaggregate) grain=["cat"]
+  measure: grand is amt.sum()
+}
+
+#(materialize) name="clipped_mat"
+source: clipped is raw extend {
+  except: mark
+  #(preaggregate) grain=["cat"]
+  measure: cgrand is amt.sum()
+}
+`);
+      const query = (base: string, measure: string) =>
+         `run: ${base} -> { group_by: cat; aggregate: ${measure}; order_by: cat }`;
+      const live = await answer(query("clipped", "cgrand"));
+      const m = await build();
+      expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+
+      for (const name of ["porders", "orders"]) {
+         const rollup = rollupOf(m, name);
+         expect([name, rollup.upstreamReuse]).toEqual([name, "reused"]);
+         const create = createdBy(rollup.physicalTableName);
+         expect(create).toContain(`"${entryOf(m, name).physicalTableName}"`);
+         expect(create).not.toContain(RAW_MARK);
+      }
+
+      const clipped = rollupOf(m, "clipped");
+      expect(clipped.upstreamReuse).toBeUndefined();
+      expect(createdBy(clipped.physicalTableName)).toContain(RAW_MARK);
+      expect(
+         await rowsOf(`SELECT * FROM ${clipped.physicalTableName}`),
+      ).toEqual(await rowsOf(await plannedSQL(clipped)));
+      const served = await answer(query("clipped", "cgrand"));
+      expect(served.servedBy).toBe("rollup");
+      expect(served.rows).toEqual(live.rows);
    });
 
    describe("with freshness", () => {

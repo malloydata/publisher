@@ -505,8 +505,11 @@ export async function tryCompileRollupCompanion(args: {
  * `#@ persist` base with its own notes kept, and each `#(materialize)` base
  * imported from its re-rooted copy beside the `#(materialize)` companion's
  * files ({@link GeneratedRollups.overStoredBases}). A rollup whose base's copy
- * or build source is missing is left out, and builds from the warehouse;
- * so is every rollup when the compile fails.
+ * or build source is missing is left out, and builds from the warehouse.
+ * Each copy is compile-checked on its own, and one that fails is left out
+ * alone; when the copies still fail together, the companion is compiled
+ * again with none of them, so the `#@ persist` rollups still read their
+ * bases' tables; when that fails too, every rollup builds from the warehouse.
  */
 async function compileOverStoredBases(args: {
    files: GeneratedFiles;
@@ -527,34 +530,92 @@ async function compileOverStoredBases(args: {
    const modelURL = pathToFileURL(modelFile);
    const out = new Map<string, OverStoredBase>();
    if (overStored.rollups.size === 0) return out;
+   let kept: Map<string, string> | undefined;
+   let stored: Map<string, { url: string; text: string }>;
    try {
-      const kept = await files.blanked(args.modelDef, overStored.keep);
+      kept = await files.blanked(args.modelDef, overStored.keep);
       if (!kept) return out;
-      const stored = storedBaseCopies(
+      stored = storedBaseCopies(
          overStored.stored,
          kept.get(overlayKey(modelURL)) ?? (await files.readIfAny(modelURL)),
          modelFile,
       );
-      kept.set(
+   } catch (error) {
+      warnWarehouse(args.modelPath, error);
+      return out;
+   }
+   for (const [copy, copyText] of args.copies) kept.set(copy, copyText);
+   // Each stored copy checked on its own: one that does not compile (a base
+   // whose `except:` names a column its build source never had, say) is left
+   // out, so only its own rollups build from the warehouse.
+   const materializedFiles = new Map(kept);
+   for (const [file, fileText] of args.materialized?.files ?? []) {
+      materializedFiles.set(file, fileText);
+   }
+   for (const [name, copy] of [...stored]) {
+      try {
+         await files.compile(
+            new URL(copy.url),
+            new Map([...materializedFiles, [copy.url, copy.text]]),
+         );
+      } catch (error) {
+         logger.warn(
+            "A rollup builds from the warehouse: its #(materialize) base's copy over the stored table did not compile",
+            {
+               modelPath: args.modelPath,
+               base: name,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         stored.delete(name);
+      }
+   }
+   try {
+      await compileOverStored(stored);
+   } catch (error) {
+      if (stored.size === 0) {
+         warnWarehouse(args.modelPath, error);
+         return out;
+      }
+      // Together the copies still failed: the `#@ persist` rollups compile
+      // without any `#(materialize)` copy, as they would with none declared.
+      logger.warn(
+         "The rollups over #(materialize) bases build from the warehouse: their companion over the bases' stored tables did not compile",
+         {
+            modelPath: args.modelPath,
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+      out.clear();
+      try {
+         await compileOverStored(new Map());
+      } catch (retryError) {
+         warnWarehouse(args.modelPath, retryError);
+      }
+   }
+   return out;
+
+   /** Compile the companion over `copies`, filling `out`. Throws on a Malloy error. */
+   async function compileOverStored(
+      copies: ReadonlyMap<string, { url: string; text: string }>,
+   ): Promise<void> {
+      const overlay = new Map(
+         copies.size === 0 ? (kept as Map<string, string>) : materializedFiles,
+      );
+      overlay.set(
          url.href,
-         stored.size === 0
+         copies.size === 0
             ? args.text
             : (generateRollupBuildFile(
                  args.plans,
                  path.basename(args.modelPath),
-                 new Set(stored.keys()),
+                 new Set(copies.keys()),
               ) as string),
       );
-      for (const [copy, copyText] of args.copies) kept.set(copy, copyText);
-      if (stored.size > 0) {
-         for (const [file, fileText] of args.materialized?.files ?? []) {
-            kept.set(file, fileText);
-         }
-         for (const { url: copy, text: copyText } of stored.values()) {
-            kept.set(copy, copyText);
-         }
+      for (const { url: copy, text: copyText } of copies.values()) {
+         overlay.set(copy, copyText);
       }
-      const compiled = await files.compile(url, kept);
+      const compiled = await files.compile(url, overlay);
       const sources = plannedSources(
          await compiled.runtime.getBuildTargets(compiled.model),
       );
@@ -585,23 +646,25 @@ async function compileOverStoredBases(args: {
             out.set(source.sourceID, { source });
             continue;
          }
-         const baseBuildSource = stored.has(base)
+         const baseBuildSource = copies.has(base)
             ? buildSources.get(base)
             : undefined;
          if (baseBuildSource) {
             out.set(source.sourceID, { source, baseBuildSource });
          }
       }
-   } catch (error) {
-      logger.warn(
-         "The rollups of a model build from the warehouse: their companion over the bases' stored tables did not compile",
-         {
-            modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
-         },
-      );
    }
-   return out;
+}
+
+/** Log that a model's rollups build from the warehouse, and why. */
+function warnWarehouse(modelPath: string, error: unknown): void {
+   logger.warn(
+      "The rollups of a model build from the warehouse: their companion over the bases' stored tables did not compile",
+      {
+         modelPath,
+         error: error instanceof Error ? error.message : String(error),
+      },
+   );
 }
 
 /**
