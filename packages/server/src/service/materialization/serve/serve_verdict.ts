@@ -18,6 +18,10 @@
  */
 
 import type { components } from "../../../api";
+import {
+   isPersistedQuerySourceID,
+   isPersistedResultSourceID,
+} from "../domain/table_plans";
 
 type BuildPlan = components["schemas"]["BuildPlan"];
 type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
@@ -108,7 +112,13 @@ export interface ServeVerdict {
    sourceName: string;
    sourceID: string;
    modelPath?: string;
-   origin: "persist" | "preaggregate";
+   /**
+    * The mechanism that declared it, in the table kinds' words: `persist`
+    * (`#@ persist` on a source), `materialize` (`#(materialize)`), `view`
+    * (`#@ persist` on a view), `query` (`#@ persist` on a named query), or
+    * `preaggregate` (a rollup).
+    */
+   origin: "persist" | "materialize" | "view" | "query" | "preaggregate";
    /** Where its table lives: the source's own connection, or a `storage=` destination. */
    tier: "colocated" | "storage";
    /**
@@ -195,6 +205,12 @@ export interface ServeVerdictFacts {
     * inline run target, whose reach is not judged).
     */
    persistedViewOf(sourceID: string): PersistedResultOf | undefined;
+   /**
+    * Whether the author's source of this sourceID is declared with
+    * `#(materialize)`, for a refused source the plan holds no plan for.
+    * Absent: none is.
+    */
+   declaredMaterialize?(sourceID: string): boolean;
    /** Per stored source's plan sourceID, its views' verdicts (a preview). */
    views?: ReadonlyMap<string, ViewServeVerdict[]>;
    /**
@@ -211,6 +227,30 @@ export interface ServeVerdictFacts {
     * warns.
     */
    connectionCanHoldTable(connectionName: string): boolean | undefined;
+}
+
+/**
+ * The mechanism that declared a stored source ({@link ServeVerdict.origin}),
+ * read off the plan: never off its name alone.
+ */
+function originOf(
+   sourceID: string,
+   rollup: boolean,
+   facts: Pick<ServeVerdictFacts, "materialize" | "declaredMaterialize">,
+): ServeVerdict["origin"] {
+   if (rollup) return "preaggregate";
+   if (isPersistedResultSourceID(sourceID)) {
+      return isPersistedQuerySourceID(sourceID) ? "query" : "view";
+   }
+   // A planned `#(materialize)` source has a plan; a refused one has only
+   // its declaration.
+   if (
+      facts.materialize(sourceID) !== undefined ||
+      facts.declaredMaterialize?.(sourceID) === true
+   ) {
+      return "materialize";
+   }
+   return "persist";
 }
 
 /** The tier a plan source's table lives in. */
@@ -238,7 +278,7 @@ export function computeServeVerdicts(facts: ServeVerdictFacts): ServeVerdict[] {
          sourceName: refused.name,
          sourceID,
          ...(refused.modelPath ? { modelPath: refused.modelPath } : {}),
-         origin: refused.tier === "preaggregate" ? "preaggregate" : "persist",
+         origin: originOf(sourceID, refused.tier === "preaggregate", facts),
          tier: refused.tier === "storage" ? "storage" : "colocated",
          verdict: "live",
          reason: "refused",
@@ -374,7 +414,9 @@ function verdictSubjectOf(
    source: PersistSourcePlan,
    facts: ServeVerdictFacts,
 ): VerdictSubject {
-   const origin = source.origin === "preaggregate" ? "preaggregate" : "persist";
+   const origin = originOf(sourceID, source.origin === "preaggregate", {
+      materialize: facts.materialize,
+   });
    const tier = planTier(source);
    const base: Omit<ServeVerdict, "verdict" | "message"> = {
       sourceName: source.name,
@@ -525,7 +567,7 @@ function boundVerdict(
       if (materialized === "not_served") return notServed();
       if (
          materialized === undefined &&
-         origin === "persist" &&
+         origin !== "preaggregate" &&
          !facts.servedStorageNames.has(source.name)
       ) {
          return live(

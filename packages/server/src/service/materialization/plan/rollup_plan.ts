@@ -55,7 +55,9 @@
  * - **Given-reading terms.** A `where:` of the base's own that reads a given,
  *   over grain dimensions only, is left out of the build (its build copy
  *   replaces it by `true`) and written again on the variant, where each
- *   caller's givens bind it; any other is `reads_given`.
+ *   caller's givens bind it; any other is refused with the reason the one
+ *   classifier gives it on `#(materialize)` (`inherited_where_with_given`,
+ *   `given_in_persisted_query`).
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
@@ -80,6 +82,10 @@ import {
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
+import {
+   gateRefusalReason,
+   type GateRefusalReason,
+} from "../domain/gate_refusal";
 import { byReadCost } from "../domain/read_cost";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { hasFanoutJoin } from "./preaggregation_validation";
@@ -857,7 +863,13 @@ interface RollupFacts {
     * The base's own given-reading `where:` terms, re-applied on the variant
     * (each over grain dimensions only), or why they cannot be.
     */
-   given: { terms: GivenReadTerm[] } | { refused: string };
+   given:
+      | { terms: GivenReadTerm[] }
+      | {
+           refused: string;
+           /** The shared classifier's reason (`readTimeTermsOf`), as on `#(materialize)`. */
+           reason: "inherited_where_with_given" | "given_in_persisted_query";
+        };
    /** Where the base is declared, for its build copy's edits. */
    declaration: TermUse | undefined;
    timeFields: ReturnType<typeof currentTimeFields>;
@@ -907,8 +919,9 @@ function rollupFactsOf(
    const timeFields = currentTimeFields(def.fields);
    // A given-reading `where:` of the base's own, over its dimensions, is left
    // out of the build and written again on the variant, as the served copy
-   // re-applies one (P2); an inherited one, or one over anything else, is
-   // refused (`reads_given`), as on `#(materialize)`.
+   // re-applies one (P2); an inherited one (`inherited_where_with_given`), or
+   // one over anything else (`given_in_persisted_query`), is refused by the
+   // one classifier `#(materialize)` reads, with its reason.
    const read = readTimeTermsOf(
       def as SourceDefLike,
       classifyWhereTerms(def).filter((t) => t.dependsOn.kind === "given"),
@@ -918,7 +931,9 @@ function rollupFactsOf(
       ((map.model() as { givens?: Record<string, unknown> } | undefined)
          ?.givens ?? {}) as Record<string, unknown>,
    );
-   const given = read.ok ? { terms: read.terms } : { refused: read.reason };
+   const given = read.ok
+      ? { terms: read.terms }
+      : { refused: read.reason, reason: read.refusal };
    const declaration = declarationOf(def as SourceDefLike);
    // A source that sets its own `timezone:` (or inherits one) built its
    // times in that zone, and the base branch reads no query on it from a
@@ -1102,14 +1117,16 @@ function declarationRefusal(
       );
    }
    if ("refused" in facts.given) {
-      return unservable("reads_given", decl, facts.given.refused);
+      return unservable(facts.given.reason, decl, facts.given.refused);
    }
    const ungrained = facts.given.terms
       .flatMap((t) => t.columns)
       .filter((c) => !decl.grain.includes(c));
    if (ungrained.length > 0) {
+      // A given-reading `where:` over a field the table does not store, as
+      // the classifier names it on `#(materialize)`.
       return unservable(
-         "reads_given",
+         "given_in_persisted_query",
          decl,
          // malloy-text: a warning message for a person, not Malloy
          `the source's \`where:\` reads a given and ${[...new Set(ungrained)].map((c) => `\`${c}\``).join(", ")}, which the grain does not keep, so it could not be re-applied to the rollup's rows per caller`,
@@ -1123,7 +1140,7 @@ function declarationRefusal(
       !(ctx.readUnderGates ?? rollupsServeGatedBases(decl, gate.own))
    ) {
       return unservable(
-         "access_filter",
+         gate.reason.base,
          decl,
          decl.storage !== undefined
             ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
@@ -1134,7 +1151,7 @@ function declarationRefusal(
    // rollup is not built (A4, fail closed).
    if (gate.declared && gate.joinGated) {
       return unservable(
-         "access_filter",
+         gate.reason.joined,
          decl,
          "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
       );
@@ -1148,7 +1165,7 @@ function declarationRefusal(
    ];
    if (ungated.length > 0) {
       return unservable(
-         "access_filter",
+         gate.reason.base,
          decl,
          // malloy-text: a warning message for a person, not Malloy
          `the source's access filter reads ${ungated.map((g) => `\`${g}\``).join(", ")}, which the grain does not keep, so the rollup's rows could not be filtered per caller`,
@@ -1375,6 +1392,8 @@ function gateFieldNames(
    joinGated: boolean;
    /** Every gate is the base's own: none inherited, none from a derivation. */
    own: boolean;
+   /** The refusal name for the base's own gates, and for its joins' ({@link gateRefusalReason}). */
+   reason: { base: GateRefusalReason; joined: GateRefusalReason };
 } {
    const dimensions = new Set<string>();
    const unkeepable = new Set<string>();
@@ -1413,14 +1432,19 @@ function gateFieldNames(
          }
       }
    }
-   const joinGated = ((def.fields ?? []) as FieldLike[]).some(
-      (f) => f.join !== undefined && gatedJoin(f, modelDef),
+   const joinedRoutes = ((def.fields ?? []) as FieldLike[]).flatMap((f) =>
+      f.join !== undefined ? joinGateRoutes(f, modelDef) : [],
    );
+   const joinGated = joinedRoutes.length > 0;
    return {
       dimensions: [...dimensions].sort(byCodepoint),
       unkeepable: [...unkeepable].sort(byCodepoint),
       declared: entries.length > 0,
       joinGated,
+      reason: {
+         base: gateRefusalReason(entries.map((e) => e.route)),
+         joined: gateRefusalReason(joinedRoutes),
+      },
       own:
          entries.length > 0 &&
          unkeepable.size === 0 &&
@@ -1445,19 +1469,20 @@ function gateNotesDeclaredBy(def: SourceLike, scope: SourceScope): boolean {
    return gates.length > 0 && gates.every((n) => declared.has(n));
 }
 
-/** Whether a joined source carries a row-level gate (fails closed). */
-function gatedJoin(join: FieldLike, modelDef: unknown): boolean {
+/**
+ * The routes of the row-level gates a joined source carries, empty when it
+ * carries none (fails closed: an unreadable one reads as a lock).
+ */
+function joinGateRoutes(join: FieldLike, modelDef: unknown): string[] {
    try {
-      return (
-         collectEntryPointGates(
-            join as unknown as SourceDef,
-            modelDef as ModelDef,
-            new Set(),
-            true,
-         ).length > 0
-      );
+      return collectEntryPointGates(
+         join as unknown as SourceDef,
+         modelDef as ModelDef,
+         new Set(),
+         true,
+      ).map((g) => g.route);
    } catch {
-      return true;
+      return ["authorize"];
    }
 }
 

@@ -3,8 +3,10 @@
 
 /**
  * A `#(preaggregate)` rollup whose build reads a given is left out of the
- * build plan with a `preaggregate-not-built` warning (reason `reads_given`): its table would hold
- * one given value's rows, served to every caller. A rollup in the same model
+ * build plan with a `preaggregate-not-built` warning (reason
+ * `given_in_persisted_query`, as `#(materialize)` names a given-reading
+ * `where:` over a column its table does not keep): its table would hold one
+ * given value's rows, served to every caller. A rollup in the same model
  * that reads no given is still planned. Drives `Package.create` on the worker
  * path with PUBLISHER_MATERIALIZE on, as the package warnings specs do.
  */
@@ -88,7 +90,7 @@ describe("#(preaggregate) rollups whose build reads a given", () => {
          Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
             (r) => r.reason,
          ),
-      ).toEqual(["reads_given"]);
+      ).toEqual(["given_in_persisted_query"]);
       const planned = Object.values(pkg.getBuildPlan()?.sources ?? {}).map(
          (s) => s.name,
       );

@@ -29,6 +29,10 @@ import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
+import {
+   gateRefusalReason,
+   type GateRefusalReason,
+} from "../domain/gate_refusal";
 import { capabilitiesOf } from "../domain/dialect";
 import { MaterializationEligibilityError } from "../../../errors";
 import type { AnnotationNote } from "../../annotations";
@@ -166,7 +170,7 @@ export function assertMaterializationEligible(
 
    if (!options.gateEnforcedAtRead && referencesAuthorize(persistSource)) {
       throw new MaterializationEligibilityError({
-         reason: "authorize",
+         reason: gateReasonOf(persistSource),
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: it is protected by a gate — #(authorize) or ` +
@@ -427,7 +431,8 @@ export function assertColocatedPersistNotAuthorizeGated(
 
    if (origin === "persist" && gateOutcome?.inheritedRowFilter) {
       throw new MaterializationEligibilityError({
-         reason: "authorize",
+         // An inherited row filter is a row filter.
+         reason: "access_filter",
          message: inheritedRowFilterRefusal(sourceName, "colocated"),
       });
    }
@@ -454,8 +459,8 @@ export function assertColocatedPersistNotAuthorizeGated(
       return;
    }
 
-   // Same "authorize" reason as the storage gate, different cause: this pass
-   // cannot prove the gate is the entry point's own row filter.
+   // Named by the gates' kind, as the storage gate is, different cause: this
+   // pass cannot prove the gate is the entry point's own row filter.
    const gated =
       origin === "preaggregate"
          ? `the source '${sourceName}' rolls up is protected by an ` +
@@ -494,7 +499,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    // Generic message: this function cannot see WHY `gateOutcome` did not
    // clear the bar (missing, rejected, or a join-only gate).
    throw new MaterializationEligibilityError({
-      reason: "authorize",
+      reason: gateReasonOf(persistSource),
       message:
          `${what}: ${gated}. An authorize expression is evaluated per ` +
          `request; without a proven row-level, fully-attributed ` +
@@ -661,6 +666,59 @@ function walkForAuthorize(
       if (walkForAuthorize(value, seen, depth + 1)) return true;
    }
    return false;
+}
+
+/**
+ * The refusal reason for a source refused for the gates beneath it (crossing
+ * joins and inherits, as {@link referencesAuthorize} reads them), named by
+ * their kind ({@link gateRefusalReason}). A walk that fails reads as a lock.
+ */
+function gateReasonOf(persistSource: PersistSource): GateRefusalReason {
+   const routes = new Set<string>();
+   try {
+      walkForGateRoutes(sourceDefOf(persistSource), new WeakSet(), 0, routes);
+   } catch {
+      routes.add("authorize");
+   }
+   return gateRefusalReason(routes);
+}
+
+/** {@link walkForAuthorize}, collecting each gate note's route. */
+function walkForGateRoutes(
+   node: unknown,
+   seen: WeakSet<object>,
+   depth: number,
+   routes: Set<string>,
+): void {
+   if (depth > MAX_AUTHORIZE_WALK_DEPTH) {
+      throw new Error("authorize-usage walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return;
+   if (seen.has(node as object)) return;
+   seen.add(node as object);
+   if (Array.isArray(node)) {
+      for (const item of node) walkForGateRoutes(item, seen, depth + 1, routes);
+      return;
+   }
+   const record = node as Record<string, unknown>;
+   for (const key of ["blockNotes", "notes"]) {
+      const arr = record[key];
+      if (!Array.isArray(arr)) continue;
+      for (const n of arr) {
+         const text = noteText(n);
+         if (text === undefined) continue;
+         try {
+            const parsed = parseAuthorizeAnnotation(text);
+            if (parsed) routes.add(parsed.route);
+         } catch {
+            // A malformed gate still means a gate: fail closed to a lock.
+            routes.add("authorize");
+         }
+      }
+   }
+   for (const value of Object.values(record)) {
+      walkForGateRoutes(value, seen, depth + 1, routes);
+   }
 }
 
 /**
@@ -964,7 +1022,8 @@ export function assertTierEligible(
          )
       ) {
          throw new MaterializationEligibilityError({
-            reason: "authorize",
+            // An inherited row filter is a row filter.
+            reason: "access_filter",
             message: inheritedRowFilterRefusal(source.name, "storage"),
          });
       }
@@ -998,7 +1057,7 @@ export function assertTierEligible(
       !gateEnforcedAtRead(source.sourceID, plan)
    ) {
       throw new MaterializationEligibilityError({
-         reason: "authorize",
+         reason: gateReasonOf(source),
          message:
             `Source '${source.name}' cannot be materialized (colocated ` +
             `'#(materialize)'): it is protected by an #(authorize) or ` +
@@ -1020,7 +1079,7 @@ export function assertTierEligible(
       referencesAuthorize(source)
    ) {
       throw new MaterializationEligibilityError({
-         reason: "authorize",
+         reason: gateReasonOf(source),
          message:
             `'${source.name}' cannot be materialized (colocated): the ` +
             `source it reads is protected by an #(authorize) or ` +

@@ -5110,9 +5110,12 @@ components:
         origin:
           type: string
           description: >-
-            `persist` for a source a modeler annotated, `preaggregate` for a
-            rollup the publisher synthesized. A string, not an enum, so a new
-            kind of variant needs no client change.
+            The mechanism that declared the stored source: `persist` for
+            `#@ persist` on a source, `materialize` for `#(materialize)`,
+            `view` for `#@ persist` on a view, `query` for `#@ persist` on a
+            named `query:`, and `preaggregate` for a rollup the publisher
+            synthesized. A string, not an enum, so a new kind of variant
+            needs no client change.
         tier:
           type: string
           description: >-
@@ -5956,8 +5959,10 @@ components:
                   `-current-time`, `-reads-given`, `-unreadable-measure`,
                   `-join-level` and `-name-clash`, now each
                   `preaggregate-not-built` with the reasons `hidden_field`,
-                  `access_filter`, `time_zone`, `current_time`, `reads_given`,
-                  `unreadable_measure`, `join_level` and `name_clash`.
+                  `access_filter` (or `authorize`), `time_zone`,
+                  `current_time`, `given_in_persisted_query` or
+                  `inherited_where_with_given`, `unreadable_measure`,
+                  `join_level` and `name_clash`.
                   `materialization-storage-mode`: a `storage=` source the
                   deployment's `PERSIST_STORAGE_MODE` (`off` or `write-only`)
                   does not serve from storage (`subject` the source, or a
@@ -10733,7 +10738,10 @@ components:
             The bounded refusal reason; `message` says the specifics.
 
 
-            On every mechanism: `free_parameter`, `authorize`, the four that
+            On every mechanism: `free_parameter`; a row-level gate the
+            table could not keep, named by the gate's kind, `access_filter`
+            for a row filter (`#(access_filter)`, any of the gates that
+            refused it) and `authorize` for a lock (`#(authorize)`); the four that
             name where a given the build could not strip sits
             (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
             `dynamic_joined_where`); `inherited_where_with_given` (a
@@ -10744,7 +10752,9 @@ components:
             `where:` onto the persisted source to serve it from a table);
             `reads_given` (the build Malloy generates reads a given wherever it
             is written, so its table would hold one caller's rows: a persisted
-            view or query whose result reads one, or a rollup whose rows do);
+            view or query whose result reads one; a rollup takes the reasons
+            `#(materialize)` gives the same case, `given_in_persisted_query`
+            or `inherited_where_with_given`);
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns);
             `preaggregate_over_dynamic_source` (a rollup whose base is scoped
@@ -10781,8 +10791,9 @@ components:
             `run_target_unsupported` (its source is declared in another file,
             is not in the model's namespace, or cannot be read),
             `nested_result` (a result that nests, which its table cannot
-            answer yet), `access_filter` (it reaches a row-level gate its
-            stored result cannot keep), `current_time` (its result reads
+            answer yet), `access_filter` or `authorize` (it reaches a
+            row-level gate its stored result cannot keep, named by the gate's
+            kind), `current_time` (its result reads
             `now`), `no_stored_columns` (it has no stage to store) and
             `generated_build_failed` (its build does not compile on its own).
 
@@ -10798,9 +10809,9 @@ components:
 
             A rollup (`#(preaggregate)` or `#@ preaggregate`): `hidden_field`
             (a measure or grain dimension the published surface hides, which a
-            rollup would publish), `access_filter` (a row-level gate a rollup
-            cannot re-apply to its rows; a planned rollup a gate refuses
-            carries `authorize`), `time_zone` (the source sets its own
+            rollup would publish), `access_filter` or `authorize` (a
+            row-level gate a rollup cannot re-apply to its rows, named by the
+            gate's kind as on every mechanism), `time_zone` (the source sets its own
             time zone, so no query reads the rollup), `unreadable_measure` (a
             measure definition outside what a rollup reads), `join_level` (a
             measure that aggregates through a join its grain does not key), and

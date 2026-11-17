@@ -928,7 +928,9 @@ async function collectGeneratedRollups(
                      sourceID: source.sourceID,
                      name: source.name,
                      tier: "preaggregate",
-                     reason: "reads_given",
+                     // A given read while the stored relation is built,
+                     // as every other mechanism names it.
+                     reason: "given_in_persisted_query",
                   },
                },
                args.modelPath,

@@ -73,6 +73,7 @@ import {
 import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
 import type { RefusedReason } from "../domain/types";
+import { gateRefusalReason } from "../domain/gate_refusal";
 
 interface GeneratedPersistedViews {
    /** The views the companion declares. */
@@ -191,10 +192,12 @@ async function persistedViewRefusalReason(
    }
    const gates = collectEntryPointGates(node.def as never, modelDef as never);
    if (gates.length === 0) return undefined;
+   // Named by the gates' kind, as on every mechanism.
+   const gateRefusal = gateRefusalReason(gates.map((g) => g.route));
    if (gates.some((g) => !g.struct)) {
       return {
          reason: "the gates of its source cannot be read",
-         refusal: "access_filter",
+         refusal: gateRefusal,
       };
    }
    const gatedWhy =
@@ -202,19 +205,19 @@ async function persistedViewRefusalReason(
    if (stages.length !== 1 || last.type !== "reduce") {
       return {
          reason: `${gatedWhy}, which a multi-stage or non-grouping view's stored result cannot keep`,
-         refusal: "access_filter",
+         refusal: gateRefusal,
       };
    }
    if (last.limit !== undefined) {
       return {
          reason: `${gatedWhy}, which a view with limit: cannot keep: its stored rows are limited across every caller`,
-         refusal: "access_filter",
+         refusal: gateRefusal,
       };
    }
    if (computesAcrossGroups(last)) {
       return {
          reason: `${gatedWhy}, which a view computing across groups (all(), exclude(), calculate:) cannot keep`,
-         refusal: "access_filter",
+         refusal: gateRefusal,
       };
    }
    const grouped = groupedNames(last);
@@ -234,7 +237,7 @@ async function persistedViewRefusalReason(
       } catch {
          return {
             reason: `${gatedWhy} that could not be read against the view`,
-            refusal: "access_filter",
+            refusal: gateRefusalReason([gate.route]),
          };
       }
       for (const p of paths) {
@@ -242,7 +245,7 @@ async function persistedViewRefusalReason(
          if (p.length !== 1 || typeof p[0] !== "string" || !grouped.has(p[0])) {
             return {
                reason: `the access filter of its source reads \`${p.join(".")}\`, which the view does not group by, so its stored rows could not be filtered per caller`,
-               refusal: "access_filter",
+               refusal: gateRefusalReason([gate.route]),
             };
          }
       }
@@ -250,43 +253,50 @@ async function persistedViewRefusalReason(
    return undefined;
 }
 
-/** Whether `struct`, or any source it joins (at any depth), carries a gate. */
-function joinsAGate(
+/**
+ * The routes of the gates on any source `struct` joins (at any depth), empty
+ * when none carries one.
+ */
+function joinedGateRoutes(
    struct: unknown,
    modelDef: unknown,
    seen: Set<unknown> = new Set(),
-): boolean {
+): string[] {
+   const routes: string[] = [];
    const fields = (struct as { fields?: unknown[] })?.fields ?? [];
    for (const f of fields) {
       const field = f as { join?: unknown; fields?: unknown };
       if (field.join === undefined || seen.has(f)) continue;
       seen.add(f);
-      if (collectEntryPointGates(f as never, modelDef as never).length > 0) {
-         return true;
-      }
-      if (joinsAGate(f, modelDef, seen)) return true;
+      routes.push(
+         ...collectEntryPointGates(f as never, modelDef as never).map(
+            (g) => g.route,
+         ),
+         ...joinedGateRoutes(f, modelDef, seen),
+      );
    }
-   return false;
+   return routes;
 }
 
 /** The routes a row-level gate is written on. */
 const GATE_NOTE_ROUTES = new Set(["access_filter", "authorize"]);
 
 /**
- * Whether the source `sourceID` names carries a gate note its own statement
- * did not write: Malloy copies a base's notes onto an extension (`ops2 is ops
- * extend { … }`), where the gate walk reads them as the extension's own. A
- * note is another statement's when it sits in another file, or at the exact
- * position of a note another source carries.
+ * The routes of the gate notes the source `sourceID` names carries that its
+ * own statement did not write: Malloy copies a base's notes onto an
+ * extension (`ops2 is ops extend { … }`), where the gate walk reads them as
+ * the extension's own. A note is another statement's when it sits in another
+ * file, or at the exact position of a note another source carries. A source
+ * that cannot be found reads as one lock (fails closed).
  */
-function carriesInheritedGateNote(
+function inheritedGateNoteRoutes(
    sourceID: string,
    modelDef: unknown,
-): boolean {
+): string[] {
    const map = SourceMap.of(modelDef);
    const node = map.node(sourceID);
    const declaredIn = splitSourceID(sourceID)?.url;
-   if (!node) return true;
+   if (!node) return ["authorize"];
    const position = (n: AnnotationNote) =>
       n.at
          ? `${n.at.url}\u0000${n.at.range.start.line}\u0000${n.at.range.start.character}`
@@ -294,7 +304,7 @@ function carriesInheritedGateNote(
    const gateNotes = ownLevelNotes(
       (node.def as { annotations?: AnnotationsDef }).annotations,
    ).filter((n) => GATE_NOTE_ROUTES.has(routeOfNote(n.text) ?? ""));
-   if (gateNotes.length === 0) return false;
+   if (gateNotes.length === 0) return [];
    const elsewhere = new Set<string>();
    for (const other of map.nodes()) {
       if (other.sourceID === sourceID) continue;
@@ -305,10 +315,14 @@ function carriesInheritedGateNote(
          if (at !== undefined) elsewhere.add(at);
       }
    }
-   return gateNotes.some((n) => {
-      const at = position(n);
-      return at === undefined || n.at?.url !== declaredIn || elsewhere.has(at);
-   });
+   return gateNotes
+      .filter((n) => {
+         const at = position(n);
+         return (
+            at === undefined || n.at?.url !== declaredIn || elsewhere.has(at)
+         );
+      })
+      .map((n) => routeOfNote(n.text) ?? "authorize");
 }
 
 /**
@@ -387,19 +401,25 @@ async function persistedQueryRefusalReason(
    }
    // A gate anywhere the query reaches refuses it: a stored result is never
    // read past a gate (the gate policy has no row for a persisted query).
-   if (
-      collectEntryPointGates(
+   const gateRoutes = [
+      ...collectEntryPointGates(
          (node?.def ?? def) as never,
          modelDef as never,
          new Set(),
          // The entry point: an inherited gate reads as self-contained.
          true,
-      ).length > 0 ||
-      joinsAGate(node?.def ?? def, modelDef) ||
-      (plan.sourceID !== undefined &&
-         carriesInheritedGateNote(plan.sourceID, modelDef))
-   ) {
-      return { reason: GATED_QUERY_REASON, refusal: "access_filter" };
+      ).map((g) => g.route),
+      ...joinedGateRoutes(node?.def ?? def, modelDef),
+      ...(plan.sourceID !== undefined
+         ? inheritedGateNoteRoutes(plan.sourceID, modelDef)
+         : []),
+   ];
+   if (gateRoutes.length > 0) {
+      // Named by the gates' kind, as on every mechanism.
+      return {
+         reason: GATED_QUERY_REASON,
+         refusal: gateRefusalReason(gateRoutes),
+      };
    }
    return undefined;
 }
