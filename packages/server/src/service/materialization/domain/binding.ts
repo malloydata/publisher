@@ -171,6 +171,11 @@ export function heldReadBinding(
    const nativeSchema = held.columns.flatMap((c) =>
       c.nativeType !== undefined ? [{ name: c.name, type: c.nativeType }] : [],
    );
+   // What the gate policy judges a gate over a moved column by: the type it
+   // holds now, as the bind records for any other drifted database table.
+   const retypedColumns = held.columns.flatMap((c) =>
+      c.moved ? [{ name: c.name, type: c.nativeType ?? c.type }] : [],
+   );
    return {
       kind,
       tier: "database",
@@ -180,6 +185,7 @@ export function heldReadBinding(
       tablePath: entry.tableName,
       schema: held.columns.map(({ name, type }) => ({ name, type })),
       ...(nativeSchema.length > 0 ? { nativeSchema } : {}),
+      ...(retypedColumns.length > 0 ? { retypedColumns } : {}),
    };
 }
 
