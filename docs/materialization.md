@@ -674,10 +674,9 @@ cannot tell which it has. A plain DuckDB table keeps every digit. So:
   so only a query that reads it is answered live. A rollup, persisted view or persisted query whose
   table stores one answers live; the path report skips that table with `MISSING_FIELD` and says the
   stored column cannot hold live's integer exactly.
-- An incremental source whose table an older build stored with such a column re-seeds once on its
-  next run, so the rebuild stores it as `DECIMAL(38,0)`, unless a value is past 38 digits. Other
-  tables built before this change keep the 128-bit column, answered live, until their next full
-  build; nothing forces that rebuild.
+- A table built before this change keeps the 128-bit column, answered live, until its next full
+  build; nothing forces that rebuild. (An incremental source is always a passthrough read, whose
+  columns arrive in the warehouse's own types, so it never stores such a column.)
 - A colocated build on a `ducklake` connection still stores the 128-bit type, which is answered
   live as above.
 
