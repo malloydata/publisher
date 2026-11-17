@@ -114,6 +114,8 @@ import {
    type RefusalKey,
 } from "../../annotation_reader";
 import type { RefusedReason } from "../domain/types";
+import { STORAGE_DIALECT } from "../domain/dialect";
+import { storedMalloyType } from "../stored_column_types";
 import {
    destinationOf,
    placementOf,
@@ -328,6 +330,8 @@ interface FieldLike {
    join?: unknown;
    expressionType?: unknown;
    accessModifier?: unknown;
+   /** A `sql native` field's warehouse type. */
+   rawType?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0] & { inherits?: unknown };
 }
 
@@ -336,6 +340,7 @@ interface SourceLike {
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
    queryTimezone?: unknown;
+   dialect?: unknown;
 }
 
 const fieldNameOf = (f: FieldLike): string | undefined =>
@@ -899,6 +904,8 @@ interface RollupFacts {
    scope: Parameters<typeof decomposeMeasure>[1];
    /** The joins a field path reads, or undefined when unknown. */
    joinsRead(path: readonly string[]): string[] | undefined;
+   /** The base's dialect. */
+   dialect: string | undefined;
    unservable(
       reason: RefusedReason,
       decl: Declaration,
@@ -1036,6 +1043,7 @@ function rollupFactsOf(
       readInZone,
       scope,
       joinsRead,
+      dialect: typeof def.dialect === "string" ? def.dialect : undefined,
       unservable,
    };
 }
@@ -1044,7 +1052,8 @@ function rollupFactsOf(
  * Why `decl` is not built, as a refusal; `skip` for one v1's own validation
  * already reports; undefined when it may be built. Checked in order: a hidden
  * measure, a grain that is not the source's dimensions, the current time, the
- * source's own time zone, a hidden grain dimension, and the source's gates.
+ * source's own time zone, a hidden grain dimension, a `storage=` grain no
+ * stored read declares, and the source's gates.
  */
 function declarationRefusal(
    decl: Declaration,
@@ -1134,6 +1143,17 @@ function declarationRefusal(
          `its grain dimension \`${hiddenGrain}\` is private on a source it extends, which a rollup's build cannot read`,
       );
    }
+   const unreadableGrain =
+      decl.storage === undefined
+         ? undefined
+         : unreadableStoredGrain(decl.grain, byName, facts.dialect);
+   if (unreadableGrain) {
+      return unservable(
+         "not_duckdb_portable",
+         decl,
+         `its grain dimension \`${unreadableGrain.name}\` is stored as ${unreadableGrain.storedType}, which no read of a storage destination declares, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse, which reads it`,
+      );
+   }
    if ("refused" in facts.given) {
       return unservable(facts.given.reason, decl, facts.given.refused);
    }
@@ -1188,6 +1208,31 @@ function declarationRefusal(
          // malloy-text: a warning message for a person, not Malloy
          `the source's access filter reads ${ungated.map((g) => `\`${g}\``).join(", ")}, which the grain does not keep, so the rollup's rows could not be filtered per caller`,
       );
+   }
+   return undefined;
+}
+
+/**
+ * The first grain dimension a `storage=` rollup's table would store as a type
+ * no stored read declares ({@link storedMalloyType}: a BLOB, an INTERVAL, a
+ * MAP or a JSON), with that type. Every read of the rollup groups by its
+ * grain, so such a table is never read. Judged only for a DuckDB-dialect
+ * base, whose warehouse type is the type the destination stores; another
+ * warehouse's native type may arrive as another type, which serve judges.
+ */
+function unreadableStoredGrain(
+   grain: readonly string[],
+   byName: ReadonlyMap<string, FieldLike>,
+   dialect: string | undefined,
+): { name: string; storedType: string } | undefined {
+   if (dialect !== STORAGE_DIALECT) return undefined;
+   for (const name of grain) {
+      const f = byName.get(name);
+      if (f?.type !== "sql native" || typeof f.rawType !== "string") continue;
+      const storedType = f.rawType.toUpperCase();
+      if (storedMalloyType(storedType) === undefined) {
+         return { name, storedType };
+      }
    }
    return undefined;
 }

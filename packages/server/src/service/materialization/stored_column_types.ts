@@ -9,8 +9,8 @@
  *   the declared type whatever the warehouse returned ({@link
  *   BUILD_CAST_TARGETS}, {@link storageBuildCasts}).
  * - What a stored column is declared as when served: one declaration rule
- *   ({@link storedMalloyType}, {@link storedMalloyTypeFor}, {@link
- *   storedTypeText}), and per column a verdict: declared as its stored type,
+ *   ({@link storedMalloyType}, {@link storedMalloyTypeFor}), and per
+ *   column a verdict: declared as its stored type,
  *   read through a faithful cast ({@link serveTypePlan}), read as its native
  *   type (a big integer, {@link bigIntegerReads}), or left out, so a query
  *   reading it answers live and every other query is served.
@@ -1116,17 +1116,6 @@ export function declarableColumns(
 }
 
 /** `name TYPE, …` for an error or log line: names and types, never values. */
-
-/**
- * The Malloy type a stored column is declared as in the `type:`: the one rule
- * every stored table's declaration follows ({@link storedMalloyType}). A
- * column it cannot declare is left out before a declaration is written, so
- * the `json` here is never reached by one that compiles: Malloy refuses it in
- * a `type:`, which fails that copy and leaves the source to its fallback.
- */
-export function storedTypeText(stored: string): string {
-   return storedMalloyType(stored) ?? "json";
-}
 
 /**
  * A wire entry's captured `schema` as a bound entry carries it: only columns

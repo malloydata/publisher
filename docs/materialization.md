@@ -579,8 +579,13 @@ a restart, or a rebind from the store) reads every bound colocated table's colum
 changed since the build (an `ALTER TABLE` outside Publisher) is taken as above: a `#@ persist` or
 `#(materialize)` table reads it through a faithful cast or leaves it out, so only a query that reads
 it is answered live, and a rollup, persisted view or persisted query, which no cast reaches, is
-answered live as a whole. The log line has the same `storage-column-type-mismatch` code and names
-each changed column. A table whose columns cannot be read at the bind is answered live, with a
+answered live as a whole. It raises the same `storage-column-type-mismatch` package warning, one per
+table and column, saying that the table was altered outside a build and whether the column is cast,
+answered live, or the whole table answered live, and counts in the same
+`publisher_storage_column_type_mismatch_total{stage="serve"}`, once per bind. A column that is gone
+is reported too; one whose new type still reads as its declared type is not. The log line has the
+same code and names each changed column. Rebuilding the table clears it. A table whose columns
+cannot be read at the bind is answered live, with a
 warning in the log, until the next bind reads it. A change made after a bind is read at the next
 one.
 
@@ -597,7 +602,9 @@ type, which the destination stores as text) is left out the same way, and a Post
 each in a type or text the stored column does not reproduce. A table built before 0.13.1 keeps a `bytea`
 or `interval` column as text until it is rebuilt in full. The build does
 not refuse such a table, even one with no column left to declare: the served copy declines that
-source at bind, so every query over it is answered live. Each column a `storage=` build stores that
+source at bind, so every query over it is answered live. A `storage=` rollup over a DuckDB source
+whose grain is such a column is the exception: every read of it groups by its grain, so it is refused
+at plan (`not_duckdb_portable`, [preaggregation](preaggregation.md)). Each column a `storage=` build stores that
 no type declares is counted in `publisher_storage_serve_shape_type_fallback_total` and logged.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
