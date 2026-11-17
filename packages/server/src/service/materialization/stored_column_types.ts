@@ -789,38 +789,39 @@ export function bigIntegerReads(
    // rounds exactly where live rounds. A `storage=` table is read in DuckDB,
    // which keeps every digit: cast there only when live does too.
    if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) return [];
+   // Each stored column is a field's output name: a field a trailing
+   // `extend` renames (`rename: amount is total`) is stored as `total`, and
+   // that name is its own whatever another field is now called. So a column
+   // is matched to the field whose output name it is first; a field the
+   // `extend` computes (stored by a `#(materialize)` build under its name),
+   // and then a renamed field's new name, only where no output name claims
+   // the column.
    const byName = new Map<string, unknown>();
    const declared: DeclaredColumn[] = [];
-   for (const f of fields ?? []) {
-      const { name, as, type } = (f ?? {}) as {
+   const fieldOf = (f: unknown) =>
+      (f ?? {}) as {
          name?: unknown;
          as?: unknown;
          type?: unknown;
+         e?: unknown;
       };
-      const key = typeof as === "string" ? as : name;
-      if (typeof key !== "string" || typeof type !== "string") continue;
+   const claim = (key: unknown, f: unknown) => {
+      const { type } = fieldOf(f);
+      if (typeof key !== "string" || typeof type !== "string") return;
+      if (byName.has(key)) return;
       byName.set(key, f);
       declared.push({ name: key, type });
-   }
-   // A field a trailing `extend` renames (`rename: amount is total`) is
-   // stored under its output name (`total`): matched by that too, where no
-   // field already goes by it (P2-45).
+   };
    for (const f of fields ?? []) {
-      const { name, as, type } = (f ?? {}) as {
-         name?: unknown;
-         as?: unknown;
-         type?: unknown;
-      };
-      if (
-         typeof as !== "string" ||
-         typeof name !== "string" ||
-         typeof type !== "string" ||
-         byName.has(name)
-      ) {
-         continue;
-      }
-      byName.set(name, f);
-      declared.push({ name, type });
+      if (fieldOf(f).e === undefined) claim(fieldOf(f).name, f);
+   }
+   for (const f of fields ?? []) {
+      const { name, as, e } = fieldOf(f);
+      if (e !== undefined) claim(typeof as === "string" ? as : name, f);
+   }
+   for (const f of fields ?? []) {
+      const { as, e } = fieldOf(f);
+      if (e === undefined && typeof as === "string") claim(as, f);
    }
    const out: BigIntegerRead[] = [];
    for (const column of schema) {
