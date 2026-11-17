@@ -60,6 +60,20 @@ async function refused(
    throw new Error(`expected DuckDB to refuse: ${sql}`);
 }
 
+async function refusedStream(
+   connection: DuckDBConnection,
+   sql: string,
+): Promise<string> {
+   try {
+      for await (const _row of connection.runSQLStream(sql)) {
+         // Drained: a refusal throws before the first row.
+      }
+   } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+   }
+   throw new Error(`expected DuckDB to refuse (stream): ${sql}`);
+}
+
 function requestsTo(fragment: string): Seen[] {
    return seen.filter((request) => request.url.includes(fragment));
 }
@@ -126,6 +140,27 @@ async function expectCommonVectorsRefused(
       "SELECT * FROM query_table('duckdb_' || 'logs')",
    ]) {
       expect(await refused(connection, statement)).toContain("locked down");
+   }
+   // Hiding a statement from a reader that splits SQL differently from DuckDB:
+   // a line comment DuckDB ends at a carriage return, a dollar-quote tag with
+   // digits or non-ASCII, SQL run from its serialized form, and a database
+   // import that runs the SQL files it reads. Each refused through runSQL and
+   // through runSQLStream.
+   const exportDir = await fs.promises.mkdtemp(path.join(root, "export-"));
+   for (const statement of [
+      "SELECT 1 AS a --x\r, (SELECT count(*) FROM enable_logging(level:='trace')) AS b",
+      "SELECT 1 --\r; CREATE SECRET md (TYPE http, BEARER_TOKEN 't')",
+      "SELECT $a1$ -- $a1$ AS s, (SELECT count(*) FROM duckdb_logs) AS hits",
+      "SELECT $é$ -- $é$ AS s, (SELECT count(*) FROM duckdb_logs) AS hits",
+      "SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 1'))",
+      "PRAGMA json_execute_serialized_sql('{}')",
+      `IMPORT DATABASE '${exportDir}'`,
+      `PRAGMA import_database('${exportDir}')`,
+   ]) {
+      expect(await refused(connection, statement)).toContain("locked down");
+      expect(await refusedStream(connection, statement)).toContain(
+         "locked down",
+      );
    }
    // A name shared with a refused function is not refused as a column.
    expect(
@@ -335,6 +370,66 @@ describe("package sandbox: Malloy's sandboxed policy", () => {
       expect(options.setupSQL).toBeUndefined();
    });
 });
+
+describe.skipIf(process.platform !== "win32")(
+   "package sandbox on Windows: the allowlist across path spellings",
+   () => {
+      let connection: DuckDBConnection;
+
+      beforeAll(async () => {
+         const config = (
+            Package as unknown as {
+               buildPackageMalloyConfig(
+                  packagePath: string,
+                  env: () => MalloyConfig,
+               ): MalloyConfig;
+            }
+         ).buildPackageMalloyConfig(
+            path.join(root, "pkg"),
+            () => new MalloyConfig({ connections: {} }),
+         );
+         connection = (await config.connections.lookupConnection(
+            "duckdb",
+         )) as DuckDBConnection;
+         // A junction (no privilege needed on Windows) out of the package.
+         fs.symlinkSync(
+            path.join(root, "outside"),
+            path.join(root, "pkg", "junction_out"),
+            "junction",
+         );
+      });
+
+      afterAll(async () => {
+         await connection.close();
+      });
+
+      it("reads the package's own files with either separator", async () => {
+         const inside = path.join(root, "pkg", "data", "x.csv");
+         for (const spelling of [inside, inside.replace(/\\/g, "/")]) {
+            expect(
+               rowsOf(await connection.runSQL(`SELECT * FROM '${spelling}'`)),
+            ).toEqual([{ a: "1", b: "2" }]);
+         }
+      });
+
+      it("refuses a file outside the package however its path is spelled", async () => {
+         const outside = path.join(root, "outside", "secret.csv");
+         for (const spelling of [
+            outside,
+            outside.replace(/\\/g, "/"),
+            outside.toUpperCase(),
+            outside.toLowerCase(),
+            `\\\\?\\${outside}`,
+            path.join(root, "pkg", "..", "outside", "secret.csv"),
+            `${path.join(root, "pkg")}/../outside\\secret.csv`,
+            path.join(root, "pkg", "junction_out", "secret.csv"),
+            "junction_out/secret.csv",
+         ]) {
+            await refused(connection, `SELECT * FROM '${spelling}'`);
+         }
+      });
+   },
+);
 
 describe("environment duckdb with setupSQL: allowlist, then lock, as options", () => {
    let restore: () => void;

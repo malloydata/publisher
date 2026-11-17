@@ -86,7 +86,7 @@ The lockdown is part of each instance's configuration identity, so a locked inst
 - A read or a write outside the connection's own roots fails, absolute paths and `..` included: the package directory for the sandbox, the environment directory for an environment `duckdb` connection, the data path for a DuckLake catalog. In the sandbox, a file that is a symlink out of the package is refused, and so is a relative glob over the package's top level (`'*.csv'`); a glob in a subdirectory (`'data/*.csv'`), a named file, or an absolute path inside the package reads as before.
 - Extension autoload is off on a locked connection: only the extensions its own setup loads, and `json`, `icu`, `excel` and `ducklake`, are available.
 - `setupSQL` on an environment `duckdb` connection with no `attachedDatabases` runs confined: it cannot reach the network, read or write outside the environment directory, or install or load an extension.
-- On a locked connection, SQL cannot create, replace or drop a secret, nor call DuckDB's logging or profiling functions, nor `query()` / `query_table()`.
+- On a locked connection, SQL cannot create, replace or drop a secret, call DuckDB's logging or profiling functions, or run SQL taken from text (`query()`, `query_table()`, `json_execute_serialized_sql`, `IMPORT DATABASE`).
 - MotherDuck connections are locked like the other networked readers but have not been tested with external access off.
 
 **Known residual:** confining a connection to its data path is not org isolation inside one shared bucket. Isolating orgs that share a bucket requires credentials the host scopes per org; see [security-posture.md](docs/security-posture.md#known-gaps), gap 6, which also lists the other limits.

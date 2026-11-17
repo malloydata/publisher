@@ -34,6 +34,41 @@ async function parserInstance(): Promise<DuckDBInstance> {
    return parser;
 }
 
+/**
+ * DuckDB's own parse of `sql`, by `json_serialize_sql`: the statements when
+ * all are SELECT, else the error and its type (`parser` for SQL that does not
+ * parse, `not implemented` for a statement kind it does not serialize).
+ */
+export async function serializeSQL(sql: string): Promise<{
+   error?: boolean;
+   errorType?: string;
+   errorMessage?: string;
+   statements?: unknown[];
+}> {
+   const connection = await (await parserInstance()).connect();
+   try {
+      const prepared = await connection.prepare(
+         "SELECT json_serialize_sql($1::VARCHAR) AS j",
+      );
+      prepared.bindVarchar(1, sql);
+      const rows = await (await prepared.run()).getRowObjectsJson();
+      const parsed = JSON.parse(String(rows[0]?.j)) as {
+         error?: boolean;
+         error_type?: string;
+         error_message?: string;
+         statements?: unknown[];
+      };
+      return {
+         error: parsed.error,
+         errorType: parsed.error_type,
+         errorMessage: parsed.error_message,
+         statements: parsed.statements,
+      };
+   } finally {
+      connection.closeSync();
+   }
+}
+
 /** How many SELECT statements `sql` holds, or why it is not only SELECTs. */
 export async function classifySelect(
    sql: string,

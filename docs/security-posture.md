@@ -381,9 +381,12 @@ credentials (httpfs's env-seeded settings are blanked and its global S3 fallback
 cloud-metadata or other non-allowlisted URL, no ATTACH of another catalog, no extension install or
 load beyond what the instance's own setup loaded (extension autoload is off), no persistent
 secret, and no `SET`/`RESET` once locked. On a locked instance, Publisher also refuses, before
-DuckDB sees it, any statement that creates or drops a secret, or that reaches DuckDB's logging or
-profiling, which DuckDB's configuration lock does not cover; Publisher's own renewal of a storage
-secret is the one secret statement it admits. The lockdown is part of each instance's configuration identity, so an instance is never
+DuckDB sees it, any statement that creates or drops a secret, that reaches DuckDB's logging or
+profiling (which DuckDB's configuration lock does not cover), or that runs SQL taken from text
+(`query()`, a serialized plan, `IMPORT DATABASE`). It reads each statement with DuckDB's own
+parser where the parser can serialize it, and every statement with a fail-closed lexical check
+that re-reads comment and string text, so a construct read differently from DuckDB hides nothing.
+Publisher's own renewal of a storage secret is the one secret statement it admits. The lockdown is part of each instance's configuration identity, so an instance is never
 shared with a connection that needs a different setup or a different policy.
 
 What it does not cover, so a multi-tenant deployment still has to:
