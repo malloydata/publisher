@@ -352,6 +352,44 @@ for (const placement of ["colocated", "storage"] as const) {
             );
          });
 
+         // In a destination the join branch needs the parent stored beside it,
+         // which `cats` is not, so it declines there before any variant.
+         it.skipIf(placement === "storage")(
+            "denies a join answer that reaches it past the leg's refusal (govern(), the second layer)",
+            async () => {
+               const { allowGivenTermJoinsForTests } = await import(
+                  "../../../src/service/materialization/serve/join_rollup"
+               );
+               const { AccessDeniedError } = await import(
+                  "../../../src/errors"
+               );
+               // The join branches are planned once per model: forget them, so
+               // they are planned again under the seam (and after it).
+               const forget = () => {
+                  (
+                     fixture.model as unknown as {
+                        rollupVariants: { planMemo?: unknown };
+                     }
+                  ).rollupVariants.planMemo = undefined;
+               };
+               const restoreSeam = allowGivenTermJoinsForTests();
+               forget();
+               try {
+                  fixture.setBindings(fixture.bindings);
+                  await expect(
+                     fixture.runAsIs(
+                        "run: cats -> { group_by: category; aggregate: t is scoped.total }",
+                        { REGION: "east" },
+                     ),
+                  ).rejects.toThrow(AccessDeniedError);
+               } finally {
+                  restoreSeam();
+                  forget();
+                  fixture.setBindings(fixture.bindings);
+               }
+            },
+         );
+
          it("refuses a term over a field the grain does not keep, and one inherited, and answers both live", async () => {
             expect(
                fixture.rollupRefusals

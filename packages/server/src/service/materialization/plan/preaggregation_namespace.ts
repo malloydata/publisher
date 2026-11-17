@@ -13,7 +13,7 @@
  * tail stay Publisher's. `namespace=` is the container's older, deprecated
  * spelling, read for one more release.
  */
-import { hasReservedTableSuffix } from "../domain/table_name";
+import { hasReservedTableSuffix, readableSegment } from "../domain/table_name";
 
 /**
  * One segment of a container: a plain identifier, plus the hyphen.
@@ -100,6 +100,14 @@ export function readRollupContainer(keys: {
       if (prefix === "" || (dot >= 0 && container === undefined)) {
          return {
             invalid: `has name="${name}", which is not a plain name: write a table name, with the schema or dataset to place it in before a dot if any (name="analytics.orders_rollup")`,
+         };
+      }
+      // Written into the name as it reads, lowercased only: a leaf the name
+      // would rewrite (a space, punctuation, a leading digit, `__`) is
+      // refused rather than changed without notice.
+      if (readableSegment(prefix) !== prefix.toLowerCase()) {
+         return {
+            invalid: `has name="${name}", whose table name is not a plain name: use letters, digits and single underscores, starting with a letter (it is lowercased in the table's name)`,
          };
       }
       if (hasReservedTableSuffix(prefix)) {

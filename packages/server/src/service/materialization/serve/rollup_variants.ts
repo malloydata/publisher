@@ -1651,13 +1651,40 @@ export class RollupVariantServe {
          companion && declaringFile
             ? generateRollupBuildFile([plan], path.basename(declaringFile))
             : undefined;
-      if (!companion || !text) return { error: "no companion" };
+      if (!companion || !text || !declaringFile) {
+         return { error: "no companion" };
+      }
       overlay.set(companion.href, text);
       // The shared, checked blanking (persist_blanking.ts), read through
       // the package's own reader, as the build companion reads them.
       const blanked = await authorFiles.blanked(this.host.modelDef());
       if (!blanked) return { error: "a `#@` line could not be left out" };
       for (const [url, file] of blanked) overlay.set(url, file);
+      // The base's build copy, which the companion imports it from, made as
+      // the plan made it, so the build source's SQL (and its table) is one.
+      if (readsBuildCopy(plan)) {
+         const baseURL = pathToFileURL(declaringFile);
+         const made = rollupBuildCopyText(
+            blanked.get(overlayKey(baseURL)) ??
+               (await authorFiles.readIfAny(baseURL.href)) ??
+               "",
+            plan,
+            (plan.privateGrain ?? []).length > 0,
+         );
+         if (!("copy" in made)) return { error: made.reason };
+         overlay.set(
+            pathToFileURL(
+               path.join(
+                  path.dirname(declaringFile),
+                  rollupBuildCopyName(
+                     path.basename(declaringFile),
+                     plan.baseDeclaredName,
+                  ),
+               ),
+            ).href,
+            made.copy,
+         );
+      }
       const declaration = `${colocatedRollupSource(plan, this.host.modelDef(), servedName, relativeImport(queryModelURL, companion.href))}
 ${sourceOverRollup(plan, use, servedName, "")}`;
       const modelText = queryModelText(

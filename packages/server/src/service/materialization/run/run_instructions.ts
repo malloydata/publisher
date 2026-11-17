@@ -574,6 +574,12 @@ function tableNameDecision(
    previous: string | undefined;
    renaming: boolean;
    tableName: string;
+   /**
+    * A rollup's table an earlier run built under another readable name of
+    * this package's (its `name=` leaf changed), which this run renames:
+    * reclaimed once the run commits, as a pre-readable name is.
+    */
+   leafRenamed?: string;
 } {
    // Orchestrated builds use the host-supplied `physicalTableName`. A
    // storage build replaces its table atomically (`CREATE OR REPLACE` in
@@ -620,7 +626,32 @@ function tableNameDecision(
       )
          ? prior!.physicalTableName
          : fresh;
-   return { named, prior, sameDestination, previous, renaming, tableName };
+   const leafRenamed =
+      naming &&
+      naming.ownedVersion === undefined &&
+      !!compiled.tables[persistSource.sourceID]?.rollup &&
+      sameDestination &&
+      !renaming &&
+      tableName === fresh &&
+      prior!.physicalTableName !== fresh &&
+      READABLE_TAIL.test(prior!.physicalTableName) &&
+      !takenByAnother(
+         persistSource,
+         destination,
+         prior!.physicalTableName,
+         sourceEntityId,
+      )
+         ? prior!.physicalTableName
+         : undefined;
+   return {
+      named,
+      prior,
+      sameDestination,
+      previous,
+      renaming,
+      tableName,
+      ...(leafRenamed !== undefined ? { leafRenamed } : {}),
+   };
 }
 
 /**
@@ -711,17 +742,24 @@ export function deriveSelfInstructions(
       if (seen.has(sourceEntityId)) continue;
       seen.add(sourceEntityId);
 
-      const { named, prior, sameDestination, previous, renaming, tableName } =
-         tableNameDecision(
-            compiled,
-            persistSource,
-            sourceEntityId,
-            destination,
-            priorEntries,
-            freshNames.get(sourceEntityId)!,
-            takenByAnother,
-            naming,
-         );
+      const {
+         named,
+         prior,
+         sameDestination,
+         previous,
+         renaming,
+         tableName,
+         leafRenamed,
+      } = tableNameDecision(
+         compiled,
+         persistSource,
+         sourceEntityId,
+         destination,
+         priorEntries,
+         freshNames.get(sourceEntityId)!,
+         takenByAnother,
+         naming,
+      );
       if (naming && !named) {
          const key = tableKeyOf(
             persistSource.connectionName,
@@ -804,10 +842,10 @@ export function deriveSelfInstructions(
          continue;
       }
 
-      if (renaming && logicalName === tableName) {
+      if ((renaming && logicalName === tableName) || leafRenamed) {
          renamed.push({
             sourceEntityId,
-            previousName: previous!,
+            previousName: leafRenamed ?? previous!,
             physicalTableName: tableName,
             connectionName: persistSource.connectionName,
             ...(destination ? { storageDestinationName: destination } : {}),

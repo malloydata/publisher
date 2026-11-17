@@ -211,11 +211,14 @@ container, and the leaf takes the place of the
 (`<package>__<file>__orders_by_category`), as a `name=` does under `scope: "version"`; the
 `__p<hash>` that keeps the name unique is always Publisher's, so the table is never at the
 `name=` itself. A `name=` with no dot (`name="orders_rollup"`) sets only the prefix, in the
-connection's default schema. Without `name=`, the table takes the readable name. An empty
-leaf, a container needing quotes, or a leaf ending as Publisher's own names do
+connection's default schema. Without `name=`, the table takes the readable name. The leaf
+is written into the name as it reads, lowercased (`OrdersRollup` names `ordersrollup__p<hash>`):
+a leaf the name would otherwise rewrite (a space, punctuation, a leading digit, `__`), an
+empty one, a container needing quotes, or a leaf ending as Publisher's own names do
 (`__p<8 hex>`) fails the publish and the load (`preaggregate-invalid`), and so do measures at
-one grain naming different leaves. Changing the leaf renames the table, which is rebuilt
-once under the new name. `#@ preaggregate grain="category" name="analytics.orders_rollup"`
+one grain naming different leaves. Two rollups that compile alike but name different leaves
+are two tables. Changing the leaf renames the table, which is rebuilt once under the new
+name, and the old table is dropped once that run commits and is served. `#@ preaggregate grain="category" name="analytics.orders_rollup"`
 places a v1 rollup the same way.
 
 **`namespace=` is deprecated.** `namespace="analytics"` is the older spelling of the

@@ -126,7 +126,9 @@ describe("a rollup's name= places its table", () => {
       for (const v1 of [false, true]) {
          const named = await as('name="analytics.t"', v1);
          const spaced = await as('namespace="analytics"', v1);
-         // One address and container; the name= leaf only renames it.
+         // Each alone keeps the plain address (#1794, option A) and the
+         // container; the name= leaf renames it. Beside each other in one
+         // plan they are two tables (below).
          const [n] = tablesOf(named.compiled, named.packagePath);
          const [d] = tablesOf(spaced.compiled, spaced.packagePath);
          expect(d?.address).toBe(n?.address);
@@ -152,6 +154,10 @@ describe("a rollup's name= places its table", () => {
 
    for (const [label, placement] of [
       ["a name= with an empty leaf", 'name="analytics."'],
+      ["a leaf with a space", 'name="analytics.Orders Rollup"'],
+      ["a leaf starting with a digit", 'name="1st_rollup"'],
+      ["a leaf of punctuation", 'name="a.--"'],
+      ["a leaf with a double underscore", 'name="a.orders__rollup"'],
       ["a name= whose container needs quotes", 'name="my schema.t"'],
       ["a name= ending as Publisher's own names do", 'name="a.t__p0123abcd"'],
       [
@@ -178,6 +184,19 @@ describe("a rollup's name= places its table", () => {
 });
 
 describe("a rollup's name= leaf with no container", () => {
+   it("is lowercased in the table's name, and otherwise written as it reads", async () => {
+      const { compiled, packagePath } = await compile(
+         `source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category"] name="OrdersRollup"
+  measure: total is amount.sum()
+}
+`,
+      );
+      expect(tablesOf(compiled, packagePath).map((t) => t.table)).toEqual([
+         expect.stringMatching(prefixed("", "ordersrollup")),
+      ]);
+   });
+
    it("names its table in the connection's default schema", async () => {
       const { compiled, packagePath } = await compile(
          `source: orders is ${ROWS} extend {
@@ -262,6 +281,43 @@ source: orders is ${ROWS} extend {
             (f) => f.code === "materialization-table-collision",
          ),
       ).toEqual([]);
+   });
+
+   it("gives identical rollups named by different leaves two tables at two addresses, whatever the file order", async () => {
+      const model = (
+         first: string,
+         second: string,
+      ) => `source: a is ${ROWS} extend {
+  #(preaggregate) grain=["category"] ${first}
+  measure: total is amount.sum()
+}
+source: b is ${ROWS} extend {
+  #(preaggregate) grain=["category"] ${second}
+  measure: total is amount.sum()
+}
+`;
+      for (const [first, second] of [
+         ['name="x"', 'name="y"'],
+         ['name="y"', 'name="x"'],
+      ] as const) {
+         const { compiled, packagePath } = await compile(model(first, second));
+         const entries = tablesOf(compiled, packagePath);
+         expect(entries.map((t) => t.table).sort()).toEqual([
+            expect.stringMatching(prefixed("", "x")),
+            expect.stringMatching(prefixed("", "y")),
+         ]);
+         expect(new Set(entries.map((t) => t.address)).size).toBe(2);
+      }
+      // A leaf beside none (the readable name): two tables too.
+      const mixed = await compile(model("", 'name="x"'));
+      expect(
+         new Set(
+            tablesOf(mixed.compiled, mixed.packagePath).map((t) => t.address),
+         ).size,
+      ).toBe(2);
+      // The same leaf: one table.
+      const same = await compile(model('name="x"', 'name="x"'));
+      expect(tablesOf(same.compiled, same.packagePath)).toHaveLength(1);
    });
 
    it("gives one grain placed in two containers two tables at two addresses", async () => {

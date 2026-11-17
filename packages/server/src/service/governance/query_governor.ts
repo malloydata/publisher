@@ -826,15 +826,14 @@ export class QueryGovernor {
    /**
     * Deny a routed answer whose given-reading `where:` terms differ from
     * live's ({@link GovernRequest.reprovesGivenTerms}); opaque to the caller.
-    * Counted as a gate denial at the entry point until the metric has a
-    * value of its own.
+    * Not a gate decision, so no gate metric counts it: its error-level log
+    * line is the signal.
     */
    private async denyGivenTermsDiffer(
       routed: QueryMaterializer,
    ): Promise<never> {
       const source = await this.resolveAuthorizeSourceFromRunnable(routed);
-      recordRowLevelGateDecision("denied_by_gate", "entry_point");
-      logger.warn(
+      logger.error(
          "A routed answer's given-reading where: terms differ from the live query's on its own compile; denying",
          { modelPath: this.modelPath, source },
       );
