@@ -1057,6 +1057,45 @@ describe("applyObservedColumns", () => {
          });
       }
 
+      // Fixed-length text pads with blanks: a move to or from it, or to
+      // another fixed length, is never read as it is ('ab' against 'ab ').
+      for (const [built, now, kept] of [
+         ["character(2)", "character varying(2)", false],
+         ["character varying(2)", "character(2)", false],
+         ["bpchar", "varchar", false],
+         ["character(2)", "character(3)", false],
+         ["character varying(2)", "character varying(3)", true],
+         ["character varying(3)", "character varying(2)", false],
+      ] as const) {
+         it(`reads ${built} now ${now} ${kept ? "as it is" : "left out"} (Postgres)`, () => {
+            const out = applyObservedColumns({
+               entries: {
+                  v1: {
+                     tableName: "t",
+                     connectionName: "pg",
+                     schema: [{ name: "x", type: "VARCHAR" }],
+                     nativeSchema: [{ name: "x", type: built }],
+                  },
+               },
+               bindings: [],
+               observed: new Map([
+                  [
+                     "v1",
+                     {
+                        dialect: "postgres",
+                        columns: [
+                           { name: "x", type: "VARCHAR", nativeType: now },
+                        ],
+                     },
+                  ],
+               ]),
+            });
+            expect(out.entries.v1?.leftOutColumns ?? []).toEqual(
+               kept ? [] : ["x"],
+            );
+         });
+      }
+
       it("keeps the bare table when every moved column still reads as declared", () => {
          const out = applyObservedColumns({
             entries: {

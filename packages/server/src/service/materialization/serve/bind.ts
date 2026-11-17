@@ -806,6 +806,8 @@ type ParsedType =
    | { kind: "decimal"; precision: number; scale: number }
    | { kind: "float"; rank: number }
    | { kind: "text"; length: number }
+   /** Fixed-length, blank-padded text (`character(n)`, `bpchar`). */
+   | { kind: "char"; length: number }
    | { kind: "other"; spelling: string };
 
 /** Each integer's width, by its spellings, with the decimal digits it holds. */
@@ -862,8 +864,17 @@ function parsedType(type: string): ParsedType {
    if (/^(double|double precision|float8|float64)$/.test(t)) {
       return { kind: "float", rank: 2 };
    }
+   // Fixed-length text pads with blanks, so a move to or from it adds or
+   // strips them ('ab' against 'ab '): a kind apart from varying text.
+   const fixed = /^(bpchar|char|character)\s*(?:\((\d+)\))?$/.exec(t);
+   if (fixed) {
+      return {
+         kind: "char",
+         length: fixed[2] !== undefined ? Number(fixed[2]) : Infinity,
+      };
+   }
    const text =
-      /^(varchar|text|string|character varying|char varying|nvarchar|bpchar|char|character)\s*(?:\((\d+)\))?$/.exec(
+      /^(varchar|text|string|character varying|char varying|nvarchar)\s*(?:\((\d+)\))?$/.exec(
          t,
       );
    if (text) {
@@ -880,7 +891,9 @@ function parsedType(type: string): ParsedType {
  * exactly as before: the same type, or a widening that loses nothing (a
  * wider integer, a decimal with no fewer integer or fraction digits, an
  * integer into a decimal or float that holds all its digits, FLOAT to DOUBLE,
- * a longer text). Anything else inside a family may have rounded or cut a
+ * a longer varying text). A move between fixed-length text (`character(n)`)
+ * and varying text, or between two fixed lengths, adds or strips padding, so
+ * it is never one. Anything else inside a family may have rounded or cut a
  * value, so it is never read as is.
  */
 function losslessWidening(built: string, now: string): boolean {
@@ -911,6 +924,10 @@ function losslessWidening(built: string, now: string): boolean {
    }
    if (from.kind === "text") {
       return to.kind === "text" && to.length >= from.length;
+   }
+   // Another length pads differently; varying text holds no padding.
+   if (from.kind === "char") {
+      return to.kind === "char" && to.length === from.length;
    }
    return to.kind === "other" && to.spelling === from.spelling;
 }
