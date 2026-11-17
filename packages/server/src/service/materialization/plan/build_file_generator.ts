@@ -46,9 +46,10 @@
  * the companion model. Without a `name=`, a `storage=` source's table defaults
  * to the source's own name (the destination is Publisher's, and the existing
  * collision checks refuse two sources on one table). A colocated source (no
- * `storage=`) is built into its own warehouse and needs a `name=`
- * ({@link COLOCATED_NEEDS_NAME}): its default could be the very table it
- * reads. The served copy re-roots it on that table, on its own connection,
+ * `storage=`) is built into its own warehouse; without a `name=` Publisher
+ * gives its table a readable name of its own (never the table it reads), and
+ * only BigQuery, where a table needs a dataset, needs a `name=` that names
+ * one (`needs_qualified_name`). The served copy re-roots it on that table, on its own connection,
  * as it re-roots a `storage=` source on its destination, and a v1 colocated
  * `#@ persist` table the same way
  * (`tests/component/r4/served_copy_colocated.component.spec.ts`). Only a

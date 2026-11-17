@@ -264,7 +264,8 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
          "planned | colocated | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
       views__by_region_col__view: "planned | colocated | not_built",
-      views__by_region_sto__view: "refused authorize | storage | live refused",
+      views__by_region_sto__view:
+         "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize on, gated sources off": {
       mat_col: "planned | colocated | not_built",
@@ -279,18 +280,27 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       "roll.total_sto": "refused access_filter | colocated | live refused",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
       views__by_region_col__view:
-         "refused authorize | colocated | live refused",
-      views__by_region_sto__view: "refused authorize | storage | live refused",
+         "refused access_filter | colocated | live refused",
+      views__by_region_sto__view:
+         "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources on": {
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources off": {
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize on, gated sources on": {
       mat_col: "planned | colocated | not_built",
@@ -335,6 +345,10 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
          "planned | colocated | live row_level_gate",
       secure_persist_col: "planned | colocated | not_built",
       secure_persist_sto: "planned | storage | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize off, gated sources off": {
       persist_col: "planned | colocated | not_built",
@@ -343,6 +357,10 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
          "planned | colocated | live row_level_gate",
       secure_persist_col: "planned | colocated | not_built",
       secure_persist_sto: "planned | storage | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
 };
 

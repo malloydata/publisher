@@ -265,9 +265,10 @@ export interface QueryPathInput {
 }
 
 /**
- * Assemble the path report. Order in `considered` follows the order Publisher
- * tries the tiers: `storage=` tables, then colocated rollups, then colocated
- * `#@ persist` tables nearest first.
+ * Assemble the path report. `considered` lists `storage=` tables, then
+ * colocated rollups, then colocated tables nearest first: not the order the
+ * router tries the legs (`makeLegs`: persisted results, then rollups, then
+ * the served copy).
  */
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);

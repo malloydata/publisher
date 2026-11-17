@@ -314,6 +314,35 @@ const PARENT_NOT_REROOTED =
    "the parent's declaration could not be re-rooted on its build source";
 
 /**
+ * `text`, the file that declares `plan`'s source, with that declaration
+ * (`declaration`, a range in `text`) re-rooted on the source's own generated
+ * build source as an extension's build copy re-roots its parent
+ * ({@link rerootOnBuildSource}), and the build source imported from
+ * `importFrom`: a query over the source in the copy reads its stored table
+ * through a run's build manifest. Read by the rollup companion, so a
+ * colocated rollup over a colocated `#(materialize)` base builds from the
+ * base's table (rollup_compile.ts). Undefined when the declaration is not
+ * where `declaration` says or does not re-root.
+ */
+export function storedSourceCopyText(
+   text: string,
+   plan: MaterializePlan,
+   declaration: TermUse,
+   importFrom: string,
+): string | undefined {
+   const from = offsetOf(text, declaration.range.start);
+   const to = offsetOf(text, declaration.range.end);
+   if (from < 0 || to < from) return undefined;
+   const rerooted = rerootOnBuildSource(text.slice(from, to), plan);
+   if (rerooted === undefined) return undefined;
+   const copy = applyEdits(text, [{ start: from, end: to, insert: rerooted }]);
+   if (copy === undefined) return undefined;
+   const at = afterModelHeader(copy);
+   const line = `import { ${identifier(plan.buildSourceName)} } from ${stringLiteral(importFrom)}\n`;
+   return `${copy.slice(0, at)}${line}${copy.slice(at)}`;
+}
+
+/**
  * A parent's declaration in an extension's build copy (P10): `<name> is
  * <build source>`, then the blocks that undo its renames
  * ({@link inverseRenameBlocks}), then its own trailing `extend` run less each

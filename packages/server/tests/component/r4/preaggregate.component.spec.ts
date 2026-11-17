@@ -669,7 +669,7 @@ source: open is duckdb.table('orders_raw') extend {
       // (r4/rollup_gaps serves one whose grain does).
       expect(
          fixture.rollupRefusals.filter((r) => r.sourceName === "scoped"),
-      ).toEqual([{ reason: "reads_given", sourceName: "scoped" }]);
+      ).toEqual([{ reason: "given_in_persisted_query", sourceName: "scoped" }]);
       expect(
          Object.keys(fixture.rollupTables).filter((n) =>
             n.startsWith("scoped__rollup__"),

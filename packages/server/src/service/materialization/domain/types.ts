@@ -153,6 +153,46 @@ export interface KeyUniqueness {
    parentKeys?: Record<string, boolean>;
 }
 
+/**
+ * One bound colocated table's columns as the bind read them from its
+ * warehouse (DuckDB's spelling, as {@link FreshnessAwareManifestEntry.schema}),
+ * or why they could not be read, in which case the table answers live.
+ */
+export type ObservedColumns =
+   | {
+        /**
+         * Each column, `type` absent for one whose warehouse type Malloy
+         * reads as no basic type (a struct, an array): never a drift.
+         */
+        columns: {
+           name: string;
+           type?: string;
+           /** Its type as the warehouse's catalog names it (`numeric(10,2)`). */
+           nativeType?: string;
+        }[];
+        /** The connection's dialect the types were read on. */
+        dialect?: string;
+     }
+   | {
+        /** Why, as a fixed class: what a package warning may say. */
+        unread: UnreadReason;
+        /**
+         * The driver's own message, its connection's secrets redacted: for
+         * the log alone, never the API.
+         */
+        detail?: string;
+     };
+
+/** Why the bind could not read a database table's columns. */
+export type UnreadReason =
+   | "connection_failed"
+   | "timed_out"
+   | "catalog_query_failed"
+   | "not_found"
+   | "ambiguous"
+   | "unparseable"
+   | "not_read";
+
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */
 export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;
 

@@ -764,7 +764,11 @@ describe("R4: gated queries on storage= rollups with gated sources off", () => {
          fixture.rollupRefusals
             .filter((r) => !["open", "order_lines"].includes(r.sourceName))
             .every(
-               (r) => r.reason === "access_filter" || r.reason === "time_zone",
+               // Named by the gate's kind: a row filter or a lock.
+               (r) =>
+                  r.reason === "access_filter" ||
+                  r.reason === "authorize" ||
+                  r.reason === "time_zone",
             ),
       ).toBe(true);
    });

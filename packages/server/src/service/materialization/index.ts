@@ -18,6 +18,7 @@ export { PackageMaterialization } from "./package_materialization";
 export { nearMissGateLines } from "./plan/load_gate_text";
 export { MaterializationService } from "./run/materialization_service";
 export { keptTablesResolverFor, Reclaimer } from "./run/reclaimer";
+export { isUsableTableName } from "./run/manifest_loader";
 export { MaterializationScheduler } from "./run/materialization_scheduler";
 export type * from "./host";
 export type { SynthesizedRuntimeFactory } from "./text/generated_files";
