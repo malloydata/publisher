@@ -1924,9 +1924,13 @@ ${declaration}
             });
             if (typeof rollup !== "string") return rollup;
             const parent = parentAlias(plan);
+            // malloy-text: colocatedRollupSource's declaration, every name through identifier
+            const rollupText = rollup;
+            // malloy-text: the author's own gate notes, as gateLines writes them for every declaring-file variant
+            const gateText = gates;
             return `import { ${identifier(parent)} is ${identifier(sourceName)} } from ${doubleQuotedString(copyName)}
-${rollup}
-${gates}${sourceOverRollup(plan, { ...use, localName: sourceName }, servedName, "")}`;
+${rollupText}
+${gateText}${sourceOverRollup(plan, { ...use, localName: sourceName }, servedName, "")}`;
          },
       });
    }
