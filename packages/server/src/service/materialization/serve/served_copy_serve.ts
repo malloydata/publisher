@@ -71,6 +71,7 @@ import {
    type BigIntegerReadOptions,
    nativeTypeLookup,
    declaredColumnsOf,
+   ducklakeStoresAsDouble,
    liveKeepsBigIntegers,
    storedColumnReadPlan,
    storedTypeServesAs,
@@ -4616,6 +4617,17 @@ export function chainBuildText(
    const aliases: Record<string, string[]> = {};
    const sourceIDs = new Map<string, readonly string[] | undefined>();
    for (const upstream of request.upstreams) {
+      // An upstream table holding a 128-bit integer holds its digits rounded
+      // (DuckLake stores it as a DOUBLE, P4-01): never stacked on, so the
+      // downstream recomputes from its raw source rather than storing those
+      // rounded values as exact. Its text then reads the upstream as written.
+      if (
+         (upstream.entry.schema ?? []).some((c) =>
+            ducklakeStoresAsDouble(c.type ?? ""),
+         )
+      ) {
+         continue;
+      }
       const address = upstream.entry.sourceEntityId;
       entries[address] = upstream.entry;
       const names = Object.keys(upstream.names);

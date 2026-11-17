@@ -125,6 +125,27 @@ source: p_wide is wide -> { group_by: k; aggregate: hs is h.sum(), n is count() 
 
 #(materialize) storage="lake"
 source: m_wide is wide_base extend {}
+
+// A stored upstream whose sum column fell back to the 128-bit type, as an
+// older build's did: one key past 38 digits fails the DECIMAL(38,0) cast for
+// the whole column, so every key's sum is stored rounded. A chained
+// downstream over it must never store those rounded values as exact.
+source: mixed is warehouse.sql("""
+  SELECT 'k' || lpad((i % ${GROUPS})::VARCHAR, 5, '0') AS k,
+         (CASE WHEN i < ${GROUPS} THEN ${BIG} ELSE 1 END)::HUGEINT AS v
+  FROM range(${2 * GROUPS}) AS t(i)
+  UNION ALL SELECT 'wide' AS k, ${WIDE}::HUGEINT AS v
+""")
+
+#@ persist storage="lake"
+source: p_mixed is mixed -> { group_by: k; aggregate: total is v.sum() }
+
+#@ persist storage="lake"
+source: c_mixed is p_mixed -> {
+  where: k != 'wide'
+  group_by: k
+  aggregate: t is total.sum()
+}
 `;
 
 /** Each query, what it reads, and whether the table answers it. */
@@ -185,6 +206,12 @@ const CASES: {
       malloy: "run: wide -> by_k_wide",
       exact: { column: "ht", value: WIDE },
       leg: "view",
+   },
+   {
+      name: "P4-01 chained: a downstream over a rounded 128-bit upstream equals live",
+      malloy: "run: c_mixed -> { select: k, t; order_by: k }",
+      exact: { column: "t", value: SUM },
+      served: true,
    },
    {
       name: "P4-01 control: a stored BIGINT (#@ persist) still serves",
@@ -518,6 +545,15 @@ describe.skipIf(process.platform === "win32")(
             });
          }
          // Past 38 digits the cast fails and the 128-bit type is stored.
+         // The rounded upstream, and its chained downstream stored exact.
+         expect(entry("p_mixed").schema).toContainEqual({
+            name: "total",
+            type: "HUGEINT",
+         });
+         expect(entry("c_mixed").schema).toContainEqual({
+            name: "t",
+            type: "DECIMAL(38,0)",
+         });
          expect(entry("p_wide").schema).toContainEqual({
             name: "hs",
             type: "HUGEINT",
