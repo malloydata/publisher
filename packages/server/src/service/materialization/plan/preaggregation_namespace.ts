@@ -6,11 +6,14 @@
  * (`#@ preaggregate` and `#(preaggregate)`) and the inheritance from a base's
  * `name=` all apply it.
  *
- * A rollup's `name=` places its table: everything before its last dot is the
- * schema or dataset the table is created in, and its leaf is not used, since
- * Publisher names a rollup's table itself (`<base>_by_<grain>`). `namespace=`
- * is that container's older, deprecated spelling, read for one more release.
+ * A rollup's `name=` places and prefixes its table: everything before its
+ * last dot is the schema or dataset the table is created in, and its leaf
+ * takes the place of the readable prefix of the name Publisher gives the
+ * table, as a `name=` does under `scope: "version"`; the name's identity and
+ * tail stay Publisher's. `namespace=` is the container's older, deprecated
+ * spelling, read for one more release.
  */
+import { hasReservedTableSuffix } from "../domain/table_name";
 
 /**
  * One segment of a container: a plain identifier, plus the hyphen.
@@ -62,17 +65,21 @@ export function nameContainer(name: string | undefined): string | undefined {
 type RollupContainer =
    | {
         container?: string;
+        /** The `name=`'s leaf: the readable prefix of the table's name. */
+        prefix?: string;
         /** Read from the deprecated `namespace=`. */
         deprecatedNamespace?: true;
      }
    | { invalid: string };
 
 /**
- * The container one rollup line places its table in, from its `name=` or its
- * deprecated `namespace=` (never both), or why the line is invalid: a
- * `name=` with no plain container to place the table in (a bare name would
- * place nothing), or a `namespace=` that is not plain dot-separated names.
- * Neither key: no container of its own.
+ * Where one rollup line places its table and what its name starts with,
+ * from its `name=` (its container, if any, and its leaf, the readable
+ * prefix) or its deprecated `namespace=` (a container only), never both; or
+ * why the line is invalid: a `name=` whose container is not plain names, an
+ * empty leaf, or a leaf ending the way Publisher's own names do; a
+ * `namespace=` that is not plain dot-separated names. Neither key: nothing
+ * of its own.
  */
 export function readRollupContainer(keys: {
    name?: string;
@@ -86,12 +93,21 @@ export function readRollupContainer(keys: {
       };
    }
    if (name !== undefined) {
-      const container = nameContainer(name.trim());
-      return container === undefined
-         ? {
-              invalid: `has name="${name}", which names no plain schema or dataset: a rollup's name= places its table there, and Publisher names the table itself, so write the container before a dot (name="analytics.orders_rollup")`,
-           }
-         : { container };
+      const written = name.trim();
+      const dot = written.lastIndexOf(".");
+      const prefix = written.slice(dot + 1).trim();
+      const container = dot > 0 ? nameContainer(written) : undefined;
+      if (prefix === "" || (dot >= 0 && container === undefined)) {
+         return {
+            invalid: `has name="${name}", which is not a plain name: write a table name, with the schema or dataset to place it in before a dot if any (name="analytics.orders_rollup")`,
+         };
+      }
+      if (hasReservedTableSuffix(prefix)) {
+         return {
+            invalid: `has name="${name}", whose table name ends the way Publisher's own table names do (\`__p<8 hex>\`); choose another`,
+         };
+      }
+      return { ...(container ? { container } : {}), prefix };
    }
    if (namespace !== undefined) {
       const container = namespace.trim();
@@ -106,5 +122,5 @@ export function readRollupContainer(keys: {
 
 /** The rewrite of a deprecated `namespace=`, for its warning. */
 export function namespaceRewrite(container: string): string {
-   return `namespace= is deprecated: write name="${container}.<table>" instead (its schema or dataset places the table; Publisher names the table itself)`;
+   return `namespace= is deprecated: write name="${container}.<table>" instead (its schema or dataset places the table, and <table> starts the table's name)`;
 }

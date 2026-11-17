@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * One placement key for every table: a rollup's `name=` places it. Its
- * container (everything before the last dot) is the schema or dataset the
- * table is created in, and its leaf stays Publisher's readable name
- * (`<pkg>__<file>__<base>_by_<grain>__p<hash>`), on `#(preaggregate)` and
- * `#@ preaggregate` alike. `namespace=`, the older spelling of the container,
- * is read for one more release with a `deprecated-preaggregate-namespace`
- * warning, and places the table exactly as the `name=` that replaces it. A
+ * One placement key for every table: a rollup's `name=` places and names it.
+ * Its container (everything before the last dot) is the schema or dataset the
+ * table is created in, and its leaf takes the place of the readable prefix
+ * (`<leaf>__p<hash>`, where it would read `<pkg>__<file>__<base>_by_<grain>`),
+ * as a `name=` does under `scope: "version"`; the hash, and so uniqueness,
+ * stays Publisher's. On `#(preaggregate)` and `#@ preaggregate` alike.
+ * `namespace=`, the older spelling of the container, is read for one more
+ * release with a `deprecated-preaggregate-namespace` warning, in the same
+ * container under the readable prefix. A
  * rollup with no placement of its own inherits its base's colocated `name=`
  * container, from `#@ persist` or `#(materialize)`, so the two spellings land
  * in one schema. A rollup's table never takes its base's table, whatever the
@@ -75,6 +77,11 @@ const readable = (container: string, label: string) =>
    new RegExp(
       `^${container ? `${container.replace(".", "\\.")}\\.` : ""}pa__m__${label}__p[0-9a-f]{8}$`,
    );
+/** A rollup's name under its `name=` leaf: `[container.]<leaf>__p<hash>`. */
+const prefixed = (container: string, leaf: string) =>
+   new RegExp(
+      `^${container ? `${container.replace(".", "\\.")}\\.` : ""}${leaf}__p[0-9a-f]{8}$`,
+   );
 
 describe("a rollup's name= places its table", () => {
    for (const [spelling, line] of [
@@ -87,7 +94,7 @@ describe("a rollup's name= places its table", () => {
          '#@ preaggregate grain="category" name="analytics.anything"',
       ],
    ] as const) {
-      it(`places a ${spelling} table in name='s container, under Publisher's own leaf`, async () => {
+      it(`places a ${spelling} table in name='s container, its leaf the readable prefix`, async () => {
          const { compiled, packagePath } = await compile(
             `source: orders is ${ROWS} extend {
   ${line}
@@ -97,7 +104,7 @@ describe("a rollup's name= places its table", () => {
          );
          const tables = tablesOf(compiled, packagePath);
          expect(tables.map((t) => t.table)).toEqual([
-            expect.stringMatching(readable("analytics", "orders_by_category")),
+            expect.stringMatching(prefixed("analytics", "anything")),
          ]);
          expect(
             findingsOf(compiled).filter(
@@ -107,7 +114,7 @@ describe("a rollup's name= places its table", () => {
       });
    }
 
-   it("reads namespace= as name='s container, with a deprecation warning, at the same table", async () => {
+   it("reads namespace= as name='s container, with a deprecation warning, at the same address", async () => {
       const as = async (placement: string, v1: boolean) =>
          compile(
             `source: orders is ${ROWS} extend {
@@ -119,9 +126,12 @@ describe("a rollup's name= places its table", () => {
       for (const v1 of [false, true]) {
          const named = await as('name="analytics.t"', v1);
          const spaced = await as('namespace="analytics"', v1);
-         expect(tablesOf(spaced.compiled, spaced.packagePath)).toEqual(
-            tablesOf(named.compiled, named.packagePath),
-         );
+         // One address and container; the name= leaf only renames it.
+         const [n] = tablesOf(named.compiled, named.packagePath);
+         const [d] = tablesOf(spaced.compiled, spaced.packagePath);
+         expect(d?.address).toBe(n?.address);
+         expect(n?.table).toMatch(prefixed("analytics", "t"));
+         expect(d?.table).toMatch(readable("analytics", "orders_by_category"));
          expect(
             findingsOf(spaced.compiled).filter(
                ([c]) => c === "deprecated-preaggregate-namespace",
@@ -141,8 +151,13 @@ describe("a rollup's name= places its table", () => {
    });
 
    for (const [label, placement] of [
-      ["a name= with no container", 'name="t"'],
+      ["a name= with an empty leaf", 'name="analytics."'],
       ["a name= whose container needs quotes", 'name="my schema.t"'],
+      ["a name= ending as Publisher's own names do", 'name="a.t__p0123abcd"'],
+      [
+         "two leaves at one grain",
+         'name="a.t"\n  #(preaggregate) grain=["category"] name="a.u"',
+      ],
       ["both name= and namespace=", 'name="a.t" namespace="a"'],
       ["both name= and storage=", 'name="a.t" storage="lake"'],
    ] as const) {
@@ -160,6 +175,21 @@ describe("a rollup's name= places its table", () => {
          expect(invalid.map((f) => f.tier)).toEqual(["malformed"]);
       });
    }
+});
+
+describe("a rollup's name= leaf with no container", () => {
+   it("names its table in the connection's default schema", async () => {
+      const { compiled, packagePath } = await compile(
+         `source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category"] name="orders_rollup"
+  measure: total is amount.sum()
+}
+`,
+      );
+      expect(tablesOf(compiled, packagePath).map((t) => t.table)).toEqual([
+         expect.stringMatching(prefixed("", "orders_rollup")),
+      ]);
+   });
 });
 
 describe("a rollup with no placement of its own takes its base's name= container", () => {
@@ -188,7 +218,7 @@ source: orders is ${ROWS} -> { select: * } extend {
          expect(tables).toEqual([
             "analytics.orders_t",
             expect.stringMatching(readable("analytics", "orders_by_category")),
-            expect.stringMatching(readable("other", "orders_by_region")),
+            expect.stringMatching(prefixed("other", "t")),
          ]);
       });
    }
@@ -224,7 +254,7 @@ source: orders is ${ROWS} extend {
       const entries = tablesOf(compiled, packagePath);
       expect(entries.map((t) => t.table).sort()).toEqual([
          "analytics.orders_t",
-         expect.stringMatching(readable("analytics", "orders_by_category")),
+         expect.stringMatching(prefixed("analytics", "orders_t")),
       ]);
       expect(new Set(entries.map((t) => t.address)).size).toBe(2);
       expect(
@@ -245,8 +275,8 @@ source: orders is ${ROWS} extend {
       );
       const entries = tablesOf(compiled, packagePath);
       expect(entries.map((t) => t.table).sort()).toEqual([
-         expect.stringMatching(readable("a", "orders_by_category")),
-         expect.stringMatching(readable("b", "orders_by_category")),
+         expect.stringMatching(prefixed("a", "t")),
+         expect.stringMatching(prefixed("b", "t")),
       ]);
       expect(new Set(entries.map((t) => t.address)).size).toBe(2);
    });

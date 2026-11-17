@@ -85,6 +85,8 @@ interface PreaggregateGrain {
    namespace?: string;
    /** {@link namespace} was written as the deprecated `namespace=`. */
    deprecatedNamespace?: true;
+   /** Its `name=`'s leaf: the readable prefix of its table's name. */
+   prefix?: string;
    /**
     * The storage destination this rollup's table is built into and served from,
     * when the author named one (`#@ preaggregate grain="category"
@@ -446,6 +448,7 @@ export function readPreaggregateAnnotation(
          text: grainText,
          namespace,
          ...(read.deprecatedNamespace ? { deprecatedNamespace: true } : {}),
+         ...(read.prefix !== undefined ? { prefix: read.prefix } : {}),
          storage,
          ...(fresh.freshness ? { freshness: fresh.freshness } : {}),
       });

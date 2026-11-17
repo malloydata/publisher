@@ -347,6 +347,8 @@ function selfTableName(
    }
    const dot = written.lastIndexOf(".");
    const prefixed = hasAuthorTableName(compiled, persistSource);
+   // A rollup's `name=` leaf, which its build source does not carry.
+   const rollupPrefix = compiled.tables[persistSource.sourceID]?.rollup?.prefix;
    return readableTableName({
       identity: {
          environmentName: naming.environmentName,
@@ -359,7 +361,11 @@ function selfTableName(
       },
       label: labelOf(compiled, namer),
       ...(dot > 0 ? { container: written.slice(0, dot) } : {}),
-      ...(prefixed ? { prefix: written.slice(dot + 1) } : {}),
+      ...(prefixed
+         ? { prefix: written.slice(dot + 1) }
+         : rollupPrefix !== undefined
+           ? { prefix: rollupPrefix }
+           : {}),
       dialect: persistSource.dialectName,
       inDestination: !!destination,
    });
@@ -396,12 +402,22 @@ function keepsReadableName(
       return false;
    }
    const head = (leaf: string) => leaf.replace(READABLE_TAIL, "");
+   // A `name=` that sets the prefix (under `scope: version`, or a rollup's
+   // in any package) keeps the table's name only while the prefix is the
+   // same; a readable name's own prefix (with `__`) stands for none.
+   const rollup = compiled.tables[persistSource.sourceID]?.rollup;
+   const prefixed =
+      rollup?.prefix !== undefined ||
+      (!rollup && hasAuthorTableName(compiled, persistSource));
+   if (rollup && naming.ownedVersion === undefined) {
+      return prefixed
+         ? head(was.leaf) === head(now.leaf)
+         : head(was.leaf).includes("__");
+   }
    if (naming.ownedVersion !== undefined) {
       const version = `__${readableVersion(naming.ownedVersion)}`;
       if (!head(was.leaf).endsWith(version)) return false;
-      if (hasAuthorTableName(compiled, persistSource)) {
-         return head(was.leaf) === head(now.leaf);
-      }
+      if (prefixed) return head(was.leaf) === head(now.leaf);
       // A recorded name with no `__` before its version was a `name=`
       // prefix: the `name=` is gone, so the prefix changed.
       if (!head(was.leaf).slice(0, -version.length).includes("__")) {
