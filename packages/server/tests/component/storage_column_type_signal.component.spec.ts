@@ -336,7 +336,7 @@ describe("a colocated table read again after a transient failure", () => {
       expect(drifted).toBe(1);
       const mz = pkg.materialization();
       // The retry's read succeeds, and finds the table as built.
-      mz.readColocatedColumns = async (retried) =>
+      mz.readDatabaseColumns = async (retried) =>
          new Map(
             Object.keys(retried).map((id) => [
                id,
@@ -348,12 +348,12 @@ describe("a colocated table read again after a transient failure", () => {
          colocatedAsGiven: true,
          observed,
       });
-      expect(mz.hasUnreadColocatedTables()).toBe(true);
+      expect(mz.hasUnreadDatabaseTables()).toBe(true);
       const deadline = Date.now() + 10_000;
-      while (mz.hasUnreadColocatedTables() && Date.now() < deadline) {
+      while (mz.hasUnreadDatabaseTables() && Date.now() < deadline) {
          await new Promise((r) => setTimeout(r, 100));
       }
-      expect(mz.hasUnreadColocatedTables()).toBe(false);
+      expect(mz.hasUnreadDatabaseTables()).toBe(false);
 
       expect(
          await harness.collectCounter(
