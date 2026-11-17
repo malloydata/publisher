@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — one vocabulary: `database` replaces `colocated` on the wire
+## [Unreleased] — one vocabulary: `database` replaces `colocated` on the wire; rollups lift private dimensions and read zoned dates like the served copy
 
 **Contract change: every tier value that said `colocated` now says `database`.** A table built in the source's own connection was called `colocated` on some surfaces and `database` on others (`servedFrom`, `path.servedBy.tier`). It is `database` everywhere now. `colocated` is retained, no longer produced, where it was an API enum value, and Publisher keeps accepting it wherever it reads a stored or legacy record. Clients should accept both values for one release. Credible's control plane already does.
 
@@ -49,6 +49,10 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 A strict client must add the three new values (`materialize`, `view`, `query`) to the plan, binding and manifest enums, or read an unknown value as an entry that is not a rollup.
 
 **Fixed: a refused `storage=` rollup's serve verdict said `tier: colocated`.** The verdict mapped every refusal-record tier that was not `storage` to the database tier, and a rollup's record says `preaggregate`. A refused rollup's verdict now gives the tier its own `storage=` puts it in, `storage` or `database`. Its `RefusedSource.tier` still says `preaggregate`.
+
+**A rollup lifts a `private` grain dimension that a source its base extends declares.** A `#(preaggregate)` or `#@ preaggregate` rollup whose grain names a `private` dimension the base inherits from a source it extends, declared in the same file, is now built and served. Its build copy lifts that source's statement, as the served copy's build copy lifts the base's own, and the column stays `private` on the rollup, so a query grouping by the rest of the grain is answered from it, equal to live, while no caller can select it. Before, such a rollup was refused (`hidden_field`) and answered live. One declared in another file is still refused. A rollup never lets a caller read a hidden (`private` or `internal`) measure or dimension that live refuses: a hidden measure is still never built, and every query that reaches a hidden field through a rollup gets live's own error.
+
+**A rollup reads a caller's `timezone:` by the served copy's rule.** A query that sets its own zone is now answered from a rollup when it groups by, filters on, or truncates a stored `date` or `timestamp` column itself, including through a join to the rolled-up source; before, any such query that read a stored date or time, or read the rollup through a join, was answered live. The answer equals live's in every zone. A query that reads what the build computed in the model's zone is still answered live (`TIME_ZONE`): a stored truncation (`order_day is order_time.day`, or a query base's truncated column), a measure or dimension that reads a time, a base `where:` that reads a time, or a field through the base's own joins.
 
 ## [Unreleased] — database-table drift reported like `storage=`; DOUBLE incremental tables re-seed; unreadable rollup grains refused at plan
 
